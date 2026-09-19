@@ -416,6 +416,10 @@ impl Interpreter<'_> {
                 .insert("ANNOTATION_DECLARATION_UNAVAILABLE".into());
             return Vec::new();
         };
+        if !definition.bounded.is_empty() {
+            self.boundaries
+                .insert("ANNOTATION_DEFINITION_BOUNDED".into());
+        }
         let metas = definition
             .annotations
             .iter()

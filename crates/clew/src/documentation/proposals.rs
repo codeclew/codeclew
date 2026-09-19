@@ -183,7 +183,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let narrative = artifact
                 .narrative
                 .ok_or_else(|| invalid("proposal has no canonical content"))?;
-            let mut result = render::publish_reviewed(&repo, narrative, versions)?;
+            let mut result =
+                render::publish_reviewed(&repo, narrative, versions, work.snapshot.as_deref())?;
             result["meaningReview"] = json!("UNASSESSED");
             result["proposal"] = json!(proposal);
             Ok(result)
@@ -207,18 +208,20 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
-/// Recheck exact revisions and every admitted external input before acceptance.
+/// Validate the selected evidence contract and admitted external inputs.
+/// Snapshot work stays historical; its publication does not claim current sources.
 pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
-    let (kind, id) = work
-        .subject
-        .split_once(':')
-        .ok_or_else(|| invalid("invalid work subject"))?;
-    let selected = if kind == "service" {
-        BTreeSet::from([id.to_owned()])
-    } else {
-        BTreeSet::new()
-    };
-    let now = check::run_selected(repo, &selected)?;
+    let snapshot = work.snapshot.as_deref().ok_or_else(|| ClewError::new(
+        ErrorCode::StaleRequiresReslice,
+        "LEGACY_WORK_REQUIRES_REPREPARE: prepare new work from saved evidence; legacy continuation cannot acquire current sources",
+    ))?;
+    let now = check::Check::load_snapshot(repo, snapshot)?;
+    if now.input_digest != repo.input_digest()? || digest(&now)? != digest(&work.checked)? {
+        return Err(ClewError::new(
+            ErrorCode::StaleRequiresReslice,
+            "saved work evidence or documentation declarations changed",
+        ));
+    }
     if now
         .services
         .iter()
@@ -257,9 +260,41 @@ struct Builder<'a> {
     diagnostics: Vec<Value>,
     events: usize,
 }
+
+/// The proposal validator's reference capabilities are also exposed as read
+/// metadata.  Keep these predicates pure so that advisory roles cannot drift
+/// from the checks which authorize a proposal.
+pub(super) fn evidence_reference_allowed(handle: &work::Handle) -> bool {
+    matches!(
+        handle.kind.as_str(),
+        "DEPENDENCY" | "NOTE" | "ENTRYPOINT" | "SOURCE"
+    )
+}
+
+pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) -> bool {
+    if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
+        return false;
+    }
+    work.request.entrypoint.as_ref().is_none_or(|entrypoint| {
+        entrypoint == &handle.id
+            || (handle.kind == "NOTE"
+                && handle
+                    .id
+                    .strip_prefix("note:")
+                    .is_some_and(|id| entrypoint == &super::notes::root(id)))
+    })
+}
+
+pub(super) fn gap_reference_allowed(handle: &work::Handle) -> bool {
+    matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE")
+}
+
 impl Builder<'_> {
     fn handle(&self, reference: &str) -> Result<&work::Handle, ClewError> {
         if !self.received.contains(reference) {
+            if !self.work.handles.contains_key(reference) {
+                return Err(invalid(format!("unknown work reference {reference}")));
+            }
             return Err(invalid(format!(
                 "evidence {reference} was not supplied by a recorded work read; expand it first"
             )));
@@ -277,6 +312,9 @@ impl Builder<'_> {
         let mut sources = BTreeSet::new();
         for reference in references {
             let handle = self.handle(reference)?;
+            if !evidence_reference_allowed(handle) {
+                return Err(invalid("unsupported evidence reference"));
+            }
             match handle.kind.as_str() {
                 "DEPENDENCY" | "NOTE" => {
                     let observation = &self.work.checked.dependencies[&handle.id];
@@ -599,15 +637,16 @@ fn materialize(
         if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
             return Err(invalid("operation requires an entrypoint work reference"));
         }
-        if work.request.entrypoint.as_ref().is_some_and(|id| {
-            id != &handle.id
-                && !(handle.kind == "NOTE"
-                    && id == &super::notes::root(handle.id.strip_prefix("note:").unwrap()))
-        }) {
+        if !operation_reference_allowed(work, handle) {
             return Err(invalid("operation is outside the requested entrypoint"));
         }
         Ok(if handle.kind == "NOTE" {
-            super::notes::root(handle.id.strip_prefix("note:").unwrap())
+            super::notes::root(
+                handle
+                    .id
+                    .strip_prefix("note:")
+                    .ok_or_else(|| invalid("invalid note work reference"))?,
+            )
         } else {
             handle.id.clone()
         })
@@ -806,13 +845,17 @@ fn materialize(
         }
     }
     for (reference, reason) in &input.gaps {
-        let id = if let Some(h) = work
-            .handles
-            .get(reference)
-            .filter(|h| matches!(h.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE"))
-        {
+        let id = if let Some(h) = work.handles.get(reference) {
+            if !gap_reference_allowed(h) {
+                return Err(invalid(
+                    "gap requires an entrypoint reference or its scenario subject",
+                ));
+            }
             if h.kind == "NOTE" {
-                super::notes::root(h.id.strip_prefix("note:").unwrap())
+                super::notes::root(
+                    h.id.strip_prefix("note:")
+                        .ok_or_else(|| invalid("invalid note work reference"))?,
+                )
             } else {
                 h.id.clone()
             }

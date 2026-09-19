@@ -895,7 +895,7 @@ private class FirFactsCfgChecker(
                         add(buildJsonObject {
                             put("from", from.id)
                             put("to", to.id)
-                            put("label", edge.label.toString())
+                            put("label", compilerCfgLabel(edge.label))
                             put("edgeKind", edge.kind.toString())
                         })
                     }

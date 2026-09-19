@@ -17,6 +17,60 @@ import kotlin.test.*
 
 class KotlinDocumentationFlowTest {
     @Test
+    fun compilerCfgLabelsAreStableAndPreserveExceptionalJumpTargets() {
+        val root = Files.createTempDirectory("compiler-cfg-labels").toRealPath()
+        try {
+            val input = Files.writeString(root.resolve("Labels.kt"), """
+                package labels
+                fun choose(flag: Boolean): Int {
+                    outer@ while (true) {
+                        try {
+                            if (flag) return 1
+                            if (System.nanoTime() > 0) break@outer
+                            continue@outer
+                        } finally {
+                            touch()
+                        }
+                    }
+                    return 0
+                }
+                fun touch() {}
+            """.trimIndent())
+            val plugin = Path.of(FirFactsCompilerPluginRegistrar::class.java.protectionDomain.codeSource.location.toURI())
+            fun compile(attempt: Int): List<JsonObject> {
+                val facts = root.resolve("facts-$attempt.jsonl")
+                val output = ByteArrayOutputStream()
+                val status = PrintStream(output).use { stream ->
+                    synchronized(K2JVMCompiler::class.java) {
+                        K2JVMCompiler().exec(stream, "-no-stdlib", "-no-reflect", "-jvm-target", "21",
+                            "-classpath", System.getProperty("java.class.path"),
+                            "-d", root.resolve("classes-$attempt").toString(),
+                            "-Xplugin=$plugin", "-P", "plugin:semantic-thread-facts:output=$facts", input.toString())
+                    }
+                }
+                assertEquals(0, status.code, output.toString())
+                return Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
+                    .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
+                    // This field is an operational duration, not graph content.
+                    .map { JsonObject(it - "firExtractionMicros") }
+                    .sortedBy { it["start"]!!.jsonPrimitive.int }
+            }
+            val first = compile(1)
+            val labels = first.flatMap { it["edges"]!!.jsonArray }
+                .map { it.jsonObject["label"]!!.jsonPrimitive.content }.toSet()
+            assertTrue("NormalPath" in labels, labels.toString())
+            assertTrue("onUncaughtException" in labels, labels.toString())
+            assertTrue("break@outer" in labels, labels.toString())
+            assertTrue("continue@outer" in labels, labels.toString())
+            assertTrue("return@labels/choose" in labels, labels.toString())
+            assertFalse(labels.any { it.startsWith("org.jetbrains.kotlin.") }, labels.toString())
+            assertEquals(first, compile(2))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun compilerTargetsPreserveOverloadsBranchesAndUnicodeSources() {
         val flows = extract("""
             package docs

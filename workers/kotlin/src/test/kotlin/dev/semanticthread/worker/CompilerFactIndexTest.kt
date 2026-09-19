@@ -63,6 +63,39 @@ class CompilerFactIndexTest {
     }
 
     @Test
+    fun equalRangeOrderingDoesNotDependOnJsonObjectInsertionOrder() {
+        val freshA = buildJsonObject {
+            put("recordType", "SEMANTIC_FACT")
+            put("file", "A.kt")
+            put("start", 12)
+            put("end", 20)
+            put("id", "a")
+        }
+        val freshB = buildJsonObject {
+            put("id", "b")
+            put("end", 20)
+            put("start", 12)
+            put("file", "A.kt")
+            put("recordType", "SEMANTIC_FACT")
+        }
+        // A persisted canonical JSON parse has a different insertion order
+        // from fresh plugin rows, while the fact values remain identical.
+        fun reloaded(id: String) = buildJsonObject {
+            put("end", 20)
+            put("file", "A.kt")
+            put("id", id)
+            put("recordType", "SEMANTIC_FACT")
+            put("start", 12)
+        }
+        fun ids(rows: List<JsonObject>) = rows.map { it["id"]!!.jsonPrimitive.content }
+
+        val fresh = CompilerFactIndex(repo, listOf(freshA, freshB))
+        val reloadedIndex = CompilerFactIndex(repo, listOf(reloaded("a"), reloaded("b")))
+        assertEquals(listOf("a", "b"), ids(fresh.semanticFacts(repo.resolve("A.kt"))))
+        assertEquals(ids(fresh.semanticFacts(repo.resolve("A.kt"))), ids(reloadedIndex.semanticFacts(repo.resolve("A.kt"))))
+    }
+
+    @Test
     fun cfgLookupPreservesFirstDuplicateAndArrivalOrder() {
         val first = fact("A.kt", 1, 5, "first", "FIR_CFG")
         val duplicate = fact("A.kt", 1, 5, "duplicate", "FIR_CFG")

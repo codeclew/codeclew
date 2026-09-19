@@ -707,6 +707,113 @@ internal fun validateProjectModelSourceFiles(repo: Path, model: JsonObject): Jso
     }
 }
 
+/**
+ * Bind the exact files selected by the build model to the semantic authority.
+ *
+ * Source roots are only a directory-level projection. The model's selected
+ * membership and the bytes read by the index/analyzer must remain visible in
+ * the manifest so a selection or source edit cannot reuse an old index.
+ */
+internal fun sourceSelectionAuthority(repo: Path, model: JsonObject): JsonObject {
+    data class SourceEntry(val relative: String, val digest: String)
+    val contentDigests = mutableMapOf<Path, String>()
+
+    fun entries(key: String, value: JsonElement): List<SourceEntry> {
+        val sources = value as? JsonArray ?: throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "Kotlin build model $key is not an array",
+        )
+        val seen = mutableSetOf<String>()
+        return sources.map { source ->
+            val raw = source.safeString() ?: throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "Kotlin build model source path is not a string",
+            )
+            val canonical = repositorySourceFile(repo, raw)
+            val relative = repo.relativize(canonical).invariantSeparatorsPathString
+            if (!seen.add(relative)) {
+                throw WorkerFailure(
+                    "UNSUPPORTED_PROJECT_CONFIGURATION",
+                    "Kotlin build model $key contains a duplicate source path",
+                )
+            }
+            val digest = contentDigests.getOrPut(canonical) {
+                runCatching { sha(Files.readAllBytes(canonical)) }.getOrElse {
+                    throw WorkerFailure(
+                        "UNSUPPORTED_PROJECT_CONFIGURATION",
+                        "Kotlin build model source file cannot be read",
+                    )
+                }
+            }
+            SourceEntry(relative, digest)
+        }.sortedBy { it.relative }
+    }
+
+    val indexEntries = entries(
+        "sourceFiles",
+        model["sourceFiles"] ?: throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "Kotlin build model has no sourceFiles",
+        ),
+    )
+    // This is the same fallback used by analyzeWithK2: absent analysis
+    // selection means the selected index source set is the analysis source set.
+    val analysisEntries = entries("analysisSourceFiles", model["analysisSourceFiles"] ?: model["sourceFiles"]!!)
+
+    fun authority(entries: List<SourceEntry>): JsonObject = buildJsonObject {
+        put("digest", sha(entries.joinToString("\u0000") { "${it.relative}\u0000${it.digest}" }.toByteArray()))
+        putJsonArray("files") {
+            entries.forEach { entry ->
+                add(buildJsonObject {
+                    put("path", entry.relative)
+                    put("hash", entry.digest)
+                })
+            }
+        }
+    }
+
+    return buildJsonObject {
+        put("sourceSelectionSchema", "kotlin-source-selection/1.0")
+        put("sourceFiles", authority(indexEntries))
+        put("analysisSourceFiles", authority(analysisEntries))
+    }
+}
+
+/** Stable compiler configuration; source deltas remain owned by the BTA store. */
+internal fun btaSemanticConfigurationDigest(manifest: JsonObject): String {
+    val digestPattern = Regex("^sha256:[0-9a-f]{64}$")
+    fun validSourceRole(value: JsonElement?): Boolean {
+        val role = value as? JsonObject ?: return false
+        if (role.keys != setOf("digest", "files")) return false
+        val files = role["files"] as? JsonArray ?: return false
+        val entries = files.map { item ->
+            val entry = item as? JsonObject ?: return false
+            if (entry.keys != setOf("path", "hash")) return false
+            val path = entry["path"].safeString() ?: return false
+            val hash = entry["hash"].safeString() ?: return false
+            if (path.isEmpty() || path.startsWith('/') || '\u0000' in path ||
+                path.split('/').any { it.isEmpty() || it == "." || it == ".." } ||
+                !digestPattern.matches(hash)) return false
+            path to hash
+        }
+        if (entries != entries.sortedBy { it.first } || entries.map { it.first }.toSet().size != entries.size) return false
+        val expected = sha(entries.joinToString("\u0000") { "${it.first}\u0000${it.second}" }.toByteArray())
+        return role["digest"].safeString() == expected
+    }
+    val externalSourceState = manifest["sourceSelectionSchema"].safeString() == "kotlin-source-selection/1.0" &&
+        validSourceRole(manifest["sourceFiles"]) && validSourceRole(manifest["analysisSourceFiles"])
+    val configuration = if (externalSourceState) {
+        JsonObject(manifest.filterKeys { it != "sourceFiles" && it != "analysisSourceFiles" })
+    } else manifest
+    // Never strip legacy, malformed, or unknown-version inputs. A new domain
+    // prevents this namespace from aliasing the previous complete-input key.
+    return sha(canonicalJson(buildJsonObject {
+        put("schema", "kotlin-bta-semantic-configuration/1.0")
+        put("sourceState", if (externalSourceState) "BTA_SNAPSHOT" else "FULL_INPUT")
+        put("manifest", configuration)
+    }).toByteArray())
+}
+
 internal fun descriptorUnsupportedReason(raw: JsonObject, file: String?, source: String?): String? {
     val identity = raw["symbolIdentity"].safeString().orEmpty()
     val owner = raw["ownerIdentity"].safeString().orEmpty()
@@ -788,13 +895,53 @@ internal fun parseCompilerFactLines(lines: List<String>): List<JsonObject> = lin
 internal fun jdkFingerprint(home: Path): String {
     val canonical = home.toRealPath()
     val release = canonical.resolve("release")
-    val java = canonical.resolve("bin/java")
-    if (!release.isRegularFile() || !java.isRegularFile()) {
+    val javaLauncher = canonical.resolve("bin/java")
+    fun regular(path: Path): Boolean = Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
+        !Files.isSymbolicLink(path)
+    if (!regular(release) || !regular(javaLauncher)) {
         throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "JDK identity files are missing")
     }
+
+    fun optionalImage(relative: String): Path? {
+        val path = canonical.resolve(relative)
+        if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null
+        if (!regular(path)) throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION", "JDK image is not a regular file: $relative",
+        )
+        return path
+    }
+    val modularImage = optionalImage("lib/modules")
+    val legacyImage = listOf(
+        canonical.resolve("jre/lib/rt.jar"),
+        canonical.resolve("lib/rt.jar"),
+    ).firstOrNull(::regular)
+    val runtimeImage = modularImage ?: legacyImage ?: throw WorkerFailure(
+        "UNSUPPORTED_PROJECT_CONFIGURATION",
+        "JDK runtime image is missing",
+    )
+    val ctSym = optionalImage("lib/ct.sym")
+
+    fun fileDigest(path: Path): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path, java.nio.file.LinkOption.NOFOLLOW_LINKS).buffered().use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("", "sha256:") { "%02x".format(it) }
+    }
+
     return sha(buildString {
-        append("release:").append(sha(release.readBytes())).append('\u0000')
-        append("java:").append(sha(java.readBytes())).append('\u0000')
+        append("release:").append(fileDigest(release)).append('\u0000')
+        append("java:").append(fileDigest(javaLauncher)).append('\u0000')
+        append("runtime:").append(canonical.relativize(runtimeImage).invariantSeparatorsPathString)
+            .append(':').append(fileDigest(runtimeImage)).append('\u0000')
+        append("ct.sym:")
+        if (ctSym != null) append("present:").append(fileDigest(ctSym)) else append("absent")
+        append('\u0000')
     }.toByteArray())
 }
 
@@ -1387,8 +1534,8 @@ internal class Worker(
         // Project-native model extraction inherits mutable build-tool state
         // that is intentionally outside the repository input hash. Keep its
         // in-memory cache scoped to the latest OpenProject so reopening observes
-        // the current environment. Sealed external state remains worker-scoped.
-        if (!projectModelCacheIsWorkerScoped && kind == 2) projectModelCache.clear()
+        // the current environment, including for sealed external state.
+        if (kind == 2) projectModelCache.clear()
         requestCacheRequests = 0
         requestCacheHits = 0
         requestPsiParseMicros = 0
@@ -1486,9 +1633,28 @@ internal class Worker(
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
         require(requestedRepo.isDirectory()) { "repository does not exist: $requestedRepo" }
         val repo = requestedRepo.toRealPath()
-        return cachedProjectModel(repo, compilation) {
-            val buildModel = cachedProjectModel(repo, compilation)
+        // Admit the raw build model before looking up a normalized model. The
+        // selected file set and configured JDK are inputs to canonical reuse;
+        // roots alone cannot distinguish two source selections.
+        val currentRaw = cachedProjectModel(repo, compilation)
+        val currentSourceAuthority = sourceSelectionAuthority(repo, currentRaw)
+        val analysisJvmHome = Path.of(System.getProperty("java.home")).toRealPath()
+        val currentAnalysisJvmFingerprint = jdkFingerprint(analysisJvmHome)
+        val currentJdkHome = Path.of(currentRaw["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home")).toRealPath()
+        val currentJdkHomeFingerprint = if (currentJdkHome == analysisJvmHome) currentAnalysisJvmFingerprint else jdkFingerprint(currentJdkHome)
+        val canonicalAuthority = buildJsonObject {
+            currentSourceAuthority.forEach { (key, value) -> put(key, value) }
+            // Environment-dependent build options may change without changing
+            // inventory, selected sources or JDK. Bind the complete fresh model.
+            put("rawModelHash", sha(canonicalJson(currentRaw).toByteArray()))
+            put("analysisJvmFingerprint", currentAnalysisJvmFingerprint)
+            put("jdkHomeFingerprint", currentJdkHomeFingerprint)
+        }
+        val canonicalAuthorityHash = sha(canonicalJson(canonicalAuthority).toByteArray())
+        val canonical = cachedProjectModel(repo, compilation, cacheAuthority = canonicalAuthorityHash, extract = {
+            val buildModel = currentRaw
             val modelInputs = projectInventory(repo).modelInputs
+            val sourceAuthority = currentSourceAuthority
         val sourceFiles = buildModel["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
         val sourceRoots = sourceFiles.mapNotNull { sourceRoot(repo, it) }.distinct().sorted()
         val generatedRoots = sourceFiles.filter {
@@ -1620,8 +1786,8 @@ internal class Worker(
             })
             buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
             put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown"))
-            put("analysisJvmFingerprint", jdkFingerprint(Path.of(System.getProperty("java.home"))))
-            put("jdkHomeFingerprint", jdkFingerprint(Path.of(buildModel["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home"))))
+            put("analysisJvmFingerprint", currentAnalysisJvmFingerprint)
+            put("jdkHomeFingerprint", currentJdkHomeFingerprint)
             putJsonArray("modelInputs") { modelInputs.map { buildJsonObject { put("path", it.path); put("hash", it.hash) } }.sortedBy { it.toString() }.forEach(::add) }
         }
         val modelHash = sha(normalized.toString().toByteArray())
@@ -1666,6 +1832,7 @@ internal class Worker(
             put("classpathAuthority", normalized["classpathAuthority"] ?: JsonNull)
             put("buildState", normalized["buildState"] ?: JsonNull)
             put("modelInputs", normalized["modelInputs"] ?: JsonArray(emptyList()))
+            sourceAuthority.forEach { (key, value) -> put(key, value) }
         }
         buildJsonObject {
             put("schema", "semantic-project/0.1"); put("projectPath", ".")
@@ -1674,10 +1841,11 @@ internal class Worker(
             put("workerCompilerVersion", WORKER_COMPILER_VERSION)
             put("jdk", 21)
             put("projectModelHash", modelHash)
-                put("semanticInputManifest", semanticInputManifest)
-                put("semanticInputManifestHash", sha(canonicalJson(semanticInputManifest).toByteArray()))
-            }
+            put("semanticInputManifest", semanticInputManifest)
+            put("semanticInputManifestHash", sha(canonicalJson(semanticInputManifest).toByteArray()))
         }
+        })
+        return canonical
     }
 
     private fun gradleModel(repo: Path, compilation: String?): JsonObject {
@@ -1878,7 +2046,12 @@ internal class Worker(
         }
     }
 
-    private fun cachedProjectModel(repo: Path, compilation: String?, extract: (() -> JsonObject)? = null): JsonObject {
+    private fun cachedProjectModel(
+        repo: Path,
+        compilation: String?,
+        cacheAuthority: String? = null,
+        extract: (() -> JsonObject)? = null,
+    ): JsonObject {
         val projectModelStarted = System.nanoTime()
         fun elapsedMicros(started: Long): Long = (System.nanoTime() - started).coerceAtLeast(0L) / 1_000L
         requestCacheRequests++
@@ -1886,7 +2059,7 @@ internal class Worker(
         val canonicalRepo = repo.toRealPath()
         val view = if (extract == null) "RAW" else "CANONICAL"
         val inventory = projectInventory(canonicalRepo)
-        val key = "$canonicalRepo|${compilation ?: ":/main"}|${inventory.inputHash(view)}"
+        val key = "$canonicalRepo|${compilation ?: ":/main"}|${inventory.inputHash(view)}|authority=${cacheAuthority.orEmpty()}"
         val keyMicros = elapsedMicros(keyStarted)
         val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
         val persistentCacheAuthorized = projectModelCacheIsWorkerScoped && extract != null
@@ -2079,7 +2252,7 @@ internal class Worker(
         val factsPluginDigest = artifactFingerprint(pluginArtifact)
         val extractor = extractorAuthority()
         val extractorAuthorityDigest = sha(canonicalJson(extractor).toByteArray())
-        val cacheKey = semanticK2CacheKey(
+        fun semanticKey(inputDigest: String) = semanticK2CacheKey(
             extractor,
             buildString {
                 val version = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
@@ -2088,10 +2261,14 @@ internal class Worker(
                     model["kotlinSemanticEngine"]?.jsonObject?.get("engineId")?.jsonPrimitive?.contentOrNull
                         ?: "kotlin-engine-$WORKER_COMPILER_VERSION",
                 ).append('\u0000')
-                append("semanticConfigurationDigest=").append(semanticInputManifestDigest).append('\u0000')
+                append("semanticConfigurationDigest=").append(inputDigest).append('\u0000')
                 append("factsPlugin=").append(factsPluginDigest).append('\u0000')
             },
         )
+        val cacheKey = semanticKey(semanticInputManifestDigest)
+        val semanticManifest = semanticModel["semanticInputManifest"] as? JsonObject
+            ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input manifest is unavailable")
+        val btaCacheKey = semanticKey(btaSemanticConfigurationDigest(semanticManifest))
         val sourceStateDigest = analysisSourceStateDigest(analysisRepo, sources, overrides)
         val memoryKey = "$analysisRepo|$compilation|$cacheKey|$sourceStateDigest"
         analysisCache[memoryKey]?.let { requestCacheHits++; return it }
@@ -2112,14 +2289,14 @@ internal class Worker(
                     semanticInputManifestDigest = semanticInputManifestDigest,
                     factsPluginDigest = factsPluginDigest,
                     extractorAuthorityDigest = extractorAuthorityDigest,
-                    semanticConfigurationDigest = cacheKey,
+                    semanticConfigurationDigest = btaCacheKey,
                 )
 
                 val request = IncrementalK2Request(
                     indexRoot = indexRoot,
                     repo = analysisRepo,
                     compilation = compilation,
-                    semanticConfigurationDigest = cacheKey,
+                    semanticConfigurationDigest = btaCacheKey,
                     expectedCompilerVersion = WORKER_COMPILER_VERSION,
                     moduleName = model["projectPath"]?.jsonPrimitive?.contentOrNull?.substringAfterLast(':')
                         ?.ifBlank { "main" } ?: "main",
@@ -2287,7 +2464,7 @@ internal class Worker(
         }
         val canonical = JsonArray(files)
         return buildJsonObject {
-            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requestedFiles.isNotEmpty()); put("analysisMode", if (semanticAvailable) "K2_SEMANTIC" else "SYNTAX_DECLARATIONS"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
+            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requestedFiles.isNotEmpty()); put("analysisMode", if (semanticAvailable) "K2_SEMANTIC" else "SYNTAX_DECLARATIONS"); put("files", canonical); put("indexHash", sha(canonicalJson(canonical).toByteArray()))
             put("declarationRelations", declarationRelations)
             put("declarationRelationHash", sha(canonicalJson(declarationRelations).toByteArray()))
             put("declarationDescriptors", declarationDescriptors)
@@ -3062,6 +3239,7 @@ internal class Worker(
 
     private fun cfgRecords(repo: Path, path: Path, analysis: K2Analysis): List<JsonObject> =
         analysis.indexFor(repo).cfgRecords(path)
+            .map { compilerCfgIdentityRow(it, repo.relativize(path).invariantSeparatorsPathString) }
 
     private fun normalizeFirCfg(repo: Path, file: String, owner: String, kt: KtFile, fn: KtNamedFunction, cfg: JsonObject, analysis: K2Analysis, compilation: String): JsonObject {
         val rawNodes = cfg["nodes"]!!.jsonArray
@@ -3247,7 +3425,7 @@ internal class Worker(
             put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
             put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
             putJsonArray("inheritanceFacts") { inheritance.forEach(::add) }
-            put("firCfgHash", sha(cfg.toString().toByteArray()))
+            put("firCfgHash", canonicalCompilerRowDigest(cfg, file))
         }
     }
 
@@ -4127,7 +4305,7 @@ private fun canonicalJsonValue(value: JsonElement): JsonElement = when (value) {
     is JsonArray -> JsonArray(value.map(::canonicalJsonValue))
     else -> value
 }
-private fun canonicalJson(value: JsonElement): String = canonicalJsonValue(value).toString()
+internal fun canonicalJson(value: JsonElement): String = canonicalJsonValue(value).toString()
 private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
 private fun sha(bytes: ByteArray) = "sha256:" + MessageDigest.getInstance("SHA-256").digest(bytes).hex()
 private fun normalizeTokens(text: String): String {

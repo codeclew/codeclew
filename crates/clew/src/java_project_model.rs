@@ -3,6 +3,7 @@ use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Read;
@@ -60,7 +61,7 @@ pub enum JavaBuildSystem {
     Maven,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JavaClasspathAuthority {
     pub logical_name: String,
@@ -81,6 +82,19 @@ pub struct JavaProjectModel {
     pub release: u16,
     pub compiler_version: String,
     pub compiler_options: Vec<String>,
+    /// Explicitly admitted annotation-processor class names. Empty means no
+    /// annotation processing is authorized. Derived only from admitted project
+    /// compiler configuration (a `-processor:...`/`-processor` option or the
+    /// Maven compiler-plugin `annotationProcessors`/`-processor` compilerArg),
+    /// never inferred from classpath presence alone.
+    #[serde(default)]
+    pub annotation_processors: Vec<String>,
+    /// Immutable processor-path artifacts explicitly admitted for annotation
+    /// processing (for example the Maven compiler-plugin `annotationProcessorPaths`).
+    /// Their digests participate in model identity so a processor change
+    /// invalidates semantic authority. Empty means no processor paths admitted.
+    #[serde(default)]
+    pub annotation_processor_paths: Vec<JavaClasspathAuthority>,
     pub boundaries: Vec<String>,
 }
 
@@ -89,6 +103,7 @@ pub struct JavaOperationalModel {
     pub authority: JavaProjectModel,
     pub source_paths: Vec<PathBuf>,
     pub classpath_paths: Vec<PathBuf>,
+    pub annotation_processor_paths: Vec<PathBuf>,
     pub java_executable: PathBuf,
 }
 
@@ -104,16 +119,70 @@ pub fn extract_java_model_with_settings(
     compilation: &str,
     settings: Option<&crate::maven::MavenSettings>,
 ) -> Result<JavaOperationalModel, ClewError> {
+    extract_java_model_with_settings_and_diagnostics(repository, compilation, settings, None, &[])
+}
+
+pub(crate) fn extract_java_model_with_settings_and_diagnostics(
+    repository: &Path,
+    compilation: &str,
+    settings: Option<&crate::maven::MavenSettings>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    extra_annotation_processors: &[String],
+) -> Result<JavaOperationalModel, ClewError> {
+    let mut models = extract_java_models_with_settings_and_diagnostics(
+        repository,
+        &[compilation.to_owned()],
+        settings,
+        debug_output,
+        extra_annotation_processors,
+    )?;
+    models
+        .pop()
+        .ok_or_else(|| internal("single Java model extraction returned no model"))
+}
+
+/// Extract all selected Java compilations in deterministic order. Maven model
+/// preflights complete before any cohort compilation starts; Gradle retains its
+/// existing one-task-per-selector behavior.
+pub(crate) fn extract_java_models_with_settings_and_diagnostics(
+    repository: &Path,
+    compilations: &[String],
+    settings: Option<&crate::maven::MavenSettings>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    extra_annotation_processors: &[String],
+) -> Result<Vec<JavaOperationalModel>, ClewError> {
+    if compilations.is_empty() {
+        return Err(invalid("Java compilation selection is empty"));
+    }
     let repository = repository.canonicalize().map_err(io_error)?;
-    let selector = JavaCompilationSelector::parse(compilation)?;
+    let mut selectors = compilations
+        .iter()
+        .map(|compilation| JavaCompilationSelector::parse(compilation))
+        .collect::<Result<Vec<_>, _>>()?;
+    selectors.sort_by_key(JavaCompilationSelector::canonical);
+    if selectors
+        .windows(2)
+        .any(|pair| pair[0].canonical() == pair[1].canonical())
+    {
+        return Err(invalid("Java compilation selection contains a duplicate"));
+    }
     let gradle = repository.join("gradlew").is_file()
         && (repository.join("settings.gradle").is_file()
             || repository.join("settings.gradle.kts").is_file());
     let maven = repository.join("pom.xml").is_file();
     match (gradle, maven) {
-        (true, false) if settings.is_none() => extract_gradle(&repository, &selector),
+        (true, false) if settings.is_none() => selectors
+            .iter()
+            .map(|selector| extract_gradle(&repository, selector))
+            .collect(),
         (true, false) => Err(invalid("--maven-settings requires a Java Maven project")),
-        (false, true) => extract_maven(&repository, &selector, settings),
+        (false, true) => extract_maven_batch(
+            &repository,
+            &selectors,
+            settings,
+            debug_output,
+            extra_annotation_processors,
+        ),
         (true, true) => Err(unsupported(
             "Java build authority is ambiguous between Gradle and Maven",
         )),
@@ -223,6 +292,8 @@ fn extract_gradle(
             ])
             .current_dir(repository),
         "Gradle Java model extraction failed",
+        "GRADLE_MODEL",
+        None,
     )?;
     let line = output
         .lines()
@@ -280,166 +351,354 @@ fn extract_gradle(
         release,
         compiler_options,
         Vec::new(),
+        Vec::new(),
     )
 }
 
-fn extract_maven(
-    repository: &Path,
-    selector: &JavaCompilationSelector,
-    settings: Option<&crate::maven::MavenSettings>,
-) -> Result<JavaOperationalModel, ClewError> {
-    let settings = settings
-        .map(crate::maven::MavenSettings::materialize)
-        .transpose()?;
-    let scope = if selector.source_set == "main" {
+fn maven_scope(source_set: &str) -> &'static str {
+    if source_set == "main" {
         "compile"
     } else {
         "test"
-    };
-    let scope_property = format!("-Dmdep.includeScope={scope}");
-    let maven = || -> Result<Command, ClewError> {
-        let mut command = crate::maven::command(repository)?;
-        if let Some(settings) = &settings {
-            command.arg("--settings").arg(settings.path());
+    }
+}
+
+fn maven_command(
+    repository: &Path,
+    settings_path: Option<&Path>,
+    source_set: &str,
+) -> Result<Command, ClewError> {
+    let mut command = crate::maven::command(repository)?;
+    if let Some(settings_path) = settings_path {
+        command.arg("--settings").arg(settings_path);
+    }
+    let scope_property = format!("-Dmdep.includeScope={}", maven_scope(source_set));
+    command.args([
+        "-DskipTests",
+        "-Dstyle.color=never",
+        "-Dmdep.outputFile=target/codeclew-classpath.txt",
+        "-Dmdep.regenerateFile=true",
+        &scope_property,
+    ]);
+    Ok(command)
+}
+
+struct MavenPreflight {
+    selector: JavaCompilationSelector,
+    project: PathBuf,
+    source_paths: Vec<PathBuf>,
+    processor_names: Vec<String>,
+    processor_coordinates: Vec<String>,
+}
+
+struct MavenCaptured {
+    index: usize,
+    model: JavaOperationalModel,
+    source_digests: BTreeMap<PathBuf, String>,
+    classpath_paths: Vec<PathBuf>,
+}
+
+fn extract_maven_batch(
+    repository: &Path,
+    selectors: &[JavaCompilationSelector],
+    admitted_settings: Option<&crate::maven::MavenSettings>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    extra_annotation_processors: &[String],
+) -> Result<Vec<JavaOperationalModel>, ClewError> {
+    let settings_file = admitted_settings
+        .map(crate::maven::MavenSettings::materialize)
+        .transpose()?;
+    let settings_path = settings_file.as_ref().map(|file| file.path().to_owned());
+    let mut effective_cache = BTreeMap::<(PathBuf, String), String>::new();
+    let mut preflights = Vec::with_capacity(selectors.len());
+    for selector in selectors {
+        let project = selector.maven_project_directory(repository)?;
+        let key = (project.clone(), selector.source_set.clone());
+        let effective_xml = if let Some(xml) = effective_cache.get(&key) {
+            xml.clone()
+        } else {
+            let effective_pom = tempfile::NamedTempFile::new().map_err(io_error)?;
+            discard_build_output(
+                maven_command(repository, settings_path.as_deref(), &selector.source_set)?
+                    .arg("-f")
+                    .arg(project.join("pom.xml"))
+                    .args(["-B", "-q", "-N", "help:effective-pom"])
+                    .arg(format!("-Doutput={}", effective_pom.path().display()))
+                    .current_dir(repository),
+                "Maven Java effective model extraction failed",
+                "EFFECTIVE_POM",
+                debug_output,
+            )?;
+            let mut effective_xml = String::new();
+            effective_pom
+                .reopen()
+                .map_err(io_error)?
+                .take(MAX_MODEL_OUTPUT_BYTES as u64 + 1)
+                .read_to_string(&mut effective_xml)
+                .map_err(io_error)?;
+            if effective_xml.len() > MAX_MODEL_OUTPUT_BYTES {
+                return Err(resource(
+                    "Maven Java effective model exceeds the byte limit",
+                ));
+            }
+            effective_cache.insert(key, effective_xml.clone());
+            effective_xml
+        };
+        validate_maven_build_layout(&project, &effective_xml)?;
+        let source_root = project.join(if selector.source_set == "main" {
+            "src/main/java"
+        } else {
+            "src/test/java"
+        });
+        let source_paths = java_sources(&source_root)?;
+        let (processor_names, processor_coordinates) =
+            maven_compiler_processor_declarations(&effective_xml)?;
+        preflights.push(MavenPreflight {
+            selector: selector.clone(),
+            project,
+            source_paths,
+            processor_names,
+            processor_coordinates,
+        });
+    }
+
+    let mut cohorts = BTreeMap::<String, Vec<usize>>::new();
+    for (index, preflight) in preflights.iter().enumerate() {
+        cohorts
+            .entry(preflight.selector.source_set.clone())
+            .or_default()
+            .push(index);
+    }
+    let mut captured = Vec::with_capacity(preflights.len());
+    for (source_set, indexes) in cohorts {
+        let mut classpath_files = Vec::with_capacity(indexes.len());
+        for index in &indexes {
+            let path = preflights[*index]
+                .project
+                .join("target/codeclew-classpath.txt");
+            remove_stale_classpath(&path)?;
+            classpath_files.push(path);
         }
-        // Property-activated profiles must be identical for model extraction,
-        // native compilation, and release evaluation.
-        command.args([
-            "-DskipTests",
-            "-Dstyle.color=never",
-            "-Dmdep.outputFile=target/codeclew-classpath.txt",
-            "-Dmdep.regenerateFile=true",
-            &scope_property,
-        ]);
-        Ok(command)
-    };
-    let project = selector.maven_project_directory(repository)?;
-    // Resolve inheritance and active profiles before checking the build layout.
-    // Plugin configuration can also contain <outputDirectory> (for example,
-    // spring-boot:repackage); it is not the compiler's classes directory.
-    let effective_pom = tempfile::NamedTempFile::new().map_err(io_error)?;
-    discard_build_output(
-        maven()?
-            .arg("-f")
-            .arg(project.join("pom.xml"))
-            .args(["-B", "-q", "-N", "help:effective-pom"])
-            .arg(format!("-Doutput={}", effective_pom.path().display()))
-            .current_dir(repository),
-        "Maven Java effective model extraction failed",
-    )?;
-    let mut effective_xml = String::new();
-    effective_pom
-        .reopen()
-        .map_err(io_error)?
-        .take(MAX_MODEL_OUTPUT_BYTES as u64 + 1)
-        .read_to_string(&mut effective_xml)
-        .map_err(io_error)?;
-    if effective_xml.len() > MAX_MODEL_OUTPUT_BYTES {
-        return Err(resource(
-            "Maven Java effective model exceeds the byte limit",
-        ));
-    }
-    validate_maven_build_layout(&project, &effective_xml)?;
-    let source_root = project.join(if selector.source_set == "main" {
-        "src/main/java"
-    } else {
-        "src/test/java"
-    });
-    let source_paths = java_sources(&source_root)?;
-    let classpath_file = project.join("target/codeclew-classpath.txt");
-    let mut build = maven()?;
-    build.arg("-f").arg(repository.join("pom.xml"));
-    if project != repository {
-        build
-            .arg("-pl")
-            .arg(project.strip_prefix(repository).map_err(internal)?)
-            .arg("-am");
-    }
-    // Compile in the managed workspace before collecting the classpath. Maven
-    // then resolves sibling modules from this reactor's outputs, without install
-    // into the user's local repository. Native generators run in the same build.
-    discard_build_output(
-        build
-            .args([
-                "-B",
-                "-q",
-                if selector.source_set == "main" {
-                    "compile"
+        let mut build = maven_command(repository, settings_path.as_deref(), &source_set)?;
+        build.arg("-f").arg(repository.join("pom.xml"));
+        let mut modules = indexes
+            .iter()
+            .map(|index| {
+                let project = &preflights[*index].project;
+                if project == repository {
+                    Ok(".".to_owned())
                 } else {
-                    "test-compile"
-                },
-                "dependency:build-classpath",
-            ])
-            .current_dir(repository),
-        "Maven Java compilation and classpath extraction failed",
-    )?;
-    let classpath = fs::read_to_string(&classpath_file)
-        .map_err(|_| unsupported("Maven Java classpath output is unavailable"))?;
-    let mut classpath_paths = if classpath.trim().is_empty() {
-        Vec::new()
-    } else {
-        std::env::split_paths(classpath.trim()).collect::<Vec<_>>()
-    };
-    // Generated types and compiled main classes are dependencies of the sealed
-    // source declarations. We do not invent source anchors for generated bytes.
-    if project.join("target/classes").is_dir() {
-        classpath_paths.push(project.join("target/classes"));
-    }
-    if selector.source_set == "test" && project.join("target/test-classes").is_dir() {
-        classpath_paths.push(project.join("target/test-classes"));
-    }
-    let release_output = bounded_output(
-        maven()?
-            .args([
-                "-f",
-                project
-                    .join("pom.xml")
-                    .to_str()
-                    .ok_or_else(|| unsupported("Maven pom path is not UTF-8"))?,
-                "-q",
-                "-DforceStdout",
-                "help:evaluate",
-                "-Dexpression=maven.compiler.release",
-            ])
-            .current_dir(repository),
-        "Maven Java release extraction failed",
-    )?;
-    let release = release_output
-        .lines()
-        .filter_map(|line| parse_java_level(line.trim()))
-        .next_back()
-        .ok_or_else(|| unsupported("Maven Java release authority is unavailable"))?;
-    if release < 17 {
-        return Err(unsupported("Java analysis requires release 17 or newer"));
-    }
-    let java_home = std::env::var_os("JAVA_HOME").map(PathBuf::from);
-    let java = java_home
-        .as_ref()
-        .map(|home| home.join("bin/java"))
-        .unwrap_or_else(|| PathBuf::from("java"));
-    let javac = java_home
-        .as_ref()
-        .map(|home| home.join("bin/javac"))
-        .unwrap_or_else(|| PathBuf::from("javac"));
-    let mut boundaries = Vec::new();
-    for directory in ["target/generated-sources", "target/generated-test-sources"] {
-        let root = project.join(directory);
-        if root.is_dir() && !java_sources(&root)?.is_empty() {
-            boundaries.push("JAVA_GENERATED_DECLARATIONS_NOT_INDEXED".into());
+                    project
+                        .strip_prefix(repository)
+                        .map_err(internal)
+                        .and_then(|relative| {
+                            relative
+                                .to_str()
+                                .map(|value| value.replace('\\', "/"))
+                                .ok_or_else(|| unsupported("Maven module path is not UTF-8"))
+                        })
+                }
+            })
+            .collect::<Result<Vec<_>, ClewError>>()?;
+        modules.sort();
+        modules.dedup();
+        build.arg("-pl").arg(modules.join(",")).arg("-am");
+        discard_build_output(
+            build
+                .args([
+                    "-B",
+                    "-q",
+                    if source_set == "main" {
+                        "compile"
+                    } else {
+                        "test-compile"
+                    },
+                    "dependency:build-classpath",
+                ])
+                .current_dir(repository),
+            "Maven Java compilation and classpath extraction failed",
+            "COMPILE_CLASSPATH",
+            debug_output,
+        )?;
+        let local_repo = maven_local_repository(settings_path.as_deref())?;
+
+        for (index, classpath_file) in indexes.iter().zip(classpath_files) {
+            let preflight = &preflights[*index];
+            let classpath = fs::read_to_string(&classpath_file).map_err(|_| {
+                unsupported("Maven Java classpath output is unavailable after a successful build")
+            })?;
+            let mut classpath_paths = if classpath.trim().is_empty() {
+                Vec::new()
+            } else {
+                std::env::split_paths(classpath.trim()).collect::<Vec<_>>()
+            };
+            if preflight.project.join("target/classes").is_dir() {
+                classpath_paths.push(preflight.project.join("target/classes"));
+            }
+            if source_set == "test" && preflight.project.join("target/test-classes").is_dir() {
+                classpath_paths.push(preflight.project.join("target/test-classes"));
+            }
+            let release_output = bounded_output(
+                maven_command(repository, settings_path.as_deref(), &source_set)?
+                    .args([
+                        "-f",
+                        preflight
+                            .project
+                            .join("pom.xml")
+                            .to_str()
+                            .ok_or_else(|| unsupported("Maven pom path is not UTF-8"))?,
+                        "-q",
+                        "-DforceStdout",
+                        "help:evaluate",
+                        "-Dexpression=maven.compiler.release",
+                    ])
+                    .current_dir(repository),
+                "Maven Java release extraction failed",
+                "RELEASE",
+                debug_output,
+            )?;
+            let release = release_output
+                .lines()
+                .filter_map(|line| parse_java_level(line.trim()))
+                .next_back()
+                .ok_or_else(|| unsupported("Maven Java release authority is unavailable"))?;
+            if release < 17 {
+                return Err(unsupported("Java analysis requires release 17 or newer"));
+            }
+            let java_home = std::env::var_os("JAVA_HOME").map(PathBuf::from);
+            let java = java_home
+                .as_ref()
+                .map(|home| home.join("bin/java"))
+                .unwrap_or_else(|| PathBuf::from("java"));
+            let javac = java_home
+                .as_ref()
+                .map(|home| home.join("bin/javac"))
+                .unwrap_or_else(|| PathBuf::from("javac"));
+            let mut boundaries = Vec::new();
+            for directory in ["target/generated-sources", "target/generated-test-sources"] {
+                let root = preflight.project.join(directory);
+                if root.is_dir() && !java_sources(&root)?.is_empty() {
+                    boundaries.push("JAVA_GENERATED_DECLARATIONS_NOT_INDEXED".into());
+                }
+            }
+            let mut processor_paths = preflight
+                .processor_coordinates
+                .iter()
+                .map(|coordinate| resolve_annotation_processor_coordinate(&local_repo, coordinate))
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            for coordinate in extra_annotation_processors {
+                let resolved = resolve_annotation_processor_coordinate(&local_repo, coordinate)?;
+                if !processor_paths.contains(&resolved) {
+                    processor_paths.push(resolved);
+                }
+            }
+            let mut compiler_options = vec![format!("--release={release}")];
+            if !preflight.processor_names.is_empty() {
+                compiler_options.push(format!(
+                    "-processor:{}",
+                    preflight.processor_names.join(",")
+                ));
+            }
+            for path in &processor_paths {
+                if !classpath_paths.contains(path) {
+                    classpath_paths.push(path.clone());
+                }
+            }
+            if processor_paths.is_empty() && !preflight.processor_names.is_empty() {
+                boundaries.push("JAVA_PROCESSOR_PATH_UNRESOLVED".into());
+            }
+            let model = canonical_model(
+                repository,
+                &preflight.selector,
+                JavaBuildSystem::Maven,
+                preflight.source_paths.clone(),
+                classpath_paths,
+                java,
+                javac,
+                release,
+                compiler_options,
+                processor_paths,
+                boundaries,
+            )?;
+            captured.push(MavenCaptured {
+                index: *index,
+                source_digests: source_digest_authority(&model.source_paths)?,
+                classpath_paths: model.classpath_paths.clone(),
+                model,
+            });
         }
     }
-    canonical_model(
-        repository,
-        selector,
-        JavaBuildSystem::Maven,
-        source_paths,
-        classpath_paths,
-        java,
-        javac,
-        release,
-        vec![format!("--release={release}")],
-        boundaries,
-    )
+    for capture in &captured {
+        let preflight = &preflights[capture.index];
+        let source_root = preflight
+            .project
+            .join(if preflight.selector.source_set == "main" {
+                "src/main/java"
+            } else {
+                "src/test/java"
+            });
+        if java_sources(&source_root)? != capture.model.source_paths
+            || source_digest_authority(&capture.model.source_paths)? != capture.source_digests
+            || classpath_authority_sequence(&capture.classpath_paths)?
+                != capture.model.authority.classpath
+        {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "Java source or classpath bytes changed between Maven cohorts",
+            ));
+        }
+    }
+    captured.sort_by_key(|capture| capture.index);
+    Ok(captured.into_iter().map(|capture| capture.model).collect())
+}
+
+fn remove_stale_classpath(path: &Path) -> Result<(), ClewError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+            fs::remove_file(path).map_err(io_error)?;
+        }
+        Ok(_) => {
+            return Err(unsupported(
+                "Maven classpath output path is not a regular file",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error(error)),
+    }
+    Ok(())
+}
+
+fn source_digest_authority(paths: &[PathBuf]) -> Result<BTreeMap<PathBuf, String>, ClewError> {
+    paths
+        .iter()
+        .map(|path| {
+            Ok((
+                path.clone(),
+                hash_file(path).map_err(|_| {
+                    ClewError::new(
+                        ErrorCode::InputMutated,
+                        "Java source bytes changed during Maven model extraction",
+                    )
+                })?,
+            ))
+        })
+        .collect()
+}
+
+fn classpath_authority_sequence(
+    paths: &[PathBuf],
+) -> Result<Vec<JavaClasspathAuthority>, ClewError> {
+    paths
+        .iter()
+        .map(|path| {
+            classpath_authority(path).map_err(|_| {
+                ClewError::new(
+                    ErrorCode::InputMutated,
+                    "Java classpath bytes changed during Maven model extraction",
+                )
+            })
+        })
+        .collect()
 }
 
 fn validate_maven_build_layout(project: &Path, effective_xml: &str) -> Result<(), ClewError> {
@@ -492,6 +751,151 @@ fn validate_maven_build_layout(project: &Path, effective_xml: &str) -> Result<()
     Ok(())
 }
 
+/// Parse processor declarations without resolving artifacts. Resolution waits
+/// until the cohort build has completed so Maven may materialize the artifacts.
+fn maven_compiler_processor_declarations(
+    effective_xml: &str,
+) -> Result<(Vec<String>, Vec<String>), ClewError> {
+    let document = roxmltree::Document::parse(effective_xml)
+        .map_err(|_| unsupported("Maven Java effective model is invalid XML"))?;
+    let root = document.root_element();
+    let Some(configuration) = root
+        .children()
+        .find(|node| node.has_tag_name("build"))
+        .into_iter()
+        .flat_map(|node| node.children())
+        .find(|node| node.has_tag_name("plugins"))
+        .into_iter()
+        .flat_map(|node| node.children())
+        .find(|plugin| {
+            plugin.has_tag_name("plugin")
+                && plugin.children().any(|node| {
+                    node.has_tag_name("artifactId")
+                        && node.text().map(str::trim) == Some("maven-compiler-plugin")
+                })
+        })
+        .into_iter()
+        .flat_map(|plugin| plugin.children())
+        .find(|node| node.has_tag_name("configuration"))
+    else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let names = configuration
+        .children()
+        .find(|node| node.has_tag_name("annotationProcessors"))
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| node.has_tag_name("annotationProcessor"))
+        .filter_map(|node| node.text())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let mut coordinates = Vec::new();
+    for path in configuration
+        .children()
+        .find(|node| node.has_tag_name("annotationProcessorPaths"))
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| node.has_tag_name("path"))
+    {
+        let child_text = |tag: &str| {
+            path.children()
+                .find(|node| node.has_tag_name(tag))
+                .and_then(|node| node.text())
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+        };
+        if let (Some(group), Some(artifact), Some(version)) = (
+            child_text("groupId"),
+            child_text("artifactId"),
+            child_text("version"),
+        ) {
+            coordinates.push(format!("{group}:{artifact}:{version}"));
+        }
+    }
+    Ok((names, coordinates))
+}
+
+#[cfg(test)]
+fn maven_compiler_processor_authority(
+    effective_xml: &str,
+    local_repo: &Path,
+) -> Result<(Vec<String>, Vec<PathBuf>), ClewError> {
+    let (names, coordinates) = maven_compiler_processor_declarations(effective_xml)?;
+    let paths = coordinates
+        .iter()
+        .map(|coordinate| resolve_annotation_processor_coordinate(local_repo, coordinate))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((names, paths))
+}
+
+/// Resolve a per-service admitted annotation-processor Maven coordinate
+/// (`group:artifact:version`) to its owned jar in the local repository. Used so
+/// a module relying on a classpath-discovered processor (e.g. Lombok) can be
+/// analyzed without editing its pom.xml.
+fn resolve_annotation_processor_coordinate(
+    local_repo: &Path,
+    coordinate: &str,
+) -> Result<PathBuf, ClewError> {
+    let mut parts = coordinate.split(':');
+    let group = parts.next().unwrap_or_default();
+    let artifact = parts.next().unwrap_or_default();
+    let version = parts.next().unwrap_or_default();
+    if group.is_empty() || artifact.is_empty() || version.is_empty() || parts.next().is_some() {
+        return Err(invalid(&format!(
+            "annotation processor coordinate must be group:artifact:version: {coordinate}"
+        )));
+    }
+    let local_repo = local_repo
+        .canonicalize()
+        .map_err(|_| unsupported("Maven local repository is unavailable"))?;
+    let artifact_path = local_repo
+        .join(group.replace('.', "/"))
+        .join(artifact)
+        .join(version)
+        .join(format!("{artifact}-{version}.jar"));
+    let resolved = artifact_path.canonicalize().map_err(|_| unsupported(&format!(
+        "per-service annotation processor artifact is unavailable in the local repository: {coordinate}"
+    )))?;
+    if !resolved.starts_with(local_repo) || !resolved.is_file() {
+        return Err(unsupported(&format!(
+            "per-service annotation processor artifact escapes the local repository: {coordinate}"
+        )));
+    }
+    Ok(resolved)
+}
+
+/// Resolve the effective Maven local repository from the pinned settings file
+/// (`<localRepository>`) or fall back to the standard user repository, so
+/// annotationProcessorPaths artifacts can be resolved to owned paths.
+fn maven_local_repository(settings_path: Option<&Path>) -> Result<PathBuf, ClewError> {
+    if let Some(settings_path) = settings_path {
+        let bytes = std::fs::read(settings_path)
+            .map_err(|_| unsupported("Maven settings are unreadable"))?;
+        if let Ok(document) = roxmltree::Document::parse(
+            std::str::from_utf8(&bytes).map_err(|_| unsupported("Maven settings are not UTF-8"))?,
+        ) && let Some(local) = document
+            .root_element()
+            .children()
+            .find(|node| node.has_tag_name("localRepository"))
+            .and_then(|node| node.text())
+        {
+            let local = local.trim();
+            if !local.is_empty() {
+                let resolved = PathBuf::from(local)
+                    .canonicalize()
+                    .map_err(|_| unsupported("Maven settings localRepository is unavailable"))?;
+                return Ok(resolved);
+            }
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| unsupported("Java Maven local repository is unavailable"))?;
+    Ok(home.join(".m2/repository"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn canonical_model(
     repository: &Path,
@@ -502,7 +906,8 @@ fn canonical_model(
     java_executable: PathBuf,
     javac_executable: PathBuf,
     release: u16,
-    mut compiler_options: Vec<String>,
+    compiler_options: Vec<String>,
+    annotation_processor_paths: Vec<PathBuf>,
     mut boundaries: Vec<String>,
 ) -> Result<JavaOperationalModel, ClewError> {
     let repository = repository.canonicalize().map_err(io_error)?;
@@ -536,10 +941,56 @@ fn canonical_model(
     for path in &classpath_paths {
         classpath.push(classpath_authority(path)?);
     }
+    // Explicit processor authority comes only from admitted compiler options
+    // (or the native Maven compiler-plugin configuration surfaced as such).
+    // Never infer processors from classpath presence alone. We extract the
+    // -processor/-processor: value pairs from the RAW option sequence so that
+    // an option followed by its value is never reordered into a different
+    // meaning by sorting.
+    let mut annotation_processors = Vec::new();
+    let mut option_iter = compiler_options.iter().peekable();
+    while let Some(option) = option_iter.next() {
+        if let Some(names) = option.strip_prefix("-processor:") {
+            annotation_processors.extend(
+                names
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            );
+        } else if option == "-processor"
+            && let Some(names) = option_iter.peek()
+        {
+            annotation_processors.extend(
+                names
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+    }
+    // The stored option sequence is sorted/deduped for canonical identity, but
+    // the extracted processor names already captured the value pairs above.
+    let mut compiler_options = compiler_options;
     compiler_options.sort();
     compiler_options.dedup();
+    // Processor-path artifacts admitted for annotation processing. Their
+    // content digests participate in model identity. The artifacts are also
+    // available to the analyzer through the emitted classpath manifest.
+    let mut annotation_processor_paths = annotation_processor_paths;
+    annotation_processor_paths.sort();
+    annotation_processor_paths.dedup();
+    let mut annotation_processor_authority = Vec::with_capacity(annotation_processor_paths.len());
+    for path in &annotation_processor_paths {
+        annotation_processor_authority.push(classpath_authority(path)?);
+    }
+    annotation_processor_authority.sort();
+    annotation_processor_authority.dedup();
     boundaries.sort();
     boundaries.dedup();
+    annotation_processors.sort();
+    annotation_processors.dedup();
     let mut authority = JavaProjectModel {
         schema: JAVA_MODEL_SCHEMA.into(),
         model_digest: String::new(),
@@ -550,6 +1001,8 @@ fn canonical_model(
         release,
         compiler_version,
         compiler_options,
+        annotation_processors,
+        annotation_processor_paths: annotation_processor_authority,
         boundaries,
     };
     authority.model_digest = canonical::hash(&authority).map_err(internal)?;
@@ -558,6 +1011,7 @@ fn canonical_model(
         authority,
         source_paths,
         classpath_paths,
+        annotation_processor_paths,
         java_executable,
     })
 }
@@ -571,7 +1025,15 @@ pub fn verify_model(model: &JavaProjectModel) -> Result<(), ClewError> {
         || model.source_files.windows(2).any(|pair| pair[0] >= pair[1])
         || model.classpath.len() > MAX_CLASSPATH_ENTRIES
         || model
+            .annotation_processor_paths
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || model
             .compiler_options
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || model
+            .annotation_processors
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
         || model.boundaries.windows(2).any(|pair| pair[0] >= pair[1])
@@ -632,7 +1094,7 @@ fn relative_source(repository: &Path, path: &Path) -> Result<String, ClewError> 
         .ok_or_else(|| unsupported("Java source path is not UTF-8"))
 }
 
-fn classpath_authority(path: &Path) -> Result<JavaClasspathAuthority, ClewError> {
+pub(crate) fn classpath_authority(path: &Path) -> Result<JavaClasspathAuthority, ClewError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|_| unsupported("Java classpath entry is unavailable"))?;
     if metadata.file_type().is_symlink() {
@@ -772,12 +1234,18 @@ fn compiler_version(executable: &Path, repository: &Path) -> Result<String, Clew
 struct BuildStream {
     retained: Vec<u8>,
     bytes: u64,
+    diagnostic_tail: crate::maven_diagnostics::Tail,
 }
 
-fn drain_build_stream(mut reader: impl Read, retain: bool) -> std::io::Result<BuildStream> {
+fn drain_build_stream(
+    mut reader: impl Read,
+    retain: bool,
+    retain_diagnostics: bool,
+) -> std::io::Result<BuildStream> {
     let mut stream = BuildStream {
         retained: Vec::new(),
         bytes: 0,
+        diagnostic_tail: crate::maven_diagnostics::Tail::default(),
     };
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -792,21 +1260,36 @@ fn drain_build_stream(mut reader: impl Read, retain: bool) -> std::io::Result<Bu
                 .retained
                 .extend_from_slice(&buffer[..count.min(remaining)]);
         }
+        if retain_diagnostics {
+            stream.diagnostic_tail.append(&buffer[..count]);
+        }
     }
 }
 
-fn discard_build_output(command: &mut Command, message: &str) -> Result<(), ClewError> {
-    run_build_command(command, message, false).map(|_| ())
+fn discard_build_output(
+    command: &mut Command,
+    message: &str,
+    stage: &str,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<(), ClewError> {
+    run_build_command(command, message, false, stage, debug_output).map(|_| ())
 }
 
-fn bounded_output(command: &mut Command, message: &str) -> Result<String, ClewError> {
-    run_build_command(command, message, true)
+fn bounded_output(
+    command: &mut Command,
+    message: &str,
+    stage: &str,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<String, ClewError> {
+    run_build_command(command, message, true, stage, debug_output)
 }
 
 fn run_build_command(
     command: &mut Command,
     message: &str,
     retain: bool,
+    stage: &str,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<String, ClewError> {
     let mut child = command
         .stdin(Stdio::null())
@@ -816,9 +1299,10 @@ fn run_build_command(
         .map_err(|_| build_command_failure(message, "BUILD_LAUNCHER_START_FAILED", "Verify the build launcher is executable and available in the same terminal or agent PATH; check JAVA_HOME."))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
+    let capture_diagnostics = debug_output.is_some();
     let (status, stdout, stderr) = std::thread::scope(|scope| {
-        let stdout = scope.spawn(move || drain_build_stream(stdout, retain));
-        let stderr = scope.spawn(move || drain_build_stream(stderr, false));
+        let stdout = scope.spawn(move || drain_build_stream(stdout, retain, capture_diagnostics));
+        let stderr = scope.spawn(move || drain_build_stream(stderr, false, capture_diagnostics));
         let status = child.wait();
         (status, stdout.join(), stderr.join())
     });
@@ -851,12 +1335,20 @@ fn run_build_command(
         stdout.retained.len()
     );
     if !status.success() {
-        return Err(build_command_failure(
+        let error = build_command_failure(
             message,
             "BUILD_COMMAND_FAILED",
             &format!(
                 "{measurements} Resolve the native build's first error (including dependency access, credentials or JDK configuration), then retry Codeclew. Build output is omitted because it may contain private data."
             ),
+        );
+        return Err(crate::maven_diagnostics::annotate_failure(
+            error,
+            debug_output,
+            stage,
+            &status,
+            &stdout.diagnostic_tail,
+            &stderr.diagnostic_tail,
         ));
     }
     if retain && stdout.bytes > MAX_MODEL_OUTPUT_BYTES as u64 {
@@ -968,6 +1460,77 @@ mod tests {
     }
 
     #[test]
+    fn maven_processor_authority_admits_explicit_paths_and_names() {
+        let repo = tempfile::tempdir().unwrap();
+        let local = repo.path().join("repo");
+        let artifact = local.join("org/projectlombok/lombok/1.18.38/lombok-1.18.38.jar");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(&artifact, b"lombok-bytes").unwrap();
+        let xml = r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>dev.codeclew.fixture</groupId><artifactId>processor-layout</artifactId><version>1</version>
+              <build>
+                <plugins>
+                  <plugin>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                      <annotationProcessorPaths>
+                        <path><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><version>1.18.38</version></path>
+                      </annotationProcessorPaths>
+                      <annotationProcessors>
+                        <annotationProcessor>lombok.launch.AnnotationProcessorHider$AnnotationProcessor</annotationProcessor>
+                      </annotationProcessors>
+                    </configuration>
+                  </plugin>
+                </plugins>
+              </build>
+            </project>"#;
+        let (names, paths) = maven_compiler_processor_authority(xml, &local).unwrap();
+        assert_eq!(
+            names,
+            vec!["lombok.launch.AnnotationProcessorHider$AnnotationProcessor"]
+        );
+        assert_eq!(paths, vec![artifact.canonicalize().unwrap()]);
+    }
+
+    #[test]
+    fn maven_processor_paths_missing_in_local_repo_are_an_explicit_boundary() {
+        let repo = tempfile::tempdir().unwrap();
+        let local = repo.path().join("repo");
+        fs::create_dir_all(&local).unwrap();
+        let xml = r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>dev.codeclew.fixture</groupId><artifactId>processor-layout</artifactId><version>1</version>
+              <build><plugins><plugin>
+                <artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>
+                <configuration><annotationProcessorPaths>
+                  <path><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><version>9.9.9</version></path>
+                </annotationProcessorPaths></configuration>
+              </plugin></plugins></build>
+            </project>"#;
+        let error = maven_compiler_processor_authority(xml, &local).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(
+            error
+                .message
+                .contains("unavailable in the local repository"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn maven_processor_authority_is_empty_when_no_compiler_plugin() {
+        let repo = tempfile::tempdir().unwrap();
+        let xml = r#"<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion></project>"#;
+        let (names, paths) = maven_compiler_processor_authority(xml, repo.path()).unwrap();
+        assert!(names.is_empty());
+        assert!(paths.is_empty());
+    }
+
+    #[test]
     fn maven_layout_uses_effective_build_paths_not_plugin_configuration() {
         let project = Path::new("/selected/module");
         let xml = effective_maven_fixture(project);
@@ -1008,6 +1571,8 @@ mod tests {
         let error = super::bounded_output(
             &mut Command::new(missing.path().join("missing-launcher")),
             "Maven Java classpath extraction failed",
+            "COMPILE_CLASSPATH",
+            None,
         )
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_LAUNCHER_START_FAILED"));
@@ -1025,6 +1590,8 @@ mod tests {
                 "echo 'https://private.invalid?token=secret' >&2; exit 1",
             ]),
             "Gradle Java model extraction failed",
+            "GRADLE_MODEL",
+            None,
         )
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
@@ -1040,13 +1607,17 @@ mod tests {
         discard_build_output(
             Command::new("/bin/sh").args(["-c", noise]),
             "Maven Java compilation and classpath extraction failed",
+            "COMPILE_CLASSPATH",
+            None,
         )
         .unwrap();
         // stderr is a log even when stdout carries the release/model protocol.
         assert_eq!(
             bounded_output(
                 Command::new("/bin/sh").args(["-c", "head -c 6000000 /dev/zero >&2; printf 17"]),
-                "Maven Java release extraction failed"
+                "Maven Java release extraction failed",
+                "RELEASE",
+                None,
             )
             .unwrap(),
             "17"
@@ -1054,6 +1625,8 @@ mod tests {
         let error = bounded_output(
             Command::new("/bin/sh").args(["-c", noise]),
             "Maven Java release extraction failed",
+            "RELEASE",
+            None,
         )
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_MODEL_OUTPUT_LIMIT"));
@@ -1066,6 +1639,8 @@ mod tests {
         let error = bounded_output(
             Command::new("/bin/sh").args(["-c", &format!("{noise}; exit 7")]),
             "Maven Java compilation and classpath extraction failed",
+            "COMPILE_CLASSPATH",
+            None,
         )
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
@@ -1086,6 +1661,8 @@ mod tests {
         let error = bounded_output(
             Command::new("/bin/sh").args(["-c", "kill -TERM $$"]),
             "Maven Java release extraction failed",
+            "RELEASE",
+            None,
         )
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
@@ -1093,6 +1670,8 @@ mod tests {
         let error = bounded_output(
             Command::new("/bin/sh").args(["-c", "printf '\\377'"]),
             "Maven Java release extraction failed",
+            "RELEASE",
+            None,
         )
         .unwrap_err();
         assert!(error.message.starts_with("BUILD_MODEL_OUTPUT_ENCODING"));
@@ -1233,6 +1812,7 @@ mod tests {
             21,
             vec!["--release=21".into()],
             vec![],
+            vec![],
         )
         .unwrap();
         let bytes = canonical::bytes(&model.authority).unwrap();
@@ -1296,5 +1876,207 @@ mod tests {
         assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
         assert!(error.message.contains("build.outputDirectory"), "{error}");
         assert!(!repository.path().join("alternate-classes").exists());
+    }
+
+    #[test]
+    fn per_service_annotation_processor_coordinate_resolves_from_local_repo() {
+        let local_repo = tempfile::tempdir().unwrap();
+        let jar = local_repo
+            .path()
+            .join("org/example/processor/1.2.3/processor-1.2.3.jar");
+        fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        fs::write(&jar, "jar-bytes").unwrap();
+
+        let resolved = resolve_annotation_processor_coordinate(
+            local_repo.path(),
+            "org.example:processor:1.2.3",
+        )
+        .unwrap();
+        assert_eq!(resolved, jar.canonicalize().unwrap());
+        assert!(resolved.is_file());
+
+        // A coordinate whose artifact is absent from the local repository is
+        // rejected rather than silently ignored.
+        let missing = resolve_annotation_processor_coordinate(
+            local_repo.path(),
+            "org.example:processor:9.9.9",
+        )
+        .unwrap_err();
+        assert!(
+            missing
+                .message
+                .contains("unavailable in the local repository")
+        );
+
+        // Malformed coordinates are rejected before any filesystem access.
+        for bad in ["org.example", "org.example:proc:", ":proc:1.0", "a:b:c:d"] {
+            let err = resolve_annotation_processor_coordinate(local_repo.path(), bad).unwrap_err();
+            assert!(err.message.contains("group:artifact:version"), "{err}");
+        }
+    }
+
+    #[test]
+    fn processor_repository_uses_materialized_settings_after_original_changes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let original_repo = workspace.path().join("admitted");
+        let changed_repo = workspace.path().join("changed");
+        fs::create_dir_all(&original_repo).unwrap();
+        fs::create_dir_all(&changed_repo).unwrap();
+        let path = workspace.path().join("settings.xml");
+        let write = |repo: &Path| {
+            fs::write(
+                &path,
+                format!(
+                    "<settings><localRepository>{}</localRepository></settings>",
+                    repo.display()
+                ),
+            )
+            .unwrap()
+        };
+        write(&original_repo);
+        let settings = crate::maven::MavenSettings::capture(&path).unwrap();
+        let pinned = settings.materialize().unwrap();
+        write(&changed_repo);
+        assert_eq!(
+            maven_local_repository(Some(pinned.path())).unwrap(),
+            original_repo.canonicalize().unwrap()
+        );
+        assert_eq!(
+            settings.materialize().unwrap_err().code,
+            ErrorCode::InputMutated
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_batch_preflights_all_scopes_and_batches_same_source_set() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let repository = workspace.path();
+        let log = workspace.path().join("maven.log");
+        let local_repo = workspace.path().join("local-repository");
+        fs::create_dir_all(&local_repo).unwrap();
+        let settings_path = workspace.path().join("settings.xml");
+        fs::write(
+            &settings_path,
+            format!(
+                "<settings><localRepository>{}</localRepository></settings>",
+                local_repo.display()
+            ),
+        )
+        .unwrap();
+        let settings = crate::maven::MavenSettings::capture(&settings_path).unwrap();
+        fs::write(repository.join("pom.xml"), "<project/>").unwrap();
+        for module in ["common", "service", "api"] {
+            let project = repository.join(module);
+            fs::create_dir_all(project.join("src/main/java/example")).unwrap();
+            fs::write(project.join("pom.xml"), "<project/>").unwrap();
+            fs::write(
+                project.join(format!("src/main/java/example/{module}.java")),
+                format!("package example; class {module} {{}}"),
+            )
+            .unwrap();
+        }
+        let quote = |path: &Path| format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"));
+        let wrapper = format!(
+            r#"#!/bin/sh
+set -eu
+LOG={log}
+printf '%s\n' "$*" >> "$LOG"
+pom=
+previous=
+for argument in "$@"; do
+  if test "$previous" = "-f"; then pom=$argument; fi
+  previous=$argument
+done
+case "$*" in
+  *help:effective-pom*)
+    output=
+    for argument in "$@"; do
+      case "$argument" in -Doutput=*) output=${{argument#-Doutput=}} ;; esac
+    done
+    project=$(CDPATH= cd -- "$(dirname "$pom")" && pwd -P)
+    cat > "$output" <<EOF
+<project><build>
+<directory>$project/target</directory>
+<sourceDirectory>$project/src/main/java</sourceDirectory>
+<testSourceDirectory>$project/src/test/java</testSourceDirectory>
+<outputDirectory>$project/target/classes</outputDirectory>
+<testOutputDirectory>$project/target/test-classes</testOutputDirectory>
+</build></project>
+EOF
+    ;;
+  *dependency:build-classpath*)
+    modules=.
+    previous=
+    for argument in "$@"; do
+      if test "$previous" = "-pl"; then modules=$argument; fi
+      previous=$argument
+    done
+    old_ifs=$IFS
+    IFS=,
+    for module in $modules; do
+      IFS=$old_ifs
+      if test "$module" = "."; then project=$(pwd -P); else project=$(pwd -P)/$module; fi
+      mkdir -p "$project/target"
+      : > "$project/target/codeclew-classpath.txt"
+      IFS=,
+    done
+    IFS=$old_ifs
+    ;;
+  *help:evaluate*) printf '17\n' ;;
+  *) exit 2 ;;
+esac
+"#,
+            log = quote(&log),
+        );
+        let wrapper_path = repository.join("mvnw");
+        fs::write(&wrapper_path, wrapper).unwrap();
+        fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let selected = vec![
+            ":api/main".to_owned(),
+            ":common/main".to_owned(),
+            ":service/main".to_owned(),
+        ];
+        let models = extract_java_models_with_settings_and_diagnostics(
+            repository,
+            &selected,
+            Some(&settings),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.authority.compilation.as_str())
+                .collect::<Vec<_>>(),
+            vec![":api/main", ":common/main", ":service/main"]
+        );
+        let calls = fs::read_to_string(&log).unwrap();
+        assert_eq!(calls.matches("help:effective-pom").count(), 3);
+        assert_eq!(calls.matches("dependency:build-classpath").count(), 1);
+        assert_eq!(calls.matches("help:evaluate").count(), 3);
+        assert!(calls.contains("-pl api,common,service -am"), "{calls}");
+        assert!(
+            repository
+                .join("common/target/codeclew-classpath.txt")
+                .is_file()
+        );
+
+        fs::write(&log, b"").unwrap();
+        let error = extract_java_models_with_settings_and_diagnostics(
+            repository,
+            &[":common/main".into(), ":missing/main".into()],
+            Some(&settings),
+            None,
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        let calls = fs::read_to_string(&log).unwrap();
+        assert!(!calls.contains("dependency:build-classpath"), "{calls}");
     }
 }

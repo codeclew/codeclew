@@ -25,8 +25,16 @@ pub struct Service {
     pub repository: String,
     pub language: String,
     pub profile: String,
+    /// Legacy singular compilation selector (e.g. `:/main`). Superseded by the
+    /// plural `compilations` set; an authored record must not declare both.
     #[serde(default)]
     pub compilation: String,
+    /// Explicit plural compilation selectors (e.g. `:/web:main`, `:/common:test`).
+    /// Optional and skipped when empty so legacy singular records round-trip
+    /// unchanged. `effective_compilations()` normalizes singular into a
+    /// one-element set and rejects empty or conflicting declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compilations: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,6 +44,31 @@ pub struct Service {
     pub source_link_template: Option<String>,
     #[serde(default)]
     pub contract_files: Vec<String>,
+    /// Extra annotation-processor Maven coordinates (`group:artifact:version`)
+    /// admitted for this service. Resolved from the local Maven repository and
+    /// merged into the analyzer processor path, so a module using a
+    /// classpath-discovered processor (e.g. Lombok) is analyzed correctly
+    /// without editing its pom.xml. Optional and skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotation_processor_paths: Vec<String>,
+}
+
+impl Service {
+    /// Normalize the authored compilation selection into an explicit set.
+    /// A plural `compilations` set takes precedence; a legacy singular
+    /// `compilation` normalizes to a one-element set. Empty selections and
+    /// simultaneous singular/plural declarations are rejected by
+    /// `store::validate_service`, so a caller here may treat a non-source
+    /// service's result as non-empty.
+    pub fn effective_compilations(&self) -> Vec<String> {
+        if !self.compilations.is_empty() {
+            self.compilations.clone()
+        } else if !self.compilation.is_empty() {
+            vec![self.compilation.clone()]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 /// Explicit committed scope; language dialect is declared, not compiler-validated.

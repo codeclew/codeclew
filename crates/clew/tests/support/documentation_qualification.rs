@@ -355,6 +355,9 @@ pub fn mutations() {
         let baseline = publish(&f, &[order, other]);
         let initial = baseline["bundle"].as_str().unwrap();
         let before = fs::read(f.bundle(initial, "services/orders.html")).unwrap();
+        let independent_before = read(f.bundle(initial, "services/other.json"));
+        let latest = f.docs.join(".codeclew/cache/latest-check.json");
+        let latest_before = fs::read(&latest).unwrap();
         let changed=match name {
             "literal"|"helper"=>original.replace("return quantity;","return quantity + 1;"),
             "docstring"=>format!("/** Qualification documentation change. */\n{original}"),
@@ -403,9 +406,44 @@ pub fn mutations() {
             "{name}: {changed}"
         );
         let independent = read(f.bundle(bundle, "services/other.json"));
+        // Status-only observes refs and recorded declarations without repeating
+        // semantic capture. An unchanged independent ref is not evidence that
+        // compiler, dependency, or external inputs are still fresh.
         assert_eq!(
-            independent["operationStates"][&other_root]["freshness"], "CURRENT",
+            independent["operationStates"][&other_root]["freshness"], "UNVERIFIED",
             "{name}: {independent}"
+        );
+        let observed = &independent["operationStates"][&other_root];
+        let original = &independent_before["operationStates"][&other_root];
+        assert!(
+            observed["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reason| reason["reason"] == "STATUS_OBSERVATION_NOT_SEMANTIC_RECHECK"),
+            "{name}: {observed}"
+        );
+        assert_eq!(
+            observed["contentRevisions"], original["contentRevisions"],
+            "{name}"
+        );
+        assert_eq!(
+            observed["targetRevisions"], original["targetRevisions"],
+            "{name}"
+        );
+        assert_eq!(observed["verification"], original["verification"], "{name}");
+        assert_eq!(
+            independent["operations"], independent_before["operations"],
+            "{name}"
+        );
+        assert_eq!(
+            independent["sources"], independent_before["sources"],
+            "{name}"
+        );
+        assert_eq!(
+            fs::read(&latest).unwrap(),
+            latest_before,
+            "{name}: status-only replaced latest-check"
         );
         assert_eq!(
             fs::read(f.bundle(initial, "services/orders.html")).unwrap(),

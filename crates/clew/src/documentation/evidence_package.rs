@@ -512,6 +512,7 @@ struct Report {
     runtime_mode: String,
     retry: Vec<String>,
     worker_failure: Option<Value>,
+    maven_failure: Option<Value>,
     capabilities: Vec<Value>,
     semantic_outcomes: Vec<Value>,
     source_count: usize,
@@ -537,12 +538,15 @@ fn report(
     let worker_failure = error
         .and_then(|e| crate::worker_diagnostics::from_evidence(&e.evidence))
         .and_then(|d| crate::worker_diagnostics::safe_summary(&d));
+    let maven_failure = error
+        .and_then(|e| crate::maven_diagnostics::from_evidence(&e.evidence))
+        .and_then(|d| crate::maven_diagnostics::safe_summary(&d));
     serde_json::to_value(Report {
         schema:"codeclew-documentation-diagnostic-report/1.0".into(), producer_version:env!("CARGO_PKG_VERSION").into(),
         platform:std::env::consts::OS.into(), architecture:std::env::consts::ARCH.into(), language:service.language.clone(),profile:service.profile.clone(),
         declared_dialect:service.source.as_ref().map(|s|s.dialect.clone()),project_java_minimum:crate::analysis_modules::JAVA_MIN_MAJOR,
-        kotlin_worker_java:21,outcome:outcome.into(),error_code:error.map(|e|e.code.clone()),worker_failure:worker_failure.clone(),
-        stage:worker_failure.as_ref().and_then(|v|v["stage"].as_str()).unwrap_or("LOCAL_SERVICE_CAPTURE").into(),
+        kotlin_worker_java:21,outcome:outcome.into(),error_code:error.map(|e|e.code.clone()),worker_failure:worker_failure.clone(),maven_failure:maven_failure.clone(),
+        stage:worker_failure.as_ref().or(maven_failure.as_ref()).and_then(|v|v["stage"].as_str()).unwrap_or("LOCAL_SERVICE_CAPTURE").into(),
         runtime_mode:crate::runtime::RuntimeAuthority::from_environment().ok().flatten().map(|r|format!("{:?}",r.mode)).unwrap_or_else(||"UNAVAILABLE".into()),
         retry:vec![format!("clew docs modules list --root <docs> --service {}",service.id),format!("clew docs evidence report --root <docs> --service {} --output <new-report-directory>",service.id)],
         capabilities:super::modules::catalog()?.into_iter().map(|r|json!({"id":r["id"],"implementationDigest":r["implementationDigest"],"availability":r["availability"],"producer":r["producer"],"producers":r["producers"],"knownAnalyzers":r["knownAnalyzers"]})).collect(),
@@ -733,17 +737,15 @@ fn capture(
     )
 }
 
-fn check_expected(repo: &Repository, package: &Package) -> Result<Expectation, ClewError> {
-    let service = repo
-        .services()?
-        .remove(&package.manifest.service.id)
-        .ok_or_else(|| invalid("package service is not registered"))?;
-    let policy = policies(repo)?
-        .remove(&service.id)
-        .ok_or_else(|| invalid("configure a trusted evidence expectation before import"))?;
+fn check_expected_with(
+    service: &Service,
+    policy: &Expectation,
+    package: &Package,
+) -> Result<(), ClewError> {
+    validate_policy(policy, service)?;
     if policy.repository_id != service.repository_id
-        || policy.service_digest != digest(&service)?
-        || package.manifest.service != service
+        || policy.service_digest != digest(service)?
+        || package.manifest.service != service.clone()
         || package.digest != policy.manifest_digest
         || package.manifest.revision.as_ref() != Some(&policy.revision)
         || package.manifest.compatibility_digest != compatibility()?
@@ -752,6 +754,18 @@ fn check_expected(repo: &Repository, package: &Package) -> Result<Expectation, C
             "package does not match configured service, revision, trusted digest or supported producer rules",
         ));
     }
+    Ok(())
+}
+
+fn check_expected(repo: &Repository, package: &Package) -> Result<Expectation, ClewError> {
+    let service = repo
+        .services()?
+        .remove(&package.manifest.service.id)
+        .ok_or_else(|| invalid("package service is not registered"))?;
+    let policy = policies(repo)?
+        .remove(&service.id)
+        .ok_or_else(|| invalid("configure a trusted evidence expectation before import"))?;
+    check_expected_with(&service, &policy, package)?;
     Ok(policy)
 }
 fn import(repo: &Repository, input: &Path) -> Result<Value, ClewError> {
@@ -788,9 +802,20 @@ pub(super) fn selected(
     repo: &Repository,
     service: &Service,
 ) -> Result<Option<ServiceEvidence>, ClewError> {
-    let Some(policy) = policies(repo)?.remove(&service.id) else {
+    let policy = policies(repo)?.remove(&service.id);
+    selected_with_expectation(repo, service, policy.as_ref())
+}
+
+pub(super) fn selected_with_expectation(
+    repo: &Repository,
+    service: &Service,
+    expectation: Option<&Expectation>,
+) -> Result<Option<ServiceEvidence>, ClewError> {
+    let Some(policy) = expectation else {
         return Ok(None);
     };
+    validate_policy(policy, service)?;
+    let expectation_digest = digest(policy)?;
     let pointer_path = repo.path(&selection_path(&service.id)?)?;
     let pointer: Selection = if pointer_path.exists() {
         store::read(&pointer_path, store::MAX_RECORD)?
@@ -801,20 +826,20 @@ pub(super) fn selected(
             schema: "codeclew-documentation-evidence-selection/1.0".into(),
             service: service.id.clone(),
             manifest_digest: policy.manifest_digest.clone(),
-            expectation_digest: digest(&policy)?,
+            expectation_digest: expectation_digest.clone(),
         }
     };
     if pointer.schema != "codeclew-documentation-evidence-selection/1.0"
         || pointer.service != service.id
         || pointer.manifest_digest != policy.manifest_digest
-        || pointer.expectation_digest != digest(&policy)?
+        || pointer.expectation_digest != expectation_digest
     {
         return Err(invalid(
             "selected portable result is missing or superseded by the coordinator expectation",
         ));
     }
     let package = load(&repo.path(&package_path(&pointer.manifest_digest)?)?)?;
-    check_expected(repo, &package)?;
+    check_expected_with(service, policy, &package)?;
     if package.manifest.outcome != "CAPTURED" {
         let report: Report =
             serde_json::from_value(package.records["report"][0].clone()).map_err(io_error)?;
@@ -946,6 +971,180 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::documentation::model::Manifest as DocumentationManifest;
+
+    fn fixture_service(title: &str) -> Service {
+        serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0",
+            "id":"orders",
+            "title":title,
+            "repositoryId":"orders",
+            "repository":"https://example.invalid/orders",
+            "language":"java",
+            "profile":"java-17plus-maven-read-only",
+            "compilation":":/main",
+            "targetRef":"HEAD"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn selection_without_expectation_does_not_consult_repository_policies() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = Repository {
+            root: temporary.path().to_path_buf(),
+            manifest: DocumentationManifest {
+                schema: String::new(),
+                title: String::new(),
+            },
+        };
+        let service = fixture_service("Orders");
+
+        assert!(matches!(
+            selected_with_expectation(&repo, &service, None),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn frozen_expectation_selects_a_when_repository_records_have_moved_to_b() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Architecture").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let service_a = fixture_service("Orders A");
+        let service_digest_a = digest(&service_a).unwrap();
+        repo.atomic("catalog/services/orders.json", &bytes(&service_a).unwrap())
+            .unwrap();
+
+        let revision_a = "a".repeat(40);
+        let evidence_a = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: service_a.id.clone(),
+            revision: revision_a.clone(),
+            service_digest: service_digest_a.clone(),
+            extractor: SOURCE_EXTRACTOR.into(),
+            runtime_mode: "COMMITTED_SOURCE_NO_BUILD".into(),
+            coverage: "SYNTAX".into(),
+            boundaries: vec![],
+            entrypoints: vec![],
+            observations: BTreeMap::new(),
+            sources: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+        };
+        let mut parts = BTreeMap::new();
+        let mut refs = Vec::new();
+        make_parts(
+            "report",
+            vec![report(&service_a, "CAPTURED", Some(&evidence_a), None).unwrap()],
+            &mut parts,
+            &mut refs,
+        )
+        .unwrap();
+        make_parts(
+            "header",
+            vec![json!(Header {
+                schema: evidence_a.schema.clone(),
+                service: evidence_a.service.clone(),
+                revision: evidence_a.revision.clone(),
+                service_digest: evidence_a.service_digest.clone(),
+                extractor: evidence_a.extractor.clone(),
+                runtime_mode: evidence_a.runtime_mode.clone(),
+                coverage: evidence_a.coverage.clone(),
+                boundaries: evidence_a.boundaries.clone(),
+            })],
+            &mut parts,
+            &mut refs,
+        )
+        .unwrap();
+        let manifest = Manifest {
+            schema: SCHEMA.into(),
+            service: service_a.clone(),
+            service_digest: service_digest_a,
+            revision: Some(revision_a.clone()),
+            producer_version: env!("CARGO_PKG_VERSION").into(),
+            compatibility_digest: compatibility().unwrap(),
+            outcome: "CAPTURED".into(),
+            parts: refs,
+        };
+        let manifest_digest = digest(&manifest).unwrap();
+        let package_root = format!("evidence/packages/{}", &manifest_digest[7..]);
+        for (path, data) in parts {
+            repo.atomic(&format!("{package_root}/{path}"), &data)
+                .unwrap();
+        }
+        repo.atomic(
+            &format!("{package_root}/manifest.json"),
+            &bytes(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let policy_a = Expectation {
+            schema: POLICY_SCHEMA.into(),
+            service: service_a.id.clone(),
+            repository_id: service_a.repository_id.clone(),
+            service_digest: digest(&service_a).unwrap(),
+            revision: revision_a,
+            manifest_digest: manifest_digest.clone(),
+            sequence: 1,
+        };
+        repo.atomic(
+            &policy_path(&service_a.id).unwrap(),
+            &bytes(&policy_a).unwrap(),
+        )
+        .unwrap();
+        let pointer = Selection {
+            schema: "codeclew-documentation-evidence-selection/1.0".into(),
+            service: service_a.id.clone(),
+            manifest_digest,
+            expectation_digest: digest(&policy_a).unwrap(),
+        };
+        repo.atomic(
+            &selection_path(&service_a.id).unwrap(),
+            &bytes(&pointer).unwrap(),
+        )
+        .unwrap();
+
+        let service_b = fixture_service("Orders B");
+        let policy_b = Expectation {
+            schema: POLICY_SCHEMA.into(),
+            service: service_b.id.clone(),
+            repository_id: service_b.repository_id.clone(),
+            service_digest: digest(&service_b).unwrap(),
+            revision: "b".repeat(40),
+            manifest_digest: format!("sha256:{}", "b".repeat(64)),
+            sequence: 2,
+        };
+        repo.atomic("catalog/services/orders.json", &bytes(&service_b).unwrap())
+            .unwrap();
+        repo.atomic(
+            &policy_path(&service_b.id).unwrap(),
+            &bytes(&policy_b).unwrap(),
+        )
+        .unwrap();
+
+        let selected_a = selected_with_expectation(&repo, &service_a, Some(&policy_a))
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected_a.service, service_a.id);
+        assert_eq!(selected_a.revision, "a".repeat(40));
+        assert_eq!(selected_a.service_digest, digest(&service_a).unwrap());
+
+        let legacy_error = selected(&repo, &service_a).unwrap_err();
+        assert!(
+            legacy_error
+                .to_string()
+                .contains("selected portable result is missing or superseded")
+        );
+
+        repo.atomic("catalog/services/orders.json", &bytes(&service_a).unwrap())
+            .unwrap();
+        repo.atomic(
+            &policy_path(&service_a.id).unwrap(),
+            &bytes(&policy_a).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn portable_records_are_split_and_oversized_records_refused() {
         let mut parts = BTreeMap::new();
@@ -997,5 +1196,32 @@ mod tests {
         assert_eq!(value["workerFailure"]["exitCode"], 17);
         assert_eq!(value["stage"], "INDEX_FILES");
         assert_eq!(value["declaredDialect"], "1.9");
+    }
+
+    #[test]
+    fn diagnostic_report_projects_maven_capture_without_private_artifacts() {
+        let service: Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":"java","profile":"java-17plus-maven-read-only","compilation":":/main","targetRef":"HEAD"})).unwrap();
+        let mut failure = ClewError::new(
+            crate::error::ErrorCode::UnsupportedProjectConfiguration,
+            "private-maven-marker",
+        );
+        failure.evidence.push(format!("maven-build-diagnostic:{}",json!({
+            "schema":"codeclew-maven-build-diagnostic/1.0","stage":"EFFECTIVE_POM","status":"CAPTURED_PRIVATE",
+            "process":{"exitCode":1,"signal":null},
+            "stdout":{"observedBytes":4,"retainedBytes":4,"truncated":false,"artifact":"private.stdout"},
+            "stderr":{"observedBytes":8,"retainedBytes":8,"truncated":false,"path":"/private/maven.stderr","text":"private-maven-marker"}
+        })));
+        let value = report(&service, "PRODUCER_FAILURE", None, Some(&failure)).unwrap();
+        let text = value.to_string();
+        for private in [
+            "private.stdout",
+            "/private/maven.stderr",
+            "private-maven-marker",
+        ] {
+            assert!(!text.contains(private));
+        }
+        assert_eq!(value["mavenFailure"]["stage"], "EFFECTIVE_POM");
+        assert_eq!(value["mavenFailure"]["exitCode"], 1);
+        assert_eq!(value["stage"], "EFFECTIVE_POM");
     }
 }

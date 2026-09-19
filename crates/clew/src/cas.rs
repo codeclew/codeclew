@@ -219,6 +219,8 @@ pub struct StorageReport {
     pub catalog_snapshot_limit_bytes: u64,
     pub catalog_tail_bytes: u64,
     pub catalog_tail_limit_bytes: u64,
+    #[serde(default)]
+    pub java_analysis_scratch: crate::java_analysis_scratch::JavaScratchReport,
 }
 
 #[derive(Debug)]
@@ -1613,6 +1615,7 @@ impl CasStore {
                 catalog_snapshot_limit_bytes: MAX_CATALOG_SNAPSHOT_BYTES as u64,
                 catalog_tail_bytes,
                 catalog_tail_limit_bytes: MAX_CATALOG_RECOVERY_TAIL_BYTES,
+                java_analysis_scratch: Default::default(),
             },
             dead_packs,
             dead_loose,
@@ -1633,9 +1636,12 @@ pub fn storage_status(authority: &StateAuthority) -> Result<StorageReport, ClewE
     // session can only move monotonically into GARBAGE_COLLECTED after this
     // snapshot, so a concurrent transition causes safe over-retention.
     let released = released_session_cas_roots(authority)?;
-    Ok(CasStore::open(authority)?
+    let mut report = CasStore::open(authority)?
         .storage_plan(authority, &released)?
-        .report)
+        .report;
+    report.java_analysis_scratch =
+        crate::java_analysis_scratch::inspect_or_reclaim(authority, false)?;
+    Ok(report)
 }
 
 pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageReport, ClewError> {
@@ -1708,6 +1714,8 @@ pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageRepo
     plan.report.reclaimed_bytes = plan.report.reclaimable_bytes;
     drop(store);
     drop(world_lease);
+    plan.report.java_analysis_scratch =
+        crate::java_analysis_scratch::inspect_or_reclaim(authority, true)?;
     Ok(plan.report)
 }
 

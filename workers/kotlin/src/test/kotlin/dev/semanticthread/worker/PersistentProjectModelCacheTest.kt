@@ -71,9 +71,13 @@ fun verifiedRoundTripInvalidatesChangedModelAndArtifactInputs() {
             val source = repo.resolve("A.kt").also { it.writeText("class A") }
             val build = repo.resolve("build.gradle.kts").also { it.writeText("plugins {}") }
             val artifact = repo.resolve("library.jar").also { it.writeText("artifact") }
-            val jdk = repo.resolve("jdk17").also { it.resolve("bin").createDirectories() }
+            val jdk = repo.resolve("jdk17").also {
+                it.resolve("bin").createDirectories()
+                it.resolve("lib").createDirectories()
+            }
             jdk.resolve("release").writeText("JAVA_VERSION=\"17.0.12\"\n")
             jdk.resolve("bin/java").writeText("project-java-fixture")
+            jdk.resolve("lib/modules").writeText("runtime-image-fixture")
             val original = model(repo, source, build, artifact)
             val fingerprint = jdkFingerprint(jdk)
             val changed = withSemanticInputManifestHash(buildJsonObject {

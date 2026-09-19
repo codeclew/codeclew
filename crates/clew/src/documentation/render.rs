@@ -1117,9 +1117,27 @@ pub fn make_bindings(
         .values()
         .flat_map(|f| f.dependencies.keys().cloned())
         .collect();
-    let observations = referenced
+    let observations: BTreeMap<String, Observation> = referenced
         .into_iter()
         .map(|id| (id.clone(), checked.dependencies[&id].clone()))
+        .collect();
+    // Retain only the complete source closure reachable from the retained
+    // observation references AND the fragment claim references. Unreferenced
+    // sources are excluded, while every source a current or fragment claim
+    // resolves to is preserved at its exact version.
+    let reachable_sources: BTreeSet<String> = observations
+        .values()
+        .flat_map(|observation| observation.source_ids.iter().cloned())
+        .chain(
+            fragments
+                .values()
+                .flat_map(|fragment| fragment.sources.keys().cloned()),
+        )
+        .collect();
+    let all_sources = checked.sources();
+    let retained_sources: BTreeMap<String, Source> = all_sources
+        .into_iter()
+        .filter(|(id, _)| reachable_sources.contains(id))
         .collect();
     let mut binding = Bindings {
         schema: "codeclew-documentation-bindings/1.1".into(),
@@ -1155,11 +1173,12 @@ pub fn make_bindings(
         observations,
         narratives,
         output_hashes: BTreeMap::new(),
-        retained_sources: checked.sources(),
+        retained_sources,
         section_states: BTreeMap::new(),
         target_revisions: BTreeMap::new(),
         update_failures: BTreeMap::new(),
         accepted_versions: BTreeMap::new(),
+        heavy: None,
     };
     super::status::update_states(&mut binding, checked);
     Ok(binding)
@@ -1485,22 +1504,81 @@ pub fn publish_with_failures(
     require_complete: bool,
     failures: BTreeMap<String, Value>,
 ) -> Result<Value, ClewError> {
-    publish_internal(repo, incoming, require_complete, failures, BTreeMap::new())
+    publish_internal(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        BTreeMap::new(),
+        EvidenceMode::Saved(None),
+    )
+}
+
+/// Refresh current source evidence through the ordinary check/save path before
+/// publishing. This is explicit because it may run project analyzers.
+pub fn publish_from_current_source(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+) -> Result<Value, ClewError> {
+    publish_internal(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        BTreeMap::new(),
+        EvidenceMode::Refresh,
+    )
+}
+
+/// Render an explicitly selected saved analysis without acquiring current sources.
+pub fn publish_from_snapshot(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+    snapshot: &str,
+) -> Result<Value, ClewError> {
+    publish_internal(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        BTreeMap::new(),
+        EvidenceMode::Saved(Some(snapshot)),
+    )
 }
 
 pub(super) fn publish_reviewed(
     repo: &Repository,
     narrative: Narrative,
     versions: BTreeMap<String, super::review::AcceptedVersion>,
+    snapshot: Option<&str>,
 ) -> Result<Value, ClewError> {
-    publish_internal(repo, vec![narrative], false, BTreeMap::new(), versions)
+    publish_internal(
+        repo,
+        vec![narrative],
+        false,
+        BTreeMap::new(),
+        versions,
+        EvidenceMode::Saved(snapshot),
+    )
 }
+
+#[derive(Clone, Copy)]
+enum EvidenceMode<'a> {
+    Saved(Option<&'a str>),
+    Refresh,
+}
+
 fn publish_internal(
     repo: &Repository,
     mut incoming: Vec<Narrative>,
     require_complete: bool,
     mut failures: BTreeMap<String, Value>,
     versions: BTreeMap<String, super::review::AcceptedVersion>,
+    evidence_mode: EvidenceMode<'_>,
 ) -> Result<Value, ClewError> {
     let previous = bindings::baseline(repo)?;
     for (key, version) in &versions {
@@ -1525,7 +1603,16 @@ fn publish_internal(
     } else {
         None
     };
-    let mut checked = check::run(repo)?;
+    let refreshing = matches!(evidence_mode, EvidenceMode::Refresh);
+    let (mut checked, selected_snapshot) = match evidence_mode {
+        EvidenceMode::Saved(snapshot) => Check::retained(repo, snapshot, &BTreeSet::new())?,
+        EvidenceMode::Refresh => {
+            let checked = super::check::run(repo)?;
+            let snapshot = checked.save_snapshot(repo)?;
+            (checked, snapshot)
+        }
+    };
+    let snapshot = Some(selected_snapshot.as_str());
     super::review::scopes(repo, &mut checked, versions.values().cloned())?;
     for version in versions.values() {
         if version.source_revisions.iter().any(|(id, revision)| {
@@ -1551,7 +1638,6 @@ fn publish_internal(
             narrative.context_digest = checked.context_digest.clone();
         }
     }
-    checked.save(repo)?;
     let services = repo.services()?;
     let scenarios = repo.scenarios()?;
     let mut fresh = BTreeMap::new();
@@ -1845,7 +1931,6 @@ fn publish_internal(
             .filter(|(_, d)| d.kind.starts_with("PROCESS_"))
             .map(|(id, d)| (id.clone(), d.clone())),
     );
-    checked.save(repo)?;
     super::status::update_states(&mut binding, &checked);
     super::review::verification(&mut binding);
     // Whole-page freshness is an aggregate; each operation keeps its exact content vector.
@@ -1857,13 +1942,29 @@ fn publish_internal(
             .map(|(_, s)| s.clone())
             .collect();
         if let Some(state) = binding.section_states.get_mut(subject) {
-            if children
+            if state.freshness == Freshness::Stale
+                || children.iter().any(|s| s.freshness == Freshness::Stale)
+            {
+                state.freshness = Freshness::Stale;
+            } else if children
                 .iter()
                 .any(|s| s.freshness == Freshness::Unverified)
             {
                 state.freshness = Freshness::Unverified;
-            } else if children.iter().any(|s| s.freshness == Freshness::Stale) {
-                state.freshness = Freshness::Stale;
+            }
+        }
+    }
+    if !refreshing {
+        // A valid historical snapshot is not proof of current source freshness.
+        // Keep stronger stale findings and the independent meaning-review state.
+        for state in binding.section_states.values_mut() {
+            if state.freshness == Freshness::Current {
+                state.freshness = Freshness::Unverified;
+            }
+            let reason =
+                json!({"reason":"PINNED_SNAPSHOT_NOT_REVERIFIED","snapshot":selected_snapshot});
+            if !state.reasons.contains(&reason) {
+                state.reasons.push(reason);
             }
         }
     }
@@ -1908,7 +2009,7 @@ fn publish_internal(
             if b.narratives.contains_key(subject) {
                 Some(store::read(
                     &repo.path(&format!("docs/generated/{bundle}/{folder}/{id}.json"))?,
-                    64 * 1024 * 1024,
+                    check::PORTABLE_CACHE_MAX_BYTES,
                 )?)
             } else {
                 None
@@ -2048,7 +2149,7 @@ fn publish_internal(
         previous_bytes.as_deref(),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
+        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
     )
 }
 
@@ -2081,13 +2182,20 @@ pub(super) fn commit_bundle(
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
         .collect();
     bindings::compact(&mut binding);
+    // Store the heavy payload once in the immutable object store and leave
+    // only references in the persisted bindings, so equivalent publications
+    // share heavy evidence instead of serializing a full copy each time.
+    bindings::store_bindings_heavy(repo, &mut binding)?;
     files.insert("bindings.json".into(), bytes(&binding)?);
     publication.files = files
         .iter()
         .map(|(name, data)| (name.clone(), canonical::hash_bytes(data)))
         .collect();
     files.insert("publication.json".into(), bytes(&publication)?);
-    if files.values().any(|data| data.len() > 64 * 1024 * 1024) {
+    if files
+        .values()
+        .any(|data| data.len() > check::PORTABLE_CACHE_MAX_BYTES as usize)
+    {
         return Err(ClewError::new(
             ErrorCode::SliceBudgetExceeded,
             "documentation output exceeds its portable record budget; narrow source roots",

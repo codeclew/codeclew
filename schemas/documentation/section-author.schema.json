@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/section-author.schema.json",
+  "title": "Bound section author result",
+  "description": "The controller also enforces UTF-8 byte limits matching the numeric maxLength values below and rejects whitespace-only text. Optional uncertainty may be null or omitted; a supplied string must be nonempty. Evidence items are restricted to handles delivered in this request.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/sectionAction"
+    },
+    {
+      "$ref": "#/$defs/expandAction"
+    }
+  ],
+  "$defs": {
+    "sectionAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "section"
+        },
+        "section": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "summary": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192
+                },
+                "evidence": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 32,
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "uncertainty": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 2048
+                }
+              },
+              "required": [
+                "text",
+                "evidence"
+              ]
+            },
+            "uncertainties": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              }
+            }
+          },
+          "required": [
+            "title",
+            "summary"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "section"
+      ]
+    },
+    "expandAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "expand"
+        },
+        "selection": {
+          "$ref": "#/$defs/selection"
+        }
+      },
+      "required": [
+        "action",
+        "selection"
+      ]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "references": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "symbolContains": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "untrackedReads": {
+          "const": false
+        }
+      }
+    }
+  }
+}

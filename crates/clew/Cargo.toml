@@ -31,6 +31,7 @@ tree-sitter-kotlin-ng = "1.1.0"
 uuid.workspace = true
 unicode-normalization.workspace = true
 walkdir.workspace = true
+zip.workspace = true
 roxmltree = "0.21.1"
 
 [build-dependencies]

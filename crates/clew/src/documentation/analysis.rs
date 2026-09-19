@@ -24,8 +24,8 @@ use std::{
     process::Stdio,
 };
 
-const MAX_EVIDENCE: u64 = 64 * 1024 * 1024;
-const MAX_FACTS: usize = 131_072;
+const MAX_EVIDENCE: u64 = 256 * 1024 * 1024;
+const MAX_FACTS: usize = 524_288;
 
 pub fn git(repo: &Path, args: &[&str]) -> Result<String, ClewError> {
     let result = isolated_git_command(repo)
@@ -125,39 +125,122 @@ pub fn bound_repository(repository: &Repository, service: &Service) -> Result<Pa
 }
 
 pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvidence, ClewError> {
+    capture_with_diagnostics(repository, service, None)
+}
+
+pub(crate) fn capture_with_diagnostics(
+    repository: &Repository,
+    service: &Service,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<ServiceEvidence, ClewError> {
     if let Some(evidence) = super::evidence_package::selected(repository, service)? {
         return Ok(evidence);
     }
-    capture_local(repository, service)
+    capture_local_with_diagnostics(repository, service, debug_output)
+}
+
+/// Source selection consumes the supplied admission policy. It must not follow
+/// a subsequently edited policy while reporting the original captured inputs.
+pub(super) fn capture_with_expectation(
+    repository: &Repository,
+    service: &Service,
+    expectation: Option<&super::evidence_package::Expectation>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<ServiceEvidence, ClewError> {
+    if let Some(evidence) =
+        super::evidence_package::selected_with_expectation(repository, service, expectation)?
+    {
+        return Ok(evidence);
+    }
+    capture_local_with_diagnostics(repository, service, debug_output)
 }
 
 pub(super) fn capture_local(
     repository: &Repository,
     service: &Service,
 ) -> Result<ServiceEvidence, ClewError> {
+    capture_local_with_diagnostics(repository, service, None)
+}
+
+fn capture_local_with_diagnostics(
+    repository: &Repository,
+    service: &Service,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<ServiceEvidence, ClewError> {
     let repo = bound_repository(repository, service)?;
     if service.profile == "source-syntax" {
+        // Pure syntax can reuse this deterministic key. An enabled semantic
+        // provider adds external authority that this key does not contain;
+        // even an older manifest marked REUSABLE must not bypass admission.
+        let revision = git(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{}^{{commit}}", service.target_ref),
+            ],
+        )?;
+        let service_digest = digest(service)?;
+        let cache_key = digest(&json!([
+            &revision,
+            &service_digest,
+            SOURCE_EXTRACTOR,
+            service.language
+        ]))?;
+        let semantic = super::modules::semantic(service);
+        let semantic_enabled = semantic.is_some();
+        if !semantic_enabled
+            && let Some(reused) =
+                super::cache::load_capture_if_valid(repository, &service.id, &cache_key)?
+        {
+            return Ok(reused);
+        }
         let mut source = super::syntax::capture(service, &repo)?;
-        if let Some(semantic) = super::modules::semantic(service) {
+        if let Some(semantic) = semantic {
             let mut provider = service.clone();
             provider.source = None;
             provider.modules = None;
             provider.profile = semantic.profile.clone();
             provider.compilation = semantic.compilation.clone();
-            super::syntax::enrich(&mut source, capture_local(repository, &provider))?;
+            super::syntax::enrich(
+                &mut source,
+                capture_local_with_diagnostics(repository, &provider, debug_output),
+            )?;
         }
         super::contracts::capture(service, &repo, &mut source)?;
         super::modules::attach(service, &mut source)?;
+        let _lock = repository.lock()?;
+        if semantic_enabled {
+            let mut manifest = super::cache::store_capture(repository, &source)?;
+            super::cache::mark_non_cacheable(
+                &mut manifest,
+                "semantic provider capture lacks complete external authority and must not be reused",
+            );
+            let cache_path = format!(
+                ".codeclew/cache/{}-{}.json",
+                service.id,
+                cache_key.trim_start_matches("sha256:")
+            );
+            repository.atomic(&cache_path, &bytes(&manifest)?)?;
+        } else {
+            super::cache::save_capture(repository, &service.id, &cache_key, &source)?;
+        }
         return Ok(source);
     }
     let runtime = RuntimeAuthority::from_environment()?
         .ok_or_else(|| invalid("documentation analysis requires the supported clew launcher"))?;
-    let compilations = vec![service.compilation.clone()];
+    let compilations = service.effective_compilations();
+    if compilations.is_empty() {
+        return Err(invalid(
+            "service requires at least one compilation selector",
+        ));
+    }
     let language = if service.language == "kotlin" {
         SessionLanguage::Kotlin
     } else {
         SessionLanguage::Java
     };
+    eprintln!("CODEDEBUG doctor START for {}", service.id);
     let readiness = operations::doctor(
         &runtime,
         DoctorScope::Task,
@@ -182,6 +265,7 @@ pub(super) fn capture_local(
             format!("documentation source admission requires action: {action}"),
         ));
     }
+    eprintln!("CODEDEBUG doctor PASS for {}", service.id);
     let revision = git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     let service_digest = digest(service)?;
     // Revalidate current admission and repository state even when cached bytes exist.
@@ -206,12 +290,27 @@ pub(super) fn capture_local(
         ModelCachePolicy::NonCacheable,
         None,
     )?;
-    let result = capture_session(&session, service, &service_digest);
+    let result = capture_session(&session, service, &service_digest, debug_output);
     // Only use supported lifecycle operations; documentation records have no session dependency.
     let cleanup = session.abort().and_then(|_| session.gc(false)).map(|_| ());
-    let mut evidence = result?;
+    let mut evidence = match result {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            eprintln!("CODEDEBUG capture_session ERR for {}: {error}", service.id);
+            cleanup?;
+            return Err(error);
+        }
+    };
+    eprintln!(
+        "CODEDEBUG capture_session OK for {} ({} sources, {} observations)",
+        service.id,
+        evidence.sources.len(),
+        evidence.observations.len()
+    );
     super::contracts::capture(service, &repo, &mut evidence)?;
+    eprintln!("CODEDEBUG contracts OK for {}", service.id);
     super::modules::attach(service, &mut evidence)?;
+    eprintln!("CODEDEBUG modules OK for {}", service.id);
     cleanup?;
     if git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])? != revision {
         return Err(ClewError::new(
@@ -220,7 +319,20 @@ pub(super) fn capture_local(
         ));
     }
     let _lock = repository.lock()?;
-    repository.atomic(&cache_path, &bytes(&evidence)?)?;
+    // New-format captures persist a small reference envelope: the heavy
+    // payload lives once in the immutable object store, and the keyed cache
+    // path holds validated object references instead of a duplicated full
+    // ServiceEvidence serialization.
+    let mut manifest = super::cache::store_capture(repository, &evidence)?;
+    // Maven/external-state capture has no complete build/settings/dependency
+    // authority in the reuse key, so it is explicitly non-cacheable (recapture
+    // on the next run) rather than silently reusable.
+    super::cache::mark_non_cacheable(
+        &mut manifest,
+        "Maven/external-state capture lacks complete build/settings/dependency authority",
+    );
+    repository.atomic(&cache_path, &bytes(&manifest)?)?;
+    eprintln!("CODEDEBUG cache write OK for {}", service.id);
     Ok(evidence)
 }
 
@@ -228,23 +340,56 @@ fn capture_session(
     session: &SessionAuthority,
     service: &Service,
     service_digest: &str,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<ServiceEvidence, ClewError> {
-    let ready = generation_service::ensure_session_generation(session)?;
+    let ready = generation_service::ensure_session_generation_with_diagnostics(
+        session,
+        debug_output,
+        generation_service::wants_writable_then_seal(&service.profile),
+        &service.annotation_processor_paths,
+    )?;
+    eprintln!(
+        "CODEDEBUG capture_session ensure_generation OK for {}",
+        service.id
+    );
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
+    // A writable-then-seal generation persists the exact transformed source
+    // bytes it was indexed against. Documentation must read those bytes, never
+    // slice the original repository snapshot with transformed coordinates.
+    // Each admitted compilation carries its own transformed reference, so the
+    // source table is keyed per compilation scope instead of sharing the
+    // set-level first-present reference across all scopes.
     let snapshot = generation_service::load_snapshot(&store, &ready)?;
-    let contents: BTreeMap<_, _> = snapshot
-        .worktree
-        .iter()
-        .filter_map(|e| e.content.as_ref().map(|c| (e.path.clone(), c.clone())))
-        .collect();
+    eprintln!(
+        "CODEDEBUG capture_session load_snapshot OK for {}",
+        service.id
+    );
+    let mut snapshot_text: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &snapshot.worktree {
+        if let Some(reference) = &entry.content {
+            let lease = store.read(reference, store::MAX_RECORD as usize)?;
+            if let Ok(text) = String::from_utf8(lease.bytes().to_vec()) {
+                snapshot_text.insert(entry.path.clone(), text);
+            }
+        }
+    }
     let mut facts = Vec::new();
     let mut count = 0usize;
     let mut total = 0u64;
+    // Scope membership is attached only when more than one compilation is
+    // admitted; a single-compilation service keeps the legacy (scope-free)
+    // evidence so existing records round-trip and digest unchanged.
+    let multi_scope = ready.compilations.len() > 1;
     for compilation in &ready.compilations {
         let lease = store.read(&compilation.generation, MAX_EVIDENCE as usize)?;
+        eprintln!(
+            "CODEDEBUG capture_session read generation OK for {}",
+            service.id
+        );
         let generation: GenerationManifest =
             serde_json::from_slice(lease.bytes()).map_err(io_error)?;
+        let scope = compilation.clone();
         generation.visit_facts(&store, |fact| {
             let domain = if service.language == "kotlin" {
                 "analysis:kotlin-semantic-facts"
@@ -263,45 +408,104 @@ fn capture_session(
                 ));
             }
             let lease = store.read(&fact.payload, MAX_EVIDENCE as usize)?;
-            let value: Value = serde_json::from_slice(lease.bytes()).map_err(io_error)?;
+            let mut value: Value = serde_json::from_slice(lease.bytes()).map_err(io_error)?;
+            // Attach explicit compilation-scope membership so a symbol that
+            // appears under several scopes is retained per scope instead of
+            // last-write-wins overwriting. Single-scope records stay unmarked.
+            if multi_scope {
+                value["scope"] = json!(scope);
+            }
             facts.push((value, fact.payload.digest.clone()));
             Ok(())
         })?;
+        eprintln!(
+            "CODEDEBUG capture_session visit_facts OK for {} (count={count})",
+            service.id
+        );
     }
     if service.language == "kotlin" {
         facts = super::kotlin::project_facts(facts)?;
     }
-    let mut files = BTreeMap::new();
     let wanted: BTreeSet<_> = facts
         .iter()
         .filter_map(|(f, _)| f["file"].as_str().map(str::to_owned))
-        .chain(service.contract_files.iter().cloned())
         .collect();
-    let mut source_bytes = 0usize;
-    for file in wanted {
-        if let Some(reference) = contents.get(&file) {
-            let lease = store.read(reference, store::MAX_RECORD as usize)?;
-            source_bytes = source_bytes.saturating_add(lease.bytes().len());
-            if source_bytes > MAX_EVIDENCE as usize {
-                return Err(ClewError::new(
-                    ErrorCode::SliceBudgetExceeded,
-                    "documentation source byte budget exceeded",
-                ));
-            }
-            files.insert(
-                file,
-                String::from_utf8(lease.bytes().to_vec()).map_err(io_error)?,
-            );
+    // Contract files are loaded once from the explicit original snapshot,
+    // never flattened out of a per-compilation transformed table.
+    let mut contracts = BTreeMap::new();
+    for file in &service.contract_files {
+        if let Some(text) = snapshot_text.get(file) {
+            contracts.insert(file.clone(), text.clone());
         }
     }
-    project(
+    let known: BTreeSet<String> = ready
+        .compilations
+        .iter()
+        .map(|c| c.compilation.clone())
+        .collect();
+    // A single admitted compilation keeps the empty-scope legacy key so its
+    // scope-free facts resolve to the sole source table and records round-trip.
+    let mut contents = BTreeMap::new();
+    let mut transformed_map = BTreeMap::new();
+    let mut source_bytes = 0usize;
+    eprintln!(
+        "CODEDEBUG capture_session reading sources for {} (wanted={})",
+        service.id,
+        wanted.len()
+    );
+    for compilation in &ready.compilations {
+        let scope = if multi_scope {
+            compilation.compilation.clone()
+        } else {
+            String::new()
+        };
+        let (bytes, transformed) = match &compilation.transformed_source {
+            Some(reference) => (
+                generation_service::load_transformed_source(&store, reference)?,
+                true,
+            ),
+            // Read-only generations share the original snapshot for their
+            // occurrences and never claim transformed authority.
+            None => (
+                snapshot_text
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone().into_bytes()))
+                    .collect(),
+                false,
+            ),
+        };
+        let mut table = BTreeMap::new();
+        for path in &wanted {
+            if let Some(bytes) = bytes.get(path)
+                && let Ok(text) = std::str::from_utf8(bytes)
+            {
+                source_bytes = source_bytes.saturating_add(text.len());
+                if source_bytes > MAX_EVIDENCE as usize {
+                    return Err(ClewError::new(
+                        ErrorCode::SliceBudgetExceeded,
+                        "documentation source byte budget exceeded",
+                    ));
+                }
+                table.insert(path.clone(), text.to_owned());
+            }
+        }
+        contents.insert(scope.clone(), table);
+        transformed_map.insert(scope, transformed);
+    }
+    let sources = CompilationSource {
+        contents,
+        transformed: transformed_map,
+        contracts,
+    };
+    project_scoped(
         service,
         &session.base_revision,
         service_digest,
         &format!("{:?}", session.runtime_mode).to_uppercase(),
         &ready.coverage,
         facts,
-        &files,
+        &sources,
+        &known,
     )
 }
 
@@ -343,10 +547,35 @@ pub fn source_link(
     ))
 }
 
+/// Per-compilation source text and transformed authority keyed by the canonical
+/// compilation scope, plus an explicit original-snapshot contract table.
+///
+/// Occurrence (scope, path) stays distinct even when payloads are equal, so two
+/// compilations sharing a relative path with different transformed text keep
+/// both. The legacy single-compilation path uses the empty scope key.
+pub(crate) struct CompilationSource {
+    pub contents: BTreeMap<String, BTreeMap<String, String>>,
+    pub transformed: BTreeMap<String, bool>,
+    pub contracts: BTreeMap<String, String>,
+}
+
+impl CompilationSource {
+    fn text(&self, scope: &str, file: &str) -> Option<&str> {
+        if let Some(text) = self.contents.get(scope).and_then(|table| table.get(file)) {
+            return Some(text);
+        }
+        if scope.is_empty() {
+            return self.contracts.get(file).map(String::as_str);
+        }
+        None
+    }
+}
+
 fn add_source(
     evidence: &mut ServiceEvidence,
     service: &Service,
-    files: &BTreeMap<String, String>,
+    sources: &CompilationSource,
+    scope: &str,
     fact: &Value,
     binding: &str,
     identity: &str,
@@ -354,9 +583,18 @@ fn add_source(
     let Some(file) = fact["file"].as_str() else {
         return Ok(None);
     };
-    let Some(text) = files.get(file) else {
+    let Some(text) = sources.text(scope, file) else {
+        // A transformed compilation that cannot supply a required file must fail
+        // explicitly rather than silently falling back to another scope or the
+        // original snapshot.
+        if !scope.is_empty() && sources.transformed.get(scope).copied().unwrap_or(false) {
+            return Err(invalid(format!(
+                "transformed compilation {scope} lacks required source file {file}"
+            )));
+        }
         return Ok(None);
     };
+    let transformed = sources.transformed.get(scope).copied().unwrap_or(false);
     let (Some(start), Some(end)) = (fact["startLine"].as_u64(), fact["endLine"].as_u64()) else {
         return Ok(None);
     };
@@ -366,6 +604,20 @@ fn add_source(
     }
     let exact = lines[start as usize - 1..end as usize].join("\n");
     let id = source_id(&service.id, identity)?;
+    // Transformed source coordinates refer to the persisted transformed bytes,
+    // never the original commit snapshot. When transformed, identify the source
+    // as such and omit the original-revision link unless the mapping is known.
+    let (authority, url) = if transformed {
+        (
+            crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY.into(),
+            None,
+        )
+    } else {
+        (
+            "EXACT_SNAPSHOT_TEXT".into(),
+            source_link(service, &evidence.revision, file, start, end),
+        )
+    };
     evidence.sources.insert(
         id.clone(),
         Source {
@@ -378,9 +630,9 @@ fn add_source(
             text_digest: canonical::hash_bytes(exact.as_bytes()),
             text: exact,
             evidence_digest: binding.into(),
-            authority: "EXACT_SNAPSHOT_TEXT".into(),
+            authority,
             occurrence: None,
-            url: source_link(service, &evidence.revision, file, start, end),
+            url,
         },
     );
     Ok(Some(id))
@@ -471,6 +723,48 @@ pub fn java_tokens(text: &str) -> Vec<String> {
     result
 }
 
+/// Prepend a compilation scope to an evidence identity so the same symbol or
+/// source path under different scopes is retained as a distinct observation
+/// instead of colliding. An empty scope (legacy single compilation) yields the
+/// unmodified identity, preserving existing records.
+fn scoped_identity(scope: &str, identity: &str) -> String {
+    if scope.is_empty() {
+        identity.to_string()
+    } else {
+        format!("{scope}\u{1f}{identity}")
+    }
+}
+
+/// Resolve the canonical compilation-scope key from a fact's `scope` value.
+///
+/// Production capture attaches the whole `ReadyGeneration` object as `scope`
+/// (see `capture_session`), so an object's `compilation` field is authoritative
+/// and must name a registered compilation. A nonempty legacy string scope is
+/// accepted unchanged for older records. An empty scope is used only when the
+/// scope is absent, which is valid solely for a single admitted compilation.
+/// A malformed object or an unknown registered scope is an explicit error, never
+/// a silent empty fallback.
+fn resolve_scope_key(scope: &Value, known: &BTreeSet<String>) -> Result<String, ClewError> {
+    match scope {
+        Value::Object(map) => {
+            let compilation = map
+                .get("compilation")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| invalid("fact scope object lacks a compilation identity"))?;
+            if !known.contains(compilation) {
+                return Err(invalid(format!(
+                    "fact scope is not a registered compilation: {compilation}"
+                )));
+            }
+            Ok(compilation.to_string())
+        }
+        Value::String(s) if !s.is_empty() => Ok(s.clone()),
+        _ => Ok(String::new()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn project(
     service: &Service,
     revision: &str,
@@ -479,6 +773,41 @@ pub fn project(
     coverage: &str,
     facts: Vec<(Value, String)>,
     files: &BTreeMap<String, String>,
+    transformed: bool,
+) -> Result<ServiceEvidence, ClewError> {
+    // Legacy single-compilation projection: the flat files map becomes the
+    // empty-scope source table and the contract table.
+    let mut contents = BTreeMap::new();
+    contents.insert(String::new(), files.clone());
+    let mut transformed_map = BTreeMap::new();
+    transformed_map.insert(String::new(), transformed);
+    let sources = CompilationSource {
+        contents,
+        transformed: transformed_map,
+        contracts: files.clone(),
+    };
+    project_scoped(
+        service,
+        revision,
+        service_digest,
+        runtime_mode,
+        coverage,
+        facts,
+        &sources,
+        &BTreeSet::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn project_scoped(
+    service: &Service,
+    revision: &str,
+    service_digest: &str,
+    runtime_mode: &str,
+    coverage: &str,
+    facts: Vec<(Value, String)>,
+    sources: &CompilationSource,
+    known: &BTreeSet<String>,
 ) -> Result<ServiceEvidence, ClewError> {
     let mut evidence = ServiceEvidence {
         schema: "codeclew-documentation-service-evidence/1.0".into(),
@@ -494,8 +823,22 @@ pub fn project(
         sources: BTreeMap::new(),
         contracts: BTreeMap::new(),
     };
+    let annotation_registry = spring_entrypoints::annotation_registry(facts.iter().map(|(f, _)| f));
+    // Track, per symbol, the distinct normalized payload digests observed
+    // across admitted compilation scopes. A symbol that resolves to multiple
+    // incompatible candidates becomes an explicit SCOPE_AMBIGUOUS boundary
+    // rather than last-write-wins overwriting a single candidate.
+    let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (fact, binding) in &facts {
         if fact["kind"] == "BOUNDARY" {
+            if fact["code"].as_str() == Some("JAVA_COMPILER_DIAGNOSTIC") {
+                eprintln!(
+                    "CODEDEBUG JAVA_COMPILER_DIAGNOSTIC diagnosticCode={} file={} line={}",
+                    fact["diagnosticCode"].as_str().unwrap_or("?"),
+                    fact["file"].as_str().unwrap_or("?"),
+                    fact["line"]
+                );
+            }
             evidence.boundaries.push(
                 fact["code"]
                     .as_str()
@@ -510,19 +853,46 @@ pub fn project(
         let symbol = fact["symbolIdentity"]
             .as_str()
             .ok_or_else(|| invalid("compiler declaration lacks identity"))?;
-        let id = dependency_id(&service.id, "symbol", symbol)?;
-        let source = add_source(&mut evidence, service, files, fact, binding, symbol)?;
+        let scope = resolve_scope_key(&fact["scope"], known)?;
+        let scoped = scoped_identity(&scope, symbol);
+        let id = dependency_id(&service.id, "symbol", &scoped)?;
+        let source = add_source(
+            &mut evidence,
+            service,
+            sources,
+            &scope,
+            fact,
+            binding,
+            &scoped,
+        )?;
         let mut normalized = strip_coordinates(fact);
         if let Some(s) = source.as_ref().and_then(|id| evidence.sources.get(id)) {
             normalized["sourceTokens"] = json!(java_tokens(&s.text));
         }
+        // Ambiguity is judged on symbol content independent of which scope it
+        // appeared in: identical payloads across scopes are not ambiguous,
+        // only incompatible candidates are. strip_coordinates preserves the
+        // injected `scope` key, so drop it from the content digest.
+        let mut content = normalized.clone();
+        if let Value::Object(map) = &mut content {
+            map.remove("scope");
+        }
+        let content_digest = digest(&content)?;
+        if !scope.is_empty() {
+            normalized["scope"] = json!(scope);
+        }
+        let obs_digest = digest(&normalized)?;
+        symbol_digests
+            .entry(symbol.to_string())
+            .or_default()
+            .insert(content_digest);
         let source_ids: Vec<_> = source.into_iter().collect();
         let observation = Observation {
             id: id.clone(),
             kind: "SYMBOL".into(),
             service: service.id.clone(),
             symbol: symbol.into(),
-            digest: digest(&normalized)?,
+            digest: obs_digest,
             normalized,
             source_ids: source_ids.clone(),
         };
@@ -540,12 +910,22 @@ pub fn project(
                 );
             }
             for (index, event) in events.iter().enumerate() {
-                let identity = format!("{symbol}/event/{index}");
+                let identity = scoped_identity(&scope, &format!("{symbol}/event/{index}"));
                 let event_id = dependency_id(&service.id, "flow", &identity)?;
-                let event_source =
-                    add_source(&mut evidence, service, files, event, binding, &identity)?;
+                let event_source = add_source(
+                    &mut evidence,
+                    service,
+                    sources,
+                    &scope,
+                    event,
+                    binding,
+                    &identity,
+                )?;
                 let mut normalized = strip_coordinates(event);
                 normalized["ordinal"] = json!(index);
+                if !scope.is_empty() {
+                    normalized["scope"] = json!(scope);
+                }
                 evidence.observations.insert(
                     event_id.clone(),
                     Observation {
@@ -560,8 +940,9 @@ pub fn project(
                 );
             }
         }
+        let spring_fact = spring_entrypoints::with_annotation_registry(fact, &annotation_registry)?;
         if let Some(metadata) = spring_entrypoints::metadata_for_fact(
-            fact,
+            &spring_fact,
             if service.language == "kotlin" {
                 "K2_RESOLVED_ANNOTATIONS"
             } else {
@@ -578,10 +959,20 @@ pub fn project(
                 } else {
                     format!("{target}/{ordinal}")
                 };
-                let eid = source_id(&service.id, &format!("entrypoint/{identity}"))?;
+                let eid = source_id(
+                    &service.id,
+                    &scoped_identity(&scope, &format!("entrypoint/{identity}")),
+                )?;
                 let trigger = spring_entrypoints::describe_trigger(entry);
-                let route_id = dependency_id(&service.id, "entrypoint", &identity)?;
-                let normalized = json!({"trigger":trigger,"binding":entry,"boundaries":metadata.boundaries,"frameworkDerivation":metadata.derivation});
+                let route_id = dependency_id(
+                    &service.id,
+                    "entrypoint",
+                    &scoped_identity(&scope, &identity),
+                )?;
+                let mut normalized = json!({"trigger":trigger,"binding":entry,"boundaries":metadata.boundaries,"frameworkDerivation":metadata.derivation});
+                if !scope.is_empty() {
+                    normalized["scope"] = json!(scope);
+                }
                 evidence.observations.insert(
                     route_id.clone(),
                     Observation {
@@ -607,7 +998,18 @@ pub fn project(
             }
         }
     }
-    super::contracts::import(service, &mut evidence, files)?;
+    // A symbol admitted under multiple compilation scopes with incompatible
+    // candidate payloads is a visible SCOPE_AMBIGUOUS boundary, not a silent
+    // last-write-wins selection. Identical payloads across scopes are not
+    // ambiguous (their observations coexist under distinct scope identities).
+    for (symbol, digests) in &symbol_digests {
+        if digests.len() > 1 {
+            evidence
+                .boundaries
+                .push(format!("SCOPE_AMBIGUOUS:{symbol}"));
+        }
+    }
+    super::contracts::import(service, &mut evidence, &sources.contracts)?;
     for entry in &mut evidence.entrypoints {
         if !evidence.observations.values().any(|o| {
             o.kind == "SYMBOL"
@@ -758,6 +1160,43 @@ mod tests {
         assert_ne!(java_tokens("\"a b\""), java_tokens("\"ab\""));
         assert_eq!(java_tokens("// moved\nreturn x;"), java_tokens("return x;"));
     }
+
+    #[test]
+    fn scope_key_resolves_production_object_and_rejects_malformed() {
+        let known: BTreeSet<String> = [
+            ":common/main".into(),
+            ":flows:lead-tinkoff-decision-flow/main".into(),
+        ]
+        .into_iter()
+        .collect();
+        // Production attaches the ReadyGeneration object as scope; its
+        // `compilation` field is authoritative and yields a distinct stable key.
+        let object_scope = json!({ "compilation": ":flows:lead-tinkoff-decision-flow/main" });
+        assert_eq!(
+            resolve_scope_key(&object_scope, &known).unwrap(),
+            ":flows:lead-tinkoff-decision-flow/main"
+        );
+        // A nonempty legacy string scope is accepted unchanged.
+        assert_eq!(
+            resolve_scope_key(&json!(":common/main"), &known).unwrap(),
+            ":common/main"
+        );
+        // Absent scope (single compilation) yields the empty legacy key.
+        assert_eq!(resolve_scope_key(&Value::Null, &known).unwrap(), "");
+        // A malformed object without a compilation identity is an explicit error.
+        let malformed = resolve_scope_key(&json!({"runtime_key": "x"}), &known).unwrap_err();
+        assert!(
+            malformed.message.contains("compilation identity"),
+            "{malformed}"
+        );
+        // An unknown registered scope is an explicit error, never empty fallback.
+        let unknown =
+            resolve_scope_key(&json!({"compilation": ":unknown/main"}), &known).unwrap_err();
+        assert!(
+            unknown.message.contains("not a registered compilation"),
+            "{unknown}"
+        );
+    }
     #[test]
     fn locators_do_not_export_credentials() {
         assert_eq!(
@@ -776,6 +1215,424 @@ mod tests {
                 "user:fixture-password"
             ))
             .is_none()
+        );
+    }
+
+    #[test]
+    fn project_marks_transformed_sources_and_omits_original_links() {
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
+            "repositoryId":"svc", "repository":"https://example.invalid/svc",
+            "language":"java", "profile":"java-17plus-maven-writable-then-seal",
+            "compilation":":/main", "targetRef":"main",
+            "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
+        }))
+        .unwrap();
+        let text = "package example;\npublic class Service { void m() {} }\n";
+        let file = "src/main/java/example/Service.java";
+        let declaration = json!({
+            "kind":"DECLARATION","symbolIdentity":"example.Service",
+            "ownerIdentity":"example","name":"Service","file":file,
+            "startLine":2,"endLine":2,"resolution":"RESOLVED",
+            "documentation":{"events":[]},
+        });
+        let facts = vec![(declaration, "binding-digest".into())];
+        let files = BTreeMap::from([(file.into(), text.into())]);
+
+        // Transformed: source labelled TRANSFORMED_SOURCE, no original URL.
+        let transformed = project(
+            &service,
+            &"a".repeat(40),
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            facts.clone(),
+            &files,
+            true,
+        )
+        .unwrap();
+        let source = transformed.sources.values().next().unwrap();
+        assert_eq!(source.authority, "TRANSFORMED_SOURCE");
+        assert_eq!(
+            source.url, None,
+            "transformed source must not claim an original-commit link"
+        );
+        assert_eq!(source.text, "public class Service { void m() {} }");
+
+        // Read-only: EXACT_SNAPSHOT_TEXT with an original-commit URL.
+        let read_only = project(
+            &service,
+            &"a".repeat(40),
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            facts,
+            &files,
+            false,
+        )
+        .unwrap();
+        let source = read_only.sources.values().next().unwrap();
+        assert_eq!(source.authority, "EXACT_SNAPSHOT_TEXT");
+        assert!(
+            source
+                .url
+                .as_deref()
+                .is_some_and(|url| url.contains("/blob/") && url.contains("#L2-L2")),
+            "read-only source must retain an original-commit link"
+        );
+    }
+
+    fn projection_service() -> Service {
+        serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
+            "repositoryId":"svc", "repository":"https://example.invalid/svc",
+            "language":"java", "profile":"java-17plus-maven-writable-then-seal",
+            "compilation":":/main", "targetRef":"main",
+            "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
+            "contractFiles":[],
+        }))
+        .unwrap()
+    }
+
+    fn declaration_fact(scope: &Value, symbol: &str, file: &str, line: u64) -> (Value, String) {
+        (
+            json!({
+                "kind":"DECLARATION","symbolIdentity":symbol,"ownerIdentity":"example",
+                "name":symbol.rsplit('.').next().unwrap_or(symbol),
+                "file":file,"startLine":line,"endLine":line,"resolution":"RESOLVED",
+                "documentation":{"events":[]},"scope":scope,
+            }),
+            "binding-digest".into(),
+        )
+    }
+
+    fn compile_sources(
+        scopes: Vec<(&str, BTreeMap<String, String>, bool)>,
+        contracts: BTreeMap<String, String>,
+    ) -> CompilationSource {
+        let mut contents = BTreeMap::new();
+        let mut transformed = BTreeMap::new();
+        for (scope, table, is_transformed) in scopes {
+            contents.insert(scope.to_string(), table);
+            transformed.insert(scope.to_string(), is_transformed);
+        }
+        CompilationSource {
+            contents,
+            transformed,
+            contracts,
+        }
+    }
+
+    fn known(scopes: &[&str]) -> BTreeSet<String> {
+        scopes.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn project_scoped_ok(
+        service: &Service,
+        facts: Vec<(Value, String)>,
+        sources: &CompilationSource,
+        scopes: &[&str],
+    ) -> ServiceEvidence {
+        project_scoped(
+            service,
+            &"a".repeat(40),
+            &digest(service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            facts,
+            sources,
+            &known(scopes),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scoped_sources_same_path_different_bytes_produce_separate_records() {
+        let service = projection_service();
+        let file = "src/main/java/example/Service.java";
+        let text_a = "package example;\npublic class Service { void a() {} }\n";
+        let text_b = "package example;\npublic class Service { void b() {} }\n";
+        let mut table_a = BTreeMap::new();
+        table_a.insert(file.into(), text_a.into());
+        let mut table_b = BTreeMap::new();
+        table_b.insert(file.into(), text_b.into());
+        let sources = compile_sources(
+            vec![(":a/main", table_a, true), (":b/main", table_b, true)],
+            BTreeMap::new(),
+        );
+        let facts = vec![
+            declaration_fact(
+                &json!({"compilation":":a/main"}),
+                "example.Service",
+                file,
+                2,
+            ),
+            declaration_fact(
+                &json!({"compilation":":b/main"}),
+                "example.Service",
+                file,
+                2,
+            ),
+        ];
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main", ":b/main"]);
+        assert_eq!(evidence.sources.len(), 2, "one source record per scope");
+        let texts: BTreeSet<_> = evidence.sources.values().map(|s| s.text.clone()).collect();
+        assert_eq!(
+            texts,
+            BTreeSet::from([
+                "public class Service { void a() {} }".to_string(),
+                "public class Service { void b() {} }".to_string(),
+            ]),
+            "different transformed bytes per scope must survive as separate records"
+        );
+        for source in evidence.sources.values() {
+            assert_eq!(source.start_line, 2);
+            assert_eq!(source.end_line, 2);
+            assert_eq!(source.authority, "TRANSFORMED_SOURCE");
+        }
+    }
+
+    #[test]
+    fn mixed_readonly_and_transformed_scopes_choose_independent_authority() {
+        let service = projection_service();
+        let file = "src/main/java/example/Service.java";
+        let table = BTreeMap::from([(
+            file.into(),
+            "package example;\npublic class Service {}\n".into(),
+        )]);
+        let sources = compile_sources(
+            vec![
+                (":writable/main", table.clone(), true),
+                (":readonly/main", table.clone(), false),
+            ],
+            BTreeMap::new(),
+        );
+        let facts = vec![
+            declaration_fact(
+                &json!({"compilation":":writable/main"}),
+                "example.Service",
+                file,
+                2,
+            ),
+            declaration_fact(
+                &json!({"compilation":":readonly/main"}),
+                "example.Service",
+                file,
+                2,
+            ),
+        ];
+        let evidence = project_scoped_ok(
+            &service,
+            facts,
+            &sources,
+            &[":writable/main", ":readonly/main"],
+        );
+        assert_eq!(evidence.sources.len(), 2, "one source per scope");
+        let writable = evidence
+            .sources
+            .values()
+            .find(|s| s.authority == "TRANSFORMED_SOURCE")
+            .unwrap();
+        assert_eq!(
+            writable.url, None,
+            "writable must omit original-commit link"
+        );
+        let readonly = evidence
+            .sources
+            .values()
+            .find(|s| s.authority == "EXACT_SNAPSHOT_TEXT")
+            .unwrap();
+        assert!(
+            readonly
+                .url
+                .as_deref()
+                .is_some_and(|u| u.contains("/blob/")),
+            "readonly must retain original-commit link"
+        );
+    }
+
+    #[test]
+    fn scoped_projection_rejects_malformed_and_unregistered_scope() {
+        let service = projection_service();
+        let file = "src/main/java/example/Service.java";
+        let mut table = BTreeMap::new();
+        table.insert(
+            file.into(),
+            "package example;\npublic class Service {}\n".into(),
+        );
+        let sources = compile_sources(vec![(":a/main", table, true)], BTreeMap::new());
+        // Malformed object scope (no compilation identity) is an explicit error.
+        let malformed = project_scoped(
+            &service,
+            &"a".repeat(40),
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            vec![declaration_fact(
+                &json!({"runtime_key":"x"}),
+                "example.Service",
+                file,
+                2,
+            )],
+            &sources,
+            &known(&[":a/main"]),
+        )
+        .unwrap_err();
+        assert!(
+            malformed.message.contains("compilation identity"),
+            "{malformed}"
+        );
+        // An unregistered compilation scope is an explicit error, never a silent
+        // fallback to the empty or another compilation's table.
+        let unregistered = project_scoped(
+            &service,
+            &"a".repeat(40),
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            vec![declaration_fact(
+                &json!({"compilation":":unknown/main"}),
+                "example.Service",
+                file,
+                2,
+            )],
+            &sources,
+            &known(&[":a/main"]),
+        )
+        .unwrap_err();
+        assert!(
+            unregistered
+                .message
+                .contains("not a registered compilation"),
+            "{unregistered}"
+        );
+    }
+
+    #[test]
+    fn single_scope_legacy_empty_key_round_trips() {
+        let service = projection_service();
+        let file = "src/main/java/example/Service.java";
+        let mut table = BTreeMap::new();
+        table.insert(
+            file.into(),
+            "package example;\npublic class Service {}\n".into(),
+        );
+        // A single admitted compilation uses the empty-scope legacy key, so a
+        // scope-free fact (scope absent) resolves to the sole source table.
+        let sources = compile_sources(vec![("", table, true)], BTreeMap::new());
+        let evidence = project_scoped_ok(
+            &service,
+            vec![declaration_fact(&Value::Null, "example.Service", file, 2)],
+            &sources,
+            &[],
+        );
+        assert_eq!(evidence.sources.len(), 1);
+        let source = evidence.sources.values().next().unwrap();
+        assert_eq!(source.text, "public class Service {}");
+        assert_eq!(source.authority, "TRANSFORMED_SOURCE");
+    }
+
+    #[test]
+    fn identical_shared_declarations_across_scopes_are_not_ambiguous() {
+        let service = projection_service();
+        let file = "src/main/java/example/Shared.java";
+        let text = "package example;\npublic class Shared {}\n";
+        let mut table = BTreeMap::new();
+        table.insert(file.into(), text.into());
+        // Same symbol and identical payloads under two scopes must coexist
+        // without a SCOPE_AMBIGUOUS boundary.
+        let sources = compile_sources(
+            vec![(":a/main", table.clone(), true), (":b/main", table, true)],
+            BTreeMap::new(),
+        );
+        let facts = vec![
+            declaration_fact(&json!({"compilation":":a/main"}), "example.Shared", file, 2),
+            declaration_fact(&json!({"compilation":":b/main"}), "example.Shared", file, 2),
+        ];
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main", ":b/main"]);
+        assert_eq!(evidence.sources.len(), 2, "both scope records retained");
+        assert_eq!(
+            evidence
+                .observations
+                .values()
+                .filter(|o| o.kind == "SYMBOL" && o.symbol == "example.Shared")
+                .count(),
+            2
+        );
+        assert!(
+            !evidence
+                .boundaries
+                .iter()
+                .any(|b| b.starts_with("SCOPE_AMBIGUOUS")),
+            "identical payloads across scopes are not ambiguous: {:?}",
+            evidence.boundaries
+        );
+    }
+
+    #[test]
+    fn contract_files_load_independently_of_transformed_java_table() {
+        let service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
+            "repositoryId":"svc", "repository":"https://example.invalid/svc",
+            "language":"java", "profile":"java-17plus-maven-writable-then-seal",
+            "compilation":":/main", "targetRef":"main",
+            "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
+            "contractFiles":["api/openapi.yaml"],
+        }))
+        .unwrap();
+        // The transformed Java table intentionally has no contract path; the
+        // contract must still load from the explicit contract table and never
+        // be flattened out of a per-compilation transformed map.
+        let mut table = BTreeMap::new();
+        table.insert(
+            "src/main/java/example/Service.java".into(),
+            "package example;\npublic class Service {}\n".into(),
+        );
+        let sources = compile_sources(
+            vec![(":a/main", table, true)],
+            BTreeMap::from([(
+                "api/openapi.yaml".into(),
+                "openapi: 3.0.3\ninfo: {title: S, version: \"1\"}\npaths: {}\n".into(),
+            )]),
+        );
+        let evidence = project_scoped_ok(
+            &service,
+            vec![declaration_fact(
+                &json!({"compilation":":a/main"}),
+                "example.Service",
+                "src/main/java/example/Service.java",
+                2,
+            )],
+            &sources,
+            &[":a/main"],
+        );
+        assert!(
+            evidence.contracts.contains_key("api/openapi.yaml"),
+            "contract must load from its explicit snapshot table"
+        );
+        assert!(
+            evidence
+                .observations
+                .values()
+                .any(|o| o.kind == "CONTRACT" && o.symbol == "api/openapi.yaml"),
+            "contract observation must be registered"
+        );
+        // Both the Java declaration source and the declared contract source are
+        // bound independently; the contract path is not part of the Java table.
+        assert_eq!(evidence.sources.len(), 2);
+        assert!(
+            evidence
+                .sources
+                .values()
+                .any(|s| s.file == "src/main/java/example/Service.java"),
+            "Java source must be bound"
+        );
+        assert!(
+            evidence
+                .sources
+                .values()
+                .any(|s| s.file == "api/openapi.yaml"),
+            "contract source must be bound"
         );
     }
 }

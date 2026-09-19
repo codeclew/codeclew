@@ -12,7 +12,7 @@ use walkdir::{DirEntry, WalkDir};
 
 const SCHEMA: &str = "codeclew-repository-diagnostic/1.0";
 const MAX_DISCOVERY_ENTRIES: usize = 100_000;
-const MAX_COMPILATIONS: usize = 64;
+const MAX_COMPILATIONS: usize = crate::limits::MAX_SELECTED_COMPILATIONS;
 const MAX_CARGO_METADATA_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Default)]

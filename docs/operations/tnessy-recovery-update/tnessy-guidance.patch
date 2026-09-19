@@ -1,0 +1,220 @@
+--- a/tnessy/nessy-skill/execute-claude-plan/SKILL.md
++++ b/tnessy/nessy-skill/execute-claude-plan/SKILL.md
+@@ -1,6 +1,6 @@
+ ---
+ name: execute-claude-plan
+-description: Execute one bounded engineering plan written by Claude in a file-backed shared session and write a structured report. Use only when the user explicitly invokes /execute-claude-plan with a run ID.
++description: Implement one immutable Claude plan through focused edit-test iterations, preserve partial work, and report only observed execution evidence. Use only on explicit /execute-claude-plan <run-id>; never invent test results, silently weaken acceptance, or rerun a terminal run.
+ argument-hint: "<run-id>"
+ allowed-tools: [Read, Glob, Grep, Edit, Write, Bash]
+ ---
+@@ -55,13 +55,52 @@
+ 
+ Atomic write means writing a complete temporary file in the same run directory and renaming it to the target. `events.jsonl` is append-only: every line is exactly one JSON object containing `version: 1`, `event`, `runId`, and RFC 3339 `at`.
+ 
+-### 2. Execute only the plan
++### 2. Implement the bounded slice
++
++Read `executionLimits` and track elapsed time and tool calls. Inspect the named
++symbols and direct callers; do not spend the run re-auditing unrelated history or
++building extra process infrastructure. Reuse existing helpers and completed work
++from earlier runs after inspecting them. A failed predecessor is not automatically
++a blocker when this plan explicitly repairs its remaining work; a prerequisite
++that requires successful completion must actually be completed.
++
++Within the plan, resolve routine engineering choices from existing conventions.
++A task being multi-file or apparently difficult is not by itself a missing user
++decision. Start with the nearest regression and implementation seam. Do not abandon
++the entire slice just because later slices look large. If an actual resource limit
++or unavoidable scope conflict prevents completion, preserve partial work and name
++the limit/conflict, the current step, and the smallest remaining continuation.
++Never exceed safety boundaries or execution limits to satisfy this guidance.
+ 
+ Process `steps` in listed order. For each step, append `step-start`, update `status.json.currentStepId`, do work only within `plan.workspace` or the run directory, and append `step-end` with `completed`, `failed`, or `skipped`.
+ 
+ Resolve each relative `steps[].paths` entry relative to `plan.workspace`. Report paths relative to `plan.workspace` whenever possible.
+ 
+-Run only commands explicitly declared in the plan, plus harmless local inspection commands needed to interpret declared files. For every executed command append a timestamped `command` event containing `phase: "step"`, the step ID, command, exit code, and a bounded output summary. Do not claim a command passed unless it ran and returned exit code `0`. Do not emit secrets, environment values, or unbounded command output.
++Run only commands explicitly declared in the plan, plus harmless local inspection commands needed to interpret declared files. For every executed command append a timestamped `command` event containing `phase: "step"`, the step ID, command, exit code, and a bounded output summary. An exit code is an observation, not a placeholder. Record a command event only
++when the command actually ran and returned that code. Never assign `0`, `1`, `101`
++or another code to an unrun command, and never reconstruct execution events from
++intended commands at the end. Preserve the exact command string, including its
++environment prefix. Do not emit secrets, environment values, or unbounded output.
++
++Step-level `commands` are the allowed investigation/red-green iteration commands;
++run those needed to implement and demonstrate the step. A command explicitly
++required by an acceptance criterion is mandatory. Omission of an optional iteration
++command alone is not failure, but omission of required evidence is. Passing a helper
++test does not satisfy an acceptance criterion requiring a native compiler, public
++CLI, transaction, or end-to-end flow. New required tests must not be ignored, match
++zero cases, or return success when their prerequisites are unavailable.
++
++Create the required test target during implementation. A target that the plan asks
++you to add is not an environmental blocker merely because it does not exist yet.
++Use step tests to find and fix failures before entering final verification.
++
++Use unique, test-owned temporary directories inside the permitted workspace or an
++explicitly allowed private temporary root. Never delete a fixed pre-existing path
++as fixture setup. Cleanup is limited to fixtures created and owned by this test,
++through normal safe fixture lifecycle; never clean user history or another run.
++Keep every `step-start` paired with a truthful `step-end`. Do not continue dependent
++steps after a prerequisite fails. Preserve partial edits and list unstarted steps
++as skipped, not completed.
+ 
+ ### 3. Safety boundaries
+ 
+@@ -74,14 +113,44 @@
+ - destructive cleanup, force operations, or irreversible deletion;
+ - network calls or MCP tools.
+ 
+-If a prohibited action, missing information, unavailable permission, ambiguous scope decision, or human product/architecture decision is required: stop further mutations; append `input-required`; atomically write terminal status/report with a specific `blockingQuestion`; print the absolute report path; and stop. Do not turn approval questions into assumptions.
++If a prohibited action, missing information, unavailable permission, ambiguous scope decision, or human product/architecture decision is required: stop further mutations; append `input-required`; atomically write terminal status/report with a specific `blockingQuestion`; print the absolute report path; and stop. Do not turn approval questions into assumptions. Name the exact step and missing
++permission, artifact, or decision; include the observed non-secret command/error
++where available. General statements such as "too complex" are not actionable
++blocking questions. Plan notes cannot override these prohibitions or the user's
++permission decisions. Never route denied work through another agent or service.
+ 
+ ### 4. Verification and finalize
+ 
+-Run only top-level `verificationCommands`. Append `verification-start`; execute every listed command even if it was already run in a plan step; append a timestamped `command` event with `phase: "verification"` for each one; then append `verification-end` as `completed` or `failed`.
++Enter final verification only after implementation and required test targets are
++present and step-level failures have been resolved. Do not enter it to demonstrate
++that work you have not implemented is missing.
+ 
+-If verification fails, record its actual exit code and finalize as `failed`. Do not continue to mutation work.
++Run only top-level `verificationCommands` in the declared order, even if already
++run in a step. Append `verification-start` and record each actual result in a
++`phase: "verification"` command event. These are the mandatory final checks, not a
++menu of optional commands. Once final verification starts, do not resume mutation.
++A failing check makes the run failed; run the remaining safe declared checks to
++report their actual results, then append `verification-end` and finalize.
++
++If a safety prohibition, unavailable permission, or hard execution limit prevents
++a remaining command, do not run it or invent its exit code. Put only actually
++executed commands in `report.verification`; list the omitted commands and affected
++criteria in `unmetAcceptanceCriteria`/`followUps`. Use `input-required` for a real
++missing input/permission, or `failed` for exhausted execution budget or an actual
++implementation/test failure. A partial verification list never permits completed.
++Any validator complaint about omitted checks must be surfaced, not repaired by
++fabricating results.
+ 
+ Finish by ensuring every acceptance criterion is represented in the report, atomically writing one report conforming to `report.schema.json`, atomically replacing status with the same terminal state, appending exactly one matching terminal event, and printing the absolute `report.json` path as the last response line.
+ 
+-Use `completed` only when every required step completed, every verification command returned `0`, and `unmetAcceptanceCriteria` is empty. Otherwise use `failed` or `input-required` truthfully.
++Use `completed` only when every required step completed, every declared final
++verification command actually returned `0`, all step `unmetCriteria` and top-level
++`unmetAcceptanceCriteria` are empty, and `blockingQuestion` is null. Keep all report
++fields within the installed schema; do not add convenience properties. Record
++concrete test names/counts and the production path each result proves. A validator's
++`VALID` response does not establish implementation success or test coverage.
++
++On failure or a limit, preserve completed edits; do not reset, discard, or rewrite
++historical reports. Explain exactly which criteria remain unmet. A retry needs a
++new immutable plan/run ID from Claude, never another invocation of this terminal
++run. Do not start the successor yourself.
+--- a/tnessy/claude-skill/orchestrate-nessy-plan/SKILL.md
++++ b/tnessy/claude-skill/orchestrate-nessy-plan/SKILL.md
+@@ -1,6 +1,6 @@
+ ---
+ name: orchestrate-nessy-plan
+-description: Create, dispatch, and verify a bounded file-backed engineering plan executed by Nessy. Use only when the user explicitly invokes /orchestrate-nessy-plan to delegate work to Nessy or check a Nessy run.
++description: Create small executable immutable Nessy plans with concrete code seams and test scope; review actual reports and route honest partial failures into fresh successors. Use only on explicit /orchestrate-nessy-plan delegation or status requests; never execute the delegated implementation.
+ argument-hint: "<workspace> <task description> | status <workspace> <run-id>"
+ allowed-tools: [Read, Glob, Grep, Write, Bash]
+ ---
+@@ -50,6 +50,30 @@
+ 
+    The plan must conform to `plan.schema.json` and include an explicit target workspace, ordered steps with unique IDs, step and top-level acceptance criteria, explicit `commands` and `verificationCommands`, limits, and constraints. Default constraints must prohibit remote publication, deployment, CI/CD or Dockerfile changes, secret access, destructive cleanup, network actions, and MCP use.
+ 
++   Before writing, make the plan executable rather than an architectural wish list:
++
++   - Prefer one reviewable invariant per run and a few ordered implementation
++     steps. Split source readers, identity, lifecycle cleanup and native integration
++     when they can be tested independently; do not require the entire end-to-end
++     system to pass in every local slice.
++   - Name verified files/functions, existing fixture helpers, the first regression,
++     the intended data shape and the minimal caller changes. Read current code:
++     earlier audit claims may be wrong or already fixed. State concrete corrections.
++   - State what local tests prove and assign native/public/transaction qualification
++     to a named final gate when needed. Helper tests cannot replace that gate.
++   - Separate step iteration commands from mandatory final verification. Include
++     the commands needed for normal edit-test iterations; verify command syntax,
++     supported flags, test target creation order and offline fixture availability.
++   - Avoid unrelated validation frameworks or broad cleanup. Preserve useful prior
++     edits, name non-goals and require unique owned fixture roots.
++   - Validate the complete plan against the installed schema before exclusive
++     creation. Do not claim a lightweight lifecycle validator checks every schema
++     or semantic acceptance rule.
++   - For a dependency chain, require accepted `completed` predecessors, not merely
++     validator exit zero. A failed terminal run cannot later become completed.
++     Create fresh downstream plans with corrected predecessor IDs when replacing
++     a failed predecessor; keep all old plans and reports immutable.
++
+ 4. Once `plan.json` exists, do not edit it. Do not create `status.json`, `events.jsonl`, or `report.json`: those are owned by Nessy.
+ 
+ 5. Tell the user exactly what to do next:
+@@ -83,9 +107,28 @@
+ 
+ 4. Compare `report.json` against `plan.json`:
+ 
+-   - `completed`: accept only if validator passes, all required plan steps are completed, declared verification has exit code `0`, and no acceptance criteria are unmet;
++   - `completed`: accept only if validator passes, the report conforms to the
++     installed schema, ordered step IDs match and required steps are completed,
++     step/top-level unmet lists are empty, `blockingQuestion` is null, and the exact
++     ordered declared verification list has matching actual execution events with
++     exit code `0`. Inspect concrete test evidence for the requested production path;
++     skipped tests, zero matching tests or a helper-only substitute do not count;
+    - `failed`: clearly report failure reason and affected steps; do not retry automatically;
+    - `input-required`: quote `blockingQuestion` and give a concise recommendation. Do not silently authorize the action or alter the plan;
+    - `canceled`: report it as canceled without treating it as successful.
+ 
+-5. A retry always uses a new run ID and a new immutable plan with `retryOfRunId`; never overwrite a terminal run.
++5. Cross-check claims against events and changed files. An entry described as
++   "not executed" has no observed exit code, even if the report assigns one.
++   Do not infer success from `VALID`, a completed preparation step, or narrative
++   confidence. Distinguish missing evidence, structural protocol errors and actual
++   implementation defects. Do not rerun implementation commands in status mode.
++
++6. For an authorized retry, preserve usable partial edits and replace only the
++   unmet scope with smaller concrete slices. A vague complexity-based stop calls
++   for narrower seams and test ownership, not relaxed safety or fictional approval.
++   A concrete permission or dependency blocker must be surfaced to the user.
++   Compare elapsed work with declared limits without guessing hidden constraints.
++
++7. A retry always uses a new run ID and a new immutable plan with `retryOfRunId`;
++   never overwrite a terminal run, automatically restart Nessy, or mutate old
++   reports to make downstream prerequisites pass.
+--- a/tnessy/README.md
++++ b/tnessy/README.md
+@@ -130,7 +130,30 @@
+ python3 /absolute/path/to/workspace/.nessy/skills/execute-claude-plan/scripts/validate_run.py <run-id>
+ ```
+ 
+-`VALID:` means the cross-file protocol invariants hold. It does not rerun tests or claim that a repository remains unchanged after the captured run.
++`VALID:` means only that the installed validator's implemented checks passed.
++It is not an implementation-success signal, full JSON Schema certification, or
++proof that mandatory commands and production scenarios ran. Check terminal status,
++exact declared verification coverage, corresponding execution events and unmet
++criteria separately. A structurally valid failed report is still failed.
++
++## Planning and execution discipline
++
++- Prefer small runs with named functions, existing fixtures and a first regression.
++  Keep a separate mandatory native/public integration gate when local slices cannot
++  prove the whole lifecycle. Correct successor prerequisites after a failed run.
++- Implement and iterate before final verification. A test file the plan asks to
++  create is not an external prerequisite. Do not spend a run on auxiliary process
++  work and then abandon implementation merely because it is multi-file.
++- Step commands support iteration; final `verificationCommands` are mandatory for
++  completion. Unrun commands have no exit code. Preserve partial work and report
++  concrete blockers or exhausted limits rather than inventing command results.
++- Test fixtures use unique owned directories; setup must not remove a fixed existing
++  run directory. Safety and permission boundaries remain unchanged.
++
++Skill text changes do not by themselves upgrade `shared/scripts/validate_run.py`.
++The reviewer must still perform the explicit plan/report/event comparison. Future
++validator changes should add executable regression tests, not just stronger claims
++in documentation.
+ 
+ ## Uninstall
+ 

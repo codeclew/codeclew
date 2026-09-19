@@ -45,6 +45,9 @@ pub(crate) struct ManagedTemporaryDirectory {
     parent: ManagedDirectory,
     directory: ManagedDirectory,
     name: OsString,
+    /// Set once an explicit `close` has removed the tree so the Drop fallback
+    /// does not attempt a second removal (best-effort, never panicking).
+    removed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -461,6 +464,7 @@ impl ManagedDirectory {
                 handle: Arc::new(handle),
             },
             name,
+            removed: false,
         })
     }
 
@@ -472,6 +476,14 @@ impl ManagedDirectory {
     pub(crate) fn open_file(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
         validate_file_name(name)?;
         open_existing_private_file_at(&self.handle, name, libc::O_RDONLY)
+    }
+
+    /// Open an existing managed lock without creating it. Reclaimers use this
+    /// after the ready marker so a missing lock is reported as unknown rather
+    /// than manufacturing new authority for a damaged lease.
+    pub(crate) fn open_existing_lock(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
+        validate_file_name(name)?;
+        open_existing_private_file_at(&self.handle, name, libc::O_RDWR)
     }
 
     pub(crate) fn open_append(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
@@ -584,6 +596,32 @@ impl ManagedDirectory {
         remove_directory_tree_at(&self.handle, name)
     }
 
+    /// Remove a child only when the entry still names the descriptor identity
+    /// observed by the caller. Reclaimers use this to avoid deleting a
+    /// replacement or an unrelated entry after a stale lease is inspected.
+    #[cfg(unix)]
+    pub(crate) fn remove_tree_if_identity(
+        &self,
+        name: &std::ffi::OsStr,
+        expected: (u64, u64),
+    ) -> Result<bool, ClewError> {
+        self.require_path_identity()?;
+        if entry_identity(&self.handle, name)? != expected {
+            return Ok(false);
+        }
+        remove_directory_tree_at(&self.handle, name)?;
+        Ok(true)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn remove_tree_if_identity(
+        &self,
+        _name: &std::ffi::OsStr,
+        _expected: (u64, u64),
+    ) -> Result<bool, ClewError> {
+        Err(invalid("descriptor-relative managed state requires POSIX"))
+    }
+
     pub(crate) fn remove_file(&self, name: &std::ffi::OsStr) -> Result<(), ClewError> {
         validate_file_name(name)?;
         unlink_at(&self.handle, name)?;
@@ -596,14 +634,51 @@ impl ManagedDirectory {
 }
 
 impl ManagedTemporaryDirectory {
+    /// Relinquish automatic removal while leaving this owned tree available
+    /// to its namespace's supported lease-aware reclaimer.
+    pub(crate) fn defer_cleanup(mut self) {
+        self.removed = true;
+    }
+
     pub(crate) fn directory(&self) -> &ManagedDirectory {
         &self.directory
+    }
+
+    /// Consume the owned temporary directory and remove its tree via the same
+    /// handle-relative, descriptor-authorized removal path used by Drop, but
+    /// report the result explicitly. The entry currently named at the parent
+    /// path must still be the directory this handle owns; a same-name
+    /// replacement is refused rather than deleted. On success the tree is
+    /// marked removed so the Drop fallback does not double-remove.
+    pub(crate) fn close(mut self) -> Result<(), ClewError> {
+        let held = self.directory.identity()?;
+        let current = entry_identity(&self.parent.handle, &self.name)?;
+        if current != held {
+            // Refuse to remove an unrelated same-name replacement. Mark the
+            // tree removed so the Drop fallback does not delete the replacement
+            // either; the owned original remains wherever it was moved.
+            self.removed = true;
+            return Err(invalid(
+                "managed temporary directory was replaced at its path; refusing to remove an unrelated directory",
+            ));
+        }
+        let result = remove_directory_tree_at(&self.parent.handle, &self.name);
+        if result.is_ok() {
+            self.removed = true;
+        }
+        result
     }
 }
 
 impl Drop for ManagedTemporaryDirectory {
     fn drop(&mut self) {
-        let _ = remove_directory_tree_at(&self.parent.handle, &self.name);
+        if !self.removed
+            && self.directory.identity().is_ok_and(|held| {
+                entry_identity(&self.parent.handle, &self.name).is_ok_and(|current| current == held)
+            })
+        {
+            let _ = remove_directory_tree_at(&self.parent.handle, &self.name);
+        }
     }
 }
 
@@ -649,6 +724,33 @@ fn validate_file_name(name: &std::ffi::OsStr) -> Result<(), ClewError> {
 #[cfg(unix)]
 fn component_name(value: &std::ffi::OsStr) -> Result<CString, ClewError> {
     CString::new(value.as_bytes()).map_err(|_| invalid("managed state path contains NUL"))
+}
+
+/// Identity (dev, ino) of the entry currently named `name` directly under
+/// `parent`, resolved without following symlinks. Used by explicit disposal to
+/// refuse removing a same-name replacement that is no longer the owned
+/// temporary directory.
+#[cfg(unix)]
+fn entry_identity(parent: &File, name: &std::ffi::OsStr) -> Result<(u64, u64), ClewError> {
+    validate_file_name(name)?;
+    let encoded = component_name(name)?;
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            encoded.as_ptr(),
+            status.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let status = unsafe { status.assume_init() };
+    // libc's device/inode integer widths differ between Unix targets.
+    #[allow(clippy::unnecessary_cast)]
+    let identity = (status.st_dev as u64, status.st_ino as u64);
+    Ok(identity)
 }
 
 #[cfg(all(test, unix))]
@@ -1579,5 +1681,201 @@ mod tests {
                 .is_err()
         );
         assert!(!victim.join("forged").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_managed_attempt_drop_removes_nested_tree_for_ten_cycles() {
+        // The sealed Drop path must remove a read-only (0500) attempt tree via
+        // the held parent handle. open_private_child_directory restores 0700 on
+        // the child after ownership verification, so no separate chmod/reseal
+        // is needed to delete a doomed workspace. Ten cycles must leave no
+        // entries behind.
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        for cycle in 0..10 {
+            let attempt = attempts.temporary_child("sealed-cycle").unwrap();
+            let path = attempt.directory().resolved_path().unwrap();
+            fs::create_dir(path.join("nested")).unwrap();
+            fs::create_dir_all(path.join("a/b/c")).unwrap();
+            fs::write(path.join("nested/file.txt"), format!("cycle-{cycle}")).unwrap();
+            fs::write(path.join("a/b/c/leaf"), b"x").unwrap();
+            crate::repository_snapshot::seal_tree(&path).unwrap();
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o500,
+                "sealed attempt dirs must be read-only before disposal (cycle {cycle})"
+            );
+            let name = attempt.name.clone();
+            drop(attempt);
+            assert!(
+                !path.exists(),
+                "sealed attempt entry must be removed on drop (cycle {cycle})"
+            );
+            assert!(
+                attempts.existing_child(&name).is_err(),
+                "attempts must no longer name the removed entry (cycle {cycle})"
+            );
+        }
+        assert_eq!(
+            fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "no managed attempt entries may remain after disposal"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_attempt_drop_leaves_external_symlink_sentinel_untouched() {
+        // A symlink inside the owned attempt must never cause disposal to reach
+        // the external target: seal_tree uses follow_links(false) and the
+        // descriptor-relative removal unlinks the link itself, leaving the
+        // external sentinel and its bytes unchanged.
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let sentinel = parent.path().join("sentinel");
+        fs::create_dir(&sentinel).unwrap();
+        fs::write(sentinel.join("keep"), b"external").unwrap();
+        let attempt = attempts.temporary_child("sealed-symlink").unwrap();
+        let path = attempt.directory().resolved_path().unwrap();
+        fs::write(path.join("inner"), b"attempt-data").unwrap();
+        symlink(&sentinel, path.join("link")).unwrap();
+        crate::repository_snapshot::seal_tree(&path).unwrap();
+        drop(attempt);
+        assert!(!path.exists(), "owned attempt must be removed");
+        assert!(sentinel.is_dir(), "external sentinel must survive");
+        assert_eq!(
+            fs::read(sentinel.join("keep")).unwrap(),
+            b"external",
+            "external sentinel bytes must be untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_attempt_drop_survives_root_replacement() {
+        // After the state root is moved aside and a same-name replacement is
+        // created, dropping the attempt must remove from the held (moved) inode,
+        // not the replacement. The path-based removal must stay handle-relative.
+        let parent = tempfile::tempdir().unwrap();
+        let state_root = parent.path().join("state");
+        let moved_root = parent.path().join("state-moved");
+        let state = StateAuthority::open(state_root.clone()).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let attempt = attempts.temporary_child("sealed-moved").unwrap();
+        let path = attempt.directory().resolved_path().unwrap();
+        fs::write(path.join("marker"), b"attempt").unwrap();
+        crate::repository_snapshot::seal_tree(&path).unwrap();
+        let name = attempt.name.clone();
+        let moved_path = moved_root.join("attempts").join(&name);
+        fs::rename(&state_root, &moved_root).unwrap();
+        fs::create_dir(&state_root).unwrap();
+        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(state_root.join("attempts")).unwrap();
+        assert!(
+            moved_path.exists(),
+            "moved root must still hold the sealed attempt before disposal"
+        );
+        assert!(
+            !state_root.join("attempts").join(&name).exists(),
+            "replacement root must not contain the moved attempt"
+        );
+        drop(attempt);
+        assert!(
+            !moved_path.exists(),
+            "drop must remove from the held moved inode, not the replacement"
+        );
+        assert!(
+            moved_root.join("attempts").is_dir(),
+            "the moved attempts parent must remain"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_temporary_close_removes_tree_and_does_not_double_remove() {
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let attempt = attempts.temporary_child("close-owned").unwrap();
+        let path = attempt.directory().resolved_path().unwrap();
+        fs::create_dir_all(path.join("nested/deep")).unwrap();
+        fs::write(path.join("nested/deep/file"), b"owned").unwrap();
+        let name = attempt.name.clone();
+        // Explicit consuming dispose removes the tree and reports success.
+        attempt.close().unwrap();
+        assert!(!path.exists(), "explicit close must remove the owned tree");
+        assert!(
+            attempts.existing_child(&name).is_err(),
+            "no entry may remain after explicit close"
+        );
+        // The consuming close marks the tree removed, so the Drop fallback runs
+        // as a no-op and never double-removes or panics.
+        assert_eq!(
+            fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_temporary_close_refuses_same_name_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let attempt = attempts.temporary_child("close-replaced").unwrap();
+        let attempts_path = attempts.resolved_path().unwrap();
+        let path = attempts_path.join(&attempt.name);
+        fs::write(path.join("owned"), b"original").unwrap();
+        let aside = attempts_path.join(format!("{}-aside", attempt.name.to_string_lossy()));
+        // Swap in a same-name, differently-owned directory at the held path.
+        fs::rename(&path, &aside).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("replacement"), b"r").unwrap();
+        // The explicit dispose must refuse to remove the unrelated replacement
+        // and must not let the Drop fallback delete it either.
+        let err = attempt.close().unwrap_err();
+        assert!(err.message.contains("replaced at its path"), "{err}");
+        assert!(
+            path.join("replacement").exists(),
+            "replacement must survive"
+        );
+        assert!(path.is_dir(), "replacement directory must survive");
+        assert!(
+            aside.join("owned").exists(),
+            "moved owned tree must survive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_identity_reclaimer_refuses_same_name_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let attempt = attempts.temporary_child("identity-check").unwrap();
+        let path = attempt.directory().resolved_path().unwrap();
+        let identity = attempt.directory().identity().unwrap();
+        let name = path.file_name().unwrap().to_owned();
+        let aside = attempts
+            .resolved_path()
+            .unwrap()
+            .join(format!("{}-aside", name.to_string_lossy()));
+        fs::rename(&path, &aside).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("replacement"), b"replacement").unwrap();
+
+        assert!(!attempts.remove_tree_if_identity(&name, identity).unwrap());
+        // Mark the held descriptor removed after the helper refusal so its
+        // Drop fallback cannot remove the replacement during test cleanup.
+        assert!(attempt.close().is_err());
+        assert!(path.join("replacement").exists());
+        assert!(aside.is_dir());
     }
 }

@@ -4,6 +4,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import subprocess
+import tempfile
 import unittest
 
 
@@ -16,6 +18,37 @@ SPEC.loader.exec_module(privacy)
 
 
 class RepositoryPrivacyTest(unittest.TestCase):
+    def test_worktree_checks_pending_content_without_changing_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            tracked = root / "tracked.txt"
+            tracked.write_text("public placeholder")
+            (root / ".gitignore").write_text("ignored.txt\n")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            index = (root / ".git/index").read_bytes()
+            private = b"/Users/" + b"private-example/source"
+            tracked.write_bytes(private)
+            (root / "pending.txt").write_bytes(private)
+            (root / "ignored.txt").write_bytes(private)
+            def check(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, "-I", "-S", str(MODULE_PATH), *args],
+                    cwd=root, capture_output=True, text=True, check=False,
+                )
+            self.assertEqual(check().returncode, 0, "default still checks staged blobs")
+            pending = check("--worktree")
+            self.assertEqual(pending.returncode, 1)
+            self.assertIn("tracked.txt: personal-home-path", pending.stderr)
+            self.assertIn("pending.txt: personal-home-path", pending.stderr)
+            self.assertNotIn("ignored.txt", pending.stderr)
+            self.assertNotIn("private-example", pending.stderr)
+            tracked.unlink()
+            (root / "pending.txt").unlink()
+            (root / "link.txt").symlink_to("ignored.txt")
+            self.assertEqual(check("--worktree").returncode, 0, "do not follow symlinks or scan deleted content")
+            self.assertEqual((root / ".git/index").read_bytes(), index)
+
     def test_pilot_results_are_forbidden_even_when_force_added(self) -> None:
         self.assertEqual(
             privacy.path_rules("docs/pilot/results/case-001.json"),

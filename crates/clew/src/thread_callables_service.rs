@@ -169,7 +169,10 @@ pub fn create(
         {
             return Err(ClewError::new(
                 ErrorCode::SliceBudgetExceeded,
-                "thread callable selected compilations exceed 64",
+                format!(
+                    "thread callable selected compilations exceed {}",
+                    crate::limits::MAX_SELECTED_COMPILATIONS
+                ),
             ));
         }
         let member_single_context = session.load_context(&member_context.context_id)?;

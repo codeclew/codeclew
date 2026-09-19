@@ -34,7 +34,7 @@ pub const KOTLIN_SEMANTIC_FACT_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0
 
 pub const MAX_CALLABLE_MEMBERS: usize = 8;
 pub const MAX_CALLABLE_PAIR_BINDINGS: usize = 32;
-pub const MAX_CALLABLE_COMPILATIONS: usize = 64;
+pub const MAX_CALLABLE_COMPILATIONS: usize = crate::limits::MAX_SELECTED_COMPILATIONS;
 pub const MAX_INPUT_FACTS_VISITED: usize = 131_072;
 pub const MAX_INPUT_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_DECLARATION_FACTS: usize = 65_536;
@@ -769,9 +769,10 @@ pub fn build_with_jobs(
     if input.selected_compilations.is_empty()
         || input.selected_compilations.len() > request.budgets.max_compilations
     {
-        return Err(budget(
-            "callable selected compilations are empty or exceed 64",
-        ));
+        return Err(budget(format!(
+            "callable selected compilations are empty or exceed {}",
+            crate::limits::MAX_SELECTED_COMPILATIONS
+        )));
     }
     if input.payloads.is_empty() {
         return Err(invalid(
@@ -1234,9 +1235,10 @@ fn validate_authority_compilation_bindings(
         }
     }
     if total == 0 || total > authority.budgets.max_compilations {
-        return Err(corrupt(
-            "callable authority selected compilation count exceeds 64",
-        ));
+        return Err(corrupt(format!(
+            "callable authority selected compilation count exceeds {}",
+            crate::limits::MAX_SELECTED_COMPILATIONS
+        )));
     }
     Ok(())
 }
@@ -1551,7 +1553,10 @@ fn member_bindings(
         ));
     }
     if compilations.len() > budgets.max_compilations {
-        return Err(budget("callable selected compilations exceed 64"));
+        return Err(budget(format!(
+            "callable selected compilations exceed {}",
+            crate::limits::MAX_SELECTED_COMPILATIONS
+        )));
     }
     let mut sessions = BTreeSet::new();
     let mut namespaces = BTreeSet::new();
@@ -4020,7 +4025,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_ready_compilations_are_bound_and_count_toward_the_global_64_limit() {
+    fn empty_ready_compilations_are_bound_and_count_toward_the_global_limit() {
         let (request, mut exact_input) = fixture("p/Orders.findOrder", "p/Consumer.call");
         for index in exact_input.selected_compilations.len()..MAX_CALLABLE_COMPILATIONS {
             let mut authority = compilation(

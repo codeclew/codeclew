@@ -346,9 +346,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         }
     }
 }
-pub fn attach(repo: &Repository, checked: &mut Check) -> Result<(), ClewError> {
-    let definitions = repo.scenarios()?;
-    let interactions = repo.interactions()?;
+pub(super) fn attach_from_inputs(
+    definitions: &BTreeMap<String, Scenario>,
+    interactions: &BTreeMap<String, Interaction>,
+    checked: &mut Check,
+) -> Result<(), ClewError> {
     if !definitions.values().any(|s| s.view.is_some()) {
         return Ok(());
     }
@@ -366,7 +368,7 @@ pub fn attach(repo: &Repository, checked: &mut Check) -> Result<(), ClewError> {
             source_ids: vec![],
         },
     );
-    for (id, s) in &definitions {
+    for (id, s) in definitions {
         let Some(v) = &s.view else {
             continue;
         };

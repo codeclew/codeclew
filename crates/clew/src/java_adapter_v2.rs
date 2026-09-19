@@ -10,6 +10,7 @@ use crate::incremental_v2::{
     COMPLETENESS_VECTOR_SCHEMA, Certainty, CompletenessVector, Coverage, Support,
     VerificationObligation,
 };
+use crate::java_analysis_inputs::PreparedJavaAnalysisInputs;
 use crate::java_project_model::{JavaOperationalModel, JavaProjectModel, verify_model};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -26,7 +27,7 @@ pub const JAVA_INDEX_SCHEMA: &str = "codeclew-java-compiler-index/1.0";
 pub const JAVA_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const JAVA_RECEIPT_SCHEMA: &str = "codeclew-java-compiler-completeness/1.0";
 const JAVA_ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-java-compiler-adapter/1.0";
-const JAVA_ANALYZER_SOURCE: &str = include_str!("java_analyzer.java");
+pub const JAVA_ANALYZER_SOURCE: &str = include_str!("java_analyzer.java");
 const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_JAVA_FACTS: usize = 262_144;
 const MAX_FACT_BYTES: usize = 64 * 1024;
@@ -127,6 +128,12 @@ pub enum JavaCompilerFact {
         required_checks: Vec<String>,
         resolution: String,
     },
+    AnnotationRegistry {
+        schema: String,
+        authority: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        definitions: BTreeMap<String, serde_json::Value>,
+    },
 }
 
 impl JavaCompilerFact {
@@ -135,7 +142,8 @@ impl JavaCompilerFact {
             Self::SourceFile { schema, .. }
             | Self::Declaration { schema, .. }
             | Self::Relation { schema, .. }
-            | Self::Boundary { schema, .. } => schema,
+            | Self::Boundary { schema, .. }
+            | Self::AnnotationRegistry { schema, .. } => schema,
         }
     }
 
@@ -145,6 +153,7 @@ impl JavaCompilerFact {
             | Self::Declaration { file, .. }
             | Self::Relation { file, .. } => Some(file),
             Self::Boundary { file, .. } => file.as_deref(),
+            Self::AnnotationRegistry { .. } => None,
         }
     }
 
@@ -161,6 +170,10 @@ pub struct JavaCompilerIndex {
     pub model: JavaProjectModel,
     pub analyzer_digest: String,
     pub facts: Vec<JavaCompilerFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_state: Option<serde_json::Value>,
 }
 
 pub fn java_adapter_digest() -> Result<String, ClewError> {
@@ -179,66 +192,253 @@ pub fn build_java_compiler_index(
     repository: &Path,
     operational: &JavaOperationalModel,
     source_content_digests: &BTreeMap<String, String>,
+    writable_then_seal: bool,
+    before_digests: Option<&BTreeMap<String, String>>,
+    changed_files: &[(String, String, String)],
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<JavaCompilerIndex, ClewError> {
+    build_java_compiler_index_inner(
+        repository,
+        operational,
+        source_content_digests,
+        writable_then_seal,
+        before_digests,
+        changed_files,
+        debug_output,
+        None,
+    )
+}
+
+/// Run the no-processor analyzer against the request-scoped closed inputs.
+/// The ordinary path above remains the authority for writable and processor
+/// enabled analysis.
+pub fn build_java_compiler_index_with_prepared_inputs(
+    operational: &JavaOperationalModel,
+    prepared: &PreparedJavaAnalysisInputs,
+    source_content_digests: &BTreeMap<String, String>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<JavaCompilerIndex, ClewError> {
+    prepared.require_sealed()?;
+    if !operational.authority.annotation_processors.is_empty()
+        || !operational.authority.annotation_processor_paths.is_empty()
+        || operational
+            .authority
+            .compiler_options
+            .iter()
+            .any(|option| option.starts_with("-A"))
+    {
+        return Err(unsupported(
+            "closed Java analysis inputs cannot execute annotation processors",
+        ));
+    }
+    build_java_compiler_index_inner(
+        &prepared.analysis_root,
+        operational,
+        source_content_digests,
+        false,
+        None,
+        &[],
+        debug_output,
+        Some(prepared),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_java_compiler_index_inner(
+    repository: &Path,
+    operational: &JavaOperationalModel,
+    source_content_digests: &BTreeMap<String, String>,
+    writable_then_seal: bool,
+    before_digests: Option<&BTreeMap<String, String>>,
+    changed_files: &[(String, String, String)],
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    prepared: Option<&PreparedJavaAnalysisInputs>,
 ) -> Result<JavaCompilerIndex, ClewError> {
     verify_model(&operational.authority)?;
     let repository = repository.canonicalize().map_err(io_error)?;
     let temporary = tempfile::tempdir().map_err(io_error)?;
     let analyzer = temporary.path().join("CodeclewJavaAnalyzer.java");
-    let sources = temporary.path().join("sources.txt");
-    let classpath = temporary.path().join("classpath.txt");
     fs::write(&analyzer, JAVA_ANALYZER_SOURCE).map_err(io_error)?;
-    fs::write(
-        &sources,
-        manifest_lines(
-            operational
-                .authority
-                .source_files
-                .iter()
-                .map(String::as_str),
-        )?,
-    )
-    .map_err(io_error)?;
-    fs::write(
-        &classpath,
-        manifest_lines(
-            operational
-                .classpath_paths
-                .iter()
-                .map(|path| path.to_str().unwrap_or("")),
-        )?,
-    )
-    .map_err(io_error)?;
-    let output = Command::new(&operational.java_executable)
-        .args([
-            "--source",
-            "17",
-            analyzer
+    let sources = prepared
+        .map(|inputs| inputs.source_manifest.clone())
+        .unwrap_or_else(|| temporary.path().join("sources.txt"));
+    let classpath = prepared
+        .map(|inputs| inputs.classpath_manifest.clone())
+        .unwrap_or_else(|| temporary.path().join("classpath.txt"));
+    if prepared.is_none() {
+        fs::write(
+            &sources,
+            manifest_lines(
+                operational
+                    .authority
+                    .source_files
+                    .iter()
+                    .map(String::as_str),
+            )?,
+        )
+        .map_err(io_error)?;
+        fs::write(
+            &classpath,
+            manifest_lines(
+                operational
+                    .classpath_paths
+                    .iter()
+                    .map(|path| path.to_str().unwrap_or("")),
+            )?,
+        )
+        .map_err(io_error)?;
+    }
+    // Annotation processors run only when explicitly admitted by the project
+    // model (explicit `<annotationProcessors>` names OR the resolved
+    // `<annotationProcessorPaths>` artifacts) AND the writable profile is
+    // active. Their emitted sources/classes are isolated to a disposable
+    // directory inside this auto-cleaned tempdir, never the repository tree.
+    // Otherwise the analyzer runs with -proc:none so arbitrary classpath-
+    // discovered processors cannot run or mutate.
+    let admitted = operational.authority.annotation_processors.join(",");
+    let admitted_paths = operational
+        .annotation_processor_paths
+        .iter()
+        .map(|path| path.to_str().unwrap_or(""))
+        .collect::<Vec<_>>();
+    let generated_root = temporary.path().join("generated");
+    let (generated_arg, processor_arg, processor_path_arg) =
+        if writable_then_seal && (!admitted.is_empty() || !admitted_paths.is_empty()) {
+            fs::create_dir_all(&generated_root).map_err(io_error)?;
+            (
+                generated_root
+                    .to_str()
+                    .ok_or_else(|| internal("Java generated-source root is not UTF-8"))?
+                    .to_owned(),
+                admitted,
+                std::env::join_paths(&admitted_paths)
+                    .map_err(|_| internal("Java processor path is not a valid list"))?
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+    // Processor options (`-A...`) are surfaced from the admitted model
+    // compiler options so an explicitly admitted processor can observe them
+    // during its isolated disposable-root execution. They are part of model
+    // identity (compiler_options) and only ever reach an admitted processor.
+    let processor_options = operational
+        .authority
+        .compiler_options
+        .iter()
+        .filter(|option| option.starts_with("-A"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut analyzer_args = vec![
+        "--source".to_owned(),
+        "17".to_owned(),
+        analyzer
+            .to_str()
+            .ok_or_else(|| internal("Java analyzer path is not UTF-8"))?
+            .to_owned(),
+        repository
+            .to_str()
+            .ok_or_else(|| unsupported("Java repository path is not UTF-8"))?
+            .to_owned(),
+        sources
+            .to_str()
+            .ok_or_else(|| internal("Java source manifest path is not UTF-8"))?
+            .to_owned(),
+        classpath
+            .to_str()
+            .ok_or_else(|| internal("Java classpath manifest path is not UTF-8"))?
+            .to_owned(),
+        operational.authority.release.to_string(),
+        generated_arg,
+        processor_arg,
+        processor_path_arg,
+        processor_options.join("\n"),
+    ];
+    if let Some(inputs) = prepared {
+        analyzer_args.push("CLOSED_NO_AP".into());
+        analyzer_args.push(
+            inputs
+                .empty_source_path
                 .to_str()
-                .ok_or_else(|| internal("Java analyzer path is not UTF-8"))?,
-            repository
-                .to_str()
-                .ok_or_else(|| unsupported("Java repository path is not UTF-8"))?,
-            sources
-                .to_str()
-                .ok_or_else(|| internal("Java source manifest path is not UTF-8"))?,
-            classpath
-                .to_str()
-                .ok_or_else(|| internal("Java classpath manifest path is not UTF-8"))?,
-            &operational.authority.release.to_string(),
-        ])
-        .current_dir(&repository)
+                .ok_or_else(|| internal("Java empty source-path is not UTF-8"))?
+                .to_owned(),
+        );
+    }
+    let java_executable = prepared
+        .map(|inputs| inputs.java_executable.as_path())
+        .unwrap_or(&operational.java_executable);
+    let working_dir = prepared
+        .map(|inputs| inputs.working_dir.as_path())
+        .unwrap_or(repository.as_path());
+    let mut command = Command::new(java_executable);
+    if let Some(inputs) = prepared {
+        command.args([
+            "-Dfile.encoding=UTF-8",
+            "-Duser.language=en",
+            "-Duser.country=US",
+            "-Duser.timezone=UTC",
+        ]);
+        command.arg(format!("-Duser.home={}", inputs.working_dir.display()));
+        command.arg(format!("-Djava.io.tmpdir={}", inputs.working_dir.display()));
+        command.arg("--class-path").arg(&inputs.empty_source_path);
+    }
+    command
+        .args(&analyzer_args)
+        .current_dir(working_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(inputs) = prepared {
+        let home = inputs
+            .java_executable
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| unsupported("prepared Java launcher has no JDK home"))?;
+        command
+            .env_clear()
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .env("JAVA_HOME", home)
+            .env("TMPDIR", inputs.working_dir.as_os_str())
+            .env("PATH", home.join("bin"));
+        crate::java_analysis_scratch::attach_child_lease(
+            &mut command,
+            inputs.duplicate_liveness()?,
+        )?;
+    }
+    let output = command
         .output()
         .map_err(|_| unsupported("Java compiler analyzer could not start"))?;
     if !output.status.success()
         || output.stdout.len() > MAX_ANALYZER_OUTPUT_BYTES
         || output.stderr.len() > MAX_ANALYZER_OUTPUT_BYTES
     {
-        return Err(ClewError::new(
+        // Only allowlisted metadata is ever surfaced publicly. Raw analyzer
+        // output is retained solely through the opt-in private diagnostic
+        // contract (byte-bounded, caller-owned 0700 directory).
+        eprintln!(
+            "Java compiler analyzer failed: status={:?} stdout_bytes={} stderr_bytes={}",
+            output.status.code(),
+            output.stdout.len(),
+            output.stderr.len(),
+        );
+        let mut stdout_tail = crate::maven_diagnostics::Tail::default();
+        stdout_tail.append(&output.stdout);
+        let mut stderr_tail = crate::maven_diagnostics::Tail::default();
+        stderr_tail.append(&output.stderr);
+        let error = ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
             "Java compiler analyzer did not produce bounded facts",
+        );
+        return Err(crate::maven_diagnostics::annotate_failure(
+            error,
+            debug_output,
+            "JAVA_ANALYZER",
+            &output.status,
+            &stdout_tail,
+            &stderr_tail,
         ));
     }
     let text = std::str::from_utf8(&output.stdout)
@@ -286,15 +486,59 @@ pub fn build_java_compiler_index(
     }
     facts.sort_by_cached_key(|fact| canonical::bytes(fact).expect("serializable Java fact"));
     facts.dedup();
+    let (provenance, source_state) = transformed_index_marker(
+        writable_then_seal,
+        before_digests,
+        source_content_digests,
+        changed_files,
+    );
     let index = JavaCompilerIndex {
         schema: JAVA_INDEX_SCHEMA.into(),
         compilation: operational.authority.compilation.clone(),
         model: operational.authority.clone(),
         analyzer_digest: canonical::hash_bytes(JAVA_ANALYZER_SOURCE.as_bytes()),
         facts,
+        provenance,
+        source_state,
     };
     validate_index(&index)?;
     Ok(index)
+}
+
+/// Assemble the provenance/source_state marker for a writable-then-seal index.
+///
+/// Pure function so the marker shape can be unit-tested without launching the
+/// JDK compiler analyzer. `changed` entries are `(path, before_digest,
+/// after_digest)` triples.
+fn transformed_index_marker(
+    writable_then_seal: bool,
+    before: Option<&BTreeMap<String, String>>,
+    after: &BTreeMap<String, String>,
+    changed: &[(String, String, String)],
+) -> (Option<String>, Option<serde_json::Value>) {
+    if !writable_then_seal {
+        return (None, None);
+    }
+    let changed_files = changed
+        .iter()
+        .map(|(path, before, after)| json!({"path": path, "before": before, "after": after}))
+        .collect::<Vec<_>>();
+    let before_map = before
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    (
+        Some("TRANSFORMED_WORKSPACE".to_string()),
+        Some(json!({
+            "kind": "TRANSFORMED_WORKSPACE",
+            "before": before_map,
+            "after": after,
+            "changedFiles": changed_files,
+        })),
+    )
 }
 
 pub fn java_scope_digest(index: &JavaCompilerIndex) -> Result<String, ClewError> {
@@ -638,7 +882,9 @@ mod tests {
                     (path.clone(), canonical::hash_bytes(&bytes))
                 })
                 .collect();
-            let index = build_java_compiler_index(&repository, &model, &digests).unwrap();
+            let index =
+                build_java_compiler_index(&repository, &model, &digests, false, None, &[], None)
+                    .unwrap();
             assert!(index.facts.iter().any(|fact| matches!(
                 fact,
                 JavaCompilerFact::Declaration { symbol_identity, .. }
@@ -687,7 +933,9 @@ mod tests {
                 (path.clone(), canonical::hash_bytes(&bytes))
             })
             .collect();
-        let index = build_java_compiler_index(&repository, &model, &digests).unwrap();
+        let index =
+            build_java_compiler_index(&repository, &model, &digests, false, None, &[], None)
+                .unwrap();
         assert!(!index.facts.is_empty());
         assert!(index.facts.iter().all(|fact| matches!(
             fact,
@@ -893,6 +1141,9 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                 .arg(&manifest)
                 .arg(&classpath)
                 .arg(release)
+                .arg("")
+                .arg("")
+                .arg("")
                 .output()
                 .unwrap();
             assert!(
@@ -905,6 +1156,33 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                 .lines()
                 .map(|line| serde_json::from_str(line).unwrap())
                 .collect();
+            let values: Vec<serde_json::Value> = facts
+                .iter()
+                .map(|fact| serde_json::to_value(fact).unwrap())
+                .collect();
+            for fact in values.iter().filter(|fact| fact["kind"] == "DECLARATION") {
+                if let Some(annotations) = fact.get("jvm_annotations") {
+                    assert!(
+                        annotations["definitions"]
+                            .as_object()
+                            .is_none_or(|definitions| definitions.is_empty()),
+                        "declaration facts no longer re-embed annotation definitions"
+                    );
+                }
+            }
+            let registry = crate::spring_entrypoints::annotation_registry(values.iter());
+            assert!(
+                !registry.is_empty(),
+                "shared annotation registry must be non-empty"
+            );
+            assert!(
+                values
+                    .iter()
+                    .filter(|fact| fact["kind"] == "ANNOTATION_REGISTRY")
+                    .count()
+                    >= 1,
+                "annotation definitions are emitted once (possibly sharded) as a shared registry"
+            );
             let boundaries: Vec<_> = facts
                 .iter()
                 .filter_map(|fact| match fact {
@@ -928,8 +1206,13 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                             assert_eq!(file, "example/Handlers.java");
                             assert_eq!(annotations["authority"], "JAVAC_RESOLVED_ANNOTATIONS");
                             let payload = serde_json::to_value(fact).unwrap();
+                            let spring_payload =
+                                crate::spring_entrypoints::with_annotation_registry(
+                                    &payload, &registry,
+                                )
+                                .unwrap();
                             let derived = crate::spring_entrypoints::metadata_for_fact(
-                                &payload,
+                                &spring_payload,
                                 "JAVAC_RESOLVED_ANNOTATIONS",
                             )
                             .unwrap()
@@ -1076,6 +1359,154 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                 json!([])
             );
         }
+    }
+
+    #[test]
+    fn transformed_workspace_provenance_and_source_state_round_trip() {
+        let index = JavaCompilerIndex {
+            schema: JAVA_INDEX_SCHEMA.into(),
+            compilation: "example".into(),
+            model: JavaProjectModel {
+                schema: "codeclew-java-project-model/1.0".into(),
+                model_digest: "digest".into(),
+                build_system: crate::java_project_model::JavaBuildSystem::Maven,
+                compilation: "example".into(),
+                source_files: vec!["src/main/java/example/Service.java".into()],
+                classpath: vec![],
+                release: 17,
+                compiler_version: "17.0".into(),
+                compiler_options: vec![],
+                annotation_processors: vec![],
+                annotation_processor_paths: vec![],
+                boundaries: vec![],
+            },
+            analyzer_digest: "analyzer".into(),
+            facts: vec![],
+            provenance: Some("TRANSFORMED_WORKSPACE".into()),
+            source_state: Some(json!({
+                "kind": "TRANSFORMED_WORKSPACE",
+                "before": {"Service.java": "old"},
+                "after": {"Service.java": "new"},
+                "changedFiles": [
+                    {"path": "Service.java", "before": "old", "after": "new"}
+                ],
+            })),
+        };
+        let value = serde_json::to_value(&index).unwrap();
+        assert_eq!(value["provenance"], "TRANSFORMED_WORKSPACE");
+        assert_eq!(value["sourceState"]["kind"], "TRANSFORMED_WORKSPACE");
+        assert_eq!(
+            value["sourceState"]["changedFiles"][0]["path"],
+            "Service.java"
+        );
+        let round_trip: JavaCompilerIndex = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            round_trip.provenance.as_deref(),
+            Some("TRANSFORMED_WORKSPACE")
+        );
+        let source_state = round_trip.source_state.unwrap();
+        assert_eq!(
+            source_state["changedFiles"]
+                .as_array()
+                .map(|v| v.len())
+                .unwrap_or(0),
+            1
+        );
+    }
+
+    #[test]
+    fn read_only_index_omits_provenance_and_source_state_and_keeps_old_index_compatible() {
+        let index = JavaCompilerIndex {
+            schema: JAVA_INDEX_SCHEMA.into(),
+            compilation: "example".into(),
+            model: JavaProjectModel {
+                schema: "codeclew-java-project-model/1.0".into(),
+                model_digest: "digest".into(),
+                build_system: crate::java_project_model::JavaBuildSystem::Maven,
+                compilation: "example".into(),
+                source_files: vec![],
+                classpath: vec![],
+                release: 17,
+                compiler_version: "17.0".into(),
+                compiler_options: vec![],
+                annotation_processors: vec![],
+                annotation_processor_paths: vec![],
+                boundaries: vec![],
+            },
+            analyzer_digest: "analyzer".into(),
+            facts: vec![],
+            provenance: None,
+            source_state: None,
+        };
+        let value = serde_json::to_value(&index).unwrap();
+        let object = value.as_object().unwrap();
+        assert!(!object.contains_key("provenance"));
+        assert!(!object.contains_key("sourceState"));
+        // Old-index compatibility: a serialized index without the new keys
+        // deserializes back with provenance/source_state both None.
+        let old: JavaCompilerIndex = serde_json::from_value(value).unwrap();
+        assert_eq!(old.provenance, None);
+        assert_eq!(old.source_state, None);
+    }
+
+    #[test]
+    fn transformed_index_marker_assembles_expected_source_state() {
+        let after: BTreeMap<String, String> = [
+            (
+                "src/main/java/example/Service.java".to_string(),
+                "sha256:after1".into(),
+            ),
+            (
+                "src/main/java/example/Unchanged.java".to_string(),
+                "sha256:same".into(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let before: BTreeMap<String, String> = [
+            (
+                "src/main/java/example/Service.java".to_string(),
+                "sha256:before1".into(),
+            ),
+            (
+                "src/main/java/example/Unchanged.java".to_string(),
+                "sha256:same".into(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let changed = vec![(
+            "src/main/java/example/Service.java".to_string(),
+            "sha256:before1".to_string(),
+            "sha256:after1".to_string(),
+        )];
+
+        let (provenance, source_state) =
+            transformed_index_marker(true, Some(&before), &after, &changed);
+        assert_eq!(provenance.as_deref(), Some("TRANSFORMED_WORKSPACE"));
+        let state = source_state.expect("source_state present for writable_then_seal");
+        assert_eq!(state["kind"], "TRANSFORMED_WORKSPACE");
+        assert_eq!(
+            state["before"]["src/main/java/example/Service.java"],
+            "sha256:before1"
+        );
+        // `after` reflects the passed source_content_digests exactly.
+        assert_eq!(state["after"], json!(after));
+        let changed_files = state["changedFiles"]
+            .as_array()
+            .expect("changedFiles is an array");
+        assert!(!changed_files.is_empty());
+        assert_eq!(
+            changed_files[0]["path"],
+            "src/main/java/example/Service.java"
+        );
+        assert_eq!(changed_files[0]["before"], "sha256:before1");
+        assert_eq!(changed_files[0]["after"], "sha256:after1");
+
+        // Read-only path leaves both marker fields None.
+        let (prov, state) = transformed_index_marker(false, Some(&before), &after, &changed);
+        assert_eq!(prov, None);
+        assert_eq!(state, None);
     }
 
     #[test]

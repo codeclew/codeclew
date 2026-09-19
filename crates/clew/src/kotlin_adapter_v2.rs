@@ -12,12 +12,14 @@ use crate::repository_snapshot::{
 };
 use crate::state::{ManagedTemporaryDirectory, StateAuthority, create_private_directory};
 use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -184,6 +186,50 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
     }
 }
 
+/// Operational timing is measured from native call boundaries and is never
+/// used as a semantic or cache authority. `Option` distinguishes an omitted
+/// measurement from a real zero duration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProjectNativeKotlinRequestTiming {
+    pub(crate) worker_processing_micros: Option<u64>,
+    pub(crate) ipc_micros: Option<u64>,
+    pub(crate) serialization_micros: Option<u64>,
+    pub(crate) project_model_micros: Option<u64>,
+    pub(crate) project_model_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) compiler_index: Option<crate::worker::CompilerIndexProfile>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProjectNativeKotlinCompilationTiming {
+    /// Initial process startup and handshake only. Engine discovery and later
+    /// worker startups are inside open_project_wall_micros. Request profiles
+    /// describe the final selected response; nested timers overlap and must
+    /// not be summed as session wall.
+    pub(crate) initial_worker_startup_micros: Option<u64>,
+    pub(crate) open_project_wall_micros: Option<u64>,
+    pub(crate) open_project_physical_requests: Option<u64>,
+    pub(crate) open_project_logical_requests: Option<u64>,
+    pub(crate) open_project_profile: Option<ProjectNativeKotlinRequestTiming>,
+    pub(crate) index_profile: Option<ProjectNativeKotlinRequestTiming>,
+    pub(crate) final_shutdown_micros: Option<u64>,
+    pub(crate) final_input_verification_micros: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProjectNativeKotlinOperationalTiming {
+    pub(crate) materialization_micros: Option<u64>,
+    pub(crate) derived_mount_micros: Option<u64>,
+    pub(crate) final_unmount_micros: Option<u64>,
+    pub(crate) final_verification_micros: Option<u64>,
+    pub(crate) disposal_micros: Option<u64>,
+    /// BTreeMap gives deterministic compilation ordering in private evidence.
+    pub(crate) compilations: BTreeMap<String, ProjectNativeKotlinCompilationTiming>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProjectNativeKotlinWorkspaceProfile {
     pub(crate) materializations: u64,
@@ -192,12 +238,13 @@ pub(crate) struct ProjectNativeKotlinWorkspaceProfile {
     pub(crate) workspace_set_authorizations: u64,
     pub(crate) authorized_compilation_count: u64,
     pub(crate) legacy_open_project_calls: u64,
+    pub(crate) operational_timing: Option<ProjectNativeKotlinOperationalTiming>,
 }
 
 pub(crate) struct ProjectNativeKotlinWorkspace {
     store: CasStore,
     snapshot: RepositoryInputSnapshot,
-    _attempt_root: ManagedTemporaryDirectory,
+    _attempt_root: Option<ManagedTemporaryDirectory>,
     repo: std::path::PathBuf,
     derived_mounts: Vec<std::path::PathBuf>,
     preparation_profile: ProjectNativeKotlinWorkspaceProfile,
@@ -205,6 +252,8 @@ pub(crate) struct ProjectNativeKotlinWorkspace {
     issued_compilations: Mutex<BTreeSet<String>>,
     model_extraction_gate: Mutex<()>,
     legacy_open_project_calls: AtomicU64,
+    allow_materialization_mutation: bool,
+    operational_timing: Arc<Mutex<ProjectNativeKotlinOperationalTiming>>,
 }
 
 pub(crate) struct ProjectNativeKotlinAttempt {
@@ -215,6 +264,8 @@ pub(crate) struct ProjectNativeKotlinAttempt {
     worker: Option<WorkerClient>,
     request: Value,
     project: Value,
+    compilation: String,
+    operational_timing: Arc<Mutex<ProjectNativeKotlinOperationalTiming>>,
 }
 
 impl ProjectNativeKotlinWorkspace {
@@ -259,18 +310,31 @@ impl ProjectNativeKotlinWorkspace {
         let attempt_path = attempt_root.directory().resolved_path()?;
         let repo = attempt_path.join("repo");
         let mut preparation_profile = ProjectNativeKotlinWorkspaceProfile::default();
+        let mut operational_timing = ProjectNativeKotlinOperationalTiming::default();
+        let materialization_started = Instant::now();
         materialize(snapshot, store, &repo)?;
+        operational_timing.materialization_micros = Some(elapsed_micros(materialization_started));
         preparation_profile.materializations += 1;
+        let derived_mount_started = Instant::now();
         let derived_mounts = mount_project_derived_state(&attempt_path, &repo, snapshot)?;
+        operational_timing.derived_mount_micros = Some(elapsed_micros(derived_mount_started));
         preparation_profile.derived_mount_sets += 1;
         preparation_profile.workspace_set_authority_digest = workspace_set_authority_digest;
         preparation_profile.workspace_set_authorizations = 1;
         preparation_profile.authorized_compilation_count =
             u64::try_from(compilations.len()).map_err(internal)?;
+        if language == "kotlin" {
+            for compilation in compilations {
+                operational_timing.compilations.insert(
+                    compilation.clone(),
+                    ProjectNativeKotlinCompilationTiming::default(),
+                );
+            }
+        }
         Ok(Self {
             store: store.clone(),
             snapshot: snapshot.clone(),
-            _attempt_root: attempt_root,
+            _attempt_root: Some(attempt_root),
             repo,
             derived_mounts,
             preparation_profile,
@@ -278,6 +342,8 @@ impl ProjectNativeKotlinWorkspace {
             issued_compilations: Mutex::new(BTreeSet::new()),
             model_extraction_gate: Mutex::new(()),
             legacy_open_project_calls: AtomicU64::new(0),
+            allow_materialization_mutation: false,
+            operational_timing: Arc::new(Mutex::new(operational_timing)),
         })
     }
 
@@ -285,6 +351,11 @@ impl ProjectNativeKotlinWorkspace {
         &self.repo
     }
 
+    pub(crate) fn set_allow_materialization_mutation(&mut self, allow: bool) {
+        self.allow_materialization_mutation = allow;
+    }
+
+    #[cfg(test)]
     pub(crate) fn open_compilation_from_set(
         &self,
         state: &StateAuthority,
@@ -298,6 +369,25 @@ impl ProjectNativeKotlinWorkspace {
             compiler_store_component,
             build_state_root,
             None,
+            None,
+        )
+    }
+
+    pub(crate) fn open_compilation_from_set_with_hint(
+        &self,
+        state: &StateAuthority,
+        native_compilation: &str,
+        compiler_store_component: &str,
+        build_state_root: Option<&std::path::Path>,
+        preferred_engine: Option<KotlinSemanticEngine>,
+    ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
+        self.open_compilation_with_engine(
+            state,
+            native_compilation,
+            compiler_store_component,
+            build_state_root,
+            None,
+            preferred_engine,
         )
     }
 
@@ -316,6 +406,7 @@ impl ProjectNativeKotlinWorkspace {
             compiler_store_component,
             build_state_root,
             Some(engine),
+            None,
         )
     }
 
@@ -326,6 +417,7 @@ impl ProjectNativeKotlinWorkspace {
         compiler_store_component: &str,
         build_state_root: Option<&std::path::Path>,
         qualification_engine: Option<KotlinSemanticEngine>,
+        preferred_engine: Option<KotlinSemanticEngine>,
     ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
         if !self.authorized_compilations.contains(native_compilation) {
@@ -352,6 +444,7 @@ impl ProjectNativeKotlinWorkspace {
             .directory(std::path::Path::new("generations/compiler-store"))?
             .child(std::path::Path::new(compiler_store_component))?;
         let compiler_store_namespace = format!("sha256:{compiler_store_component}");
+        let startup_started = Instant::now();
         let mut worker = if let Some(engine) = qualification_engine {
             #[cfg(test)]
             {
@@ -369,21 +462,36 @@ impl ProjectNativeKotlinWorkspace {
                 unreachable!("qualification engine is test-only")
             }
         } else {
-            WorkerClient::start_with_managed_states(
+            WorkerClient::start_with_managed_states_hint(
                 &workspace_root(),
                 build_state_root,
                 Some(&compiler_store),
                 &compiler_store_namespace,
+                preferred_engine,
             )?
         };
+        let startup_micros = elapsed_micros(startup_started);
         let request = json!({
             "repo":self.repo,
             "compilation":native_compilation,
             "syntaxOnly":false,
         });
+        let open_project_started = Instant::now();
         let project = worker.open_project_verified(&request)?;
+        let open_project_wall_micros = elapsed_micros(open_project_started);
+        let open_project_profile = request_timing(&worker.last_profile, true);
+        let physical_requests = worker.physical_request_counters().open_project_requests;
+        let logical_requests = worker.request_counters().open_project_requests;
         self.legacy_open_project_calls
             .fetch_add(1, Ordering::AcqRel);
+        self.record_open_project_timing(
+            native_compilation,
+            startup_micros,
+            open_project_wall_micros,
+            physical_requests,
+            logical_requests,
+            open_project_profile,
+        )?;
         Ok(ProjectNativeKotlinAttempt {
             store: self.store.clone(),
             snapshot: self.snapshot.clone(),
@@ -392,6 +500,8 @@ impl ProjectNativeKotlinWorkspace {
             worker: Some(worker),
             request,
             project,
+            compilation: native_compilation.to_owned(),
+            operational_timing: Arc::clone(&self.operational_timing),
         })
     }
 
@@ -401,26 +511,101 @@ impl ProjectNativeKotlinWorkspace {
     }
 
     fn current_profile(&self) -> ProjectNativeKotlinWorkspaceProfile {
+        let operational_timing = self
+            .operational_timing
+            .lock()
+            .map(|timing| timing.clone())
+            .ok();
         ProjectNativeKotlinWorkspaceProfile {
             legacy_open_project_calls: self.legacy_open_project_calls.load(Ordering::Acquire),
+            operational_timing,
             ..self.preparation_profile.clone()
         }
     }
 
     pub(crate) fn finish(mut self) -> Result<ProjectNativeKotlinWorkspaceProfile, ClewError> {
+        let unmount_started = Instant::now();
         let unmount = unmount_project_derived_state(&self.repo, &self.derived_mounts);
+        self.record_workspace_phase(|timing| {
+            if timing.final_unmount_micros.is_none() {
+                timing.final_unmount_micros = Some(elapsed_micros(unmount_started));
+            }
+        })?;
         if unmount.is_ok() {
             self.derived_mounts.clear();
         }
-        let verification = verify_materialized_inputs(
-            &self.repo,
-            &self.snapshot,
-            &self.store,
-            &self.derived_mounts,
-        );
+        if !self.allow_materialization_mutation {
+            let verification_started = Instant::now();
+            let verification = verify_materialized_inputs(
+                &self.repo,
+                &self.snapshot,
+                &self.store,
+                &self.derived_mounts,
+            );
+            self.record_workspace_phase(|timing| {
+                timing.final_verification_micros = Some(elapsed_micros(verification_started))
+            })?;
+            verification?;
+        }
         unmount?;
-        verification?;
+        // Explicit owned disposal after unmount and verification. Surface a
+        // cleanup failure as the result when no primary work error already
+        // exists; on an earlier primary error the workspace drops and the
+        // best-effort Drop fallback still removes the attempt without panicking.
+        if let Some(attempt) = self._attempt_root.take() {
+            let disposal_started = Instant::now();
+            let disposal = attempt.close();
+            self.record_workspace_phase(|timing| {
+                timing.disposal_micros = Some(elapsed_micros(disposal_started))
+            })?;
+            disposal?;
+        }
         Ok(self.current_profile())
+    }
+
+    /// Remove the derived-state mounts (build/target/.gradle symlink stubs)
+    /// without consuming or dropping the workspace. Used by the
+    /// writable-then-seal profile so the transformed source can be sealed
+    /// read-only while the derived mounts are still removable.
+    pub(crate) fn unmount_derived_state(&mut self) -> Result<(), ClewError> {
+        let unmount_started = Instant::now();
+        unmount_project_derived_state(&self.repo, &self.derived_mounts)?;
+        self.record_workspace_phase(|timing| {
+            timing.final_unmount_micros = Some(elapsed_micros(unmount_started))
+        })?;
+        self.derived_mounts.clear();
+        Ok(())
+    }
+
+    fn record_open_project_timing(
+        &self,
+        compilation: &str,
+        startup_micros: u64,
+        open_project_wall_micros: u64,
+        physical_requests: u64,
+        logical_requests: u64,
+        profile: ProjectNativeKotlinRequestTiming,
+    ) -> Result<(), ClewError> {
+        let mut timing = self.operational_timing.lock().map_err(poisoned)?;
+        let compilation_timing = timing
+            .compilations
+            .entry(compilation.to_owned())
+            .or_default();
+        compilation_timing.initial_worker_startup_micros = Some(startup_micros);
+        compilation_timing.open_project_wall_micros = Some(open_project_wall_micros);
+        compilation_timing.open_project_physical_requests = Some(physical_requests);
+        compilation_timing.open_project_logical_requests = Some(logical_requests);
+        compilation_timing.open_project_profile = Some(profile);
+        Ok(())
+    }
+
+    fn record_workspace_phase(
+        &self,
+        update: impl FnOnce(&mut ProjectNativeKotlinOperationalTiming),
+    ) -> Result<(), ClewError> {
+        let mut timing = self.operational_timing.lock().map_err(poisoned)?;
+        update(&mut timing);
+        Ok(())
     }
 }
 
@@ -482,6 +667,8 @@ impl ProjectNativeKotlinAttempt {
             Err(error) => return Err(error),
         };
         let profile = worker.last_profile.compiler_index.clone();
+        let request_profile = worker.last_profile.clone();
+        self.record_index_timing(&request_profile)?;
         let counters = self.finish()?;
         Ok((index, profile, counters))
     }
@@ -511,6 +698,8 @@ impl ProjectNativeKotlinAttempt {
             })?;
         let index = worker.inspect_verified_index(&verified)?.clone();
         let profile = worker.last_profile.compiler_index.clone();
+        let request_profile = worker.last_profile.clone();
+        self.record_index_timing(&request_profile)?;
         let counters = self.finish()?;
         Ok((index, profile, counters))
     }
@@ -525,24 +714,99 @@ impl ProjectNativeKotlinAttempt {
             .take()
             .ok_or_else(|| invalid("project-native worker was already closed"))?;
         let counters = worker.request_counters();
+        let shutdown_started = Instant::now();
         let shutdown = worker.shutdown();
+        let shutdown_micros = elapsed_micros(shutdown_started);
+        self.record_attempt_phase(|timing| timing.final_shutdown_micros = Some(shutdown_micros))?;
+        let verification_started = Instant::now();
         let verification = verify_materialized_inputs(
             &self.repo,
             &self.snapshot,
             &self.store,
             &self.derived_mounts,
         );
+        let verification_micros = elapsed_micros(verification_started);
+        self.record_attempt_phase(|timing| {
+            timing.final_input_verification_micros = Some(verification_micros)
+        })?;
         shutdown?;
         verification?;
         Ok(counters)
+    }
+
+    fn record_index_timing(
+        &self,
+        profile: &crate::worker::RequestProfile,
+    ) -> Result<(), ClewError> {
+        let mut timing = self.operational_timing.lock().map_err(poisoned)?;
+        let compilation_timing = timing
+            .compilations
+            .entry(self.compilation.clone())
+            .or_default();
+        compilation_timing.index_profile = Some(request_timing(profile, false));
+        Ok(())
+    }
+
+    fn record_attempt_phase(
+        &self,
+        update: impl FnOnce(&mut ProjectNativeKotlinCompilationTiming),
+    ) -> Result<(), ClewError> {
+        let mut timing = self.operational_timing.lock().map_err(poisoned)?;
+        let compilation_timing = timing
+            .compilations
+            .entry(self.compilation.clone())
+            .or_default();
+        update(compilation_timing);
+        Ok(())
     }
 }
 
 impl Drop for ProjectNativeKotlinAttempt {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
+            let shutdown_started = Instant::now();
             let _ = worker.shutdown();
+            let shutdown_micros = elapsed_micros(shutdown_started);
+            let _ = self.record_attempt_phase(|timing| {
+                if timing.final_shutdown_micros.is_none() {
+                    timing.final_shutdown_micros = Some(shutdown_micros);
+                }
+            });
         }
+    }
+}
+
+fn elapsed_micros(started: Instant) -> u64 {
+    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn request_timing(
+    profile: &crate::worker::RequestProfile,
+    include_project_model: bool,
+) -> ProjectNativeKotlinRequestTiming {
+    let project_model = include_project_model
+        .then_some(profile.project_model_cache.as_ref())
+        .flatten();
+    ProjectNativeKotlinRequestTiming {
+        // RequestProfile retains the selected response's timers only. The
+        // worker and IPC residual are absent when the response omitted the
+        // worker-side timer, rather than being reported as fabricated zeroes.
+        worker_processing_micros: profile
+            .worker_processing_observed
+            .then_some(profile.worker_processing_micros),
+        ipc_micros: profile
+            .worker_processing_observed
+            .then_some(profile.ipc_micros),
+        serialization_micros: Some(profile.serialization_micros),
+        project_model_micros: project_model.map(|value| value.total_micros),
+        project_model_status: project_model.and_then(|value| {
+            serde_json::to_value(value.status)
+                .ok()
+                .and_then(|encoded| encoded.as_str().map(ToOwned::to_owned))
+        }),
+        compiler_index: (!include_project_model)
+            .then_some(profile.compiler_index.clone())
+            .flatten(),
     }
 }
 
@@ -1134,6 +1398,49 @@ mod tests {
     use crate::repository_snapshot;
     use crate::worker::CompilerIndexStatus;
     use std::path::Path;
+
+    #[test]
+    fn operational_profile_distinguishes_missing_worker_timer_from_zero() {
+        let mut response = crate::worker::RequestProfile::default();
+        let missing = request_timing(&response, true);
+        assert_eq!(missing.worker_processing_micros, None);
+        assert_eq!(missing.ipc_micros, None);
+        assert_eq!(missing.project_model_micros, None);
+        response.worker_processing_observed = true;
+        let measured = request_timing(&response, true);
+        assert_eq!(measured.worker_processing_micros, Some(0));
+        assert_eq!(measured.ipc_micros, Some(0));
+    }
+
+    #[test]
+    fn operational_profile_retains_compiler_evidence_and_reads_legacy_timing() {
+        let compiler: crate::worker::CompilerIndexProfile = serde_json::from_value(json!({
+            "backend":"BTA_PERSISTENT", "status":"INCREMENTAL", "valid":true,
+            "totalMicros":100, "compilerMicros":80, "firExtractionMicros":10,
+            "totalFiles":4, "compiledFiles":2, "reusedFiles":2,
+            "recovered":false, "fallbackUsed":false,
+            "semanticInputManifestDigest":"source-authority",
+            "factsPluginDigest":"plugin-authority",
+            "extractorAuthorityDigest":"extractor-authority",
+            "semanticConfigurationDigest":"configuration-authority"
+        }))
+        .unwrap();
+        let response = crate::worker::RequestProfile {
+            compiler_index: Some(compiler.clone()),
+            ..Default::default()
+        };
+        let timing = request_timing(&response, false);
+        assert_eq!(timing.compiler_index, Some(compiler));
+        let encoded = serde_json::to_value(&timing).unwrap();
+        let decoded: ProjectNativeKotlinRequestTiming =
+            serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded, timing);
+        assert!(request_timing(&response, true).compiler_index.is_none());
+        let mut legacy = encoded;
+        legacy.as_object_mut().unwrap().remove("compilerIndex");
+        let decoded: ProjectNativeKotlinRequestTiming = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.compiler_index.is_none());
+    }
 
     fn empty_local_cfg_hash() -> String {
         canonical::hash(&json!({"graphs":[],"boundaries":[]})).unwrap()
@@ -1904,6 +2211,11 @@ mod tests {
         assert_eq!(initial.workspace_set_authorizations, 1);
         assert_eq!(initial.authorized_compilation_count, 1);
         assert_eq!(initial.legacy_open_project_calls, 0);
+        let timing = initial.operational_timing.as_ref().unwrap();
+        assert!(timing.materialization_micros.is_some());
+        assert!(timing.derived_mount_micros.is_some());
+        assert_eq!(timing.compilations.len(), 1);
+        assert_eq!(timing.compilations[":/main"].open_project_wall_micros, None);
         assert_eq!(
             initial.workspace_set_authority_digest,
             canonical::hash(&json!({
@@ -1937,6 +2249,10 @@ mod tests {
         assert_eq!(profile.derived_mount_sets, 1);
         assert_eq!(profile.workspace_set_authorizations, 1);
         assert_eq!(profile.legacy_open_project_calls, 0);
+        let timing = profile.operational_timing.as_ref().unwrap();
+        assert!(timing.final_verification_micros.is_some());
+        assert!(timing.disposal_micros.is_some());
+        assert_eq!(timing.compilations[":/main"].open_project_profile, None);
 
         let unsorted = ProjectNativeKotlinWorkspace::prepare(
             &state,
@@ -1956,6 +2272,201 @@ mod tests {
         .err()
         .expect("duplicate workspace set must be rejected");
         assert_eq!(duplicate.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn finish_skips_input_verification_when_materialization_mutation_is_allowed() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let source_path = std::path::Path::new("src/main/kotlin/com/acme/Samples.kt");
+
+        // Without the flag, mutating a materialized input fails finish().
+        let guarded =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        crate::repository_snapshot::make_files_writable(guarded.repository()).unwrap();
+        std::fs::write(guarded.repository().join(source_path), "// mutation\n")
+            .expect("write materialized source");
+        let error = guarded
+            .finish()
+            .expect_err("finish must reject an unexpected materialized mutation");
+        assert_eq!(error.code, ErrorCode::InputMutated);
+
+        // With the flag set, the same mutation is accepted and finish() succeeds.
+        let mut allowed =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        allowed.set_allow_materialization_mutation(true);
+        crate::repository_snapshot::make_files_writable(allowed.repository()).unwrap();
+        std::fs::write(allowed.repository().join(source_path), "// mutation\n")
+            .expect("write materialized source");
+        let profile = allowed
+            .finish()
+            .expect("finish must allow the materialized mutation");
+        assert_eq!(profile.materializations, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_disposes_owned_attempt_root() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        assert_eq!(
+            std::fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            1,
+            "prepare must create one owned attempt"
+        );
+        workspace.finish().unwrap();
+        assert_eq!(
+            std::fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "finish must dispose the owned attempt root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_surfaces_injected_owned_disposal_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let mut workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        // Skip unmount/verification so the injected disposal failure is the only
+        // error observed, then swap in a same-name owned replacement at the held
+        // path. Explicit disposal must refuse rather than delete the replacement.
+        workspace.derived_mounts.clear();
+        workspace.allow_materialization_mutation = true;
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let attempts_path = attempts.resolved_path().unwrap();
+        let names: Vec<_> = std::fs::read_dir(&attempts_path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1);
+        let owned_path = attempts_path.join(&names[0]);
+        let aside = attempts_path.join(format!("{}-aside", names[0].to_string_lossy()));
+        std::fs::rename(&owned_path, &aside).unwrap();
+        std::fs::create_dir(&owned_path).unwrap();
+        std::fs::write(owned_path.join("replacement"), b"r").unwrap();
+        let err = workspace.finish().unwrap_err();
+        assert!(err.message.contains("replaced at its path"), "{err}");
+        assert!(
+            owned_path.join("replacement").exists(),
+            "replacement must survive the refused disposal"
+        );
+        assert!(aside.is_dir(), "moved owned attempt must survive");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_unwind_drop_cleans_owned_attempt_without_finish() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        assert_eq!(
+            std::fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+        // A primary model/index error prevents finish; the workspace is dropped
+        // and the best-effort Drop fallback must still remove the owned attempt.
+        drop(workspace);
+        assert_eq!(
+            std::fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "Drop fallback must clean the owned attempt on early unwind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_verification_failure_preserves_error_and_cleans_attempt() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        crate::repository_snapshot::make_files_writable(workspace.repository()).unwrap();
+        std::fs::write(
+            workspace
+                .repository()
+                .join("src/main/kotlin/com/acme/Samples.kt"),
+            "// mutation\n",
+        )
+        .unwrap();
+        let error = workspace
+            .finish()
+            .expect_err("finish must reject an unexpected materialized mutation");
+        assert_eq!(error.code, ErrorCode::InputMutated);
+        assert_eq!(
+            std::fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "attempt must be cleaned after the primary verification error"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_unmount_failure_preserves_error_and_cleans_attempt() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        // Break a derived mount (replace the .gradle symlink with a real dir) so
+        // unmount fails; the primary error must be preserved and the owned
+        // attempt still cleaned by the best-effort Drop fallback.
+        let mount = workspace.repository().join(".gradle");
+        std::fs::remove_file(&mount).unwrap();
+        std::fs::create_dir(&mount).unwrap();
+        let error = workspace
+            .finish()
+            .expect_err("finish must reject an unexpected derived mount authority");
+        assert_eq!(error.code, ErrorCode::InputMutated);
+        assert_eq!(
+            std::fs::read_dir(attempts.resolved_path().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "attempt must be cleaned after the unmount failure"
+        );
     }
 
     #[test]

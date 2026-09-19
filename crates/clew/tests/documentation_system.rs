@@ -6,6 +6,13 @@ mod support;
 use std::fs;
 use support::{Fixture, commit, read};
 
+// Inspect the public hydrated evidence contract; persisted Work may reference
+// shared immutable snapshots instead of embedding compiler facts.
+fn frozen_work(f: &Fixture, id: &str) -> serde_json::Value {
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    serde_json::to_value(clew::documentation::work::load(&repo, id).unwrap()).unwrap()
+}
+
 fn portable_baseline(f: &Fixture) -> clew::documentation::bindings::Bindings {
     clew::documentation::bindings::baseline(
         &clew::documentation::store::Repository::open(&f.docs).unwrap(),
@@ -47,7 +54,7 @@ fn docsys_t17_local_proposal_publication_retains_influence_without_inventing_rev
     let bundle = published["bundle"].as_str().unwrap();
     let data = read(f.bundle(bundle, "services/orders.json"));
     let root = data["operations"][0]["id"].as_str().unwrap();
-    assert_eq!(data["operationStates"][root]["freshness"], "CURRENT");
+    assert_eq!(data["operationStates"][root]["freshness"], "UNVERIFIED");
     assert_eq!(data["operationStates"][root]["verification"], "UNASSESSED");
     let binding = read(f.bundle(bundle, "bindings.json"));
     let version = &binding["acceptedVersions"][format!("service:orders/{root}")];
@@ -374,6 +381,7 @@ fn docsys_t13_inflight_work_rechecks_notes_definitions_targets_and_job_budget() 
     reject(&work, &proposal);
     let config = execution_config(&f, json!({"mode":"malformed"}), json!({}), None);
     let input = f.input("queue-config.json", &config);
+    f.checked(); // Explicitly bind the changed saved definition before queue generation.
     let run = f.ok(&[
         "docs",
         "update",
@@ -612,6 +620,8 @@ fn docsys_t13_interrupted_publication_is_repaired_without_target_rollback() {
     let producer = Fixture::new();
     let source = producer.service("orders");
     let (f, initial) = update_central(&producer, &["orders"]);
+    f.checked();
+    f.ok(&["docs", "render"]);
     assert_eq!(
         update_enqueue(&f, &update_event(&initial[0].1, "initial", 1, false)).0,
         0
@@ -640,6 +650,7 @@ fn docsys_t13_interrupted_publication_is_repaired_without_target_rollback() {
     );
     fs::remove_dir(&history).unwrap();
     fs::rename(history.with_extension("saved"), &history).unwrap();
+    f.checked(); // Observe the new coordinator target without native producers.
     let repaired = f.ok(&["docs", "update", "run"]);
     assert_ne!(
         repaired["publication"]["status"],
@@ -976,6 +987,8 @@ fn docsys_t12_imported_evidence_receives_separate_review_and_protects_trust() {
     assert_eq!(package_import(&f, &package).0, 0);
     fs::remove_file(f.temp.path().join("tools/git")).unwrap();
     drop(producer);
+    // Assemble imported evidence explicitly; ordinary preparation only consumes it.
+    f.checked();
     let mut page = f.ok(&[
         "docs",
         "section",
@@ -989,7 +1002,7 @@ fn docsys_t12_imported_evidence_receives_separate_review_and_protects_trust() {
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(&f, &work, json!({"cursor":cursor}));
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = frozen_work(&f, &work);
     let handle = frozen["handles"]
         .as_object()
         .unwrap()
@@ -1055,7 +1068,14 @@ fn docsys_t00_stale_status_retains_content_without_agents() {
     );
     assert_eq!(
         refreshed["sections"]["service:other"]["freshness"],
-        "CURRENT"
+        "UNVERIFIED"
+    );
+    assert!(
+        refreshed["sections"]["service:other"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["reason"] == "STATUS_OBSERVATION_NOT_SEMANTIC_RECHECK")
     );
     let new = refreshed["bundle"].as_str().unwrap();
     assert_ne!(old, new);
@@ -1123,7 +1143,17 @@ fn docsys_t00_missing_source_is_local_and_preserves_originals() {
         "UNVERIFIED"
     );
     assert!(result["sections"]["service:orders"]["targetRevisions"]["orders"].is_null());
-    assert_eq!(result["sections"]["service:other"]["freshness"], "CURRENT");
+    assert_eq!(
+        result["sections"]["service:other"]["freshness"],
+        "UNVERIFIED"
+    );
+    assert!(
+        result["sections"]["service:other"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["reason"] == "STATUS_OBSERVATION_NOT_SEMANTIC_RECHECK")
+    );
     let index = fs::read(f.docs.join("docs/index.html")).unwrap();
     let bundle = result["bundle"].as_str().unwrap();
     fs::write(
@@ -1186,7 +1216,7 @@ fn docsys_t01_valid_update_survives_unavailable_service_and_invalid_input() {
     );
     assert_eq!(absent_data["sectionState"]["freshness"], "UNVERIFIED");
     let updated_data = read(f.bundle(bundle, "services/updated.json"));
-    assert_eq!(updated_data["sectionState"]["freshness"], "CURRENT");
+    assert_eq!(updated_data["sectionState"]["freshness"], "UNVERIFIED");
     let before = fs::read(f.docs.join("docs/index.html")).unwrap();
     assert_ne!(f.run(&["docs", "render", "--require-complete"]).0, 0);
     assert_eq!(fs::read(f.docs.join("docs/index.html")).unwrap(), before);
@@ -1238,7 +1268,10 @@ fn docsys_t01_operations_keep_distinct_evidence_versions_in_one_page() {
     let result = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
     let data = read(f.bundle(result["bundle"].as_str().unwrap(), "services/orders.json"));
     assert_eq!(data["operations"].as_array().unwrap().len(), 2);
-    assert_eq!(data["operationStates"][&reserve_id]["freshness"], "CURRENT");
+    assert_eq!(
+        data["operationStates"][&reserve_id]["freshness"],
+        "UNVERIFIED"
+    );
     assert_eq!(data["operationStates"][&normalize_id]["freshness"], "STALE");
     assert_eq!(
         data["operationSources"][&normalize_id],
@@ -1275,7 +1308,7 @@ fn docsys_t01_operations_keep_distinct_evidence_versions_in_one_page() {
         fs::read_to_string(f.bundle(unchanged["bundle"].as_str().unwrap(), "services/orders.md"))
             .unwrap();
     assert!(
-        markdown.contains("Source freshness: CURRENT")
+        markdown.contains("Source freshness: UNVERIFIED")
             && markdown.contains("Source freshness: STALE")
     );
     let refresh = f.ok(&["docs", "refresh", "--status-only"]);
@@ -1358,18 +1391,33 @@ fn docsys_t02_freezes_evidence_and_tracks_negative_queries_and_notes() {
     use serde_json::json;
     let f = Fixture::new();
     let source = f.service("orders");
-    let baseline = f.author("orders", &f.checked());
-    f.ok(&["docs", "render", "--input", baseline.to_str().unwrap()]);
     fs::create_dir(f.docs.join("notes")).unwrap();
     fs::write(
         f.docs.join("notes/context.md"),
         "Human decision, retained exactly.\n",
     )
     .unwrap();
+    let checked = f.checked();
+    let baseline = f.author("orders", &checked);
+    f.ok(&["docs", "render", "--input", baseline.to_str().unwrap()]);
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
     let request = work_request(&f, 40 * 1024, 20);
-    let page = work_prepare(&f, &request);
+    let page = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
     let id = page["work"].as_str().unwrap();
-    let frozen = read(f.docs.join(format!(".codeclew/work/{id}/work.json")));
+    let original_work_bytes =
+        fs::read(f.docs.join(format!(".codeclew/work/{id}/work.json"))).unwrap();
+    let frozen = frozen_work(&f, id);
     assert!(
         frozen["retained"]["operations"]
             .as_array()
@@ -1398,15 +1446,28 @@ fn docsys_t02_freezes_evidence_and_tracks_negative_queries_and_notes() {
     fs::write(f.docs.join("notes/context.md"), "Updated human decision.\n").unwrap();
     let still_negative = work_read(&f, id, query.clone());
     assert_eq!(negative, still_negative);
-    let new = work_prepare(&f, &request);
+    let checked = f.checked();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let new = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
     let new_id = new["work"].as_str().unwrap();
     assert_ne!(new_id, id);
     let positive = work_read(&f, new_id, query);
     assert!(positive["total"].as_u64().unwrap() > 0);
     assert_ne!(positive["membershipDigest"], negative["membershipDigest"]);
+    assert_eq!(frozen_work(&f, id), frozen);
     assert_eq!(
-        read(f.docs.join(format!(".codeclew/work/{id}/work.json"))),
-        frozen
+        fs::read(f.docs.join(format!(".codeclew/work/{id}/work.json"))).unwrap(),
+        original_work_bytes
     );
     let ledger = read(f.docs.join(format!(".codeclew/work/{id}/reads.json")));
     assert!(ledger["receipts"].as_object().unwrap().values().any(
@@ -1420,8 +1481,20 @@ fn docsys_t02_enforces_selection_cursors_and_untracked_read_limitations() {
     use serde_json::json;
     let f = Fixture::new();
     f.service("orders");
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = f.checked().save_snapshot(&repo).unwrap();
     let request = work_request(&f, 40 * 1024, 1);
-    let page = work_prepare(&f, &request);
+    let page = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
     let id = page["work"].as_str().unwrap();
     assert!(page["nextCursor"].is_string());
     let path = f.input("forged.json", &json!({"references":["s999999"]}));
@@ -1465,7 +1538,7 @@ fn docsys_t02_enforces_selection_cursors_and_untracked_read_limitations() {
         work_read(&f, id, json!({}))["influenceCoverage"],
         "INCOMPLETE_UNTRACKED_READS"
     );
-    let frozen = read(f.docs.join(format!(".codeclew/work/{id}/work.json")));
+    let frozen = frozen_work(&f, id);
     let dependency = frozen["handles"]
         .as_object()
         .unwrap()
@@ -1488,8 +1561,20 @@ fn docsys_t02_oversized_records_are_explicit_and_pages_stay_bounded() {
         "long human input ".repeat(700),
     )
     .unwrap();
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = f.checked().save_snapshot(&repo).unwrap();
     let request = work_request(&f, 2048, 100);
-    let mut page = work_prepare(&f, &request);
+    let mut page = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
     let id = page["work"].as_str().unwrap().to_owned();
     let mut omitted = Vec::new();
     for _ in 0..100 {
@@ -1530,7 +1615,7 @@ fn proposal_fixture(f: &Fixture) -> (String, serde_json::Value, serde_json::Valu
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(f, &id, json!({"cursor":cursor}));
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{id}/work.json")));
+    let frozen = frozen_work(f, &id);
     let reference = |native: &str| {
         frozen["handles"]
             .as_object()
@@ -1735,6 +1820,14 @@ fn docsys_t03_rejects_stale_and_incompletely_read_work() {
     )
     .unwrap();
     commit(&source);
+    // Source changes alone do not invalidate a pinned historical work.
+    assert_eq!(proposal_submit(&f, &work, &input)["status"], "NEEDS_REPAIR");
+    fs::create_dir(f.docs.join("notes")).unwrap();
+    fs::write(
+        f.docs.join("notes/policy.md"),
+        "Changed maintainer policy.\n",
+    )
+    .unwrap();
     let path = f.input("stale-proposal.json", &input);
     let (code, error) = f.run(&[
         "docs",
@@ -1750,8 +1843,20 @@ fn docsys_t03_rejects_stale_and_incompletely_read_work() {
         error.to_string().contains("STALE_REQUIRES_RESLICE"),
         "{error}"
     );
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = f.checked().save_snapshot(&repo).unwrap();
     let request = work_request(&f, 49152, 1);
-    let page = work_prepare(&f, &request);
+    let page = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
     let incomplete_id = page["work"].as_str().unwrap();
     let empty = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[]});
     let result = proposal_submit(&f, incomplete_id, &empty);
@@ -3035,6 +3140,9 @@ fn docsys_t08_section_work_uses_separate_author_and_reviewer() {
     use serde_json::json;
     let f = Fixture::new();
     f.service("orders");
+    // Section prepare consumes the latest saved evidence; capture after the
+    // fixture setup instead of relying on an implicit acquisition.
+    f.checked();
     let mut page = f.ok(&[
         "docs",
         "section",
@@ -3048,7 +3156,7 @@ fn docsys_t08_section_work_uses_separate_author_and_reviewer() {
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(&f, &work, json!({"cursor":cursor}));
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = frozen_work(&f, &work);
     let handle = frozen["handles"]
         .as_object()
         .unwrap()
@@ -3111,12 +3219,14 @@ fn note_fixture(f: &Fixture) -> (serde_json::Value, Vec<u8>) {
 }
 fn note_work(f: &Fixture) -> (String, serde_json::Value) {
     use serde_json::json;
+    // note_fixture mutates admitted documentation inputs before preparing.
+    f.checked();
     let mut page = f.ok(&["docs", "note", "prepare", "--id", "policy"]);
     let work = page["work"].as_str().unwrap().to_owned();
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(f, &work, json!({"cursor":cursor}));
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = frozen_work(f, &work);
     (work, frozen)
 }
 fn note_proposal(frozen: &serde_json::Value, outcome: &str) -> serde_json::Value {
@@ -3513,6 +3623,9 @@ fn docsys_t10_saved_identity_transient_inspection_and_unavailable_participant() 
         );
     }
     let path = f.input("process.json", &definition);
+    // Process inspection is source-backed even though the candidate is not
+    // saved; provide an explicit latest immutable check for that inspection.
+    f.checked();
     let before = fs::read_dir(f.docs.join("scenarios")).unwrap().count();
     let transient = f.ok(&[
         "docs",
@@ -3645,12 +3758,14 @@ fn docsys_t10_linked_cycles_missing_children_and_negative_interaction_scope() {
 #[cfg(target_os = "macos")]
 fn process_work(f: &Fixture, id: &str) -> (String, serde_json::Value) {
     use serde_json::json;
+    // Saved process definitions changed the admitted documentation inputs.
+    f.checked();
     let mut page = f.ok(&["docs", "process", "prepare", "--id", id, "--overview"]);
     let work = page["work"].as_str().unwrap().to_owned();
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(f, &work, json!({"cursor":cursor}));
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = frozen_work(f, &work);
     (work, frozen)
 }
 #[test]
@@ -3922,12 +4037,15 @@ fn put_view(f: &Fixture, definition: &serde_json::Value, human: bool) -> (i32, s
     f.run(&args)
 }
 fn view_work(f: &Fixture, id: &str) -> (String, serde_json::Value) {
+    // View definitions and their entity associations are admitted inputs;
+    // prepare from an explicit latest immutable check.
+    f.checked();
     let mut page = f.ok(&["docs", "view", "prepare", "--id", id]);
     let work = page["work"].as_str().unwrap().to_owned();
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(f, &work, serde_json::json!({"cursor":cursor}));
     }
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let frozen = frozen_work(f, &work);
     (work, frozen)
 }
 fn view_proposal(
@@ -4216,7 +4334,14 @@ fn docsys_t11_mapper_change_invalidates_views_process_and_contract_with_independ
     ));
     assert_eq!(
         independent["operationStates"]["entity-dataflow"]["freshness"],
-        "CURRENT"
+        "UNVERIFIED"
+    );
+    assert!(
+        independent["operationStates"]["entity-dataflow"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["reason"] == "STATUS_OBSERVATION_NOT_SEMANTIC_RECHECK")
     );
 }
 #[test]
@@ -4352,6 +4477,10 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
     }
     // A service-only author/reviewer job must not acquire unrelated dynamic
     // process/view scopes captured as NOT_CHECKED in its source selection.
+    // Acquisition is explicit; section preparation consumes this selection.
+    let (code, selected) = f.run(&["docs", "check", "--service", "other"]);
+    assert_eq!(code, 3, "{selected}");
+    assert!(selected["snapshot"].is_string());
     let mut page = f.ok(&[
         "docs",
         "section",
@@ -4365,10 +4494,7 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
     while let Some(cursor) = page["nextCursor"].as_str() {
         page = work_read(&f, &service_work, json!({"cursor":cursor}));
     }
-    let sw = read(
-        f.docs
-            .join(format!(".codeclew/work/{service_work}/work.json")),
-    );
+    let sw = frozen_work(&f, &service_work);
     assert!(
         sw["handles"]
             .as_object()
@@ -4592,4 +4718,614 @@ fn docsys_t11_declared_transfer_and_distinct_dto_message_table_representations()
         retained["operationStates"]["entity-dataflow"]["freshness"],
         "STALE"
     );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_initial_request_budget_stops_before_full_reads_reservation_or_publication() {
+    use clew::documentation::{store::Repository, work};
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let checked = f.checked();
+    let repo = Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let narrative = f.author("orders", &checked);
+    f.ok(&[
+        "docs",
+        "render",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        narrative.to_str().unwrap(),
+    ]);
+    let before_index = fs::read(f.docs.join("docs/index.html")).unwrap();
+    let request = work_request(&f, 49152, 1);
+    let page = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
+    assert!(page["nextCursor"].is_string());
+    let id = page["work"].as_str().unwrap();
+    let first_page_bytes = clew::canonical::bytes(&page).unwrap().len() as u64;
+    let mut config = execution_config(&f, json!({}), json!({}), None);
+    // Evidence page alone fits. The complete job envelope + proposal schema
+    // does not, and must be rejected without silently sending a prefix.
+    config["author"]["cap"]["maximum"]["inputTokens"] = json!(first_page_bytes + 512);
+    fs::rename(&source, source.with_extension("offline")).unwrap();
+    let latest = f.docs.join(".codeclew/cache/latest-check.json");
+    fs::write(&latest, b"budget check must not reacquire evidence").unwrap();
+    let result = work_run(&f, id, &config);
+    assert!(
+        result["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("INPUT_CAP_EXCEEDED"),
+        "{result}"
+    );
+    let report = run_report(&f, &result);
+    assert!(report["attempts"].as_array().unwrap().is_empty());
+    assert!(report["accounting"].as_array().unwrap().is_empty());
+    assert!(report["publication"].is_null());
+    assert_eq!(report["contextBudget"]["stage"], "INITIAL_AUTHOR");
+    assert_eq!(report["contextBudget"]["status"], "FIXED_OVERHEAD_EXCEEDED");
+    assert_eq!(report["contextBudget"]["pagesRead"], 0);
+    let reads = work::read_state(&repo, id).unwrap();
+    assert!(!work::initial_context_complete(&reads));
+    assert_eq!(
+        reads.receipts.len(),
+        1,
+        "preflight should stop after the first page"
+    );
+    assert_eq!(
+        fs::read(f.docs.join("docs/index.html")).unwrap(),
+        before_index
+    );
+    assert_eq!(
+        fs::read(latest).unwrap(),
+        b"budget check must not reacquire evidence"
+    );
+    let account = read(f.docs.join("execution/accounts/fixture.json"));
+    assert!(account["reservations"].as_object().unwrap().is_empty());
+
+    // Now admit the first page but not the aggregate. The measured base is a
+    // prefix lower bound, not a guessed complete context/token estimate.
+    let base_bytes = report["contextBudget"]["candidateRequestBytes"]
+        .as_u64()
+        .unwrap();
+    config["author"]["cap"]["maximum"]["inputTokens"] = json!(base_bytes + first_page_bytes + 32);
+    let aggregate = work_run(&f, id, &config);
+    let aggregate_report = run_report(&f, &aggregate);
+    assert_eq!(
+        aggregate_report["contextBudget"]["status"], "REQUIRED_CONTEXT_EXCEEDS_CAP",
+        "{aggregate_report}"
+    );
+    assert_eq!(aggregate_report["contextBudget"]["pagesRead"], 2);
+    assert_eq!(aggregate_report["contextBudget"]["complete"], false);
+    assert_eq!(
+        aggregate_report["contextBudget"]["sizeScope"],
+        "LOWER_BOUND_PREFIX"
+    );
+    assert!(aggregate_report["contextBudget"]["nextCursor"].is_string());
+    assert!(aggregate_report["attempts"].as_array().unwrap().is_empty());
+    assert!(
+        aggregate_report["accounting"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!work::initial_context_complete(
+        &work::read_state(&repo, id).unwrap()
+    ));
+    assert_eq!(work::read_state(&repo, id).unwrap().receipts.len(), 2);
+
+    // A prior complete human/tool read cannot authorize sending a partial
+    // model context on a later attempt.
+    let mut next = page["nextCursor"].as_str().map(str::to_owned);
+    while let Some(cursor) = next {
+        let remaining = work_read(&f, id, json!({"cursor":cursor}));
+        next = remaining["nextCursor"].as_str().map(str::to_owned);
+    }
+    assert!(work::initial_context_complete(
+        &work::read_state(&repo, id).unwrap()
+    ));
+    let already_read = work_run(&f, id, &config);
+    assert_eq!(
+        already_read["contextBudget"]["status"],
+        "REQUIRED_CONTEXT_EXCEEDS_CAP"
+    );
+    assert!(
+        run_report(&f, &already_read)["attempts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read(f.docs.join("docs/index.html")).unwrap(),
+        before_index
+    );
+    assert_eq!(
+        fs::read(f.docs.join(".codeclew/cache/latest-check.json")).unwrap(),
+        b"budget check must not reacquire evidence"
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn section_contract_work(f: &Fixture, section: &str) -> (String, String) {
+    use clew::documentation::store::Repository;
+    use serde_json::json;
+    let repo = Repository::open(&f.docs).unwrap();
+    let snapshot = f.checked().save_snapshot(&repo).unwrap();
+    let request = f.input(
+        "section-request.json",
+        &json!({
+            "schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Service maintainers", "entrypoint":section,
+            "maxItems":100, "maxBytes":49152
+        }),
+    );
+    let page = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
+    (page["work"].as_str().unwrap().to_owned(), snapshot)
+}
+
+#[cfg(target_os = "macos")]
+fn section_execution_config(f: &Fixture, author: serde_json::Value) -> serde_json::Value {
+    use serde_json::json;
+    let mut config = execution_config(
+        f,
+        author,
+        json!({"requireEvidenceText":"HUMAN_RULE_SENTINEL"}),
+        None,
+    );
+    config["authorOutputContract"] = json!("section-summary/1.0");
+    config
+}
+
+#[cfg(target_os = "macos")]
+fn section_human_note(f: &Fixture) {
+    fs::create_dir_all(f.docs.join("notes")).unwrap();
+    fs::write(
+        f.docs.join("notes/section.md"),
+        "HUMAN_RULE_SENTINEL: do not infer ownership from names.",
+    )
+    .unwrap();
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_contract_expansion_and_review_preserve_authority_and_evidence() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    section_human_note(&f);
+    let (work, snapshot) = section_contract_work(&f, "section-entities");
+    let mut config = section_execution_config(
+        &f,
+        json!({"mode":"section-expand", "requireEvidenceText":"HUMAN_RULE_SENTINEL", "bindSchemaInTitle":true}),
+    );
+    config["expansions"] = json!(1);
+    config["authorCalls"] = json!(3);
+    config["reviewerCalls"] = json!(4);
+    fs::rename(&source, source.with_extension("offline")).unwrap();
+    let latest = f.docs.join(".codeclew/cache/latest-check.json");
+    fs::write(&latest, b"section author must consume retained evidence").unwrap();
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert_ne!(
+        attempts[0]["authorContract"]["deliveredDigest"],
+        attempts[1]["authorContract"]["deliveredDigest"]
+    );
+    assert_eq!(attempts[1]["authorContract"]["snapshot"], snapshot);
+    assert_eq!(attempts[1]["adaptedProposal"], report["proposal"]);
+    let raw = read(f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[1]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(raw["result"]["action"], "section");
+    assert_eq!(
+        attempts[1]["authorContract"]["outputSchemaDigest"],
+        raw["result"]["section"]["title"]
+    );
+    assert!(raw["result"]["section"]["entrypoint"].is_null());
+    let canonical = proposal_artifact(&f, &json!({"proposal":report["proposal"]}));
+    assert_eq!(
+        canonical["input"]["operations"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        canonical["input"]["operations"][0]["entrypoint"],
+        attempts[1]["authorContract"]["targetReference"]
+    );
+    assert_eq!(canonical["input"]["gaps"], json!({}));
+    assert_eq!(
+        canonical["narrative"]["operations"][0]["id"],
+        "section-entities"
+    );
+    assert_eq!(
+        fs::read(latest).unwrap(),
+        b"section author must consume retained evidence"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_contract_rejects_author_owned_targets_and_gaps_without_silent_drops() {
+    use serde_json::json;
+    for field in ["targetReference", "gaps", "dataflow"] {
+        let f = Fixture::new();
+        f.service("orders");
+        section_human_note(&f);
+        let (work, _) = section_contract_work(&f, "section-entities");
+        let config =
+            section_execution_config(&f, json!({"mode":"section-invalid", "invalidField":field}));
+        let result = work_run(&f, &work, &config);
+        assert_ne!(result["status"], "ACCEPTED", "{result}");
+        let report = run_report(&f, &result);
+        assert!(
+            report["proposal"].is_null(),
+            "invalid draft reached canonical submission: {report}"
+        );
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), 1, "{report}");
+        let raw = read(f.docs.join(format!(
+            ".codeclew/job-results/{}.json",
+            attempts[0]["invocation"].as_str().unwrap()
+        )));
+        assert!(
+            raw["result"]["section"][field].is_object(),
+            "raw rejected output must remain auditable"
+        );
+        assert!(!report["gap"]["reason"].as_str().unwrap().is_empty());
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_contract_rejects_unknown_or_incompatible_admission_before_dispatch() {
+    use serde_json::json;
+    for (section, contract) in [
+        ("section-overview", "section-summary/1.0"),
+        ("section-entities", "unsupported/99"),
+    ] {
+        let f = Fixture::new();
+        let source = f.service("orders");
+        section_human_note(&f);
+        let (work, _) = section_contract_work(&f, section);
+        let mut config = section_execution_config(&f, json!({"mode":"section-invalid"}));
+        config["authorOutputContract"] = json!(contract);
+        fs::rename(&source, source.with_extension("offline")).unwrap();
+        let latest = f.docs.join(".codeclew/cache/latest-check.json");
+        fs::write(&latest, b"contract admission must not capture").unwrap();
+        let result = work_run(&f, &work, &config);
+        let report = run_report(&f, &result);
+        assert!(
+            report["attempts"].as_array().unwrap().is_empty(),
+            "{report}"
+        );
+        assert!(report["publication"].is_null(), "{report}");
+        assert!(report["proposal"].is_null());
+        assert!(
+            report["accounting"]
+                .as_array()
+                .is_none_or(|rows| rows.is_empty()),
+            "{report}"
+        );
+        assert_eq!(
+            fs::read(latest).unwrap(),
+            b"contract admission must not capture"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_contract_concurrent_read_does_not_authorize_unseen_citation() {
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    f.service("orders");
+    section_human_note(&f);
+    let (work, _) = section_contract_work(&f, "section-entities");
+    let frozen = frozen_work(&f, &work);
+    let source_ref = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, handle)| handle["kind"] == "SOURCE")
+        .unwrap()
+        .0
+        .clone();
+    let config = section_execution_config(
+        &f,
+        json!({"mode":"section-unseen", "evidenceRef":source_ref, "delayMs":1500}),
+    );
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| work_run(&f, &work, &config));
+        let started = Instant::now();
+        loop {
+            let pointer_path = f
+                .docs
+                .join(format!(".codeclew/work/{work}/latest-run.json"));
+            if let Ok(bytes) = fs::read(pointer_path) {
+                let pointer: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let report = read(f.docs.join(format!(
+                    ".codeclew/jobs/{}.json",
+                    pointer["run"].as_str().unwrap()
+                )));
+                if report["attempts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|attempt| attempt["status"] == "DISPATCHED")
+                {
+                    break;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "author never dispatched"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let expanded = work_read(&f, &work, json!({"references":[source_ref]}));
+        assert!(
+            expanded["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["reference"] == source_ref)
+        );
+        let result = running.join().unwrap();
+        let report = run_report(&f, &result);
+        assert_ne!(result["status"], "ACCEPTED", "{result}");
+        assert!(
+            report["proposal"].is_null(),
+            "unseen citation reached canonical validator: {report}"
+        );
+        assert_eq!(report["attempts"].as_array().unwrap().len(), 1);
+        assert!(
+            report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("evidence"),
+            "{report}"
+        );
+    });
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_contract_repairs_and_fallback_keep_narrow_author_shape() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    section_human_note(&f);
+    let (work, _) = section_contract_work(&f, "section-entities");
+    let options = json!({"mode":"section-valid", "requireEvidenceText":"HUMAN_RULE_SENTINEL"});
+    let mut config = execution_config(
+        &f,
+        options.clone(),
+        json!({"mode":"require-fallback", "requireEvidenceText":"HUMAN_RULE_SENTINEL"}),
+        Some(options),
+    );
+    config["authorOutputContract"] = json!("section-summary/1.0");
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.iter().filter(|a| a["role"] == "author").count(), 2);
+    assert_eq!(
+        attempts.iter().filter(|a| a["role"] == "fallback").count(),
+        1
+    );
+    assert_eq!(
+        attempts.iter().filter(|a| a["role"] == "reviewer").count(),
+        3
+    );
+    assert!(
+        attempts
+            .iter()
+            .filter(|a| a["role"] != "reviewer")
+            .all(|a| a["authorContract"].is_object())
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_contract_budget_includes_bound_output_schema_before_dispatch() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    section_human_note(&f);
+    let (work, _) = section_contract_work(&f, "section-entities");
+    let mut config = section_execution_config(&f, json!({"mode":"section-valid"}));
+    config["author"]["cap"]["maximum"]["inputTokens"] = json!(1000);
+    let result = work_run(&f, &work, &config);
+    let report = run_report(&f, &result);
+    assert!(
+        report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("INPUT_CAP_EXCEEDED"),
+        "{report}"
+    );
+    assert!(report["attempts"].as_array().unwrap().is_empty());
+    assert!(report["publication"].is_null());
+    assert_eq!(report["contextBudget"]["stage"], "INITIAL_AUTHOR");
+    assert!(
+        report["contextBudget"]["candidateRequestBytes"]
+            .as_u64()
+            .unwrap()
+            > 1000
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inputs() {
+    use clew::documentation::store::Repository;
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let methods: String = (0..12).map(|n| format!("int quantity{n}(int n) {{ int a=n+1; int b=a+2; int c=b+3; if(c>0) return c; return n; }}\n")).collect();
+    fs::write(
+        source.join("Orders.java"),
+        format!("class Orders {{\n{methods}}}\n"),
+    )
+    .unwrap();
+    commit(&source);
+    section_human_note(&f);
+    let repo = Repository::open(&f.docs).unwrap();
+    let snapshot = f.checked().save_snapshot(&repo).unwrap();
+    let prepare = |profile: Option<&str>| {
+        let mut request = json!({"schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Maintainers", "entrypoint":"section-entities", "maxItems":20,"maxBytes":40960});
+        if let Some(profile) = profile {
+            request["contextProfile"] = json!(profile);
+        }
+        let path = f.input("profile-request.json", &request);
+        f.ok(&[
+            "docs",
+            "work",
+            "prepare",
+            "--subject",
+            "service:orders",
+            "--snapshot",
+            &snapshot,
+            "--input",
+            path.to_str().unwrap(),
+        ])["work"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let full = prepare(None);
+    let profile = prepare(Some("declarations-v1"));
+    fs::rename(&source, source.with_extension("offline")).unwrap();
+    let latest = f.docs.join(".codeclew/cache/latest-check.json");
+    fs::write(&latest, b"profile must not analyze").unwrap();
+    let mut full_config = section_execution_config(&f, json!({"mode":"section-expand"}));
+    full_config["authorCalls"] = json!(3);
+    full_config["reviewerCalls"] = json!(4);
+    full_config["expansions"] = json!(1);
+    full_config["reviewer"]["cap"]["maximum"]["inputTokens"] = json!(1);
+    let baseline = work_run(&f, &full, &full_config);
+    let baseline = run_report(&f, &baseline);
+    assert!(
+        baseline["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("INPUT_CAP_EXCEEDED"),
+        "{baseline}"
+    );
+    assert!(baseline["publication"].is_null());
+    let required = json!([
+        "CONTEXT_PROFILE",
+        "SOURCE",
+        "EXTERNAL_INPUT",
+        "REVIEW_REASON",
+        "OBLIGATION"
+    ]);
+    let author = json!({"mode":"section-valid","requireEvidenceText":"HUMAN_RULE_SENTINEL","bindRequestBytesInTitle":true,
+        "requireEvidenceKinds":required,"requireContextProfile":"declarations-v1"});
+    let reviewer = json!({"requireEvidenceText":"HUMAN_RULE_SENTINEL",
+        "requireEvidenceKinds":required,"requireContextProfile":"declarations-v1"});
+    let mut config = execution_config(&f, author, reviewer, None);
+    config["authorOutputContract"] = json!("section-summary/1.0");
+    let result = work_run(&f, &profile, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let compact = run_report(&f, &result);
+    assert_eq!(compact["attempts"].as_array().unwrap().len(), 2);
+    let old_bytes = baseline["contextBudget"]["candidateRequestBytes"]
+        .as_u64()
+        .unwrap();
+    let new_bytes = compact["contextBudget"]["candidateRequestBytes"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(compact["attempts"][0]["requestBytes"], new_bytes);
+    let raw = read(f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        compact["attempts"][0]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(raw["result"]["section"]["title"], new_bytes.to_string());
+    let baseline_source_ready = baseline["attempts"][1]["requestBytes"].as_u64().unwrap();
+    assert!(new_bytes < baseline_source_ready);
+    assert!(
+        new_bytes < old_bytes,
+        "actual envelope did not shrink: {new_bytes} vs {old_bytes}"
+    );
+    assert!(
+        compact["contextBudget"]["pagesRead"].as_u64().unwrap()
+            < baseline["contextBudget"]["pagesRead"].as_u64().unwrap()
+    );
+    assert_eq!(fs::read(latest).unwrap(), b"profile must not analyze");
+    eprintln!(
+        "declaration-profile fixture actual initial request bytes: {old_bytes} -> {new_bytes}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_section_review_contract_rejects_object_coverage_and_wrong_binding() {
+    use serde_json::json;
+    for reviewer_mode in ["object-coverage", "replay"] {
+        let f = Fixture::new();
+        f.service("orders");
+        section_human_note(&f);
+        let (work, _) = section_contract_work(&f, "section-entities");
+        let mut config = execution_config(
+            &f,
+            json!({"mode":"section-valid"}),
+            json!({"mode":reviewer_mode}),
+            None,
+        );
+        config["authorOutputContract"] = json!("section-summary/1.0");
+        let result = work_run(&f, &work, &config);
+        assert_eq!(result["status"], "GENERATION_GAP", "{result}");
+        let report = run_report(&f, &result);
+        assert!(
+            report["review"].is_null(),
+            "invalid reviews must never become accepted evidence"
+        );
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), 2);
+        let raw = read(f.docs.join(format!(
+            ".codeclew/job-results/{}.json",
+            attempts[1]["invocation"].as_str().unwrap()
+        )));
+        if reviewer_mode == "object-coverage" {
+            assert!(raw["result"]["review"]["assessedClaims"][0].is_object());
+            assert_eq!(report["gap"]["reason"], "review violates its closed schema");
+        } else {
+            assert_eq!(raw["result"]["review"]["proposal"], "0".repeat(64));
+            assert!(
+                report["gap"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("REVIEW_BINDING_MISMATCH")
+            );
+        }
+    }
 }

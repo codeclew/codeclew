@@ -122,6 +122,7 @@ mod tests {
                 source.into(),
                 std::fs::read_to_string(fixture.join(source)).unwrap(),
             )]),
+            false,
         )
         .unwrap();
         assert_eq!(evidence.entrypoints.len(), 2, "{evidence:?}");
@@ -223,9 +224,11 @@ mod tests {
                 source: None,
                 modules: None,
                 compilation: ":/main".into(),
+                compilations: Vec::new(),
                 target_ref: "main".into(),
                 source_link_template: None,
                 contract_files: vec![],
+                annotation_processor_paths: vec![],
             };
             store::validate_service(&service).unwrap();
             let symbol = "callable:example/Importer.importStock#jvm:()V";
@@ -248,6 +251,7 @@ mod tests {
                 "PARTIAL",
                 projected,
                 &BTreeMap::from([("Importer.kt".into(), "fun importStock() { send() }".into())]),
+                false,
             )
             .unwrap();
             services.insert(id.clone(), evidence);

@@ -8,7 +8,7 @@ use crate::generation_v2::GenerationManifest;
 use crate::session::{SessionAuthority, SessionLanguage};
 use crate::state::StateAuthority;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_PAYLOAD: usize = 2 * 1024 * 1024;
 const MAX_CATALOGUE: usize = 64 * 1024 * 1024;
@@ -18,6 +18,44 @@ pub use clew_framework_spring::{SpringEntry, SpringMetadata, describe_trigger};
 
 fn invalid(message: impl Into<String>) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
+}
+
+/// The compiler emits annotation definitions once as a shared registry instead
+/// of re-embedding them on every declaration. Collect that registry from the
+/// retained compiler facts so it can be reattached before interpretation.
+pub fn annotation_registry<'a>(facts: impl Iterator<Item = &'a Value>) -> BTreeMap<String, Value> {
+    facts
+        .filter(|fact| fact["kind"] == "ANNOTATION_REGISTRY")
+        .filter_map(|fact| fact["definitions"].as_object())
+        .flat_map(|object| {
+            object
+                .iter()
+                .map(|(name, definition)| (name.clone(), definition.clone()))
+        })
+        .collect()
+}
+
+/// Reattach the shared annotation-definition registry to a slim declaration
+/// fact before framework interpretation, so meta-annotation expansion, defaults
+/// and aliases resolve exactly as they did with inline definitions.
+pub fn with_annotation_registry(
+    fact: &Value,
+    registry: &BTreeMap<String, Value>,
+) -> Result<Value, ClewError> {
+    if registry.is_empty() {
+        return Ok(fact.clone());
+    }
+    let mut value = fact.clone();
+    let Some(annotations) = value.get_mut("jvmAnnotations") else {
+        return Ok(value);
+    };
+    let Some(annotations) = annotations.as_object_mut() else {
+        return Err(invalid(
+            "jvmAnnotations fact carries a non-object annotation graph",
+        ));
+    };
+    annotations.insert("definitions".into(), json!(registry));
+    Ok(value)
 }
 
 /// Derive from the retained portable compiler facts. Legacy metadata remains a
@@ -165,6 +203,23 @@ pub fn catalogue(
             let mut descriptors = 0usize;
             let mut inspected = 0usize;
             let mut scope_boundaries = BTreeSet::new();
+            let mut registry = BTreeMap::new();
+            generation.visit_facts(&store, |fact| {
+                if fact.domain_uri.as_str() != "analysis:java-compiler-facts" {
+                    return Ok(());
+                }
+                let lease = store.read(&fact.payload, MAX_PAYLOAD)?;
+                let payload: Value = serde_json::from_slice(lease.bytes())
+                    .map_err(|_| invalid("entrypoint fact is invalid"))?;
+                if payload.get("kind").and_then(Value::as_str) == Some("ANNOTATION_REGISTRY")
+                    && let Some(object) = payload.get("definitions").and_then(Value::as_object)
+                {
+                    for (name, definition) in object {
+                        registry.insert(name.clone(), definition.clone());
+                    }
+                }
+                Ok(())
+            })?;
             generation.visit_facts(&store, |fact| {
                 let kotlin = fact.fact_key.starts_with("kotlin:descriptor:");
                 let java = fact.domain_uri.as_str() == "analysis:java-compiler-facts";
@@ -187,7 +242,8 @@ pub fn catalogue(
                 if !matches!(payload.get("declarationKind").and_then(Value::as_str), Some("FUNCTION" | "METHOD" | "CLASS")) { return Ok(()); }
                 descriptors += 1;
                 if kotlin { crate::semantic_validation::validate_declaration_descriptor_fact(&payload)?; }
-                let Some(metadata) = metadata_for_fact(&payload, if kotlin { "K2_RESOLVED_ANNOTATIONS" } else { "JAVAC_RESOLVED_ANNOTATIONS" })? else { return Ok(()); };
+                let spring_payload = with_annotation_registry(&payload, &registry)?;
+                let Some(metadata) = metadata_for_fact(&spring_payload, if kotlin { "K2_RESOLVED_ANNOTATIONS" } else { "JAVAC_RESOLVED_ANNOTATIONS" })? else { return Ok(()); };
                 inspected += 1;
                 scope_boundaries.extend(metadata.boundaries.iter().cloned());
                 for (ordinal, entry) in metadata.entries.iter().enumerate() {

@@ -1637,7 +1637,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Open(args),
         } => {
-            let session = open_session(&args)?;
+            let session = open_session(&args, None)?;
             Ok(json!({"schema":"codeclew-session-open/4.0","status":"OPEN","session":session}))
         }
         Command::Session {
@@ -2134,7 +2134,10 @@ fn session_language(language: SessionLanguageArg) -> SessionLanguage {
     }
 }
 
-fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
+fn open_session(
+    args: &SessionOpenArgs,
+    profile: Option<&str>,
+) -> Result<SessionAuthority, ClewError> {
     let policy = match args.model_cache {
         ModelCachePolicyArg::NonCacheable => ModelCachePolicy::NonCacheable,
         ModelCachePolicyArg::TrackedManifest => ModelCachePolicy::TrackedManifest,
@@ -2150,6 +2153,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
         args.external_build_state.as_deref(),
         None,
         args.maven_settings.as_deref(),
+        profile,
     )
 }
 
@@ -2311,9 +2315,10 @@ fn admit_and_open_context(
             None,
             Some(profile),
             session_args.maven_settings.as_deref(),
+            None,
         )?
     } else {
-        open_session(session_args)?
+        open_session(session_args, Some(profile))?
     };
     match create_context_object(&session, intent, terms, max_roots) {
         Ok(context) => Ok(AdmittedContext {
@@ -2811,7 +2816,7 @@ fn require_task_ready(readiness: &Value) -> Result<(), ClewError> {
 }
 
 fn change_open(args: ChangeOpenArgs) -> Result<Value, ClewError> {
-    let session = open_session(&args.session)?;
+    let session = open_session(&args.session, None)?;
     match create_context(&session, args.intent, args.terms, args.max_roots) {
         Ok(context) => Ok(json!({
             "schema":"codeclew-change-open/1.0",

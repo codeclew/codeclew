@@ -250,12 +250,13 @@ fn enqueue(repo: &Repository, events: Vec<Event>) -> Result<Value, ClewError> {
 }
 
 /// Coordinator mode never invokes a service compiler during a central check.
-pub(super) fn capture(
+pub(super) fn capture_with_expectation(
     repo: &Repository,
     service: &Service,
     targets: &State,
+    expectation: Option<&super::evidence_package::Expectation>,
 ) -> Result<ServiceEvidence, ClewError> {
-    let e = super::evidence_package::selected(repo, service)?
+    let e = super::evidence_package::selected_with_expectation(repo, service, expectation)?
         .ok_or_else(|| invalid("central update requires admitted portable service evidence"))?;
     if let Some(target) = targets.targets.get(&service.id)
         && (target.repository_id != service.repository_id || target.revision != e.revision)
@@ -287,7 +288,7 @@ fn run_queue(
 ) -> Result<Value, ClewError> {
     let publication = publish_status(repo)?;
     let target_digest = digest(&state(repo)?)?;
-    let checked = super::check::run(repo)?;
+    let (checked, snapshot) = super::check::Check::retained(repo, None, &BTreeSet::new())?;
     let baseline = bindings::baseline(repo)?
         .ok_or_else(|| invalid("update status publication is unavailable"))?;
     let mut pending = Vec::new();
@@ -333,19 +334,22 @@ fn run_queue(
                 audience: "Maintainers reviewing behavior at the coordinator-selected revision"
                     .into(),
                 entrypoint,
+                context_profile: None,
                 max_items: 20,
                 max_bytes: 40 * 1024,
                 external_inputs: vec![],
             };
-            let result = super::work::prepare(repo, subject.clone(), request).and_then(|w| {
-                super::agent_jobs::run(
-                    repo,
-                    w["work"]
-                        .as_str()
-                        .ok_or_else(|| invalid("prepared work has no identity"))?,
-                    Some(config),
-                )
-            });
+            let result =
+                super::work::prepare_with_snapshot(repo, subject.clone(), request, Some(&snapshot))
+                    .and_then(|w| {
+                        super::agent_jobs::run(
+                            repo,
+                            w["work"]
+                                .as_str()
+                                .ok_or_else(|| invalid("prepared work has no identity"))?,
+                            Some(config),
+                        )
+                    });
             results.push(match result{Ok(v)=>json!({"subject":subject,"root":root,"result":v}),Err(e)=>json!({"subject":subject,"root":root,"status":"LOCAL_UPDATE_GAP","reason":e.code})});
         }
     }

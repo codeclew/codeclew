@@ -145,9 +145,11 @@ pub fn put(
         json!({"status":"SAVED","inputDigest":repo.input_digest()?,"ownershipAuthority":"Human declarations remain distinct from agent proposals"}),
     )
 }
-pub fn attach(repo: &Repository, checked: &mut Check) -> Result<(), ClewError> {
-    let rows = records(repo)?;
-    for (id, entity) in &rows {
+pub fn attach_from_records(
+    rows: &BTreeMap<String, Entity>,
+    checked: &mut Check,
+) -> Result<(), ClewError> {
+    for (id, entity) in rows {
         let key = format!("entity:{id}");
         let deps: BTreeSet<_> = entity
             .relations

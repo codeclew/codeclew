@@ -32,6 +32,11 @@
             "null"
           ]
         },
+        "contextProfile": {
+          "type": "string",
+          "const": "declarations-v1",
+          "description": "Opt-in bounded declaration context for service section-entities work."
+        },
         "maxItems": {
           "type": "integer",
           "minimum": 1,
@@ -130,8 +135,32 @@
         "audience": {
           "type": "string"
         },
+        "contextProfile": {
+          "type": "string",
+          "const": "declarations-v1"
+        },
+        "subjectReference": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reference": {
+              "type": "string"
+            },
+            "referenceRoles": {
+              "$ref": "#/$defs/referenceRoles"
+            }
+          },
+          "required": [
+            "reference",
+            "referenceRoles"
+          ]
+        },
         "contextDigest": {
           "type": "string"
+        },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}/(0|[1-9][0-9]*)$"
         },
         "inputDigest": {
           "type": "string"
@@ -155,7 +184,12 @@
         "items": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "referenceRoles": {
+                "$ref": "#/$defs/referenceRoles"
+              }
+            }
           }
         },
         "omitted": {
@@ -218,6 +252,19 @@
         "nextCursor",
         "receiptDigest"
       ]
+    },
+    "referenceRoles": {
+      "type": "array",
+      "description": "Advisory capabilities for the proposal handle in reference; only reference values are handles.",
+      "uniqueItems": true,
+      "maxItems": 3,
+      "items": {
+        "enum": [
+          "evidence",
+          "operation",
+          "gap"
+        ]
+      }
     }
   }
 }

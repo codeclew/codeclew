@@ -47,6 +47,10 @@ cargo test --locked -p clew --lib java_project_model::tests::maven_large_logs_an
 cargo test --locked -p clew --lib 'worker_diagnostics::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib worker::tests::worker_frame_eof_keeps_exit_status_without_inline_stderr -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'java_adapter_v2::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'java_analysis_' -- --test-threads=1
+cargo test --locked -p clew --lib java_analysis_scratch::tests::native_java_child_retains_lease_after_parent_handles_close -- --exact --ignored --test-threads=1
+cargo test --locked -p clew --lib 'java_archive_inputs::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'generation_service::reuse_tests::' -- --test-threads=1
 cargo test --locked -p clew --lib \
   java_adapter_v2::tests::spring_entrypoints_use_resolved_annotations_on_java_17_and_21 \
   -- --exact --ignored --test-threads=1
@@ -72,7 +76,7 @@ GIT_CONFIG_KEY_0=user.name \
 GIT_CONFIG_VALUE_0='Codeclew Maintainers' \
 GIT_CONFIG_KEY_1=user.email \
 GIT_CONFIG_VALUE_1='maintainers@codeclew.invalid' \
-python3 -I -S scripts/check_repository_privacy.py --pre-commit
+python3 -I -S scripts/check_repository_privacy.py --worktree --pre-commit
 python3 -I -S scripts/usability-smoke.py
 
 printf '%s\n' '{"schema":"codeclew-verification/1.0","status":"PASSED"}'

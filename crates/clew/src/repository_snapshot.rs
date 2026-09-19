@@ -1743,7 +1743,16 @@ fn resolve_symlink(path: &str, target: &str) -> Result<String, ClewError> {
     Ok(parts.join("/"))
 }
 
-fn seal_tree(root: &Path) -> Result<(), ClewError> {
+pub(crate) fn seal_tree(root: &Path) -> Result<(), ClewError> {
+    // The writable-then-seal lifecycle seals AFTER unmount_derived_state. If a
+    // concurrent owner or a failed attempt removes the materialized repository
+    // between capture and seal, report the vanished input as a typed mutation
+    // rather than an internal IO error so the attempt is not marked INTERNAL.
+    if !root.is_dir() {
+        return Err(mutated(
+            "materialized repository disappeared between capture and seal",
+        ));
+    }
     let mut entries = walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -1755,15 +1764,67 @@ fn seal_tree(root: &Path) -> Result<(), ClewError> {
     entries.sort_by_key(|(_, path)| std::cmp::Reverse(path.components().count()));
     for (kind, path) in entries {
         if kind.is_dir() {
-            set_mode(&path, 0o500)?;
+            if let Err(e) = set_mode(&path, 0o500) {
+                eprintln!("CODEDEBUG seal_tree chmod dir FAIL {}: {e}", path.display());
+                return Err(e);
+            }
         } else if kind.is_file() {
             let executable =
                 fs::metadata(&path).map_err(io_error)?.permissions().mode() & 0o111 != 0;
-            set_mode(&path, if executable { 0o500 } else { 0o400 })?;
+            if let Err(e) = set_mode(&path, if executable { 0o500 } else { 0o400 }) {
+                eprintln!(
+                    "CODEDEBUG seal_tree chmod file FAIL {}: {e}",
+                    path.display()
+                );
+                return Err(e);
+            }
         } else if !kind.is_symlink() {
             return Err(invalid(
                 "synthetic Git snapshot contains an unsupported entry",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Make every regular file under `root` writable by the owner (dirs are left
+/// as-is; the derived-state mount already restores dirs). The existing mode is
+/// preserved and the owner-write bit (0o200) is added, so a later `seal_tree`
+/// can restore the original executability from the surviving exec bits. Used
+/// only by the writable-then-seal profile so in-place transform/codegen plugins
+/// can rewrite source.
+pub(crate) fn make_files_writable(root: &Path) -> Result<(), ClewError> {
+    eprintln!("CODEDEBUG make_files_writable START {}", root.display());
+    let mut entries = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.path().components().count()));
+    for entry in entries {
+        if entry.file_type().is_file() {
+            let mode = match fs::metadata(entry.path()).map_err(io_error) {
+                Ok(m) => m.permissions().mode(),
+                Err(e) => {
+                    eprintln!(
+                        "CODEDEBUG make_files_writable metadata FAIL {}: {e}",
+                        entry.path().display()
+                    );
+                    return Err(e);
+                }
+            };
+            // Add owner-write, preserve existing exec and other permission bits
+            // so a later seal_tree can restore the original executability.
+            if let Err(e) =
+                fs::set_permissions(entry.path(), fs::Permissions::from_mode(mode | 0o200))
+                    .map_err(io_error)
+            {
+                eprintln!(
+                    "CODEDEBUG make_files_writable chmod FAIL {} mode={mode:o}: {e}",
+                    entry.path().display()
+                );
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -2565,6 +2626,92 @@ mod tests {
                 .mode()
                 & 0o777,
             0o400
+        );
+    }
+
+    #[test]
+    fn make_files_writable_then_seal_restores_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src/main/java")).unwrap();
+        fs::write(root.join("src/main/java/A.java"), "class A {}").unwrap();
+        make_files_writable(root).unwrap();
+        let mode = fs::metadata(root.join("src/main/java/A.java"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o200,
+            0o200,
+            "file should be writable after make_files_writable"
+        );
+        seal_tree(root).unwrap();
+        let sealed = fs::metadata(root.join("src/main/java/A.java"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            sealed & 0o222,
+            0,
+            "file should be read-only after seal_tree"
+        );
+    }
+
+    #[test]
+    fn make_files_writable_preserves_exec_through_seal() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let script = root.join("bin/tool.sh");
+        fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o111,
+            0o111,
+            "precondition: file starts executable"
+        );
+        make_files_writable(root).unwrap();
+        let writable = fs::metadata(&script).unwrap().permissions().mode();
+        assert_eq!(
+            writable & 0o111,
+            0o111,
+            "exec bit survives make_files_writable"
+        );
+        assert_eq!(
+            writable & 0o200,
+            0o200,
+            "file is writable after make_files_writable"
+        );
+        seal_tree(root).unwrap();
+        let sealed = fs::metadata(&script).unwrap().permissions().mode();
+        assert_ne!(
+            sealed & 0o111,
+            0,
+            "exec bit survives seal_tree (seal normalizes executable files to 0o500)"
+        );
+        assert_eq!(sealed & 0o222, 0, "file is read-only after seal_tree");
+    }
+
+    #[test]
+    fn seal_tree_on_vanished_repository_is_typed_not_internal() {
+        // The writable-then-seal lifecycle seals AFTER unmount_derived_state.
+        // If a concurrent owner removes the materialized repository between
+        // capture and seal, seal_tree must report a typed InputMutated error
+        // (not an internal IO error) so the attempt is not marked INTERNAL.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/Service.java"), "public class Service {}\n").unwrap();
+        // The repository disappears before seal (concurrent cleanup).
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!root.exists());
+        let error = seal_tree(&root).unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::InputMutated,
+            "vanished repository must be a typed mutation, got {error:?}"
         );
     }
 }

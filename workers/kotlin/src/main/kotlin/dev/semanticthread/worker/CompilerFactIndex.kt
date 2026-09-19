@@ -26,8 +26,10 @@ internal class CompilerFactIndex(private val repo: Path, facts: List<JsonObject>
             destination.getOrPut(file) { mutableListOf() }.add(fact)
         }
         semanticByFile = semantic.mapValues { (_, rows) ->
-            // Serialization is only the final tie-breaker, computed once per row.
-            rows.map { it to it.toString() }.sortedWith(compareBy(
+            // Fresh plugin rows and persisted rows can have different object
+            // insertion order. Only canonical content may break range ties.
+            // Compute it once per row, rather than in each comparison.
+            rows.map { it to canonicalJson(it) }.sortedWith(compareBy(
                 { it.first["start"]?.jsonPrimitive?.intOrNull ?: -1 },
                 { it.first["end"]?.jsonPrimitive?.intOrNull ?: -1 },
                 { it.second },

@@ -6,14 +6,46 @@ use super::{
 };
 use crate::error::ClewError;
 use clap::{Args, Subcommand};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
 };
 
+const CHECK_REPORT_SCHEMA: &str = "codeclew-documentation-check-report/1.0";
+
+/// Small mutable-independent binding for a paginated check report. The heavy
+/// check is kept in Check's immutable snapshot; this file binds its identity,
+/// selection and rendered freshness output without copying report rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CheckReportBinding {
+    schema: String,
+    report_id: String,
+    snapshot: String,
+    input_digest: String,
+    context_digest: String,
+    service_selection: Vec<String>,
+    freshness: Value,
+    output_binding: String,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Name and retain saved documentation evidence without copying or recapturing it.
+    Snapshot {
+        #[command(subcommand)]
+        command: super::snapshot_pins::Command,
+    },
+    /// Rebuild declarations over an original saved capture without running analyzers or changing latest.
+    Recompose {
+        #[arg(long)]
+        root: PathBuf,
+        /// Immutable handle returned by an original docs check.
+        #[arg(long)]
+        snapshot: String,
+    },
     /// Inspect immutable documentation snapshots without rerunning producers or agents.
     History {
         #[command(subcommand)]
@@ -28,6 +60,11 @@ pub enum Command {
     Evidence {
         #[command(subcommand)]
         command: super::evidence_package::Command,
+    },
+    /// Compact validated legacy advisory cache metadata.
+    Cache {
+        #[command(subcommand)]
+        command: super::sidecar_compaction::Command,
     },
     /// Manage explicitly saved evidence-bound entity views.
     View {
@@ -103,11 +140,11 @@ pub enum Command {
         #[arg(long, required = true)]
         status_only: bool,
     },
-    /// Read bounded source-backed authoring input. Use --refresh to rebuild evidence.
+    /// Read saved source-backed authoring input. Explicit --refresh rebuilds evidence.
     Context(ContextArgs),
     /// Review affected claims with bounded before/after evidence.
     Changes(ChangeArgs),
-    /// Render the overview, each service, and named interaction scenarios offline.
+    /// Render saved evidence offline; use --refresh to acquire current source evidence.
     Render {
         #[arg(long)]
         root: PathBuf,
@@ -115,6 +152,12 @@ pub enum Command {
         input: Vec<PathBuf>,
         #[arg(long)]
         require_complete: bool,
+        /// Acquire current evidence with docs check before publishing; may run analyzers.
+        #[arg(long, conflicts_with = "snapshot")]
+        refresh: bool,
+        /// Select saved evidence; defaults to latest saved check, never runs analyzers.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
 }
 #[derive(Debug, Args)]
@@ -124,6 +167,9 @@ pub struct CheckArgs {
     /// Check selected services only; all others remain explicitly unverified.
     #[arg(long = "service")]
     pub services: Vec<String>,
+    /// Existing caller-owned 0700 directory for private Maven failure output.
+    #[arg(long)]
+    pub debug_output: Option<PathBuf>,
 }
 #[derive(Debug, Args)]
 pub struct RootArgs {
@@ -183,6 +229,9 @@ pub enum InteractionCommand {
         root: PathBuf,
         #[arg(long)]
         input: PathBuf,
+        /// Select saved evidence; defaults to the latest saved check.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
 }
 #[derive(Debug, Args)]
@@ -191,6 +240,9 @@ pub struct ChangeArgs {
     pub root: PathBuf,
     #[arg(long)]
     pub fragment: Option<String>,
+    /// Compare this immutable snapshot; defaults to latest saved check.
+    #[arg(long)]
+    pub snapshot: Option<String>,
     #[arg(long)]
     pub cursor: Option<String>,
     #[arg(long, default_value_t=20, value_parser=clap::value_parser!(u32).range(1..=100))]
@@ -226,8 +278,11 @@ pub struct ContextArgs {
     pub dependency_ids: Vec<String>,
     #[arg(long, value_enum, default_value = "raw")]
     pub format: ContextFormat,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "cursor")]
     pub refresh: bool,
+    /// Read this immutable check snapshot instead of the latest check.
+    #[arg(long, conflicts_with = "refresh")]
+    pub snapshot: Option<String>,
     #[arg(long)]
     pub cursor: Option<String>,
     #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u32).range(1..=100))]
@@ -253,8 +308,10 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Snapshot { command } => super::snapshot_pins::run(command),
         Command::View { command } => super::dataflow::run(command),
         Command::Evidence { command } => super::evidence_package::run(command),
+        Command::Cache { command } => super::sidecar_compaction::run(command),
         Command::Update { command } => super::updates::run(command),
         Command::History { command } => super::history::run(command),
         Command::Process { command } => super::processes::run(command),
@@ -312,56 +369,80 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 id,
                 expected_input_digest,
             } => Repository::open(&root)?.interaction_remove(&id, &expected_input_digest),
-            InteractionCommand::Candidates { root, input } => {
+            InteractionCommand::Candidates {
+                root,
+                input,
+                snapshot,
+            } => {
                 let repo = Repository::open(&root)?;
                 let i: Interaction = store::read(&input, store::MAX_RECORD)?;
                 store::endpoint(&i.from, &repo.services()?)?;
                 store::endpoint(&i.to, &repo.services()?)?;
-                let checked = check::run(&repo)?;
-                checked.save(&repo)?;
+                let selected = BTreeSet::from([i.from.service.clone(), i.to.service.clone()]);
+                let (checked, snapshot) =
+                    check::Check::retained(&repo, snapshot.as_deref(), &selected)?;
                 Ok(
-                    json!({"schema":"codeclew-docs-candidates/1.0","inputDigest":checked.input_digest,"result":check::check_interaction(&i,&checked.services)?,"unresolved":checked.unresolved}),
+                    json!({"schema":"codeclew-docs-candidates/1.0","snapshot":snapshot,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","inputDigest":checked.input_digest,"result":check::check_interaction(&i,&checked.services)?,"unresolved":checked.unresolved}),
                 )
             }
         },
+        Command::Recompose { root, snapshot } => {
+            let repo = Repository::open(&root)?;
+            let (checked, derived) = super::composition::recompose(&repo, &snapshot)?;
+            let mut value = checked.summary();
+            value["snapshot"] = json!(derived);
+            value["parentSnapshot"] = json!(snapshot);
+            value["authority"] = json!("RECOMPOSED_DECLARATIONS_SOURCE_NOT_REVERIFIED");
+            Ok(value)
+        }
         Command::Check(request) => {
             let args = request.page;
+            let requested_services: BTreeSet<String> = request.services.into_iter().collect();
             let repo = Repository::open(&args.root)?;
-            let checked = check::run_selected(&repo, &request.services.into_iter().collect())?;
-            checked.save(&repo)?;
+            if let Some(cursor) = args.cursor.as_deref() {
+                return check_followup(&repo, cursor, args.limit as usize, &requested_services);
+            }
+            let debug_output = request
+                .debug_output
+                .as_deref()
+                .map(crate::maven_diagnostics::DebugOutput::open)
+                .transpose()?;
+            let checked = check::run_selected_with_diagnostics(
+                &repo,
+                &requested_services,
+                debug_output.as_ref(),
+            )?;
+            let snapshot = checked.save_snapshot(&repo)?;
             let mut value = checked.summary();
             value["freshness"] = super::bindings::freshness(
                 super::bindings::baseline(&repo)?.as_ref().map(|(_, b)| b),
                 &checked,
             );
-            if super::bytes(&value)?.len() <= 48 * 1024 && args.cursor.is_none() {
+            value["snapshot"] = json!(snapshot.clone());
+            if super::bytes(&value)?.len() <= 48 * 1024 {
                 return Ok(value);
             }
-            let status = value["freshness"]["status"].clone();
-            let mut rows = Vec::new();
-            for (section, record) in value.as_object().unwrap() {
-                match record {
-                    Value::Object(entries) => {
-                        for (id, entry) in entries {
-                            if let Some(entries) = entry.as_array() {
-                                for (index, item) in entries.iter().enumerate() {
-                                    rows.push(json!({"section":section,"id":format!("{id}/{index}"),"record":item}));
-                                }
-                            } else {
-                                rows.push(json!({"section":section,"id":id,"record":entry}));
-                            }
-                        }
-                    }
-                    _ => rows.push(json!({"section":section,"id":section,"record":record})),
-                }
-            }
-            page(
-                &checked.context_digest,
-                rows,
-                args.cursor.as_deref(),
-                args.limit as usize,
-                json!({"reportSchema":"codeclew-documentation-check/1.0","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"freshness":{"status":status}}),
-            )
+            let freshness = value["freshness"].clone();
+            let output_binding =
+                check_output_binding(&checked, &requested_services, &snapshot, &value)?;
+            let service_selection = requested_services.iter().cloned().collect::<Vec<_>>();
+            let report_id = super::digest(&(
+                snapshot.clone(),
+                service_selection.clone(),
+                output_binding.clone(),
+            ))?;
+            let binding = CheckReportBinding {
+                schema: CHECK_REPORT_SCHEMA.into(),
+                report_id,
+                snapshot,
+                input_digest: checked.input_digest.clone(),
+                context_digest: checked.context_digest.clone(),
+                service_selection,
+                freshness,
+                output_binding,
+            };
+            save_check_report(&repo, &binding)?;
+            check_page(&binding, check_rows(&value), None, args.limit as usize)
         }
         Command::Context(args) => context(args),
         Command::Changes(args) => changes(args),
@@ -369,6 +450,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             root,
             input,
             require_complete,
+            refresh,
+            snapshot,
         } => {
             let mut narratives = Vec::new();
             let mut failures = BTreeMap::new();
@@ -383,14 +466,226 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     }
                 }
             }
-            super::render::publish_with_failures(
-                &Repository::open(&root)?,
-                narratives,
-                require_complete,
-                failures,
-            )
+            let repo = Repository::open(&root)?;
+            if refresh {
+                super::render::publish_from_current_source(
+                    &repo,
+                    narratives,
+                    require_complete,
+                    failures,
+                )
+            } else if let Some(snapshot) = snapshot {
+                super::render::publish_from_snapshot(
+                    &repo,
+                    narratives,
+                    require_complete,
+                    failures,
+                    &snapshot,
+                )
+            } else {
+                super::render::publish_with_failures(&repo, narratives, require_complete, failures)
+            }
         }
     }
+}
+
+fn check_rows(value: &Value) -> Vec<Value> {
+    let mut rows = Vec::new();
+    for (section, record) in value
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+    {
+        match record {
+            Value::Object(entries) => {
+                for (id, entry) in entries {
+                    if let Some(entries) = entry.as_array() {
+                        for (index, item) in entries.iter().enumerate() {
+                            rows.push(json!({
+                                "section": section,
+                                "id": format!("{id}/{index}"),
+                                "record": item
+                            }));
+                        }
+                    } else {
+                        rows.push(json!({"section":section,"id":id,"record":entry}));
+                    }
+                }
+            }
+            _ => rows.push(json!({"section":section,"id":section,"record":record})),
+        }
+    }
+    rows
+}
+
+fn check_output_binding(
+    checked: &check::Check,
+    services: &BTreeSet<String>,
+    snapshot: &str,
+    value: &Value,
+) -> Result<String, ClewError> {
+    super::digest(&(
+        checked.input_digest.clone(),
+        checked.context_digest.clone(),
+        services,
+        snapshot,
+        value,
+    ))
+}
+
+fn check_report_path(repo: &Repository, report_id: &str) -> Result<PathBuf, ClewError> {
+    let key = check_report_key(report_id)?;
+    repo.path(&format!(".codeclew/cache/check-reports/{key}.json"))
+}
+
+fn check_report_key(report_id: &str) -> Result<&str, ClewError> {
+    let key = report_id.strip_prefix("sha256:").unwrap_or(report_id);
+    if key.len() != 64
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(invalid("invalid documentation report identity"));
+    }
+    Ok(key)
+}
+
+fn save_check_report(repo: &Repository, binding: &CheckReportBinding) -> Result<(), ClewError> {
+    let encoded = super::bytes(binding)?;
+    if encoded.len() as u64 > store::MAX_RECORD {
+        return Err(invalid(
+            "documentation report binding exceeds its portable record budget",
+        ));
+    }
+    repo.atomic(
+        &format!(
+            ".codeclew/cache/check-reports/{}.json",
+            binding.report_id.trim_start_matches("sha256:")
+        ),
+        &encoded,
+    )
+}
+
+fn load_check_report(repo: &Repository, report_id: &str) -> Result<CheckReportBinding, ClewError> {
+    let path = check_report_path(repo, report_id)?;
+    let binding: CheckReportBinding = store::read(&path, store::MAX_RECORD)?;
+    if binding.schema != CHECK_REPORT_SCHEMA || binding.report_id != report_id {
+        return Err(invalid(
+            "documentation report identity does not match cursor",
+        ));
+    }
+    let recomputed = super::digest(&(
+        binding.snapshot.clone(),
+        binding.service_selection.clone(),
+        binding.output_binding.clone(),
+    ))?;
+    if recomputed != binding.report_id {
+        return Err(invalid("documentation report binding is corrupt"));
+    }
+    Ok(binding)
+}
+
+fn check_cursor(report_id: &str, offset: usize) -> String {
+    format!("check-v1|{report_id}|{offset}")
+}
+
+fn parse_check_cursor(cursor: &str) -> Result<(&str, usize), ClewError> {
+    let mut parts = cursor.split('|');
+    if parts.next() != Some("check-v1") {
+        return Err(invalid("invalid documentation check cursor"));
+    }
+    let report_id = parts
+        .next()
+        .ok_or_else(|| invalid("invalid documentation check cursor identity"))?;
+    let offset = parts
+        .next()
+        .ok_or_else(|| invalid("invalid documentation check cursor offset"))?
+        .parse::<usize>()
+        .map_err(|_| invalid("invalid documentation check cursor offset"))?;
+    if parts.next().is_some() {
+        return Err(invalid("invalid documentation check cursor"));
+    }
+    check_report_key(report_id)?;
+    Ok((report_id, offset))
+}
+
+fn check_page(
+    binding: &CheckReportBinding,
+    rows: Vec<Value>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Value, ClewError> {
+    let start = cursor
+        .map(|value| parse_check_cursor(value).map(|(_, offset)| offset))
+        .transpose()?
+        .unwrap_or(0);
+    let internal = format!(
+        "{}:{start}",
+        binding.report_id.trim_start_matches("sha256:")
+    );
+    let mut result = page(
+        &binding.report_id,
+        rows,
+        Some(&internal),
+        limit,
+        json!({
+            // The public report retains Check's schema and exit-status
+            // contract; CHECK_REPORT_SCHEMA belongs to the saved cursor binding.
+            "reportSchema": "codeclew-documentation-check/1.0",
+            "reportId": binding.report_id,
+            "snapshot": binding.snapshot,
+            "inputDigest": binding.input_digest,
+            "contextDigest": binding.context_digest,
+            "serviceSelection": binding.service_selection,
+            // Detailed freshness records are already paginated as rows.
+            "freshness": {"status": binding.freshness["status"]},
+            "outputBinding": binding.output_binding,
+        }),
+    )?;
+    if let Some(next) = result["nextCursor"].as_str()
+        && let Some((_, offset)) = next.split_once(':')
+    {
+        result["nextCursor"] = json!(check_cursor(
+            &binding.report_id,
+            offset
+                .parse()
+                .map_err(|_| invalid("invalid generated documentation cursor"))?
+        ));
+    }
+    Ok(result)
+}
+
+fn check_followup(
+    repo: &Repository,
+    cursor: &str,
+    limit: usize,
+    requested_services: &BTreeSet<String>,
+) -> Result<Value, ClewError> {
+    let (report_id, _) = parse_check_cursor(cursor)?;
+    let binding = load_check_report(repo, report_id)?;
+    let bound_services: BTreeSet<_> = binding.service_selection.iter().cloned().collect();
+    if !requested_services.is_empty() && requested_services != &bound_services {
+        return Err(invalid(
+            "documentation cursor belongs to a different service selection",
+        ));
+    }
+    let checked = check::Check::load_snapshot(repo, &binding.snapshot)?;
+    if checked.input_digest != binding.input_digest
+        || checked.context_digest != binding.context_digest
+    {
+        return Err(invalid(
+            "documentation snapshot identity does not match report binding",
+        ));
+    }
+    let mut value = checked.summary();
+    value["freshness"] = binding.freshness.clone();
+    value["snapshot"] = json!(binding.snapshot);
+    let output_binding =
+        check_output_binding(&checked, &bound_services, &binding.snapshot, &value)?;
+    if output_binding != binding.output_binding {
+        return Err(invalid("documentation snapshot output binding changed"));
+    }
+    check_page(&binding, check_rows(&value), Some(cursor), limit)
 }
 
 pub fn page(
@@ -456,21 +751,17 @@ pub fn page(
     Ok(meta)
 }
 
-fn context(args: ContextArgs) -> Result<Value, ClewError> {
+fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
     let repo = Repository::open(&args.root)?;
-    let path = repo.path(".codeclew/cache/latest-check.json")?;
-    let (checked, authority) = if !args.refresh && path.exists() {
-        let checked: check::Check = store::read(&path, 64 * 1024 * 1024)?;
-        if checked.input_digest != repo.input_digest()? {
-            return Err(invalid(
-                "documentation declarations changed; rerun context --refresh",
-            ));
-        }
-        (checked, "RETAINED_CHECK_NOT_REVERIFIED")
+    let selected = args.service.iter().cloned().collect::<BTreeSet<_>>();
+    let (checked, snapshot, authority) = if args.refresh {
+        let checked = check::run_selected(&repo, &selected)?;
+        let snapshot = checked.save_snapshot(&repo)?;
+        (checked, snapshot, "CURRENT_SOURCE_CHECK")
     } else {
-        let checked = check::run(&repo)?;
-        checked.save(&repo)?;
-        (checked, "CURRENT_SOURCE_CHECK")
+        let (checked, snapshot) =
+            check::Check::retained(&repo, args.snapshot.as_deref(), &selected)?;
+        (checked, snapshot, "PINNED_SNAPSHOT_NOT_REVERIFIED")
     };
     let subject = if let Some(id) = &args.service {
         format!("service:{id}")
@@ -481,6 +772,7 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
     let retained = baseline
         .as_ref()
         .and_then(|(_, b)| b.narratives.get(&subject));
+    args.snapshot = Some(snapshot.clone());
     context_from(&checked, &args, retained, authority)
 }
 
@@ -500,6 +792,7 @@ pub(super) fn context_from(
     page(
         &super::digest(&(
             checked.context_digest.clone(),
+            args.snapshot.clone(),
             subject.clone(),
             args.entrypoint.clone(),
             args.symbols.clone(),
@@ -510,7 +803,7 @@ pub(super) fn context_from(
         items,
         args.cursor.as_deref(),
         args.limit as usize,
-        json!({"subject":subject,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","unresolved":checked.unresolved}),
+        json!({"subject":subject,"snapshot":args.snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","unresolved":checked.unresolved}),
     )
 }
 
@@ -761,20 +1054,8 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
     let (bundle, old) = super::bindings::baseline(&repo)?
         .ok_or_else(|| invalid("change dossier requires a published documentation baseline"))?;
     super::bindings::verify_outputs(&repo, &bundle, &old)?;
-    let path = repo.path(".codeclew/cache/latest-check.json")?;
-    let checked: check::Check = if args.cursor.is_some() && path.exists() {
-        let checked: check::Check = store::read(&path, 64 * 1024 * 1024)?;
-        if checked.input_digest != repo.input_digest()? {
-            return Err(invalid(
-                "documentation declarations changed; restart the change dossier",
-            ));
-        }
-        checked
-    } else {
-        let checked = check::run(&repo)?;
-        checked.save(&repo)?;
-        checked
-    };
+    let (checked, snapshot) =
+        check::Check::retained(&repo, args.snapshot.as_deref(), &BTreeSet::new())?;
     let report = super::bindings::freshness(Some(&old), &checked);
     let mut items = Vec::new();
     let mut dependencies = BTreeSet::new();
@@ -860,11 +1141,11 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
     }
     items.push(json!({"kind":"COVERAGE","id":"coverage","unresolved":checked.unresolved,"catalogueChanges":report["catalogueChanges"],"linkChanges":report["linkChanges"],"services":checked.services.iter().map(|(id,e)|(id,json!({"coverage":e.coverage,"boundaries":e.boundaries}))).collect::<BTreeMap<_,_>>(),"scope":"Recorded claims plus conservative selected source scope; external reads require their own registered scope"}));
     page(
-        &super::digest(&(&bundle, &checked.context_digest, &args.fragment))?,
+        &super::digest(&(&bundle, &snapshot, &checked.context_digest, &args.fragment))?,
         items,
         args.cursor.as_deref(),
         args.limit as usize,
-        json!({"reportSchema":"codeclew-docs-changes/1.0","baselineBundle":bundle,"contextDigest":checked.context_digest,"status":report["status"],"requiredAction":"Review affected claims before supplying a new narrative; this command does not publish"}),
+        json!({"reportSchema":"codeclew-docs-changes/1.0","snapshot":snapshot,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","baselineBundle":bundle,"contextDigest":checked.context_digest,"status":report["status"],"requiredAction":"Review affected claims before supplying a new narrative; this command does not publish"}),
     )
 }
 
@@ -925,5 +1206,238 @@ mod tests {
         .unwrap();
         assert_eq!(result["omitted"][0]["reason"], "ITEM_EXCEEDS_STDOUT_BUDGET");
         assert_eq!(result["nextCursor"], "bound:1");
+    }
+
+    #[test]
+    fn check_cursor_binds_report_identity_and_rejects_malformed_input() {
+        let report_id = format!("sha256:{}", "a".repeat(64));
+        let cursor = check_cursor(&report_id, 7);
+        assert_eq!(
+            parse_check_cursor(&cursor).unwrap(),
+            (report_id.as_str(), 7)
+        );
+        for malformed in [
+            "7",
+            "check-v1|sha256:bad|7",
+            "check-v1|sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|x",
+            "check-v1|sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|7|extra",
+        ] {
+            assert!(parse_check_cursor(malformed).is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn check_page_uses_identity_bound_cursor_for_followups() {
+        let binding = CheckReportBinding {
+            schema: CHECK_REPORT_SCHEMA.into(),
+            report_id: format!("sha256:{}", "b".repeat(64)),
+            snapshot: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc/12"
+                .into(),
+            input_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .into(),
+            context_digest:
+                "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
+            service_selection: vec!["service-a".into()],
+            freshness: json!({"status":"STALE","affected":(0..100)
+                .map(|id| json!({"fragment":id,"detail":"x".repeat(1024)}))
+                .collect::<Vec<_>>(),"unaffected":[]}),
+            output_binding:
+                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".into(),
+        };
+        let rows = (0..4).map(|id| json!({"id": id})).collect::<Vec<_>>();
+        let first = check_page(&binding, rows.clone(), None, 2).unwrap();
+        assert_eq!(first["reportSchema"], "codeclew-documentation-check/1.0");
+        let cursor = first["nextCursor"].as_str().unwrap();
+        assert!(cursor.starts_with("check-v1|sha256:"));
+        let second = check_page(&binding, rows, Some(cursor), 2).unwrap();
+        assert_eq!(second["items"][0]["id"], 2);
+
+        // A large freshness report must fit across pages without copying its
+        // affected list into the small per-page metadata budget.
+        let rows = check_rows(&json!({"freshness":binding.freshness}));
+        let mut cursor = None;
+        let mut affected = Vec::new();
+        loop {
+            let result = check_page(&binding, rows.clone(), cursor.as_deref(), 100).unwrap();
+            assert_eq!(result["freshness"], json!({"status":"STALE"}));
+            assert!(crate::documentation::bytes(&result).unwrap().len() < 64 * 1024);
+            assert!(result["omitted"].as_array().unwrap().is_empty());
+            affected.extend(
+                result["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|row| {
+                        row["id"]
+                            .as_str()
+                            .is_some_and(|id| id.starts_with("affected/"))
+                    })
+                    .map(|row| row["record"].clone()),
+            );
+            cursor = result["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(json!(affected), binding.freshness["affected"]);
+    }
+
+    #[test]
+    fn check_dispatch_reloads_saved_snapshot_after_latest_and_declaration_changes() {
+        use std::fs;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("docs");
+        Repository::init(&root, "Synthetic docs").unwrap();
+        let repo = Repository::open(&root).unwrap();
+        let observation = Observation {
+            id: "obs-a".into(),
+            kind: "ENTRYPOINT".into(),
+            service: "svc-a".into(),
+            symbol: "pkg.A.run".into(),
+            normalized: json!({"name":"run"}),
+            digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
+            source_ids: Vec::new(),
+        };
+        let mut observations = BTreeMap::new();
+        observations.insert(observation.id.clone(), observation.clone());
+        let evidence = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "svc-a".into(),
+            revision: "rev-a".into(),
+            service_digest:
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222".into(),
+            extractor: EXTRACTOR.into(),
+            runtime_mode: "SOURCE".into(),
+            coverage: "COMPLETE".into(),
+            boundaries: Vec::new(),
+            entrypoints: Vec::new(),
+            observations: observations.clone(),
+            sources: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+        };
+        let mut services = BTreeMap::new();
+        services.insert("svc-a".into(), evidence);
+        let checked = check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            source_inputs: None,
+            composition: None,
+            input_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                .into(),
+            context_digest:
+                "sha256:4444444444444444444444444444444444444444444444444444444444444444".into(),
+            services,
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: observations,
+        };
+        let snapshot = checked.save_snapshot(&repo).unwrap();
+        let selection = BTreeSet::from(["svc-a".to_string()]);
+        let mut value = checked.summary();
+        value["freshness"] = json!({"status":"CURRENT","reasons":[],"affected":[]});
+        value["snapshot"] = json!(snapshot.clone());
+        let output_binding = check_output_binding(&checked, &selection, &snapshot, &value).unwrap();
+        let binding = CheckReportBinding {
+            schema: CHECK_REPORT_SCHEMA.into(),
+            report_id: crate::documentation::digest(&(
+                snapshot.clone(),
+                selection.iter().cloned().collect::<Vec<_>>(),
+                output_binding.clone(),
+            ))
+            .unwrap(),
+            snapshot: snapshot.clone(),
+            input_digest: checked.input_digest.clone(),
+            context_digest: checked.context_digest.clone(),
+            service_selection: selection.iter().cloned().collect(),
+            freshness: value["freshness"].clone(),
+            output_binding,
+        };
+        save_check_report(&repo, &binding).unwrap();
+        let first = check_page(&binding, check_rows(&value), None, 1).unwrap();
+        let cursor = first["nextCursor"].as_str().unwrap().to_string();
+        let expected = check_page(&binding, check_rows(&value), Some(&cursor), 1).unwrap();
+
+        repo.atomic(
+            ".codeclew/cache/latest-check.json",
+            b"malformed latest pointer",
+        )
+        .unwrap();
+        repo.atomic("catalog/services/changed.yaml", b"changed declaration")
+            .unwrap();
+        let missing_debug = root.join("debug-output-does-not-exist");
+        let followup = run(Command::Check(CheckArgs {
+            page: ListArgs {
+                root: root.clone(),
+                cursor: Some(cursor.clone()),
+                limit: 1,
+            },
+            services: vec!["svc-a".into()],
+            debug_output: Some(missing_debug.clone()),
+        }))
+        .unwrap();
+        assert_eq!(followup["items"], expected["items"]);
+        assert_eq!(followup["freshness"], expected["freshness"]);
+        assert_eq!(followup["snapshot"], expected["snapshot"]);
+
+        assert!(
+            run(Command::Check(CheckArgs {
+                page: ListArgs {
+                    root: root.clone(),
+                    cursor: Some(cursor.clone()),
+                    limit: 1,
+                },
+                services: vec!["svc-b".into()],
+                debug_output: None,
+            }))
+            .is_err()
+        );
+
+        let mut corrupt = binding.clone();
+        corrupt.output_binding =
+            "sha256:9999999999999999999999999999999999999999999999999999999999999999".into();
+        repo.atomic(
+            &format!(
+                ".codeclew/cache/check-reports/{}.json",
+                binding.report_id.trim_start_matches("sha256:")
+            ),
+            &crate::documentation::bytes(&corrupt).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            run(Command::Check(CheckArgs {
+                page: ListArgs {
+                    root: root.clone(),
+                    cursor: Some(cursor.clone()),
+                    limit: 1,
+                },
+                services: vec!["svc-a".into()],
+                debug_output: None,
+            }))
+            .is_err()
+        );
+        save_check_report(&repo, &binding).unwrap();
+
+        let digest = binding.snapshot.rsplit_once('/').unwrap().0;
+        let object = repo
+            .root
+            .join(super::super::cache::OBJECT_ROOT)
+            .join(digest)
+            .join("object.json");
+        fs::remove_file(object).unwrap();
+        assert!(
+            run(Command::Check(CheckArgs {
+                page: ListArgs {
+                    root,
+                    cursor: Some(cursor),
+                    limit: 1,
+                },
+                services: vec!["svc-a".into()],
+                debug_output: None,
+            }))
+            .is_err()
+        );
+        assert!(missing_debug.ends_with("debug-output-does-not-exist"));
     }
 }

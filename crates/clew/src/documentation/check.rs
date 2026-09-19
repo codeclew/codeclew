@@ -1,9 +1,19 @@
 //! Explicit certainty axes and bounded composition across declared HTTP and Kafka boundaries.
 use super::{analysis, bytes, digest, invalid, io_error, model::*, store::Repository};
 use crate::error::ClewError;
+use crate::state::StateAuthority;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
+use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::path::Path;
+
+/// Upper bound for a portable documentation check or rendered record. Large
+/// services (for example 600+ source files) legitimately exceed 64 MiB, so the
+/// portable cache and render reads/writes share this same bound.
+pub const PORTABLE_CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -64,6 +74,87 @@ pub struct Check {
     pub interactions: BTreeMap<String, InteractionCheck>,
     pub scenarios: BTreeMap<String, ScenarioContext>,
     pub dependencies: BTreeMap<String, Observation>,
+    /// Only new captures using frozen source-selection inputs carry this record.
+    /// Absence on a legacy Check must not be repaired from current declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_inputs: Option<SourceInputs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition: Option<super::composition::Composition>,
+}
+
+pub const SOURCE_INPUTS_SCHEMA: &str = "codeclew-documentation-source-inputs/1.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceInputs {
+    pub schema: String,
+    pub input_digest: String,
+    pub inputs: super::store::RepositoryInputs,
+    pub selected_services: BTreeSet<String>,
+}
+
+pub const CHECK_MANIFEST_SCHEMA: &str = "codeclew-documentation-check-manifest/1.0";
+pub const CHECK_DEPENDENCIES_OBJECT_SCHEMA: &str = "codeclew-documentation-check-dependencies/1.0";
+/// Fact-index scope under which a check's dependency observations are indexed.
+pub const CHECK_DEPENDENCIES_SCOPE: &str = "check-dependencies";
+
+/// Reference envelope for a persisted check: per-service capture manifests and
+/// one dependencies object replace the duplicated full `ServiceEvidence`
+/// observations plus `Check.dependencies` inline copy. Light identity stays
+/// inline; heavy payload lives once in the immutable object store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckManifest {
+    pub schema: String,
+    pub input_digest: String,
+    pub context_digest: String,
+    pub service_manifests: BTreeMap<String, super::cache::CaptureManifest>,
+    pub unresolved: BTreeMap<String, Value>,
+    pub interactions: BTreeMap<String, InteractionCheck>,
+    pub scenarios: BTreeMap<String, ScenarioContext>,
+    /// Legacy whole-map dependency object (kept for portable/self-contained
+    /// reads). New captures store dependencies as per-fact index memberships and
+    /// reference the immutable snapshot root via `dependencies_index` instead,
+    /// so no second whole-map copy of every observation is serialized.
+    #[serde(default)]
+    pub dependencies: Option<super::cache::ObjectRef>,
+    /// Immutable fact-index snapshot root holding the check's dependency
+    /// observations as per-fact memberships. Present for new captures.
+    #[serde(default)]
+    pub dependencies_index: Option<super::cache::ObjectRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_inputs: Option<super::cache::ObjectRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition: Option<super::cache::ObjectRef>,
+}
+
+/// Hold a per-repository advisory lock for the whole check run. Concurrent
+/// `docs check` invocations on the same repository share one state root; without
+/// serialization their attempt lifecycles can overlap and one instance's cleanup
+/// can remove the other's attempt materialization mid-run, surfacing as a
+/// spurious `No such file or directory` during seal. Serializing the run per
+/// repository prevents that overlap without masking the error.
+struct RepositoryRunLock(File);
+impl Drop for RepositoryRunLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn acquire_repository_run_lock(
+    state: &StateAuthority,
+    repository_root: &Path,
+) -> Result<RepositoryRunLock, ClewError> {
+    let key = crate::state::repository_key(repository_root).or_else(|_| {
+        let canonical = repository_root.canonicalize().map_err(io_error)?;
+        Ok::<String, ClewError>(hex::encode(canonical.as_os_str().as_encoded_bytes()))
+    })?;
+    let directory = state.directory(Path::new("locks"))?;
+    let file = directory.open_lock(OsStr::new(&format!("docs-check-{key}.lock")))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(RepositoryRunLock(file))
 }
 
 pub fn run(repository: &Repository) -> Result<Check, ClewError> {
@@ -74,50 +165,101 @@ pub fn run_selected(
     repository: &Repository,
     selected: &BTreeSet<String>,
 ) -> Result<Check, ClewError> {
-    let mut checked = capture_selected(repository, selected, &repository.scenarios()?)?;
-    super::entities::attach(repository, &mut checked)?;
-    super::notes::attach(repository, &mut checked)?;
-    super::dataflow::attach(repository, &mut checked)?;
-    if checked.input_digest != repository.input_digest()? {
-        return Err(invalid("note inputs changed during checking"));
-    }
-    let baseline = super::bindings::baseline(repository)?;
-    if let Some((_, baseline)) = &baseline {
-        super::review::scopes(
-            repository,
-            &mut checked,
-            baseline.accepted_versions.values().cloned(),
-        )?;
-    }
-    super::processes::attach_versions(repository, &mut checked, baseline.as_ref().map(|(_, b)| b))?;
+    run_selected_with_diagnostics(repository, selected, None)
+}
+
+pub(crate) fn run_selected_with_diagnostics(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<Check, ClewError> {
+    // Serialize concurrent documentation checks on this repository so parallel
+    // runs cannot overlap their shared attempt lifecycle and race its cleanup.
+    // Production runs carry the launcher-provided state-root descriptor; outside
+    // it (tests, or runs that return before generation) locking is skipped.
+    let _run_lock = match StateAuthority::process_default() {
+        Ok(state) => Some(acquire_repository_run_lock(&state, &repository.root)?),
+        Err(_) => None,
+    };
+    let inputs = repository.inputs()?;
+    let mut checked = capture_selected_from_inputs(repository, selected, inputs, debug_output)?;
+    attach_retained_annotations(repository, &mut checked)?;
     Ok(checked)
 }
 
-/// Capture source for a transient definition without loading authored history.
-pub(super) fn capture_selected(
+fn attach_retained_annotations(
+    repository: &Repository,
+    checked: &mut Check,
+) -> Result<(), ClewError> {
+    if checked.input_digest != repository.input_digest()? {
+        return Err(invalid("documentation input changed during checking"));
+    }
+    let source = checked
+        .source_inputs
+        .take()
+        .ok_or_else(|| invalid("captured inputs are missing before retained attachment"))?;
+    let result = super::composition::attach_retained(repository, &source.inputs, checked);
+    checked.source_inputs = Some(source);
+    result
+}
+
+/// Attach catalogue observations only to a freshly assembled source Check.
+/// Every declaration and note comes from the same captured input value. The
+/// retained baseline, review scopes and process versions are a separate stage;
+/// this boundary does not claim to freeze those additional inputs.
+pub(super) fn attach_catalogue_from_inputs(
+    inputs: &super::store::RepositoryInputs,
+    checked: &mut Check,
+) -> Result<(), ClewError> {
+    super::entities::attach_from_records(&inputs.entities, checked)?;
+    super::notes::attach_from_inputs(inputs, checked)?;
+    super::dataflow::attach_from_inputs(&inputs.scenarios, &inputs.interactions, checked)
+}
+
+fn capture_selected_from_inputs(
     repository: &Repository,
     selected: &BTreeSet<String>,
-    scenarios: &BTreeMap<String, Scenario>,
+    inputs: super::store::RepositoryInputs,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<Check, ClewError> {
-    let input_digest = repository.input_digest()?;
-    let services = repository.services()?;
+    capture_selected_with(
+        repository,
+        selected,
+        inputs,
+        |service, expectation, targets| {
+            if targets.targets.is_empty() {
+                analysis::capture_with_expectation(repository, service, expectation, debug_output)
+            } else {
+                super::updates::capture_with_expectation(repository, service, targets, expectation)
+            }
+        },
+    )
+}
+
+fn capture_selected_with(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+    inputs: super::store::RepositoryInputs,
+    mut capture: impl FnMut(
+        &Service,
+        Option<&super::evidence_package::Expectation>,
+        &super::updates::State,
+    ) -> Result<ServiceEvidence, ClewError>,
+) -> Result<Check, ClewError> {
+    let input_digest = digest(&inputs)?;
+    let services = &inputs.services;
     if selected.iter().any(|id| !services.contains_key(id)) {
         return Err(invalid("selected documentation service does not exist"));
     }
-    let interactions = repository.interactions()?;
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
-    let targets = super::updates::state(repository)?;
-    for (id, service) in &services {
+    let targets = &inputs.update_state;
+    for (id, service) in services {
         if !selected.is_empty() && !selected.contains(id) {
             unresolved.insert(id.clone(), json!({"status":"NOT_CHECKED","reason":"SERVICE_NOT_SELECTED","nextAction":"Select this service explicitly to check its current source."}));
             continue;
         }
-        match if targets.targets.is_empty() {
-            analysis::capture(repository, service)
-        } else {
-            super::updates::capture(repository, service, &targets)
-        } {
+        match capture(service, inputs.evidence_expectations.get(id), targets) {
             Ok(value) => {
                 evidence.insert(id.clone(), value);
             }
@@ -130,6 +272,11 @@ pub(super) fn capture_selected(
                 if let Some(diagnostic) = crate::worker_diagnostics::from_evidence(&error.evidence)
                 {
                     failure["workerFailure"] = diagnostic;
+                }
+                if let Some(diagnostic) = crate::maven_diagnostics::from_evidence(&error.evidence)
+                    .and_then(|value| crate::maven_diagnostics::safe_summary(&value))
+                {
+                    failure["mavenFailure"] = diagnostic;
                 }
                 if let Some(report) = error.evidence.iter().find_map(|s| {
                     s.strip_prefix("documentation-evidence-report:")
@@ -144,7 +291,28 @@ pub(super) fn capture_selected(
     if input_digest != repository.input_digest()? {
         return Err(invalid("documentation input changed during checking"));
     }
-    assemble(input_digest, evidence, unresolved, &interactions, scenarios)
+    let mut checked = assemble(
+        input_digest.clone(),
+        evidence,
+        unresolved,
+        &inputs.interactions,
+        &inputs.scenarios,
+    )?;
+    // Borrow the captured bundle before moving it onto Check: do not clone all
+    // protected note bodies merely to attach their derived observations.
+    attach_catalogue_from_inputs(&inputs, &mut checked)?;
+    checked.source_inputs = Some(SourceInputs {
+        schema: SOURCE_INPUTS_SCHEMA.into(),
+        input_digest,
+        selected_services: if selected.is_empty() {
+            inputs.services.keys().cloned().collect()
+        } else {
+            selected.clone()
+        },
+        inputs,
+    });
+    checked.validate_source_input_binding()?;
+    Ok(checked)
 }
 
 pub fn assemble(
@@ -216,6 +384,8 @@ pub fn assemble(
         interactions: interactions_checked,
         scenarios: scenarios_checked,
         dependencies,
+        source_inputs: None,
+        composition: None,
     })
 }
 
@@ -639,6 +809,45 @@ pub fn compose(
 }
 
 impl Check {
+    // Validate the Check-to-input binding. The codec validates the full input
+    // payload once; capture constructs its digest from the immutable value.
+    fn validate_source_input_binding(&self) -> Result<(), ClewError> {
+        let Some(record) = &self.source_inputs else {
+            if self.composition.is_some() {
+                return Err(invalid(
+                    "saved composition has no original source-input contract",
+                ));
+            }
+            return Ok(());
+        };
+        if record.schema != SOURCE_INPUTS_SCHEMA
+            || (self.composition.is_none() && record.input_digest != self.input_digest)
+            || record
+                .selected_services
+                .iter()
+                .any(|id| !record.inputs.services.contains_key(id))
+        {
+            return Err(invalid("saved source-selection input contract is invalid"));
+        }
+        if let Some(composition) = &self.composition {
+            super::composition::validate(composition, record, &self.input_digest)?;
+        }
+        for (id, evidence) in &self.services {
+            let service = record.inputs.services.get(id).ok_or_else(|| {
+                invalid("saved source evidence is absent from its input contract")
+            })?;
+            if !record.selected_services.contains(id)
+                || evidence.service != *id
+                || evidence.service_digest != digest(service)?
+            {
+                return Err(invalid(
+                    "saved source evidence does not match its captured service declaration",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn refresh_digest(&mut self) -> Result<(), ClewError> {
         self.context_digest = digest(
             &json!({"inputDigest":self.input_digest,"extractor":EXTRACTOR,"dependencies":self.dependencies.iter().map(|(id,d)|(id,&d.digest)).collect::<BTreeMap<_,_>>(),"coverage":self.services.iter().map(|(id,e)|(id,json!([e.coverage,e.boundaries]))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved}),
@@ -656,15 +865,286 @@ impl Check {
         json!({"schema":self.schema,"inputDigest":self.input_digest,"contextDigest":self.context_digest,"status":if self.unresolved.is_empty(){"CHECKED"}else{"UNRESOLVED"},"services":self.services.iter().map(|(id,e)|(id,json!({"revision":e.revision,"coverage":e.coverage,"entrypoints":e.entrypoints.len(),"boundaries":e.boundaries}))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved,"interactions":self.interactions,"scenarios":self.scenarios.iter().map(|(id,s)|(id,json!({"steps":s.steps.len(),"truncated":s.truncated,"boundaries":s.boundaries}))).collect::<BTreeMap<_,_>>()})
     }
     pub fn save(&self, repo: &Repository) -> Result<(), ClewError> {
+        self.save_snapshot(repo).map(|_| ())
+    }
+
+    /// Save a content-addressed manifest and update the convenience latest pointer.
+    /// The returned handle remains readable when another check replaces latest.
+    /// This is a retained evidence identity, not a claim about current sources.
+    pub fn save_snapshot(&self, repo: &Repository) -> Result<String, ClewError> {
         let _lock = repo.lock()?;
-        let encoded = bytes(self)?;
-        if encoded.len() > 64 * 1024 * 1024 {
+        let (handle, encoded) = self.store_snapshot(repo)?;
+        repo.atomic(".codeclew/cache/latest-check.json", &encoded)?;
+        Ok(handle)
+    }
+
+    pub(super) fn store_snapshot(&self, repo: &Repository) -> Result<(String, Vec<u8>), ClewError> {
+        let manifest = self.store_manifest(repo)?;
+        let encoded = bytes(&manifest)?;
+        if encoded.len() > PORTABLE_CACHE_MAX_BYTES as usize {
             return Err(crate::error::ClewError::new(
                 crate::error::ErrorCode::SliceBudgetExceeded,
                 "documentation check exceeds its portable cache budget; narrow source roots",
             ));
         }
-        repo.atomic(".codeclew/cache/latest-check.json", &encoded)
+        let reference = super::cache::put(repo, CHECK_MANIFEST_SCHEMA, &encoded)?;
+        Ok((format!("{}/{}", reference.digest, reference.size), encoded))
+    }
+
+    /// Retain an immutable check without acquiring source evidence or changing
+    /// the convenience latest pointer. `selector` is an explicit immutable
+    /// snapshot handle; when absent, the current normalized latest-check record
+    /// is read once and normalized into the content-addressed store.
+    pub fn retained(
+        repo: &Repository,
+        selector: Option<&str>,
+        selected: &BTreeSet<String>,
+    ) -> Result<(Check, String), ClewError> {
+        let (checked, original_handle, normalized_bytes) = if let Some(handle) = selector {
+            let checked = Self::load_snapshot(repo, handle).map_err(|error| {
+                ClewError::new(
+                    crate::error::ErrorCode::StateCorrupt,
+                    format!(
+                        "documentation snapshot is unavailable or corrupt; run docs check explicitly: {}",
+                        error.message
+                    ),
+                )
+            })?;
+            (checked, Some(handle.to_owned()), None)
+        } else {
+            let path = repo.path(".codeclew/cache/latest-check.json")?;
+            let raw = std::fs::read(&path).map_err(|_| ClewError::new(
+                crate::error::ErrorCode::StateCorrupt,
+                "latest saved documentation evidence is unavailable; run docs check explicitly or select --snapshot",
+            ))?;
+            let checked = Self::decode(repo, &raw).map_err(|error| ClewError::new(error.code,
+                format!("saved documentation evidence is corrupt; select another snapshot or run docs check explicitly: {}", error.message)))?;
+            let normalized = serde_json::from_slice::<serde_json::Value>(&raw)
+                .is_ok_and(|v| v["schema"] == CHECK_MANIFEST_SCHEMA);
+            (checked, None, normalized.then_some(raw))
+        };
+        if checked.input_digest != repo.input_digest()? {
+            return Err(crate::error::ClewError::new(
+                crate::error::ErrorCode::StaleRequiresReslice,
+                "retained documentation check is stale; run docs check explicitly",
+            ));
+        }
+        let services = repo.services()?;
+        if selected.iter().any(|id| !services.contains_key(id)) {
+            return Err(invalid("selected documentation service does not exist"));
+        }
+        if selected.iter().any(|id| !checked.services.contains_key(id)) {
+            return Err(invalid(
+                "selected service is missing from retained evidence; select a saved snapshot containing it or explicitly run docs check --service ID",
+            ));
+        }
+        if let Some(handle) = original_handle {
+            return Ok((checked, handle));
+        }
+        let _lock = repo.lock()?;
+        if checked.input_digest != repo.input_digest()? {
+            return Err(invalid(
+                "documentation declarations changed while selecting saved evidence",
+            ));
+        }
+        let handle = if let Some(encoded) = normalized_bytes {
+            // Freeze the exact already-validated manifest; do not rewrite every
+            // fact membership just to turn the latest selector into a handle.
+            let reference = super::cache::put(repo, CHECK_MANIFEST_SCHEMA, &encoded)?;
+            format!("{}/{}", reference.digest, reference.size)
+        } else {
+            checked.store_snapshot(repo)?.0
+        };
+        Ok((checked, handle))
+    }
+
+    /// Read an explicitly selected immutable snapshot. Missing or damaged data
+    /// is an error; this path never acquires evidence or follows latest-check.
+    pub fn load_snapshot(repo: &Repository, handle: &str) -> Result<Check, ClewError> {
+        Self::from_manifest(repo, Self::load_snapshot_manifest(repo, handle)?)
+    }
+
+    pub(super) fn load_snapshot_manifest(
+        repo: &Repository,
+        handle: &str,
+    ) -> Result<CheckManifest, ClewError> {
+        let (digest, size) = handle.rsplit_once('/').ok_or_else(|| {
+            invalid("snapshot must be the sha256:identity/size returned by docs check")
+        })?;
+        let size: u64 = size.parse().map_err(|_| invalid("invalid snapshot size"))?;
+        if handle != format!("{digest}/{size}") {
+            return Err(invalid("snapshot size must use canonical decimal notation"));
+        }
+        let reference =
+            super::cache::ObjectRef::new(CHECK_MANIFEST_SCHEMA.into(), digest.into(), size);
+        let manifest: CheckManifest =
+            super::cache::get_json(repo, &reference, PORTABLE_CACHE_MAX_BYTES)?.ok_or_else(
+                || {
+                    ClewError::new(
+                        crate::error::ErrorCode::StateCorrupt,
+                        "documentation snapshot is unavailable; capture evidence explicitly",
+                    )
+                },
+            )?;
+        if manifest.schema != CHECK_MANIFEST_SCHEMA {
+            return Err(invalid("unsupported documentation snapshot schema"));
+        }
+        Ok(manifest)
+    }
+
+    /// Persist heavy service evidence and the dependencies map. Observations
+    /// are stored as per-fact memberships in the fact index and the manifest
+    /// references the immutable snapshot root, so no second whole-map copy of
+    /// every observation is serialized.
+    pub fn store_manifest(&self, repo: &Repository) -> Result<CheckManifest, ClewError> {
+        self.validate_source_input_binding()?;
+        let source_inputs = self
+            .source_inputs
+            .as_ref()
+            .map(|inputs| super::source_inputs::store(repo, inputs))
+            .transpose()?;
+        let composition = self
+            .composition
+            .as_ref()
+            .map(|value| super::composition::store(repo, value))
+            .transpose()?;
+        let mut service_manifests = BTreeMap::new();
+        for (id, evidence) in &self.services {
+            service_manifests.insert(id.clone(), super::cache::store_capture(repo, evidence)?);
+        }
+        // Dependencies are written through the fact index as per-fact memberships
+        // (bounded pages, copy-on-write), not as one whole-map object.
+        let dependencies_index = super::fact_index::store_dependency_map(repo, &self.dependencies)?;
+        let manifest = CheckManifest {
+            schema: CHECK_MANIFEST_SCHEMA.into(),
+            input_digest: self.input_digest.clone(),
+            context_digest: self.context_digest.clone(),
+            service_manifests,
+            unresolved: self.unresolved.clone(),
+            interactions: self.interactions.clone(),
+            scenarios: self.scenarios.clone(),
+            dependencies: None,
+            dependencies_index: Some(dependencies_index),
+            source_inputs,
+            composition,
+        };
+        if let Some(composition) = &self.composition {
+            super::composition::validate_parent_manifest(
+                repo,
+                composition,
+                &manifest,
+                self.source_inputs
+                    .as_ref()
+                    .ok_or_else(|| invalid("composition source-input contract is missing"))?
+                    .input_digest
+                    .as_str(),
+            )?;
+        }
+        Ok(manifest)
+    }
+
+    /// Hydrate a full `Check` from a persisted `latest-check.json`, accepting
+    /// both the normalized reference-envelope manifest and the legacy full
+    /// `Check` serialization, so pre-normalization state remains readable
+    /// without being rewritten.
+    pub fn load(repo: &Repository, path: &std::path::Path) -> Result<Check, ClewError> {
+        let raw = std::fs::read(path).map_err(io_error)?;
+        Self::decode(repo, &raw)
+    }
+
+    fn decode(repo: &Repository, raw: &[u8]) -> Result<Check, ClewError> {
+        if raw.len() as u64 > PORTABLE_CACHE_MAX_BYTES {
+            return Err(crate::error::ClewError::new(
+                crate::error::ErrorCode::ResourceLimit,
+                "documentation check exceeds its portable cache budget",
+            ));
+        }
+        // Detect the normalized manifest by its schema before hydrating; a
+        // legacy full Check deserializes directly without object reads.
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw)
+            && value.get("schema").and_then(serde_json::Value::as_str)
+                == Some(CHECK_MANIFEST_SCHEMA)
+        {
+            let manifest: CheckManifest =
+                serde_json::from_slice(raw).map_err(|error| invalid(error.to_string()))?;
+            return Self::from_manifest(repo, manifest);
+        }
+        // Legacy full Check serialization.
+        let checked: Self =
+            serde_json::from_slice(raw).map_err(|error| invalid(error.to_string()))?;
+        if checked.composition.is_some() {
+            return Err(invalid(
+                "derived checks require an immutable reference manifest",
+            ));
+        }
+        if let Some(record) = &checked.source_inputs {
+            // Inline records have not passed through the reference codec.
+            super::source_inputs::validate(record)?;
+        }
+        checked.validate_source_input_binding()?;
+        Ok(checked)
+    }
+
+    fn from_manifest(repo: &Repository, manifest: CheckManifest) -> Result<Check, ClewError> {
+        if manifest.schema != CHECK_MANIFEST_SCHEMA {
+            return Err(invalid("unsupported documentation snapshot schema"));
+        }
+        let source_inputs = manifest
+            .source_inputs
+            .as_ref()
+            .map(|reference| super::source_inputs::load(repo, reference))
+            .transpose()?;
+        let composition = manifest
+            .composition
+            .as_ref()
+            .map(|reference| super::composition::load(repo, reference))
+            .transpose()?;
+        if let Some(composition) = &composition {
+            super::composition::validate_parent_manifest(
+                repo,
+                composition,
+                &manifest,
+                source_inputs
+                    .as_ref()
+                    .ok_or_else(|| invalid("composition source-input contract is missing"))?
+                    .input_digest
+                    .as_str(),
+            )?;
+        }
+        let mut services = BTreeMap::new();
+        for (id, capture) in &manifest.service_manifests {
+            services.insert(id.clone(), super::cache::load_capture(repo, capture)?);
+        }
+        // New captures reference the fact-index snapshot root; legacy
+        // captures carry the whole-map dependency object.
+        let dependencies = if let Some(index) = &manifest.dependencies_index {
+            super::fact_index::load_snapshot_observations(repo, index, CHECK_DEPENDENCIES_SCOPE)?
+        } else if let Some(dependencies) = &manifest.dependencies {
+            super::cache::get_json(repo, dependencies, PORTABLE_CACHE_MAX_BYTES)?.ok_or_else(
+                || {
+                    ClewError::new(
+                        crate::error::ErrorCode::StateCorrupt,
+                        "documentation check dependencies object is missing",
+                    )
+                },
+            )?
+        } else {
+            BTreeMap::new()
+        };
+        let checked = Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: manifest.input_digest,
+            context_digest: manifest.context_digest,
+            services,
+            unresolved: manifest.unresolved,
+            interactions: manifest.interactions,
+            scenarios: manifest.scenarios,
+            dependencies,
+            source_inputs,
+            composition,
+        };
+        checked.validate_source_input_binding()?;
+        Ok(checked)
     }
 }
 
@@ -674,6 +1154,306 @@ mod tests {
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    #[test]
+    fn catalogue_attachment_uses_captured_notes_and_memberships_across_aba() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Catalogue capture").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        for id in ["orders", "inventory"] {
+            let service: Service = serde_json::from_value(json!({
+                "schema":"codeclew-documentation-service/1.0", "id":id,
+                "title":id, "repositoryId":id,
+                "repository":format!("https://example.invalid/{id}"), "language":"java",
+                "profile":"java-17plus-maven-read-only", "compilation":":/main", "targetRef":"main"
+            }))
+            .unwrap();
+            repo.service_add(service, Some(&repo.input_digest().unwrap()))
+                .unwrap();
+        }
+        let records = [
+            (
+                "catalog/entities/quantity.json",
+                json!({
+                    "schema":"codeclew-documentation-entity/1.0", "id":"quantity",
+                    "title":"Captured quantity", "description":"Declared domain identity",
+                    "relations":[{"service":"orders", "kind":"owned", "origin":"human",
+                        "rationale":"Maintainer declaration", "confidence":"declared"}], "limitations":[]
+                }),
+            ),
+            (
+                "catalog/interactions/transfer.json",
+                json!({
+                    "schema":"codeclew-documentation-interaction/1.0", "id":"transfer", "title":"Captured transfer",
+                    "from":{"service":"orders"}, "to":{"service":"inventory"},
+                    "transport":{"kind":"http", "method":"POST", "path":"/quantity"},
+                    "declaration":{"origin":"human", "rationale":"Declared transfer"}
+                }),
+            ),
+            (
+                "scenarios/quantity-view.yaml",
+                json!({
+                    "schema":"codeclew-documentation-view/1.0", "id":"quantity-view",
+                    "title":"Captured view", "summary":"Declared quantity flow", "root":{"service":"orders"},
+                    "interactions":["transfer"], "view":{"module":"entity-dataflow/1.0",
+                        "inputObjects":["entity:quantity"], "services":["orders","inventory"], "scope":"Declared quantity flow"}
+                }),
+            ),
+            (
+                "catalog/notes/policy.json",
+                json!({
+                    "schema":"codeclew-documentation-note-association/1.0", "id":"policy", "title":"Captured policy",
+                    "service":"orders", "path":"notes/policy.md", "classification":"policy", "period":"Current",
+                    "targets":["service:orders/section-entities", "service:inventory", "entity:quantity",
+                        "view:quantity-view", "scenario:quantity-view", "service:orders/unknown-section",
+                        "entity:missing", "view:missing", "scenario:missing", "service:missing", "unknown:target"]
+                }),
+            ),
+        ];
+        for (path, value) in &records {
+            repo.atomic(path, &bytes(value).unwrap()).unwrap();
+        }
+        let original_text = "Protected original A.\r\n";
+        repo.atomic("notes/policy.md", original_text.as_bytes())
+            .unwrap();
+        let inputs = repo.inputs().unwrap();
+        let input_digest = digest(&inputs).unwrap();
+        let source = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "orders".into(),
+            revision: "a".repeat(40),
+            service_digest: digest(&inputs.services["orders"]).unwrap(),
+            extractor: SOURCE_EXTRACTOR.into(),
+            runtime_mode: "SOURCE_SYNTAX".into(),
+            coverage: "SYNTAX".into(),
+            boundaries: vec![],
+            entrypoints: vec![],
+            observations: BTreeMap::new(),
+            sources: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+        };
+        let fresh = || {
+            assemble(
+                input_digest.clone(),
+                BTreeMap::from([("orders".into(), source.clone())]),
+                BTreeMap::new(),
+                &inputs.interactions,
+                &inputs.scenarios,
+            )
+            .unwrap()
+        };
+        let mut control = fresh();
+        attach_catalogue_from_inputs(&inputs, &mut control).unwrap();
+
+        // B removes A's target definitions, adds unrelated members and replaces
+        // the human text. An end digest alone cannot detect these transient reads.
+        for (path, value) in &records {
+            fs::remove_file(repo.root.join(path)).unwrap();
+            let mut changed = value.clone();
+            changed["id"] = json!("concurrent");
+            changed["title"] = json!("Concurrent B");
+            let parent = std::path::Path::new(path)
+                .parent()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            let extension = std::path::Path::new(path)
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            repo.atomic(
+                &format!("{parent}/concurrent.{extension}"),
+                &bytes(&changed).unwrap(),
+            )
+            .unwrap();
+        }
+        repo.atomic("notes/policy.md", b"Concurrent B text")
+            .unwrap();
+        let mut actual = fresh();
+        attach_catalogue_from_inputs(&inputs, &mut actual).unwrap();
+        assert_eq!(actual.dependencies, control.dependencies);
+        assert_eq!(
+            serde_json::to_value(&actual.scenarios).unwrap(),
+            serde_json::to_value(&control.scenarios).unwrap()
+        );
+        assert_eq!(actual.context_digest, control.context_digest);
+        assert_eq!(actual.services["orders"], source);
+        let note = &actual.dependencies["note:policy"].normalized;
+        assert_eq!(note["original"]["text"], original_text);
+        assert_eq!(
+            note["missingTargets"],
+            json!([
+                "service:orders/unknown-section",
+                "entity:missing",
+                "view:missing",
+                "scenario:missing",
+                "service:missing",
+                "unknown:target"
+            ])
+        );
+        assert_eq!(
+            actual.dependencies["entity-scope:orders"].normalized["dependencyIds"],
+            json!(["entity:quantity"])
+        );
+        assert_eq!(
+            actual.dependencies["note-scope:inventory"].normalized["dependencyIds"],
+            json!(["note:policy"])
+        );
+        assert_eq!(
+            actual.dependencies["view-scope:quantity-view"].normalized["interactionMembership"],
+            json!(["transfer"])
+        );
+        assert_eq!(
+            actual.dependencies["view-scope:quantity-view"].normalized["unavailableServices"],
+            json!(["inventory"])
+        );
+        assert!(
+            !actual
+                .dependencies
+                .keys()
+                .any(|id| id.contains("concurrent"))
+        );
+
+        for (path, value) in &records {
+            let parent = std::path::Path::new(path).parent().unwrap();
+            let extension = std::path::Path::new(path)
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            fs::remove_file(
+                repo.root
+                    .join(parent)
+                    .join(format!("concurrent.{extension}")),
+            )
+            .unwrap();
+            repo.atomic(path, &bytes(value).unwrap()).unwrap();
+        }
+        repo.atomic("notes/policy.md", original_text.as_bytes())
+            .unwrap();
+        assert_eq!(repo.input_digest().unwrap(), input_digest);
+    }
+
+    #[test]
+    fn source_selection_consumes_captured_inputs_across_aba_and_rejects_persistent_change() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Captured input test").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"orders",
+            "title":"Original title", "repositoryId":"orders",
+            "repository":"https://example.invalid/orders", "language":"java",
+            "profile":"java-17plus-maven-read-only", "compilation":":/main", "targetRef":"main"
+        }))
+        .unwrap();
+        repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let expectation = super::super::evidence_package::Expectation {
+            schema: "codeclew-documentation-evidence-expectation/1.0".into(),
+            service: "orders".into(),
+            repository_id: "orders".into(),
+            service_digest: digest(&service).unwrap(),
+            revision: "a".repeat(40),
+            manifest_digest: format!("sha256:{}", "b".repeat(64)),
+            sequence: 1,
+        };
+        let target = super::super::updates::State {
+            schema: "codeclew-documentation-update-state/1.0".into(),
+            targets: BTreeMap::from([(
+                "orders".into(),
+                super::super::updates::Event {
+                    schema: "codeclew-documentation-update-event/1.0".into(),
+                    id: "original".into(),
+                    service: "orders".into(),
+                    repository_id: "orders".into(),
+                    source_ref: "main".into(),
+                    revision: "a".repeat(40),
+                    sequence: 1,
+                    tag: None,
+                },
+            )]),
+        };
+        fs::create_dir_all(repo.root.join("catalog/evidence-trust")).unwrap();
+        let policy_path = repo.root.join("catalog/evidence-trust/orders.json");
+        let target_path = repo.root.join("catalog/update-state.json");
+        let service_path = repo.root.join("catalog/services/orders.json");
+        fs::write(&policy_path, bytes(&expectation).unwrap()).unwrap();
+        fs::write(&target_path, bytes(&target).unwrap()).unwrap();
+        let captured = repo.inputs().unwrap();
+        let original_digest = digest(&captured).unwrap();
+        let mut changed_service = service.clone();
+        changed_service.title = "Concurrent title".into();
+        let mut changed_expectation = expectation.clone();
+        changed_expectation.service_digest = digest(&changed_service).unwrap();
+        changed_expectation.revision = "c".repeat(40);
+        let mut changed_target = target.clone();
+        changed_target.targets.get_mut("orders").unwrap().revision = "c".repeat(40);
+        let replace = |changed: bool| {
+            fs::write(
+                &service_path,
+                bytes(if changed { &changed_service } else { &service }).unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                &policy_path,
+                bytes(if changed {
+                    &changed_expectation
+                } else {
+                    &expectation
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                &target_path,
+                bytes(if changed { &changed_target } else { &target }).unwrap(),
+            )
+            .unwrap();
+        };
+        replace(true);
+        assert_ne!(repo.input_digest().unwrap(), original_digest);
+        let mut calls = 0;
+        let make_evidence = || ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "orders".into(),
+            revision: "a".repeat(40),
+            service_digest: digest(&service).unwrap(),
+            extractor: SOURCE_EXTRACTOR.into(),
+            runtime_mode: "SOURCE_SYNTAX".into(),
+            coverage: "SYNTAX".into(),
+            boundaries: vec![],
+            entrypoints: vec![],
+            observations: BTreeMap::new(),
+            sources: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+        };
+        let checked = capture_selected_with(
+            &repo,
+            &BTreeSet::new(),
+            captured.clone(),
+            |chosen, policy, state| {
+                calls += 1;
+                assert_eq!(chosen, &service);
+                assert_eq!(policy, Some(&expectation));
+                assert_eq!(state, &target);
+                assert_eq!(repo.services().unwrap()["orders"], changed_service);
+                replace(false);
+                Ok(make_evidence())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(checked.input_digest, original_digest);
+        assert_eq!(checked.source_inputs.as_ref().unwrap().inputs, captured);
+        assert_eq!(checked.services["orders"].revision, "a".repeat(40));
+        let error = capture_selected_with(&repo, &BTreeSet::new(), captured, |_, _, _| {
+            replace(true);
+            Ok(make_evidence())
+        })
+        .unwrap_err();
+        assert!(error.message.contains("input changed during checking"));
+    }
 
     #[test]
     fn kafka_configuration_expressions_are_not_literal_topic_mismatches() {
@@ -730,7 +1510,8 @@ mod tests {
                     )
                 })
                 .collect();
-            let index = build_java_compiler_index(&root, &model, &hashes).unwrap();
+            let index =
+                build_java_compiler_index(&root, &model, &hashes, false, None, &[], None).unwrap();
             let facts: Vec<_> = index
                 .facts
                 .iter()
@@ -765,9 +1546,11 @@ mod tests {
                 source: None,
                 modules: None,
                 compilation: ":/main".into(),
+                compilations: Vec::new(),
                 target_ref: "main".into(),
                 source_link_template: None,
                 contract_files: vec![contract.into()],
+                annotation_processor_paths: vec![],
             };
             let evidence = analysis::project(
                 &service,
@@ -777,6 +1560,7 @@ mod tests {
                 "PARTIAL",
                 facts,
                 &files,
+                false,
             )
             .unwrap();
             services.insert(id.into(), evidence);
@@ -894,5 +1678,32 @@ mod tests {
         let mismatch = check_interaction(&changed, &services).unwrap();
         assert_eq!(mismatch.path["receiver"]["status"], "MISMATCH");
         assert_eq!(mismatch.path["caller"]["status"], "MISMATCH");
+    }
+
+    #[test]
+    fn repository_run_lock_serializes_concurrent_holders() {
+        let state_root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(state_root.path().join("v2")).unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
+        // First holder keeps the per-repository flock for the run's duration.
+        let first = acquire_repository_run_lock(&state, repo_root.path()).unwrap();
+        let acquired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let acquired_thread = acquired.clone();
+        let state_for_thread = state;
+        let path_for_thread = repo_root.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            // Blocks until `first` is released; never observes the shared repo
+            // while a concurrent run's attempt lifecycle is still active.
+            let _second = acquire_repository_run_lock(&state_for_thread, &path_for_thread).unwrap();
+            acquired_thread.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            !acquired.load(std::sync::atomic::Ordering::SeqCst),
+            "a second holder must block while the first run holds the lock"
+        );
+        drop(first);
+        handle.join().unwrap();
+        assert!(acquired.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

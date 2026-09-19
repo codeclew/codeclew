@@ -33,13 +33,13 @@ pub(crate) fn workspace_worker_test_lock() -> std::sync::MutexGuard<'static, ()>
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompilerIndexBackend {
     BtaPersistent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompilerIndexStatus {
     UnchangedHit,
@@ -50,7 +50,7 @@ pub enum CompilerIndexStatus {
     FailedRecoverable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompilerIndexProfile {
     pub backend: CompilerIndexBackend,
@@ -131,6 +131,8 @@ pub struct RequestProfile {
     pub serialization_micros: u64,
     pub ipc_micros: u64,
     pub worker_processing_micros: u64,
+    /// False when an older or malformed response omitted the worker timer.
+    pub worker_processing_observed: bool,
     pub cache_requests: u64,
     pub cache_hits: u64,
     pub psi_parse_micros: u64,
@@ -163,6 +165,7 @@ pub struct WorkerClient {
     issued_index_facts: BTreeMap<Uuid, String>,
     issued_source_syntax: BTreeMap<Uuid, String>,
     request_counters: WorkerRequestCounters,
+    physical_request_counters: WorkerRequestCounters,
 }
 
 #[derive(Clone)]
@@ -1881,15 +1884,19 @@ impl WorkerClient {
         )
     }
 
-    pub(crate) fn start_with_managed_states(
+    /// A previous engine is a startup hint only. Fresh OpenProject still selects
+    /// and qualifies the current project's engine, with normal discovery retries.
+    pub(crate) fn start_with_managed_states_hint(
         workspace: &Path,
         build_state_root: Option<&Path>,
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: &str,
+        preferred_engine: Option<KotlinSemanticEngine>,
     ) -> Result<Self, ClewError> {
+        let engine = preferred_discovery_engine(preferred_engine, &available_project_engines()?);
         Self::start_engine(
             workspace,
-            KotlinSemanticEngine::Kotlin24,
+            engine,
             build_state_root,
             compiler_index_root,
             Some(build_namespace_digest),
@@ -2082,6 +2089,7 @@ impl WorkerClient {
             issued_index_facts: BTreeMap::new(),
             issued_source_syntax: BTreeMap::new(),
             request_counters: WorkerRequestCounters::default(),
+            physical_request_counters: WorkerRequestCounters::default(),
         })
     }
 
@@ -2102,6 +2110,7 @@ impl WorkerClient {
             None,
         )?;
         replacement.request_counters = self.request_counters;
+        replacement.physical_request_counters = self.physical_request_counters;
         let previous = std::mem::replace(self, replacement);
         previous.shutdown()
     }
@@ -2209,6 +2218,23 @@ impl WorkerClient {
         let request_construction_micros =
             request_serialization_started.elapsed().as_micros() as u64;
         let (encode_micros, write_micros) = write_message_profiled(&mut self.stdin, &request)?;
+        // Discovery can resend one logical OpenProject to another compiler
+        // engine. Count actual successful transport writes separately.
+        match kind {
+            RequestKind::OpenProject => {
+                self.physical_request_counters.open_project_requests = self
+                    .physical_request_counters
+                    .open_project_requests
+                    .saturating_add(1);
+            }
+            RequestKind::IndexFiles => {
+                self.physical_request_counters.index_files_requests = self
+                    .physical_request_counters
+                    .index_files_requests
+                    .saturating_add(1);
+            }
+            _ => {}
+        }
         let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)?;
         if response.request_id != request_id {
             return Err(ClewError::new(
@@ -2345,6 +2371,11 @@ impl WorkerClient {
                 + json_micros,
             ipc_micros: (write_micros + read_micros).saturating_sub(worker_processing_micros),
             worker_processing_micros,
+            worker_processing_observed: profiling
+                .as_ref()
+                .and_then(|profile| profile.get("workerProcessingMicros"))
+                .and_then(Value::as_u64)
+                .is_some(),
             cache_requests: profiling
                 .as_ref()
                 .and_then(|profile| profile.get("cacheRequests"))
@@ -2542,6 +2573,12 @@ impl WorkerClient {
 
     pub fn request_counters(&self) -> WorkerRequestCounters {
         self.request_counters
+    }
+
+    /// Actual transport requests, including compiler-engine discovery retries.
+    /// Operational measurement only; logical analysis receipts are unchanged.
+    pub(crate) fn physical_request_counters(&self) -> WorkerRequestCounters {
+        self.physical_request_counters
     }
 
     /// Establish one exact live OpenProject authority without executing
@@ -3140,6 +3177,14 @@ fn available_project_engines() -> Result<Vec<KotlinSemanticEngine>, ClewError> {
             })
         })
         .collect())
+}
+
+fn preferred_discovery_engine(
+    hint: Option<KotlinSemanticEngine>,
+    available: &[KotlinSemanticEngine],
+) -> KotlinSemanticEngine {
+    hint.filter(|engine| available.contains(engine))
+        .unwrap_or(KotlinSemanticEngine::Kotlin24)
 }
 
 // A compiler-plugin rejection must not trigger preparation of an optional
@@ -5322,6 +5367,13 @@ mod tests {
         assert_eq!(worker.engine, KotlinSemanticEngine::Kotlin23);
         assert_eq!(worker.capabilities.compiler_version, "2.3.0");
         assert_eq!(
+            worker.physical_request_counters(),
+            WorkerRequestCounters {
+                open_project_requests: 2,
+                index_files_requests: 0,
+            }
+        );
+        assert_eq!(
             worker.request_counters(),
             WorkerRequestCounters {
                 open_project_requests: 1,
@@ -5329,6 +5381,22 @@ mod tests {
             }
         );
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn discovery_hint_never_selects_an_unavailable_engine() {
+        let only_current = [KotlinSemanticEngine::Kotlin24];
+        assert_eq!(
+            preferred_discovery_engine(Some(KotlinSemanticEngine::Kotlin23), &only_current),
+            KotlinSemanticEngine::Kotlin24,
+        );
+        assert_eq!(
+            preferred_discovery_engine(
+                Some(KotlinSemanticEngine::Kotlin23),
+                &KotlinSemanticEngine::packaged_by_preference(),
+            ),
+            KotlinSemanticEngine::Kotlin23,
+        );
     }
 
     #[test]

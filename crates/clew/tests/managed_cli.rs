@@ -3200,6 +3200,124 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
 
 #[cfg(unix)]
 #[test]
+fn doctor_compilation_limit_passes_128_and_rejects_129_via_public_cli() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repository = temporary.path().join("private-doctor-limit-repository");
+    fs::create_dir(&repository).unwrap();
+    fs::write(repository.join("README.md"), b"baseline\n").unwrap();
+    fs::write(
+        repository.join("pyproject.toml"),
+        b"[project]\nname='fixture'\n",
+    )
+    .unwrap();
+    fs::write(repository.join("app.py"), b"value = 1\n").unwrap();
+    run_git(&repository, &["init", "-q", "-b", "main"]);
+    run_git(&repository, &["add", "."]);
+    run_git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=codeclew@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "baseline",
+        ],
+    );
+    let state_root = temporary.path().join("state/v2");
+    let runtime_digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&runtime_digest);
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{runtime_digest}.lease"));
+
+    // 33 and 128 distinct repeated --compilation flags all reach the production
+    // doctor task check; only the compilation-count authority gates at >128.
+    for count in [33usize, 128] {
+        let mut args = vec![
+            "doctor",
+            "task",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--target-ref",
+            "main",
+            "--language",
+            "python",
+            "--profile",
+            "python-syntax",
+        ];
+        for _ in 0..count {
+            args.push("--compilation");
+            args.push("python:.#.");
+        }
+        args.push("--operation");
+        args.push("analysis");
+        let doctor = run_managed(&runtime_binary, &state_root, &runtime, &lease, &args, None);
+        assert!(
+            doctor.status.success(),
+            "{}",
+            String::from_utf8_lossy(&doctor.stdout)
+        );
+        let value: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+        let authority = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["checkId"] == "task.compilation-authority")
+            .unwrap_or_else(|| panic!("missing compilation-authority check in {value}"));
+        assert_eq!(
+            authority["status"], "PASS",
+            "{count} selectors must pass the compilation-authority check: {value}"
+        );
+        assert_eq!(value["status"], "PASS");
+    }
+
+    // 129 repeated flags exceed the shared cap and fail only the count check.
+    let mut args = vec![
+        "doctor",
+        "task",
+        "--repo",
+        repository.to_str().unwrap(),
+        "--target-ref",
+        "main",
+        "--language",
+        "python",
+        "--profile",
+        "python-syntax",
+    ];
+    for _ in 0..129 {
+        args.push("--compilation");
+        args.push("python:.#.");
+    }
+    args.push("--operation");
+    args.push("analysis");
+    let doctor = run_managed(&runtime_binary, &state_root, &runtime, &lease, &args, None);
+    assert!(
+        doctor.status.success(),
+        "{}",
+        String::from_utf8_lossy(&doctor.stdout)
+    );
+    let value: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(value["status"], "ACTION_REQUIRED");
+    assert_eq!(value["nextAction"], "SELECT_EXACT_COMPILATION");
+    let authority = value["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["checkId"] == "task.compilation-authority")
+        .unwrap();
+    assert_eq!(authority["status"], "ACTION_REQUIRED");
+}
+
+#[cfg(unix)]
+#[test]
 fn managed_support_summary_requires_private_input_and_drops_private_material() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -3722,9 +3840,11 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         value["interactions"]["reserve-inventory"]["path"]["receiver"]["status"], "MATCH",
         "{value}"
     );
-    let checked: Check =
-        serde_json::from_slice(&fs::read(docs.join(".codeclew/cache/latest-check.json")).unwrap())
-            .unwrap();
+    let checked: Check = clew::documentation::check::Check::load(
+        &clew::documentation::store::Repository::open(&docs).unwrap(),
+        &docs.join(".codeclew/cache/latest-check.json"),
+    )
+    .unwrap();
     let (code, context) = run(&[
         "docs",
         "context",
@@ -4149,13 +4269,42 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         fs::write(&path, serde_json::to_vec(n).unwrap()).unwrap();
         inputs.push(path);
     }
-    let mut args = vec!["docs", "render", "--root", root, "--require-complete"];
+    let mut args = vec![
+        "docs",
+        "render",
+        "--root",
+        root,
+        "--require-complete",
+        "--refresh",
+    ];
     for path in &inputs {
         args.extend(["--input", path.to_str().unwrap()]);
     }
     let (code, rendered) = run(&args);
     assert_eq!(code, 0, "{rendered}");
     assert_eq!(rendered["explicitGaps"], 0);
+    assert_eq!(rendered["evidenceAuthority"], "CURRENT_SOURCE_CHECK");
+    let conflict = run_managed(
+        &binary,
+        &state,
+        &runtime,
+        &lease,
+        &[
+            "docs",
+            "render",
+            "--root",
+            root,
+            "--refresh",
+            "--snapshot",
+            rendered["snapshot"].as_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(!conflict.status.success());
+    assert!(
+        String::from_utf8_lossy(&conflict.stderr).contains("cannot be used with")
+            || String::from_utf8_lossy(&conflict.stderr).contains("conflict")
+    );
     let bundle_root = docs
         .join("docs/generated")
         .join(rendered["bundle"].as_str().unwrap());
@@ -4208,14 +4357,28 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             }
         }
     }
-    let before = fs::read(docs.join("docs/index.html")).unwrap();
+    let current_page = fs::read(docs.join("docs/index.html")).unwrap();
     let (code, current) = run(&["docs", "check", "--root", root]);
     assert_eq!(code, 0, "{current}");
     assert_eq!(current["freshness"]["status"], "CURRENT");
+    let offline = temporary.path().join("offline-repositories");
+    fs::create_dir_all(&offline).unwrap();
+    for (id, repository) in &repositories {
+        fs::rename(repository, offline.join(id)).unwrap();
+    }
     let (code, again) = run(&["docs", "render", "--root", root]);
     assert_eq!(code, 0, "{again}");
-    assert_eq!(again["bundle"], rendered["bundle"]);
+    assert_ne!(again["bundle"], rendered["bundle"]);
+    assert_eq!(again["evidenceAuthority"], "PINNED_SNAPSHOT_NOT_REVERIFIED");
+    let before = fs::read(docs.join("docs/index.html")).unwrap();
+    assert_ne!(before, current_page);
+    let (code, repeated) = run(&["docs", "render", "--root", root]);
+    assert_eq!(code, 0, "{repeated}");
+    assert_eq!(repeated["bundle"], again["bundle"]);
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
+    for (id, repository) in &repositories {
+        fs::rename(offline.join(id), repository).unwrap();
+    }
     assert_eq!(
         fs::read_to_string(docs.join("docs/manual.md")).unwrap(),
         "Engineer-maintained explanation.\n"
@@ -4508,9 +4671,11 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
         assert_eq!(value["services"][language]["coverage"], "SYNTAX", "{value}");
         assert!(value["services"][language]["entrypoints"].as_u64().unwrap() > 1);
     }
-    let checked: Check =
-        serde_json::from_slice(&fs::read(docs.join(".codeclew/cache/latest-check.json")).unwrap())
-            .unwrap();
+    let checked: Check = clew::documentation::check::Check::load(
+        &clew::documentation::store::Repository::open(&docs).unwrap(),
+        &docs.join(".codeclew/cache/latest-check.json"),
+    )
+    .unwrap();
     let mut inputs = Vec::new();
     for (language, evidence) in &checked.services {
         let entry = evidence
@@ -4704,7 +4869,6 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
 #[cfg(unix)]
 #[ignore = "runs the admitted Maven/javac provider for source-documentation enrichment"]
 fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_roots() {
-    use clew::documentation::check::Check;
     use std::os::unix::fs::PermissionsExt;
     let temporary = tempfile::tempdir().unwrap();
     let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
@@ -4776,8 +4940,9 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
     let (_, report) = run(&["docs", "check", "--root", root]);
     assert_eq!(report["status"], "CHECKED", "{report}");
     let read = || {
-        serde_json::from_slice::<Check>(
-            &fs::read(docs.join(".codeclew/cache/latest-check.json")).unwrap(),
+        clew::documentation::check::Check::load(
+            &clew::documentation::store::Repository::open(&docs).unwrap(),
+            &docs.join(".codeclew/cache/latest-check.json"),
         )
         .unwrap()
     };

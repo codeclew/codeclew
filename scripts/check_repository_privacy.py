@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -168,6 +171,29 @@ def check_entries(entries: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
     return sorted(set(findings))
 
 
+def check_worktree() -> list[tuple[str, str]]:
+    """Check the same pending files CI builds, without changing the Git index."""
+    root = Path(os.fsdecode(git("rev-parse", "--show-toplevel").rstrip(b"\n")))
+    findings = []
+    names = git("ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    for name in sorted(set(names.split(b"\0")) - {b""}):
+        relative = os.fsdecode(name)
+        path = root / relative
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue  # A tracked deletion is absent from the pending tree.
+        if stat.S_ISLNK(metadata.st_mode):
+            data = os.fsencode(os.readlink(path))  # Git stores the link, not its target.
+        elif stat.S_ISREG(metadata.st_mode):
+            data = path.read_bytes()
+        else:
+            continue  # Gitlinks/directories are not file blobs.
+        findings.extend((relative, rule) for rule in path_rules(relative))
+        findings.extend((relative, rule) for rule in blob_rules(data, relative))
+    return sorted(set(findings))
+
+
 def check_history_metadata() -> list[tuple[str, str]]:
     findings = []
     rows = git(
@@ -226,15 +252,18 @@ def self_test() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--history", action="store_true")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--history", action="store_true")
+    scope.add_argument("--worktree", action="store_true")
     parser.add_argument("--pre-commit", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
-    entries = history_entries() if args.history else index_entries()
-    findings = check_entries(entries)
+    findings = check_worktree() if args.worktree else check_entries(
+        history_entries() if args.history else index_entries()
+    )
     if args.history:
         findings.extend(check_history_metadata())
     if args.pre_commit:

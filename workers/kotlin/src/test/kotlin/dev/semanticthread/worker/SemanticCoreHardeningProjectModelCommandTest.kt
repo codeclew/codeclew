@@ -2,10 +2,44 @@ package dev.semanticthread.worker
 
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 
 class SemanticCoreHardeningProjectModelCommandTest {
+    @Test
+    fun graphIdentityIgnoresObjectOrderTimingAndCheckoutButPreservesSemanticChanges() {
+        val fresh = Json.parseToJsonElement("""{
+            "recordType":"FIR_CFG", "file":"/checkout-one/src/A.kt",
+            "firExtractionMicros":17,
+            "edges":[{"to":2,"from":1,"label":"NormalPath"}],
+            "futureSemanticField":{"b":2,"a":1}
+        }""").jsonObject
+        val reloaded = Json.parseToJsonElement("""{
+            "edges":[{"from":1,"label":"NormalPath","to":2}],
+            "file":"/checkout-two/src/A.kt", "firExtractionMicros":99,
+            "futureSemanticField":{"a":1,"b":2}, "recordType":"FIR_CFG"
+        }""").jsonObject
+        fun digest(row: kotlinx.serialization.json.JsonObject) =
+            canonicalCompilerRowDigest(compilerCfgIdentityRow(row, "src/A.kt"), "src/A.kt")
+        assertEquals(digest(fresh), digest(reloaded))
+        assertEquals(digest(fresh), digest(buildJsonObject {
+            reloaded.filterKeys { it != "firExtractionMicros" }.forEach(::put)
+        }))
+        assertNotEquals(digest(fresh), digest(Json.parseToJsonElement(
+            reloaded.toString().replace("NormalPath", "onUncaughtException")
+        ).jsonObject))
+        assertNotEquals(digest(fresh), digest(buildJsonObject {
+            reloaded.forEach(::put)
+            put("futureSemanticField", 3)
+        }))
+        val boundaryFresh = unknownCompilerLocalCfg("NO_SOURCE_FUNCTION", compilerCfgIdentityRow(fresh, "src/A.kt"), "src/A.kt")
+        val boundaryReloaded = unknownCompilerLocalCfg("NO_SOURCE_FUNCTION", compilerCfgIdentityRow(reloaded, "src/A.kt"), "src/A.kt")
+        assertEquals(boundaryFresh, boundaryReloaded)
+    }
+
     @Test
     fun structuralFailuresWinAndPartialCoreUsesExactFields() {
         val source = "fun answer() = 42"

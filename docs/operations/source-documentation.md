@@ -110,6 +110,8 @@ clew docs context --root /work/architecture --service orders --symbol example.Re
 clew docs context --root /work/architecture --service orders --source RETURNED_SOURCE_ID --format raw
 clew docs context --root /work/architecture --service orders --dependency RETURNED_DEPENDENCY_ID --format raw
 clew docs render --root /work/architecture --input /work/orders-narrative.json
+clew docs render --root /work/architecture --refresh --require-complete \
+  --input /work/orders-narrative.json
 ```
 
 A qualified name must select exactly one declaration; overloads need an exact
@@ -138,6 +140,11 @@ The same accepted explanation produces the existing offline HTML, Markdown,
 Mermaid, detailed sequence, and optional overview/state abstraction. Manual prose
 and existing generated-output edits remain protected. `--require-complete`
 rejects missing authored operations and partial source capture.
+By default, `docs render` consumes the latest saved check without running
+analyzers. Use `docs render --refresh` when the publication must acquire current
+source evidence; it runs the ordinary `docs check` path, saves the resulting
+snapshot, and can satisfy `--require-complete` only when that fresh check and
+publication are complete. `--refresh` cannot be combined with `--snapshot`.
 
 ## Check and selectively review changes
 
@@ -156,6 +163,8 @@ use newer evidence. Inspect `updateFailures` and operation states. Selective
 `docs check --service` explicitly marks unselected services as not checked.
 `--require-complete` retains the strict, non-publishing diagnostic behavior when
 any section is stale, unavailable, rejected or explicitly incomplete.
+The default render is a saved-evidence consumer and never starts an analyzer;
+request current acquisition explicitly with `docs render --refresh`.
 
 `docs refresh --status-only` publishes a new immutable status snapshot without
 calling an agent. It retains the old explanation and exact source snippets,

@@ -65,6 +65,8 @@ pub struct AnnotationDefinition {
     pub origin: Origin,
     pub annotations: Vec<AnnotationUse>,
     pub members: BTreeMap<String, AnnotationMember>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounded: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

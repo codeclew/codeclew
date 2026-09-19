@@ -365,6 +365,85 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun projectNativeOpenProjectBindsAmbientSourceSelectionToManifestAuthority() {
+        val repo = Files.createTempDirectory("worker-native-source-authority-repo").toRealPath()
+        val ambientModel = Files.createTempFile("worker-native-source-authority-ambient", ".json").toRealPath()
+        try {
+            val sourceA = repo.resolve("src/main/kotlin/p/A.kt")
+            val sourceB = repo.resolve("src/main/kotlin/p/B.kt")
+            sourceA.parent.createDirectories()
+            sourceA.writeText("package p\nclass A\n")
+            sourceB.writeText("package p\nclass B\n")
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"native-source-authority\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            require('\'' !in ambientModel.toString()) { "fixture path cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText(
+                """#!/bin/sh
+                |printf '%s' '__SEMANTIC_THREAD_MODEL__'
+                |cat '${ambientModel}'
+                |printf '\n'
+                |""".trimMargin(),
+            )
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            fun modelFor(sources: List<Path>): JsonObject {
+                val base = gradleFixtureModel(repo, sourceA, "17")
+                return buildJsonObject {
+                    base.forEach(::put)
+                    putJsonArray("sourceFiles") { sources.forEach { add(JsonPrimitive(it.toString())) } }
+                    putJsonArray("analysisSourceFiles") { sources.forEach { add(JsonPrimitive(it.toString())) } }
+                }
+            }
+
+            fun authority(result: JsonObject, key: String): JsonObject =
+                result["semanticInputManifest"]!!.jsonObject[key]!!.jsonObject
+
+            fun paths(result: JsonObject, key: String): List<String> =
+                authority(result, key)["files"]!!.jsonArray.map {
+                    it.jsonObject["path"]!!.jsonPrimitive.content
+                }
+
+            Worker(null).use { worker ->
+                ambientModel.writeText(modelFor(listOf(sourceA)).toString())
+                val first = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                ambientModel.writeText(modelFor(listOf(sourceA, sourceB)).toString())
+                val second = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                ambientModel.writeText(modelFor(listOf(sourceA, sourceB)).toString())
+                val repeat = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+
+                assertEquals(first["sourceRoots"], second["sourceRoots"])
+                assertEquals(listOf("src/main/kotlin/p/A.kt"), paths(first, "sourceFiles"))
+                assertEquals(
+                    listOf("src/main/kotlin/p/A.kt", "src/main/kotlin/p/B.kt"),
+                    paths(second, "sourceFiles"),
+                )
+                assertEquals(listOf("src/main/kotlin/p/A.kt"), paths(first, "analysisSourceFiles"))
+                assertEquals(
+                    listOf("src/main/kotlin/p/A.kt", "src/main/kotlin/p/B.kt"),
+                    paths(second, "analysisSourceFiles"),
+                )
+                assertNotEquals(
+                    authority(first, "sourceFiles")["digest"],
+                    authority(second, "sourceFiles")["digest"],
+                )
+                assertNotEquals(
+                    authority(first, "analysisSourceFiles")["digest"],
+                    authority(second, "analysisSourceFiles")["digest"],
+                )
+                assertNotEquals(first["semanticInputManifestHash"], second["semanticInputManifestHash"])
+                assertEquals(second["semanticInputManifestHash"], repeat["semanticInputManifestHash"])
+            }
+        } finally {
+            repo.toFile().deleteRecursively()
+            Files.deleteIfExists(ambientModel)
+        }
+    }
+
+    @Test
     fun k2MemoryIdentityIncludesLiveAndOverriddenSourceBytes() {
         val repo = Files.createTempDirectory("worker-k2-source-state").toRealPath()
         try {
@@ -1199,8 +1278,10 @@ class ProjectModelCommandTest {
             Worker(root).use { worker ->
                 worker.handle(2, request)
                 val reopened = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                // Every OpenProject now admits fresh native input authority,
+                // including when external build state was sealed beforehand.
                 assertEquals(
-                    "MEMORY_HIT",
+                    "EXTRACTED_NOT_PUBLISHED",
                     reopened["profiling"]?.jsonObject?.get("projectModelCacheStatus")?.jsonPrimitive?.content,
                 )
                 runtimeProjectCache = java.nio.file.Path.of(runtimeEvidence.toFile().readText())

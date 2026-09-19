@@ -138,6 +138,16 @@
         "reviewer": {
           "$ref": "#/$defs/role"
         },
+        "authorOutputContract": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "section-summary/1.0",
+            null
+          ]
+        },
         "fallback": {
           "oneOf": [
             {

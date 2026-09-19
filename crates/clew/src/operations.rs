@@ -349,7 +349,7 @@ fn task_checks(
         check(
             "task.compilation-authority",
             !task.compilations.is_empty()
-                && task.compilations.len() <= 32
+                && task.compilations.len() <= crate::limits::MAX_SELECTED_COMPILATIONS
                 && task.compilations.iter().all(|value| !value.is_empty()),
             true,
             "SELECT_EXACT_COMPILATION",
@@ -695,10 +695,17 @@ pub fn support_summary(input: &Value) -> Result<Value, ClewError> {
     } else if let Some(evidence) = input
         .pointer("/error/evidence")
         .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
-        && let Some(diagnostic) = crate::worker_diagnostics::from_evidence(&evidence)
-        && let Some(safe) = crate::worker_diagnostics::safe_summary(&diagnostic)
     {
-        summary["workerFailure"] = safe;
+        if let Some(safe) = crate::worker_diagnostics::from_evidence(&evidence)
+            .and_then(|diagnostic| crate::worker_diagnostics::safe_summary(&diagnostic))
+        {
+            summary["workerFailure"] = safe;
+        }
+        if let Some(safe) = crate::maven_diagnostics::from_evidence(&evidence)
+            .and_then(|diagnostic| crate::maven_diagnostics::safe_summary(&diagnostic))
+        {
+            summary["mavenFailure"] = safe;
+        }
     }
     let digest = canonical::hash(&summary).map_err(internal)?;
     summary["summaryDigest"] = Value::String(digest);
@@ -732,6 +739,7 @@ fn documentation_support_details(input: &Value, paged: bool) -> Result<Value, Cl
     };
     let mut codes = std::collections::BTreeMap::<String, (ErrorCode, usize)>::new();
     let mut workers = std::collections::BTreeMap::<String, (Value, usize)>::new();
+    let mut mavens = std::collections::BTreeMap::<String, (Value, usize)>::new();
     for failure in &unresolved {
         let code = parse_error_code(&failure["reason"])?;
         let label = serde_json::to_value(&code)
@@ -742,6 +750,12 @@ fn documentation_support_details(input: &Value, paged: bool) -> Result<Value, Cl
         codes.entry(label).or_insert((code, 0)).1 += 1;
         if let Some(safe) = crate::worker_diagnostics::safe_summary(&failure["workerFailure"]) {
             workers
+                .entry(canonical::compact(&safe).map_err(internal)?)
+                .or_insert((safe, 0))
+                .1 += 1;
+        }
+        if let Some(safe) = crate::maven_diagnostics::safe_summary(&failure["mavenFailure"]) {
+            mavens
                 .entry(canonical::compact(&safe).map_err(internal)?)
                 .or_insert((safe, 0))
                 .1 += 1;
@@ -763,6 +777,13 @@ fn documentation_support_details(input: &Value, paged: bool) -> Result<Value, Cl
             value
         })
         .collect::<Vec<_>>();
+    let maven_failures = mavens
+        .into_values()
+        .map(|(mut value, count)| {
+            value["count"] = json!(count);
+            value
+        })
+        .collect::<Vec<_>>();
     let freshness = input
         .pointer("/freshness/status")
         .and_then(Value::as_str)
@@ -775,7 +796,7 @@ fn documentation_support_details(input: &Value, paged: bool) -> Result<Value, Cl
     Ok(json!({
         "countsScope":if paged {"PAGE"} else {"WHOLE_REPORT"},
         "resolvedServiceCount":service_count,"unresolvedServiceCount":unresolved.len(),
-        "freshnessStatus":freshness,"failures":failures,"workerFailures":worker_failures,
+        "freshnessStatus":freshness,"failures":failures,"workerFailures":worker_failures,"mavenFailures":maven_failures,
         "hasMorePages":paged && input.get("nextCursor").is_some_and(|value| !value.is_null()),
         "omittedRecordCount":if paged {input["omitted"].as_array().map_or(0, Vec::len)} else {0},
     }))
@@ -896,6 +917,132 @@ mod tests {
 
     fn doctor_check<'a>(checks: &'a [DoctorCheck], id: &str) -> &'a DoctorCheck {
         checks.iter().find(|check| check.id == id).unwrap()
+    }
+
+    fn runtime_authority_fixture() -> (tempfile::TempDir, RuntimeAuthority) {
+        use std::collections::BTreeMap;
+        let root = tempfile::tempdir().unwrap();
+        let runtime_key = format!("sha256:{}", "1".repeat(64));
+        let mut manifest = serde_json::json!({
+            "schema":crate::runtime::RUNTIME_SCHEMA,
+            "runtimeKey":runtime_key,
+            "mode":"DEVELOPMENT",
+            "manifestDigest":"",
+            "inputDigest":format!("sha256:{}", "2".repeat(64)),
+            "platformAuthority":{"fixture":true},
+            "toolchainAuthority":{"fixture":true},
+            "components":{"clew":format!("sha256:{}", "3".repeat(64))},
+            "artifacts":BTreeMap::<String, serde_json::Value>::new(),
+            "workers":BTreeMap::<String, serde_json::Value>::new(),
+        });
+        manifest["manifestDigest"] = Value::String(crate::canonical::hash(&manifest).unwrap());
+        let canonical_root = root.path().canonicalize().unwrap();
+        std::fs::write(
+            canonical_root.join("runtime.json"),
+            crate::canonical::bytes(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(canonical_root.join("READY"), format!("{runtime_key}\n")).unwrap();
+        let authority = RuntimeAuthority::load(&canonical_root).unwrap();
+        (root, authority)
+    }
+
+    fn doctor_task_authority(
+        runtime: &RuntimeAuthority,
+        compilations: &[String],
+    ) -> Vec<DoctorCheck> {
+        let matrix = support_matrix().unwrap();
+        let repo = doctor_git_fixture();
+        task_checks(
+            runtime,
+            &matrix,
+            repo.path(),
+            Some("main"),
+            &DoctorTask {
+                language: SessionLanguage::Python,
+                profile_id: "python-syntax",
+                operation: DoctorOperation::Analysis,
+                compilations,
+                committed: false,
+                working_tree: false,
+                maven_settings: None,
+            },
+        )
+    }
+
+    #[test]
+    fn doctor_compilation_limit_accepts_32_33_64_65_and_128_distinct_selectors() {
+        let (_root, runtime) = runtime_authority_fixture();
+        for count in [32usize, 33, 64, 65, 128] {
+            let compilations = (0..count)
+                .map(|index| format!("python:.:{index}"))
+                .collect::<Vec<_>>();
+            let checks = doctor_task_authority(&runtime, &compilations);
+            let authority = doctor_check(&checks, "task.compilation-authority");
+            assert!(
+                authority.passed,
+                "{count} selectors must pass compilation-authority: {authority:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn doctor_compilation_limit_rejects_129_and_zero_and_empty_selectors() {
+        let (_root, runtime) = runtime_authority_fixture();
+        let over = (0..129)
+            .map(|index| format!("python:.:{index}"))
+            .collect::<Vec<_>>();
+        let checks = doctor_task_authority(&runtime, &over);
+        let authority = doctor_check(&checks, "task.compilation-authority");
+        assert!(!authority.passed, "129 selectors must fail the count check");
+        assert!(authority.required);
+        assert_eq!(authority.remediation, Some("SELECT_EXACT_COMPILATION"));
+
+        let zero: Vec<String> = vec![];
+        let checks = doctor_task_authority(&runtime, &zero);
+        assert!(
+            !doctor_check(&checks, "task.compilation-authority").passed,
+            "empty selection must remain a failed required check"
+        );
+
+        let empty_element = vec!["".to_string()];
+        let checks = doctor_task_authority(&runtime, &empty_element);
+        assert!(
+            !doctor_check(&checks, "task.compilation-authority").passed,
+            "an empty selector element must remain a failed required check"
+        );
+    }
+
+    #[test]
+    fn doctor_compilation_limit_pass_count_does_not_make_unrelated_checks_ready() {
+        // A passing count must not hide an unrelated required failure: use a
+        // language whose tool check is unsatisfiable so the report is not ready.
+        let (_root, runtime) = runtime_authority_fixture();
+        let compilations = (0..128)
+            .map(|index| format!("python:.:{index}"))
+            .collect::<Vec<_>>();
+        let matrix = support_matrix().unwrap();
+        let repo = doctor_git_fixture();
+        let checks = task_checks(
+            &runtime,
+            &matrix,
+            repo.path(),
+            Some("main"),
+            &DoctorTask {
+                language: SessionLanguage::Python,
+                profile_id: "definitely-not-a-profile",
+                operation: DoctorOperation::Analysis,
+                compilations: &compilations,
+                committed: false,
+                working_tree: false,
+                maven_settings: None,
+            },
+        );
+        // The compilation-authority check passes on count alone, but an invalid
+        // profile keeps task.profile failing, so the overall report stays not-ready.
+        assert!(doctor_check(&checks, "task.compilation-authority").passed);
+        assert!(!doctor_check(&checks, "task.profile").passed);
+        assert!(checks.iter().any(|row| row.required && !row.passed));
     }
 
     #[test]
@@ -1053,7 +1200,7 @@ mod tests {
             .iter()
             .filter(|profile| profile["language"] == "java")
             .collect::<Vec<_>>();
-        assert_eq!(java.len(), 4);
+        assert_eq!(java.len(), 5);
         assert!(java.iter().all(|profile| {
             profile["analysisAuthority"] == "COMPILER_BACKED_JDK"
                 && matches!(profile["compilerVersion"].as_str(), Some("21" | "17+"))

@@ -186,9 +186,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     interaction.to.service.clone(),
                 ]);
             }
-            let checked = super::check::capture_selected(&repo, &selected, &scenarios)?;
+            let (saved, snapshot) = super::check::Check::retained(&repo, None, &selected)?;
+            let checked = super::check::assemble(
+                saved.input_digest,
+                saved.services,
+                saved.unresolved,
+                &interactions,
+                &scenarios,
+            )?;
             Ok(
-                json!({"status":"TRANSIENT","saved":false,"definition":definition,"context":checked.scenarios[&definition.id],"linkedSubviews":definition.process.as_ref().map(|p|&p.linked_subviews),"limitation":"Linked child explanations are checked only for an explicitly saved definition."}),
+                json!({"status":"TRANSIENT","saved":false,"snapshot":snapshot,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","definition":definition,"context":checked.scenarios[&definition.id],"linkedSubviews":definition.process.as_ref().map(|p|&p.linked_subviews),"limitation":"Linked child explanations are checked only for an explicitly saved definition."}),
             )
         }
         Command::Prepare { id, overview, .. } => {
@@ -260,12 +267,58 @@ pub fn attach(repo: &Repository, checked: &mut Check) -> Result<(), ClewError> {
     let baseline = bindings::baseline(repo)?.map(|(_, b)| b);
     attach_versions(repo, checked, baseline.as_ref())
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RetainedVersions {
+    pub operations: BTreeMap<String, Operation>,
+    pub accepted_versions: BTreeMap<String, super::review::AcceptedVersion>,
+}
+
+pub(super) fn projection(
+    definitions: &BTreeMap<String, Scenario>,
+    baseline: &bindings::Bindings,
+) -> RetainedVersions {
+    let children: BTreeSet<_> = definitions.values().flat_map(children).cloned().collect();
+    let operations = children
+        .into_iter()
+        .filter_map(|child| {
+            let child_subject = format!("scenario:{child}");
+            let root = if definitions.get(&child).is_some_and(|s| s.process.is_some()) {
+                OVERVIEW
+            } else if definitions.get(&child).is_some_and(|s| s.view.is_some()) {
+                super::dataflow::ROOT
+            } else {
+                child.as_str()
+            };
+            baseline
+                .narratives
+                .get(&child_subject)
+                .and_then(|n| n.operations.iter().find(|o| o.id == root))
+                .map(|operation| (format!("{child_subject}/{root}"), operation.clone()))
+        })
+        .collect();
+    RetainedVersions {
+        operations,
+        accepted_versions: baseline.accepted_versions.clone(),
+    }
+}
+
 pub(super) fn attach_versions(
     repo: &Repository,
     checked: &mut Check,
     baseline: Option<&bindings::Bindings>,
 ) -> Result<(), ClewError> {
     let definitions = repo.scenarios()?;
+    let interactions = repo.interactions()?;
+    let retained = baseline.map(|baseline| projection(&definitions, baseline));
+    attach_versions_from_inputs(&definitions, &interactions, checked, retained.as_ref())
+}
+pub(super) fn attach_versions_from_inputs(
+    definitions: &BTreeMap<String, Scenario>,
+    interactions: &BTreeMap<String, Interaction>,
+    checked: &mut Check,
+    baseline: Option<&RetainedVersions>,
+) -> Result<(), ClewError> {
     checked.dependencies.retain(|_, d| {
         !matches!(
             d.kind.as_str(),
@@ -282,8 +335,8 @@ pub(super) fn attach_versions(
             !b.starts_with("LINKED_PROCESS_") && !b.starts_with("PROCESS_PARTICIPANT_UNAVAILABLE:")
         });
     }
-    let membership: Vec<_> = repo.interactions()?.into_keys().collect();
-    for (id, s) in &definitions {
+    let membership: Vec<_> = interactions.keys().cloned().collect();
+    for (id, s) in definitions {
         let Some(p) = &s.process else {
             continue;
         };
@@ -346,7 +399,7 @@ pub(super) fn attach_versions(
         let mut visited = BTreeSet::new();
         components(
             id,
-            &definitions,
+            definitions,
             baseline,
             checked,
             &mut active,
@@ -379,7 +432,7 @@ pub(super) fn attach_versions(
 fn components(
     id: &str,
     defs: &BTreeMap<String, Scenario>,
-    baseline: Option<&bindings::Bindings>,
+    baseline: Option<&RetainedVersions>,
     checked: &mut Check,
     active: &mut BTreeSet<String>,
     visited: &mut BTreeSet<String>,
@@ -418,9 +471,7 @@ fn components(
         } else {
             child.as_str()
         };
-        let operation = baseline
-            .and_then(|b| b.narratives.get(&child_subject))
-            .and_then(|n| n.operations.iter().find(|o| o.id == root));
+        let operation = baseline.and_then(|b| b.operations.get(&format!("{child_subject}/{root}")));
         let version =
             baseline.and_then(|b| b.accepted_versions.get(&format!("{child_subject}/{root}")));
         let mut deps = BTreeSet::from([format!("scenario:{child}")]);

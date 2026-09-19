@@ -46,6 +46,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.TreeMap;
+import java.util.jar.JarFile;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
@@ -68,19 +69,56 @@ import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
 import javax.tools.StandardJavaFileManager;
+import javax.tools.StandardLocation;
 import javax.tools.ToolProvider;
 
 final class CodeclewJavaAnalyzer {
     private static final String SCHEMA = "codeclew-java-compiler-fact/1.0";
+    // Annotation definitions are a finite, service-wide set. Sharing them across
+    // every declaration avoids re-expanding (and re-serializing) the same
+    // definition once per method/class, which otherwise balloons the fact set.
+    private static final Map<String, Object> GLOBAL_DEFINITIONS = new TreeMap<>();
+    private static final Set<String> GLOBAL_COLLECTING = new TreeSet<>();
+    // Bound the inherited-callable catalog on a class declaration so its fact
+    // stays under the per-fact byte budget even for very wide hierarchies.
+    private static final int INHERITED_CALLABLES_BYTES = 50_000;
+    // Bound a method's documentation flow so its declaration fact stays under
+    // the per-fact byte budget; a long body is truncated with a boundary.
+    private static final int DOCUMENTATION_FLOW_BYTES = 45_000;
+    // Bound a single annotation definition so it never makes a registry shard
+    // exceed the per-fact byte budget. Oversized members are truncated and the
+    // definition is explicitly marked bounded instead of silently dropped.
+    private static final int DEFINITION_MEMBERS_BYTES = 60_000;
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 4) {
+        // Seven fixed arguments plus optional processor options and the closed
+        // no-AP execution marker and its owned empty source path.
+        if (args.length != 7 && args.length != 8 && args.length != 9 && args.length != 10) {
             System.exit(2);
         }
         Path root = Path.of(args[0]).toRealPath();
         List<Path> sources = readSources(root, Path.of(args[1]));
         List<String> classpath = readLines(Path.of(args[2]));
         String release = args[3];
+        // Generated-source output root. Empty means no annotation processing.
+        String genDir = args[4];
+        // Explicitly admitted processor class names (comma-separated). Empty
+        // means processors are not authorized by name.
+        String processorList = args[5];
+        // Explicitly admitted processor path (resolved <annotationProcessorPaths>
+        // artifacts). Empty means no processor path is admitted. When either
+        // processorList or processorPath is non-empty, annotation processing is
+        // enabled and its emitted sources/classes are isolated to genDir.
+        String processorPath = args[6];
+        // Explicitly admitted processor options (newline-separated `-A...`).
+        // Empty means no processor options are surfaced to the analyzer. They
+        // only reach a processor that was explicitly admitted by name/path.
+        String processorOptions = args.length > 7 ? args[7] : "";
+        boolean closedNoAp = args.length == 10 && "CLOSED_NO_AP".equals(args[8]);
+        String closedEmptySourcePath = args.length == 10 ? args[9] : "";
+        if (args.length >= 9 && !closedNoAp) {
+            System.exit(2);
+        }
         if (!release.matches("[0-9]+") || Integer.parseInt(release) < 17 || sources.isEmpty()) {
             System.exit(2);
         }
@@ -94,8 +132,53 @@ final class CodeclewJavaAnalyzer {
         try (StandardJavaFileManager files = compiler.getStandardFileManager(
                 diagnostics, Locale.ROOT, StandardCharsets.UTF_8)) {
             List<String> options = new ArrayList<>(List.of(
-                    "--release", release, "-proc:none", "-implicit:none", "-Xlint:none"));
-            if (!classpath.isEmpty()) {
+                    "--release", release, "-implicit:none", "-Xlint:none"));
+            if (closedNoAp) {
+                if (!processorList.isEmpty() || !processorPath.isEmpty() || !processorOptions.isEmpty()) {
+                    System.exit(2);
+                }
+                rejectJarManifestClassPath(classpath);
+                // Empty SOURCE_PATH and the exact admitted CLASS_PATH are
+                // installed through the file manager so javac cannot fall
+                // back to the process working directory or ambient lookup.
+                files.setLocationFromPaths(StandardLocation.SOURCE_PATH, List.of());
+                files.setLocationFromPaths(StandardLocation.CLASS_PATH, classpath.stream()
+                        .map(Path::of)
+                        .toList());
+                options.add("-sourcepath");
+                options.add(closedEmptySourcePath);
+            }
+            boolean processing = !processorList.isEmpty() || !processorPath.isEmpty();
+            if (!processing) {
+                // No processors are admitted: arbitrary service-discovered
+                // processors are not authorized to run or mutate the input tree.
+                options.add("-proc:none");
+            } else {
+                // Only explicitly admitted processors run, and their emitted
+                // sources/classes are isolated to the disposable genDir, never
+                // the repository input tree. Only parse()/analyze() run, so no
+                // bytecode is emitted into the repository.
+                if (!processorList.isEmpty()) {
+                    options.add("-processor");
+                    options.add(processorList);
+                }
+                if (!processorPath.isEmpty()) {
+                    options.add("-processorpath");
+                    options.add(processorPath);
+                }
+                options.add("-s");
+                options.add(genDir);
+                options.add("-d");
+                options.add(genDir + "/classes");
+                // Surface only explicitly admitted processor options; they are
+                // part of model identity and reach the admitted processor only.
+                for (String option : processorOptions.split("\n")) {
+                    if (!option.isEmpty()) {
+                        options.add(option);
+                    }
+                }
+            }
+            if (closedNoAp || !classpath.isEmpty()) {
                 options.add("-classpath");
                 options.add(String.join(System.getProperty("path.separator"), classpath));
             }
@@ -125,7 +208,49 @@ final class CodeclewJavaAnalyzer {
         for (Map<String, Object> fact : facts) {
             canonical.add(json(fact));
         }
+        // The annotation-definition registry is a bounded, service-wide set. It is
+        // emitted once here (in shards below the per-fact byte budget); every
+        // declaration reattaches it before framework interpretation.
+        for (Map<String, Object> shard : registryShards()) {
+            canonical.add(json(shard));
+        }
         canonical.forEach(System.out::println);
+    }
+
+    private static List<Map<String, Object>> registryShards() {
+        // Keep each shard under the adapter's per-fact byte budget (64 KiB) so
+        // the shared catalog is not rejected as an oversized single fact.
+        final int budget = 20_000;
+        List<Map<String, Object>> shards = new ArrayList<>();
+        Map<String, Object> shard = new TreeMap<>();
+        for (Map.Entry<String, Object> entry : GLOBAL_DEFINITIONS.entrySet()) {
+            Map<String, Object> candidate = new TreeMap<>(shard);
+            candidate.put(entry.getKey(), entry.getValue());
+            if (!shard.isEmpty() && utf8(registry(candidate)) >= budget) {
+                // Copy the completed shard: the registry must retain an
+                // independent map so a later shard.clear() cannot empty it.
+                shards.add(registry(new TreeMap<>(shard)));
+                shard.clear();
+            }
+            shard.put(entry.getKey(), entry.getValue());
+        }
+        if (!shard.isEmpty()) {
+            shards.add(registry(new TreeMap<>(shard)));
+        }
+        return shards;
+    }
+
+    private static int utf8(Map<String, Object> value) {
+        return json(value).getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static Map<String, Object> registry(Map<String, Object> definitions) {
+        Map<String, Object> registry = new LinkedHashMap<>();
+        registry.put("kind", "ANNOTATION_REGISTRY");
+        registry.put("schema", SCHEMA);
+        registry.put("authority", "JAVAC_RESOLVED_ANNOTATIONS");
+        registry.put("definitions", definitions);
+        return registry;
     }
 
     private static List<Path> readSources(Path root, Path list) throws IOException {
@@ -142,11 +267,42 @@ final class CodeclewJavaAnalyzer {
                 throw new IOException("invalid source authority");
             }
         }
-        result.sort(Comparator.naturalOrder());
         if (result.size() != new TreeSet<>(result).size()) {
             throw new IOException("duplicate source authority");
         }
         return result;
+    }
+
+    private static void rejectJarManifestClassPath(List<String> classpath) throws IOException {
+        for (String entry : classpath) {
+            Path path = Path.of(entry);
+            if (!Files.isRegularFile(path)) {
+                continue;
+            }
+            byte[] magic = new byte[4];
+            int read;
+            try (var input = Files.newInputStream(path)) {
+                read = input.read(magic);
+            }
+            boolean zipMagic = read >= 4
+                    && magic[0] == 'P'
+                    && magic[1] == 'K'
+                    && ((magic[2] == 3 && magic[3] == 4)
+                        || (magic[2] == 5 && magic[3] == 6)
+                        || (magic[2] == 7 && magic[3] == 8));
+            boolean jarNamed = path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar");
+            if (!zipMagic && !jarNamed) {
+                continue;
+            }
+            try (JarFile jar = new JarFile(path.toFile(), false)) {
+                if (jar.getManifest() != null
+                        && jar.getManifest().getMainAttributes().getValue("Class-Path") != null) {
+                    throw new IOException("JAR manifest Class-Path expansion is outside closed authority");
+                }
+            } catch (java.util.zip.ZipException error) {
+                throw new IOException("closed Java classpath archive is malformed", error);
+            }
+        }
     }
 
     private static List<String> readLines(Path path) throws IOException {
@@ -328,6 +484,23 @@ final class CodeclewJavaAnalyzer {
                         .map(p -> types.erasure(p.asType()).toString()).toList());
                 result.put("events", events);
                 result.put("boundaries", new ArrayList<>(boundaries));
+                if (utf8(result) > DOCUMENTATION_FLOW_BYTES) {
+                    // Bound the flow so the enclosing declaration fact stays under
+                    // the per-fact byte budget; retain the source-order prefix.
+                    List<Map<String, Object>> kept = new ArrayList<>();
+                    int bytes = 0;
+                    for (Map<String, Object> row : events) {
+                        int cost = utf8(row) + 2;
+                        if (!kept.isEmpty() && bytes + cost > DOCUMENTATION_FLOW_BYTES) {
+                            break;
+                        }
+                        kept.add(row);
+                        bytes += cost;
+                    }
+                    boundaries.add("DOCUMENTATION_FLOW_BYTE_BUDGET");
+                    result.put("events", kept);
+                    result.put("boundaries", new ArrayList<>(boundaries));
+                }
                 return result;
             }
 
@@ -439,38 +612,131 @@ final class CodeclewJavaAnalyzer {
                 Map<String, Object> result = new LinkedHashMap<>();
                 String owner = ownerOf(method);
                 String name = method.getSimpleName().toString();
-                if (!owner.equals("class:org.springframework.web.client.RestTemplate")) return result;
-                String verb = switch (name) {
-                    case "postForObject", "postForEntity" -> "POST";
-                    case "getForObject", "getForEntity" -> "GET";
-                    case "put" -> "PUT";
-                    case "delete" -> "DELETE";
-                    default -> null;
-                };
-                if (verb == null || call.getArguments().isEmpty()) return result;
-                result.put("adapter", "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0");
-                result.put("method", verb);
-                Tree uri = call.getArguments().get(0);
-                if (uri instanceof BinaryTree binary && binary.getKind() == Tree.Kind.PLUS
-                        && binary.getRightOperand() instanceof LiteralTree suffix
-                        && suffix.getValue() instanceof String path && path.startsWith("/")) {
-                    result.put("path", path);
-                    Element base = trees.getElement(new TreePath(getCurrentPath(), binary.getLeftOperand()));
-                    if (base instanceof VariableElement variable) {
-                        for (AnnotationMirror annotation : variable.getAnnotationMirrors()) {
-                            if (!annotation.getAnnotationType().toString().equals("org.springframework.beans.factory.annotation.Value")) continue;
-                            for (AnnotationValue value : annotation.getElementValues().values()) {
-                                if (value.getValue() instanceof String expression && expression.startsWith("${")
-                                        && expression.endsWith("}")) {
-                                    String key = expression.substring(2, expression.length() - 1).split(":", 2)[0];
-                                    result.put("destinationConfigKey", key);
+                if (owner.equals("class:org.springframework.web.client.RestTemplate")) {
+                    String verb = switch (name) {
+                        case "postForObject", "postForEntity" -> "POST";
+                        case "getForObject", "getForEntity" -> "GET";
+                        case "put" -> "PUT";
+                        case "delete" -> "DELETE";
+                        default -> null;
+                    };
+                    if (verb == null || call.getArguments().isEmpty()) return result;
+                    result.put("adapter", "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0");
+                    result.put("method", verb);
+                    Tree uri = call.getArguments().get(0);
+                    if (uri instanceof BinaryTree binary && binary.getKind() == Tree.Kind.PLUS
+                            && binary.getRightOperand() instanceof LiteralTree suffix
+                            && suffix.getValue() instanceof String path && path.startsWith("/")) {
+                        result.put("path", path);
+                        Element base = trees.getElement(new TreePath(getCurrentPath(), binary.getLeftOperand()));
+                        if (base instanceof VariableElement variable) {
+                            for (AnnotationMirror annotation : variable.getAnnotationMirrors()) {
+                                if (!annotation.getAnnotationType().toString().equals("org.springframework.beans.factory.annotation.Value")) continue;
+                                for (AnnotationValue value : annotation.getElementValues().values()) {
+                                    if (value.getValue() instanceof String expression && expression.startsWith("${")
+                                            && expression.endsWith("}")) {
+                                        String key = expression.substring(2, expression.length() - 1).split(":", 2)[0];
+                                        result.put("destinationConfigKey", key);
+                                    }
                                 }
                             }
                         }
                     }
+                    if (!result.containsKey("path")) result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                    return result;
                 }
-                if (!result.containsKey("path")) result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                if (owner.equals("class:org.springframework.web.client.RestClient")) {
+                    String verb = switch (name) {
+                        case "get" -> "GET";
+                        case "post" -> "POST";
+                        case "put" -> "PUT";
+                        case "delete" -> "DELETE";
+                        case "patch" -> "PATCH";
+                        case "head" -> "HEAD";
+                        case "options" -> "OPTIONS";
+                        case "method" -> httpMethodConstant(call);
+                        default -> null;
+                    };
+                    if (verb == null) return result;
+                    Tree uri = restClientUri(call);
+                    if (uri == null) return result;
+                    result.put("adapter", "SPRING_REST_CLIENT_URI/1.0");
+                    result.put("method", verb);
+                    // Separate a normalized request path from authority/host: a
+                    // literal relative path (or URI template) is kept as the path;
+                    // a literal absolute URL is split so its authority never
+                    // masquerades as a route path. URI templates remain templates,
+                    // never exact concrete routes. A configured client or a request
+                    // specification without a resolvable uri is not an executed
+                    // request and produces no egress (restClientUri returns null).
+                    if (uri instanceof LiteralTree literal && literal.getValue() instanceof String value) {
+                        if (value.startsWith("/")) {
+                            result.put("path", value);
+                        } else if (value.startsWith("http://") || value.startsWith("https://")) {
+                            int scheme = value.indexOf("://") + 3;
+                            int slash = value.indexOf('/', scheme);
+                            if (slash < 0) {
+                                result.put("authority", value.substring(scheme));
+                                result.put("path", "/");
+                            } else {
+                                result.put("authority", value.substring(scheme, slash));
+                                result.put("path", value.substring(slash));
+                            }
+                        } else {
+                            result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                        }
+                    } else {
+                        result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                    }
+                    return result;
+                }
                 return result;
+            }
+
+            /** Resolve the HTTP verb from a statically-typed `method(HttpMethod.CONSTANT)`
+             *  argument (the `HttpMethod` enum constant name). Non-constant or
+             *  unrecognized arguments return null so no egress is claimed. */
+            private String httpMethodConstant(MethodInvocationTree call) {
+                if (call.getArguments().isEmpty()) return null;
+                Tree arg = call.getArguments().get(0);
+                if (arg instanceof MemberSelectTree select) {
+                    String id = select.getIdentifier().toString();
+                    switch (id) {
+                        case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS" -> {
+                            return id;
+                        }
+                        default -> {
+                            return null;
+                        }
+                    }
+                }
+                return null;
+            }
+
+            /** For `restClient.verb().uri(url)` (and the longer fluent chains
+             *  `client.post().uri(url).retrieve().body(...)`), return the `url`
+             *  argument tree. The verb call (`client.post()`) sits beneath a
+             *  `MemberSelect("uri")` whose parent is the `uri(...)` invocation,
+             *  so we walk through an intervening MemberSelect before matching the
+             *  receiver/selector identity. Older forms where the uri invocation is
+             *  the direct parent are also accepted. */
+            private Tree restClientUri(MethodInvocationTree verbCall) {
+                TreePath path = getCurrentPath().getParentPath();
+                if (path == null) return null;
+                Tree leaf = path.getLeaf();
+                if (leaf instanceof MemberSelectTree select) {
+                    if (!select.getIdentifier().contentEquals("uri")) return null;
+                    path = path.getParentPath();
+                    if (path == null) return null;
+                    leaf = path.getLeaf();
+                }
+                if (leaf instanceof MethodInvocationTree chain
+                        && chain.getMethodSelect() instanceof MemberSelectTree select
+                        && select.getIdentifier().contentEquals("uri")
+                        && !chain.getArguments().isEmpty()) {
+                    return chain.getArguments().get(0);
+                }
+                return null;
             }
         }
 
@@ -624,8 +890,8 @@ final class CodeclewJavaAnalyzer {
 
         /** Exports only compiler observations; framework rules run over the sealed result. */
         private final class JvmAnnotationReader {
-            private final Map<String, Object> definitions = new TreeMap<>();
-            private final Set<String> collecting = new TreeSet<>();
+            private final Map<String, Object> definitions = GLOBAL_DEFINITIONS;
+            private final Set<String> collecting = GLOBAL_COLLECTING;
             private final Set<String> boundaries = new TreeSet<>();
             private int depth;
             private int visits;
@@ -637,6 +903,7 @@ final class CodeclewJavaAnalyzer {
 
             Map<String, Object> readInherited(TypeElement owner) {
                 List<Map<String, Object>> callables = new ArrayList<>();
+                int callablesBytes = 0;
                 if (!owner.getModifiers().contains(Modifier.ABSTRACT) && !owner.getKind().isInterface()) {
                     Set<String> seen = new TreeSet<>();
                     int members = 0;
@@ -646,16 +913,25 @@ final class CodeclewJavaAnalyzer {
                                 || member.getEnclosingElement().equals(owner) || method.getModifiers().contains(Modifier.ABSTRACT)
                                 || member.getEnclosingElement().toString().equals("java.lang.Object")) continue;
                         if (executableDescriptor(method) == null) { boundaries.add("INHERITED_CALLABLE_IDENTITY_UNRESOLVED"); continue; }
-                        if (seen.add(methodIdentity(method))) callables.add(callable(method, owner, true));
+                        if (!seen.add(methodIdentity(method))) continue;
+                        Map<String, Object> candidate = callable(method, owner, true);
+                        int cost = utf8(candidate);
+                        if (!callables.isEmpty() && callablesBytes + cost > INHERITED_CALLABLES_BYTES) {
+                            boundaries.add("INHERITED_CALLABLES_TRUNCATED");
+                            break;
+                        }
+                        callables.add(candidate);
+                        callablesBytes += cost;
                     }
                 }
                 return finish(classIdentity(owner), callables, owner);
             }
 
             private Map<String, Object> finish(String identity, List<Map<String, Object>> callables, TypeElement owner) {
-                List<Map<String, Object>> types = types(owner);
+                // Definitions and the class hierarchy are emitted once as a shared
+                // registry; consumers reattach them before framework interpretation.
                 return Map.of("schema", "jvm-annotation-facts/1.0", "authority", "JAVAC_RESOLVED_ANNOTATIONS",
-                        "declaration", identity, "definitions", definitions, "types", types, "callables", callables,
+                        "declaration", identity, "definitions", Map.of(), "types", List.of(), "callables", callables,
                         "boundaries", new ArrayList<>(boundaries),
                         "coverage", Map.of("status", boundaries.isEmpty() ? "COMPLETE" : "PARTIAL", "scope", "REACHABLE_ANNOTATIONS_AND_HIERARCHY"));
             }
@@ -674,6 +950,8 @@ final class CodeclewJavaAnalyzer {
                                 && elements.overrides(method, base, owner)) bases.add(method(base, List.of()));
                     }
                 }
+                // The callable carries the full annotated type hierarchy so Spring consumers
+                // resolve interface/superclass route prefixes and inherited context.
                 return Map.of("method", method(method, bases), "classes", types(owner), "beanClass", classIdentity(owner),
                         "abstractMethod", method.getModifiers().contains(Modifier.ABSTRACT), "inherited", inherited,
                         "implementationSource", trees.getPath(method) != null);
@@ -701,13 +979,15 @@ final class CodeclewJavaAnalyzer {
             }
 
             private List<Map<String, Object>> types(TypeElement owner) {
-                return hierarchy(owner).stream().map(type -> {
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("identity", classIdentity(type));
-                    row.put("annotations", annotationUses(type));
-                    row.put("directSupertypes", types.directSupertypes(type.asType()).stream().map(Object::toString).toList());
-                    return row;
-                }).toList();
+                return hierarchy(owner).stream().map(this::typeRow).toList();
+            }
+
+            private Map<String, Object> typeRow(TypeElement type) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("identity", classIdentity(type));
+                row.put("annotations", annotationUses(type));
+                row.put("directSupertypes", types.directSupertypes(type.asType()).stream().map(Object::toString).toList());
+                return row;
             }
 
             private Map<String, Object> origin(Element element, AnnotationMirror annotation) {
@@ -761,7 +1041,24 @@ final class CodeclewJavaAnalyzer {
                         if (member.getDefaultValue() != null) row.put("defaultValue", value(member.getDefaultValue(), member, 0));
                         members.put(member.getSimpleName().toString(), row);
                     }
-                    definitions.put(id, Map.of("origin", origin(declaration, null), "annotations", annotationUses(declaration), "members", members));
+                    Map<String, Object> complete = Map.of("origin", origin(declaration, null), "annotations", annotationUses(declaration), "members", members);
+                    if (utf8(complete) > DEFINITION_MEMBERS_BYTES) {
+                        // Bound oversized definitions explicitly; never silently drop
+                        // a record or let it inflate a registry shard past the fact
+                        // budget. The framework treats a bounded definition as PARTIAL.
+                        Map<String, Object> boundedMembers = new TreeMap<>();
+                        int bytes = 0;
+                        for (Map.Entry<String, Object> member : members.entrySet()) {
+                            int cost = utf8((Map<String, Object>) member.getValue()) + 2;
+                            if (!boundedMembers.isEmpty() && bytes + cost > DEFINITION_MEMBERS_BYTES) break;
+                            boundedMembers.put(member.getKey(), member.getValue());
+                            bytes += cost;
+                        }
+                        boundaries.add("ANNOTATION_DEFINITION_BOUNDED");
+                        definitions.put(id, Map.of("origin", origin(declaration, null), "annotations", annotationUses(declaration), "members", boundedMembers, "bounded", List.of("DEFINITION_MEMBER_BUDGET")));
+                    } else {
+                        definitions.put(id, complete);
+                    }
                 } finally { collecting.remove(id); }
             }
 

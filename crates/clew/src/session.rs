@@ -65,6 +65,11 @@ pub struct SessionAuthority {
     pub model_cache_authority: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maven_settings_digest: Option<String>,
+    /// Durable support-matrix profile selected for this session. Carried through
+    /// committed-context and working-tree entrypoints so generation admission
+    /// (e.g. writable-then-seal) is not a documentation-only boolean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_tree: Option<WorkingTreeSourceBinding>,
     pub created_unix_ms: u128,
@@ -345,6 +350,7 @@ impl SessionAuthority {
             external_build_state,
             working_tree_profile,
             None,
+            None,
         )
     }
 
@@ -359,6 +365,7 @@ impl SessionAuthority {
         external_build_state: Option<&Path>,
         working_tree_profile: Option<&str>,
         maven_settings: Option<&Path>,
+        profile: Option<&str>,
     ) -> Result<Self, ClewError> {
         if maven_settings.is_some()
             && (language != SessionLanguage::Java || !repo.join("pom.xml").is_file())
@@ -482,6 +489,7 @@ impl SessionAuthority {
             maven_settings_digest: maven_settings
                 .as_ref()
                 .map(|settings| settings.digest.clone()),
+            profile: profile.map(str::to_owned),
             working_tree: captured.as_ref().map(|(_, binding)| binding.clone()),
             created_unix_ms: unix_ms(),
         };
@@ -1330,7 +1338,21 @@ fn validate_session_authority_shape(
                 && authority.model_cache_policy == ModelCachePolicy::NonCacheable
         }
     };
+    // A durable profile is meaningful for committed Java contexts (e.g.
+    // writable-then-seal). It must be non-empty when present and is rejected
+    // for working-tree sessions, which carry their profile in the binding.
+    let profile_valid = match (&authority.profile, &authority.working_tree) {
+        (Some(profile), _) if profile.is_empty() => false,
+        (Some(_), Some(_)) => false,
+        (Some(_), None) => {
+            matches!(authority.language, SessionLanguage::Java)
+                || authority.language == SessionLanguage::Kotlin
+                || authority.language == SessionLanguage::Rust
+        }
+        (None, _) => true,
+    };
     if !source_valid
+        || !profile_valid
         || authority
             .maven_settings_digest
             .as_ref()
@@ -2096,6 +2118,7 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
         model_cache_policy: ModelCachePolicy::NonCacheable,
         model_cache_authority: None,
         maven_settings_digest: None,
+        profile: None,
         working_tree: None,
         created_unix_ms: 1,
     };
@@ -3293,8 +3316,11 @@ fn canonical_compilations(
     language: SessionLanguage,
     compilations: &[String],
 ) -> Result<Vec<String>, ClewError> {
-    if compilations.is_empty() || compilations.len() > 64 {
-        return Err(invalid("session must select between 1 and 64 compilations"));
+    if compilations.is_empty() || compilations.len() > crate::limits::MAX_SELECTED_COMPILATIONS {
+        return Err(invalid(&format!(
+            "session must select between 1 and {} compilations",
+            crate::limits::MAX_SELECTED_COMPILATIONS
+        )));
     }
     if compilations
         .iter()
@@ -3317,7 +3343,7 @@ fn model_cache_policy_is_valid(language: SessionLanguage, policy: ModelCachePoli
 
 fn compilations_are_canonical(language: SessionLanguage, compilations: &[String]) -> bool {
     !compilations.is_empty()
-        && compilations.len() <= 64
+        && compilations.len() <= crate::limits::MAX_SELECTED_COMPILATIONS
         && compilations
             .iter()
             .all(|compilation| valid_compilation(language, compilation))
@@ -3395,6 +3421,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compilation_limit_accepts_distinct_java_selectors_at_64_65_and_128() {
+        for count in [64usize, 65, 128] {
+            let selectors = (0..count)
+                .map(|index| format!(":m{index}/main"))
+                .collect::<Vec<_>>();
+            let canonical = canonical_compilations(SessionLanguage::Java, &selectors).unwrap();
+            assert_eq!(canonical.len(), count);
+            assert!(compilations_are_canonical(
+                SessionLanguage::Java,
+                &canonical
+            ));
+        }
+    }
+
+    #[test]
+    fn compilation_limit_rejects_129_distinct_java_selectors() {
+        let selectors = (0..129)
+            .map(|index| format!(":m{index}/main"))
+            .collect::<Vec<_>>();
+        let error = canonical_compilations(SessionLanguage::Java, &selectors).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.contains("between 1 and 128"));
+        assert!(!compilations_are_canonical(
+            SessionLanguage::Java,
+            &selectors
+        ));
+    }
+
+    #[test]
+    fn compilation_limit_still_rejects_duplicates_and_bad_grammar() {
+        let duplicate = vec![":m0/main".into(), ":m0/main".into()];
+        let duplicate_error =
+            canonical_compilations(SessionLanguage::Java, &duplicate).unwrap_err();
+        assert!(duplicate_error.message.contains("duplicated"));
+        let bad_grammar = vec![":m0/main".into(), "not-a-selector".into()];
+        assert!(canonical_compilations(SessionLanguage::Java, &bad_grammar).is_err());
+        let bad_source_set = vec![":m0/compile".into()];
+        assert!(
+            canonical_compilations(SessionLanguage::Java, &bad_source_set).is_err(),
+            "non-main/test source set must be rejected"
+        );
+    }
+
+    #[test]
+    fn compilation_limit_accepts_distinct_kotlin_selectors_at_128() {
+        // Kotlin shares the colon-prefixed module/source-set selector grammar;
+        // distinct keys exercise the same count guard.
+        let selectors = (0..128)
+            .map(|index| format!(":k{index}/main"))
+            .collect::<Vec<_>>();
+        let canonical = canonical_compilations(SessionLanguage::Kotlin, &selectors).unwrap();
+        assert_eq!(canonical.len(), 128);
+    }
+
+    #[test]
     fn context_stdout_limit_includes_the_trailing_newline() {
         let at_limit = canonical::bytes(&json!("x".repeat(MAX_CONTEXT_STDOUT_BYTES - 3))).unwrap();
         let over_limit =
@@ -3423,6 +3504,7 @@ mod tests {
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
             maven_settings_digest: None,
+            profile: None,
             working_tree: None,
             created_unix_ms: 1,
         };
@@ -4694,5 +4776,116 @@ mod tests {
         );
         assert_eq!(unavailable.status, "UNAVAILABLE");
         assert_eq!(unavailable.remediation_id, "CHECK_REPOSITORY_LOCATOR");
+    }
+
+    fn profile_session(language: SessionLanguage, profile: Option<&str>) -> SessionAuthority {
+        let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut authority = SessionAuthority {
+            schema: SESSION_SCHEMA.into(),
+            authority_digest: String::new(),
+            session_id: format!("session:{digest}"),
+            repository_key: format!("repo:{digest}"),
+            base_revision: "1111111111111111111111111111111111111111".into(),
+            target_ref: "refs/heads/main".into(),
+            target_oid: "1111111111111111111111111111111111111111".into(),
+            runtime_key: format!("runtime:{digest}"),
+            runtime_mode: RuntimeMode::Development,
+            language,
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
+            model_cache_policy: ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            maven_settings_digest: None,
+            profile: profile.map(str::to_owned),
+            working_tree: None,
+            created_unix_ms: 1,
+        };
+        authority.authority_digest = session_authority_digest(&authority).unwrap();
+        authority
+    }
+
+    #[test]
+    fn committed_session_carries_durable_writable_then_seal_profile() {
+        let writable = profile_session(
+            SessionLanguage::Java,
+            Some(crate::generation_service::JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE),
+        );
+        assert!(validate_session_authority_shape(&writable, &writable.session_id).is_ok());
+
+        // Read-only profile is also valid for committed Java.
+        let read_only = profile_session(SessionLanguage::Java, Some("java-17plus-maven-read-only"));
+        assert!(validate_session_authority_shape(&read_only, &read_only.session_id).is_ok());
+
+        // Empty profile is rejected; a profile on a working-tree session is too.
+        let empty = profile_session(SessionLanguage::Java, Some(""));
+        assert!(validate_session_authority_shape(&empty, &empty.session_id).is_err());
+    }
+
+    #[test]
+    fn writable_gate_derives_from_committed_and_working_tree_routes() {
+        use crate::generation_service::wants_writable_then_seal;
+        fn set_working_binding(session: &mut SessionAuthority, profile_id: &str) {
+            session.working_tree = Some(WorkingTreeSourceBinding {
+                schema: "codeclew-working-tree-source/1.0".into(),
+                source_selection: "WORKING_TREE".into(),
+                operation: "MUTATION".into(),
+                profile_id: profile_id.into(),
+                snapshot: CasObject::for_bytes(SNAPSHOT_SCHEMA, b"fixture").unwrap(),
+                capture_scope: "ALL_TRACKED_AND_NON_IGNORED_UNTRACKED_INPUTS".into(),
+                excluded_categories: vec![],
+                consistency:
+                    "TWO_COMPLETE_CONTENT_PASSES_AND_STABLE_HEAD_INDEX_INVENTORY;NOT_ATOMIC".into(),
+                limits: crate::repository_snapshot::WorkingTreeLimits::default(),
+            });
+        }
+        // The exact derivation used by public dispatch
+        // (ensure_session_generation): committed profile first, else the
+        // working-tree binding profile_id.
+        let derive = |session: &SessionAuthority| {
+            session
+                .profile
+                .as_deref()
+                .or_else(|| {
+                    session
+                        .working_tree
+                        .as_ref()
+                        .map(|binding| binding.profile_id.as_str())
+                })
+                .map(wants_writable_then_seal)
+                .unwrap_or(false)
+        };
+
+        // Committed route: a writable-then-seal profile gates the writable build.
+        let committed = profile_session(
+            SessionLanguage::Java,
+            Some(crate::generation_service::JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE),
+        );
+        assert!(committed.working_tree.is_none());
+        assert!(derive(&committed));
+
+        // Negative reuse: a read-only committed profile must NOT gate writable.
+        let read_only = profile_session(SessionLanguage::Java, Some("java-17plus-maven-read-only"));
+        assert!(!derive(&read_only));
+
+        // Working-tree route: the binding profile_id gates writable, and the
+        // committed profile field is not carried (source isolation).
+        let mut working = profile_session(SessionLanguage::Java, None);
+        set_working_binding(
+            &mut working,
+            crate::generation_service::JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE,
+        );
+        assert!(
+            working.profile.is_none(),
+            "working-tree must not carry a committed profile"
+        );
+        assert!(derive(&working));
+
+        // Negative reuse on the working-tree route: a read-only profile_id must
+        // not gate writable.
+        set_working_binding(&mut working, "java-17plus-maven-read-only");
+        assert!(!derive(&working));
+
+        // No profile at all (legacy read-only) derives no writable gate.
+        assert!(!derive(&profile_session(SessionLanguage::Java, None)));
     }
 }

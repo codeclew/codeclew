@@ -79,7 +79,10 @@ fn path(id: &str) -> Result<String, ClewError> {
     Ok(format!("docs/generated/{id}/publication.json"))
 }
 fn load(repo: &Repository, id: &str) -> Result<Publication, ClewError> {
-    let p: Publication = store::read(&repo.path(&path(id)?)?, 64 * 1024 * 1024)?;
+    let p: Publication = store::read(
+        &repo.path(&path(id)?)?,
+        super::check::PORTABLE_CACHE_MAX_BYTES,
+    )?;
     if p.schema != "codeclew-documentation-publication/1.0"
         || p.id != id
         || p.ordinal == 0
@@ -99,7 +102,7 @@ fn integrity(repo: &Repository, p: &Publication) -> Result<Vec<String>, ClewErro
     for (name, expected) in &p.files {
         let file = repo.path(&format!("docs/generated/{}/{name}", p.id))?;
         match fs::metadata(&file) {
-            Ok(m) if m.is_file() && m.len() <= 64 * 1024 * 1024 => {
+            Ok(m) if m.is_file() && m.len() <= super::check::PORTABLE_CACHE_MAX_BYTES => {
                 if canonical::hash_bytes(&fs::read(&file).map_err(io_error)?) != *expected {
                     missing.push(name.clone());
                 }
@@ -299,7 +302,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             "sections"=>p.sections.iter().map(|(id,state)|json!({"id":id,"state":state})).collect(),
             "explanations"=>p.explanation_versions.iter().map(|(id,version)|json!({"id":id,"version":version})).collect(),
             "files"=>p.files.iter().map(|(id,hash)|json!({"id":id,"digest":hash})).collect(),
-            "inputs"=>{let value:Value=store::read(&repo.path(&format!("docs/generated/{id}/inputs.json"))?,64*1024*1024)?;value.as_object().ok_or_else(||invalid("invalid frozen inputs"))?.iter().map(|(id,value)|json!({"id":id,"record":value})).collect()},
+            "inputs"=>{let value:Value=store::read(&repo.path(&format!("docs/generated/{id}/inputs.json"))?,super::check::PORTABLE_CACHE_MAX_BYTES)?;value.as_object().ok_or_else(||invalid("invalid frozen inputs"))?.iter().map(|(id,value)|json!({"id":id,"record":value})).collect()},
             "evidence"=>p.evidence_packages.iter().map(|id|json!({"id":id,"status":if packages.contains(id){"MISSING_OR_DAMAGED"}else{"RETAINED"}})).collect(),
             _=>return Err(invalid("unknown history record kind")),
         };

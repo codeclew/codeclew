@@ -1,7 +1,7 @@
 //! Separate machine-owned records preserve authored YAML comments and manual prose.
 use super::{bytes, digest, invalid, io_error, model::*};
 use crate::error::{ClewError, ErrorCode};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -15,6 +15,23 @@ pub const MAX_RECORDS: usize = 1024;
 pub struct Repository {
     pub root: PathBuf,
     pub manifest: Manifest,
+}
+
+/// Parsed documentation inputs. The serialized fields preserve the existing
+/// input digest contract. Capturing this value is a bounded sequential read,
+/// not an atomic filesystem snapshot or authority for native analyzer reuse.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositoryInputs {
+    pub manifest: Manifest,
+    pub services: BTreeMap<String, Service>,
+    pub interactions: BTreeMap<String, Interaction>,
+    pub scenarios: BTreeMap<String, Scenario>,
+    pub entities: BTreeMap<String, super::entities::Entity>,
+    pub notes: BTreeMap<String, Value>,
+    pub evidence_expectations: BTreeMap<String, super::evidence_package::Expectation>,
+    pub update_policies: BTreeMap<String, super::updates::Policy>,
+    pub update_state: super::updates::State,
 }
 
 pub struct WriteLock(PathBuf);
@@ -317,10 +334,37 @@ impl Repository {
     }
 
     pub fn input_digest(&self) -> Result<String, ClewError> {
+        digest(&self.inputs()?)
+    }
+
+    pub fn inputs(&self) -> Result<RepositoryInputs, ClewError> {
+        self.ensure_manifest_current()?;
         // Parse independently authored files without rewriting their bytes/comments.
-        digest(
-            &json!({"manifest":self.manifest,"services":self.services()?,"interactions":self.interactions()?,"scenarios":self.scenarios()?,"entities":super::entities::records(self)?,"notes":super::notes::snapshot(self)?,"evidenceExpectations":super::evidence_package::policies(self)?,"updatePolicies":super::updates::policies(self)?,"updateState":super::updates::state(self)?}),
-        )
+        Ok(RepositoryInputs {
+            manifest: self.manifest.clone(),
+            services: self.services()?,
+            interactions: self.interactions()?,
+            scenarios: self.scenarios()?,
+            entities: super::entities::records(self)?,
+            notes: super::notes::snapshot(self)?,
+            evidence_expectations: super::evidence_package::policies(self)?,
+            update_policies: super::updates::policies(self)?,
+            update_state: super::updates::state(self)?,
+        })
+    }
+
+    /// Repository instances capture the parsed manifest at open time. Reject
+    /// use of an old instance after a meaningful manifest edit so identity and
+    /// rendering cannot disagree about the title.
+    fn ensure_manifest_current(&self) -> Result<(), ClewError> {
+        let current: Manifest = read(&self.path("codeclew-docs.yaml")?, MAX_RECORD)?;
+        if current != self.manifest {
+            return Err(ClewError::new(
+                ErrorCode::WwConflict,
+                "documentation manifest changed since this repository was opened; reopen the repository",
+            ));
+        }
+        Ok(())
     }
 
     pub fn put<T: Serialize>(
@@ -428,7 +472,9 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
     let supported = match s.language.as_str() {
         "java" => matches!(
             s.profile.as_str(),
-            "java-17plus-maven-read-only" | "java-17plus-gradle-read-only"
+            "java-17plus-maven-read-only"
+                | "java-17plus-gradle-read-only"
+                | "java-17plus-maven-writable-then-seal"
         ),
         "kotlin" => matches!(
             s.profile.as_str(),
@@ -469,17 +515,67 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
             "source configuration requires the source-syntax profile",
         ));
     }
-    if !source_profile && (!supported || s.compilation.is_empty()) {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedLanguage,
-            "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
-        ));
+    if !source_profile {
+        if !supported {
+            return Err(ClewError::new(
+                ErrorCode::UnsupportedLanguage,
+                "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
+            ));
+        }
+        // Explicit plural compilation selection: normalize and validate the
+        // authored set. A plural `compilations` set and a legacy singular
+        // `compilation` are mutually exclusive; duplicates and empty selectors
+        // are rejected so the same scope cannot multiply work or create
+        // ambiguous authority.
+        if !s.compilations.is_empty() && !s.compilation.is_empty() {
+            return Err(invalid(
+                "service declares both a singular compilation and a plural compilations set",
+            ));
+        }
+        let compilations = s.effective_compilations();
+        if compilations.is_empty() {
+            return Err(invalid(
+                "service requires at least one compilation selector",
+            ));
+        }
+        if compilations.len() > crate::limits::MAX_SELECTED_COMPILATIONS {
+            return Err(invalid(format!(
+                "at most {} compilation selectors may be selected",
+                crate::limits::MAX_SELECTED_COMPILATIONS
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for selector in &compilations {
+            if selector.is_empty() {
+                return Err(invalid("a compilation selector must not be empty"));
+            }
+            if !seen.insert(selector) {
+                return Err(invalid("a compilation selector must not be duplicated"));
+            }
+        }
     }
     if s.contract_files.len() > 128 {
         return Err(invalid("at most 128 contract files may be selected"));
     }
     for file in &s.contract_files {
         relative(file)?;
+    }
+    if s.annotation_processor_paths.len() > 32 {
+        return Err(invalid(
+            "at most 32 annotation processor paths may be selected",
+        ));
+    }
+    for coordinate in &s.annotation_processor_paths {
+        let parts = coordinate.split(':').collect::<Vec<_>>();
+        if parts.len() != 3
+            || parts.iter().any(|part| part.is_empty())
+            || coordinate.contains('/')
+            || coordinate.contains('\\')
+        {
+            return Err(invalid(
+                "annotation processor path must be a Maven coordinate group:artifact:version",
+            ));
+        }
     }
     if let Some(template) = &s.source_link_template
         && (!safe_url(template)
@@ -581,9 +677,11 @@ mod tests {
             source: None,
             modules: None,
             compilation: ":/main".into(),
+            compilations: Vec::new(),
             target_ref: "main".into(),
             source_link_template: None,
             contract_files: vec![],
+            annotation_processor_paths: vec![],
         }
     }
     fn setup() -> (tempfile::TempDir, Repository) {
@@ -602,6 +700,66 @@ mod tests {
         assert_eq!(r.service_add(s, Some(&first)).unwrap()["status"], "CURRENT");
         let reopened = Repository::open(t.path()).unwrap();
         assert_eq!(reopened.services().unwrap().len(), 1);
+    }
+    #[test]
+    fn detects_concurrent_manifest_edit_but_accepts_semantically_equal_yaml() {
+        let (t, r) = setup();
+        let before = r.input_digest().unwrap();
+        let manifest_path = r.root.join("codeclew-docs.yaml");
+
+        fs::write(
+            &manifest_path,
+            "# Formatting and comments are not part of manifest identity.\n\ntitle: Architecture\nschema: codeclew-documentation/1.0\n",
+        )
+        .unwrap();
+        assert_eq!(r.input_digest().unwrap(), before);
+
+        fs::write(
+            &manifest_path,
+            "schema: codeclew-documentation/1.0\ntitle: Changed title\n",
+        )
+        .unwrap();
+        let error = r.input_digest().unwrap_err();
+        assert_eq!(error.code, ErrorCode::WwConflict);
+        assert!(error.message.contains("reopen the repository"));
+        let write_error = r.service_add(service("orders"), Some(&before)).unwrap_err();
+        assert_eq!(write_error.code, ErrorCode::WwConflict);
+        assert!(!r.root.join("catalog/services/orders.json").exists());
+
+        let reopened = Repository::open(t.path()).unwrap();
+        let after = reopened.input_digest().unwrap();
+        assert_ne!(after, before);
+        reopened
+            .service_add(service("orders"), Some(&after))
+            .unwrap();
+        assert!(reopened.root.join("catalog/services/orders.json").exists());
+    }
+    #[test]
+    fn compilation_limit_service_accepts_128_and_rejects_129_selectors() {
+        let (t, r) = setup();
+        let mut s = service("sales");
+        let selectors = (0..128)
+            .map(|index| format!(":m{index}/main"))
+            .collect::<Vec<_>>();
+        s.compilation = String::new();
+        s.compilations = selectors.clone();
+        assert_eq!(s.compilations.len(), 128);
+        r.service_add(s.clone(), Some(&r.input_digest().unwrap()))
+            .unwrap();
+
+        let mut over = s;
+        over.compilations = (0..129)
+            .map(|index| format!(":m{index}/main"))
+            .collect::<Vec<_>>();
+        assert!(super::validate_service(&over).is_err());
+        assert!(
+            Repository::open(t.path())
+                .unwrap()
+                .services()
+                .unwrap()
+                .iter()
+                .all(|x| x.1.id != "over")
+        );
     }
     #[test]
     fn rejects_unknown_fields_and_dangling_references() {
@@ -651,5 +809,31 @@ mod tests {
         assert!(r.path("docs/link/escape").is_err());
         let _lock = r.lock().unwrap();
         assert!(r.lock().is_err());
+    }
+
+    #[test]
+    fn per_service_annotation_processor_paths_are_validated() {
+        let mut s = service("orders");
+        s.annotation_processor_paths = vec!["org.projectlombok:lombok:1.18.22".into()];
+        assert!(validate_service(&s).is_ok());
+
+        // Malformed or oversized selections are rejected.
+        for bad in [
+            "org.projectlombok",
+            "org.projectlombok:lombok",
+            "org.projectlombok:lombok:",
+            "org.projectlombok:lombok:1.18.22:extra",
+            "org/projectlombok:lombok:1.18.22",
+        ] {
+            let mut s = service("orders");
+            s.annotation_processor_paths = vec![bad.into()];
+            let error = validate_service(&s).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidInput, "{bad}: {error}");
+        }
+
+        let mut s = service("orders");
+        s.annotation_processor_paths = (0..33).map(|i| format!("org.example:p{i}:1.0")).collect();
+        let error = validate_service(&s).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
     }
 }

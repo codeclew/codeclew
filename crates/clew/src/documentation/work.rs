@@ -1,7 +1,7 @@
 //! Immutable evidence work and bounded, recorded reads for external authors.
 use super::{
     bindings, bytes,
-    check::{self, Check},
+    check::Check,
     cli::{self, ContextArgs, ContextFormat},
     digest, invalid, io_error,
     model::*,
@@ -26,6 +26,9 @@ pub enum Command {
         subject: String,
         #[arg(long)]
         input: PathBuf,
+        /// Select saved evidence; defaults to the latest saved check, never captures.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
     Run {
         #[arg(long)]
@@ -76,6 +79,8 @@ pub struct Request {
     pub audience: String,
     #[serde(default)]
     pub entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_profile: Option<String>,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
@@ -118,6 +123,8 @@ pub struct Work {
     pub subject: String,
     pub request: Request,
     pub checked: Check,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
     pub retained: Option<Narrative>,
     pub external_inputs: BTreeMap<String, Value>,
     pub handles: BTreeMap<String, Handle>,
@@ -125,6 +132,90 @@ pub struct Work {
     pub obligations: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_reasons: Vec<Value>,
+}
+
+const WORK_SCHEMA: &str = "codeclew-documentation-work/1.0";
+const WORK_MANIFEST_SCHEMA: &str = "codeclew-documentation-work-manifest/1.0";
+
+/// The persisted work record keeps the immutable check in the content-addressed
+/// cache instead of duplicating its (potentially very large) hydrated form.
+/// `Work` remains the public, hydrated runtime representation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredWork {
+    schema: String,
+    id: String,
+    subject: String,
+    request: Request,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot: Option<String>,
+    retained: Option<Narrative>,
+    external_inputs: BTreeMap<String, Value>,
+    handles: BTreeMap<String, Handle>,
+    influence: BTreeMap<String, String>,
+    obligations: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    review_reasons: Vec<Value>,
+    evidence_snapshot: String,
+}
+
+impl StoredWork {
+    fn from_runtime(work: &Work, evidence_snapshot: String) -> Self {
+        Self {
+            schema: WORK_MANIFEST_SCHEMA.into(),
+            id: String::new(),
+            subject: work.subject.clone(),
+            request: work.request.clone(),
+            snapshot: work.snapshot.clone(),
+            retained: work.retained.clone(),
+            external_inputs: work.external_inputs.clone(),
+            handles: work.handles.clone(),
+            influence: work.influence.clone(),
+            obligations: work.obligations.clone(),
+            review_reasons: work.review_reasons.clone(),
+            evidence_snapshot,
+        }
+    }
+
+    fn validate_identity(&self, id: &str) -> Result<(), ClewError> {
+        if self.schema != WORK_MANIFEST_SCHEMA {
+            return Err(invalid("unsupported stored work schema"));
+        }
+        let recorded = self.id.clone();
+        let mut canonical = self.clone();
+        canonical.id.clear();
+        let expected = digest(&canonical)?[7..].to_owned();
+        if recorded != id || expected != id {
+            return Err(invalid("work evidence digest or schema is invalid"));
+        }
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot != &self.evidence_snapshot)
+        {
+            return Err(invalid(
+                "work snapshot authority disagrees with stored evidence",
+            ));
+        }
+        Ok(())
+    }
+
+    fn into_runtime(self, checked: Check) -> Work {
+        Work {
+            schema: WORK_SCHEMA.into(),
+            id: self.id,
+            subject: self.subject,
+            request: self.request,
+            checked,
+            snapshot: self.snapshot,
+            retained: self.retained,
+            external_inputs: self.external_inputs,
+            handles: self.handles,
+            influence: self.influence,
+            obligations: self.obligations,
+            review_reasons: self.review_reasons,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -150,17 +241,24 @@ fn directory(id: &str) -> Result<String, ClewError> {
     Ok(format!(".codeclew/work/{id}"))
 }
 pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
-    let mut work: Work = store::read(
-        &repo.path(&format!("{}/work.json", directory(id)?))?,
-        64 * 1024 * 1024,
-    )?;
+    let path = repo.path(&format!("{}/work.json", directory(id)?))?;
+    if let Ok(stored) = store::read::<StoredWork>(&path, 64 * 1024 * 1024) {
+        // Validate the manifest identity before opening its referenced evidence.
+        stored.validate_identity(id)?;
+        validate_context_profile(&stored.subject, &stored.request)?;
+        let checked = Check::load_snapshot(repo, &stored.evidence_snapshot)?;
+        return Ok(stored.into_runtime(checked));
+    }
+    // Immutable work/1.0 records predate the manifest and remain self-contained.
+    let mut work: Work = store::read(&path, 64 * 1024 * 1024)?;
     let recorded = work.id.clone();
     work.id.clear();
     let expected = digest(&work)?[7..].to_owned();
     work.id = recorded;
-    if work.id != id || expected != id || work.schema != "codeclew-documentation-work/1.0" {
+    if work.id != id || expected != id || work.schema != WORK_SCHEMA {
         return Err(invalid("work evidence digest or schema is invalid"));
     }
+    validate_context_profile(&work.subject, &work.request)?;
     Ok(work)
 }
 pub fn read_state(repo: &Repository, id: &str) -> Result<ReadState, ClewError> {
@@ -180,10 +278,12 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             root,
             subject,
             input,
-        } => prepare(
+            snapshot,
+        } => prepare_with_snapshot(
             &Repository::open(&root)?,
             subject,
             store::read(&input, store::MAX_RECORD)?,
+            snapshot.as_deref(),
         ),
         Command::Run { root, work, config } => {
             super::agent_jobs::run(&Repository::open(&root)?, &work, config.as_deref())
@@ -211,6 +311,36 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 }
 
 pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<Value, ClewError> {
+    prepare_with_snapshot(repo, subject, request, None)
+}
+
+fn validate_context_profile(subject: &str, request: &Request) -> Result<(), ClewError> {
+    match request.context_profile.as_deref() {
+        None => Ok(()),
+        Some("declarations-v1")
+            if subject
+                .strip_prefix("service:")
+                .is_some_and(|id| !id.is_empty())
+                && request.entrypoint.as_deref() == Some("section-entities") =>
+        {
+            Ok(())
+        }
+        Some("declarations-v1") => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: declarations-v1 requires a service work request for section-entities",
+        )),
+        Some(profile) => Err(invalid(format!(
+            "CONTEXT_PROFILE_UNSUPPORTED: unsupported immutable work context profile: {profile}"
+        ))),
+    }
+}
+
+/// Snapshot selection is explicit and never falls back to source acquisition.
+pub fn prepare_with_snapshot(
+    repo: &Repository,
+    subject: String,
+    request: Request,
+    snapshot: Option<&str>,
+) -> Result<Value, ClewError> {
     if request.schema != "codeclew-documentation-work-request/1.0"
         || request.audience.trim().is_empty()
         || request.audience.len() > 512
@@ -224,6 +354,7 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
     let (kind, id) = subject
         .split_once(':')
         .ok_or_else(|| invalid("work subject must be service:ID or scenario:ID"))?;
+    validate_context_profile(&subject, &request)?;
     let selected = match kind {
         "service" if repo.services()?.contains_key(id) => BTreeSet::from([id.to_owned()]),
         "scenario"
@@ -242,8 +373,7 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
             ));
         }
     };
-    let checked = check::run_selected(repo, &selected)?;
-    checked.save(repo)?;
+    let (checked, evidence_snapshot) = Check::retained(repo, snapshot, &selected)?;
     let baseline = bindings::baseline(repo)?;
     let retained = baseline
         .as_ref()
@@ -376,6 +506,7 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
         subject,
         request,
         checked,
+        snapshot: Some(evidence_snapshot.clone()),
         retained,
         external_inputs,
         handles,
@@ -383,10 +514,11 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
         obligations,
         review_reasons,
     };
-    work.id = digest(&work)?[7..].into();
+    let mut stored = StoredWork::from_runtime(&work, evidence_snapshot);
+    stored.id = digest(&stored)?[7..].into();
     // Validate selection before committing an unusable work object.
     rows(&work, &Selection::default())?;
-    let encoded = bytes(&work)?;
+    let encoded = bytes(&stored)?;
     if encoded.len() > 64 * 1024 * 1024 {
         return Err(ClewError::new(
             ErrorCode::SliceBudgetExceeded,
@@ -405,14 +537,15 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
                 "documentation declarations changed during work preparation",
             ));
         }
-        let path = format!("{}/work.json", directory(&work.id)?);
+        let path = format!("{}/work.json", directory(&stored.id)?);
         if repo.path(&path)?.exists() {
-            load(repo, &work.id)?;
+            load(repo, &stored.id)?;
         } else {
             repo.atomic(&path, &encoded)?;
         }
     }
-    read(repo, &work.id, Selection::default())
+    work.id = stored.id;
+    read_loaded(repo, &work, Selection::default())
 }
 
 // Only explicitly admitted root-relative files and the protected notes tree are read.
@@ -421,10 +554,17 @@ pub fn capture_inputs(
     repo: &Repository,
     request: &Request,
 ) -> Result<BTreeMap<String, Value>, ClewError> {
+    capture_inputs_with_membership(repo, request).map(|(_, inputs)| inputs)
+}
+
+pub fn capture_inputs_with_membership(
+    repo: &Repository,
+    request: &Request,
+) -> Result<(BTreeSet<String>, BTreeMap<String, Value>), ClewError> {
     if request.external_inputs.len() > 64 {
         return Err(invalid("select at most 64 external inputs"));
     }
-    let mut paths: BTreeSet<String> = request.external_inputs.iter().cloned().collect();
+    let mut note_paths = BTreeSet::new();
     let mut pending = vec!["notes".to_owned()];
     let mut traversed = 0;
     while let Some(relative) = pending.pop() {
@@ -436,7 +576,7 @@ pub fn capture_inputs(
         }
         let path = repo.path(&relative)?;
         if !path.exists() {
-            paths.insert(relative);
+            note_paths.insert(relative);
             continue;
         }
         let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
@@ -450,9 +590,11 @@ pub fn capture_inputs(
                 pending.push(format!("{relative}/{name}"));
             }
         } else {
-            paths.insert(relative);
+            note_paths.insert(relative);
         }
     }
+    let mut paths = note_paths.clone();
+    paths.extend(request.external_inputs.iter().cloned());
     let mut out = BTreeMap::new();
     for relative in paths {
         let path = repo.path(&relative)?;
@@ -473,7 +615,24 @@ pub fn capture_inputs(
         };
         out.insert(relative, value);
     }
-    Ok(out)
+    Ok((note_paths, out))
+}
+
+fn reference_roles(work: &Work, reference: &str) -> Vec<&'static str> {
+    let Some(handle) = work.handles.get(reference) else {
+        return Vec::new();
+    };
+    let mut roles = Vec::new();
+    if super::proposals::evidence_reference_allowed(handle) {
+        roles.push("evidence");
+    }
+    if super::proposals::operation_reference_allowed(work, handle) {
+        roles.push("operation");
+    }
+    if super::proposals::gap_reference_allowed(handle) {
+        roles.push("gap");
+    }
+    roles
 }
 
 fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
@@ -490,6 +649,13 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
         return Err(invalid(
             "choose up to eight references, eight symbols, or one bounded query",
         ));
+    }
+    if work.request.context_profile.as_deref() == Some("declarations-v1")
+        && selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+    {
+        return profile_rows(work);
     }
     let (kind, id) = work
         .subject
@@ -587,6 +753,7 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
             dependency_ids: Vec::new(),
             format: ContextFormat::Raw,
             refresh: false,
+            snapshot: None,
             cursor: None,
             limit: 100,
         };
@@ -659,6 +826,10 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
             items.push(json!({"kind":"OBLIGATION","id":format!("obligation-{}",index+1),"record":obligation}));
         }
     }
+    annotate_rows(work, items)
+}
+
+fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewError> {
     // Dynamic view/process facts outside this work subject are not supplied
     // or admitted as implicit influence of a service-only explanation.
     items.retain(|item| {
@@ -679,6 +850,12 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
         )) {
             item["reference"] = json!(reference);
         }
+        item["referenceRoles"] = json!(
+            item["reference"]
+                .as_str()
+                .map(|reference| reference_roles(work, reference))
+                .unwrap_or_default()
+        );
         for field in ["sourceIds", "dependencyIds"] {
             if let Some(ids) = item["record"][field].as_array() {
                 let references: Vec<_> = ids
@@ -707,9 +884,154 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     Ok(items)
 }
 
+fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
+    let (kind, service) = work
+        .subject
+        .split_once(':')
+        .ok_or_else(|| invalid("invalid stored work subject"))?;
+    if kind != "service" {
+        return Err(invalid("declarations-v1 requires a service work subject"));
+    }
+    let mut items = Vec::new();
+    let mut selected_membership = Vec::new();
+    let mut deferred_membership = Vec::new();
+    let mut add = |kind: &str, id: String, record: Value| {
+        let item_id = id.clone();
+        selected_membership.push(json!([kind, id]));
+        items.push(json!({"kind":kind,"id":item_id,"record":record}));
+    };
+
+    if let Some(section) = super::sections::records(service, work.retained.as_ref())
+        .into_iter()
+        .find(|record| record["id"] == "section-entities")
+    {
+        add(
+            "SECTION",
+            section["id"].as_str().unwrap_or_default().to_owned(),
+            section,
+        );
+    }
+    let mut source_ids = BTreeSet::new();
+    for observation in work.checked.dependencies.values() {
+        let in_scope = observation.service == service || observation.kind == "DOMAIN_ENTITY";
+        if !in_scope {
+            continue;
+        }
+        if matches!(observation.kind.as_str(), "SYNTAX_DETAIL" | "FLOW") {
+            deferred_membership.push(json!(["DEPENDENCY", observation.id]));
+            continue;
+        }
+        if !work.influence.contains_key(&observation.id) {
+            continue;
+        }
+        for source_id in &observation.source_ids {
+            source_ids.insert(source_id.clone());
+        }
+        add(
+            "DEPENDENCY",
+            observation.id.clone(),
+            serde_json::to_value(observation).map_err(io_error)?,
+        );
+    }
+    let sources = work.checked.sources();
+    for source_id in source_ids {
+        let source = sources.get(&source_id).ok_or_else(|| {
+            invalid(format!(
+                "CONTEXT_PROFILE_MISSING_SOURCE: selected dependency references missing source {source_id}"
+            ))
+        })?;
+        add(
+            "SOURCE",
+            source_id,
+            serde_json::to_value(source).map_err(io_error)?,
+        );
+    }
+    for (index, record) in work.review_reasons.iter().enumerate() {
+        add("REVIEW_REASON", format!("review-{index}"), record.clone());
+    }
+    for (path, record) in &work.external_inputs {
+        add("EXTERNAL_INPUT", path.clone(), record.clone());
+    }
+    for (index, obligation) in work.obligations.iter().enumerate() {
+        add(
+            "OBLIGATION",
+            format!("obligation-{}", index + 1),
+            obligation.clone(),
+        );
+    }
+    let deferred_sections: Vec<_> = super::sections::records(service, work.retained.as_ref())
+        .into_iter()
+        .filter(|section| section["id"] != "section-entities")
+        .map(|section| {
+            json!({
+                "id": section["id"],
+                "required": section["required"],
+                "status": section["status"],
+            })
+        })
+        .collect();
+    for section in &deferred_sections {
+        deferred_membership.push(json!(["SECTION", section["id"]]));
+    }
+    deferred_membership.push(json!([
+        "BOUNDARY_INVENTORY",
+        format!("inventory:{service}")
+    ]));
+
+    let inventory = super::sections::inventory(service, &work.checked);
+    let known_section_references: Vec<_> = work
+        .handles
+        .iter()
+        .filter(|(_, handle)| handle.kind == "SECTION")
+        .take(5)
+        .map(|(reference, _)| reference.clone())
+        .collect();
+    let inventory_digest = digest(&inventory)?;
+    let summary = json!({
+        "profile": "declarations-v1",
+        "focus": "section-entities",
+        "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+        "selectedCount": selected_membership.len(),
+        "deferredCount": deferred_membership.len(),
+        "selectedMembershipDigest": digest(&selected_membership)?,
+        "deferredMembershipDigest": digest(&deferred_membership)?,
+        "coverage": work.checked.services.get(service).map(|e| e.coverage.clone()).unwrap_or_default(),
+        "gaps": inventory["gaps"],
+        "sourceBoundaries": inventory["sourceBoundaries"],
+        "deferredSections": deferred_sections,
+        "inventoryDigest": inventory_digest.clone(),
+        "inventory": {
+            "publicBoundaries": inventory["publicBoundaries"].as_array().map_or(0, |v| v.len()),
+            "internalCallables": inventory["internalCallables"].as_array().map_or(0, |v| v.len()),
+            "digest": inventory_digest,
+        },
+        "expansion": {
+            "kind": "*",
+            "query": {"kind":"*","symbolContains":""},
+            "sectionReferences": known_section_references,
+        },
+        "deferredByProfile": true,
+    });
+    items.push(json!({
+        "kind":"CONTEXT_PROFILE",
+        "id":"context-profile:declarations-v1",
+        "record":summary,
+    }));
+    annotate_rows(work, items)
+}
+
 pub fn read(repo: &Repository, id: &str, selection: Selection) -> Result<Value, ClewError> {
     let work = load(repo, id)?;
-    let items = rows(&work, &selection)?;
+    read_loaded(repo, &work, selection)
+}
+
+pub(super) fn read_loaded(
+    repo: &Repository,
+    work: &Work,
+    selection: Selection,
+) -> Result<Value, ClewError> {
+    let id = work.id.as_str();
+    let items = rows(work, &selection)?;
     let membership: Vec<_> = items.iter().map(|i| json!([i["kind"], i["id"]])).collect();
     let membership_digest = digest(&membership)?;
     let mut binding_selection = selection.clone();
@@ -738,6 +1060,18 @@ pub fn read(repo: &Repository, id: &str, selection: Selection) -> Result<Value, 
         "contextDigest":work.checked.context_digest,"inputDigest":work.checked.input_digest,"authority":"IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
         "influenceCoverage":"RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED","membershipDigest":membership_digest,
         "total":items.len(),"items":[],"omitted":[],"nextCursor":null});
+    if work.subject.starts_with("scenario:") {
+        output["subjectReference"] = json!({
+            "reference": work.subject,
+            "referenceRoles": ["operation", "gap"]
+        });
+    }
+    if let Some(snapshot) = &work.snapshot {
+        output["snapshot"] = json!(snapshot);
+    }
+    if let Some(profile) = &work.request.context_profile {
+        output["contextProfile"] = json!(profile);
+    }
     let mut supplied = Vec::new();
     let mut omitted = Vec::new();
     let mut out = Vec::new();
@@ -808,6 +1142,7 @@ pub fn read(repo: &Repository, id: &str, selection: Selection) -> Result<Value, 
 /// Omitted records are an evidence-budget problem, never a model-reasoning problem.
 pub fn initial_context_complete(state: &ReadState) -> bool {
     let mut cursor: Option<String> = None;
+    let mut membership: Option<String> = None;
     for _ in 0..=state.receipts.len() {
         let Some(receipt) = state.receipts.values().find(|r| {
             r.selection.references.is_empty()
@@ -818,6 +1153,13 @@ pub fn initial_context_complete(state: &ReadState) -> bool {
         }) else {
             return false;
         };
+        if membership
+            .as_deref()
+            .is_some_and(|digest| digest != receipt.membership_digest)
+        {
+            return false;
+        }
+        membership = Some(receipt.membership_digest.clone());
         if receipt.next_cursor.is_none() {
             return true;
         }

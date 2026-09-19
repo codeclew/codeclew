@@ -23,20 +23,26 @@ use crate::incremental_v2::{
 };
 use crate::java_adapter_v2::{
     JAVA_COMPILER_FACTS_CAPABILITY, JAVA_LANGUAGE, JavaAdapterV2, JavaCompilerFact,
-    JavaCompilerIndex, build_java_compiler_index, java_adapter_digest, java_scope_digest,
+    JavaCompilerIndex, build_java_compiler_index, build_java_compiler_index_with_prepared_inputs,
+    java_adapter_digest, java_scope_digest,
+};
+use crate::java_analysis_inputs::{
+    JavaAnalysisInputPool, JavaPreparedInputsResult, JavaPreparedRefusal,
+    PreparedJavaAnalysisInputs,
 };
 use crate::java_project_model::{
-    JAVA_MODEL_SCHEMA, JavaOperationalModel, extract_java_model_with_settings,
+    JAVA_MODEL_SCHEMA, JavaOperationalModel, extract_java_models_with_settings_and_diagnostics,
 };
 use crate::kotlin_adapter_v2::{
     KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinGenerationDriver,
-    ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace, ProjectNativeKotlinWorkspaceProfile,
-    kotlin_adapter_digest, semantic_scope_digest,
+    ProjectNativeKotlinAttempt, ProjectNativeKotlinOperationalTiming, ProjectNativeKotlinWorkspace,
+    ProjectNativeKotlinWorkspaceProfile, kotlin_adapter_digest, semantic_scope_digest,
 };
 use crate::kotlin_engine::{
     KOTLIN_ADAPTER_CONTRACT_ID, KotlinEngineCapabilities, KotlinProjectSemantics,
     KotlinSemanticEngine,
 };
+use crate::maven_diagnostics::DebugOutput;
 use crate::python_adapter_v2::{
     MAX_SOURCE_FILE_BYTES as MAX_PYTHON_SOURCE_FILE_BYTES,
     MAX_SOURCE_FILES as MAX_PYTHON_SOURCE_FILES,
@@ -87,6 +93,23 @@ use std::os::fd::AsRawFd;
 
 pub const READY_GENERATION_SCHEMA: &str = "codeclew-ready-generation/2.0";
 pub const READY_GENERATION_SET_SCHEMA: &str = "codeclew-ready-generation-set/1.0";
+/// Immutable persisted authority for the exact source bytes a Java generation
+/// was indexed against. Present only for the writable-then-seal profile, where
+/// the build may rewrite source in place and the original repository snapshot
+/// no longer matches the coordinates emitted by the analyzer.
+pub const TRANSFORMED_SOURCE_SCHEMA: &str = "codeclew-transformed-source/1.0";
+/// Schema for a single persisted transformed source file object inside a
+/// transformed-source manifest.
+pub const TRANSFORMED_SOURCE_FILE_SCHEMA: &str = "codeclew-transformed-source-file/1.0";
+/// Authority label for source text read from the persisted transformed bytes.
+pub const TRANSFORMED_SOURCE_AUTHORITY: &str = "TRANSFORMED_SOURCE";
+pub(crate) const JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE: &str =
+    "java-17plus-maven-writable-then-seal";
+
+/// Whether the given profile opts into writable-then-seal Maven materialization.
+pub(crate) fn wants_writable_then_seal(profile: &str) -> bool {
+    profile == JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE
+}
 const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/3.0";
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
@@ -109,6 +132,9 @@ struct GenerationWorkspaceEvidence {
     workspace_set_authorizations: u64,
     authorized_compilation_count: u64,
     legacy_open_project_calls: u64,
+    /// Additive operational timing only; absent in older private evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operational_timing: Option<ProjectNativeKotlinOperationalTiming>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +156,12 @@ pub struct ReadyGeneration {
     pub derived_input_manifest: CasObject,
     pub generation: CasObject,
     pub query_index: CasObject,
+    /// Immutable transformed source bytes this generation was indexed against
+    /// (writable-then-seal only). Absent for read-only generations and for all
+    /// non-Java language authorities. When present, documentation must read
+    /// source from these bytes, never slice the original repository snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transformed_source: Option<CasObject>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +177,11 @@ pub struct ReadyGenerationSet {
     pub coverage: String,
     pub certainty: String,
     pub obligations: Vec<String>,
+    /// Shared immutable transformed source bytes for the set (writable-then-seal
+    /// only). Mirrors each compilation's `transformed_source` and is used by
+    /// documentation to read the exact bytes a generation was indexed against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transformed_source: Option<CasObject>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,8 +233,32 @@ struct IncrementalHead {
     ready: CasObject,
 }
 
+const JAVA_ANALYSIS_CHECKPOINT_SCHEMA: &str = "codeclew-java-analysis-checkpoint/1.0";
+const JAVA_ANALYSIS_REQUEST_SCHEMA: &str = "codeclew-java-analysis-request/1.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JavaAnalysisCheckpoint {
+    schema: String,
+    input: CasObject,
+    ready: CasObject,
+}
+
+/// A request observation is separate from the immutable production receipt.
+/// A reused Java result retains its original Full/CompilerProcess evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JavaAnalysisRequest {
+    schema: String,
+    compilation: String,
+    eligibility: String,
+    lookup: String,
+    java_analyzer_starts: u64,
+    input: CasObject,
+    generation: CasObject,
+}
+
 struct LoadedIncrementalHead {
-    head: IncrementalHead,
     receipt: IncrementalReceipt,
     ready: ReadyGeneration,
 }
@@ -228,6 +289,26 @@ impl IncrementalHeadState {
 
 pub fn ensure_session_generation(
     session: &SessionAuthority,
+) -> Result<ReadyGenerationSet, ClewError> {
+    // Derive the writable-then-seal gate from durable session authority: the
+    // committed-context profile field or the working-tree binding profile.
+    // This keeps generation admission consistent across context-open and
+    // working-tree entrypoints rather than a documentation-only boolean.
+    let profile = session.profile.as_deref().or_else(|| {
+        session
+            .working_tree
+            .as_ref()
+            .map(|binding| binding.profile_id.as_str())
+    });
+    let writable_then_seal = profile.map(wants_writable_then_seal).unwrap_or(false);
+    ensure_session_generation_with_diagnostics(session, None, writable_then_seal, &[])
+}
+
+pub(crate) fn ensure_session_generation_with_diagnostics(
+    session: &SessionAuthority,
+    debug_output: Option<&DebugOutput>,
+    writable_then_seal: bool,
+    extra_annotation_processors: &[String],
 ) -> Result<ReadyGenerationSet, ClewError> {
     let state = StateAuthority::process_default()?;
     let session_root = state.session_root(&session.session_id)?;
@@ -299,6 +380,9 @@ pub fn ensure_session_generation(
                 &compilation_root,
                 &binding_path,
                 "",
+                debug_output,
+                writable_then_seal,
+                extra_annotation_processors,
             );
         }
         SessionLanguage::JavaScript => {
@@ -521,6 +605,91 @@ fn rust_head_matches_session(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Copy a directory tree, preserving files, directories and symlinks, without
+/// following symlinks (so derived mounts are never pulled in).
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<(), ClewError> {
+    // The classes directory lives under the derived-state `target` mount (a
+    // symlink), so resolve it to the real build output before walking.
+    let src = src.canonicalize().map_err(io_error)?;
+    std::fs::create_dir_all(dst).map_err(io_error)?;
+    for entry in walkdir::WalkDir::new(&src) {
+        let entry = entry.map_err(|error| internal(error.to_string()))?;
+        let relative = entry
+            .path()
+            .strip_prefix(&src)
+            .map_err(|_| internal("build class path escapes its root"))?;
+        let target = dst.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target).map_err(io_error)?;
+        } else if entry.file_type().is_symlink() {
+            #[cfg(unix)]
+            {
+                let link = std::fs::read_link(entry.path()).map_err(io_error)?;
+                std::os::unix::fs::symlink(link, &target).map_err(io_error)?;
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = entry;
+                let _ = &target;
+            }
+        } else if entry.file_type().is_file() {
+            std::fs::copy(entry.path(), &target).map_err(io_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Preserve a compilation's compiled output (`target/classes` and, for test
+/// compilations, `target/test-classes`) into a stable directory under the
+/// attempt root. The derived-state mounts (`target`/`build`) are unmounted
+/// before analysis, so a classpath entry pointing at `.../target/classes`
+/// becomes dangling and the analyzer cannot resolve build-generated types
+/// (jaxws, annotation processors, MapStruct impls). Copying the compiled
+/// output before the unmount lets the analyzer reach it in Phase 2.
+fn preserve_compiled_classes(
+    attempt_root: &std::path::Path,
+    model: &mut JavaOperationalModel,
+) -> Result<(), ClewError> {
+    if model.classpath_paths.len() != model.authority.classpath.len() {
+        return Err(internal(
+            "Java classpath paths differ from admitted entries",
+        ));
+    }
+    let mut next = Vec::with_capacity(model.classpath_paths.len());
+    for (path, admitted) in model.classpath_paths.iter().zip(&model.authority.classpath) {
+        let is_classes = path.ends_with("target/classes") || path.ends_with("target/test-classes");
+        if is_classes {
+            if crate::java_project_model::classpath_authority(path)? != *admitted {
+                return Err(ClewError::new(
+                    ErrorCode::InputMutated,
+                    "compiled Java output changed after model admission",
+                ));
+            }
+            // All compilation models share this attempt. A per-model numeric
+            // slot can overwrite another module's classes. Content identity
+            // keeps distinct outputs separate and shares genuinely equal ones.
+            let dest = attempt_root
+                .join("analysis-classes")
+                .join(digest_component(&admitted.digest)?);
+            if !dest.exists() {
+                copy_tree(path, &dest)?;
+            }
+            if crate::java_project_model::classpath_authority(&dest)? != *admitted {
+                return Err(ClewError::new(
+                    ErrorCode::InputMutated,
+                    "preserved Java output differs from admitted classpath",
+                ));
+            }
+            next.push(dest);
+        } else {
+            next.push(path.clone());
+        }
+    }
+    model.classpath_paths = next;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ensure_java_generation_set(
     session: &SessionAuthority,
     state: &StateAuthority,
@@ -530,32 +699,156 @@ fn ensure_java_generation_set(
     compilation_root: &Path,
     binding_path: &Path,
     binding_prefix: &str,
+    debug_output: Option<&DebugOutput>,
+    writable_then_seal: bool,
+    extra_annotation_processors: &[String],
 ) -> Result<ReadyGenerationSet, ClewError> {
-    let workspace = ProjectNativeKotlinWorkspace::prepare_language(
+    let mut workspace = ProjectNativeKotlinWorkspace::prepare_language(
         state,
         store,
         snapshot,
         &session.compilations,
         "java",
     )?;
+    if writable_then_seal {
+        eprintln!(
+            "CODEDEBUG ensure_java_generation_set writable_then_seal=true repo={}",
+            workspace.repository().display()
+        );
+        crate::repository_snapshot::make_files_writable(workspace.repository())?;
+        eprintln!("CODEDEBUG make_files_writable returned OK");
+        workspace.set_allow_materialization_mutation(true);
+    }
     let sources = effective_java_sources(snapshot)?;
-    let mut results = Vec::with_capacity(session.compilations.len());
-    for compilation in &session.compilations {
+    // Phase 1: extract the model and capture the (transformed) source state for
+    // every compilation. Transformations run here while the tree is writable.
+    // No indexing or publication happens yet.
+    let settings = session.maven_settings()?;
+    let models = extract_java_models_with_settings_and_diagnostics(
+        workspace.repository(),
+        &session.compilations,
+        settings.as_ref(),
+        debug_output,
+        extra_annotation_processors,
+    )?;
+    let mut captured = Vec::with_capacity(models.len());
+    for model in models {
+        let compilation = model.authority.compilation.clone();
         let component = digest_component(
             &canonical::hash(&json!({
                 "schema":"codeclew-session-java-compilation-binding/1.0",
                 "compilation":compilation,
+                "writableThenSeal":writable_then_seal,
             }))
             .map_err(internal)?,
         )?
         .to_owned();
-        let settings = session.maven_settings()?;
-        let model = extract_java_model_with_settings(
-            workspace.repository(),
-            compilation,
-            settings.as_ref(),
-        )?;
-        let source_content_digests = java_source_content_digests(store, &sources, &model)?;
+        let (source_content_digests, before_digests, changed_files) = if writable_then_seal {
+            let after = transformed_java_source_digests(
+                workspace.repository(),
+                &model.authority.source_files,
+            )?;
+            // "before" = CAS snapshot digests for the same source files.
+            let before = java_source_content_digests(store, &sources, &model)?;
+            let changed = before
+                .iter()
+                .filter_map(|(path, d)| {
+                    after
+                        .get(path)
+                        .filter(|a| *a != d)
+                        .map(|a| (path.clone(), d.clone(), a.clone()))
+                })
+                .collect::<Vec<_>>();
+            (after, Some(before), changed)
+        } else {
+            let digests = java_source_content_digests(store, &sources, &model)?;
+            (digests, None, Vec::new())
+        };
+        captured.push((
+            model,
+            source_content_digests,
+            before_digests,
+            changed_files,
+            compilation.clone(),
+            compilation_root.join(format!("{binding_prefix}{component}.json")),
+        ));
+    }
+    // Seal the transformed materialization read-only BEFORE indexing. The
+    // derived-state mounts (build/target/.gradle symlink stubs) must be removed
+    // first: sealing before unmount makes the parent directories read-only, so
+    // removing the mounts would fail with Permission denied. Unmounting first
+    // (without dropping the workspace) keeps the repo path alive so it can be
+    // sealed, then finish() verifies/cleans up.
+    if writable_then_seal {
+        // Preserve each compilation's compiled output before unmounting the
+        // derived-state mounts, so the Phase-2 analyzer can still resolve the
+        // build-generated types (jaxws, annotation processors, MapStruct impls)
+        // even though `.../target/classes` becomes a dangling path after
+        // `unmount_derived_state`.
+        let attempt_root = workspace
+            .repository()
+            .parent()
+            .ok_or_else(|| internal("attempt workspace root is unavailable"))?
+            .to_owned();
+        for (model, _, _, _, _, _) in captured.iter_mut() {
+            preserve_compiled_classes(&attempt_root, model)?;
+        }
+        workspace.unmount_derived_state()?;
+        eprintln!("CODEDEBUG seal_tree PRE-INDEX START");
+        if let Err(e) = crate::repository_snapshot::seal_tree(workspace.repository()) {
+            eprintln!("CODEDEBUG seal_tree PRE-INDEX ERR {e}");
+            return Err(e);
+        }
+        eprintln!("CODEDEBUG seal_tree PRE-INDEX OK");
+    }
+    // Prepare the whole selected set before sealing the shared input pool.
+    // One request owns one JDK image and content-deduplicated classpath copies.
+    let mut input_pool = JavaAnalysisInputPool::new(state, java_adapter_digest()?)?;
+    let mut prepared_inputs = Vec::with_capacity(captured.len());
+    for (model, source_digests, _, _, _, _) in &captured {
+        prepared_inputs.push(if session.working_tree.is_some() {
+            JavaPreparedInputsResult::Refused(JavaPreparedRefusal::LegacyInputAuthority)
+        } else {
+            input_pool.prepare(
+                workspace.repository(),
+                model,
+                source_digests,
+                writable_then_seal,
+            )?
+        });
+    }
+    input_pool.seal()?;
+    // Phase 2: index/validate/publish every compilation against the sealed,
+    // immutable source state. The analyzer only reads; emitted processor output
+    // is isolated to disposable dirs, so sealing before analysis is safe.
+    let mut results = Vec::with_capacity(captured.len());
+    for (
+        (model, source_content_digests, before_digests, changed_files, compilation, binding_path),
+        preparation,
+    ) in captured.into_iter().zip(prepared_inputs)
+    {
+        let (prepared, eligibility) = match &preparation {
+            JavaPreparedInputsResult::Eligible(inputs) => (Some(inputs.as_ref()), "ELIGIBLE"),
+            JavaPreparedInputsResult::Refused(reason) => (None, reason.code()),
+        };
+        if writable_then_seal {
+            // The sealed tree must still match the captured transformed state;
+            // otherwise a transform mutated sources after capture and the index
+            // would be attributed to bytes it never analyzed.
+            let sealed = transformed_java_source_digests(
+                workspace.repository(),
+                &model.authority.source_files,
+            )?;
+            if source_content_digests
+                .iter()
+                .any(|(path, expected)| sealed.get(path) != Some(expected))
+            {
+                return Err(ClewError::new(
+                    ErrorCode::UnsupportedProjectConfiguration,
+                    "transformed source changed between capture and seal; refusing to publish a generation attributed to other bytes",
+                ));
+            }
+        }
         results.push(ensure_java_generation(
             session,
             state,
@@ -564,10 +857,17 @@ fn ensure_java_generation_set(
             workspace.repository(),
             model,
             source_content_digests,
-            compilation,
-            &compilation_root.join(format!("{binding_prefix}{component}.json")),
+            &compilation,
+            &binding_path,
+            writable_then_seal,
+            before_digests.as_ref(),
+            &changed_files,
+            debug_output,
+            prepared,
+            eligibility,
         )?);
     }
+    input_pool.close()?;
     workspace.finish()?;
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(state, binding_path, &ready)?;
@@ -585,10 +885,13 @@ fn ensure_java_generation(
     source_content_digests: BTreeMap<String, String>,
     compilation: &str,
     binding_path: &Path,
+    writable_then_seal: bool,
+    before_digests: Option<&BTreeMap<String, String>>,
+    changed_files: &[(String, String, String)],
+    debug_output: Option<&DebugOutput>,
+    prepared: Option<&PreparedJavaAnalysisInputs>,
+    eligibility: &str,
 ) -> Result<ReadyGeneration, ClewError> {
-    if state.private_file_exists(binding_path)? {
-        return load_ready(state, store, binding_path, session, compilation, false);
-    }
     let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
         ClewError::new(
             ErrorCode::WorkerPreparationRequired,
@@ -599,7 +902,7 @@ fn ensure_java_generation(
         JAVA_MODEL_SCHEMA,
         &canonical::bytes(&model.authority).map_err(internal)?,
     )?;
-    let toolchain = store.put(
+    let legacy_toolchain = store.put(
         "codeclew-java-toolchain-authority/1.0",
         &canonical::bytes(&json!({
             "schema":"codeclew-java-toolchain-authority/1.0",
@@ -609,6 +912,41 @@ fn ensure_java_generation(
         }))
         .map_err(internal)?,
     )?;
+    let (toolchain, canonical_options) = if let Some(prepared) = prepared {
+        prepared.require_sealed()?;
+        let image = store.put(
+            "codeclew-java-execution-image/1.0",
+            &canonical::bytes(&prepared.authority.jdk).map_err(internal)?,
+        )?;
+        // Store the shared JDK manifest once; each scope binds a CAS reference.
+        let mut policy = serde_json::to_value(&prepared.authority).map_err(internal)?;
+        let fields = policy
+            .as_object_mut()
+            .ok_or_else(|| internal("Java analysis authority is not an object"))?;
+        fields.remove("jdk");
+        fields.remove("schema");
+        let inputs = store.put(
+            "codeclew-java-closed-analysis-authority/1.0",
+            &canonical::bytes(&json!({
+                "schema":"codeclew-java-closed-analysis-authority/1.0",
+                "policy":policy,
+                "executionImage":image,
+            }))
+            .map_err(internal)?,
+        )?;
+        let options = store.put(
+            "codeclew-java-analysis-options/1.0",
+            &canonical::bytes(&json!({
+                "schema":"codeclew-java-analysis-options/1.0",
+                "model":model_object,
+                "analysisInputs":inputs,
+            }))
+            .map_err(internal)?,
+        )?;
+        (image, options)
+    } else {
+        (legacy_toolchain, model_object.clone())
+    };
     let mut classpath = model
         .authority
         .classpath
@@ -634,7 +972,7 @@ fn ensure_java_generation(
         classpath,
         toolchain,
         plugins: Vec::new(),
-        canonical_options: model_object.clone(),
+        canonical_options,
         dependency_compilation_ids: Vec::new(),
         operations: Vec::new(),
         origin: DescriptorOrigin::ProjectNative,
@@ -664,15 +1002,64 @@ fn ensure_java_generation(
         &snapshot_object,
         compilation,
         &derived_input_manifest,
+        writable_then_seal,
     )?;
     let _lock = GenerationLock::acquire(state, &generation_key)?;
-    if state.private_file_exists(binding_path)? {
-        return load_ready(state, store, binding_path, session, compilation, false);
-    }
     let adapter_digest = java_adapter_digest()?;
     let compiler_store =
         CompilerStoreKey::create("java-compiler-1", adapter_digest.clone(), &descriptor)?;
-    let index = build_java_compiler_index(repository, &model, &source_content_digests)?;
+    // A partial session binding is only a publication side effect. Fresh native
+    // modeling may change external classpath inputs while snapshot/revision stay
+    // equal. Recover only through the current complete-input checkpoint key.
+    let checkpoint_path = if prepared.is_some() {
+        let path = java_analysis_checkpoint_path(state, session, &generation_key)?;
+        if let Some(ready) = load_java_analysis_checkpoint(
+            state,
+            store,
+            &path,
+            session,
+            compilation,
+            &generation_key,
+            &derived_input_manifest,
+            &compiler_store,
+        )? {
+            write_java_analysis_request(state, binding_path, &ready, eligibility, true)?;
+            write_private_atomic(state, binding_path, &ready)?;
+            return Ok(ready);
+        }
+        Some(path)
+    } else {
+        None
+    };
+    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
+    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
+    journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
+    journal.transition(AttemptState::Analyzing, "Java compiler analyzer started")?;
+    let indexed = if let Some(prepared) = prepared {
+        build_java_compiler_index_with_prepared_inputs(
+            &model,
+            prepared,
+            &source_content_digests,
+            debug_output,
+        )
+    } else {
+        build_java_compiler_index(
+            repository,
+            &model,
+            &source_content_digests,
+            writable_then_seal,
+            before_digests,
+            changed_files,
+            debug_output,
+        )
+    };
+    let index = match indexed {
+        Ok(index) => index,
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "Java compiler analyzer failed")?;
+            return Err(error);
+        }
+    };
     let adapter = JavaAdapterV2::new(
         adapter_digest,
         descriptor.toolchain.digest.clone(),
@@ -682,10 +1069,6 @@ fn ensure_java_generation(
     )?;
     let mut registry = AdapterRegistry::default();
     registry.register_adapter(Arc::new(adapter))?;
-    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
-    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
-    journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
-    journal.transition(AttemptState::Analyzing, "Java compiler adapter DAG started")?;
     let request = AnalyzeGenerationRequest {
         schema: ANALYSIS_REQUEST_SCHEMA.into(),
         attempt_id: journal.attempt().attempt_id.clone(),
@@ -727,6 +1110,16 @@ fn ensure_java_generation(
             &generation,
             completeness.clone(),
         )?;
+        // Persist the exact transformed source bytes (writable-then-seal only)
+        // so documentation never slices the original snapshot with transformed
+        // coordinates. None for read-only generations and all non-Java paths.
+        let transformed_source = persist_transformed_source(
+            store,
+            repository,
+            &model.authority.source_files,
+            index.provenance.as_deref(),
+            index.source_state.as_ref(),
+        )?;
         let ready = ReadyGeneration {
             schema: READY_GENERATION_SCHEMA.into(),
             generation_key,
@@ -753,6 +1146,7 @@ fn ensure_java_generation(
             derived_input_manifest,
             generation: generation_object,
             query_index,
+            transformed_source,
         };
         verify_ready(store, &ready, session, compilation, true)?;
         Ok(ready)
@@ -760,6 +1154,10 @@ fn ensure_java_generation(
     match result {
         Ok(ready) => {
             journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
+            if let Some(path) = &checkpoint_path {
+                publish_java_analysis_checkpoint(state, store, path, &ready)?;
+            }
+            write_java_analysis_request(state, binding_path, &ready, eligibility, false)?;
             write_private_atomic(state, binding_path, &ready)?;
             Ok(ready)
         }
@@ -768,6 +1166,112 @@ fn ensure_java_generation(
             Err(error)
         }
     }
+}
+
+fn java_analysis_checkpoint_path(
+    state: &StateAuthority,
+    session: &SessionAuthority,
+    generation_key: &str,
+) -> Result<std::path::PathBuf, ClewError> {
+    let repository = state.repository_by_key(&session.repository_key)?;
+    let root = repository.root.join("generations/java-analysis");
+    state.directory_at(&root)?;
+    Ok(root.join(format!("{}.json", digest_component(generation_key)?)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_java_analysis_checkpoint(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    session: &SessionAuthority,
+    compilation: &str,
+    generation_key: &str,
+    input: &CasObject,
+    compiler_store: &CompilerStoreKey,
+) -> Result<Option<ReadyGeneration>, ClewError> {
+    if !state.private_file_exists(path)? {
+        return Ok(None);
+    }
+    let bytes = state.read_private_file(path, MAX_BINDING_BYTES)?;
+    let checkpoint: JavaAnalysisCheckpoint = serde_json::from_slice(&bytes)
+        .map_err(|_| corrupt("Java analysis checkpoint is invalid"))?;
+    if canonical::bytes(&checkpoint).map_err(internal)? != bytes
+        || checkpoint.schema != JAVA_ANALYSIS_CHECKPOINT_SCHEMA
+        || checkpoint.input != *input
+        || checkpoint.ready.object_schema != READY_GENERATION_SCHEMA
+    {
+        return Err(corrupt(
+            "Java analysis checkpoint input authority is invalid",
+        ));
+    }
+    let ready: ReadyGeneration = read_canonical_object(store, &checkpoint.ready)?;
+    if ready.generation_key != generation_key
+        || ready.derived_input_manifest != *input
+        || ready.incremental.analysis_execution_authority
+            != AnalysisExecutionAuthority::CompilerProcess
+        || ready.incremental.executed != IncrementalExecutionMode::Full
+    {
+        return Err(corrupt(
+            "Java analysis checkpoint result authority is invalid",
+        ));
+    }
+    verify_ready(store, &ready, session, compilation, true)?;
+    let receipt: IncrementalReceipt = read_canonical_object(store, &ready.incremental_receipt)?;
+    if receipt.compiler_store_key != compiler_store.key {
+        return Err(corrupt(
+            "Java analysis checkpoint compiler-store authority is invalid",
+        ));
+    }
+    Ok(Some(ready))
+}
+
+fn publish_java_analysis_checkpoint(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    ready: &ReadyGeneration,
+) -> Result<(), ClewError> {
+    // CasStore holds its shared world lease until the durable repository root
+    // is published. A crash before this atomic write leaves an unsaved unit.
+    let checkpoint = JavaAnalysisCheckpoint {
+        schema: JAVA_ANALYSIS_CHECKPOINT_SCHEMA.into(),
+        input: ready.derived_input_manifest.clone(),
+        ready: store.put(
+            READY_GENERATION_SCHEMA,
+            &canonical::bytes(ready).map_err(internal)?,
+        )?,
+    };
+    write_canonical_atomic(state, path, &checkpoint)
+}
+
+fn write_java_analysis_request(
+    state: &StateAuthority,
+    binding_path: &Path,
+    ready: &ReadyGeneration,
+    eligibility: &str,
+    hit: bool,
+) -> Result<(), ClewError> {
+    write_canonical_atomic(
+        state,
+        &binding_path.with_extension("java-analysis.json"),
+        &JavaAnalysisRequest {
+            schema: JAVA_ANALYSIS_REQUEST_SCHEMA.into(),
+            compilation: ready.compilation.clone(),
+            eligibility: eligibility.into(),
+            lookup: if hit {
+                "HIT"
+            } else if eligibility == "ELIGIBLE" {
+                "MISS"
+            } else {
+                "INELIGIBLE"
+            }
+            .into(),
+            java_analyzer_starts: u64::from(!hit),
+            input: ready.derived_input_manifest.clone(),
+            generation: ready.generation.clone(),
+        },
+    )
 }
 
 fn effective_java_sources(
@@ -827,6 +1331,225 @@ fn java_source_content_digests(
             Ok((path.clone(), source_content_digest(store, source)?))
         })
         .collect()
+}
+
+/// Re-hash the model's source files from the (sealed) transformed worktree,
+/// keyed by repository-relative path. Used only for the writable-then-seal
+/// profile, where the build may rewrite source in place. This indexes only the
+/// compiled source set (not generated sources under target/); a model source
+/// that disappeared during transformation is a hard error.
+fn transformed_java_source_digests(
+    repository: &Path,
+    source_files: &[String],
+) -> Result<BTreeMap<String, String>, ClewError> {
+    let mut out = BTreeMap::new();
+    for path in source_files {
+        let file = repository.join(path);
+        if !file.is_file() {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                format!("Java model selected a source absent after transformation: {path}"),
+            ));
+        }
+        let bytes = match std::fs::read(&file) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "CODEDEBUG transformed_java_source_digests read FAIL {}: {e}",
+                    file.display()
+                );
+                return Err(io_error(e));
+            }
+        };
+        out.insert(path.clone(), canonical::hash_bytes(&bytes));
+    }
+    eprintln!(
+        "CODEDEBUG transformed_java_source_digests OK count={}",
+        out.len()
+    );
+    Ok(out)
+}
+
+/// A transformed source path must be a safe repository-relative path: nonempty,
+/// not absolute, and made only of normal components (no `.`, `..`, or backslash
+/// escapes). Rejects traversal that could escape the sealed materialization.
+fn is_safe_relative_source_path(path: &str) -> bool {
+    use std::path::{Component, Path};
+    !path.is_empty()
+        && !Path::new(path).is_absolute()
+        && Path::new(path)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Extract the authoritative `after` digest map from a transformed source
+/// state. The `after` map records the exact persisted-byte digests for every
+/// admitted source file and is authoritative for what is trusted on reopen;
+/// `before`/`changedFiles` are attribution only. A missing or malformed state
+/// fails closed: it cannot become trusted transformed evidence.
+fn transformed_source_state_after(
+    source_state: &serde_json::Value,
+) -> Result<&serde_json::Map<String, serde_json::Value>, ClewError> {
+    if source_state.get("kind").and_then(Value::as_str) != Some("TRANSFORMED_WORKSPACE") {
+        return Err(corrupt("transformed source state kind is invalid"));
+    }
+    source_state
+        .get("after")
+        .and_then(Value::as_object)
+        .ok_or_else(|| corrupt("transformed source state has no authoritative after map"))
+}
+
+/// The admitted file set must match the authoritative after-map exactly:
+/// every admitted source has a digest and every after entry is admitted. A
+/// missing or extra path fails before any manifest reference is published.
+fn transformed_paths_match_source_files(
+    source_files: &[String],
+    after: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ClewError> {
+    let admitted: BTreeSet<&String> = source_files.iter().collect();
+    let indexed: BTreeSet<&String> = after.keys().collect();
+    if admitted.len() != source_files.len()
+        || admitted != indexed
+        || after.values().any(|v| !v.is_string())
+    {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            "transformed source state paths do not exactly match admitted source files",
+        ));
+    }
+    Ok(())
+}
+
+/// Persist the immutable transformed source bytes a writable-then-seal Java
+/// generation was indexed against, together with its source_state/provenance
+/// marker. Returns the CAS reference (or None when not transformed). The bytes
+/// are read from the sealed repository materialization after transformation.
+///
+/// The authoritative `after` map (indexed byte digests) must exactly match the
+/// admitted source files, and each file's bytes must hash to its declared
+/// digest BEFORE any manifest reference is published. A source that changed
+/// after index-state construction, or any missing/extra/malformed state, fails
+/// before publication. Unreachable CAS writes are not publication.
+fn persist_transformed_source(
+    store: &CasStore,
+    repository: &Path,
+    source_files: &[String],
+    provenance: Option<&str>,
+    source_state: Option<&serde_json::Value>,
+) -> Result<Option<CasObject>, ClewError> {
+    if provenance != Some("TRANSFORMED_WORKSPACE") {
+        return Ok(None);
+    }
+    let state = source_state
+        .ok_or_else(|| corrupt("transformed source provenance lacks the indexed source state"))?;
+    let after = transformed_source_state_after(state)?;
+    transformed_paths_match_source_files(source_files, after)?;
+    // Validate every file's bytes against its authoritative digest before
+    // publishing the manifest reference; a transform that mutated sources after
+    // index-state construction must never be persisted as transformed evidence.
+    let mut files = BTreeMap::new();
+    for path in source_files {
+        if !is_safe_relative_source_path(path) {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "transformed source path is not a safe relative path",
+            ));
+        }
+        let expected = after
+            .get(path)
+            .and_then(Value::as_str)
+            .ok_or_else(|| corrupt("transformed source state has no digest for admitted file"))?;
+        let bytes = std::fs::read(repository.join(path)).map_err(io_error)?;
+        let digest = canonical::hash_bytes(&bytes);
+        if digest != expected {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "transformed source bytes changed after index-state construction",
+            ));
+        }
+        let content = store.put(TRANSFORMED_SOURCE_FILE_SCHEMA, &bytes)?;
+        files.insert(path.clone(), content);
+    }
+    let manifest = store.put(
+        TRANSFORMED_SOURCE_SCHEMA,
+        &canonical::bytes(&json!({
+            "schema": TRANSFORMED_SOURCE_SCHEMA,
+            "kind": "TRANSFORMED_WORKSPACE",
+            "provenance": "TRANSFORMED_WORKSPACE",
+            "sourceState": source_state,
+            "files": files,
+        }))
+        .map_err(internal)?,
+    )?;
+    Ok(Some(manifest))
+}
+
+/// Load a persisted transformed-source manifest and return the indexed bytes
+/// keyed by repository-relative path. Callers must bound reads to their own
+/// evidence budget.
+///
+/// The manifest is trusted only if it carries the authoritative source state
+/// and every persisted file matches it: safe relative paths, exact
+/// sourceState.after membership, per-file schema, and byte hashes. A legacy or
+/// well-formed-but-inconsistent manifest fails closed rather than being
+/// silently promoted to trusted transformed evidence.
+pub(crate) fn load_transformed_source(
+    store: &CasStore,
+    reference: &CasObject,
+) -> Result<BTreeMap<String, Vec<u8>>, ClewError> {
+    if reference.object_schema != TRANSFORMED_SOURCE_SCHEMA {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "transformed source reference schema is invalid",
+        ));
+    }
+    let limit = usize::try_from(reference.size)
+        .map_err(|_| resource("transformed source manifest exceeds host size"))?;
+    let lease = store.read(reference, limit)?;
+    let manifest: serde_json::Value = serde_json::from_slice(lease.bytes())
+        .map_err(|_| corrupt("transformed source is invalid"))?;
+    if manifest["schema"].as_str() != Some(TRANSFORMED_SOURCE_SCHEMA)
+        || manifest["kind"].as_str() != Some("TRANSFORMED_WORKSPACE")
+    {
+        return Err(corrupt("transformed source manifest authority is invalid"));
+    }
+    let state = manifest
+        .get("sourceState")
+        .ok_or_else(|| corrupt("transformed source manifest lacks integrity source state"))?;
+    let after = transformed_source_state_after(state)?;
+    let files = manifest["files"]
+        .as_object()
+        .ok_or_else(|| corrupt("transformed source manifest has no file map"))?;
+    if files.len() != after.len() || files.keys().any(|k| !after.contains_key(k)) {
+        return Err(corrupt(
+            "transformed source manifest files do not match indexed source state",
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for (path, content) in files {
+        if !is_safe_relative_source_path(path) {
+            return Err(corrupt("transformed source file path is unsafe"));
+        }
+        let object: CasObject = serde_json::from_value(content.clone())
+            .map_err(|_| corrupt("transformed source file"))?;
+        if object.object_schema != TRANSFORMED_SOURCE_FILE_SCHEMA {
+            return Err(corrupt("transformed source file object schema is invalid"));
+        }
+        let expected = after
+            .get(path)
+            .and_then(Value::as_str)
+            .ok_or_else(|| corrupt("transformed source file has no indexed digest"))?;
+        let limit = usize::try_from(object.size)
+            .map_err(|_| resource("transformed source file exceeds host size"))?;
+        let bytes = store.read(&object, limit)?.bytes().to_vec();
+        if canonical::hash_bytes(&bytes) != expected {
+            return Err(corrupt(
+                "transformed source file hash does not match indexed source state",
+            ));
+        }
+        out.insert(path.clone(), bytes);
+    }
+    Ok(out)
 }
 
 fn java_incremental_receipt(
@@ -1046,6 +1769,7 @@ fn ensure_typescript_generation(
         &snapshot_object,
         compilation,
         &derived_input_manifest,
+        false,
     )?;
     let _lock = GenerationLock::acquire(state, &generation_key)?;
     if state.private_file_exists(binding_path)? {
@@ -1147,6 +1871,7 @@ fn ensure_typescript_generation(
             derived_input_manifest,
             generation: generation_object,
             query_index,
+            transformed_source: None,
         };
         verify_ready(store, &ready, session, compilation, true)?;
         Ok(ready)
@@ -1434,6 +2159,7 @@ fn ensure_python_generation(
         snapshot_object,
         compilation,
         &derived_input_manifest,
+        false,
     )?;
     let _lock = GenerationLock::acquire(state, &generation_key)?;
     if state.private_file_exists(binding_path)? {
@@ -1532,6 +2258,7 @@ fn ensure_python_generation(
             derived_input_manifest,
             generation: generation_object,
             query_index,
+            transformed_source: None,
         };
         verify_ready(store, &ready, session, compilation, true)?;
         Ok(ready)
@@ -1662,6 +2389,7 @@ fn ensure_rust_generation(
         snapshot_object,
         compilation,
         &derived_input_manifest,
+        false,
     )?;
     let _lock = GenerationLock::acquire(state, &generation_key)?;
     if state.private_file_exists(binding_path)? {
@@ -1754,6 +2482,7 @@ fn ensure_rust_generation(
             derived_input_manifest,
             generation: generation_object,
             query_index,
+            transformed_source: None,
         };
         verify_ready(store, &ready, session, compilation, true)?;
         Ok(ready)
@@ -2063,6 +2792,7 @@ fn write_generation_workspace_evidence(
             workspace_set_authorizations: profile.workspace_set_authorizations,
             authorized_compilation_count: profile.authorized_compilation_count,
             legacy_open_project_calls: profile.legacy_open_project_calls,
+            operational_timing: profile.operational_timing,
         },
     )
 }
@@ -2117,11 +2847,20 @@ fn ensure_generation(
     }
     let compiler_namespace = compiler_store_key(&runtime, compilation)?;
     let external_build_state = session.external_build_state_path()?;
-    let live_attempt = workspace.open_compilation_from_set(
+    let head_path = incremental_head_path(&repository.root, compilation)?;
+    let preferred_engine = cached_engine_hint(
+        &state,
+        &store,
+        &head_path,
+        &runtime.runtime_key,
+        compilation,
+    );
+    let live_attempt = workspace.open_compilation_from_set_with_hint(
         &state,
         compilation,
         digest_component(&compiler_namespace)?,
         external_build_state.as_deref(),
+        preferred_engine,
     )?;
     let prepared = ensure_prepared_authority(
         &state,
@@ -2140,6 +2879,7 @@ fn ensure_generation(
         snapshot_object,
         compilation,
         &prepared.derived_input_manifest,
+        false,
     )?;
     let _lock = GenerationLock::acquire(&state, &generation_key)?;
     if state.private_file_exists(binding_path)? {
@@ -2154,7 +2894,6 @@ fn ensure_generation(
         prepared.adapter_digest.clone(),
         &prepared.descriptor,
     )?;
-    let head_path = incremental_head_path(&repository.root, compilation)?;
     let head_lock_key = canonical::hash(&json!({
         "schema":"codeclew-incremental-head-lock/2.0",
         "repositoryKey":session.repository_key,
@@ -2162,19 +2901,62 @@ fn ensure_generation(
     }))
     .map_err(internal)?;
     let _head_lock = GenerationLock::acquire(&state, &head_lock_key)?;
-    let head = load_incremental_head_for_planning(&state, &store, &head_path)?;
-    let previous = head.ready();
-    let (plan, unchanged_is_exact) = match head.forced_full_plan() {
-        Some(forced) => forced,
-        None => incremental_plan_for(
+    let history_path = analysis_history_path(&repository.root, &prepared, &compiler_store)?;
+    // Model admission is still fresh: only after OpenProject and complete current
+    // derived authority may an older exact analysis replace another IndexFiles.
+    // A -> B -> A must not lose A merely because B is now the incremental head.
+    let history = load_content_analysis(
+        &state,
+        &store,
+        &history_path,
+        session,
+        &prepared,
+        &compiler_store,
+    )?;
+    let history_was_present = history.is_some();
+    let archived = match history {
+        Some(saved) => Some(saved),
+        None => load_exact_analysis(
+            &state,
             &store,
-            snapshot,
-            snapshot_object,
+            &cache_path,
+            session,
+            compilation,
+            &generation_key,
             &prepared,
             &compiler_store,
-            previous,
         )?,
     };
+    let head = if archived.is_some() {
+        IncrementalHeadState::Missing
+    } else {
+        load_incremental_head_for_planning(&state, &store, &head_path)?
+    };
+    let previous = head.ready();
+    let (plan, unchanged_is_exact) = if let Some((_, receipt)) = &archived {
+        (
+            IncrementalPlan::UnchangedHit {
+                parent_generation_id: receipt.generation_id.clone(),
+            },
+            true,
+        )
+    } else {
+        match head.forced_full_plan() {
+            Some(forced) => forced,
+            None => incremental_plan_for(
+                &store,
+                snapshot,
+                snapshot_object,
+                &prepared,
+                &compiler_store,
+                previous,
+            )?,
+        }
+    };
+    let reusable = archived
+        .as_ref()
+        .map(|(ready, _)| ready)
+        .or_else(|| previous.map(|value| &value.ready));
     let ready = if unchanged_is_exact {
         build_unchanged_ready(
             &state,
@@ -2184,7 +2966,7 @@ fn ensure_generation(
             snapshot_object.clone(),
             generation_key,
             &prepared,
-            previous.expect("exact unchanged head"),
+            reusable.expect("exact unchanged analysis"),
             plan,
             live_attempt,
         )?
@@ -2202,9 +2984,16 @@ fn ensure_generation(
             live_attempt,
         )?
     };
-    if session.model_cache_policy != ModelCachePolicy::NonCacheable {
-        write_private_atomic(&state, &cache_path, &ready)?;
+    // Publish the content lookup before revision/session bindings. A crash after
+    // this durable root must not make a saved analysis undiscoverable for another
+    // revision. Keep the first verified result; later revisions only add their
+    // own bindings, never another copy of its analysis payload.
+    if !history_was_present {
+        publish_incremental_head(&state, &store, &history_path, &ready, &compiler_store.key)?;
     }
+    // NonCacheable governs model reuse, not a verified result after live model
+    // admission. The managed repository root retains these exact CAS references.
+    write_private_atomic(&state, &cache_path, &ready)?;
     if publish_head {
         publish_incremental_head(&state, &store, &head_path, &ready, &compiler_store.key)?;
     }
@@ -2446,6 +3235,7 @@ fn build_ready(
             derived_input_manifest: prepared.derived_input_manifest,
             generation: generation_object,
             query_index: query_index_object,
+            transformed_source: None,
         };
         verify_ready(store, &ready, session, &ready.compilation, true)?;
         Ok(ready)
@@ -2471,7 +3261,7 @@ fn build_unchanged_ready(
     snapshot_object: CasObject,
     generation_key: String,
     prepared: &PreparedGenerationAuthority,
-    previous: &LoadedIncrementalHead,
+    previous: &ReadyGeneration,
     planned: IncrementalPlan,
     live_attempt: ProjectNativeKotlinAttempt,
 ) -> Result<ReadyGeneration, ClewError> {
@@ -2505,7 +3295,7 @@ fn build_unchanged_ready(
         ));
     }
     journal.transition(AttemptState::Finalizing, "reusing immutable generation")?;
-    let mut ready = previous.ready.clone();
+    let mut ready = previous.clone();
     ready.generation_key = generation_key;
     ready.runtime_key = runtime.runtime_key.clone();
     ready.base_revision = session.base_revision.clone();
@@ -2521,7 +3311,7 @@ fn build_unchanged_ready(
         subset_analysis_supported: false,
         worker_requests: counters,
     };
-    ready.incremental_receipt = previous.head.receipt.clone();
+    ready.incremental_receipt = previous.incremental_receipt.clone();
     verify_ready(store, &ready, session, &ready.compilation, true)?;
     journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
     Ok(ready)
@@ -2780,16 +3570,48 @@ fn final_generation_key(
     snapshot: &CasObject,
     compilation: &str,
     derived_input_manifest: &CasObject,
+    writable_then_seal: bool,
 ) -> Result<String, ClewError> {
     canonical::hash(&json!({
-        "schema":"codeclew-generation-key/2.2",
+        "schema":"codeclew-generation-key/2.3",
         "runtimeKey":runtime_key,
         "baseRevision":base_revision,
         "snapshot":snapshot,
         "compilation":compilation,
         "derivedInputManifest":derived_input_manifest,
+        "writableThenSeal":writable_then_seal,
     }))
     .map_err(internal)
+}
+
+/// Public test-only wrapper so integration tests can assert that the semantic
+/// generation identity distinguishes writable-then-seal from read-only for
+/// otherwise identical inputs (no-op transformation). Not part of product API.
+#[doc(hidden)]
+pub fn final_generation_key_for_test(
+    compilation: &str,
+    writable_then_seal: bool,
+) -> Result<String, ClewError> {
+    let snapshot = CasObject {
+        schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+        object_schema: crate::repository_snapshot::SNAPSHOT_SCHEMA.into(),
+        digest: format!("sha256:{}", "a".repeat(64)),
+        size: 1,
+    };
+    let derived = CasObject {
+        schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+        object_schema: crate::derived_manifest::DERIVED_MANIFEST_SCHEMA.into(),
+        digest: format!("sha256:{}", "b".repeat(64)),
+        size: 1,
+    };
+    final_generation_key(
+        &format!("sha256:{}", "c".repeat(64)),
+        &format!("sha256:{}", "d".repeat(64)),
+        &snapshot,
+        compilation,
+        &derived,
+        writable_then_seal,
+    )
 }
 
 #[derive(Clone)]
@@ -3570,11 +4392,140 @@ fn load_incremental_head(
     {
         return Err(corrupt("incremental head objects are not mutually bound"));
     }
-    Ok(Some(LoadedIncrementalHead {
-        head,
-        receipt,
-        ready,
+    Ok(Some(LoadedIncrementalHead { receipt, ready }))
+}
+
+/// An old result may suggest which worker to start, never which model to trust.
+/// Keep this optional read small and independent of the analysis closure: the
+/// ordinary live OpenProject still qualifies and can switch the selected engine.
+fn cached_engine_hint(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    runtime_key: &str,
+    compilation: &str,
+) -> Option<KotlinSemanticEngine> {
+    const MAX_HINT_BYTES: usize = 64 * 1024;
+    let bytes = state.read_private_file(path, MAX_HINT_BYTES).ok()?;
+    let head: IncrementalHead = serde_json::from_slice(&bytes).ok()?;
+    if canonical::bytes(&head).ok()? != bytes
+        || head.schema != INCREMENTAL_HEAD_SCHEMA
+        || head.ready.object_schema != READY_GENERATION_SCHEMA
+        || head.ready.size > MAX_HINT_BYTES as u64
+    {
+        return None;
+    }
+    let lease = store.read(&head.ready, MAX_HINT_BYTES).ok()?;
+    let ready: ReadyGeneration = serde_json::from_slice(lease.bytes()).ok()?;
+    if canonical::bytes(&ready).ok()? != lease.bytes()
+        || ready.schema != READY_GENERATION_SCHEMA
+        || ready.runtime_key != runtime_key
+        || ready.compilation != compilation
+    {
+        return None;
+    }
+    KotlinSemanticEngine::from_analyzer_compiler_version(&ready.compiler_version).ok()
+}
+
+/// Reuse an exact historical analysis only after the caller obtained current
+/// OpenProject authority. This never authorizes a project-model cache hit.
+#[allow(clippy::too_many_arguments)]
+fn load_exact_analysis(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    session: &SessionAuthority,
+    compilation: &str,
+    generation_key: &str,
+    prepared: &PreparedGenerationAuthority,
+    compiler_store: &CompilerStoreKey,
+) -> Result<Option<(ReadyGeneration, IncrementalReceipt)>, ClewError> {
+    if !state.private_file_exists(path)? {
+        return Ok(None);
+    }
+    let ready = load_ready(state, store, path, session, compilation, true)?;
+    let receipt: IncrementalReceipt = read_canonical_object(store, &ready.incremental_receipt)?;
+    if ready.generation_key != generation_key
+        || ready.compiler_version != prepared.semantic_engine.analyzer_compiler_version
+        || ready.incremental.analysis_execution_authority
+            != AnalysisExecutionAuthority::CompilerWorker
+        || ready.transformed_source.is_some()
+        || !exact_generation_authority(
+            &ready.repository_snapshot,
+            &ready.derived_input_manifest,
+            &receipt.compiler_store_key,
+            &prepared.repository_snapshot,
+            &prepared.derived_input_manifest,
+            &compiler_store.key,
+        )
+    {
+        return Err(corrupt(
+            "saved analysis differs from current exact OpenProject authority",
+        ));
+    }
+    Ok(Some((ready, receipt)))
+}
+
+/// Repository-scoped lookup for complete computational inputs. Revision remains
+/// part of the published generation binding, not the immutable analysis lookup.
+fn analysis_history_path(
+    repository_root: &Path,
+    prepared: &PreparedGenerationAuthority,
+    compiler_store: &CompilerStoreKey,
+) -> Result<std::path::PathBuf, ClewError> {
+    let key = canonical::hash(&json!({
+        "schema":"codeclew-native-analysis-history-key/1.0",
+        "runtimeKey":prepared.runtime_key,
+        "compilation":prepared.compilation,
+        "compilerVersion":prepared.semantic_engine.analyzer_compiler_version,
+        "repositorySnapshot":prepared.repository_snapshot,
+        "derivedInputManifest":prepared.derived_input_manifest,
+        "compilerStoreKey":compiler_store.key,
+        "writableSurface":false,
     }))
+    .map_err(internal)?;
+    Ok(repository_root
+        .join("generations/analysis")
+        .join(format!("{}.json", digest_component(&key)?)))
+}
+
+fn load_content_analysis(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    session: &SessionAuthority,
+    prepared: &PreparedGenerationAuthority,
+    compiler_store: &CompilerStoreKey,
+) -> Result<Option<(ReadyGeneration, IncrementalReceipt)>, ClewError> {
+    // This validates the old revision binding and its complete immutable closure
+    // against their own authority. Current session verification happens only
+    // after build_unchanged_ready creates the new revision binding.
+    let Some(saved) = load_incremental_head(state, store, path)? else {
+        return Ok(None);
+    };
+    let ready = saved.ready;
+    if ready.runtime_key != session.runtime_key
+        || ready.runtime_key != prepared.runtime_key
+        || ready.compilation != prepared.compilation
+        || !session.compilations.contains(&ready.compilation)
+        || ready.compiler_version != prepared.semantic_engine.analyzer_compiler_version
+        || ready.incremental.analysis_execution_authority
+            != AnalysisExecutionAuthority::CompilerWorker
+        || ready.transformed_source.is_some()
+        || !exact_generation_authority(
+            &ready.repository_snapshot,
+            &ready.derived_input_manifest,
+            &saved.receipt.compiler_store_key,
+            &prepared.repository_snapshot,
+            &prepared.derived_input_manifest,
+            &compiler_store.key,
+        )
+    {
+        return Err(corrupt(
+            "saved analysis differs from current complete OpenProject authority",
+        ));
+    }
+    Ok(Some((ready, saved.receipt)))
 }
 
 fn load_incremental_head_for_planning(
@@ -3654,6 +4605,16 @@ fn assemble_ready_set(
         &repository_snapshot,
         &compilations,
     )?;
+    // The set's transformed-source authority is a per-compilation concern:
+    // distinct compilation manifests and equal payload sharing are both valid,
+    // and consumers select the source authority by compilation rather than
+    // flattening conflicting paths. The set-level field is only a convenience
+    // aggregation (first present) used when all compilations share it; each
+    // ReadyGeneration.transformed_source remains authoritative for its own
+    // compilation. We do not reject distinct per-compilation authority here.
+    let transformed_source = compilations
+        .iter()
+        .find_map(|ready| ready.transformed_source.clone());
     let ready = ReadyGenerationSet {
         schema: READY_GENERATION_SET_SCHEMA.into(),
         generation_key,
@@ -3665,6 +4626,7 @@ fn assemble_ready_set(
         certainty: certainty_label(&completeness).into(),
         obligations: obligation_codes(&completeness),
         completeness,
+        transformed_source,
     };
     verify_ready_set_authority(
         &CasStore::open(&StateAuthority::process_default()?)?,
@@ -3752,7 +4714,7 @@ fn verify_ready_set_authority(
     let aggregate = aggregate_completeness(&ready.compilations)?;
     if ready.schema != READY_GENERATION_SET_SCHEMA
         || ready.compilations.is_empty()
-        || ready.compilations.len() > 64
+        || ready.compilations.len() > crate::limits::MAX_SELECTED_COMPILATIONS
         || !ready
             .compilations
             .windows(2)
@@ -3841,6 +4803,10 @@ fn verify_ready_authority(
         || ready.query_index.object_schema != QUERY_INDEX_SCHEMA
         || ready.incremental.schema != INCREMENTAL_EVIDENCE_SCHEMA
         || ready.incremental_receipt.object_schema != INCREMENTAL_RECEIPT_SCHEMA
+        || ready
+            .transformed_source
+            .as_ref()
+            .is_some_and(|reference| reference.object_schema != TRANSFORMED_SOURCE_SCHEMA)
         || ready.coverage != coverage_label(&ready.completeness)
         || ready.certainty != certainty_label(&ready.completeness)
         || ready.obligations != obligation_codes(&ready.completeness)
@@ -3851,6 +4817,7 @@ fn verify_ready_authority(
                 &ready.repository_snapshot,
                 &ready.compilation,
                 &ready.derived_input_manifest,
+                ready.transformed_source.is_some(),
             )?
     {
         return Err(corrupt("ready generation authority is invalid"));
@@ -4052,6 +5019,90 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    fn compiled_output_model(path: &Path) -> JavaOperationalModel {
+        use crate::java_project_model::{JavaBuildSystem, JavaProjectModel, classpath_authority};
+        JavaOperationalModel {
+            authority: JavaProjectModel {
+                schema: JAVA_MODEL_SCHEMA.into(),
+                model_digest: String::new(),
+                build_system: JavaBuildSystem::Maven,
+                compilation: "java:maven:module:main".into(),
+                source_files: Vec::new(),
+                classpath: vec![classpath_authority(path).unwrap()],
+                release: 17,
+                compiler_version: "javac 17".into(),
+                compiler_options: Vec::new(),
+                annotation_processors: Vec::new(),
+                annotation_processor_paths: Vec::new(),
+                boundaries: Vec::new(),
+            },
+            source_paths: Vec::new(),
+            classpath_paths: vec![path.to_owned()],
+            annotation_processor_paths: Vec::new(),
+            java_executable: PathBuf::from("java"),
+        }
+    }
+
+    #[test]
+    fn compiled_outputs_keep_distinct_modules_separate_and_share_equal_content() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("module-one/target/classes");
+        let second = root.path().join("module-two/target/classes");
+        let same = root.path().join("module-copy/target/classes");
+        for (path, bytes) in [(&first, b"first"), (&second, b"other"), (&same, b"first")] {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("Type.class"), bytes).unwrap();
+        }
+        let mut a = compiled_output_model(&first);
+        let mut b = compiled_output_model(&second);
+        let mut c = compiled_output_model(&same);
+        preserve_compiled_classes(root.path(), &mut a).unwrap();
+        preserve_compiled_classes(root.path(), &mut b).unwrap();
+        assert_ne!(a.classpath_paths, b.classpath_paths);
+        assert_eq!(
+            std::fs::read(a.classpath_paths[0].join("Type.class")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            std::fs::read(b.classpath_paths[0].join("Type.class")).unwrap(),
+            b"other"
+        );
+        preserve_compiled_classes(root.path(), &mut c).unwrap();
+        assert_eq!(a.classpath_paths, c.classpath_paths);
+        assert_eq!(
+            std::fs::read_dir(root.path().join("analysis-classes"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn compiled_outputs_reject_changed_source_and_corrupt_retained_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("module/target/classes");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("Type.class"), b"admitted").unwrap();
+        let mut model = compiled_output_model(&source);
+        let mut another = model.clone();
+        std::fs::write(source.join("Type.class"), b"changed").unwrap();
+        assert_eq!(
+            preserve_compiled_classes(root.path(), &mut model)
+                .unwrap_err()
+                .code,
+            ErrorCode::InputMutated
+        );
+        std::fs::write(source.join("Type.class"), b"admitted").unwrap();
+        preserve_compiled_classes(root.path(), &mut model).unwrap();
+        std::fs::write(model.classpath_paths[0].join("Type.class"), b"corrupt").unwrap();
+        assert_eq!(
+            preserve_compiled_classes(root.path(), &mut another)
+                .unwrap_err()
+                .code,
+            ErrorCode::InputMutated
+        );
+    }
+
     #[test]
     fn analyzer_engine_identity_is_separate_from_adapter_contract() {
         assert_eq!(
@@ -4063,6 +5114,51 @@ mod tests {
             KotlinSemanticEngine::Kotlin24,
         );
         assert_eq!(KOTLIN_ADAPTER_CONTRACT_ID, "kotlin-semantic-facts");
+    }
+
+    #[test]
+    fn writable_then_seal_profile_matches_gate_string() {
+        assert_eq!(
+            JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE,
+            "java-17plus-maven-writable-then-seal"
+        );
+    }
+
+    #[test]
+    fn wants_writable_then_seal_gates_on_profile() {
+        assert!(wants_writable_then_seal(
+            JAVA_MAVEN_WRITABLE_THEN_SEAL_PROFILE
+        ));
+        assert!(!wants_writable_then_seal("java-17plus-maven-read-only"));
+        assert!(!wants_writable_then_seal("java-17plus-gradle-read-only"));
+    }
+
+    #[test]
+    fn transformed_java_source_digests_indexes_only_model_sources() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::create_dir_all(root.path().join("target")).unwrap();
+        std::fs::write(root.path().join("src/A.java"), "v1").unwrap();
+        std::fs::write(root.path().join("target/gen.java"), "generated").unwrap();
+
+        // Only the model source set is indexed; target/ is excluded.
+        let sources = vec!["src/A.java".to_string()];
+        let digests = transformed_java_source_digests(root.path(), &sources).unwrap();
+        assert_eq!(digests.len(), 1);
+        assert!(digests.contains_key("src/A.java"));
+        assert!(!digests.contains_key("target/gen.java"));
+        assert_eq!(digests["src/A.java"], canonical::hash_bytes(b"v1"));
+
+        // Modified content produces a different digest.
+        std::fs::write(root.path().join("src/A.java"), "v2").unwrap();
+        let digests = transformed_java_source_digests(root.path(), &sources).unwrap();
+        assert_eq!(digests["src/A.java"], canonical::hash_bytes(b"v2"));
+        assert_ne!(digests["src/A.java"], canonical::hash_bytes(b"v1"));
+
+        // A model source absent after transformation is a hard error.
+        let error = transformed_java_source_digests(root.path(), &["src/Missing.java".to_string()])
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InputMutated);
     }
 
     #[test]
@@ -4296,6 +5392,7 @@ mod tests {
             derived_input_manifest: object(DERIVED_MANIFEST_SCHEMA, '6'),
             generation: object(GENERATION_SCHEMA, '7'),
             query_index: object(QUERY_INDEX_SCHEMA, '8'),
+            transformed_source: None,
         };
         let compilations = vec![component];
         let forged = CompletenessVector::verified_complete(digest('9')).unwrap();
@@ -4311,6 +5408,7 @@ mod tests {
             certainty: certainty_label(&forged).into(),
             obligations: obligation_codes(&forged),
             completeness: forged,
+            transformed_source: None,
         };
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
@@ -4589,6 +5687,7 @@ mod tests {
             &snapshot,
             ":/main",
             &derived,
+            false,
         )
         .unwrap();
         let changed_completeness = CompletenessVector {
@@ -4611,6 +5710,7 @@ mod tests {
             &snapshot,
             ":/main",
             &derived,
+            false,
         )
         .unwrap();
         assert_eq!(first, second);
@@ -4625,6 +5725,7 @@ mod tests {
                 &snapshot,
                 ":/main",
                 &changed_derived,
+                false,
             )
             .unwrap()
         );
@@ -4675,6 +5776,26 @@ mod tests {
                 workspace_set_authorizations: 1,
                 authorized_compilation_count: 12,
                 legacy_open_project_calls: 1,
+                operational_timing: Some(ProjectNativeKotlinOperationalTiming {
+                    materialization_micros: Some(3),
+                    derived_mount_micros: Some(5),
+                    final_unmount_micros: Some(7),
+                    final_verification_micros: Some(11),
+                    disposal_micros: Some(13),
+                    compilations: BTreeMap::from([(
+                        ":/main".into(),
+                        crate::kotlin_adapter_v2::ProjectNativeKotlinCompilationTiming {
+                            initial_worker_startup_micros: Some(17),
+                            open_project_wall_micros: Some(19),
+                            open_project_physical_requests: Some(2),
+                            open_project_logical_requests: Some(1),
+                            open_project_profile: None,
+                            index_profile: None,
+                            final_shutdown_micros: Some(23),
+                            final_input_verification_micros: Some(29),
+                        },
+                    )]),
+                }),
             },
             GenerationWorkspaceAuthority {
                 base_revision: "base",
@@ -4699,6 +5820,30 @@ mod tests {
         assert_eq!(value.workspace_set_authorizations, 1);
         assert_eq!(value.authorized_compilation_count, 12);
         assert_eq!(value.legacy_open_project_calls, 1);
+        assert_eq!(
+            value
+                .operational_timing
+                .as_ref()
+                .and_then(|timing| timing.materialization_micros),
+            Some(3)
+        );
+        assert_eq!(
+            value
+                .operational_timing
+                .as_ref()
+                .and_then(|timing| timing.compilations.get(":/main"))
+                .and_then(|timing| timing.open_project_physical_requests),
+            Some(2)
+        );
+
+        let mut old_value = serde_json::to_value(&value).unwrap();
+        old_value
+            .as_object_mut()
+            .unwrap()
+            .remove("operationalTiming");
+        let old_value: GenerationWorkspaceEvidence =
+            serde_json::from_value(old_value).expect("legacy evidence without timing");
+        assert!(old_value.operational_timing.is_none());
 
         let error = write_generation_workspace_evidence(
             &state,
@@ -4711,6 +5856,7 @@ mod tests {
                 workspace_set_authorizations: 1,
                 authorized_compilation_count: 12,
                 legacy_open_project_calls: 13,
+                operational_timing: None,
             },
             GenerationWorkspaceAuthority {
                 base_revision: "base",
@@ -4876,4 +6022,515 @@ mod tests {
             ErrorCode::StateCorrupt
         );
     }
+
+    #[test]
+    fn transformed_source_persists_exact_bytes_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join("src/main/java/example")).unwrap();
+        let service_text = b"package example;\npublic class Service { void m() {} }\n";
+        let unchanged_text = b"package example;\npublic class Unchanged {}\n";
+        std::fs::write(
+            repo.join("src/main/java/example/Service.java"),
+            service_text,
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("src/main/java/example/Unchanged.java"),
+            unchanged_text,
+        )
+        .unwrap();
+
+        // The authoritative after-map must carry real byte digests and cover
+        // exactly the admitted source files.
+        let source_state = json!({
+            "kind": "TRANSFORMED_WORKSPACE",
+            "before": {"src/main/java/example/Service.java": canonical::hash_bytes(service_text)},
+            "after": {
+                "src/main/java/example/Service.java": canonical::hash_bytes(service_text),
+                "src/main/java/example/Unchanged.java": canonical::hash_bytes(unchanged_text),
+            },
+            "changedFiles": [],
+        });
+        let reference = persist_transformed_source(
+            &store,
+            &repo,
+            &[
+                "src/main/java/example/Service.java".into(),
+                "src/main/java/example/Unchanged.java".into(),
+            ],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&source_state),
+        )
+        .unwrap()
+        .expect("transformed source must persist");
+
+        assert_eq!(reference.object_schema, TRANSFORMED_SOURCE_SCHEMA);
+        let loaded = load_transformed_source(&store, &reference).unwrap();
+        assert_eq!(
+            loaded["src/main/java/example/Service.java"],
+            b"package example;\npublic class Service { void m() {} }\n"
+        );
+        assert_eq!(
+            loaded["src/main/java/example/Unchanged.java"],
+            b"package example;\npublic class Unchanged {}\n"
+        );
+
+        // Read-only generations persist nothing.
+        let none = persist_transformed_source(
+            &store,
+            &repo,
+            &["src/main/java/example/Service.java".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn transformed_source_rejects_foreign_or_malformed_reference() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let foreign = store.put("some-other-schema", b"x").unwrap();
+        let error = load_transformed_source(&store, &foreign).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn chained_lifecycle_persists_reopens_and_consumes_transformed_source() {
+        // Real transform-to-persist-to-reopen-to-documentation chain: a
+        // writable-then-seal build transforms source (line inserted), the real
+        // CAS persistence writes the exact transformed bytes, reopen reads them
+        // back unchanged, and the real documentation consumer labels them
+        // TRANSFORMED_SOURCE (no original link) rather than read-only
+        // EXACT_SNAPSHOT_TEXT. Each stage calls the real product code.
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let repo = root.path().join("repo");
+        let relative = "src/main/java/example/Service.java";
+        let file = repo.join(relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let original = "package example;\npublic class Service { void m() {} }\n";
+        // Synthetic writable transform: a line is inserted before the class, so
+        // the declaration moves from line 2 to line 3 of the transformed bytes.
+        let transformed = "package example;\n\npublic class Service { void m() {} }\n";
+        std::fs::write(&file, transformed).unwrap();
+
+        let source_state = json!({
+            "kind": "TRANSFORMED_WORKSPACE",
+            "before": {relative: "old"},
+            "after": {relative: canonical::hash_bytes(transformed.as_bytes())},
+            "changedFiles": [],
+        });
+        let reference = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&source_state),
+        )
+        .unwrap()
+        .expect("writable-then-seal provenance must persist transformed authority");
+        let loaded = load_transformed_source(&store, &reference).unwrap();
+        assert_eq!(
+            String::from_utf8(loaded[relative].clone()).unwrap(),
+            transformed,
+            "reopened persisted bytes must equal the exact indexed transformed bytes"
+        );
+
+        // A read-only provenance persists nothing, so a stale writable
+        // generation can never be reused as readonly authority.
+        assert!(
+            persist_transformed_source(&store, &repo, &[relative.into()], None, None)
+                .unwrap()
+                .is_none()
+        );
+
+        // Real documentation consumer reads the persisted transformed bytes and
+        // labels them TRANSFORMED_SOURCE with no original-commit link.
+        let service: crate::documentation::model::Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
+            "repositoryId":"svc", "repository":"https://example.invalid/svc",
+            "language":"java", "profile":"java-17plus-maven-writable-then-seal",
+            "compilation":":/main", "targetRef":"main",
+            "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
+        }))
+        .unwrap();
+        let declaration = json!({
+            "kind":"DECLARATION","symbolIdentity":"example.Service",
+            "ownerIdentity":"example","name":"Service","file":relative,
+            "startLine":3,"endLine":3,"resolution":"RESOLVED",
+            "documentation":{"events":[]},
+        });
+        let facts = vec![(declaration, "binding-digest".into())];
+        let transformed_files = BTreeMap::from([(
+            relative.to_string(),
+            String::from_utf8(loaded[relative].clone()).unwrap(),
+        )]);
+        let transformed_evidence = crate::documentation::analysis::project(
+            &service,
+            &"a".repeat(40),
+            &crate::documentation::digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            facts.clone(),
+            &transformed_files,
+            true,
+        )
+        .unwrap();
+        let transformed_src = transformed_evidence.sources.values().next().unwrap();
+        assert_eq!(
+            transformed_src.authority, TRANSFORMED_SOURCE_AUTHORITY,
+            "persisted transformed bytes must be consumed as TRANSFORMED_SOURCE"
+        );
+        assert!(
+            transformed_src.url.is_none(),
+            "transformed source must omit the original-commit link"
+        );
+        assert!(
+            transformed_src.text.contains("public class Service"),
+            "consumer must read the persisted transformed bytes, not the original snapshot"
+        );
+
+        // The same project read-only consumes the original bytes as
+        // EXACT_SNAPSHOT_TEXT with an original-commit link. The read-only
+        // consumer uses the original snapshot coordinates (line 2), not the
+        // transformed coordinates (line 3).
+        let original_declaration = json!({
+            "kind":"DECLARATION","symbolIdentity":"example.Service",
+            "ownerIdentity":"example","name":"Service","file":relative,
+            "startLine":2,"endLine":2,"resolution":"RESOLVED",
+            "documentation":{"events":[]},
+        });
+        let original_facts = vec![(original_declaration, "binding-digest".into())];
+        let original_files = BTreeMap::from([(relative.to_string(), original.to_string())]);
+        let original_evidence = crate::documentation::analysis::project(
+            &service,
+            &"a".repeat(40),
+            &crate::documentation::digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            original_facts,
+            &original_files,
+            false,
+        )
+        .unwrap();
+        let original_src = original_evidence.sources.values().next().unwrap();
+        assert_eq!(original_src.authority, "EXACT_SNAPSHOT_TEXT");
+        assert!(
+            original_src
+                .url
+                .as_deref()
+                .is_some_and(|url| url.contains("/blob/")),
+            "read-only source must keep its original-commit link: {:?}",
+            original_src.url
+        );
+    }
+
+    fn transformed_fixture() -> (
+        tempfile::TempDir,
+        CasStore,
+        std::path::PathBuf,
+        &'static str,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let repo = root.path().join("repo");
+        let relative = "src/main/java/example/Service.java";
+        std::fs::create_dir_all(repo.join(relative).parent().unwrap()).unwrap();
+        (root, store, repo, relative)
+    }
+
+    fn transformed_state(_relative: &str, after: serde_json::Value) -> serde_json::Value {
+        json!({"kind": "TRANSFORMED_WORKSPACE", "before": {}, "after": after, "changedFiles": []})
+    }
+
+    /// Build an outer well-formed transformed-source manifest referencing
+    /// `files` and carrying `source_state`, so reopen integrity can be tested
+    /// with a deliberately inconsistent payload.
+    fn put_transformed_manifest(
+        store: &CasStore,
+        files: &BTreeMap<String, CasObject>,
+        source_state: &serde_json::Value,
+    ) -> CasObject {
+        store
+            .put(
+                TRANSFORMED_SOURCE_SCHEMA,
+                &canonical::bytes(&json!({
+                    "schema": TRANSFORMED_SOURCE_SCHEMA,
+                    "kind": "TRANSFORMED_WORKSPACE",
+                    "provenance": "TRANSFORMED_WORKSPACE",
+                    "sourceState": source_state,
+                    "files": files,
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn readonly_and_noop_writable_generation_keys_differ() {
+        // The existing writable flag already separates read-only from a no-op
+        // writable-then-seal generation for otherwise identical inputs. Retain
+        // and prove that separation rather than redesigning the key.
+        let readonly = final_generation_key_for_test(":main", false).unwrap();
+        let writable = final_generation_key_for_test(":main", true).unwrap();
+        assert_ne!(readonly, writable);
+        assert_eq!(
+            final_generation_key_for_test(":main", false).unwrap(),
+            readonly,
+            "equivalent read-only inputs must be stable"
+        );
+    }
+
+    #[test]
+    fn two_indexed_after_states_reject_incompatible_and_keep_previous_binding() {
+        let (_root, store, repo, relative) = transformed_fixture();
+        let bytes: &[u8] = b"package example;\npublic class Service {}\n";
+        std::fs::write(repo.join(relative), bytes).unwrap();
+        let after_a = json!({relative: canonical::hash_bytes(bytes)});
+        let reference = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&transformed_state(relative, after_a)),
+        )
+        .unwrap()
+        .expect("first after-state must persist");
+        // A second indexed after-state for the same original snapshot whose
+        // digest does not match the persisted bytes must fail before any
+        // publication, leaving the previous binding usable and unchanged.
+        let after_b =
+            json!({relative: canonical::hash_bytes(b"package example;\npublic class Other {}\n")});
+        let err = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&transformed_state(relative, after_b)),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("changed after index-state"), "{err}");
+        assert_eq!(
+            load_transformed_source(&store, &reference).unwrap()[relative],
+            bytes,
+            "previous binding must remain unchanged and usable"
+        );
+    }
+
+    #[test]
+    fn persist_rejects_missing_and_extra_source_state_paths() {
+        let (_root, store, repo, relative) = transformed_fixture();
+        let bytes: &[u8] = b"package example;\npublic class Service {}\n";
+        std::fs::write(repo.join(relative), bytes).unwrap();
+        // Missing: the after-map does not cover the admitted source file.
+        let missing = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&transformed_state(relative, json!({}))),
+        )
+        .unwrap_err();
+        assert!(
+            missing.message.contains("do not exactly match"),
+            "{missing}"
+        );
+        // Extra: an after entry names a path that is not admitted.
+        let extra = json!({
+            relative: canonical::hash_bytes(bytes),
+            "src/Unadmitted.java": canonical::hash_bytes(b"x"),
+        });
+        let err = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&transformed_state(relative, extra)),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("do not exactly match"), "{err}");
+    }
+
+    #[test]
+    fn persist_rejects_bytes_changed_since_index_state_construction() {
+        let (_root, store, repo, relative) = transformed_fixture();
+        // The authoritative after-map records the digest of the intended bytes,
+        // but the materialized file differs: a transform mutated source after
+        // index-state construction.
+        let declared: &[u8] = b"package example;\npublic class Service { void m() {} }\n";
+        let on_disk: &[u8] = b"package example;\npublic class Service {}\n";
+        std::fs::write(repo.join(relative), on_disk).unwrap();
+        let after = json!({relative: canonical::hash_bytes(declared)});
+        let err = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&transformed_state(relative, after)),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("changed after index-state"), "{err}");
+    }
+
+    #[test]
+    fn persist_rejects_unsafe_source_path() {
+        let (_root, store, repo, _relative) = transformed_fixture();
+        let unsafe_path = "../escape/Service.java";
+        std::fs::create_dir_all(repo.join("..").join("escape")).unwrap();
+        std::fs::write(repo.join(unsafe_path), b"x").unwrap();
+        let after = json!({unsafe_path: canonical::hash_bytes(b"x")});
+        let err = persist_transformed_source(
+            &store,
+            &repo,
+            &[unsafe_path.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&transformed_state(unsafe_path, after)),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("safe relative path"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_legacy_manifest_without_source_state() {
+        let (_root, store, _repo, relative) = transformed_fixture();
+        // A well-formed outer manifest with no integrity source state is a
+        // legacy artifact and must be rejected for trusted reuse, not promoted.
+        let file = store
+            .put(TRANSFORMED_SOURCE_FILE_SCHEMA, b"package example;")
+            .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(relative.to_string(), file);
+        let manifest = put_transformed_manifest(&store, &files, &json!({}));
+        let err = load_transformed_source(&store, &manifest).unwrap_err();
+        assert!(
+            err.message.contains("integrity source state")
+                || err.message.contains("kind is invalid"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_manifest_without_authoritative_after_map() {
+        let (_root, store, _repo, relative) = transformed_fixture();
+        // kind present but `after` absent: no authoritative digest map to trust.
+        let file = store
+            .put(TRANSFORMED_SOURCE_FILE_SCHEMA, b"package example;")
+            .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(relative.to_string(), file);
+        let source_state = json!({"kind": "TRANSFORMED_WORKSPACE", "before": {}});
+        let manifest = put_transformed_manifest(&store, &files, &source_state);
+        let err = load_transformed_source(&store, &manifest).unwrap_err();
+        assert!(err.message.contains("authoritative after map"), "{err}");
+    }
+
+    #[test]
+    fn load_rejects_wellformed_manifest_with_state_file_mismatch() {
+        let (_root, store, _repo, relative) = transformed_fixture();
+        // The outer manifest is well-formed, but the persisted file bytes do not
+        // match the authoritative after digest carried in the same manifest.
+        let persisted: &[u8] = b"package example;\npublic class Service {}\n";
+        let declared: &[u8] = b"package example;\npublic class Other {}\n";
+        let file = store
+            .put(TRANSFORMED_SOURCE_FILE_SCHEMA, persisted)
+            .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(relative.to_string(), file);
+        let after = json!({relative: canonical::hash_bytes(declared)});
+        let manifest =
+            put_transformed_manifest(&store, &files, &transformed_state(relative, after));
+        let err = load_transformed_source(&store, &manifest).unwrap_err();
+        assert!(
+            err.message
+                .contains("hash does not match indexed source state"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_manifest_with_extra_file_beyond_indexed_state() {
+        let (_root, store, _repo, relative) = transformed_fixture();
+        // files set and after-map membership must match exactly; an extra file
+        // beyond the indexed state is a mismatch, not trusted evidence.
+        let extra_path = "src/Extra.java";
+        let persisted: &[u8] = b"package example;\npublic class Service {}\n";
+        let file = store
+            .put(TRANSFORMED_SOURCE_FILE_SCHEMA, persisted)
+            .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(relative.to_string(), file.clone());
+        files.insert(extra_path.to_string(), file);
+        let after = json!({relative: canonical::hash_bytes(persisted)});
+        let manifest =
+            put_transformed_manifest(&store, &files, &transformed_state(relative, after));
+        let err = load_transformed_source(&store, &manifest).unwrap_err();
+        assert!(
+            err.message.contains("do not match indexed source state"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_unsafe_path_in_reopened_manifest() {
+        let (_root, store, _repo, _relative) = transformed_fixture();
+        let unsafe_path = "../escape/Service.java";
+        let file = store
+            .put(TRANSFORMED_SOURCE_FILE_SCHEMA, b"package example;")
+            .unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(unsafe_path.to_string(), file);
+        let after = json!({unsafe_path: canonical::hash_bytes(b"package example;")});
+        let manifest =
+            put_transformed_manifest(&store, &files, &transformed_state(unsafe_path, after));
+        let err = load_transformed_source(&store, &manifest).unwrap_err();
+        assert!(err.message.contains("path is unsafe"), "{err}");
+    }
+
+    #[test]
+    fn stable_equivalent_state_round_trips_deterministically() {
+        let (_root, store, repo, relative) = transformed_fixture();
+        let bytes: &[u8] = b"package example;\npublic class Service {}\n";
+        std::fs::write(repo.join(relative), bytes).unwrap();
+        let after = json!({relative: canonical::hash_bytes(bytes)});
+        let state = transformed_state(relative, after);
+        let first = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&state),
+        )
+        .unwrap()
+        .expect("first persist");
+        let second = persist_transformed_source(
+            &store,
+            &repo,
+            &[relative.into()],
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&state),
+        )
+        .unwrap()
+        .expect("second persist");
+        assert_eq!(
+            first, second,
+            "equivalent stable state must be deterministic"
+        );
+        assert_eq!(
+            load_transformed_source(&store, &first).unwrap()[relative],
+            bytes,
+            "exact state must round-trip"
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "generation_reuse_tests.rs"]
+mod reuse_tests;

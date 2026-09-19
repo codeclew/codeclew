@@ -787,6 +787,7 @@ mod tests {
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
             maven_settings_digest: None,
+            profile: None,
             working_tree: None,
             created_unix_ms: 1,
         };

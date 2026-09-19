@@ -279,8 +279,10 @@ impl Fixture {
             matches!(report["status"].as_str(), Some("CHECKED" | "UNRESOLVED")),
             "{report}"
         );
-        serde_json::from_slice(
-            &fs::read(self.docs.join(".codeclew/cache/latest-check.json")).unwrap(),
+        let repo = clew::documentation::store::Repository::open(&self.docs).unwrap();
+        clew::documentation::check::Check::load(
+            &repo,
+            &self.docs.join(".codeclew/cache/latest-check.json"),
         )
         .unwrap()
     }
