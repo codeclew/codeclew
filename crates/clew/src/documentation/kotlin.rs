@@ -109,7 +109,7 @@ mod tests {
             })
             .collect();
         let service: Service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0", "id":"warehouse", "title":"Warehouse import", "repositoryId":"warehouse", "repository":"https://example.invalid/warehouse",
-            "language":"kotlin", "profile":"kotlin-jvm-maven-analysis", "compilation":":/main", "targetRef":"main"})).unwrap();
+            "language":"kotlin", "profile":"kotlin-jvm-maven-analysis", "compilations":[":/main"], "targetRef":"main"})).unwrap();
         let source = "src/main/kotlin/example/ImportController.kt";
         let evidence = analysis::project(
             &service,
@@ -223,8 +223,7 @@ mod tests {
                 profile: "kotlin-jvm-maven-analysis".into(),
                 source: None,
                 modules: None,
-                compilation: ":/main".into(),
-                compilations: Vec::new(),
+                compilations: vec![":/main".into()],
                 target_ref: "main".into(),
                 source_link_template: None,
                 contract_files: vec![],
@@ -265,7 +264,7 @@ mod tests {
                 interactions.insert(interaction.id.clone(), interaction);
             }
         }
-        let scenario: Scenario = serde_json::from_value(json!({"schema":"codeclew-documentation-scenario/1.0","id":"import","title":"Import stock",
+        let scenario: Scenario = serde_json::from_value(json!({"schema":"codeclew-documentation-process/1.0","process":{"scope":"Stock propagation","participants":["service0"],"trigger":"Stock update","outcomes":["Propagated stock"]},"id":"import","title":"Import stock",
             "summary":"Propagate stock changes.","root":{"service":"service0","selector":{"language":"kotlin","owner":"example.Importer","name":"importStock","parameterTypes":[]}},
             "interactions":interactions.keys().collect::<Vec<_>>(),"maxDepth":16,"maxNodes":64})).unwrap();
         check::assemble(
@@ -318,9 +317,10 @@ mod tests {
         let checked = chain(8);
         let step = &checked.scenarios["import"].steps[0];
         let mut narrative: Narrative = serde_json::from_value(json!({
-            "schema":"codeclew-documentation-narrative/1.1", "subject":"scenario:import", "contextDigest":checked.context_digest,
+            "schema":"codeclew-documentation-narrative/1.3", "subject":"scenario:import", "contextDigest":checked.context_digest,
             "operations":[{"id":"import","title":"Import stock","summary":{"id":"summary","text":"Propagate stock changes.","dependencyIds":step.dependency_ids,"sourceIds":step.source_ids},
                 "participants":(0..8).map(|i|json!({"id":format!("p{i}"),"label":format!("Service {i}"),"service":format!("service{i}")})).chain([json!({"id":"client","label":"Warehouse operator","service":null})]).collect::<Vec<_>>(),
+                "overviewDiagram":{"nodes":[{"id":"accept","text":"Accept the stock batch","participant":"p0","column":0,"row":0,"eventIds":["send"]}],"edges":[]},
                 "events":[{"id":"send","kind":"message","text":"Accept the warehouse stock batch","from":"client","to":"p0","dependencyIds":step.dependency_ids,"sourceIds":step.source_ids}],
                 "explanation":[{"id":"acceptance","text":"The operator submits the available quantity for the warehouse. The importing service accepts the batch and prepares its propagation to the next service.","eventIds":["send"],"dependencyIds":step.dependency_ids,"sourceIds":step.source_ids}]}]
         })).unwrap();
@@ -335,7 +335,6 @@ mod tests {
                 .fragments
                 .contains_key("scenario:import/import/acceptance")
         );
-        narrative.schema = "codeclew-documentation-narrative/1.2".into();
         narrative.operations[0].explanation[0].detail = true;
         narrative.operations[0].interface_contracts = vec![InterfaceContract {
             id: "stock-message".into(),
@@ -362,7 +361,7 @@ mod tests {
                 .contains_key("scenario:import/import/stock-topic")
         );
         let mut overview = narrative.clone();
-        overview.schema = "codeclew-documentation-narrative/1.3".into();
+        overview.operations[0].overview_diagram = None;
         assert!(render::validate(&overview, &checked).is_err());
         overview.operations[0].overview_diagram = Some(serde_json::from_value(json!({
             "nodes":[{"id":"accept","text":"Accept stock","participant":"p0","column":0,"row":0,"eventIds":["send"]},
@@ -443,7 +442,17 @@ mod tests {
         assert!(render::validate(&narrative, &checked).is_err());
         narrative.operations[0].explanation.clear();
         assert!(render::validate(&narrative, &checked).is_err());
-        narrative.schema = "codeclew-documentation-narrative/1.0".into();
-        render::validate(&narrative, &checked).unwrap();
+        overview.operations[0].overview_diagram = valid;
+        render::validate(&overview, &checked).unwrap();
+        for version in ["1.0", "1.1", "1.2"] {
+            let mut obsolete = overview.clone();
+            obsolete.schema = format!("codeclew-documentation-narrative/{version}");
+            assert!(
+                render::validate(&obsolete, &checked)
+                    .unwrap_err()
+                    .message
+                    .contains("only codeclew-documentation-narrative/1.3")
+            );
+        }
     }
 }

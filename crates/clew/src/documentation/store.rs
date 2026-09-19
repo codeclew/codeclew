@@ -15,6 +15,8 @@ pub const MAX_RECORDS: usize = 1024;
 pub struct Repository {
     pub root: PathBuf,
     pub manifest: Manifest,
+    pub(crate) object_database:
+        std::sync::Mutex<Option<(String, std::sync::Arc<super::sqlite_objects::SqliteObjects>)>>,
 }
 
 /// Parsed documentation inputs. The serialized fields preserve the existing
@@ -100,9 +102,34 @@ impl Repository {
             schema: format!("codeclew-documentation/{VERSION}"),
             title: title.into(),
         };
-        let repo = Self { root, manifest };
-        let _lock = repo.lock()?;
+        let repo = Self {
+            root,
+            manifest,
+            object_database: Default::default(),
+        };
         let path = repo.path("codeclew-docs.yaml")?;
+        let new_root = !path.exists();
+        if !new_root {
+            let current: Manifest = read(&path, MAX_RECORD)?;
+            validate_manifest_schema(&current)?;
+            if current != repo.manifest {
+                return Err(invalid(
+                    "documentation root already has a different manifest",
+                ));
+            }
+        }
+        // Only an entirely absent private root can denote a fresh Git clone.
+        // A partial cache is damaged local state, never an implicit reset.
+        let private_state_absent = !repo.path(".codeclew")?.try_exists().map_err(io_error)?;
+        let _lock = repo.lock()?;
+        if new_root || private_state_absent {
+            // Publish the SQLite layout before the new root manifest. If this
+            // process is interrupted, a retry still sees an uninitialized root
+            // and can complete activation.
+            super::object_layout::activate(&repo)?;
+        } else {
+            super::object_layout::ensure_current(&repo)?;
+        }
         if path.exists() {
             let current: Manifest = read(&path, MAX_RECORD)?;
             if current != repo.manifest {
@@ -147,7 +174,7 @@ impl Repository {
                 .as_bytes(),
             )?;
         }
-        let instructions = "# Documentation ownership\n\nRead codeclew-docs.yaml and catalog records first. Use clew docs commands for\nvalidated operations. Bind relocated checkouts with clew docs bind.\nManual notes belong outside docs/generated and narratives; never overwrite them.\nDefault service scope covers every discovered entrypoint, including explicit gaps.\nUse current narrative 1.3; existing narrative 1.0, 1.1 and 1.2 remain readable.\nPrefer docs work prepare/read and docs proposal submit for local authoring.\nPublish a machine-ready proposal with docs proposal publish --unassessed;\nthis retains captured influence and explicitly leaves meaning review UNASSESSED.\nSeparate configured review is required for VERIFIED meaning.\nUse domain explanation paragraphs linked to every diagram step.\nExplain business inputs, checks, state changes, failures and outcomes from source.\nPreserve callback scheduling and asynchronous message boundaries.\nDeclared interactions are not compiler or runtime proof. Run clew docs check\nbefore refreshing; preserve stable declaration and scenario IDs.\nKotlin/Java source-syntax authoring does not require an optional compiler provider.\nRetain evidence/packages, execution/accounts and immutable history with the docs.\n";
+        let instructions = "# Documentation ownership\n\nRead codeclew-docs.yaml and catalog records first. Use clew docs commands for\nvalidated operations. Bind relocated checkouts with clew docs bind.\nManual notes belong outside docs/generated and narratives; never overwrite them.\nDefault service scope covers every discovered entrypoint, including explicit gaps.\nUse current narrative 1.3; earlier narrative formats are unsupported.\nRetained consumers read saved snapshots without automatic source checks.\nPrefer docs work prepare/read and docs proposal submit for local authoring.\nPublish a machine-ready proposal with docs proposal publish --unassessed;\nthis retains captured influence and explicitly leaves meaning review UNASSESSED.\nSeparate configured review is required for VERIFIED meaning.\nUse domain explanation paragraphs linked to every diagram step.\nExplain business inputs, checks, state changes, failures and outcomes from source.\nPreserve callback scheduling and asynchronous message boundaries.\nDeclared interactions are not compiler or runtime proof. Run clew docs check\nbefore refreshing; preserve stable declaration and scenario IDs.\nKotlin/Java source-syntax authoring does not require an optional compiler provider.\nRetain evidence/packages, execution/accounts and immutable history with the docs.\n";
         let instructions_path = if repo.path("AGENTS.md")?.exists() {
             "AGENTS.codeclew-docs.md"
         } else {
@@ -188,15 +215,24 @@ impl Repository {
         let root = root.canonicalize().map_err(io_error)?;
         let provisional = Self {
             root,
+            object_database: Default::default(),
             manifest: Manifest {
                 schema: String::new(),
                 title: String::new(),
             },
         };
         let manifest: Manifest = read(&provisional.path("codeclew-docs.yaml")?, MAX_RECORD)?;
-        if manifest.schema != format!("codeclew-documentation/{VERSION}") {
-            return Err(invalid("unsupported documentation schema"));
+        validate_manifest_schema(&manifest)?;
+        if !provisional
+            .path(".codeclew")?
+            .try_exists()
+            .map_err(io_error)?
+        {
+            return Err(invalid(
+                "documentation checkout has no local state; run docs init with the existing title, then bind sources and run docs check explicitly",
+            ));
         }
+        super::object_layout::ensure_current(&provisional)?;
         Ok(Self {
             manifest,
             ..provisional
@@ -309,9 +345,7 @@ impl Repository {
         for (id, value) in &rows {
             if !matches!(
                 value.schema.as_str(),
-                "codeclew-documentation-scenario/1.0"
-                    | "codeclew-documentation-process/1.0"
-                    | "codeclew-documentation-view/1.0"
+                "codeclew-documentation-process/1.0" | "codeclew-documentation-view/1.0"
             ) || id != &value.id
                 || !valid_id(id)
                 || value.max_depth > 16
@@ -455,6 +489,15 @@ impl Repository {
     }
 }
 
+fn validate_manifest_schema(manifest: &Manifest) -> Result<(), ClewError> {
+    if manifest.schema != format!("codeclew-documentation/{VERSION}") {
+        return Err(invalid(
+            "DOCS_REINDEX_REQUIRED: unsupported documentation root schema; initialize a fresh documentation root and reindex its sources",
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_service(s: &Service) -> Result<(), ClewError> {
     super::modules::validate(s)?;
     if s.schema != "codeclew-documentation-service/1.0"
@@ -498,13 +541,6 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
                 "source roots and dialect must be bounded and nonempty",
             ));
         }
-        if let Some(semantic) = &config.semantic {
-            let mut provider = s.clone();
-            provider.source = None;
-            provider.profile = semantic.profile.clone();
-            provider.compilation = semantic.compilation.clone();
-            validate_service(&provider)?;
-        }
         for root in &config.roots {
             if root != "." {
                 relative(root)?;
@@ -522,16 +558,9 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
                 "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
             ));
         }
-        // Explicit plural compilation selection: normalize and validate the
-        // authored set. A plural `compilations` set and a legacy singular
-        // `compilation` are mutually exclusive; duplicates and empty selectors
-        // are rejected so the same scope cannot multiply work or create
-        // ambiguous authority.
-        if !s.compilations.is_empty() && !s.compilation.is_empty() {
-            return Err(invalid(
-                "service declares both a singular compilation and a plural compilations set",
-            ));
-        }
+        // Explicit compilation selection: duplicates and empty selectors are
+        // rejected so one scope cannot multiply work or create ambiguous
+        // authority.
         let compilations = s.effective_compilations();
         if compilations.is_empty() {
             return Err(invalid(
@@ -598,6 +627,9 @@ pub fn endpoint(e: &Endpoint, services: &BTreeMap<String, Service>) -> Result<()
         && (s.language != services[&e.service].language
             || s.owner.is_empty()
             || s.name.is_empty()
+            || s.scope
+                .as_ref()
+                .is_some_and(|scope| scope.len() > 1024 || scope.chars().any(char::is_control))
             || s.parameter_types.as_ref().is_some_and(|p| p.len() > 64))
     {
         return Err(invalid("endpoint selector is incomplete or unsupported"));
@@ -676,8 +708,7 @@ mod tests {
             profile: "java-17plus-maven-read-only".into(),
             source: None,
             modules: None,
-            compilation: ":/main".into(),
-            compilations: Vec::new(),
+            compilations: vec![":/main".into()],
             target_ref: "main".into(),
             source_link_template: None,
             contract_files: vec![],
@@ -690,6 +721,137 @@ mod tests {
         let r = Repository::open(t.path()).unwrap();
         (t, r)
     }
+    #[test]
+    fn current_git_clone_initializes_local_state_and_binds_without_changing_declarations() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let original = temporary.path().join("docs-original");
+        let cloned = temporary.path().join("docs-clone");
+        fs::create_dir_all(source.join("src")).unwrap();
+        let git = |path: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(path)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&source, &["init", "--initial-branch=main"]);
+        git(
+            &source,
+            &["remote", "add", "origin", "https://example.invalid/orders"],
+        );
+        fs::write(
+            source.join("src/Worker.java"),
+            "class Worker { int value() { return 1; } }",
+        )
+        .unwrap();
+        git(&source, &["add", "."]);
+        git(&source, &["commit", "-m", "Fixture"]);
+        Repository::init(&original, "Architecture").unwrap();
+        let repo = Repository::open(&original).unwrap();
+        let mut selected = service("orders");
+        selected.profile = "source-syntax".into();
+        selected.compilations.clear();
+        selected.source = Some(SourceConfig {
+            roots: vec!["src".into()],
+            dialect: "17".into(),
+        });
+        selected.target_ref = "main".into();
+        repo.service_add(selected, Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        fs::write(original.join("manual.md"), "Preserve authored guidance.\n").unwrap();
+        let original_digest = repo.input_digest().unwrap();
+        git(&original, &["init", "--initial-branch=main"]);
+        git(&original, &["add", "."]);
+        git(&original, &["commit", "-m", "Current documentation"]);
+        git(
+            temporary.path(),
+            &[
+                "clone",
+                original.to_str().unwrap(),
+                cloned.to_str().unwrap(),
+            ],
+        );
+        assert!(!cloned.join(".codeclew").exists());
+        assert!(
+            Repository::open(&cloned)
+                .unwrap_err()
+                .message
+                .contains("docs init")
+        );
+        let declaration_bytes = fs::read(cloned.join("catalog/services/orders.json")).unwrap();
+        Repository::init(&cloned, "Architecture").unwrap();
+        let clone = Repository::open(&cloned).unwrap();
+        assert_eq!(clone.input_digest().unwrap(), original_digest);
+        assert_eq!(
+            fs::read(cloned.join("catalog/services/orders.json")).unwrap(),
+            declaration_bytes
+        );
+        assert_eq!(
+            fs::read_to_string(cloned.join("manual.md")).unwrap(),
+            "Preserve authored guidance.\n"
+        );
+        super::super::analysis::bind(&clone, "orders", &source).unwrap();
+    }
+
+    #[test]
+    fn initialization_rejects_obsolete_and_partial_roots_without_resetting_them() {
+        let old = tempfile::tempdir().unwrap();
+        let bytes = b"schema: codeclew-documentation/1.0\ntitle: Architecture\n";
+        fs::write(old.path().join("codeclew-docs.yaml"), bytes).unwrap();
+        for result in [
+            Repository::init(old.path(), "Architecture").map(|_| ()),
+            Repository::open(old.path()).map(|_| ()),
+        ] {
+            assert!(
+                result
+                    .unwrap_err()
+                    .message
+                    .contains("DOCS_REINDEX_REQUIRED")
+            );
+        }
+        assert_eq!(
+            fs::read(old.path().join("codeclew-docs.yaml")).unwrap(),
+            bytes
+        );
+        assert!(!old.path().join(".codeclew").exists());
+        let (root, repo) = setup();
+        let marker = repo.path(".codeclew/cache/object-layout.json").unwrap();
+        let layout: Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+        let database = repo.path(layout["database"].as_str().unwrap()).unwrap();
+        drop(repo);
+        fs::remove_file(&database).unwrap();
+        assert_eq!(
+            Repository::init(root.path(), "Architecture")
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
+        assert!(!database.exists());
+        fs::remove_file(&marker).unwrap();
+        let retained = root.path().join(".codeclew/cache/retained-data");
+        fs::write(&retained, b"keep").unwrap();
+        assert!(
+            Repository::init(root.path(), "Architecture")
+                .unwrap_err()
+                .message
+                .contains("DOCS_REINDEX_REQUIRED")
+        );
+        assert_eq!(fs::read(retained).unwrap(), b"keep");
+        assert!(!marker.exists());
+    }
+
     #[test]
     fn records_survive_reopen_and_detect_concurrent_writes() {
         let (t, r) = setup();
@@ -709,14 +871,14 @@ mod tests {
 
         fs::write(
             &manifest_path,
-            "# Formatting and comments are not part of manifest identity.\n\ntitle: Architecture\nschema: codeclew-documentation/1.0\n",
+            "# Formatting and comments are not part of manifest identity.\n\ntitle: Architecture\nschema: codeclew-documentation/2.0\n",
         )
         .unwrap();
         assert_eq!(r.input_digest().unwrap(), before);
 
         fs::write(
             &manifest_path,
-            "schema: codeclew-documentation/1.0\ntitle: Changed title\n",
+            "schema: codeclew-documentation/2.0\ntitle: Changed title\n",
         )
         .unwrap();
         let error = r.input_digest().unwrap_err();
@@ -741,7 +903,6 @@ mod tests {
         let selectors = (0..128)
             .map(|index| format!(":m{index}/main"))
             .collect::<Vec<_>>();
-        s.compilation = String::new();
         s.compilations = selectors.clone();
         assert_eq!(s.compilations.len(), 128);
         r.service_add(s.clone(), Some(&r.input_digest().unwrap()))

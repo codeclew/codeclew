@@ -32,10 +32,12 @@ pub struct Details {
 }
 pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<(), ClewError> {
     let Some(p) = &s.process else {
-        return if s.schema == "codeclew-documentation-process/1.0" {
-            Err(invalid("saved process requires explicit process metadata"))
-        } else {
+        return if s.schema == "codeclew-documentation-view/1.0" && s.view.is_some() {
             Ok(())
+        } else {
+            Err(invalid(
+                "saved definitions require current process or view metadata",
+            ))
         };
     };
     if s.view.is_some() {
@@ -90,6 +92,20 @@ pub fn overview(checked: &Check, subject: &str, root: &str) -> bool {
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Discover structural process candidates from saved evidence without capture or model calls.
+    Candidates {
+        #[command(flatten)]
+        page: ListArgs,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Exact callable SYMBOL observation ID; admits roots without discoverable flow.
+        #[arg(long)]
+        declaration: Vec<String>,
+        #[arg(long, default_value = "all", value_parser = ["all", "internal", "trigger"])]
+        lane: String,
+    },
     List {
         #[command(flatten)]
         page: ListArgs,
@@ -126,7 +142,7 @@ pub enum Command {
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     let root = match &command {
-        Command::List { page } => &page.root,
+        Command::List { page } | Command::Candidates { page, .. } => &page.root,
         Command::Show { root, .. }
         | Command::Put { root, .. }
         | Command::Inspect { root, .. }
@@ -134,8 +150,40 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     };
     let repo = Repository::open(root)?;
     match command {
+        Command::Candidates {
+            page,
+            service,
+            snapshot,
+            declaration,
+            lane,
+        } => {
+            let (checked, handle) = Check::retained(
+                &repo,
+                snapshot.as_deref(),
+                &BTreeSet::from([service.clone()]),
+            )?;
+            let catalogue = super::process_candidates::catalog(
+                &checked.services[&service],
+                &declaration.into_iter().collect(),
+            )?;
+            let records: Vec<_> = catalogue
+                .records
+                .into_iter()
+                .filter(|row| lane == "all" || row["lane"] == lane)
+                .collect();
+            let selection = digest(
+                &json!({"snapshot":handle,"summary":catalogue.summary,"lane":lane,"records":records}),
+            )?;
+            super::cli::page(
+                &selection,
+                records,
+                page.cursor.as_deref(),
+                page.limit as usize,
+                json!({"snapshot":handle,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","lane":lane,"catalogue":catalogue.summary}),
+            )
+        }
         Command::List { page } => {
-            let records=repo.scenarios()?.into_values().map(|s|json!({"id":s.id,"title":s.title,"kind":if s.process.is_some(){"SAVED_PROCESS"}else if s.view.is_some(){"SAVED_VIEW"}else{"LEGACY_SCENARIO"},"subject":format!("scenario:{}",s.id)})).collect::<Vec<_>>();
+            let records=repo.scenarios()?.into_values().map(|s|json!({"id":s.id,"title":s.title,"kind":if s.process.is_some(){"SAVED_PROCESS"}else{"SAVED_VIEW"},"subject":format!("scenario:{}",s.id)})).collect::<Vec<_>>();
             super::cli::page(
                 &digest(&records)?,
                 records,
@@ -202,7 +250,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             if !repo.scenarios()?.contains_key(&id) {
                 return Err(invalid("unknown process"));
             }
-            work::prepare(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"maxItems":20,"maxBytes":40960})).map_err(io_error)?)
+            work::prepare(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?)
         }
     }
 }
@@ -600,4 +648,22 @@ fn children(s: &Scenario) -> &[String] {
         .map(|p| p.linked_subviews.as_slice())
         .or_else(|| s.view.as_ref().map(|v| v.related_processes.as_slice()))
         .unwrap_or(&[])
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn plain_scenario_cannot_bypass_process_metadata() {
+        let mut definition: Scenario = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-scenario/1.0", "id":"old",
+            "title":"Old scenario", "summary":"Missing process metadata",
+            "root":{"service":"orders"}
+        }))
+        .unwrap();
+        assert!(validate(&definition, &BTreeMap::new()).is_err());
+        definition.schema = "codeclew-documentation-process/1.0".into();
+        assert!(validate(&definition, &BTreeMap::new()).is_err());
+    }
 }

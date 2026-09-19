@@ -302,7 +302,18 @@ impl Fixture {
             .find(|e| e.symbol.contains(selector))
             .unwrap();
         let events:Vec<_>=e.observations.values().filter(|o|o.kind=="FLOW" && o.symbol==entry.symbol).enumerate().map(|(i,o)|json!({"id":format!("step-{i}"),"kind":"note","text":"The source returns a normalized quantity.","from":null,"to":null,"dependencyIds":[o.id],"sourceIds":o.source_ids})).collect();
-        self.input(&format!("{service}-{selector}-narrative.json"),&json!({"schema":"codeclew-documentation-narrative/1.0","subject":format!("service:{service}"),"contextDigest":checked.context_digest,"operations":[{"id":entry.id,"title":"Reserve quantity","summary":{"id":"summary","text":"Returns the normalized requested quantity.","dependencyIds":entry.dependency_ids,"sourceIds":entry.source_ids},"participants":[{"id":"caller","label":"Caller","service":null},{"id":"service","label":"Orders","service":service}],"events":events,"boundaries":["Source syntax only."]}],"gaps":e.entrypoints.iter().filter(|e|e.id!=entry.id).map(|e|(&e.id,"Not authored in this fixture.")).collect::<std::collections::BTreeMap<_,_>>()}))
+        let explanation: Vec<_> = events
+            .iter()
+            .map(|event| {
+                json!({
+                    "id":format!("paragraph-{}",event["id"].as_str().unwrap()),
+                    "text":event["text"], "eventIds":[event["id"]],
+                    "dependencyIds":event["dependencyIds"],"sourceIds":event["sourceIds"],
+                })
+            })
+            .collect();
+        let overview = json!({"nodes":[{"id":"normalize-quantity","text":"Normalize requested quantity","participant":"service","column":0,"row":0,"eventIds":[events.first().expect("quantity flow evidence")["id"]]}],"edges":[]});
+        self.input(&format!("{service}-{selector}-narrative.json"),&json!({"schema":"codeclew-documentation-narrative/1.3","subject":format!("service:{service}"),"contextDigest":checked.context_digest,"operations":[{"id":entry.id,"title":"Reserve quantity","summary":{"id":"summary","text":"Returns the normalized requested quantity.","dependencyIds":entry.dependency_ids,"sourceIds":entry.source_ids},"participants":[{"id":"caller","label":"Caller","service":null},{"id":"service","label":"Orders","service":service}],"events":events,"explanation":explanation,"overviewDiagram":overview,"boundaries":["Source syntax only."]}],"gaps":e.entrypoints.iter().filter(|e|e.id!=entry.id).map(|e|(&e.id,"Not authored in this fixture.")).collect::<std::collections::BTreeMap<_,_>>()}))
     }
     pub fn bundle(&self, id: &str, path: &str) -> PathBuf {
         self.docs.join("docs/generated").join(id).join(path)

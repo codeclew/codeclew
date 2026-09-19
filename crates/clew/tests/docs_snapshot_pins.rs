@@ -21,11 +21,12 @@ fn pin(f: &Fixture, name: &str, handle: &str) -> Value {
         handle,
     ])
 }
-fn object(repo: &Repository, digest: &str) -> PathBuf {
-    repo.root
-        .join(cache::OBJECT_ROOT)
-        .join(digest)
-        .join("object.json")
+fn object_database(repo: &Repository) -> rusqlite::Connection {
+    let layout: Value = serde_json::from_slice(
+        &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+    )
+    .unwrap();
+    rusqlite::Connection::open(repo.root.join(layout["database"].as_str().unwrap())).unwrap()
 }
 
 #[test]
@@ -88,9 +89,9 @@ fn pin_conflict_and_writer_lock_preserve_the_existing_root() {
     let handle = checked.save_snapshot(&repo).unwrap();
     pin(&f, "release", &handle);
     let before = fs::read(marker(&f, "release")).unwrap();
-    let mut legacy = checked;
-    legacy.source_inputs = None;
-    let other = legacy.save_snapshot(&repo).unwrap();
+    let mut changed = checked;
+    changed.context_digest = "different-context".into();
+    let other = changed.save_snapshot(&repo).unwrap();
     assert_ne!(other, handle);
     let (code, _) = f.run(&[
         "docs",
@@ -119,9 +120,10 @@ fn broken_evidence_never_registers_or_revalidates_but_unpin_still_works() {
     pin(&f, "release", &handle);
     let manifest = checked.store_manifest(&repo).unwrap();
     let sources = &manifest.service_manifests["orders"].sources;
-    fs::write(
-        object(&repo, &sources.digest),
-        vec![b'x'; sources.size as usize],
+    let db = object_database(&repo);
+    db.execute(
+        "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+        rusqlite::params![b"damaged".as_slice(), sources.digest],
     )
     .unwrap();
     for command in [
@@ -153,7 +155,15 @@ fn broken_evidence_never_registers_or_revalidates_but_unpin_still_works() {
     let listed = f.ok(&["docs", "snapshot", "list"]);
     assert!(listed.to_string().contains("NOT_CHECKED"));
     f.ok(&["docs", "snapshot", "unpin", "--name", "release"]);
-    assert!(object(&repo, &sources.digest).exists());
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM objects WHERE digest = ?1",
+            [&sources.digest],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -163,11 +173,7 @@ fn pin_recomposed_snapshot_verifies_original_parent_reader_data() {
     let checked = f.checked();
     let repo = Repository::open(&f.docs).unwrap();
     let parent = checked.save_snapshot(&repo).unwrap();
-    let parent_index = checked
-        .store_manifest(&repo)
-        .unwrap()
-        .dependencies_index
-        .unwrap();
+    let parent_index = checked.store_manifest(&repo).unwrap().dependencies_index;
     let title_path = f.docs.join("codeclew-docs.yaml");
     let mut title: Value =
         serde_yaml_ng::from_str(&fs::read_to_string(&title_path).unwrap()).unwrap();
@@ -185,13 +191,24 @@ fn pin_recomposed_snapshot_verifies_original_parent_reader_data() {
     let derived = result["snapshot"].as_str().unwrap();
     let repo = Repository::open(&f.docs).unwrap();
     pin(&f, "derived", derived);
-    let derived_path = object(&repo, derived.rsplit_once('/').unwrap().0);
-    let derived_manifest: Value = serde_json::from_slice(&fs::read(derived_path).unwrap()).unwrap();
+    let db = object_database(&repo);
+    let bytes: Vec<u8> = db
+        .query_row(
+            "SELECT payload FROM objects WHERE digest = ?1",
+            [derived.rsplit_once('/').unwrap().0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let derived_manifest: Value = serde_json::from_slice(&bytes).unwrap();
     assert_ne!(
         derived_manifest["dependenciesIndex"]["digest"],
         parent_index.digest
     );
-    fs::remove_file(object(&repo, &parent_index.digest)).unwrap();
+    db.execute(
+        "DELETE FROM objects WHERE digest = ?1",
+        [&parent_index.digest],
+    )
+    .unwrap();
     // The normal derived read validates the parent manifest, not its dependency index.
     assert!(Check::load_snapshot(&repo, derived).is_ok());
     let (code, _) = f.run(&["docs", "snapshot", "show", "--name", "derived"]);

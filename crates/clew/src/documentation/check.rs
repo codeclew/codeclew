@@ -1,14 +1,12 @@
 //! Explicit certainty axes and bounded composition across declared HTTP and Kafka boundaries.
 use super::{analysis, bytes, digest, invalid, io_error, model::*, store::Repository};
 use crate::error::ClewError;
-use crate::state::StateAuthority;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::os::unix::fs::OpenOptionsExt;
 
 /// Upper bound for a portable documentation check or rendered record. Large
 /// services (for example 600+ source files) legitimately exceed 64 MiB, so the
@@ -74,8 +72,7 @@ pub struct Check {
     pub interactions: BTreeMap<String, InteractionCheck>,
     pub scenarios: BTreeMap<String, ScenarioContext>,
     pub dependencies: BTreeMap<String, Observation>,
-    /// Only new captures using frozen source-selection inputs carry this record.
-    /// Absence on a legacy Check must not be repaired from current declarations.
+    /// Frozen source-selection inputs; required when persisting a capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_inputs: Option<SourceInputs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,15 +88,18 @@ pub struct SourceInputs {
     pub input_digest: String,
     pub inputs: super::store::RepositoryInputs,
     pub selected_services: BTreeSet<String>,
+    /// Valid saved service results carried forward without visiting their source.
+    /// These are deliberately separate from this operation's capture selection.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub retained_services: BTreeSet<String>,
 }
 
 pub const CHECK_MANIFEST_SCHEMA: &str = "codeclew-documentation-check-manifest/1.0";
-pub const CHECK_DEPENDENCIES_OBJECT_SCHEMA: &str = "codeclew-documentation-check-dependencies/1.0";
 /// Fact-index scope under which a check's dependency observations are indexed.
 pub const CHECK_DEPENDENCIES_SCOPE: &str = "check-dependencies";
 
 /// Reference envelope for a persisted check: per-service capture manifests and
-/// one dependencies object replace the duplicated full `ServiceEvidence`
+/// a fact-index root replace the duplicated full `ServiceEvidence`
 /// observations plus `Check.dependencies` inline copy. Light identity stays
 /// inline; heavy payload lives once in the immutable object store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,18 +112,10 @@ pub struct CheckManifest {
     pub unresolved: BTreeMap<String, Value>,
     pub interactions: BTreeMap<String, InteractionCheck>,
     pub scenarios: BTreeMap<String, ScenarioContext>,
-    /// Legacy whole-map dependency object (kept for portable/self-contained
-    /// reads). New captures store dependencies as per-fact index memberships and
-    /// reference the immutable snapshot root via `dependencies_index` instead,
-    /// so no second whole-map copy of every observation is serialized.
-    #[serde(default)]
-    pub dependencies: Option<super::cache::ObjectRef>,
-    /// Immutable fact-index snapshot root holding the check's dependency
-    /// observations as per-fact memberships. Present for new captures.
-    #[serde(default)]
-    pub dependencies_index: Option<super::cache::ObjectRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_inputs: Option<super::cache::ObjectRef>,
+    /// Required immutable fact-index root for dependency observations.
+    pub dependencies_index: super::cache::ObjectRef,
+    /// Required frozen source-selection inputs.
+    pub source_inputs: super::cache::ObjectRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composition: Option<super::cache::ObjectRef>,
 }
@@ -141,16 +133,23 @@ impl Drop for RepositoryRunLock {
     }
 }
 
-fn acquire_repository_run_lock(
-    state: &StateAuthority,
-    repository_root: &Path,
-) -> Result<RepositoryRunLock, ClewError> {
-    let key = crate::state::repository_key(repository_root).or_else(|_| {
-        let canonical = repository_root.canonicalize().map_err(io_error)?;
-        Ok::<String, ClewError>(hex::encode(canonical.as_os_str().as_encoded_bytes()))
-    })?;
-    let directory = state.directory(Path::new("locks"))?;
-    let file = directory.open_lock(OsStr::new(&format!("docs-check-{key}.lock")))?;
+fn acquire_repository_run_lock(repository: &Repository) -> Result<RepositoryRunLock, ClewError> {
+    // The lock belongs to the docs root, not CODECLEW_HOME: separate runtime
+    // installations can legitimately update the same documentation repository.
+    std::fs::create_dir_all(repository.path(".codeclew")?).map_err(io_error)?;
+    let path = repository.path(".codeclew/check-run.lock")?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(io_error)?;
+    if !file.metadata().map_err(io_error)?.is_file() {
+        return Err(invalid("documentation run lock is not a regular file"));
+    }
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }
@@ -173,14 +172,28 @@ pub(crate) fn run_selected_with_diagnostics(
     selected: &BTreeSet<String>,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<Check, ClewError> {
-    // Serialize concurrent documentation checks on this repository so parallel
-    // runs cannot overlap their shared attempt lifecycle and race its cleanup.
-    // Production runs carry the launcher-provided state-root descriptor; outside
-    // it (tests, or runs that return before generation) locking is skipped.
-    let _run_lock = match StateAuthority::process_default() {
-        Ok(state) => Some(acquire_repository_run_lock(&state, &repository.root)?),
-        Err(_) => None,
-    };
+    let _run_lock = acquire_repository_run_lock(repository)?;
+    run_selected_unlocked(repository, selected, debug_output)
+}
+
+/// Keep sibling selection and publication under the same operation lock. Two
+/// independent scoped checks must never overwrite each other's newer siblings.
+pub(crate) fn run_and_save_selected(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<(Check, String), ClewError> {
+    let _run_lock = acquire_repository_run_lock(repository)?;
+    let checked = run_selected_unlocked(repository, selected, debug_output)?;
+    let snapshot = checked.save_snapshot(repository)?;
+    Ok((checked, snapshot))
+}
+
+fn run_selected_unlocked(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<Check, ClewError> {
     let inputs = repository.inputs()?;
     let mut checked = capture_selected_from_inputs(repository, selected, inputs, debug_output)?;
     attach_retained_annotations(repository, &mut checked)?;
@@ -253,9 +266,34 @@ fn capture_selected_with(
     }
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
+    let previous = if selected.is_empty() {
+        None
+    } else {
+        let path = repository.path(".codeclew/cache/latest-check.json")?;
+        if path.try_exists().map_err(io_error)? {
+            Some(Check::load(repository, &path)?)
+        } else {
+            None
+        }
+    };
+    let mut retained_services = BTreeSet::new();
     let targets = &inputs.update_state;
     for (id, service) in services {
         if !selected.is_empty() && !selected.contains(id) {
+            if let Some(saved) = previous.as_ref().and_then(|previous| {
+                let original = &previous.source_inputs.as_ref()?.inputs;
+                (original.services.get(id) == Some(service)
+                    && original.evidence_expectations.get(id)
+                        == inputs.evidence_expectations.get(id)
+                    && original.update_policies.get(id) == inputs.update_policies.get(id)
+                    && original.update_state.targets.get(id) == targets.targets.get(id))
+                .then(|| previous.services.get(id))
+                .flatten()
+            }) {
+                evidence.insert(id.clone(), saved.clone());
+                retained_services.insert(id.clone());
+                continue;
+            }
             unresolved.insert(id.clone(), json!({"status":"NOT_CHECKED","reason":"SERVICE_NOT_SELECTED","nextAction":"Select this service explicitly to check its current source."}));
             continue;
         }
@@ -309,6 +347,7 @@ fn capture_selected_with(
         } else {
             selected.clone()
         },
+        retained_services,
         inputs,
     });
     checked.validate_source_input_binding()?;
@@ -603,13 +642,13 @@ impl Walker<'_> {
             .extend(step.dependency_ids.iter().cloned());
         self.steps.push(step);
     }
-    fn walk(&mut self, service: &str, symbol: &str, depth: usize) -> Result<(), ClewError> {
+    fn walk(&mut self, service: &str, declaration_id: &str, depth: usize) -> Result<(), ClewError> {
         if depth > self.selection.max_depth {
             self.truncated = true;
             self.boundaries.insert("DEPTH_BUDGET_EXHAUSTED".into());
             return Ok(());
         }
-        if !self.active.insert((service.into(), symbol.into())) {
+        if !self.active.insert((service.into(), declaration_id.into())) {
             self.boundaries
                 .insert("LOCAL_OR_DECLARED_CYCLE_NOT_EXPANDED".into());
             return Ok(());
@@ -621,12 +660,13 @@ impl Walker<'_> {
         };
         let Some(declaration) = e
             .observations
-            .values()
-            .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+            .get(declaration_id)
+            .filter(|o| o.kind == "SYMBOL")
         else {
             self.boundaries.insert("CALLEE_BODY_UNAVAILABLE".into());
             return Ok(());
         };
+        let symbol = declaration.symbol.as_str();
         self.dependencies.insert(declaration.id.clone());
         let flow = declaration.normalized.get("documentation");
         if flow.is_none() {
@@ -650,8 +690,9 @@ impl Walker<'_> {
                 self.boundaries.insert("NODE_BUDGET_EXHAUSTED".into());
                 break;
             }
-            let id =
-                analysis::dependency_id(service, "flow", &format!("{symbol}/event/{ordinal}"))?;
+            let scope = declaration.normalized["scope"].as_str().unwrap_or("");
+            let identity = analysis::scoped_identity(scope, &format!("{symbol}/event/{ordinal}"));
+            let id = analysis::dependency_id(service, "flow", &identity)?;
             let Some(observation) = e.observations.get(&id) else {
                 self.boundaries.insert("FLOW_EVENT_EVIDENCE_MISSING".into());
                 continue;
@@ -720,24 +761,46 @@ impl Walker<'_> {
                 self.push(FlowStep{id:format!("step-{}",self.steps.len()),service:service.into(),symbol:symbol.into(),kind:if interaction.transport.kind == "kafka" {"DECLARED_KAFKA_TRANSITION"} else {"DECLARED_HTTP_TRANSITION"}.into(),dependency_ids:deps,source_ids:checked.call_site.source_ids.iter().chain(checked.to.source_ids.iter()).cloned().collect(),detail:json!({"interaction":interaction_id,"origin":interaction.declaration.origin,"toService":interaction.to.service,"runtime":"UNKNOWN","transport":interaction.transport.kind,"checks":checked}),depth});
                 self.transitions.insert(interaction_id.clone());
                 bridged = true;
-                self.walk(&interaction.to.service, &receiver.symbol, depth + 1)?;
+                self.walk(&interaction.to.service, &receiver.id, depth + 1)?;
             }
             if !bridged
                 && matches!(event["kind"].as_str(), Some("CALL" | "CONSTRUCT"))
                 && let Some(target) = event["target"].as_str()
             {
-                if e.observations
+                let targets: Vec<_> = e
+                    .observations
                     .values()
-                    .any(|o| o.kind == "SYMBOL" && o.symbol == target)
-                {
-                    self.walk(service, target, depth + 1)?;
-                } else {
-                    self.boundaries
-                        .insert("EXTERNAL_CALL_BODY_NOT_EXPANDED".into());
+                    .filter(|o| o.kind == "SYMBOL" && o.symbol == target)
+                    .collect();
+                let same_scope: Vec<_> = targets
+                    .iter()
+                    .copied()
+                    .filter(|o| o.normalized["scope"].as_str().unwrap_or("") == scope)
+                    .collect();
+                // Catalog uniqueness does not establish classpath visibility:
+                // a test or unrelated module can define the same JVM symbol.
+                // Expand only the caller's source scope until a compiler-backed
+                // cross-scope source mapping is available.
+                match same_scope.as_slice() {
+                    [callee] => self.walk(service, &callee.id, depth + 1)?,
+                    [] => {
+                        self.boundaries.insert(
+                            if targets.is_empty() {
+                                "EXTERNAL_CALL_BODY_NOT_EXPANDED"
+                            } else {
+                                "CROSS_SCOPE_CALLEE_UNVERIFIED"
+                            }
+                            .into(),
+                        );
+                    }
+                    _ => {
+                        self.boundaries
+                            .insert("AMBIGUOUS_CALLEE_SCOPE_NOT_EXPANDED".into());
+                    }
                 }
             }
         }
-        self.active.remove(&(service.into(), symbol.into()));
+        self.active.remove(&(service.into(), declaration_id.into()));
         Ok(())
     }
 }
@@ -778,11 +841,7 @@ pub fn compose(
     } else {
         let root = resolution(&s.root, services);
         if matches!(root.status.as_str(), "RESOLVED" | "SOURCE_MATCH") {
-            walker.walk(
-                &s.root.service,
-                &services[&s.root.service].observations[&root.candidates[0]].symbol,
-                0,
-            )?;
+            walker.walk(&s.root.service, &root.candidates[0], 0)?;
         } else {
             walker
                 .boundaries
@@ -825,7 +884,15 @@ impl Check {
             || record
                 .selected_services
                 .iter()
+                .chain(&record.retained_services)
                 .any(|id| !record.inputs.services.contains_key(id))
+            || !record
+                .selected_services
+                .is_disjoint(&record.retained_services)
+            || record
+                .retained_services
+                .iter()
+                .any(|id| !self.services.contains_key(id))
         {
             return Err(invalid("saved source-selection input contract is invalid"));
         }
@@ -836,7 +903,7 @@ impl Check {
             let service = record.inputs.services.get(id).ok_or_else(|| {
                 invalid("saved source evidence is absent from its input contract")
             })?;
-            if !record.selected_services.contains(id)
+            if !(record.selected_services.contains(id) || record.retained_services.contains(id))
                 || evidence.service != *id
                 || evidence.service_digest != digest(service)?
             {
@@ -861,8 +928,25 @@ impl Check {
             .flat_map(|s| s.sources.clone())
             .collect()
     }
+    pub fn source_authorities(&self) -> BTreeMap<String, &'static str> {
+        self.services
+            .keys()
+            .map(|id| {
+                let authority = if self
+                    .source_inputs
+                    .as_ref()
+                    .is_some_and(|s| s.retained_services.contains(id))
+                {
+                    "RETAINED_SOURCE_NOT_REVERIFIED"
+                } else {
+                    "CAPTURED_SOURCE"
+                };
+                (id.clone(), authority)
+            })
+            .collect()
+    }
     pub fn summary(&self) -> Value {
-        json!({"schema":self.schema,"inputDigest":self.input_digest,"contextDigest":self.context_digest,"status":if self.unresolved.is_empty(){"CHECKED"}else{"UNRESOLVED"},"services":self.services.iter().map(|(id,e)|(id,json!({"revision":e.revision,"coverage":e.coverage,"entrypoints":e.entrypoints.len(),"boundaries":e.boundaries}))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved,"interactions":self.interactions,"scenarios":self.scenarios.iter().map(|(id,s)|(id,json!({"steps":s.steps.len(),"truncated":s.truncated,"boundaries":s.boundaries}))).collect::<BTreeMap<_,_>>()})
+        json!({"schema":self.schema,"inputDigest":self.input_digest,"contextDigest":self.context_digest,"status":if self.unresolved.is_empty(){"CHECKED"}else{"UNRESOLVED"},"services":self.services.iter().map(|(id,e)|(id,json!({"revision":e.revision,"coverage":e.coverage,"entrypoints":e.entrypoints.len(),"boundaries":e.boundaries,"sourceAuthority":if self.source_inputs.as_ref().is_some_and(|s|s.retained_services.contains(id)){"RETAINED_SOURCE_NOT_REVERIFIED"}else{"CAPTURED_SOURCE"}}))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved,"interactions":self.interactions,"scenarios":self.scenarios.iter().map(|(id,s)|(id,json!({"steps":s.steps.len(),"truncated":s.truncated,"boundaries":s.boundaries}))).collect::<BTreeMap<_,_>>()})
     }
     pub fn save(&self, repo: &Repository) -> Result<(), ClewError> {
         self.save_snapshot(repo).map(|_| ())
@@ -894,7 +978,7 @@ impl Check {
     /// Retain an immutable check without acquiring source evidence or changing
     /// the convenience latest pointer. `selector` is an explicit immutable
     /// snapshot handle; when absent, the current normalized latest-check record
-    /// is read once and normalized into the content-addressed store.
+    /// is read once and retained in the content-addressed store.
     pub fn retained(
         repo: &Repository,
         selector: Option<&str>,
@@ -919,9 +1003,7 @@ impl Check {
             ))?;
             let checked = Self::decode(repo, &raw).map_err(|error| ClewError::new(error.code,
                 format!("saved documentation evidence is corrupt; select another snapshot or run docs check explicitly: {}", error.message)))?;
-            let normalized = serde_json::from_slice::<serde_json::Value>(&raw)
-                .is_ok_and(|v| v["schema"] == CHECK_MANIFEST_SCHEMA);
-            (checked, None, normalized.then_some(raw))
+            (checked, None, Some(raw))
         };
         if checked.input_digest != repo.input_digest()? {
             return Err(crate::error::ClewError::new(
@@ -947,14 +1029,10 @@ impl Check {
                 "documentation declarations changed while selecting saved evidence",
             ));
         }
-        let handle = if let Some(encoded) = normalized_bytes {
-            // Freeze the exact already-validated manifest; do not rewrite every
-            // fact membership just to turn the latest selector into a handle.
-            let reference = super::cache::put(repo, CHECK_MANIFEST_SCHEMA, &encoded)?;
-            format!("{}/{}", reference.digest, reference.size)
-        } else {
-            checked.store_snapshot(repo)?.0
-        };
+        let encoded = normalized_bytes.ok_or_else(|| invalid("saved check manifest is missing"))?;
+        // Freeze the exact validated manifest, without rewriting fact memberships.
+        let reference = super::cache::put(repo, CHECK_MANIFEST_SCHEMA, &encoded)?;
+        let handle = format!("{}/{}", reference.digest, reference.size);
         Ok((checked, handle))
     }
 
@@ -978,7 +1056,8 @@ impl Check {
         let reference =
             super::cache::ObjectRef::new(CHECK_MANIFEST_SCHEMA.into(), digest.into(), size);
         let manifest: CheckManifest =
-            super::cache::get_json(repo, &reference, PORTABLE_CACHE_MAX_BYTES)?.ok_or_else(
+            super::cache::get_json(repo, &reference, PORTABLE_CACHE_MAX_BYTES).map_err(|error| invalid(format!(
+                "DOCS_REINDEX_REQUIRED: unsupported or corrupt snapshot ({}); initialize a fresh documentation root and run docs check", error.message)))?.ok_or_else(
                 || {
                     ClewError::new(
                         crate::error::ErrorCode::StateCorrupt,
@@ -987,7 +1066,9 @@ impl Check {
                 },
             )?;
         if manifest.schema != CHECK_MANIFEST_SCHEMA {
-            return Err(invalid("unsupported documentation snapshot schema"));
+            return Err(invalid(
+                "DOCS_REINDEX_REQUIRED: unsupported documentation snapshot schema; initialize a fresh documentation root and run docs check",
+            ));
         }
         Ok(manifest)
     }
@@ -998,11 +1079,8 @@ impl Check {
     /// every observation is serialized.
     pub fn store_manifest(&self, repo: &Repository) -> Result<CheckManifest, ClewError> {
         self.validate_source_input_binding()?;
-        let source_inputs = self
-            .source_inputs
-            .as_ref()
-            .map(|inputs| super::source_inputs::store(repo, inputs))
-            .transpose()?;
+        let source_inputs = super::source_inputs::store(repo, self.source_inputs.as_ref()
+            .ok_or_else(|| invalid("DOCS_REINDEX_REQUIRED: capture has no source-input contract; initialize a fresh documentation root and run docs check"))?)?;
         let composition = self
             .composition
             .as_ref()
@@ -1023,8 +1101,7 @@ impl Check {
             unresolved: self.unresolved.clone(),
             interactions: self.interactions.clone(),
             scenarios: self.scenarios.clone(),
-            dependencies: None,
-            dependencies_index: Some(dependencies_index),
+            dependencies_index,
             source_inputs,
             composition,
         };
@@ -1043,10 +1120,7 @@ impl Check {
         Ok(manifest)
     }
 
-    /// Hydrate a full `Check` from a persisted `latest-check.json`, accepting
-    /// both the normalized reference-envelope manifest and the legacy full
-    /// `Check` serialization, so pre-normalization state remains readable
-    /// without being rewritten.
+    /// Hydrate a current reference manifest; historical serialized formats require reindexing.
     pub fn load(repo: &Repository, path: &std::path::Path) -> Result<Check, ClewError> {
         let raw = std::fs::read(path).map_err(io_error)?;
         Self::decode(repo, &raw)
@@ -1059,41 +1133,18 @@ impl Check {
                 "documentation check exceeds its portable cache budget",
             ));
         }
-        // Detect the normalized manifest by its schema before hydrating; a
-        // legacy full Check deserializes directly without object reads.
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw)
-            && value.get("schema").and_then(serde_json::Value::as_str)
-                == Some(CHECK_MANIFEST_SCHEMA)
-        {
-            let manifest: CheckManifest =
-                serde_json::from_slice(raw).map_err(|error| invalid(error.to_string()))?;
-            return Self::from_manifest(repo, manifest);
-        }
-        // Legacy full Check serialization.
-        let checked: Self =
-            serde_json::from_slice(raw).map_err(|error| invalid(error.to_string()))?;
-        if checked.composition.is_some() {
-            return Err(invalid(
-                "derived checks require an immutable reference manifest",
-            ));
-        }
-        if let Some(record) = &checked.source_inputs {
-            // Inline records have not passed through the reference codec.
-            super::source_inputs::validate(record)?;
-        }
-        checked.validate_source_input_binding()?;
-        Ok(checked)
+        let manifest: CheckManifest = serde_json::from_slice(raw).map_err(|error| invalid(format!(
+            "DOCS_REINDEX_REQUIRED: unsupported saved check format ({error}); initialize a fresh documentation root and run docs check")))?;
+        Self::from_manifest(repo, manifest)
     }
 
     fn from_manifest(repo: &Repository, manifest: CheckManifest) -> Result<Check, ClewError> {
         if manifest.schema != CHECK_MANIFEST_SCHEMA {
-            return Err(invalid("unsupported documentation snapshot schema"));
+            return Err(invalid(
+                "DOCS_REINDEX_REQUIRED: unsupported documentation snapshot schema; initialize a fresh documentation root and run docs check",
+            ));
         }
-        let source_inputs = manifest
-            .source_inputs
-            .as_ref()
-            .map(|reference| super::source_inputs::load(repo, reference))
-            .transpose()?;
+        let source_inputs = Some(super::source_inputs::load(repo, &manifest.source_inputs)?);
         let composition = manifest
             .composition
             .as_ref()
@@ -1115,22 +1166,11 @@ impl Check {
         for (id, capture) in &manifest.service_manifests {
             services.insert(id.clone(), super::cache::load_capture(repo, capture)?);
         }
-        // New captures reference the fact-index snapshot root; legacy
-        // captures carry the whole-map dependency object.
-        let dependencies = if let Some(index) = &manifest.dependencies_index {
-            super::fact_index::load_snapshot_observations(repo, index, CHECK_DEPENDENCIES_SCOPE)?
-        } else if let Some(dependencies) = &manifest.dependencies {
-            super::cache::get_json(repo, dependencies, PORTABLE_CACHE_MAX_BYTES)?.ok_or_else(
-                || {
-                    ClewError::new(
-                        crate::error::ErrorCode::StateCorrupt,
-                        "documentation check dependencies object is missing",
-                    )
-                },
-            )?
-        } else {
-            BTreeMap::new()
-        };
+        let dependencies = super::fact_index::load_snapshot_observations(
+            repo,
+            &manifest.dependencies_index,
+            CHECK_DEPENDENCIES_SCOPE,
+        )?;
         let checked = Check {
             schema: "codeclew-documentation-check/1.0".into(),
             input_digest: manifest.input_digest,
@@ -1165,7 +1205,7 @@ mod tests {
                 "schema":"codeclew-documentation-service/1.0", "id":id,
                 "title":id, "repositoryId":id,
                 "repository":format!("https://example.invalid/{id}"), "language":"java",
-                "profile":"java-17plus-maven-read-only", "compilation":":/main", "targetRef":"main"
+                "profile":"java-17plus-maven-read-only", "compilations":[":/main"], "targetRef":"main"
             }))
             .unwrap();
             repo.service_add(service, Some(&repo.input_digest().unwrap()))
@@ -1344,7 +1384,7 @@ mod tests {
             "schema":"codeclew-documentation-service/1.0", "id":"orders",
             "title":"Original title", "repositoryId":"orders",
             "repository":"https://example.invalid/orders", "language":"java",
-            "profile":"java-17plus-maven-read-only", "compilation":":/main", "targetRef":"main"
+            "profile":"java-17plus-maven-read-only", "compilations":[":/main"], "targetRef":"main"
         }))
         .unwrap();
         repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
@@ -1545,8 +1585,7 @@ mod tests {
                 profile: "java-17plus-maven-read-only".into(),
                 source: None,
                 modules: None,
-                compilation: ":/main".into(),
-                compilations: Vec::new(),
+                compilations: vec![":/main".into()],
                 target_ref: "main".into(),
                 source_link_template: None,
                 contract_files: vec![contract.into()],
@@ -1568,6 +1607,7 @@ mod tests {
         let selector = |service: &str, owner: &str, name: &str| Endpoint {
             service: service.into(),
             selector: Some(Selector {
+                scope: None,
                 language: "java".into(),
                 owner: owner.into(),
                 name: name.into(),
@@ -1600,9 +1640,16 @@ mod tests {
             contract_reference: None,
         };
         let scenario = Scenario {
-            process: None,
+            process: Some(super::super::processes::Details {
+                scope: "Order reservation".into(),
+                participants: vec!["orders".into(), "inventory".into()],
+                objects: vec![],
+                trigger: "Checkout request".into(),
+                outcomes: vec!["Reservation result".into()],
+                linked_subviews: vec![],
+            }),
             view: None,
-            schema: "codeclew-documentation-scenario/1.0".into(),
+            schema: "codeclew-documentation-process/1.0".into(),
             id: "checkout".into(),
             title: "Checkout".into(),
             summary: "Reserve stock for an order.".into(),
@@ -1682,19 +1729,19 @@ mod tests {
 
     #[test]
     fn repository_run_lock_serializes_concurrent_holders() {
-        let state_root = tempfile::tempdir().unwrap();
-        let state = StateAuthority::open(state_root.path().join("v2")).unwrap();
         let repo_root = tempfile::tempdir().unwrap();
+        Repository::init(repo_root.path(), "Lock test").unwrap();
+        let repo = Repository::open(repo_root.path()).unwrap();
         // First holder keeps the per-repository flock for the run's duration.
-        let first = acquire_repository_run_lock(&state, repo_root.path()).unwrap();
+        let first = acquire_repository_run_lock(&repo).unwrap();
         let acquired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let acquired_thread = acquired.clone();
-        let state_for_thread = state;
         let path_for_thread = repo_root.path().to_path_buf();
         let handle = std::thread::spawn(move || {
             // Blocks until `first` is released; never observes the shared repo
             // while a concurrent run's attempt lifecycle is still active.
-            let _second = acquire_repository_run_lock(&state_for_thread, &path_for_thread).unwrap();
+            let _second =
+                acquire_repository_run_lock(&Repository::open(&path_for_thread).unwrap()).unwrap();
             acquired_thread.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -1705,5 +1752,171 @@ mod tests {
         drop(first);
         handle.join().unwrap();
         assert!(acquired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn process_walk_uses_the_declarations_scoped_flow_identity() {
+        let symbol = "method:example.Worker#process()V";
+        let scope = ":worker/main";
+        let event = json!({"kind":"RETURN","value":"done"});
+        let declaration = json!({"ownerIdentity":"class:example.Worker","name":"process",
+            "jvmDescriptor":"()V","scope":scope,"documentation":{"events":[event],"boundaries":[]}});
+        let flow = json!({"kind":"RETURN","value":"done","ordinal":0,"scope":scope});
+        let symbol_id = analysis::dependency_id(
+            "worker",
+            "symbol",
+            &analysis::scoped_identity(scope, symbol),
+        )
+        .unwrap();
+        let flow_id = analysis::dependency_id(
+            "worker",
+            "flow",
+            &analysis::scoped_identity(scope, &format!("{symbol}/event/0")),
+        )
+        .unwrap();
+        let observations = [
+            (symbol_id.clone(), "SYMBOL", declaration),
+            (flow_id.clone(), "FLOW", flow),
+        ]
+        .into_iter()
+        .map(|(id, kind, normalized)| {
+            (
+                id.clone(),
+                Observation {
+                    id,
+                    kind: kind.into(),
+                    service: "worker".into(),
+                    symbol: symbol.into(),
+                    digest: digest(&normalized).unwrap(),
+                    normalized,
+                    source_ids: vec!["worker-source".into()],
+                },
+            )
+        })
+        .collect();
+        let evidence = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "worker".into(),
+            revision: "a".repeat(40),
+            service_digest: "test".into(),
+            extractor: EXTRACTOR.into(),
+            runtime_mode: "DEVELOPMENT".into(),
+            coverage: "PARTIAL".into(),
+            boundaries: vec![],
+            entrypoints: vec![],
+            observations,
+            sources: BTreeMap::from([(
+                "worker-source".into(),
+                Source {
+                    id: "worker-source".into(),
+                    service: "worker".into(),
+                    revision: "a".repeat(40),
+                    file: "Worker.java".into(),
+                    start_line: 1,
+                    end_line: 1,
+                    text_digest: crate::canonical::hash_bytes(b"void process() { return; }"),
+                    text: "void process() { return; }".into(),
+                    evidence_digest: "fixture".into(),
+                    authority: "EXACT_SNAPSHOT_TEXT".into(),
+                    occurrence: None,
+                    url: None,
+                },
+            )]),
+            contracts: BTreeMap::new(),
+        };
+        let scenario: Scenario = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-process/1.0", "process":{"scope":"Worker processing","participants":["worker"],"trigger":"Work request","outcomes":["Processed work"]}, "id":"worker-flow", "title":"Worker processing", "summary":"Scoped internal method",
+            "root":{"service":"worker","selector":{"language":"java","owner":"example.Worker","name":"process","parameterTypes":[]}},
+            "interactions":[]
+        })).unwrap();
+        let services = BTreeMap::from([("worker".into(), evidence)]);
+        let result = compose(&scenario, &services, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(result.steps.len(), 1, "{:?}", result.boundaries);
+        assert_eq!(result.steps[0].kind, "RETURN");
+        assert!(result.dependency_ids.contains(&flow_id));
+        assert!(result.dependency_ids.contains(&symbol_id));
+        assert!(
+            !result
+                .boundaries
+                .iter()
+                .any(|b| b == "FLOW_EVENT_EVIDENCE_MISSING")
+        );
+
+        let mut services = services;
+        let evidence = services.get_mut("worker").unwrap();
+        let mut other = evidence.observations[&symbol_id].clone();
+        other.id = "other-scope-declaration".into();
+        other.normalized["scope"] = json!(":worker/test");
+        other.normalized["documentation"]["events"] = json!([]);
+        evidence.observations.insert(other.id.clone(), other);
+        let ambiguous = compose(&scenario, &services, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert!(ambiguous.steps.is_empty());
+        assert!(
+            ambiguous
+                .boundaries
+                .contains(&"SCENARIO_ROOT_AMBIGUOUS".into())
+        );
+        let mut scenario = scenario;
+        scenario.root.selector.as_mut().unwrap().scope = Some(scope.into());
+        let selected = compose(&scenario, &services, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(selected.steps.len(), 1);
+        assert!(selected.dependency_ids.contains(&symbol_id));
+        assert!(
+            !selected
+                .dependency_ids
+                .contains(&"other-scope-declaration".into())
+        );
+
+        // Equal callee symbols in main/test must never pick map iteration order.
+        let evidence = services.get_mut("worker").unwrap();
+        let target = "method:example.Helper#apply()V";
+        let call = json!({"kind":"CALL","target":target});
+        evidence
+            .observations
+            .get_mut(&symbol_id)
+            .unwrap()
+            .normalized["documentation"]["events"] = json!([call]);
+        evidence.observations.get_mut(&flow_id).unwrap().normalized = call;
+        for (id, callee_scope) in [("a-test-callee", ":worker/test"), ("z-main-callee", scope)] {
+            let mut callee = evidence.observations[&symbol_id].clone();
+            callee.id = id.into();
+            callee.symbol = target.into();
+            callee.normalized["ownerIdentity"] = json!("class:example.Helper");
+            callee.normalized["name"] = json!("apply");
+            callee.normalized["scope"] = json!(callee_scope);
+            callee.normalized["documentation"]["events"] = json!([]);
+            evidence.observations.insert(id.into(), callee);
+        }
+        let selected = compose(&scenario, &services, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert!(selected.dependency_ids.contains(&"z-main-callee".into()));
+        assert!(!selected.dependency_ids.contains(&"a-test-callee".into()));
+        let evidence = services.get_mut("worker").unwrap();
+        evidence
+            .observations
+            .get_mut("z-main-callee")
+            .unwrap()
+            .normalized["scope"] = json!(":other/main");
+        let ambiguous = compose(&scenario, &services, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert!(
+            ambiguous
+                .boundaries
+                .contains(&"CROSS_SCOPE_CALLEE_UNVERIFIED".into())
+        );
+        assert!(!ambiguous.dependency_ids.contains(&"a-test-callee".into()));
+        assert!(!ambiguous.dependency_ids.contains(&"z-main-callee".into()));
+
+        // A sole test-scope match is still not evidence for a production call.
+        services
+            .get_mut("worker")
+            .unwrap()
+            .observations
+            .remove("z-main-callee");
+        let unrelated = compose(&scenario, &services, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert!(
+            unrelated
+                .boundaries
+                .contains(&"CROSS_SCOPE_CALLEE_UNVERIFIED".into())
+        );
+        assert!(!unrelated.dependency_ids.contains(&"a-test-callee".into()));
     }
 }

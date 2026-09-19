@@ -138,60 +138,12 @@ pub struct Bindings {
     pub observations: BTreeMap<String, Observation>,
     pub narratives: BTreeMap<String, Narrative>,
     pub output_hashes: BTreeMap<String, String>,
-    #[serde(default)]
     pub retained_sources: BTreeMap<String, Source>,
-    /// Missing in legacy bundles; it never implies an accepted meaning review.
-    #[serde(default)]
     pub section_states: BTreeMap<String, SectionState>,
-    #[serde(default)]
     pub target_revisions: BTreeMap<String, Option<String>>,
-    #[serde(default)]
     pub update_failures: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accepted_versions: BTreeMap<String, super::review::AcceptedVersion>,
-    /// When present, the heavy `retained_sources` and `observations` payloads
-    /// are stored once in the immutable object store and referenced here, so
-    /// repeated equivalent publications share heavy evidence instead of
-    /// serializing a full copy each time. `baseline` hydrates them into the
-    /// in-memory `Bindings`; a portable materialization re-serializes them
-    /// inline so exports remain readable without the private cache.
-    #[serde(default)]
-    pub heavy: Option<BindingsHeavy>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BindingsHeavy {
-    pub schema: String,
-    pub retained_sources: super::cache::ObjectRef,
-    pub observations: super::cache::ObjectRef,
-}
-
-pub const BINDINGS_HEAVY_SCHEMA: &str = "codeclew-documentation-bindings-heavy/1.0";
-
-/// Store the heavy `retained_sources`/`observations` payloads as immutable
-/// objects and leave only references in the `Bindings`, so the persisted
-/// bindings are small and equivalent publications share heavy evidence.
-pub fn store_bindings_heavy(repo: &Repository, binding: &mut Bindings) -> Result<(), ClewError> {
-    if binding.heavy.is_some() {
-        return Ok(());
-    }
-    let retained_sources = super::cache::put_json(
-        repo,
-        super::cache::SOURCES_OBJECT_SCHEMA,
-        &binding.retained_sources,
-    )?;
-    let observations = super::cache::put_json(
-        repo,
-        super::cache::OBSERVATIONS_OBJECT_SCHEMA,
-        &binding.observations,
-    )?;
-    binding.heavy = Some(BindingsHeavy {
-        schema: BINDINGS_HEAVY_SCHEMA.into(),
-        retained_sources,
-        observations,
-    });
-    Ok(())
 }
 
 pub fn expand_dependencies(
@@ -420,20 +372,17 @@ pub(super) fn capture_baseline(
             "documentation bindings grew beyond their record budget",
         ));
     }
-    let mut binding: Bindings = serde_yaml_ng::from_slice(&raw).map_err(io_error)?;
+    let mut binding: Bindings = serde_yaml_ng::from_slice(&raw).map_err(|error| invalid(format!(
+        "DOCS_REINDEX_REQUIRED: unsupported documentation bindings ({error}); initialize a fresh documentation root and run docs check")))?;
     let receipt = BaselineReceipt {
         bundle: id.into(),
         index_digest: canonical::hash_bytes(index_text.as_bytes()),
         bindings_digest: canonical::hash_bytes(&raw),
     };
-    if !matches!(
-        binding.schema.as_str(),
-        "codeclew-documentation-bindings/1.0"
-            | "codeclew-documentation-bindings/1.1"
-            | "codeclew-documentation-bindings/1.2"
-            | "codeclew-documentation-bindings/1.3"
-    ) {
-        return Err(invalid("unsupported documentation bindings schema"));
+    if binding.schema != "codeclew-documentation-bindings/1.3" {
+        return Err(invalid(
+            "DOCS_REINDEX_REQUIRED: unsupported documentation bindings schema; initialize a fresh documentation root and run docs check",
+        ));
     }
     expand_shared(&mut binding)?;
     for (id, observation) in &binding.observations {
@@ -477,39 +426,13 @@ pub(super) fn capture_baseline(
             ));
         }
     }
-    // The portable overview resolves service/scenario links within its bundle;
-    // the root index prefixes those same links with the immutable bundle path.
-    let comparison_text = if matches!(
-        binding.renderer.as_str(),
-        "codeclew-documentation-html/1.2"
-            | "codeclew-documentation-html/1.3"
-            | "codeclew-documentation-html/1.4"
-            | "codeclew-documentation-html/1.5"
-            | "codeclew-documentation-html/1.6"
-            | "codeclew-documentation-html/1.7"
-            | "codeclew-documentation-html/1.8"
-            | "codeclew-documentation-html/1.9"
-            | "codeclew-documentation-html/1.10"
-            | "codeclew-documentation-html/1.11"
-            | "codeclew-documentation-html/1.12"
-            | "codeclew-documentation-html/1.13"
-    ) {
-        if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
-            return Err(ClewError::new(
-                ErrorCode::WwConflict,
-                "generated root overview links were edited",
-            ));
-        }
-        index_text.replace(&format!("href=\"generated/{id}/"), "href=\"")
-    } else {
-        index_text.clone()
-    };
-    let root_hash = canonical::hash_bytes(comparison_text.as_bytes());
-    let root_matches = if let Some(expected) = binding.output_hashes.get("root-overview.html") {
-        expected == &canonical::hash_bytes(index_text.as_bytes())
-    } else {
-        binding.output_hashes.get("overview.html") == Some(&root_hash)
-    };
+    if binding.renderer != RENDERER {
+        return Err(invalid(
+            "DOCS_REINDEX_REQUIRED: unsupported documentation renderer; initialize a fresh documentation root and run docs check",
+        ));
+    }
+    let root_matches = binding.output_hashes.get("root-overview.html")
+        == Some(&canonical::hash_bytes(index_text.as_bytes()));
     if !root_matches {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
@@ -619,13 +542,67 @@ pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
     } else {
         "PARTIALLY_STALE"
     };
-    json!({"status":status,"affected":affected,"unaffected":unaffected,"linkChanges":links,"catalogueChanges":catalogue,"scope":"Recorded dependencies and supported static analysis only","incompleteSource":incomplete_source,"unresolved":checked.unresolved})
+    json!({"status":status,"affected":affected,"unaffected":unaffected,"linkChanges":links,"catalogueChanges":catalogue,"scope":"Recorded dependencies and supported static analysis only","sourceAuthorities":checked.source_authorities(),"incompleteSource":incomplete_source,"unresolved":checked.unresolved})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::documentation::check;
+
+    #[test]
+    fn baseline_requires_current_format_and_preserves_current_portable_evidence() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Format boundary").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let bundle = "a".repeat(64);
+        let path = repo
+            .path(&format!("docs/generated/{bundle}/bindings.json"))
+            .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            repo.path("docs/index.html").unwrap(),
+            format!("<!-- codeclew-bundle {bundle} -->\n"),
+        )
+        .unwrap();
+        let mut binding = old(&current());
+        binding.output_hashes.insert(
+            "root-overview.html".into(),
+            canonical::hash_bytes(format!("<!-- codeclew-bundle {bundle} -->\n").as_bytes()),
+        );
+        compact(&mut binding);
+        let current = serde_json::to_value(binding).unwrap();
+        fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+        assert_eq!(
+            baseline(&repo).unwrap().unwrap().1.retained_sources.len(),
+            1
+        );
+        let mut variants = Vec::new();
+        for version in ["1.0", "1.1", "1.2"] {
+            let mut outdated = current.clone();
+            outdated["schema"] = json!(format!("codeclew-documentation-bindings/{version}"));
+            variants.push(outdated);
+        }
+        let mut heavy = current.clone();
+        heavy["heavy"] = Value::Null;
+        variants.push(heavy);
+        let mut missing = current.clone();
+        missing.as_object_mut().unwrap().remove("sectionStates");
+        variants.push(missing);
+        for variant in variants {
+            let bytes = serde_json::to_vec(&variant).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(
+                baseline(&repo)
+                    .unwrap_err()
+                    .message
+                    .contains("DOCS_REINDEX_REQUIRED")
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+        assert!(baseline(&repo).is_ok());
+    }
 
     #[test]
     fn portable_evidence_sharing_preserves_mixed_revisions_and_rejects_missing_records() {
@@ -805,7 +782,7 @@ mod tests {
             target_revisions: BTreeMap::new(),
             update_failures: BTreeMap::new(),
             accepted_versions: BTreeMap::new(),
-            schema: "codeclew-documentation-bindings/1.0".into(),
+            schema: "codeclew-documentation-bindings/1.3".into(),
             input_digest: "input".into(),
             renderer: RENDERER.into(),
             extractor: EXTRACTOR.into(),
@@ -820,7 +797,6 @@ mod tests {
             narratives: BTreeMap::new(),
             output_hashes: BTreeMap::new(),
             retained_sources: checked.sources(),
-            heavy: None,
         }
     }
     #[test]

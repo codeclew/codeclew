@@ -175,8 +175,12 @@ pub fn forty_services() {
         inputs.push(f.input(&format!("{id}-complete.json"), &n));
     }
     let process = &checked.scenarios["quantity-process"];
-    let events:Vec<_>=process.steps.iter().enumerate().map(|(i,s)|json!({"id":format!("process-step-{i}"),"kind":"note","text":"Source-bound quantity processing with unresolved calls retained.","dependencyIds":s.dependency_ids,"sourceIds":s.source_ids})).collect();
-    let process_narrative = json!({"schema":"codeclew-documentation-narrative/1.0","subject":"scenario:quantity-process","contextDigest":checked.context_digest,"operations":[{"id":"quantity-process","title":"Quantity process","summary":{"id":"summary","text":"Source-bound quantity process; linked views preserve explicit uncertainty.","dependencyIds":process.dependency_ids,"sourceIds":process.steps.iter().flat_map(|s|s.source_ids.clone()).collect::<Vec<_>>()},"participants":[],"events":events,"boundaries":["Static source interpretation; no runtime delivery proof."]}],"gaps":{}});
+    assert!(clew::documentation::processes::overview(
+        &checked,
+        "scenario:quantity-process",
+        clew::documentation::processes::OVERVIEW
+    ));
+    let process_narrative = json!({"schema":"codeclew-documentation-narrative/1.3","subject":"scenario:quantity-process","contextDigest":checked.context_digest,"operations":[{"id":"process-overview","title":"Quantity process","summary":{"id":"summary","text":"Source-bound quantity process; linked views preserve explicit uncertainty.","dependencyIds":process.dependency_ids,"sourceIds":process.steps.iter().flat_map(|s|s.source_ids.clone()).collect::<Vec<_>>()},"participants":[],"events":[],"boundaries":process.boundaries}],"gaps":{"quantity-process":"The composition overview links saved views; a source-bound sequence has not been authored."}});
     inputs.push(f.input("process-narrative.json", &process_narrative));
     let publication_start = Instant::now();
     let published = publish(&f, &inputs);
@@ -255,7 +259,7 @@ pub fn forty_services() {
     for key in [
         "scenario:quantity-view/entity-dataflow",
         "scenario:quantity-output/entity-dataflow",
-        "scenario:quantity-process/quantity-process",
+        "scenario:quantity-process/process-overview",
         "service:orders/assessment-policy",
     ] {
         assert_ne!(

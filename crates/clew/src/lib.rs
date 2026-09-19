@@ -18,6 +18,7 @@ pub mod incremental_v2;
 pub mod java_adapter_v2;
 pub mod java_analysis_inputs;
 pub mod java_analysis_scratch;
+pub(crate) mod java_analyzer_output;
 pub(crate) mod java_archive_inputs;
 pub mod java_project_model;
 pub mod jvm_navigation;

@@ -1019,6 +1019,7 @@ mod tests {
         assert_eq!(source.entrypoints.len(), 2);
         assert_ne!(source.entrypoints[0].id, source.entrypoints[1].id);
         let selected = Selector {
+            scope: None,
             language: "python".into(),
             owner: "package:source".into(),
             name: "duplicate".into(),

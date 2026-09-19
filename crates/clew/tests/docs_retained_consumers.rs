@@ -51,6 +51,14 @@ fn read_all(f: &Fixture, mut page: Value) -> String {
     id
 }
 
+fn object_database(repo: &Repository) -> std::path::PathBuf {
+    let marker: Value = serde_json::from_slice(
+        &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+    )
+    .unwrap();
+    repo.root.join(marker["database"].as_str().unwrap())
+}
+
 #[test]
 fn retained_work_proposal_and_render_survive_latest_replacement_and_unavailable_sources() {
     let f = Fixture::new();
@@ -166,15 +174,23 @@ fn retained_snapshot_corruption_and_missing_payload_never_fall_back_to_latest() 
     let latest = f.docs.join(".codeclew/cache/latest-check.json");
     let latest_bytes = fs::read(&latest).unwrap();
     let manifest = checked.store_manifest(&repo).unwrap();
-    let payload = repo
-        .root
-        .join(cache::OBJECT_ROOT)
-        .join(&manifest.service_manifests["orders"].sources.digest)
-        .join("object.json");
-    let original = fs::read(&payload).unwrap();
+    let digest = &manifest.service_manifests["orders"].sources.digest;
+    let original = cache::get(
+        &repo,
+        &manifest.service_manifests["orders"].sources,
+        128 * 1024 * 1024,
+    )
+    .unwrap()
+    .unwrap();
     let mut corrupt = original.clone();
     corrupt[0] ^= 1;
-    fs::write(&payload, &corrupt).unwrap();
+    rusqlite::Connection::open(object_database(&repo))
+        .unwrap()
+        .execute(
+            "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+            rusqlite::params![corrupt.as_slice(), digest],
+        )
+        .unwrap();
     assert!(Check::load_snapshot(&repo, &snapshot).is_err());
     assert_ne!(
         f.run(&[
@@ -188,7 +204,13 @@ fn retained_snapshot_corruption_and_missing_payload_never_fall_back_to_latest() 
         .0,
         0
     );
-    fs::remove_file(&payload).unwrap();
+    rusqlite::Connection::open(object_database(&repo))
+        .unwrap()
+        .execute(
+            "DELETE FROM objects WHERE digest = ?1",
+            rusqlite::params![digest],
+        )
+        .unwrap();
     assert_ne!(f.run(&["docs", "render", "--snapshot", &snapshot]).0, 0);
     assert!(!f.docs.join("docs/index.html").exists());
     assert_eq!(fs::read(latest).unwrap(), latest_bytes);

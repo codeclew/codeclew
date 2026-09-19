@@ -3759,7 +3759,6 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/durable-docs");
     let docs = temporary.path().join("architecture");
-    copy_tree(&fixture.join("architecture"), &docs);
     fs::create_dir_all(docs.join("docs")).unwrap();
     fs::write(
         docs.join("docs/manual.md"),
@@ -3828,6 +3827,12 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         "Checkout architecture",
     ]);
     assert_eq!(code, 0, "{value}");
+    // Author definitions only after initializing the current persistent store.
+    copy_tree(&fixture.join("architecture/catalog"), &docs.join("catalog"));
+    copy_tree(
+        &fixture.join("architecture/scenarios"),
+        &docs.join("scenarios"),
+    );
     for (id, repo) in &repositories {
         let (code, value) = run(&[
             "docs",
@@ -3918,6 +3923,20 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         "100",
     ]);
     assert_ne!(code, 0);
+    let explain = |events: &[Event]| -> Vec<Explanation> {
+        events
+            .iter()
+            .filter(|event| event.kind != "end")
+            .map(|event| Explanation {
+                id: format!("paragraph-{}", event.id),
+                text: event.text.clone(),
+                event_ids: vec![event.id.clone()],
+                dependency_ids: event.dependency_ids.clone(),
+                source_ids: event.source_ids.clone(),
+                detail: false,
+            })
+            .collect()
+    };
     let mut narratives = Vec::new();
     for id in ["orders", "inventory"] {
         let evidence = &checked.services[id];
@@ -4041,7 +4060,34 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             ),
             local_event("end", "end", "", None, None, guard),
         ];
-        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{assessment:None,dataflow:None,overview_diagram:None,interface_contracts:vec![],id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:vec![],participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
+        let overview = OverviewDiagram {
+            nodes: vec![
+                DiagramNode {
+                    id: "validate".into(),
+                    text: "Validate requested quantity".into(),
+                    participant: "handler".into(),
+                    column: 0,
+                    row: 0,
+                    event_ids: vec!["guard".into()],
+                },
+                DiagramNode {
+                    id: "reserve".into(),
+                    text: "Process the reservation".into(),
+                    participant: "handler".into(),
+                    column: 1,
+                    row: 0,
+                    event_ids: vec!["apply".into()],
+                },
+            ],
+            edges: vec![DiagramEdge {
+                id: "accepted".into(),
+                from: "validate".into(),
+                to: "reserve".into(),
+                text: "Acceptable quantity".into(),
+                event_ids: vec!["accepted".into()],
+            }],
+        };
+        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.3".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{assessment:None,dataflow:None,overview_diagram:Some(overview),interface_contracts:vec![],id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:explain(&events),participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
     }
     let scenario = &checked.scenarios["checkout"];
     let first = scenario
@@ -4202,13 +4248,39 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         },
     );
     narratives.push(Narrative {
-        schema: "codeclew-documentation-narrative/1.0".into(),
+        schema: "codeclew-documentation-narrative/1.3".into(),
         subject: "scenario:checkout".into(),
         context_digest: checked.context_digest.clone(),
         operations: vec![Operation {
             dataflow: None,
             assessment: None,
-            overview_diagram: None,
+            overview_diagram: Some(OverviewDiagram {
+                nodes: vec![
+                    DiagramNode {
+                        id: "validate".into(),
+                        text: "Validate order quantity".into(),
+                        participant: "orders".into(),
+                        column: 0,
+                        row: 0,
+                        event_ids: vec!["valid-order".into()],
+                    },
+                    DiagramNode {
+                        id: "reserve".into(),
+                        text: "Reserve available stock".into(),
+                        participant: "inventory".into(),
+                        column: 1,
+                        row: 0,
+                        event_ids: vec!["reserve".into(), "stock-check".into(), "save".into()],
+                    },
+                ],
+                edges: vec![DiagramEdge {
+                    id: "request".into(),
+                    from: "validate".into(),
+                    to: "reserve".into(),
+                    text: "Request reservation".into(),
+                    event_ids: vec!["reserve".into()],
+                }],
+            }),
             interface_contracts: vec![],
             id: "checkout".into(),
             title: "Checkout and reserve inventory".into(),
@@ -4230,13 +4302,29 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                     service: Some("inventory".into()),
                 },
             ],
+            explanation: explain(&scenario_events),
             events: scenario_events,
-            explanation: vec![],
             findings: vec![],
             boundaries: scenario.boundaries.clone(),
         }],
         gaps: BTreeMap::new(),
     });
+    let checkout = narratives.last_mut().unwrap();
+    let mut overview = checkout.operations[0].clone();
+    overview.id = clew::documentation::processes::OVERVIEW.into();
+    overview.title = "Checkout process overview".into();
+    overview.summary.dependency_ids = scenario.dependency_ids.clone();
+    overview.summary.source_ids = scenario
+        .steps
+        .iter()
+        .flat_map(|step| step.source_ids.clone())
+        .collect();
+    overview.participants.clear();
+    overview.events.clear();
+    overview.explanation.clear();
+    overview.overview_diagram = None;
+    overview.boundaries = scenario.boundaries.clone();
+    checkout.operations.push(overview);
     for narrative in &narratives {
         clew::documentation::render::validate(narrative, &checked).unwrap();
     }
@@ -4244,6 +4332,18 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     missing_guard.operations[0]
         .events
         .retain(|e| !matches!(e.kind.as_str(), "alt" | "else" | "end"));
+    missing_guard.operations[0].explanation = explain(&missing_guard.operations[0].events);
+    missing_guard.operations[0].overview_diagram = Some(OverviewDiagram {
+        nodes: vec![DiagramNode {
+            id: "reserve".into(),
+            text: "Process reservation".into(),
+            participant: "handler".into(),
+            column: 0,
+            row: 0,
+            event_ids: vec!["apply".into()],
+        }],
+        edges: vec![],
+    });
     assert!(
         clew::documentation::render::validate(&missing_guard, &checked)
             .unwrap_err()
@@ -4268,6 +4368,8 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             section.title = id.into();
             section.participants.clear();
             section.events.clear();
+            section.explanation.clear();
+            section.overview_diagram = None;
             narrative.operations.push(section);
         }
     }
@@ -4441,7 +4543,40 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     );
     let (code, stale) = run(&["docs", "check", "--root", root]);
     assert_eq!(code, 4, "{stale}");
-    let affected = stale["freshness"]["affected"].as_array().unwrap();
+    let mut affected = stale["freshness"]["affected"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut route_match =
+        stale["interactions"]["reserve-inventory"]["path"]["receiver"]["status"].clone();
+    let snapshot = stale["snapshot"].clone();
+    let mut page = stale;
+    loop {
+        if let Some(rows) = page["items"].as_array() {
+            assert!(page["omitted"].as_array().unwrap().is_empty(), "{page}");
+            for row in rows {
+                if row["section"] == "freshness"
+                    && row["id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("affected/"))
+                {
+                    affected.push(row["record"].clone());
+                }
+                if row["section"] == "interactions" && row["id"] == "reserve-inventory" {
+                    route_match = row["record"]["path"]["receiver"]["status"].clone();
+                }
+            }
+        }
+        let Some(cursor) = page["nextCursor"].as_str() else {
+            break;
+        };
+        let (code, next) = run(&[
+            "docs", "check", "--root", root, "--cursor", cursor, "--limit", "100",
+        ]);
+        assert_eq!(code, 4, "{next}");
+        assert_eq!(next["snapshot"], snapshot);
+        page = next;
+    }
     assert!(
         affected
             .iter()
@@ -4457,10 +4592,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             .iter()
             .any(|v| v["fragment"].as_str().unwrap().contains("contract"))
     );
-    assert_eq!(
-        stale["interactions"]["reserve-inventory"]["path"]["receiver"]["status"],
-        "MISMATCH"
-    );
+    assert_eq!(route_match, "MISMATCH");
     let (code, refused) = run(&["docs", "render", "--root", root, "--require-complete"]);
     assert_eq!(code, 4, "{refused}");
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
@@ -4469,7 +4601,9 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     fs::create_dir_all(&clone_root).unwrap();
     let cloned_docs = clone_root.join("architecture");
     copy_tree(&docs, &cloned_docs);
-    fs::remove_dir_all(cloned_docs.join(".codeclew")).unwrap();
+    // Repository locations are machine-local; retained SQLite objects and
+    // published snapshots are durable state and travel with this root.
+    fs::remove_dir_all(cloned_docs.join(".codeclew/bindings")).unwrap();
     let (state2, runtime2, binary2, lease2) = create_runtime("fresh-home");
     for (id, source) in &repositories {
         let relocated = clone_root.join(id);
@@ -4711,7 +4845,9 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
                 events.push(json!({"id":format!("end-{index}"),"kind":"end","text":"","from":null,"to":null,"dependencyIds":[flow.id],"sourceIds":flow.source_ids}));
             }
         }
-        let narrative = json!({"schema":"codeclew-documentation-narrative/1.0","subject":format!("service:{language}"),"contextDigest":checked.context_digest,"operations":[{"id":entry.id,"title":"Reserve stock","summary":{"id":"summary","text":"The source checks quantity before recording a reservation in memory. It does not establish durable storage.","dependencyIds":entry.dependency_ids,"sourceIds":entry.source_ids},"participants":[{"id":"caller","label":"Caller","service":null},{"id":"service","label":"Reservations","service":language}],"events":events,"boundaries":["Source syntax only; call targets and runtime ordering remain unresolved."]}],"gaps":evidence.entrypoints.iter().filter(|e|e.id!=entry.id).map(|e|(&e.id,"This callable has source evidence but its behavior has not been authored.")).collect::<BTreeMap<_,_>>()});
+        let explanation: Vec<_> = events.iter().filter(|e| e["kind"] != "end").map(|e| json!({"id":format!("paragraph-{}", e["id"].as_str().unwrap()),"text":e["text"],"eventIds":[e["id"]],"dependencyIds":e["dependencyIds"],"sourceIds":e["sourceIds"]})).collect();
+        let overview = json!({"nodes":[{"id":"reserve","text":"Check and record a reservation","participant":"service","column":0,"row":0,"eventIds":[events.first().expect("reservation flow evidence")["id"]]}],"edges":[]});
+        let narrative = json!({"schema":"codeclew-documentation-narrative/1.3","subject":format!("service:{language}"),"contextDigest":checked.context_digest,"operations":[{"id":entry.id,"title":"Reserve stock","summary":{"id":"summary","text":"The source checks quantity before recording a reservation in memory. It does not establish durable storage.","dependencyIds":entry.dependency_ids,"sourceIds":entry.source_ids},"participants":[{"id":"caller","label":"Caller","service":null},{"id":"service","label":"Reservations","service":language}],"events":events,"explanation":explanation,"overviewDiagram":overview,"boundaries":["Source syntax only; call targets and runtime ordering remain unresolved."]}],"gaps":evidence.entrypoints.iter().filter(|e|e.id!=entry.id).map(|e|(&e.id,"This callable has source evidence but its behavior has not been authored.")).collect::<BTreeMap<_,_>>()});
         let input = temporary.path().join(format!("narrative-{language}.json"));
         fs::write(&input, serde_json::to_vec(&narrative).unwrap()).unwrap();
         inputs.push(input);
@@ -4969,8 +5105,8 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
     )
     .unwrap();
     commit();
-    record["source"]["semantic"] =
-        json!({"profile":"java-17plus-maven-read-only","compilation":":/main"});
+    record["modules"] = json!({"schema":"codeclew-documentation-modules/1.0",
+        "semantic":{"module":"javac","enabled":true,"profile":"java-17plus-maven-read-only","compilation":":/main"}});
     fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
     let (_, report) = run(&["docs", "check", "--root", root]);
     assert_eq!(report["status"], "CHECKED", "{report}");

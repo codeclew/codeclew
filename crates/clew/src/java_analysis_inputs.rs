@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const JAVA_ANALYSIS_INPUTS_SCHEMA: &str = "codeclew-java-analysis-inputs/1.0";
 pub const JAVA_ANALYSIS_POLICY: &str = "JAVA_CLOSED_NO_AP_JDK21_MACOS_V1";
+const JAVA_ANALYSIS_POLICY_JDK17: &str = "JAVA_CLOSED_NO_AP_JDK17_MACOS_V1";
 
 const MAX_JDK_FILES: usize = 262_144;
 const MAX_JDK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -212,19 +213,20 @@ impl JavaAnalysisInputPool {
             return Ok(JavaPreparedInputsResult::Refused(refusal));
         }
         let repository = repository.canonicalize().map_err(io_error)?;
-        let (java_executable, jdk_root) = match resolve_jdk(&model.java_executable) {
-            Ok(value) => value,
-            Err(JavaPreparedRefusal::UnqualifiedExecutionImage) => {
-                return Ok(JavaPreparedInputsResult::Refused(
-                    JavaPreparedRefusal::UnqualifiedExecutionImage,
-                ));
-            }
-            Err(_) => {
-                return Ok(JavaPreparedInputsResult::Refused(
-                    JavaPreparedRefusal::LegacyInputAuthority,
-                ));
-            }
-        };
+        let (java_executable, jdk_root) =
+            match resolve_jdk(&model.java_executable, &model.authority.compiler_version) {
+                Ok(value) => value,
+                Err(JavaPreparedRefusal::UnqualifiedExecutionImage) => {
+                    return Ok(JavaPreparedInputsResult::Refused(
+                        JavaPreparedRefusal::UnqualifiedExecutionImage,
+                    ));
+                }
+                Err(_) => {
+                    return Ok(JavaPreparedInputsResult::Refused(
+                        JavaPreparedRefusal::LegacyInputAuthority,
+                    ));
+                }
+            };
         if let Some((known_root, known_java)) = &self.jdk_source
             && (known_root != &jdk_root || known_java != &java_executable)
         {
@@ -377,7 +379,9 @@ impl JavaAnalysisInputPool {
         let owned_java = jdk_path.join(relative_java);
         let authority = JavaAnalysisInputAuthority {
             schema: JAVA_ANALYSIS_INPUTS_SCHEMA.into(),
-            policy: JAVA_ANALYSIS_POLICY.into(),
+            policy: analysis_policy(&model.authority.compiler_version)
+                .ok_or_else(|| unsupported("unqualified Java compiler version"))?
+                .into(),
             adapter_digest: self.adapter_digest.clone(),
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
@@ -494,9 +498,7 @@ fn refusal_for(
     {
         return Some(JavaPreparedRefusal::UnsupportedAnalyzerOptions);
     }
-    if model.authority.release != 17 && model.authority.release != 21
-        || !model.authority.compiler_version.starts_with("javac 21")
-    {
+    if !qualified_release(&model.authority.compiler_version, model.authority.release) {
         return Some(JavaPreparedRefusal::UnqualifiedExecutionImage);
     }
     if model.authority.compiler_options.iter().any(|option| {
@@ -513,7 +515,11 @@ fn refusal_for(
     {
         return Some(JavaPreparedRefusal::LegacyInputAuthority);
     }
-    if std::env::consts::OS != "macos" || !matches!(std::env::consts::ARCH, "aarch64" | "x86_64") {
+    if !qualified_platform(
+        &model.authority.compiler_version,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    ) {
         return Some(JavaPreparedRefusal::UnqualifiedExecutionImage);
     }
     None
@@ -544,7 +550,10 @@ fn host_os_build() -> Result<String, ClewError> {
     Ok(value.to_owned())
 }
 
-fn resolve_jdk(java: &Path) -> Result<(PathBuf, PathBuf), JavaPreparedRefusal> {
+fn resolve_jdk(
+    java: &Path,
+    compiler_version: &str,
+) -> Result<(PathBuf, PathBuf), JavaPreparedRefusal> {
     let executable = if java.is_absolute() || java.components().count() > 1 {
         java.to_owned()
     } else if let Some(home) = std::env::var_os("JAVA_HOME") {
@@ -583,7 +592,7 @@ fn resolve_jdk(java: &Path) -> Result<(PathBuf, PathBuf), JavaPreparedRefusal> {
         || !root.join("lib/modules").is_file()
         || !native_macos_launcher(&executable)
         || !native_macos_launcher(&javac)
-        || !jdk21_release(&root)
+        || !qualified_jdk_release(&root, compiler_version)
     {
         return Err(JavaPreparedRefusal::UnqualifiedExecutionImage);
     }
@@ -606,7 +615,45 @@ fn native_macos_launcher(path: &Path) -> bool {
     u32::from_le_bytes(header[4..8].try_into().unwrap_or_default()) == expected_cpu
 }
 
-fn jdk21_release(root: &Path) -> bool {
+fn compiler_major(compiler_version: &str) -> Option<u16> {
+    let version = compiler_version.strip_prefix("javac ")?;
+    if version.is_empty()
+        || !version.bytes().all(|byte| {
+            byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'+' | b'-')
+                || byte.is_ascii_alphabetic()
+        })
+    {
+        return None;
+    }
+    version.split(['.', '+', '-']).next()?.parse().ok()
+}
+
+fn analysis_policy(compiler_version: &str) -> Option<&'static str> {
+    match compiler_major(compiler_version)? {
+        17 => Some(JAVA_ANALYSIS_POLICY_JDK17),
+        21 => Some(JAVA_ANALYSIS_POLICY),
+        _ => None,
+    }
+}
+
+fn qualified_platform(compiler_version: &str, os: &str, arch: &str) -> bool {
+    os == "macos"
+        && match compiler_major(compiler_version) {
+            Some(17) => arch == "aarch64",
+            Some(21) => matches!(arch, "aarch64" | "x86_64"),
+            _ => false,
+        }
+}
+
+fn qualified_release(compiler_version: &str, release: u16) -> bool {
+    matches!(
+        (compiler_major(compiler_version), release),
+        (Some(17), 17) | (Some(21), 17 | 21)
+    )
+}
+
+fn qualified_jdk_release(root: &Path, compiler_version: &str) -> bool {
     let Ok(file) = fs::File::open(root.join("release")) else {
         return false;
     };
@@ -619,8 +666,12 @@ fn jdk21_release(root: &Path) -> bool {
         .filter_map(|line| line.strip_prefix("JAVA_VERSION=\""))
         .collect::<Vec<_>>();
     values.len() == 1
-        && values[0].starts_with("21.")
-        && values[0].ends_with('"')
+        && values[0].strip_suffix('"').is_some_and(|version| {
+            let release_compiler = format!("javac {version}");
+            analysis_policy(&release_compiler).is_some()
+                && (compiler_major(&release_compiler) != Some(21) || version.starts_with("21."))
+                && compiler_major(&release_compiler) == compiler_major(compiler_version)
+        })
         && release.lines().any(|line| {
             line.starts_with("MODULES=\"")
                 && line
@@ -666,6 +717,10 @@ fn copy_tree(source: &Path, destination: &Path, link_root: Option<&Path>) -> Res
             }
             #[cfg(unix)]
             std::os::unix::fs::symlink(&link, &target).map_err(io_error)?;
+            // macOS derives new link permissions from umask. Preserve the
+            // link itself, without following it or weakening image equality.
+            #[cfg(target_os = "macos")]
+            preserve_symlink_mode(&target, &metadata)?;
             #[cfg(not(unix))]
             return Err(unsupported(
                 "closed Java JDK image requires Unix symlink support",
@@ -682,6 +737,25 @@ fn copy_tree(source: &Path, destination: &Path, link_root: Option<&Path>) -> Res
         } else {
             return Err(unsupported("closed Java input contains a special file"));
         }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn preserve_symlink_mode(target: &Path, source: &fs::Metadata) -> Result<(), ClewError> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()).map_err(internal)?;
+    let mode = (source.permissions().mode() & 0o777) as libc::mode_t;
+    if unsafe {
+        libc::fchmodat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            mode,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io_error(std::io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -892,6 +966,196 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    fn no_processor_model() -> JavaOperationalModel {
+        use crate::java_project_model::{JAVA_MODEL_SCHEMA, JavaProjectModel};
+        JavaOperationalModel {
+            authority: JavaProjectModel {
+                schema: JAVA_MODEL_SCHEMA.into(),
+                model_digest: String::new(),
+                build_system: JavaBuildSystem::Maven,
+                compilation: ":/main".into(),
+                source_files: vec!["src/Main.java".into()],
+                classpath: Vec::new(),
+                release: 17,
+                compiler_version: "javac 17.0.20.1".into(),
+                compiler_options: vec!["--release=17".into(), "-implicit:none".into()],
+                annotation_processors: Vec::new(),
+                annotation_processor_paths: Vec::new(),
+                boundaries: Vec::new(),
+            },
+            source_paths: vec![PathBuf::from("src/Main.java")],
+            classpath_paths: Vec::new(),
+            annotation_processor_paths: Vec::new(),
+            java_executable: PathBuf::from("java"),
+        }
+    }
+
+    #[test]
+    fn qualified_compiler_pairs_keep_jdk21_identity_and_reject_lookalikes() {
+        for (compiler, release, expected) in [
+            ("javac 17", 17, true),
+            ("javac 17.0.20.1", 17, true),
+            ("javac 17.0.20.1", 21, false),
+            ("javac 21.0.9", 17, true),
+            ("javac 21.0.9", 21, true),
+            ("javac 21.0.9", 11, false),
+            ("javac 25.0.1", 17, false),
+            ("javac 210", 21, false),
+            ("javac 170", 17, false),
+            ("javac 17garbage", 17, false),
+            ("javac 17\nextra", 17, false),
+            ("17.0.20.1", 17, false),
+        ] {
+            assert_eq!(
+                qualified_release(compiler, release),
+                expected,
+                "{compiler}/{release}"
+            );
+        }
+        assert_eq!(analysis_policy("javac 21.0.9"), Some(JAVA_ANALYSIS_POLICY));
+        assert_eq!(
+            analysis_policy("javac 17.0.20.1"),
+            Some(JAVA_ANALYSIS_POLICY_JDK17)
+        );
+        assert_ne!(JAVA_ANALYSIS_POLICY_JDK17, JAVA_ANALYSIS_POLICY);
+    }
+
+    #[test]
+    fn jdk17_requires_qualified_arm64_host_without_narrowing_jdk21() {
+        for (compiler, os, arch, expected) in [
+            ("javac 17.0.20.1", "macos", "aarch64", true),
+            ("javac 17.0.20.1", "macos", "x86_64", false),
+            ("javac 17.0.20.1", "linux", "aarch64", false),
+            ("javac 21.0.9", "macos", "aarch64", true),
+            ("javac 21.0.9", "macos", "x86_64", true),
+            ("javac 21.0.9", "linux", "x86_64", false),
+            ("javac 25.0.1", "macos", "aarch64", false),
+        ] {
+            assert_eq!(
+                qualified_platform(compiler, os, arch),
+                expected,
+                "{compiler}/{os}/{arch}"
+            );
+        }
+    }
+
+    #[test]
+    fn jdk17_admission_keeps_processor_writable_and_source_guards() {
+        let model = no_processor_model();
+        let digests = BTreeMap::from([(
+            "src/Main.java".into(),
+            canonical::hash_bytes(b"class Main {}"),
+        )]);
+        let platform_refusal =
+            if std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64" {
+                None
+            } else {
+                Some(JavaPreparedRefusal::UnqualifiedExecutionImage)
+            };
+        assert_eq!(refusal_for(&model, &digests, false), platform_refusal);
+        assert_eq!(
+            refusal_for(&model, &digests, true),
+            Some(JavaPreparedRefusal::WritableTransform)
+        );
+        assert_eq!(
+            refusal_for(&model, &BTreeMap::new(), false),
+            Some(JavaPreparedRefusal::LegacyInputAuthority)
+        );
+        for processor_kind in 0..3 {
+            let mut ap = model.clone();
+            match processor_kind {
+                0 => ap
+                    .authority
+                    .annotation_processors
+                    .push("example.Processor".into()),
+                1 => ap
+                    .authority
+                    .annotation_processor_paths
+                    .push(JavaClasspathAuthority {
+                        logical_name: "processor.jar".into(),
+                        digest: canonical::hash_bytes(b"processor"),
+                        size: 9,
+                        kind: "JAR".into(),
+                    }),
+                _ => ap
+                    .authority
+                    .compiler_options
+                    .push("-Aexternal=ambient".into()),
+            }
+            assert_eq!(
+                refusal_for(&ap, &digests, false),
+                Some(JavaPreparedRefusal::ProcessorInputsPresent)
+            );
+        }
+        let mut module = model.clone();
+        module
+            .authority
+            .source_files
+            .push("src/module-info.java".into());
+        assert_eq!(
+            refusal_for(&module, &digests, false),
+            Some(JavaPreparedRefusal::UnsupportedAnalyzerOptions)
+        );
+        let mut external = model;
+        external
+            .authority
+            .compiler_options
+            .push("--source-path=/outside".into());
+        assert_eq!(
+            refusal_for(&external, &digests, false),
+            Some(JavaPreparedRefusal::UnsupportedAnalyzerOptions)
+        );
+    }
+
+    #[test]
+    fn jdk_release_requires_matching_qualified_major_and_compiler_module() {
+        let root = tempfile::tempdir().unwrap();
+        for (release, compiler, expected) in [
+            (
+                "JAVA_VERSION=\"21\"\nMODULES=\"java.base jdk.compiler jdk.zipfs\"\n",
+                "javac 21",
+                false,
+            ),
+            (
+                "JAVA_VERSION=\"17.0.20.1\"\nMODULES=\"java.base jdk.compiler jdk.zipfs\"\n",
+                "javac 17.0.20.1",
+                true,
+            ),
+            (
+                "JAVA_VERSION=\"21.0.9\"\nMODULES=\"java.base jdk.compiler jdk.zipfs\"\n",
+                "javac 21.0.9",
+                true,
+            ),
+            (
+                "JAVA_VERSION=\"17.0.20.1\"\nMODULES=\"java.base jdk.compiler jdk.zipfs\"\n",
+                "javac 21.0.9",
+                false,
+            ),
+            (
+                "JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base jdk.compiler jdk.zipfs\"\n",
+                "javac 25.0.1",
+                false,
+            ),
+            (
+                "JAVA_VERSION=\"17.0.20.1\"\nMODULES=\"java.base\"\n",
+                "javac 17.0.20.1",
+                false,
+            ),
+            (
+                "JAVA_VERSION=\"17.0.20.1\"\nJAVA_VERSION=\"21.0.9\"\nMODULES=\"java.base jdk.compiler jdk.zipfs\"\n",
+                "javac 17.0.20.1",
+                false,
+            ),
+        ] {
+            fs::write(root.path().join("release"), release).unwrap();
+            assert_eq!(
+                qualified_jdk_release(root.path(), compiler),
+                expected,
+                "{release}/{compiler}"
+            );
+        }
+    }
+
     #[test]
     fn prepared_refusal_codes_are_stable() {
         assert_eq!(
@@ -963,6 +1227,75 @@ mod tests {
             ErrorCode::UnsupportedProjectConfiguration
         );
     }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn jdk_copy_preserves_symlink_modes_under_restricted_umask() {
+        const CHILD_ROOT: &str = "CODECLEW_TEST_JDK_LINK_MODE_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            // Process-local mutation: no other test in the parent sees this umask.
+            unsafe {
+                libc::umask(0o077);
+            }
+            let root = PathBuf::from(root);
+            let source = root.join("source");
+            let copy = root.join("copy");
+            let before = jdk_authority(&source).unwrap();
+            copy_jdk_tree(&source, &copy).unwrap();
+            assert_eq!(jdk_authority(&copy).unwrap(), before);
+            assert_eq!(jdk_authority(&source).unwrap(), before);
+            assert_eq!(
+                fs::read(copy.join("link")).unwrap(),
+                b"execution image fixture"
+            );
+            assert_eq!(
+                fs::metadata(copy.join("file"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o640
+            );
+            return;
+        }
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file"), b"execution image fixture").unwrap();
+        fs::set_permissions(source.join("file"), fs::Permissions::from_mode(0o640)).unwrap();
+        symlink("file", source.join("link")).unwrap();
+        let path =
+            std::ffi::CString::new(source.join("link").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                libc::fchmodat(
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    0o755,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            fs::symlink_metadata(source.join("link"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "java_analysis_inputs::tests::jdk_copy_preserves_symlink_modes_under_restricted_umask", "--nocapture"])
+            .env(CHILD_ROOT, root.path()).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn closed_manifests_reject_line_injection_and_jdk_scripts() {
         for value in ["file\nother", "file\rother", "file\0other", ""] {

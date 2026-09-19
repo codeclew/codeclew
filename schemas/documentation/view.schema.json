@@ -215,6 +215,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "scope": {
+              "type": "string",
+              "maxLength": 1024
             }
           }
         },

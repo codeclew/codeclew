@@ -10,6 +10,9 @@ The installed application contains pinned Tree-sitter grammars. Baseline analysi
 executes Git plumbing, never project code or a compiler. Building Codeclew itself
 from source still requires its normal development toolchain.
 
+For a staged first document, internal processes and selective compiler follow-up,
+see [first useful documentation and selective refresh](field-documentation.md).
+
 ## Register a source scope
 
 Initialize a separate documentation repository and adapt
@@ -160,7 +163,13 @@ Default `docs render` publishes valid operations despite unrelated unavailable
 repositories or rejected inputs. A failed operation update retains its previous
 text, exact snippets and source revision; another operation on the same page may
 use newer evidence. Inspect `updateFailures` and operation states. Selective
-`docs check --service` explicitly marks unselected services as not checked.
+`docs check --service` replaces only the selected service's check. Compatible
+saved sibling results remain available, with an explicit retained-source status:
+they have not been reverified against current sources by this command. Changed
+service declarations or check policy cannot borrow an incompatible old result;
+a failed selected check does not silently restore its previous result. Concurrent
+checks against one documentation root serialize their read/capture/save operation,
+even when their runtime homes differ.
 `--require-complete` retains the strict, non-publishing diagnostic behavior when
 any section is stale, unavailable, rejected or explicitly incomplete.
 The default render is a saved-evidence consumer and never starts an analyzer;
@@ -169,7 +178,7 @@ request current acquisition explicitly with `docs render --refresh`.
 `docs refresh --status-only` publishes a new immutable status snapshot without
 calling an agent. It retains the old explanation and exact source snippets,
 shows content versus target revisions, and marks unavailable inputs locally.
-Meaning review remains unassessed for legacy/direct Narrative content. A status
+Meaning review remains unassessed for direct Narrative content. A status
 refresh cannot remove a prior review obligation or overwrite edited generated
 files. HTML, Markdown and diagram exports carry the same operation status.
 
@@ -230,13 +239,8 @@ Use `kotlin-k2` with an existing Kotlin analysis profile for Kotlin. Omit `seman
 or set `{"module":"javac","enabled":false}` to keep only source evidence.
 The source profile remains enabled. Module configuration cannot contain commands
 or select arbitrary adapters from repository files. Wrong-language selections,
-unknown fields and simultaneous explicit/legacy settings are rejected.
-
-Legacy `source.semantic` remains supported when `modules` is absent:
-
-```json
-{"semantic":{"profile":"java-17plus-maven-read-only","compilation":":/main"}}
-```
+unknown fields are rejected. Configure semantic providers only through
+`modules.semantic`; `source.semantic` is not a supported input.
 
 Kotlin uses its existing `kotlin-jvm-maven-analysis` or Gradle analysis profile.
 This explicit option invokes the normal admitted compiler workflow. Facts attach

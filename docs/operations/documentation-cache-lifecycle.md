@@ -1,4 +1,8 @@
-# Documentation cache lifecycle (2026-09-16)
+# Documentation cache lifecycle
+
+Version 0.10 requires fresh SQLite-only documentation roots. Old loose objects,
+inline Check/Work and older narrative/binding formats are unsupported. Reindex
+into a new root; the product does not migrate or delete old state.
 
 Operational design and runbook for the normalized docs-local cache. This
 documents the first storage slice implemented under
@@ -9,9 +13,8 @@ to delete or migrate user data.
 ## Implemented: immutable content-addressed object store
 
 Heavy documentation evidence is now persisted once by content identity under
-`.codeclew/cache/objects/{sha256}/`, with a `meta.json` (advisory schema/size)
-and `object.json` (the canonical payload). Objects are immutable and content
-addressed:
+the SQLite database selected by `.codeclew/cache/object-layout.json`.
+Objects are immutable and content addressed:
 
 - `documentation::cache::put` stores a payload and returns a validated
   `ObjectRef { schema, digest, size }`. Byte-identical payloads share one object
@@ -102,7 +105,7 @@ before enabling:
 
 Until retention/deletion is implemented and approved, no live cache data is
 deleted or rewritten. The object store is additive: new captures write objects
-and small envelopes alongside retained legacy state.
+and small envelopes alongside current-format retained state.
 
 ## Implemented: multi-compilation selection and scope-aware evidence
 
@@ -110,11 +113,10 @@ One documented service may now select several explicit same-repository
 compilation scopes without inventing separate services.
 
 - `Service.compilations` is a plural selector set (e.g. `:/web:main`,
-  `:/flow:main`, `:/common:main`); a legacy singular `compilation` normalizes to
-  a one-element set. Both may not be declared together; empty selections,
-  duplicate selectors, and more than 128 selectors are typed validation errors.
-  Legacy singular records still load and round-trip byte-identically.
-- Capture tags each fact with its admitting compilation scope when more than one
+  `:/flow:main`, `:/common:main`). Use a one-element list for one scope.
+  The former singular field is rejected. Empty native selections, duplicates
+  and more than 128 selectors are typed validation errors.
+- Capture tags each fact with its admitting compilation scope, including when one
   scope is selected, and projection retains scope-distinct observations and
   source records instead of last-write-wins overwriting. A symbol admitted under
   incompatible scope candidates becomes an explicit `SCOPE_AMBIGUOUS` boundary;

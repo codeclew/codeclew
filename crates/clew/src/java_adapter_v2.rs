@@ -28,7 +28,7 @@ pub const JAVA_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const JAVA_RECEIPT_SCHEMA: &str = "codeclew-java-compiler-completeness/1.0";
 const JAVA_ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-java-compiler-adapter/1.0";
 pub const JAVA_ANALYZER_SOURCE: &str = include_str!("java_analyzer.java");
-const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_JAVA_FACTS: usize = 262_144;
 const MAX_FACT_BYTES: usize = 64 * 1024;
 
@@ -147,7 +147,7 @@ impl JavaCompilerFact {
         }
     }
 
-    fn path(&self) -> Option<&str> {
+    pub(crate) fn path(&self) -> Option<&str> {
         match self {
             Self::SourceFile { file, .. }
             | Self::Declaration { file, .. }
@@ -254,6 +254,57 @@ fn build_java_compiler_index_inner(
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
     prepared: Option<&PreparedJavaAnalysisInputs>,
 ) -> Result<JavaCompilerIndex, ClewError> {
+    let raw = execute_java_compiler(
+        repository,
+        operational,
+        writable_then_seal,
+        debug_output,
+        prepared,
+    )?;
+    project_java_compiler_output(
+        &raw,
+        operational,
+        source_content_digests,
+        writable_then_seal,
+        before_digests,
+        changed_files,
+    )
+}
+
+pub(crate) fn execute_prepared_java_output(
+    operational: &JavaOperationalModel,
+    prepared: &PreparedJavaAnalysisInputs,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+) -> Result<Vec<u8>, ClewError> {
+    prepared.require_sealed()?;
+    if !operational.authority.annotation_processors.is_empty()
+        || !operational.authority.annotation_processor_paths.is_empty()
+        || operational
+            .authority
+            .compiler_options
+            .iter()
+            .any(|option| option.starts_with("-A"))
+    {
+        return Err(unsupported(
+            "closed Java analysis inputs cannot execute annotation processors",
+        ));
+    }
+    execute_java_compiler(
+        &prepared.analysis_root,
+        operational,
+        false,
+        debug_output,
+        Some(prepared),
+    )
+}
+
+fn execute_java_compiler(
+    repository: &Path,
+    operational: &JavaOperationalModel,
+    writable_then_seal: bool,
+    debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
+    prepared: Option<&PreparedJavaAnalysisInputs>,
+) -> Result<Vec<u8>, ClewError> {
     verify_model(&operational.authority)?;
     let repository = repository.canonicalize().map_err(io_error)?;
     let temporary = tempfile::tempdir().map_err(io_error)?;
@@ -441,9 +492,18 @@ fn build_java_compiler_index_inner(
             &stderr_tail,
         ));
     }
-    let text = std::str::from_utf8(&output.stdout)
-        .map_err(|_| corrupt("Java compiler facts are not UTF-8"))?;
-    let mut facts = text
+    Ok(output.stdout)
+}
+
+/// Decode successful emitter output before persistence or current-model projection.
+/// Source-membership records belong to projection, never to the Java subprocess.
+pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerFact>, ClewError> {
+    if raw.len() > MAX_ANALYZER_OUTPUT_BYTES {
+        return Err(resource("Java compiler output exceeds its byte budget"));
+    }
+    let text =
+        std::str::from_utf8(raw).map_err(|_| corrupt("Java compiler facts are not UTF-8"))?;
+    let facts = text
         .lines()
         .filter(|line| !line.is_empty())
         .map(|line| {
@@ -459,6 +519,26 @@ fn build_java_compiler_index_inner(
             "Java compiler fact count exceeds its bounded profile",
         ));
     }
+    for fact in &facts {
+        if matches!(fact, JavaCompilerFact::SourceFile { .. }) {
+            return Err(corrupt(
+                "Java raw output contains projected source membership",
+            ));
+        }
+        validate_fact(fact)?;
+    }
+    Ok(facts)
+}
+
+pub(crate) fn project_java_compiler_output(
+    raw: &[u8],
+    operational: &JavaOperationalModel,
+    source_content_digests: &BTreeMap<String, String>,
+    writable_then_seal: bool,
+    before_digests: Option<&BTreeMap<String, String>>,
+    changed_files: &[(String, String, String)],
+) -> Result<JavaCompilerIndex, ClewError> {
+    let mut facts = parse_java_compiler_output(raw)?;
     for (path, digest) in source_content_digests {
         facts.push(JavaCompilerFact::SourceFile {
             schema: JAVA_FACT_SCHEMA.into(),
@@ -754,6 +834,34 @@ impl LanguageAdapter for JavaAdapterV2 {
     }
 }
 
+fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
+    if fact.schema() != JAVA_FACT_SCHEMA
+        || fact.path().is_some_and(|path| !safe_relative_path(path))
+    {
+        return Err(corrupt("Java compiler fact authority is invalid"));
+    }
+    if let JavaCompilerFact::Declaration {
+        spring: Some(spring),
+        ..
+    } = fact
+    {
+        crate::spring_entrypoints::validate_metadata(spring, "JAVAC_RESOLVED_ANNOTATIONS")?;
+    }
+    if let JavaCompilerFact::Declaration {
+        jvm_annotations: Some(annotations),
+        symbol_identity,
+        ..
+    } = fact
+    {
+        crate::spring_entrypoints::validate_annotation_facts(
+            annotations,
+            Some(symbol_identity),
+            "JAVAC_RESOLVED_ANNOTATIONS",
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
     verify_model(&index.model)?;
     if index.schema != JAVA_INDEX_SCHEMA
@@ -765,30 +873,7 @@ fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
     }
     let mut previous = None;
     for fact in &index.facts {
-        if fact.schema() != JAVA_FACT_SCHEMA
-            || fact.path().is_some_and(|path| !safe_relative_path(path))
-        {
-            return Err(corrupt("Java compiler fact authority is invalid"));
-        }
-        if let JavaCompilerFact::Declaration {
-            spring: Some(spring),
-            ..
-        } = fact
-        {
-            crate::spring_entrypoints::validate_metadata(spring, "JAVAC_RESOLVED_ANNOTATIONS")?;
-        }
-        if let JavaCompilerFact::Declaration {
-            jvm_annotations: Some(annotations),
-            symbol_identity,
-            ..
-        } = fact
-        {
-            crate::spring_entrypoints::validate_annotation_facts(
-                annotations,
-                Some(symbol_identity),
-                "JAVAC_RESOLVED_ANNOTATIONS",
-            )?;
-        }
+        validate_fact(fact)?;
         let bytes = canonical::bytes(fact).map_err(internal)?;
         if bytes.len() > MAX_FACT_BYTES
             || previous.as_ref().is_some_and(|previous| previous >= &bytes)
@@ -1507,6 +1592,73 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
         let (prov, state) = transformed_index_marker(false, Some(&before), &after, &changed);
         assert_eq!(prov, None);
         assert_eq!(state, None);
+    }
+
+    #[test]
+    fn saved_output_projection_uses_current_model_boundaries_and_provenance() {
+        let mut authority = JavaProjectModel {
+            schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            model_digest: String::new(),
+            build_system: crate::java_project_model::JavaBuildSystem::Maven,
+            compilation: ":/main".into(),
+            source_files: vec!["src/Main.java".into()],
+            classpath: Vec::new(),
+            release: 17,
+            compiler_version: "javac 17.0.20.1".into(),
+            compiler_options: vec!["--release=17".into()],
+            annotation_processors: Vec::new(),
+            annotation_processor_paths: Vec::new(),
+            boundaries: Vec::new(),
+        };
+        authority.model_digest = canonical::hash(&authority).unwrap();
+        let mut model = JavaOperationalModel {
+            authority,
+            source_paths: Vec::new(),
+            classpath_paths: Vec::new(),
+            annotation_processor_paths: Vec::new(),
+            java_executable: "java".into(),
+        };
+        let raw = br#"{"kind":"BOUNDARY","schema":"codeclew-java-compiler-fact/1.0","code":"EMITTER_BOUNDARY","file":"src/Main.java","requiredChecks":[],"resolution":"TEST"}"#;
+        let after = BTreeMap::from([(
+            "src/Main.java".into(),
+            canonical::hash_bytes(b"current sealed bytes"),
+        )]);
+        let original = project_java_compiler_output(raw, &model, &after, false, None, &[]).unwrap();
+        assert!(original.provenance.is_none());
+        model
+            .authority
+            .boundaries
+            .push("CURRENT_MODEL_BOUNDARY".into());
+        model.authority.model_digest.clear();
+        model.authority.model_digest = canonical::hash(&model.authority).unwrap();
+        let before = BTreeMap::from([(
+            "src/Main.java".into(),
+            canonical::hash_bytes(b"current original bytes"),
+        )]);
+        let changed = vec![(
+            "src/Main.java".into(),
+            before["src/Main.java"].clone(),
+            after["src/Main.java"].clone(),
+        )];
+        let projected =
+            project_java_compiler_output(raw, &model, &after, true, Some(&before), &changed)
+                .unwrap();
+        assert_eq!(projected.model, model.authority);
+        assert!(projected.facts.iter().any(|fact| matches!(fact, JavaCompilerFact::Boundary { code, .. } if code == "CURRENT_MODEL_BOUNDARY")));
+        assert!(!original.facts.iter().any(|fact| matches!(fact, JavaCompilerFact::Boundary { code, .. } if code == "CURRENT_MODEL_BOUNDARY")));
+        assert_eq!(
+            projected.source_state.as_ref().unwrap()["before"],
+            json!(before)
+        );
+        assert_eq!(
+            projected.source_state.as_ref().unwrap()["after"],
+            json!(after)
+        );
+        // This verifies the pure projector only; writable eligibility is unchanged.
+        assert_eq!(
+            projected.provenance.as_deref(),
+            Some("TRANSFORMED_WORKSPACE")
+        );
     }
 
     #[test]

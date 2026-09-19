@@ -982,7 +982,7 @@ mod tests {
             "repository":"https://example.invalid/orders",
             "language":"java",
             "profile":"java-17plus-maven-read-only",
-            "compilation":":/main",
+            "compilations":[":/main"],
             "targetRef":"HEAD"
         }))
         .unwrap()
@@ -992,6 +992,7 @@ mod tests {
     fn selection_without_expectation_does_not_consult_repository_policies() {
         let temporary = tempfile::tempdir().unwrap();
         let repo = Repository {
+            object_database: Default::default(),
             root: temporary.path().to_path_buf(),
             manifest: DocumentationManifest {
                 schema: String::new(),
@@ -1200,7 +1201,7 @@ mod tests {
 
     #[test]
     fn diagnostic_report_projects_maven_capture_without_private_artifacts() {
-        let service: Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":"java","profile":"java-17plus-maven-read-only","compilation":":/main","targetRef":"HEAD"})).unwrap();
+        let service: Service=serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":"java","profile":"java-17plus-maven-read-only","compilations":[":/main"],"targetRef":"HEAD"})).unwrap();
         let mut failure = ClewError::new(
             crate::error::ErrorCode::UnsupportedProjectConfiguration,
             "private-maven-marker",

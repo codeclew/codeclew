@@ -236,6 +236,7 @@ fn fixture_for_language(java: bool) -> ReuseFixture {
             } else {
                 AnalysisExecutionAuthority::CompilerWorker
             },
+            compiler_output_receipt: None,
             subset_analysis_supported: false,
             worker_requests: WorkerRequestCounters {
                 open_project_requests: u64::from(!java),
@@ -852,43 +853,37 @@ fn engine_startup_hint_is_scoped_and_never_requires_analysis_authority() {
 }
 
 #[test]
-fn java_checkpoint_recovers_without_session_publication_and_preserves_receipt() {
+fn java_checkpoint_rejects_absent_raw_receipt_and_prior_envelope_version() {
     let fixture = fixture_for_language(true);
     let checkpoint = fixture.path.with_file_name("checkpoint.json");
     publish_java_analysis_checkpoint(&fixture.state, &fixture.store, &checkpoint, &fixture.ready)
         .unwrap();
-    assert!(!fixture.state.private_file_exists(&fixture.path).unwrap());
-    let mut next_session = fixture.session.clone();
-    next_session.session_id = "session:next-java-request".into();
-    let recovered = load_java_analysis_checkpoint(
-        &fixture.state,
-        &fixture.store,
-        &checkpoint,
-        &next_session,
-        &fixture.ready.compilation,
-        &fixture.ready.generation_key,
-        &fixture.ready.derived_input_manifest,
-        &fixture.compiler_store,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(recovered, fixture.ready);
-    write_java_analysis_request(&fixture.state, &fixture.path, &recovered, "ELIGIBLE", true)
-        .unwrap();
+    let load = || {
+        load_java_analysis_checkpoint(
+            &fixture.state,
+            &fixture.store,
+            &checkpoint,
+            &fixture.session,
+            &fixture.ready.compilation,
+            &fixture.ready.generation_key,
+            &fixture.ready.derived_input_manifest,
+            &fixture.compiler_store,
+        )
+    };
+    // Synthetic unqualified Java evidence has no raw execution receipt and
+    // cannot be upgraded into a qualified prepared compiler checkpoint.
+    expect_state_corrupt(load(), "result authority");
     let bytes = fixture
         .state
-        .read_private_file(
-            &fixture.path.with_extension("java-analysis.json"),
-            MAX_BINDING_BYTES,
-        )
+        .read_private_file(&checkpoint, MAX_BINDING_BYTES)
         .unwrap();
-    let observation: JavaAnalysisRequest = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(observation.lookup, "HIT");
-    assert_eq!(observation.java_analyzer_starts, 0);
-    assert_eq!(
-        recovered.incremental.executed,
-        IncrementalExecutionMode::Full
-    );
+    let mut old: JavaAnalysisCheckpoint = serde_json::from_slice(&bytes).unwrap();
+    old.schema = "codeclew-java-analysis-checkpoint/1.0".into();
+    fixture
+        .state
+        .write_private_atomic(&checkpoint, &canonical::bytes(&old).unwrap())
+        .unwrap();
+    expect_state_corrupt(load(), "input authority");
 }
 
 #[test]

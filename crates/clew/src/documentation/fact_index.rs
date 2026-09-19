@@ -59,7 +59,7 @@ const ROOT_PATH: &str = ".codeclew/cache/fact-index.json";
 /// `semantic` is the domain/semantic fact identity. Two occurrences are
 /// distinct unless every field (including scope) agrees, so same-symbol
 /// candidates under different scopes are independent memberships.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccurrenceKey {
     pub repository: String,
@@ -296,6 +296,28 @@ pub fn remove_membership(
     })
 }
 
+/// Preserve the sequential remove/upsert ordering without scanning the growing
+/// page for each change. Surviving old entries keep their order; upsert winners
+/// follow in the order of their last occurrence. Removals precede all upserts,
+/// so an upsert wins even when its key also appears in `removals`.
+fn merge_bucket_entries(
+    mut existing: Vec<FactOccurrence>,
+    upserts: &[FactOccurrence],
+    removals: &[OccurrenceKey],
+) -> Vec<FactOccurrence> {
+    let mut replaced = std::collections::HashSet::with_capacity(upserts.len() + removals.len());
+    let mut winners = Vec::with_capacity(upserts.len());
+    for membership in upserts.iter().rev() {
+        if replaced.insert(&membership.key) {
+            winners.push(membership.clone());
+        }
+    }
+    replaced.extend(removals);
+    existing.retain(|entry| !replaced.contains(&entry.key));
+    existing.extend(winners.into_iter().rev());
+    existing
+}
+
 /// A fact-granular snapshot transaction: apply a set of membership upserts and
 /// removals to produce a new current root. Changes are grouped by bucket so
 /// each affected bucket page is rewritten exactly once (plus the small root
@@ -326,14 +348,11 @@ pub fn apply_delta(
         let existing = read_page(repo, root, bucket)?
             .map(|page| page.entries)
             .unwrap_or_default();
-        let mut entries = existing;
-        for key in &removals_by_bucket[bucket] {
-            entries.retain(|entry| entry.key != *key);
-        }
-        for membership in &upserts_by_bucket[bucket] {
-            entries.retain(|entry| entry.key != membership.key);
-            entries.push(membership.clone());
-        }
+        let entries = merge_bucket_entries(
+            existing,
+            &upserts_by_bucket[bucket],
+            &removals_by_bucket[bucket],
+        );
         let count = entries.len() as u64;
         let page = FactPage {
             schema: FACT_PAGE_SCHEMA.into(),
@@ -372,21 +391,17 @@ pub fn replace_scope(
     }
     // Complete replacement: drop every current membership for `scope` that is
     // not in the provided complete set, then upsert the complete set.
-    let removals: Vec<OccurrenceKey> = root
-        .buckets
-        .iter()
-        .enumerate()
-        .filter(|(_, reference)| reference.is_some())
-        .flat_map(|(bucket, _)| {
-            read_page(repo, root, bucket)
-                .ok()
-                .flatten()
-                .map(|page| page.entries)
-                .unwrap_or_default()
-        })
-        .filter(|entry| entry.key.scope == scope)
-        .map(|entry| entry.key)
-        .collect();
+    let mut removals = Vec::new();
+    for bucket in 0..BUCKETS {
+        if let Some(page) = read_page(repo, root, bucket)? {
+            removals.extend(
+                page.entries
+                    .into_iter()
+                    .filter(|entry| entry.key.scope == scope)
+                    .map(|entry| entry.key),
+            );
+        }
+    }
     apply_delta(repo, root, complete, &removals)
 }
 
@@ -424,16 +439,13 @@ pub fn reclaimable(repo: &Repository, root: &FactIndexRoot) -> Result<ReclaimRep
             }
         }
     }
-    let owned = cache::owned_digests(repo, 8192)?;
+    let owned = cache::owned_objects(repo, usize::MAX)?;
     let mut unreferenced_bytes = 0u64;
     let mut unreferenced = 0usize;
-    for digest in &owned {
+    for (digest, size) in &owned {
         if !reachable.contains(digest) {
             unreferenced += 1;
-            let dir = repo.root.join(cache::OBJECT_ROOT).join(digest);
-            if let Ok(metadata) = fs::metadata(dir.join("object.json")) {
-                unreferenced_bytes += metadata.len();
-            }
+            unreferenced_bytes += size;
         }
     }
     Ok(ReclaimReport {
@@ -466,21 +478,48 @@ pub(super) fn store_dependency_map(
     observations: &std::collections::BTreeMap<String, super::model::Observation>,
 ) -> Result<cache::ObjectRef, ClewError> {
     let mut memberships = Vec::with_capacity(observations.len());
+    let mut batch = Vec::new();
+    let mut batch_bytes = 0usize;
+    let mut flush =
+        |batch: &mut Vec<(&String, &super::model::Observation, Vec<u8>)>| -> Result<(), ClewError> {
+            let payloads: Vec<_> = batch
+                .iter()
+                .map(|(_, _, payload)| payload.as_slice())
+                .collect();
+            let references = cache::put_batch(repo, OBSERVATION_OBJECT_SCHEMA, &payloads)?;
+            for ((id, observation, _), reference) in batch.drain(..).zip(references) {
+                memberships.push(FactOccurrence {
+                    key: OccurrenceKey {
+                        repository: observation.service.clone(),
+                        revision: "check-map/1.0".into(),
+                        source_state: "CHECK_MAP_SLOT_V1".into(),
+                        scope: super::check::CHECK_DEPENDENCIES_SCOPE.into(),
+                        domain: OBSERVATION_DOMAIN.into(),
+                        semantic: id.clone(),
+                    },
+                    payload: reference,
+                    kind: observation.kind.clone(),
+                    file: String::new(),
+                    symbol: observation.symbol.clone(),
+                });
+            }
+            Ok(())
+        };
     for (id, observation) in observations {
-        memberships.push(FactOccurrence {
-            key: OccurrenceKey {
-                repository: observation.service.clone(),
-                revision: "check-map/1.0".into(),
-                source_state: "CHECK_MAP_SLOT_V1".into(),
-                scope: super::check::CHECK_DEPENDENCIES_SCOPE.into(),
-                domain: OBSERVATION_DOMAIN.into(),
-                semantic: id.clone(),
-            },
-            payload: cache::put_json(repo, OBSERVATION_OBJECT_SCHEMA, observation)?,
-            kind: observation.kind.clone(),
-            file: String::new(),
-            symbol: observation.symbol.clone(),
-        });
+        let payload = crate::canonical::bytes(observation).map_err(super::io_error)?;
+        if !batch.is_empty() && batch_bytes.saturating_add(payload.len()) > 4 * 1024 * 1024 {
+            flush(&mut batch)?;
+            batch_bytes = 0;
+        }
+        batch_bytes += payload.len();
+        batch.push((id, observation, payload));
+        if batch.len() >= 1024 {
+            flush(&mut batch)?;
+            batch_bytes = 0;
+        }
+    }
+    if !batch.is_empty() {
+        flush(&mut batch)?;
     }
     let root = apply_delta(repo, &empty_root(), &memberships, &[])?;
     put_snapshot_root(repo, &root)
@@ -655,6 +694,32 @@ mod tests {
         Repository::init(t.path(), "Architecture").unwrap();
         let repo = Repository::open(t.path()).unwrap();
         (t, repo)
+    }
+
+    fn database(repo: &Repository) -> std::path::PathBuf {
+        let marker = repo.root.join(".codeclew/cache/object-layout.json");
+        let layout: serde_json::Value = serde_json::from_slice(&fs::read(marker).unwrap()).unwrap();
+        repo.root.join(layout["database"].as_str().unwrap())
+    }
+
+    fn corrupt_object(repo: &Repository, digest: &str, payload: &[u8]) {
+        let connection = rusqlite::Connection::open(database(repo)).unwrap();
+        connection
+            .execute(
+                "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+                rusqlite::params![payload, digest],
+            )
+            .unwrap();
+    }
+
+    fn remove_object(repo: &Repository, digest: &str) {
+        let connection = rusqlite::Connection::open(database(repo)).unwrap();
+        connection
+            .execute(
+                "DELETE FROM objects WHERE digest = ?1",
+                rusqlite::params![digest],
+            )
+            .unwrap();
     }
 
     fn key(scope: &str, semantic: &str) -> OccurrenceKey {
@@ -968,8 +1033,7 @@ mod tests {
         let page_ref = root.buckets[bucket_of(&key(":/main", "symbol0").canonical())]
             .clone()
             .unwrap();
-        let dir = repo.root.join(cache::OBJECT_ROOT).join(&page_ref.digest);
-        fs::write(dir.join("object.json"), b"tampered").unwrap();
+        corrupt_object(&repo, &page_ref.digest, b"tampered");
         let error = load_root(&repo).unwrap_err();
         assert_eq!(error.code, ErrorCode::StateCorrupt);
     }
@@ -1015,6 +1079,135 @@ mod tests {
             file: "f.java".into(),
             symbol: semantic.into(),
         }
+    }
+
+    #[test]
+    fn bucket_merge_matches_sequential_order_with_duplicate_changes() {
+        let (_t, repo) = setup();
+        let original = mem(&repo, ":/main", "a", b"shared");
+        let membership = |semantic: usize, version: &str| {
+            let mut entry = original.clone();
+            entry.key.semantic = semantic.to_string();
+            entry.kind = version.into();
+            entry
+        };
+        // Enumerate all change sequences of length zero through three over
+        // three keys, including duplicate removals and last-upsert winners.
+        let mut sequences = vec![Vec::new()];
+        for length in 1..=3 {
+            for mut encoded in 0..3usize.pow(length) {
+                let mut sequence = Vec::new();
+                for _ in 0..length {
+                    sequence.push(encoded % 3);
+                    encoded /= 3;
+                }
+                sequences.push(sequence);
+            }
+        }
+        let mut other_scope = membership(0, "other-scope");
+        other_scope.key.scope = ":/test".into();
+        let existing = vec![
+            membership(0, "old-first"),
+            membership(1, "old-middle"),
+            membership(0, "old-duplicate"),
+            membership(2, "old-last"),
+            other_scope,
+        ];
+        for removal_sequence in &sequences {
+            let removals: Vec<_> = removal_sequence
+                .iter()
+                .map(|id| membership(*id, "removed").key)
+                .collect();
+            for upsert_sequence in &sequences {
+                let upserts: Vec<_> = upsert_sequence
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| membership(*id, &format!("update-{index}")))
+                    .collect();
+                let mut expected = existing.clone();
+                for removal in &removals {
+                    expected.retain(|entry| entry.key != *removal);
+                }
+                for upsert in &upserts {
+                    expected.retain(|entry| entry.key != upsert.key);
+                    expected.push(upsert.clone());
+                }
+                assert_eq!(
+                    merge_bucket_entries(existing.clone(), &upserts, &removals),
+                    expected,
+                    "removals={removal_sequence:?}, upserts={upsert_sequence:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn large_bucket_merge_keeps_survivors_and_last_upserts_in_order() {
+        let (_t, repo) = setup();
+        let original = mem(&repo, ":/main", "shared", b"shared");
+        let membership = |id: usize, version: &str| {
+            let mut entry = original.clone();
+            entry.key.semantic = id.to_string();
+            entry.kind = version.into();
+            entry
+        };
+        // Exercise the bucket merge directly, without a filesystem write per
+        // fact or a timing assertion. A repeated-retain merge would scan over
+        // a billion entries for this bucket's replacements and removals.
+        let existing = (0..40_000).map(|id| membership(id, "old")).collect();
+        let upserts: Vec<_> = (10_000..30_000)
+            .map(|id| membership(id, "first"))
+            .chain((20_000..25_000).map(|id| membership(id, "last")))
+            .collect();
+        let removals: Vec<_> = (0..5_000)
+            .chain(10_000..15_000)
+            .map(|id| membership(id, "removed").key)
+            .collect();
+        let merged = merge_bucket_entries(existing, &upserts, &removals);
+        let expected = (5_000..10_000)
+            .chain(30_000..40_000)
+            .map(|id| (id, "old"))
+            .chain(
+                (10_000..20_000)
+                    .chain(25_000..30_000)
+                    .map(|id| (id, "first")),
+            )
+            .chain((20_000..25_000).map(|id| (id, "last")));
+        assert_eq!(merged.len(), 35_000);
+        for (entry, (id, version)) in merged.iter().zip(expected) {
+            assert_eq!(entry.key.semantic, id.to_string());
+            assert_eq!(entry.kind, version);
+        }
+    }
+
+    #[test]
+    fn complete_scope_replacement_rejects_corrupt_unrelated_page() {
+        let (_t, repo) = setup();
+        let root = apply_delta(
+            &repo,
+            &empty_root(),
+            &[mem(&repo, ":/common", "Common", b"common")],
+            &[],
+        )
+        .unwrap();
+        publish_root(&repo, &root).unwrap();
+        let original_root = fs::read(repo.root.join(ROOT_PATH)).unwrap();
+        let reference = root.buckets.iter().flatten().next().unwrap();
+        corrupt_object(&repo, &reference.digest, b"corrupt");
+        assert_eq!(
+            replace_scope(&repo, &root, ":/other", &[], true)
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
+        remove_object(&repo, &reference.digest);
+        assert_eq!(
+            replace_scope(&repo, &root, ":/other", &[], true)
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
+        assert_eq!(fs::read(repo.root.join(ROOT_PATH)).unwrap(), original_root);
     }
 
     /// Updating one fact changes only the affected bucket page(s) and root;
@@ -1269,12 +1462,7 @@ mod tests {
             .find_map(|(bucket, reference)| reference.as_ref().map(|_| bucket))
             .unwrap();
         let corrupt_reference = root.buckets[corrupt_bucket].as_ref().unwrap();
-        let corrupt_path = repo
-            .root
-            .join(cache::OBJECT_ROOT)
-            .join(&corrupt_reference.digest)
-            .join("object.json");
-        fs::write(corrupt_path, b"corrupted page").unwrap();
+        corrupt_object(&repo, &corrupt_reference.digest, b"corrupted page");
         assert!(
             load_snapshot_observations(&repo, &snapshot, "scope-does-not-exist").is_err(),
             "an empty selected scope must still validate every referenced page"
@@ -1306,12 +1494,7 @@ mod tests {
             .position(|reference| reference.is_some())
             .unwrap();
         let missing_reference = root.buckets[bucket].as_ref().unwrap().clone();
-        let missing_path = repo
-            .root
-            .join(cache::OBJECT_ROOT)
-            .join(&missing_reference.digest)
-            .join("object.json");
-        fs::remove_file(missing_path).unwrap();
+        remove_object(&repo, &missing_reference.digest);
         let missing_ref = snapshot_for_root(&repo, &root);
         assert!(load_snapshot_observations(&repo, &missing_ref, "scope-a").is_err());
 
@@ -1385,14 +1568,10 @@ mod tests {
         let first_page_ref = cache::put_json(&repo, FACT_PAGE_SCHEMA, &first_page).unwrap();
 
         let late_reference = late_bucket.1;
-        let late_path = repo
-            .root
-            .join(cache::OBJECT_ROOT)
-            .join(&late_reference.digest)
-            .join("object.json");
-        let mut late_bytes = fs::read(&late_path).unwrap();
+        let late_page = page(&repo, &late_reference);
+        let mut late_bytes = crate::canonical::bytes(&late_page).unwrap();
         late_bytes[0] ^= 1;
-        fs::write(late_path, late_bytes).unwrap();
+        corrupt_object(&repo, &late_reference.digest, &late_bytes);
 
         let mut forged = root;
         forged.buckets[first_bucket] = Some(first_page_ref);
@@ -1404,9 +1583,7 @@ mod tests {
         assert_eq!(error.code, old_error.code);
         assert_eq!(error.message, old_error.message);
         assert!(
-            error
-                .message
-                .contains("content does not match its reference digest"),
+            error.message.contains("payload hash is corrupt"),
             "late page corruption must fail before malformed selected payload decoding: {}",
             error.message
         );

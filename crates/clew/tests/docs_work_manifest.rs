@@ -1,4 +1,4 @@
-//! Immutable Work manifests share saved evidence; legacy inline work stays readable.
+//! Immutable Work manifests share saved evidence; unsupported inline work requires reindexing.
 #![cfg(unix)]
 #[path = "support/documentation.rs"]
 mod support;
@@ -24,12 +24,14 @@ fn request(audience: &str) -> work::Request {
 fn record_path(repo: &Repository, id: &str) -> std::path::PathBuf {
     repo.root.join(format!(".codeclew/work/{id}/work.json"))
 }
-fn object_path(repo: &Repository, handle: &str) -> std::path::PathBuf {
-    repo.root
-        .join(cache::OBJECT_ROOT)
-        .join(handle.rsplit_once('/').unwrap().0)
-        .join("object.json")
+fn object_database(repo: &Repository) -> rusqlite::Connection {
+    let layout: Value = serde_json::from_slice(
+        &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+    )
+    .unwrap();
+    rusqlite::Connection::open(repo.root.join(layout["database"].as_str().unwrap())).unwrap()
 }
+
 fn prepare(repo: &Repository, snapshot: &str, audience: &str) -> Value {
     work::prepare_with_snapshot(
         repo,
@@ -138,7 +140,7 @@ fn large_saved_check_is_shared_by_small_independent_work_manifests() {
 }
 
 #[test]
-fn legacy_inline_work_remains_readable_without_snapshot_objects() {
+fn inline_work_requires_reindexing_without_mutating_evidence() {
     let f = Fixture::new();
     let source = f.service("orders");
     let repo = Repository::open(&f.docs).unwrap();
@@ -149,15 +151,12 @@ fn legacy_inline_work_remains_readable_without_snapshot_objects() {
     runtime.snapshot = None;
     let original_id = write_inline(&repo, runtime);
     fs::rename(&source, source.with_extension("offline")).unwrap();
-    fs::remove_dir_all(repo.root.join(cache::OBJECT_ROOT)).unwrap();
     for id in [&pinned_id, &original_id] {
         let path = record_path(&repo, id);
         let before = fs::read(&path).unwrap();
-        let loaded = work::load(&repo, id).unwrap();
-        assert_eq!(loaded.checked.services.len(), 1);
-        assert_eq!(loaded.snapshot.is_some(), *id == pinned_id);
-        let page = work::read(&repo, id, Default::default()).unwrap();
-        assert_eq!(page["items"], prepared["items"]);
+        let error = work::load(&repo, id).unwrap_err();
+        assert!(error.message.contains("DOCS_REINDEX_REQUIRED"));
+        assert!(work::read(&repo, id, Default::default()).is_err());
         assert_eq!(fs::read(path).unwrap(), before);
     }
 }
@@ -179,6 +178,22 @@ fn manifest_and_snapshot_damage_fail_without_reacquisition_or_latest_fallback() 
     fs::write(&path, canonical::bytes(&bad).unwrap()).unwrap();
     assert!(work::load(&repo, id).is_err());
     fs::write(&path, &original).unwrap();
+    for missing in [true, false] {
+        let mut unsupported = read(&path);
+        if missing {
+            unsupported.as_object_mut().unwrap().remove("snapshot");
+        } else {
+            unsupported["snapshot"] = Value::Null;
+        }
+        fs::write(&path, canonical::bytes(&unsupported).unwrap()).unwrap();
+        assert!(
+            work::load(&repo, id)
+                .unwrap_err()
+                .message
+                .contains("DOCS_REINDEX_REQUIRED")
+        );
+        fs::write(&path, &original).unwrap();
+    }
     // Even a self-consistent new record cannot label one snapshot's facts with
     // another explicit snapshot authority.
     let mut mislabeled = read(&path);
@@ -190,12 +205,16 @@ fn manifest_and_snapshot_damage_fail_without_reacquisition_or_latest_fallback() 
     fs::create_dir_all(mislabeled_path.parent().unwrap()).unwrap();
     fs::write(mislabeled_path, canonical::bytes(&mislabeled).unwrap()).unwrap();
     assert!(work::load(&repo, &mislabeled_id).is_err());
-    let object = object_path(&repo, &snapshot);
-    let mut damaged = fs::read(&object).unwrap();
-    damaged[0] ^= 1;
-    fs::write(&object, damaged).unwrap();
+    let db = object_database(&repo);
+    let digest = snapshot.rsplit_once('/').unwrap().0;
+    db.execute(
+        "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+        rusqlite::params![b"damaged".as_slice(), digest],
+    )
+    .unwrap();
     assert!(work::load(&repo, id).is_err());
-    fs::remove_file(&object).unwrap();
+    db.execute("DELETE FROM objects WHERE digest = ?1", [digest])
+        .unwrap();
     assert!(work::read(&repo, id, Default::default()).is_err());
     assert_eq!(
         fs::read(repo.root.join(".codeclew/cache/latest-check.json")).unwrap(),
@@ -206,9 +225,10 @@ fn manifest_and_snapshot_damage_fail_without_reacquisition_or_latest_fallback() 
 }
 
 #[test]
-fn legacy_preparation_stores_a_reference_without_changing_recheck_semantics() {
+fn preparation_requires_saved_snapshot_and_retains_its_authority() {
     let f = Fixture::new();
     f.service("orders");
+    f.checked();
     let request = f.input(
         "request.json",
         &json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Maintainers"}),
@@ -228,7 +248,7 @@ fn legacy_preparation_stores_a_reference_without_changing_recheck_semantics() {
     assert!(stored.get("checked").is_none());
     assert!(stored["evidenceSnapshot"].as_str().is_some());
     let hydrated = work::load(&repo, id).unwrap();
-    assert!(hydrated.snapshot.is_none());
+    assert!(hydrated.snapshot.is_some());
     assert_eq!(hydrated.checked.services.len(), 1);
     assert!(Check::load_snapshot(&repo, stored["evidenceSnapshot"].as_str().unwrap()).is_ok());
 }

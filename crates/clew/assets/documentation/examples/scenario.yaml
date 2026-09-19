@@ -1,4 +1,4 @@
-schema: codeclew-documentation-scenario/1.0
+schema: codeclew-documentation-process/1.0
 id: checkout
 title: Checkout and inventory reservation
 summary: Validate the order and request an inventory reservation.
@@ -12,3 +12,10 @@ root:
 interactions: [reserve-inventory]
 maxDepth: 4
 maxNodes: 64
+process:
+  scope: Order checkout and declared inventory reservation
+  participants: [orders, inventory]
+  objects: []
+  trigger: A checkout request reaches the orders controller.
+  outcomes: [Inventory reservation is requested through the declared integration.]
+  linkedSubviews: []

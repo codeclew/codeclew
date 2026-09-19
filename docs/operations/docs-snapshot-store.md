@@ -56,11 +56,11 @@ collector must enumerate typed transitive references and all live roots,
 including pins, latest evidence, Work, publication/history, portable packages
 and in-flight writers/readers. `fact_index::reclaimable` considers one current
 map only and is not a safe whole-store deletion plan. Current pin validation
-is not a GC closure certificate. Existing CAS payload publication does not
-establish ordered descendant directory durability for power loss; these pins
-use same-directory staged marker publication with file and parent-directory
-sync, and support process-restart behavior; they do not repair durability of
-already stored descendant objects.
+is not a GC closure certificate. Payloads commit in SQLite with full synchronous
+transactions before their references are published. Pins use same-directory
+staged marker publication with file and parent-directory sync. These mechanisms
+support process restart; pin validation does not repair a damaged database or
+establish a power-loss guarantee beyond the database and filesystem contracts.
 
 ## Saved evidence is the consumer default
 
@@ -196,8 +196,7 @@ membership page across snapshots; changing its full payload updates its bucket.
 The enclosing Check still binds source revisions and consumed inputs. A map
 root alone does not establish source provenance. This exact-map writer does not
 read or update the mutable generic fact index, whose revision semantics remain
-unchanged. Old snapshot pages remain readable. The first write in the new
-encoding incurs migration storage; subsequent writes share unchanged pages.
+unchanged. Current-format snapshot pages share unchanged payloads.
 Full-map serialization and hashing still occur, and historical objects are not
 automatically reclaimed.
 
@@ -207,8 +206,8 @@ Use its returned handle with `docs context --root DOCS --service ID --snapshot
 DERIVED` or `docs work prepare --snapshot DERIVED`. It does not run source
 analyzers, generate prose, publish documents or advance the latest pointer.
 
-The first version requires an original capture with a recorded consumed-input
-contract. Legacy snapshots remain readable but cannot be recomposed. Derived
+Recomposition requires a current-format original capture with a recorded
+consumed-input contract. Obsolete snapshots are rejected. Derived
 parents are rejected; use the original capture for each new declaration
 revision. All Service records (including titles), portable-evidence expectations,
 update policies and targets must remain identical. Documentation title,
@@ -274,8 +273,7 @@ verification of unrelated payload objects.
 
 Source-syntax captures with an enabled semantic provider do not reuse keyed
 composite captures: the syntax key lacks complete provider input authority.
-They bypass older reusable composite entries and write `NON_CACHEABLE` with a
-reason. This applies to both module and legacy semantic configuration. Pure
+They write `NON_CACHEABLE` with a reason. Pure
 syntax retains its cache path; explicit historical snapshot reads remain
 available independently of current provider admission.
 
@@ -382,69 +380,35 @@ Structural acceptance is not evidence of semantic quality or lower model cost.
 Those require an independent content oracle and measured model usage on real
 service inputs.
 
-## Object metadata storage
+## Current-format object storage
 
-New immutable objects contain `object.json` without an advisory `meta.json`
-sidecar. Their references carry the schema, digest and size needed by readers;
-byte-identical payloads still share one object across different reference
-schemas. Existing sidecars remain untouched and are not required for reads or
-verification. This removes one small file per newly created object. It does
-not reclaim existing disk usage or retire historical evidence.
+Documentation roots use SQLite exclusively for immutable payloads. Version 0.10
+uses the top-level `codeclew-documentation/2.0` manifest and requires a fresh
+documentation root and reindexing. Old roots and serialized
+Check, Work, bindings and narrative formats are not migrated or decoded through
+fallback readers. Rejection leaves old data untouched; archive it separately if
+wanted, then initialize a new root. Do not copy old private state into that root.
 
-### Compact legacy advisory sidecars
+Digest, schema and byte-length references identify shared objects. Current-format
+snapshots, Work and pins reference the same payloads without copying them.
+Payload transactions commit before a root manifest can refer to them. SQLite uses
+full synchronous transactions and WAL; database, WAL and SHM are one live unit.
+Stop writers and copy the complete root for a filesystem backup.
 
-`docs cache compact-sidecars` removes only validated legacy `meta.json` files.
-It does not delete payloads, object directories, snapshots, accepted documents,
-Work records, pins or history, and it does not capture or regenerate evidence.
-Planning is explicit and read-only with respect to the cache:
+Git tracks declarations and publications, but excludes `.codeclew` local state.
+After cloning a current-format documentation repository, explicitly run
+`clew docs init --root DOCS --title EXISTING_TITLE`, then bind its source checkouts
+and run `docs check` to acquire new local evidence. Initialization preserves the
+tracked declarations and manual files. It only creates local storage when the
+entire `.codeclew` directory was absent; it never resets partial or corrupt local
+state. A Git clone does not restore private snapshots, Work or pins. Use a complete
+filesystem backup when those retained artifacts must survive relocation.
 
-```sh
-./clew docs cache compact-sidecars --root /path/to/docs --plan-output /path/to/sidecars.jsonl
-./clew docs cache compact-sidecars --root /path/to/docs --apply --plan /path/to/sidecars.jsonl --limit 100 --max-bytes 134217728
-```
-
-Pass a returned `nextCursor` verbatim with `--cursor` to continue. A null cursor
-means the plan is exhausted. A `requiredBytes` response without progress means
-the next candidate needs a larger byte budget; it is not silently skipped.
-Plans must be outside the object namespace and are created without overwriting
-existing files. The first apply validates the entire complete, checksummed plan
-using bounded memory before mutation. Continuations bind its file identity,
-policy, header/footer and offset; changing the plan invalidates the cursor.
-Cursors detect accidental corruption; they are not authenticated audit receipts.
-
-A candidate must be an owned, bounded regular file with exactly the legacy
-`schema` and `size` fields and a matching immutable payload digest/size. Changed,
-unknown or unsafe objects are preserved and reported. Apply anchors directory
-operations to open descriptors, holds the admitted metadata descriptor, captures
-its directory entry with an exclusive atomic rename, then verifies the captured
-inode and bytes before unlinking it. A concurrent legacy writer can recreate
-`meta.json`; the new original is not removed by recovery of the captured file.
-A captured mismatch is retained at the reported path and stops advancement at
-that record. Investigate that conflict before retrying; the command never
-restores over a concurrent writer's file or silently erases retained conflicts.
-
-Recovery covers **process interruption**, not sudden power loss: this command
-makes no fsync durability promise. Retry the same plan/cursor to recover a
-captured file. If a process stopped after unlink but before returning its report,
-a retry reports absence and does not claim those bytes as newly removed.
-Global maintenance locking uses a persistent lock inode; normal completion
-leaves one small directory per plan, not one receipt per object. The supported
-concurrency model permits current and legacy cache writers/readers with immutable
-payloads and stationary store directories. External edits to private staging,
-in-place payload mutation, or directory relocation during apply are not a
-supported concurrency protocol. POSIX descriptor operations are not a security
-sandbox against a malicious process running as the same user. Exclusive capture
-is implemented for macOS and Linux; unsupported platforms fail explicitly.
-
-`--limit` bounds visited candidates; `--max-bytes` bounds admitted metadata and
-payload validation reads, separately from plan verification IO. `planBytesRead`
-counts actual file-read bytes including buffer prefetch. Logical removed bytes
-and `allocatedBytesEstimate` are separate: the latter is `st_blocks * 512`, not
-exclusive physical space reclaimed from APFS snapshots or clones. Plan and
-maintenance-state allocation must be subtracted when measuring net savings;
-a plan may be larger than the tiny sidecars' logical content. Planning hashes
-candidate payloads and may be expensive, so measure planning separately from
-bounded apply pages. This is sidecar compaction, not evidence garbage collection.
+A missing or corrupt selected database fails explicitly. Codeclew does not create
+an empty replacement or fall back to loose files. There are no legacy compaction
+or migration commands. Documentation history and native runtime caches have
+separate lifecycles; compact physical storage does not imply automatic evidence
+GC or a disk-usage plateau.
 
 ### Remaining implementation boundaries
 
@@ -487,7 +451,7 @@ a frozen report.
   *Newly verified live source freshness* is a separate, explicit
   refresh/capture result. They are never conflated.
 
-## Compatibility with legacy capture-on-command
+## Explicit capture boundaries
 
 - Current-source rendering is available only through the explicit
   `render --refresh` option. It is never the default for a snapshot-consuming

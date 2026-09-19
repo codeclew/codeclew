@@ -28,8 +28,8 @@ Rules:
 - A selector is a build-authoritative module/source-set (Maven `main`/`test`),
   not a directory glob. Per-compilation classpath, JDK, processors, source
   state, and dependency authority are retained.
-- A legacy singular `compilation` (e.g. `:/main`) normalizes to a one-element
-  set. Declaring both `compilation` and `compilations` is rejected.
+- Older service records with a singular `compilation` field are unsupported;
+  create a fresh documentation root and reindex the service with `compilations`.
 - Empty selections, duplicate selectors, and more than 128 selectors are typed
   validation errors.
 - Test scopes are opt-in and never become production entrypoints unless

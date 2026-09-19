@@ -75,14 +75,12 @@ fn supported_refs(
 }
 
 pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
-    if !matches!(
-        n.schema.as_str(),
-        "codeclew-documentation-narrative/1.0"
-            | "codeclew-documentation-narrative/1.1"
-            | "codeclew-documentation-narrative/1.2"
-            | "codeclew-documentation-narrative/1.3"
-    ) || n.context_digest != checked.context_digest
-    {
+    if n.schema != "codeclew-documentation-narrative/1.3" {
+        return Err(invalid(
+            "only codeclew-documentation-narrative/1.3 is supported; author the current contract",
+        ));
+    }
+    if n.context_digest != checked.context_digest {
         return Err(ClewError::new(
             ErrorCode::StaleRequiresReslice,
             "narrative must bind the current contextDigest; refresh context and review affected fragments",
@@ -346,7 +344,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             return Err(invalid("sequence contains an unclosed group"));
         }
         validate_overview(o)?;
-        if n.schema.ends_with("/1.3") && o.overview_diagram.is_none() {
+        if o.overview_diagram.is_none() {
             return Err(invalid("narrative 1.3 requires a bounded overview diagram"));
         }
         // Source-bound diagrams must preserve known conditions and return branches.
@@ -479,14 +477,13 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 }
             }
         }
-        if !n.schema.ends_with("/1.0")
-            && o.events
-                .iter()
-                .filter(|e| e.kind != "end")
-                .any(|e| !o.explanation.iter().any(|p| p.event_ids.contains(&e.id)))
+        if o.events
+            .iter()
+            .filter(|e| e.kind != "end")
+            .any(|e| !o.explanation.iter().any(|p| p.event_ids.contains(&e.id)))
         {
             return Err(invalid(
-                "narrative 1.1+ requires a domain explanation covering every diagram step",
+                "narrative 1.3 requires a domain explanation covering every diagram step",
             ));
         }
         if o.interface_contracts.len() > 64 {
@@ -728,7 +725,7 @@ fn default_narrative(
     ids: impl Iterator<Item = String>,
     checked: &Check,
 ) -> Narrative {
-    Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject,context_digest:checked.context_digest.clone(),operations:vec![],gaps:ids.map(|id|{let gap=super::sections::REQUIRED.iter().find(|(key,_,_)|*key==id).map(|(_,_,purpose)|format!("{purpose} Source-bound section content has not been accepted yet.")).unwrap_or_else(||"Behavior is not yet authored. Load this entrypoint with clew docs context and supply a source-bound sequence.".into());(id,gap)}).collect()}
+    Narrative{schema:"codeclew-documentation-narrative/1.3".into(),subject,context_digest:checked.context_digest.clone(),operations:vec![],gaps:ids.map(|id|{let gap=super::sections::REQUIRED.iter().find(|(key,_,_)|*key==id).map(|(_,_,purpose)|format!("{purpose} Source-bound section content has not been accepted yet.")).unwrap_or_else(||"Behavior is not yet authored. Load this entrypoint with clew docs context and supply a source-bound sequence.".into());(id,gap)}).collect()}
 }
 
 fn add_binding(
@@ -1140,7 +1137,7 @@ pub fn make_bindings(
         .filter(|(id, _)| reachable_sources.contains(id))
         .collect();
     let mut binding = Bindings {
-        schema: "codeclew-documentation-bindings/1.1".into(),
+        schema: "codeclew-documentation-bindings/1.3".into(),
         input_digest: checked.input_digest.clone(),
         renderer: RENDERER.into(),
         extractor: EXTRACTOR.into(),
@@ -1178,7 +1175,6 @@ pub fn make_bindings(
         target_revisions: BTreeMap::new(),
         update_failures: BTreeMap::new(),
         accepted_versions: BTreeMap::new(),
-        heavy: None,
     };
     super::status::update_states(&mut binding, checked);
     Ok(binding)
@@ -1223,7 +1219,58 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
                 .cloned()
         })
         .collect();
+    let process_candidates = service_id
+        .and_then(|id| checked.services.get(id))
+        .map(|evidence| {
+            let catalog = super::process_candidates::catalog(evidence, &BTreeSet::new())
+                .expect("an empty explicit selection cannot name an invalid declaration");
+            let internal: Vec<_> = catalog
+                .records
+                .into_iter()
+                .filter(|row| row["lane"] == "internal")
+                .take(8)
+                .collect();
+            let omitted = catalog.summary["internalCandidateCount"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_sub(internal.len() as u64);
+            json!({"summary":catalog.summary,"internal":internal,"omittedInternal":omitted})
+        });
+    let saved_processes: Vec<_> = checked
+        .dependencies
+        .values()
+        .filter(|d| {
+            d.kind == "PROCESS_DEFINITION"
+                && service_id.is_some_and(|id| {
+                    let definition = &d.normalized["definition"];
+                    definition["root"]["service"] == id
+                        || definition["process"]["participants"]
+                            .as_array()
+                            .is_some_and(|participants| {
+                                participants.iter().any(|service| service == id)
+                            })
+                })
+        })
+        .map(|d| {
+            let definition = &d.normalized["definition"];
+            let id = definition["id"].as_str().unwrap_or("");
+            json!({"id":id,"title":definition["title"],"trigger":definition["process"]["trigger"],
+            "href":format!("../scenarios/{id}.html#process-overview"),"status":"AWAITING_AUTHORING",
+            "boundaries":checked.scenarios.get(id).map(|s| &s.boundaries)})
+        })
+        .collect();
     let mut sources = BTreeSet::new();
+    if let Some(preview) = &process_candidates {
+        sources.extend(
+            preview["internal"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|row| row["sourceIds"].as_array().into_iter().flatten())
+                .filter_map(Value::as_str)
+                .map(str::to_owned),
+        );
+    }
     for o in &n.operations {
         sources.extend(o.summary.source_ids.clone());
         if let Some(g) = &o.dataflow {
@@ -1312,7 +1359,7 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -1582,16 +1629,15 @@ fn publish_internal(
 ) -> Result<Value, ClewError> {
     let previous = bindings::baseline(repo)?;
     for (key, version) in &versions {
-        if let Some(expected) = &version.previous_narrative_digest {
-            let (subject, _) = key
-                .split_once('/')
-                .ok_or_else(|| invalid("invalid prepared section key"))?;
-            let retained = previous
-                .as_ref()
-                .and_then(|(_, b)| b.narratives.get(subject));
-            if &digest(&retained)? != expected {
-                return Err(invalid("published content changed after work preparation"));
-            }
+        super::review::validate_accepted_version(version)?;
+        let (subject, _) = key
+            .split_once('/')
+            .ok_or_else(|| invalid("invalid prepared section key"))?;
+        let retained = previous
+            .as_ref()
+            .and_then(|(_, b)| b.narratives.get(subject));
+        if digest(&retained)? != version.previous_narrative_digest {
+            return Err(invalid("published content changed after work preparation"));
         }
     }
     if let Some((id, binding)) = &previous {
@@ -1606,11 +1652,7 @@ fn publish_internal(
     let refreshing = matches!(evidence_mode, EvidenceMode::Refresh);
     let (mut checked, selected_snapshot) = match evidence_mode {
         EvidenceMode::Saved(snapshot) => Check::retained(repo, snapshot, &BTreeSet::new())?,
-        EvidenceMode::Refresh => {
-            let checked = super::check::run(repo)?;
-            let snapshot = checked.save_snapshot(repo)?;
-            (checked, snapshot)
-        }
+        EvidenceMode::Refresh => super::check::run_and_save_selected(repo, &BTreeSet::new(), None)?,
     };
     let snapshot = Some(selected_snapshot.as_str());
     super::review::scopes(repo, &mut checked, versions.values().cloned())?;
@@ -2036,6 +2078,26 @@ fn publish_internal(
             n,
             &checked,
         );
+        for process in data["savedProcesses"].as_array_mut().into_iter().flatten() {
+            if let Some(id) = process["id"].as_str().map(str::to_owned) {
+                let key = format!("scenario:{id}/{}", super::processes::OVERVIEW);
+                if let Some(state) = binding.section_states.get(&key) {
+                    process["state"] = json!(state);
+                }
+                if binding
+                    .narratives
+                    .get(&format!("scenario:{id}"))
+                    .is_some_and(|narrative| {
+                        narrative
+                            .operations
+                            .iter()
+                            .any(|operation| operation.id == super::processes::OVERVIEW)
+                    })
+                {
+                    process["status"] = json!("AUTHORED");
+                }
+            }
+        }
         let mut operation_sources = BTreeMap::new();
         let mut operation_contracts = BTreeMap::new();
         for operation in &n.operations {
@@ -2182,10 +2244,8 @@ pub(super) fn commit_bundle(
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
         .collect();
     bindings::compact(&mut binding);
-    // Store the heavy payload once in the immutable object store and leave
-    // only references in the persisted bindings, so equivalent publications
-    // share heavy evidence instead of serializing a full copy each time.
-    bindings::store_bindings_heavy(repo, &mut binding)?;
+    // Portable bindings already retain the complete inline payload. Do not
+    // also write unused CAS copies: baseline readers consume the inline data.
     files.insert("bindings.json".into(), bytes(&binding)?);
     publication.files = files
         .iter()
@@ -2270,6 +2330,7 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         STYLE,
         SCRIPT,
         include_str!("history.rs"),
+        include_str!("process_candidates.rs"),
         include_str!("reader.rs"),
         super::reader::HELP,
         super::reader::RUNBOOKS,
@@ -2279,4 +2340,99 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         super::reader::LIMITS,
         include_str!("../../assets/documentation/analysis.js"),
     ])
+}
+
+#[cfg(test)]
+mod process_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn process_preview_keeps_only_displayed_source_closure_and_saved_links() {
+        let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"entrypoints":[],"observations":{},"sources":{},"contracts":{}
+        }))
+        .unwrap();
+        for index in 0..10 {
+            let id = format!("method-{index:02}");
+            let events = json!([{"kind":"IF"},{"kind":"CALL","target":"method-00"},{"kind":"CALL","target":"method-01"}]);
+            evidence.observations.insert(id.clone(), Observation {
+                id:id.clone(),kind:"SYMBOL".into(),service:"svc".into(),symbol:id.clone(),
+                normalized:json!({"declarationKind":"METHOD","scope":":main","name":id,"ownerIdentity":"class:Worker","documentation":{"events":events}}),
+                digest:"digest".into(),source_ids:vec![id.clone()],
+            });
+            for (ordinal, event) in events.as_array().unwrap().iter().enumerate() {
+                let mut normalized = event.clone();
+                normalized["scope"] = json!(":main");
+                normalized["ordinal"] = json!(ordinal);
+                let flow_id = format!("{id}/event/{ordinal}");
+                evidence.observations.insert(
+                    flow_id.clone(),
+                    Observation {
+                        id: flow_id,
+                        kind: "FLOW".into(),
+                        service: "svc".into(),
+                        symbol: id.clone(),
+                        normalized,
+                        digest: "digest".into(),
+                        source_ids: vec![id.clone()],
+                    },
+                );
+            }
+            evidence.sources.insert(id.clone(),serde_json::from_value(json!({
+                "id":id,"service":"svc","revision":"rev","file":format!("{id}.java"),"startLine":1,"endLine":1,
+                "text":format!("void {id}() {{}}"),"textDigest":"digest","evidenceDigest":"digest","authority":"TEST"
+            })).unwrap());
+        }
+        let saved = Observation {
+            id: "process:worker".into(),
+            kind: "PROCESS_DEFINITION".into(),
+            service: "svc".into(),
+            symbol: "worker".into(),
+            normalized: json!({"definition":{"id":"worker","title":"Worker process","root":{"service":"svc"},"process":{"participants":["svc"],"trigger":"Unknown caller"}}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::from([(saved.id.clone(), saved)]),
+            source_inputs: None,
+            composition: None,
+        };
+        let narrative = Narrative {
+            schema: "test".into(),
+            subject: "service:svc".into(),
+            context_digest: "digest".into(),
+            operations: vec![],
+            gaps: BTreeMap::new(),
+        };
+        let data = page_data("service:svc", "Service", "", &narrative, &checked);
+        assert_eq!(
+            data["processCandidates"]["internal"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        assert_eq!(data["processCandidates"]["omittedInternal"], 2);
+        assert_eq!(data["sources"].as_object().unwrap().len(), 8);
+        for candidate in data["processCandidates"]["internal"].as_array().unwrap() {
+            for source in candidate["sourceIds"].as_array().unwrap() {
+                assert!(data["sources"].get(source.as_str().unwrap()).is_some());
+            }
+        }
+        assert!(data["sources"].get("method-09").is_none());
+        assert_eq!(
+            data["savedProcesses"][0]["href"],
+            "../scenarios/worker.html#process-overview"
+        );
+        assert_eq!(data["savedProcesses"][0]["status"], "AWAITING_AUTHORING");
+    }
 }

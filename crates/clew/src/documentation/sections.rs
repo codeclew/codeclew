@@ -62,14 +62,32 @@ pub fn inventory(service: &str, checked: &Check) -> Value {
     let Some(evidence) = checked.services.get(service) else {
         return json!({"publicBoundaries":[],"internalCallables":[],"gaps":["SOURCE_EVIDENCE_UNAVAILABLE"]});
     };
-    let (public, internal): (Vec<_>, Vec<_>) = evidence.entrypoints.iter().partition(|e| {
-        !e.kind.starts_with("SOURCE_")
-            || e.trigger
-                .get("frameworkDeclarations")
-                .and_then(Value::as_array)
-                .is_some_and(|v| !v.is_empty())
-    });
-    json!({"publicBoundaries":public,"internalCallables":internal,
+    let public: Vec<_> = evidence
+        .entrypoints
+        .iter()
+        .filter(|entry| super::process_candidates::public_boundary(entry))
+        .collect();
+    let all_internal: Vec<_> = super::process_candidates::callables(evidence)
+        .into_iter()
+        .filter(|row| row["publicBoundary"] != true)
+        .collect();
+    let internal_count = all_internal.len();
+    let mut bytes = 0;
+    let internal: Vec<_> = all_internal
+        .into_iter()
+        .filter(|row| {
+            let size = serde_json::to_vec(row).map_or(usize::MAX, |value| value.len());
+            if size > 8192usize.saturating_sub(bytes) {
+                return false;
+            }
+            bytes += size;
+            true
+        })
+        .take(8)
+        .collect();
+    json!({"publicBoundaries":public,"internalCallables":internal,"internalCallableCount":internal_count,
+        "omittedInternalCallables":internal_count.saturating_sub(internal.len()),
+        "internalCallablePreviewLimits":{"maxItems":8,"maxBytes":8192},
         "gaps":["PUBLIC_BOUNDARY_INVENTORY_IS_BOUNDED_BY_SELECTED_MODULES", "DYNAMIC_REGISTRATION_AND_RUNTIME_ACTIVATION_UNVERIFIED"],
         "sourceBoundaries":evidence.boundaries})
 }

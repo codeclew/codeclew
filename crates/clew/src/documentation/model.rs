@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const VERSION: &str = "1.0";
-pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
+pub const VERSION: &str = "2.0";
+pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.3";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.13";
+pub const RENDERER: &str = "codeclew-documentation-html/1.14";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -25,14 +25,8 @@ pub struct Service {
     pub repository: String,
     pub language: String,
     pub profile: String,
-    /// Legacy singular compilation selector (e.g. `:/main`). Superseded by the
-    /// plural `compilations` set; an authored record must not declare both.
-    #[serde(default)]
-    pub compilation: String,
-    /// Explicit plural compilation selectors (e.g. `:/web:main`, `:/common:test`).
-    /// Optional and skipped when empty so legacy singular records round-trip
-    /// unchanged. `effective_compilations()` normalizes singular into a
-    /// one-element set and rejects empty or conflicting declarations.
+    /// Explicit compilation selectors (e.g. `:/web:main`, `:/common:test`).
+    /// Empty for source-syntax services, which do not use compiler scopes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compilations: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,20 +48,9 @@ pub struct Service {
 }
 
 impl Service {
-    /// Normalize the authored compilation selection into an explicit set.
-    /// A plural `compilations` set takes precedence; a legacy singular
-    /// `compilation` normalizes to a one-element set. Empty selections and
-    /// simultaneous singular/plural declarations are rejected by
-    /// `store::validate_service`, so a caller here may treat a non-source
-    /// service's result as non-empty.
+    /// Return the authored compilation selection.
     pub fn effective_compilations(&self) -> Vec<String> {
-        if !self.compilations.is_empty() {
-            self.compilations.clone()
-        } else if !self.compilation.is_empty() {
-            vec![self.compilation.clone()]
-        } else {
-            Vec::new()
-        }
+        self.compilations.clone()
     }
 }
 
@@ -77,8 +60,6 @@ impl Service {
 pub struct SourceConfig {
     pub roots: Vec<String>,
     pub dialect: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semantic: Option<SemanticConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -92,6 +73,9 @@ pub struct SemanticConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Selector {
     pub language: String,
+    /// Optional exact compilation scope; absence preserves ambiguous matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     pub owner: String,
     pub name: String,
     /// None means overload resolution is still required; [] selects zero arguments.

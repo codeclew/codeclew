@@ -35,8 +35,12 @@
         "profile": {
           "type": "string"
         },
-        "compilation": {
-          "type": "string"
+        "compilations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128
         },
         "source": {
           "type": "object",
@@ -52,22 +56,6 @@
             },
             "dialect": {
               "type": "string"
-            },
-            "semantic": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "profile": {
-                  "type": "string"
-                },
-                "compilation": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "profile",
-                "compilation"
-              ]
             }
           },
           "required": [

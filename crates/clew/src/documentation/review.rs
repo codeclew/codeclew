@@ -39,6 +39,7 @@ pub struct Issue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcceptedVersion {
+    #[serde(deserialize_with = "deserialize_accepted_schema")]
     pub schema: String,
     pub work: String,
     pub proposal: String,
@@ -54,8 +55,50 @@ pub struct AcceptedVersion {
     pub influence: BTreeMap<String, String>,
     pub external_request: Request,
     pub external_fingerprint: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_narrative_digest: Option<String>,
+    #[serde(deserialize_with = "deserialize_previous_digest")]
+    pub previous_narrative_digest: String,
+}
+
+const ACCEPTED_VERSION_SCHEMA: &str = "codeclew-documentation-accepted-version/1.1";
+fn deserialize_accepted_schema<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let schema = String::deserialize(deserializer)?;
+    if schema != ACCEPTED_VERSION_SCHEMA {
+        return Err(serde::de::Error::custom(
+            "DOCS_REINDEX_REQUIRED: unsupported accepted-version schema; initialize a fresh documentation root and run docs check",
+        ));
+    }
+    Ok(schema)
+}
+fn valid_previous_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+fn deserialize_previous_digest<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let digest = String::deserialize(deserializer)?;
+    if !valid_previous_digest(&digest) {
+        return Err(serde::de::Error::custom(
+            "DOCS_REINDEX_REQUIRED: accepted version lacks a valid previous narrative binding; initialize a fresh documentation root and run docs check",
+        ));
+    }
+    Ok(digest)
+}
+pub(super) fn validate_accepted_version(version: &AcceptedVersion) -> Result<(), ClewError> {
+    if version.schema != ACCEPTED_VERSION_SCHEMA
+        || !valid_previous_digest(&version.previous_narrative_digest)
+    {
+        return Err(invalid(
+            "DOCS_REINDEX_REQUIRED: invalid accepted-version provenance; initialize a fresh documentation root and run docs check",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate(
@@ -338,7 +381,7 @@ pub(super) fn unassessed_versions(
                     influence: influence.clone(),
                     external_request: work.request.clone(),
                     external_fingerprint: digest(&work.external_inputs)?,
-                    previous_narrative_digest: Some(digest(&work.retained)?),
+                    previous_narrative_digest: digest(&work.retained)?,
                 },
             ))
         })
@@ -429,12 +472,38 @@ mod tests {
 
     fn version(paths: &[&str]) -> AcceptedVersion {
         serde_json::from_value(json!({
-            "schema":"codeclew-documentation-accepted-version/1.0", "work":"w", "proposal":"p",
+            "schema":"codeclew-documentation-accepted-version/1.1", "work":"w", "proposal":"p",
+            "previousNarrativeDigest":digest(&Option::<super::super::model::Narrative>::None).unwrap(),
             "invocation":null,"reviewDigest":null,"reviewerDriverDigest":null,
             "evidenceDigest":"e", "readDigest":"r", "operationDigest":"o", "verification":"VERIFIED",
             "limitations":[], "sourceRevisions":{}, "influence":{}, "externalFingerprint":"f",
             "externalRequest":{"schema":"codeclew-documentation-work-request/1.0","audience":"Maintainers","externalInputs":paths}
         })).unwrap()
+    }
+
+    #[test]
+    fn accepted_version_requires_current_schema_and_previous_narrative_binding() {
+        let current = serde_json::to_value(version(&[])).unwrap();
+        assert!(serde_json::from_value::<AcceptedVersion>(current.clone()).is_ok());
+        let mut old = current.clone();
+        old["schema"] = json!("codeclew-documentation-accepted-version/1.0");
+        assert!(
+            serde_json::from_value::<AcceptedVersion>(old)
+                .unwrap_err()
+                .to_string()
+                .contains("DOCS_REINDEX_REQUIRED")
+        );
+        for value in [Value::Null, json!(""), json!("sha256:bad")] {
+            let mut unsupported = current.clone();
+            unsupported["previousNarrativeDigest"] = value;
+            assert!(serde_json::from_value::<AcceptedVersion>(unsupported).is_err());
+        }
+        let mut missing = current;
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("previousNarrativeDigest");
+        assert!(serde_json::from_value::<AcceptedVersion>(missing).is_err());
     }
 
     #[test]

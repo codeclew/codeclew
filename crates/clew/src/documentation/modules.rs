@@ -43,34 +43,26 @@ pub enum Command {
         service: Option<String>,
     },
 }
-/// The explicit module object takes precedence only when no legacy semantic
-/// selection is present. Ambiguous declarations are rejected at registration.
+/// Compiler enrichment is selected only through the explicit module catalogue.
 pub(super) fn semantic(service: &Service) -> Option<SemanticConfig> {
-    if let Some(config) = &service.modules {
-        return config
-            .semantic
-            .as_ref()
-            .filter(|m| m.enabled)
-            .map(|m| SemanticConfig {
-                profile: m.profile.clone(),
-                compilation: m.compilation.clone(),
-            });
-    }
-    service.source.as_ref().and_then(|s| s.semantic.clone())
+    service
+        .modules
+        .as_ref()?
+        .semantic
+        .as_ref()
+        .filter(|m| m.enabled)
+        .map(|m| SemanticConfig {
+            profile: m.profile.clone(),
+            compilation: m.compilation.clone(),
+        })
 }
 pub(super) fn validate(service: &Service) -> Result<(), ClewError> {
     let Some(config) = &service.modules else {
         return Ok(());
     };
-    if config.schema != "codeclew-documentation-modules/1.0"
-        || service.profile != "source-syntax"
-        || service
-            .source
-            .as_ref()
-            .is_some_and(|s| s.semantic.is_some())
-    {
+    if config.schema != "codeclew-documentation-modules/1.0" || service.profile != "source-syntax" {
         return Err(invalid(
-            "explicit documentation modules require source-syntax and cannot also use legacy source.semantic",
+            "explicit documentation modules require source-syntax",
         ));
     }
     if let Some(module) = &config.semantic {
@@ -87,7 +79,7 @@ pub(super) fn validate(service: &Service) -> Result<(), ClewError> {
             provider.modules = None;
             provider.source = None;
             provider.profile = module.profile.clone();
-            provider.compilation = module.compilation.clone();
+            provider.compilations = vec![module.compilation.clone()];
             super::store::validate_service(&provider)?;
         } else if !module.profile.is_empty() || !module.compilation.is_empty() {
             return Err(invalid(
@@ -273,7 +265,7 @@ pub(super) fn attach(service: &Service, evidence: &mut ServiceEvidence) -> Resul
             _ => matches!(service.language.as_str(), "java" | "kotlin"),
         })
         .collect();
-    let normalized = json!({"schema":"codeclew-documentation-module-influence/1.0","configuration":service.modules,"legacySemantic":service.source.as_ref().and_then(|s|s.semantic.as_ref()),"modules":records,"adapterProtocol":crate::adapter_v2::ADAPTER_PROTOCOL,"derivationDigest":digest(&(crate::canonical::hash_bytes(include_bytes!("analysis.rs")),crate::canonical::hash_bytes(include_bytes!("modules.rs"))))?});
+    let normalized = json!({"schema":"codeclew-documentation-module-influence/1.0","configuration":service.modules,"modules":records,"adapterProtocol":crate::adapter_v2::ADAPTER_PROTOCOL,"derivationDigest":digest(&(crate::canonical::hash_bytes(include_bytes!("analysis.rs")),crate::canonical::hash_bytes(include_bytes!("modules.rs"))))?});
     if let Some(scope) = evidence
         .observations
         .values_mut()

@@ -41,8 +41,8 @@ fn bindings_with(file: &str, digest: &str) -> Bindings {
     serde_json::from_value(json!({
         "schema": "codeclew-documentation-bindings/1.3",
         "inputDigest": "input",
-        "renderer": "codeclew-documentation-html/1.13",
-        "extractor": "codeclew-documentation-jvm/1.2",
+        "renderer": clew::documentation::model::RENDERER,
+        "extractor": clew::documentation::model::EXTRACTOR,
         "revisions": {}, "coverage": {}, "catalogues": {}, "fragments": {},
         "observations": {}, "narratives": {}, "outputHashes": hashes,
         "retainedSources": {}, "sectionStates": {}, "targetRevisions": {},
@@ -106,11 +106,7 @@ fn stage_publication(
 }
 
 fn repo_at(root: &Path) -> Repository {
-    fs::write(
-        root.join("codeclew-docs.yaml"),
-        "schema: codeclew-documentation/1.0\ntitle: Test\n",
-    )
-    .unwrap();
+    Repository::init(root, "Test").unwrap();
     Repository::open(root).unwrap()
 }
 

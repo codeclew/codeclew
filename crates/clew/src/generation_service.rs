@@ -23,8 +23,8 @@ use crate::incremental_v2::{
 };
 use crate::java_adapter_v2::{
     JAVA_COMPILER_FACTS_CAPABILITY, JAVA_LANGUAGE, JavaAdapterV2, JavaCompilerFact,
-    JavaCompilerIndex, build_java_compiler_index, build_java_compiler_index_with_prepared_inputs,
-    java_adapter_digest, java_scope_digest,
+    JavaCompilerIndex, build_java_compiler_index, execute_prepared_java_output,
+    java_adapter_digest, java_scope_digest, project_java_compiler_output,
 };
 use crate::java_analysis_inputs::{
     JavaAnalysisInputPool, JavaPreparedInputsResult, JavaPreparedRefusal,
@@ -210,6 +210,7 @@ pub enum IncrementalExecutionMode {
 pub enum AnalysisExecutionAuthority {
     CompilerWorker,
     CompilerProcess,
+    CompilerOutputCheckpoint,
     InProcessSyntax,
 }
 
@@ -222,6 +223,9 @@ pub struct IncrementalExecutionEvidence {
     pub analysis_execution_authority: AnalysisExecutionAuthority,
     pub subset_analysis_supported: bool,
     pub worker_requests: WorkerRequestCounters,
+    /// Original successful subprocess evidence; current projection may reuse it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_output_receipt: Option<CasObject>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,7 +237,7 @@ struct IncrementalHead {
     ready: CasObject,
 }
 
-const JAVA_ANALYSIS_CHECKPOINT_SCHEMA: &str = "codeclew-java-analysis-checkpoint/1.0";
+const JAVA_ANALYSIS_CHECKPOINT_SCHEMA: &str = "codeclew-java-analysis-checkpoint/2.0";
 const JAVA_ANALYSIS_REQUEST_SCHEMA: &str = "codeclew-java-analysis-request/1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,7 +249,8 @@ struct JavaAnalysisCheckpoint {
 }
 
 /// A request observation is separate from the immutable production receipt.
-/// A reused Java result retains its original Full/CompilerProcess evidence.
+/// Ready reuse preserves prior production evidence; a newly projected raw hit
+/// separately records its original subprocess receipt and zero current starts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JavaAnalysisRequest {
@@ -254,6 +259,8 @@ struct JavaAnalysisRequest {
     eligibility: String,
     lookup: String,
     java_analyzer_starts: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compiler_output_receipt: Option<CasObject>,
     input: CasObject,
     generation: CasObject,
 }
@@ -748,8 +755,10 @@ fn ensure_java_generation_set(
                 workspace.repository(),
                 &model.authority.source_files,
             )?;
-            // "before" = CAS snapshot digests for the same source files.
-            let before = java_source_content_digests(store, &sources, &model)?;
+            // Original authority exists only for files present in the CAS
+            // snapshot. Build-added files appear only in the transformed
+            // after-map; never fabricate original-snapshot provenance for them.
+            let before = original_java_source_content_digests(store, &sources, &model)?;
             let changed = before
                 .iter()
                 .filter_map(|(path, d)| {
@@ -912,6 +921,9 @@ fn ensure_java_generation(
         }))
         .map_err(internal)?,
     )?;
+    let compiler_input = prepared
+        .map(|inputs| crate::java_analyzer_output::prepare_input(store, inputs, compilation))
+        .transpose()?;
     let (toolchain, canonical_options) = if let Some(prepared) = prepared {
         prepared.require_sealed()?;
         let image = store.put(
@@ -940,6 +952,7 @@ fn ensure_java_generation(
                 "schema":"codeclew-java-analysis-options/1.0",
                 "model":model_object,
                 "analysisInputs":inputs,
+                "compilerInput":compiler_input,
             }))
             .map_err(internal)?,
         )?;
@@ -1034,14 +1047,33 @@ fn ensure_java_generation(
     let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
     journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
     journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
-    journal.transition(AttemptState::Analyzing, "Java compiler analyzer started")?;
+    journal.transition(AttemptState::Analyzing, "Java compiler facts requested")?;
+    let mut raw_hit = false;
+    let mut compiler_output_receipt = None;
     let indexed = if let Some(prepared) = prepared {
-        build_java_compiler_index_with_prepared_inputs(
-            &model,
-            prepared,
-            &source_content_digests,
-            debug_output,
+        let repository_state = state.repository_by_key(&session.repository_key)?;
+        let input = compiler_input
+            .as_ref()
+            .ok_or_else(|| corrupt("prepared Java compiler input is missing"))?;
+        crate::java_analyzer_output::get_or_execute(
+            state,
+            store,
+            &repository_state.root,
+            input,
+            || execute_prepared_java_output(&model, prepared, debug_output),
         )
+        .and_then(|output| {
+            raw_hit = output.hit;
+            compiler_output_receipt = Some(output.success_receipt);
+            project_java_compiler_output(
+                &output.bytes,
+                &model,
+                &source_content_digests,
+                writable_then_seal,
+                before_digests,
+                changed_files,
+            )
+        })
     } else {
         build_java_compiler_index(
             repository,
@@ -1131,16 +1163,24 @@ fn ensure_java_generation(
             coverage: coverage_label(&completeness).into(),
             certainty: certainty_label(&completeness).into(),
             obligations: obligation_codes(&completeness),
-            incremental: full_execution_evidence(
-                IncrementalPlan::Full {
-                    reason: FullAnalysisReason::NoParent,
-                },
-                WorkerRequestCounters {
-                    open_project_requests: 0,
-                    index_files_requests: 0,
-                },
-                AnalysisExecutionAuthority::CompilerProcess,
-            ),
+            incremental: {
+                let mut evidence = full_execution_evidence(
+                    IncrementalPlan::Full {
+                        reason: FullAnalysisReason::NoParent,
+                    },
+                    WorkerRequestCounters {
+                        open_project_requests: 0,
+                        index_files_requests: 0,
+                    },
+                    if raw_hit {
+                        AnalysisExecutionAuthority::CompilerOutputCheckpoint
+                    } else {
+                        AnalysisExecutionAuthority::CompilerProcess
+                    },
+                );
+                evidence.compiler_output_receipt = compiler_output_receipt.clone();
+                evidence
+            },
             incremental_receipt,
             repository_snapshot: snapshot_object,
             derived_input_manifest,
@@ -1157,7 +1197,7 @@ fn ensure_java_generation(
             if let Some(path) = &checkpoint_path {
                 publish_java_analysis_checkpoint(state, store, path, &ready)?;
             }
-            write_java_analysis_request(state, binding_path, &ready, eligibility, false)?;
+            write_java_analysis_request(state, binding_path, &ready, eligibility, raw_hit)?;
             write_private_atomic(state, binding_path, &ready)?;
             Ok(ready)
         }
@@ -1207,9 +1247,13 @@ fn load_java_analysis_checkpoint(
     }
     let ready: ReadyGeneration = read_canonical_object(store, &checkpoint.ready)?;
     if ready.generation_key != generation_key
+        || ready.incremental.compiler_output_receipt.is_none()
         || ready.derived_input_manifest != *input
-        || ready.incremental.analysis_execution_authority
-            != AnalysisExecutionAuthority::CompilerProcess
+        || !matches!(
+            ready.incremental.analysis_execution_authority,
+            AnalysisExecutionAuthority::CompilerProcess
+                | AnalysisExecutionAuthority::CompilerOutputCheckpoint
+        )
         || ready.incremental.executed != IncrementalExecutionMode::Full
     {
         return Err(corrupt(
@@ -1268,6 +1312,7 @@ fn write_java_analysis_request(
             }
             .into(),
             java_analyzer_starts: u64::from(!hit),
+            compiler_output_receipt: ready.incremental.compiler_output_receipt.clone(),
             input: ready.derived_input_manifest.clone(),
             generation: ready.generation.clone(),
         },
@@ -1317,18 +1362,36 @@ fn java_source_content_digests(
     sources: &BTreeMap<String, CasObject>,
     model: &JavaOperationalModel,
 ) -> Result<BTreeMap<String, String>, ClewError> {
+    let digests = original_java_source_content_digests(store, sources, model)?;
+    if digests.len() != model.authority.source_files.len() {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            format!(
+                "Java model selected a source outside the sealed snapshot for {}; build-added sources require the java-17plus-maven-writable-then-seal profile",
+                model.authority.compilation
+            ),
+        ));
+    }
+    Ok(digests)
+}
+
+/// Original snapshot authority for the admitted files that existed before the
+/// build. Writable-then-seal may add files: those have only transformed after
+/// authority, persisted and verified separately. Read-only callers must use
+/// `java_source_content_digests`, which rejects any absent original member.
+fn original_java_source_content_digests(
+    store: &CasStore,
+    sources: &BTreeMap<String, CasObject>,
+    model: &JavaOperationalModel,
+) -> Result<BTreeMap<String, String>, ClewError> {
     model
         .authority
         .source_files
         .iter()
-        .map(|path| {
-            let source = sources.get(path).ok_or_else(|| {
-                ClewError::new(
-                    ErrorCode::InputMutated,
-                    "Java model selected a source outside the sealed snapshot",
-                )
-            })?;
-            Ok((path.clone(), source_content_digest(store, source)?))
+        .filter_map(|path| {
+            sources.get(path).map(|source| {
+                source_content_digest(store, source).map(|digest| (path.clone(), digest))
+            })
         })
         .collect()
 }
@@ -3308,6 +3371,7 @@ fn build_unchanged_ready(
         planned,
         executed: IncrementalExecutionMode::UnchangedHit,
         analysis_execution_authority: AnalysisExecutionAuthority::CompilerWorker,
+        compiler_output_receipt: None,
         subset_analysis_supported: false,
         worker_requests: counters,
     };
@@ -3327,6 +3391,7 @@ fn full_execution_evidence(
         planned,
         executed: IncrementalExecutionMode::Full,
         analysis_execution_authority,
+        compiler_output_receipt: None,
         subset_analysis_supported: false,
         worker_requests,
     }
@@ -4843,9 +4908,12 @@ fn verify_ready_authority(
                 "in-process generation request counters are invalid",
             ));
         }
-        (IncrementalExecutionMode::Full, AnalysisExecutionAuthority::CompilerProcess)
-            if ready.incremental.worker_requests.open_project_requests != 0
-                || ready.incremental.worker_requests.index_files_requests != 0 =>
+        (
+            IncrementalExecutionMode::Full,
+            AnalysisExecutionAuthority::CompilerProcess
+            | AnalysisExecutionAuthority::CompilerOutputCheckpoint,
+        ) if ready.incremental.worker_requests.open_project_requests != 0
+            || ready.incremental.worker_requests.index_files_requests != 0 =>
         {
             return Err(corrupt(
                 "compiler-process generation request counters are invalid",
@@ -4876,6 +4944,66 @@ fn verify_ready_authority(
         return Err(corrupt("ready derived input authority is invalid"));
     }
     derived.verify(store)?;
+    if let Some(reference) = &ready.incremental.compiler_output_receipt {
+        if !matches!(
+            ready.incremental.analysis_execution_authority,
+            AnalysisExecutionAuthority::CompilerProcess
+                | AnalysisExecutionAuthority::CompilerOutputCheckpoint
+        ) || ready.incremental.executed != IncrementalExecutionMode::Full
+        {
+            return Err(corrupt(
+                "Java raw execution receipt has another execution authority",
+            ));
+        }
+        let descriptor = derived
+            .provider_models
+            .iter()
+            .flat_map(|provider| &provider.build_model.compilations)
+            .find(|descriptor| {
+                descriptor.compilation_id == safe_compilation_id(&ready.compilation)
+                    && descriptor.language_uri.as_str() == JAVA_LANGUAGE
+            })
+            .ok_or_else(|| corrupt("Java raw execution receipt has no current Java compilation"))?;
+        let options: serde_json::Value =
+            read_canonical_object(store, &descriptor.canonical_options)?;
+        let input: CasObject = serde_json::from_value(
+            options
+                .get("compilerInput")
+                .cloned()
+                .ok_or_else(|| corrupt("current Java options omit compiler input"))?,
+        )
+        .map_err(|_| corrupt("current Java compiler input is invalid"))?;
+        let closed: CasObject = serde_json::from_value(
+            options
+                .get("analysisInputs")
+                .cloned()
+                .ok_or_else(|| corrupt("current Java options omit sealed inputs"))?,
+        )
+        .map_err(|_| corrupt("current sealed Java input is invalid"))?;
+        crate::java_analyzer_output::verify_input_binding(
+            store,
+            &input,
+            &closed,
+            &ready.compilation,
+        )?;
+        let _ = crate::java_analyzer_output::verify_receipt(store, reference, &input)?;
+    } else if ready.incremental.analysis_execution_authority
+        == AnalysisExecutionAuthority::CompilerOutputCheckpoint
+        || derived
+            .provider_models
+            .iter()
+            .flat_map(|provider| &provider.build_model.compilations)
+            .any(|descriptor| {
+                descriptor.compilation_id == safe_compilation_id(&ready.compilation)
+                    && descriptor.language_uri.as_str() == JAVA_LANGUAGE
+                    && descriptor.canonical_options.object_schema
+                        == "codeclew-java-analysis-options/1.0"
+            })
+    {
+        return Err(corrupt(
+            "Java checkpoint projection omits original execution receipt",
+        ));
+    }
     let generation_limit = usize::try_from(ready.generation.size)
         .map_err(|_| resource("generation exceeds host size"))?;
     let lease = store.read(&ready.generation, generation_limit)?;
@@ -5018,6 +5146,26 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn non_prepared_incremental_evidence_omits_java_raw_receipt() {
+        let non_prepared = full_execution_evidence(
+            IncrementalPlan::Full {
+                reason: FullAnalysisReason::NoParent,
+            },
+            WorkerRequestCounters {
+                open_project_requests: 0,
+                index_files_requests: 0,
+            },
+            AnalysisExecutionAuthority::CompilerProcess,
+        );
+        let bytes = canonical::bytes(&non_prepared).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value.get("compilerOutputReceipt").is_none());
+        let decoded: IncrementalExecutionEvidence = serde_json::from_slice(&bytes).unwrap();
+        assert!(decoded.compiler_output_receipt.is_none());
+        assert_eq!(canonical::bytes(&decoded).unwrap(), bytes);
+    }
 
     fn compiled_output_model(path: &Path) -> JavaOperationalModel {
         use crate::java_project_model::{JavaBuildSystem, JavaProjectModel, classpath_authority};
@@ -5381,6 +5529,7 @@ mod tests {
                 },
                 executed: IncrementalExecutionMode::Full,
                 analysis_execution_authority: AnalysisExecutionAuthority::CompilerWorker,
+                compiler_output_receipt: None,
                 subset_analysis_supported: false,
                 worker_requests: WorkerRequestCounters {
                     open_project_requests: 1,
@@ -6021,6 +6170,79 @@ mod tests {
                 .code,
             ErrorCode::StateCorrupt
         );
+    }
+
+    #[test]
+    fn build_added_java_sources_have_only_transformed_authority() {
+        let (_root, store, repo, original_path) = transformed_fixture();
+        let generated_path = "src/main/java/example/Generated.java";
+        let original = b"package example; public class Service {}";
+        let transformed = b"package example; public class Service { Generated value; }";
+        let generated = b"package example; public class Generated {}";
+        let original_object = store.put("source-file/1.0", original).unwrap();
+        let snapshot_sources = BTreeMap::from([(original_path.to_owned(), original_object)]);
+        std::fs::write(repo.join(original_path), transformed).unwrap();
+        std::fs::write(repo.join(generated_path), generated).unwrap();
+        let mut model = compiled_output_model(&repo.join(original_path));
+        model.authority.source_files = vec![generated_path.into(), original_path.into()];
+
+        let readonly = java_source_content_digests(&store, &snapshot_sources, &model).unwrap_err();
+        assert_eq!(readonly.code, ErrorCode::InputMutated);
+        assert!(readonly.message.contains("writable-then-seal"));
+        let before =
+            original_java_source_content_digests(&store, &snapshot_sources, &model).unwrap();
+        let after = transformed_java_source_digests(&repo, &model.authority.source_files).unwrap();
+        assert_eq!(
+            before,
+            BTreeMap::from([(original_path.into(), canonical::hash_bytes(original))])
+        );
+        assert!(
+            !before.contains_key(generated_path),
+            "new files have no original snapshot digest"
+        );
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[original_path], canonical::hash_bytes(transformed));
+        assert_eq!(after[generated_path], canonical::hash_bytes(generated));
+        let source_state = json!({
+            "kind":"TRANSFORMED_WORKSPACE", "before":before, "after":after,
+            "changedFiles":[{"path":original_path,"before":before[original_path],"after":after[original_path]}],
+        });
+        let reference = persist_transformed_source(
+            &store,
+            &repo,
+            &model.authority.source_files,
+            Some("TRANSFORMED_WORKSPACE"),
+            Some(&source_state),
+        )
+        .unwrap()
+        .unwrap();
+        let reopened = load_transformed_source(&store, &reference).unwrap();
+        assert_eq!(reopened[original_path], transformed);
+        assert_eq!(reopened[generated_path], generated);
+        std::fs::write(repo.join(generated_path), b"changed after capture").unwrap();
+        assert_eq!(
+            persist_transformed_source(
+                &store,
+                &repo,
+                &model.authority.source_files,
+                Some("TRANSFORMED_WORKSPACE"),
+                Some(&source_state),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InputMutated
+        );
+        assert_eq!(
+            load_transformed_source(&store, &reference).unwrap(),
+            reopened
+        );
+
+        // A file that did exist originally remains required in the original
+        // CAS closure: allowing added files must not swallow corrupt originals.
+        let mut corrupt_originals = snapshot_sources.clone();
+        corrupt_originals.get_mut(original_path).unwrap().digest =
+            format!("sha256:{}", "f".repeat(64));
+        assert!(original_java_source_content_digests(&store, &corrupt_originals, &model).is_err());
     }
 
     #[test]

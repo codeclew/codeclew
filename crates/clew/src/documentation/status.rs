@@ -538,7 +538,7 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
             json!({"schema":"codeclew-docs-refresh/1.0","status":"UNCHANGED","statusOnly":true,"bundle":previous.0,"index":"docs/index.html","sections":binding.section_states,"observation":observation,"agentInvocations":0,"captures":0}),
         );
     }
-    binding.schema = "codeclew-documentation-bindings/1.1".into();
+    binding.schema = "codeclew-documentation-bindings/1.3".into();
     binding.output_hashes.clear();
     let bundle = digest(&json!({"binding":binding,"targetInput":input_digest,"statusRenderer":render::renderer_digest()?}))?[7..].to_owned();
     let mut files = BTreeMap::new();

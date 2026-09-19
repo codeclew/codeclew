@@ -386,7 +386,7 @@ fn maven_command(
 struct MavenPreflight {
     selector: JavaCompilationSelector,
     project: PathBuf,
-    source_paths: Vec<PathBuf>,
+    source_root: PathBuf,
     processor_names: Vec<String>,
     processor_coordinates: Vec<String>,
 }
@@ -450,13 +450,17 @@ fn extract_maven_batch(
         } else {
             "src/test/java"
         });
-        let source_paths = java_sources(&source_root)?;
+        // Keep early bounds/symlink validation for existing roots without
+        // treating their pre-build membership as the final source authority.
+        if source_root.exists() {
+            java_sources(&source_root)?;
+        }
         let (processor_names, processor_coordinates) =
             maven_compiler_processor_declarations(&effective_xml)?;
         preflights.push(MavenPreflight {
             selector: selector.clone(),
             project,
-            source_paths,
+            source_root,
             processor_names,
             processor_coordinates,
         });
@@ -522,7 +526,22 @@ fn extract_maven_batch(
         )?;
         let local_repo = maven_local_repository(settings_path.as_deref())?;
 
-        for (index, classpath_file) in indexes.iter().zip(classpath_files) {
+        // Membership is an output of the completed build: generate-sources
+        // may legitimately add Java files under the admitted source root.
+        // Freeze every selected scope before subsequent model commands or
+        // another cohort can change its membership or bytes.
+        let source_captures = indexes
+            .iter()
+            .map(|index| {
+                let paths = java_sources(&preflights[*index].source_root)?;
+                let digests = source_digest_authority(&paths)?;
+                Ok((paths, digests))
+            })
+            .collect::<Result<Vec<_>, ClewError>>()?;
+
+        for ((index, classpath_file), (source_paths, source_digests)) in
+            indexes.iter().zip(classpath_files).zip(source_captures)
+        {
             let preflight = &preflights[*index];
             let classpath = fs::read_to_string(&classpath_file).map_err(|_| {
                 unsupported("Maven Java classpath output is unavailable after a successful build")
@@ -611,7 +630,7 @@ fn extract_maven_batch(
                 repository,
                 &preflight.selector,
                 JavaBuildSystem::Maven,
-                preflight.source_paths.clone(),
+                source_paths,
                 classpath_paths,
                 java,
                 javac,
@@ -622,7 +641,7 @@ fn extract_maven_batch(
             )?;
             captured.push(MavenCaptured {
                 index: *index,
-                source_digests: source_digest_authority(&model.source_paths)?,
+                source_digests,
                 classpath_paths: model.classpath_paths.clone(),
                 model,
             });
@@ -630,21 +649,25 @@ fn extract_maven_batch(
     }
     for capture in &captured {
         let preflight = &preflights[capture.index];
-        let source_root = preflight
-            .project
-            .join(if preflight.selector.source_set == "main" {
-                "src/main/java"
-            } else {
-                "src/test/java"
-            });
-        if java_sources(&source_root)? != capture.model.source_paths
-            || source_digest_authority(&capture.model.source_paths)? != capture.source_digests
-            || classpath_authority_sequence(&capture.classpath_paths)?
-                != capture.model.authority.classpath
+        let compilation = &capture.model.authority.compilation;
+        if java_sources(&preflight.source_root)? != capture.model.source_paths {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                format!("Java source membership changed after Maven cohort capture: {compilation}"),
+            ));
+        }
+        if source_digest_authority(&capture.model.source_paths)? != capture.source_digests {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                format!("Java source bytes changed after Maven cohort capture: {compilation}"),
+            ));
+        }
+        if classpath_authority_sequence(&capture.classpath_paths)?
+            != capture.model.authority.classpath
         {
             return Err(ClewError::new(
                 ErrorCode::InputMutated,
-                "Java source or classpath bytes changed between Maven cohorts",
+                format!("Java classpath bytes changed after Maven cohort capture: {compilation}"),
             ));
         }
     }
@@ -1944,6 +1967,185 @@ mod tests {
         assert_eq!(
             settings.materialize().unwrap_err().code,
             ErrorCode::InputMutated
+        );
+    }
+
+    #[cfg(unix)]
+    fn generated_source_maven_fixture(
+        mode: &str,
+    ) -> (tempfile::TempDir, crate::maven::MavenSettings) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("src/main/java/example")).unwrap();
+        fs::create_dir_all(root.join("src/test/java/example")).unwrap();
+        fs::create_dir_all(root.join("local-repository")).unwrap();
+        fs::write(root.join("pom.xml"), "<project/>").unwrap();
+        fs::write(root.join("fixture-mode"), mode).unwrap();
+        fs::write(
+            root.join(".gitignore"),
+            "/src/main/java/example/Generated.java\n/target/\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main/java/example/Main.java"),
+            "package example; class Main { Generated value; }",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/test/java/example/Test.java"),
+            "package example; class Test {}",
+        )
+        .unwrap();
+        let settings_path = root.join("settings.xml");
+        fs::write(
+            &settings_path,
+            format!(
+                "<settings><localRepository>{}</localRepository></settings>",
+                root.join("local-repository").display()
+            ),
+        )
+        .unwrap();
+        let settings = crate::maven::MavenSettings::capture(&settings_path).unwrap();
+        let wrapper = r#"#!/bin/sh
+set -eu
+mode=$(cat fixture-mode)
+case "$*" in
+  *help:effective-pom*)
+    output=
+    for argument in "$@"; do
+      case "$argument" in -Doutput=*) output=${argument#-Doutput=} ;; esac
+    done
+    project=$(pwd -P)
+    cat > "$output" <<EOF
+<project><build>
+<directory>$project/target</directory>
+<sourceDirectory>$project/src/main/java</sourceDirectory>
+<testSourceDirectory>$project/src/test/java</testSourceDirectory>
+<outputDirectory>$project/target/classes</outputDirectory>
+<testOutputDirectory>$project/target/test-classes</testOutputDirectory>
+</build></project>
+EOF
+    ;;
+  *dependency:build-classpath*)
+    mkdir -p target/classes
+    printf '%s\n' 'package example; class Generated {}' > src/main/java/example/Generated.java
+    printf '%s\n' 'stable-class-bytes' > target/classes/Main.class
+    : > target/codeclew-classpath.txt
+    case "$*" in *test-compile*)
+      case "$mode" in
+        membership-test) printf '%s\n' 'package example; class Late {}' > src/main/java/example/Late.java ;;
+        source-test) printf '%s\n' 'package example; class Main { int changed; }' > src/main/java/example/Main.java ;;
+        classpath-test) printf '%s\n' 'changed-class-bytes' > target/classes/Main.class ;;
+      esac
+      ;;
+    esac
+    if test "$mode" = "target-generated"; then
+      mkdir -p target/generated-sources/example
+      printf '%s\n' 'package example; class TargetGenerated {}' > target/generated-sources/example/TargetGenerated.java
+    fi
+    ;;
+  *help:evaluate*)
+    if test "$mode" = "source-during-model"; then
+      printf '%s\n' 'package example; class Main { int changed; }' > src/main/java/example/Main.java
+    fi
+    printf '17\n'
+    ;;
+  *) exit 2 ;;
+esac
+"#;
+        fs::write(root.join("mvnw"), wrapper).unwrap();
+        fs::set_permissions(root.join("mvnw"), fs::Permissions::from_mode(0o700)).unwrap();
+        (workspace, settings)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_batch_captures_generated_source_membership_after_build() {
+        let (workspace, settings) = generated_source_maven_fixture("stable");
+        assert!(
+            !workspace
+                .path()
+                .join("src/main/java/example/Generated.java")
+                .exists()
+        );
+        let selected = vec![":/main".into(), ":/test".into()];
+        let models = extract_java_models_with_settings_and_diagnostics(
+            workspace.path(),
+            &selected,
+            Some(&settings),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models[0].authority.source_files,
+            [
+                "src/main/java/example/Generated.java",
+                "src/main/java/example/Main.java"
+            ]
+        );
+        assert_eq!(
+            models[1].authority.source_files,
+            ["src/test/java/example/Test.java"]
+        );
+        let repeated = extract_java_models_with_settings_and_diagnostics(
+            workspace.path(),
+            &selected,
+            Some(&settings),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(models[0].authority, repeated[0].authority);
+        assert_eq!(models[1].authority, repeated[1].authority);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_batch_rejects_membership_source_and_classpath_drift_after_capture() {
+        for (mode, reason) in [
+            ("membership-test", "source membership"),
+            ("source-test", "source bytes"),
+            ("classpath-test", "classpath bytes"),
+            ("source-during-model", "source bytes"),
+        ] {
+            let (workspace, settings) = generated_source_maven_fixture(mode);
+            let error = extract_java_models_with_settings_and_diagnostics(
+                workspace.path(),
+                &[":/main".into(), ":/test".into()],
+                Some(&settings),
+                None,
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InputMutated, "{mode}: {error}");
+            assert!(error.message.contains(reason), "{mode}: {error}");
+            assert!(error.message.contains(":/main"), "{mode}: {error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_target_generated_sources_remain_an_explicit_boundary() {
+        let (workspace, settings) = generated_source_maven_fixture("target-generated");
+        let model =
+            extract_java_model_with_settings(workspace.path(), ":/main", Some(&settings)).unwrap();
+        assert!(
+            model
+                .authority
+                .source_files
+                .iter()
+                .all(|path| !path.starts_with("target/"))
+        );
+        assert!(
+            model
+                .authority
+                .boundaries
+                .iter()
+                .any(|code| code == "JAVA_GENERATED_DECLARATIONS_NOT_INDEXED")
         );
     }
 

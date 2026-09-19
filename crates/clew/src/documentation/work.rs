@@ -147,8 +147,7 @@ struct StoredWork {
     id: String,
     subject: String,
     request: Request,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    snapshot: Option<String>,
+    snapshot: String,
     retained: Option<Narrative>,
     external_inputs: BTreeMap<String, Value>,
     handles: BTreeMap<String, Handle>,
@@ -166,7 +165,7 @@ impl StoredWork {
             id: String::new(),
             subject: work.subject.clone(),
             request: work.request.clone(),
-            snapshot: work.snapshot.clone(),
+            snapshot: evidence_snapshot.clone(),
             retained: work.retained.clone(),
             external_inputs: work.external_inputs.clone(),
             handles: work.handles.clone(),
@@ -179,7 +178,14 @@ impl StoredWork {
 
     fn validate_identity(&self, id: &str) -> Result<(), ClewError> {
         if self.schema != WORK_MANIFEST_SCHEMA {
-            return Err(invalid("unsupported stored work schema"));
+            return Err(invalid(
+                "DOCS_REINDEX_REQUIRED: unsupported stored work schema; initialize a fresh documentation root, run docs check, and prepare new work",
+            ));
+        }
+        if self.snapshot.is_empty() || self.snapshot != self.evidence_snapshot {
+            return Err(invalid(
+                "DOCS_REINDEX_REQUIRED: work requires an explicit snapshot matching its retained evidence; initialize a fresh documentation root, run docs check, and prepare new work",
+            ));
         }
         let recorded = self.id.clone();
         let mut canonical = self.clone();
@@ -187,15 +193,6 @@ impl StoredWork {
         let expected = digest(&canonical)?[7..].to_owned();
         if recorded != id || expected != id {
             return Err(invalid("work evidence digest or schema is invalid"));
-        }
-        if self
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot != &self.evidence_snapshot)
-        {
-            return Err(invalid(
-                "work snapshot authority disagrees with stored evidence",
-            ));
         }
         Ok(())
     }
@@ -207,7 +204,7 @@ impl StoredWork {
             subject: self.subject,
             request: self.request,
             checked,
-            snapshot: self.snapshot,
+            snapshot: Some(self.snapshot),
             retained: self.retained,
             external_inputs: self.external_inputs,
             handles: self.handles,
@@ -242,25 +239,14 @@ fn directory(id: &str) -> Result<String, ClewError> {
 }
 pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     let path = repo.path(&format!("{}/work.json", directory(id)?))?;
-    if let Ok(stored) = store::read::<StoredWork>(&path, 64 * 1024 * 1024) {
-        // Validate the manifest identity before opening its referenced evidence.
-        stored.validate_identity(id)?;
-        validate_context_profile(&stored.subject, &stored.request)?;
-        let checked = Check::load_snapshot(repo, &stored.evidence_snapshot)?;
-        return Ok(stored.into_runtime(checked));
-    }
-    // Immutable work/1.0 records predate the manifest and remain self-contained.
-    let mut work: Work = store::read(&path, 64 * 1024 * 1024)?;
-    let recorded = work.id.clone();
-    work.id.clear();
-    let expected = digest(&work)?[7..].to_owned();
-    work.id = recorded;
-    if work.id != id || expected != id || work.schema != WORK_SCHEMA {
-        return Err(invalid("work evidence digest or schema is invalid"));
-    }
-    validate_context_profile(&work.subject, &work.request)?;
-    Ok(work)
+    let stored: StoredWork = store::read(&path, 64 * 1024 * 1024).map_err(|error| invalid(format!(
+        "DOCS_REINDEX_REQUIRED: unsupported saved work format ({}); initialize a fresh documentation root, run docs check, and prepare new work", error.message)))?;
+    stored.validate_identity(id)?;
+    validate_context_profile(&stored.subject, &stored.request)?;
+    let checked = Check::load_snapshot(repo, &stored.evidence_snapshot)?;
+    Ok(stored.into_runtime(checked))
 }
+
 pub fn read_state(repo: &Repository, id: &str) -> Result<ReadState, ClewError> {
     let path = repo.path(&format!("{}/reads.json", directory(id)?))?;
     if path.exists() {
@@ -317,6 +303,15 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
 fn validate_context_profile(subject: &str, request: &Request) -> Result<(), ClewError> {
     match request.context_profile.as_deref() {
         None => Ok(()),
+        Some("process-v1")
+            if subject.starts_with("scenario:")
+                && request.entrypoint.as_deref() == Some(super::processes::OVERVIEW) =>
+        {
+            Ok(())
+        }
+        Some("process-v1") => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: process-v1 requires a saved process overview",
+        )),
         Some("declarations-v1")
             if subject
                 .strip_prefix("service:")
@@ -826,7 +821,16 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
             items.push(json!({"kind":"OBLIGATION","id":format!("obligation-{}",index+1),"record":obligation}));
         }
     }
-    annotate_rows(work, items)
+    let projected = annotate_rows(work, items)?;
+    if work.request.context_profile.as_deref() == Some(super::process_context::PROFILE)
+        && selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+    {
+        super::process_context::project(projected)
+    } else {
+        Ok(projected)
+    }
 }
 
 fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewError> {
@@ -1002,7 +1006,7 @@ fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         "inventoryDigest": inventory_digest.clone(),
         "inventory": {
             "publicBoundaries": inventory["publicBoundaries"].as_array().map_or(0, |v| v.len()),
-            "internalCallables": inventory["internalCallables"].as_array().map_or(0, |v| v.len()),
+            "internalCallables": inventory["internalCallableCount"].as_u64().unwrap_or_else(|| inventory["internalCallables"].as_array().map_or(0, |v| v.len()) as u64),
             "digest": inventory_digest,
         },
         "expansion": {

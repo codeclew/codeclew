@@ -200,7 +200,7 @@ fn missing_corrupt_and_stale_latest_fail_without_fallback() {
 }
 
 #[test]
-fn legacy_inline_work_loads_but_agent_run_requires_reprepare() {
+fn legacy_inline_work_requires_reindex_before_agent_run() {
     let f = Fixture::new();
     let source = f.service("orders");
     let checked = f.checked();
@@ -224,14 +224,12 @@ fn legacy_inline_work_loads_but_agent_run_requires_reprepare() {
     fs::rename(&source, source.with_extension("offline")).unwrap();
     let (code, value) = f.run(&["docs", "work", "run", "--work", &legacy]);
     assert_ne!(code, 0);
-    assert!(value.to_string().contains("LEGACY_WORK_REQUIRES_REPREPARE"));
-    let loaded = work::load(&repo, &legacy).unwrap();
-    assert!(loaded.snapshot.is_none());
+    assert!(value.to_string().contains("DOCS_REINDEX_REQUIRED"));
     assert!(
-        clew::documentation::proposals::current(&repo, &loaded)
+        work::load(&repo, &legacy)
             .unwrap_err()
             .message
-            .contains("LEGACY_WORK_REQUIRES_REPREPARE")
+            .contains("DOCS_REINDEX_REQUIRED")
     );
 }
 

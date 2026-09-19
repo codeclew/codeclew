@@ -6,9 +6,10 @@
 //! producer/admission key, corruption and missing objects are explicit errors,
 //! and persisted checks no longer duplicate observations inline.
 
+use clew::canonical;
 use clew::documentation::cache::{self, ObjectRef, load_capture, store_capture};
-use clew::documentation::check::{Check, CheckManifest};
-use clew::documentation::model::{EXTRACTOR, ServiceEvidence, Source};
+use clew::documentation::check::{Check, CheckManifest, SOURCE_INPUTS_SCHEMA, SourceInputs};
+use clew::documentation::model::{EXTRACTOR, Service, ServiceEvidence, Source};
 use clew::documentation::store::Repository;
 use clew::error::ErrorCode;
 use std::collections::BTreeMap;
@@ -46,14 +47,37 @@ fn evidence(service: &str, text: &str) -> ServiceEvidence {
     }
 }
 
-fn check(service: &str, text: &str) -> Check {
+fn check(repo: &Repository, service: &str, text: &str) -> Check {
+    let declaration: Service = serde_json::from_value(serde_json::json!({
+        "schema": "codeclew-documentation-service/1.0",
+        "id": service,
+        "title": service,
+        "repositoryId": service,
+        "repository": format!("https://example.invalid/{service}"),
+        "language": "java",
+        "profile": "java-17plus-maven-read-only",
+        "compilations": [":/main"],
+        "targetRef": "main"
+    }))
+    .unwrap();
+    repo.service_add(declaration, Some(&repo.input_digest().unwrap()))
+        .unwrap();
+    let inputs = repo.inputs().unwrap();
+    let mut service_evidence = evidence(service, text);
+    service_evidence.service_digest = canonical::hash(&inputs.services[service]).unwrap();
     let mut services = BTreeMap::new();
-    services.insert(service.to_string(), evidence(service, text));
+    services.insert(service.to_string(), service_evidence);
     Check {
         schema: "codeclew-documentation-check/1.0".into(),
-        source_inputs: None,
+        source_inputs: Some(SourceInputs {
+            schema: SOURCE_INPUTS_SCHEMA.into(),
+            input_digest: canonical::hash(&inputs).unwrap(),
+            inputs,
+            selected_services: [service.to_string()].into_iter().collect(),
+            retained_services: Default::default(),
+        }),
         composition: None,
-        input_digest: "input".into(),
+        input_digest: repo.input_digest().unwrap(),
         context_digest: "ctx".into(),
         services,
         unresolved: Default::default(),
@@ -81,8 +105,8 @@ fn byte_identical_evidence_across_producer_keys_stores_once() {
     let objects = cache::owned_digests(&repo, 1000).unwrap();
     assert_eq!(
         objects.len(),
-        2,
-        "one sources object + one shared empty payload"
+        3,
+        "one sources object + one shared empty fact-index root + one shared empty contracts payload"
     );
 }
 
@@ -112,7 +136,7 @@ fn capture_envelope_round_trips_and_rejects_corruption() {
 fn check_persists_as_reference_envelope_and_round_trips() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
-    let checked = check("svc", "payload text");
+    let checked = check(&repo, "svc", "payload text");
     let manifest = checked.store_manifest(&repo).unwrap();
     // The manifest is a reference envelope: service evidence lives in the
     // object store, not serialized inline as a heavy copy.
@@ -132,7 +156,7 @@ fn check_persists_as_reference_envelope_and_round_trips() {
         "check reference envelope must stay small, was {manifest_bytes} bytes"
     );
     let restored = Check::load(&repo, &path).unwrap();
-    assert_eq!(restored.input_digest, "input");
+    assert_eq!(restored.input_digest, checked.input_digest);
     assert_eq!(restored.services["svc"].service, "svc");
     assert_eq!(
         restored.services["svc"]
@@ -270,12 +294,18 @@ fn capture_reuse_skips_producer_and_rejects_damage() {
     let manifest_path = cache::capture_manifest_path(&repo, service, key).unwrap();
     let manifest: cache::CaptureManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    let object_file = repo
-        .root
-        .join(cache::OBJECT_ROOT)
-        .join(&manifest.sources.digest)
-        .join("object.json");
-    std::fs::write(&object_file, b"tampered").unwrap();
+    let layout: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+    )
+    .unwrap();
+    let connection =
+        rusqlite::Connection::open(repo.root.join(layout["database"].as_str().unwrap())).unwrap();
+    connection
+        .execute(
+            "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+            rusqlite::params![b"tampered".as_slice(), manifest.sources.digest],
+        )
+        .unwrap();
     let error = cache::load_capture_if_valid(&repo, service, key).unwrap_err();
     assert_eq!(error.code, ErrorCode::StateCorrupt);
 }
@@ -311,7 +341,6 @@ fn reuse_key_binds_identity_so_state_change_recaptures() {
         repository: String::new(),
         language: "java".into(),
         profile: "source-syntax".into(),
-        compilation: String::new(),
         compilations: Vec::new(),
         source: None,
         modules: None,
@@ -421,7 +450,7 @@ fn concurrent_capture_keeps_ownership_and_interrupted_manifest_rejects() {
     )
     .unwrap();
     let error = cache::load_capture_if_valid(&repo, "svc", "key-a").unwrap_err();
-    assert_eq!(error.code, ErrorCode::InvalidInput);
+    assert_eq!(error.code, ErrorCode::StateCorrupt);
 }
 
 /// A capture marked NON_CACHEABLE (incomplete external authority) is never
@@ -466,58 +495,4 @@ fn non_cacheable_capture_is_not_reused_and_reason_is_reported() {
             .unwrap()
             .is_none()
     );
-}
-
-/// Repeated equivalent publications share the same heavy evidence object:
-/// identical retained-sources/observations payloads store once and are
-/// referenced by both, while the persisted bindings remain self-contained
-/// (inline records retained) so they are portable without the private cache.
-#[test]
-fn equivalent_publications_share_heavy_evidence_and_stay_portable() {
-    use clew::documentation::bindings::{Bindings, store_bindings_heavy};
-    use clew::documentation::model::SectionState;
-    use std::collections::BTreeMap;
-
-    let root = tempfile::tempdir().unwrap();
-    let repo = repo(root.path());
-    let make = |id: &str| -> Bindings {
-        let sources = evidence(id, "shared payload").sources;
-        Bindings {
-            schema: "codeclew-documentation-bindings/1.3".into(),
-            input_digest: "input".into(),
-            renderer: "codeclew-documentation-html/1.13".into(),
-            extractor: EXTRACTOR.into(),
-            revisions: BTreeMap::new(),
-            coverage: BTreeMap::new(),
-            catalogues: BTreeMap::new(),
-            fragments: BTreeMap::new(),
-            observations: BTreeMap::new(),
-            narratives: BTreeMap::new(),
-            output_hashes: BTreeMap::new(),
-            retained_sources: sources,
-            section_states: BTreeMap::<String, SectionState>::new(),
-            target_revisions: BTreeMap::new(),
-            update_failures: BTreeMap::new(),
-            accepted_versions: BTreeMap::new(),
-            heavy: None,
-        }
-    };
-    let mut a = make("svc-a");
-    let mut b = make("svc-b");
-    // Identical heavy payloads across the two publications.
-    b.retained_sources = a.retained_sources.clone();
-    store_bindings_heavy(&repo, &mut a).unwrap();
-    store_bindings_heavy(&repo, &mut b).unwrap();
-    let ha = a.heavy.as_ref().unwrap();
-    let hb = b.heavy.as_ref().unwrap();
-    assert_eq!(
-        ha.retained_sources.digest, hb.retained_sources.digest,
-        "equivalent publications must share one heavy sources object"
-    );
-    // Persisted bindings remain self-contained (inline retained for portability).
-    assert!(
-        !a.retained_sources.is_empty(),
-        "inline records kept for portability"
-    );
-    assert!(!b.retained_sources.is_empty());
 }

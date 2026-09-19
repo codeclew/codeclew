@@ -34,19 +34,29 @@ fn observation(
 }
 
 fn check_with_dependencies(
-    input_digest: &str,
+    repo: &Repository,
+    title: &str,
     dependencies: BTreeMap<String, Observation>,
 ) -> Check {
+    let mut inputs = repo.inputs().unwrap();
+    inputs.manifest.title = title.into();
+    let input_digest = crate::canonical::hash(&inputs).unwrap();
     Check {
         schema: "codeclew-documentation-check/1.0".into(),
-        input_digest: input_digest.into(),
+        input_digest: input_digest.clone(),
         context_digest: "context".into(),
         services: BTreeMap::new(),
         unresolved: BTreeMap::new(),
         interactions: BTreeMap::new(),
         scenarios: BTreeMap::new(),
         dependencies,
-        source_inputs: None,
+        source_inputs: Some(check::SourceInputs {
+            schema: check::SOURCE_INPUTS_SCHEMA.into(),
+            input_digest,
+            inputs,
+            selected_services: Default::default(),
+            retained_services: Default::default(),
+        }),
         composition: None,
     }
 }
@@ -74,10 +84,10 @@ fn check_dependency_index_is_independent_of_check_input_digest() {
     publish_root(&repo, &load_snapshot_root(&repo, &ambient).unwrap()).unwrap();
     let ambient_before = fs::read(repo.root.join(ROOT_PATH)).unwrap();
 
-    let first = check_with_dependencies("input-A", dependencies.clone())
+    let first = check_with_dependencies(&repo, "input-A", dependencies.clone())
         .store_manifest(&repo)
         .unwrap();
-    let second = check_with_dependencies("input-B", dependencies)
+    let second = check_with_dependencies(&repo, "input-B", dependencies)
         .store_manifest(&repo)
         .unwrap();
     assert_eq!(
@@ -90,7 +100,7 @@ fn check_dependency_index_is_independent_of_check_input_digest() {
         "the enclosing Check identity still binds its inputs"
     );
     assert_eq!(fs::read(repo.root.join(ROOT_PATH)).unwrap(), ambient_before);
-    let reference = first.dependencies_index.unwrap();
+    let reference = first.dependencies_index;
     let loaded =
         load_snapshot_observations(&repo, &reference, check::CHECK_DEPENDENCIES_SCOPE).unwrap();
     assert_eq!(loaded.len(), 1);

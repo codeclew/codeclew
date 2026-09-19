@@ -20,8 +20,10 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ops::Range,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
 };
 
 const MAX_EVIDENCE: u64 = 256 * 1024 * 1024;
@@ -201,7 +203,7 @@ fn capture_local_with_diagnostics(
             provider.source = None;
             provider.modules = None;
             provider.profile = semantic.profile.clone();
-            provider.compilation = semantic.compilation.clone();
+            provider.compilations = vec![semantic.compilation.clone()];
             super::syntax::enrich(
                 &mut source,
                 capture_local_with_diagnostics(repository, &provider, debug_output),
@@ -365,22 +367,18 @@ fn capture_session(
         "CODEDEBUG capture_session load_snapshot OK for {}",
         service.id
     );
-    let mut snapshot_text: BTreeMap<String, String> = BTreeMap::new();
+    let mut snapshot_text: BTreeMap<String, Arc<str>> = BTreeMap::new();
     for entry in &snapshot.worktree {
         if let Some(reference) = &entry.content {
             let lease = store.read(reference, store::MAX_RECORD as usize)?;
             if let Ok(text) = String::from_utf8(lease.bytes().to_vec()) {
-                snapshot_text.insert(entry.path.clone(), text);
+                snapshot_text.insert(entry.path.clone(), Arc::from(text));
             }
         }
     }
     let mut facts = Vec::new();
     let mut count = 0usize;
     let mut total = 0u64;
-    // Scope membership is attached only when more than one compilation is
-    // admitted; a single-compilation service keeps the legacy (scope-free)
-    // evidence so existing records round-trip and digest unchanged.
-    let multi_scope = ready.compilations.len() > 1;
     for compilation in &ready.compilations {
         let lease = store.read(&compilation.generation, MAX_EVIDENCE as usize)?;
         eprintln!(
@@ -389,7 +387,7 @@ fn capture_session(
         );
         let generation: GenerationManifest =
             serde_json::from_slice(lease.bytes()).map_err(io_error)?;
-        let scope = compilation.clone();
+        let scope = json!({"compilation": compilation.compilation});
         generation.visit_facts(&store, |fact| {
             let domain = if service.language == "kotlin" {
                 "analysis:kotlin-semantic-facts"
@@ -411,10 +409,8 @@ fn capture_session(
             let mut value: Value = serde_json::from_slice(lease.bytes()).map_err(io_error)?;
             // Attach explicit compilation-scope membership so a symbol that
             // appears under several scopes is retained per scope instead of
-            // last-write-wins overwriting. Single-scope records stay unmarked.
-            if multi_scope {
-                value["scope"] = json!(scope);
-            }
+            // last-write-wins overwriting, including single-scope captures.
+            value["scope"] = scope.clone();
             facts.push((value, fact.payload.digest.clone()));
             Ok(())
         })?;
@@ -435,7 +431,7 @@ fn capture_session(
     let mut contracts = BTreeMap::new();
     for file in &service.contract_files {
         if let Some(text) = snapshot_text.get(file) {
-            contracts.insert(file.clone(), text.clone());
+            contracts.insert(file.clone(), text.to_string());
         }
     }
     let known: BTreeSet<String> = ready
@@ -443,54 +439,54 @@ fn capture_session(
         .iter()
         .map(|c| c.compilation.clone())
         .collect();
-    // A single admitted compilation keeps the empty-scope legacy key so its
-    // scope-free facts resolve to the sole source table and records round-trip.
     let mut contents = BTreeMap::new();
     let mut transformed_map = BTreeMap::new();
-    let mut source_bytes = 0usize;
+    let wanted_snapshot_text: BTreeMap<String, Arc<str>> = snapshot_text
+        .iter()
+        .filter(|(path, _)| wanted.contains(*path))
+        .map(|(path, text)| (path.clone(), Arc::clone(text)))
+        .collect();
+    let mut pool = SourcePool::new(MAX_EVIDENCE as usize);
+    let snapshot_sources = if ready
+        .compilations
+        .iter()
+        .any(|c| c.transformed_source.is_none())
+    {
+        Arc::new(
+            wanted_snapshot_text
+                .iter()
+                .map(|(path, text)| Ok((path.clone(), pool.intern(Arc::clone(text))?)))
+                .collect::<Result<SourceTable, ClewError>>()?,
+        )
+    } else {
+        Arc::new(SourceTable::new())
+    };
     eprintln!(
         "CODEDEBUG capture_session reading sources for {} (wanted={})",
         service.id,
         wanted.len()
     );
     for compilation in &ready.compilations {
-        let scope = if multi_scope {
-            compilation.compilation.clone()
-        } else {
-            String::new()
-        };
-        let (bytes, transformed) = match &compilation.transformed_source {
-            Some(reference) => (
-                generation_service::load_transformed_source(&store, reference)?,
-                true,
-            ),
-            // Read-only generations share the original snapshot for their
-            // occurrences and never claim transformed authority.
-            None => (
-                snapshot_text
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone().into_bytes()))
-                    .collect(),
-                false,
-            ),
-        };
-        let mut table = BTreeMap::new();
-        for path in &wanted {
-            if let Some(bytes) = bytes.get(path)
-                && let Ok(text) = std::str::from_utf8(bytes)
-            {
-                source_bytes = source_bytes.saturating_add(text.len());
-                if source_bytes > MAX_EVIDENCE as usize {
-                    return Err(ClewError::new(
-                        ErrorCode::SliceBudgetExceeded,
-                        "documentation source byte budget exceeded",
-                    ));
+        let scope = compilation.compilation.clone();
+        let table = match &compilation.transformed_source {
+            Some(reference) => {
+                let bytes = generation_service::load_transformed_source(&store, reference)?;
+                let mut table = BTreeMap::new();
+                for path in &wanted {
+                    if let Some(bytes) = bytes.get(path)
+                        && let Ok(text) = std::str::from_utf8(bytes)
+                    {
+                        table.insert(path.clone(), pool.intern(Arc::from(text))?);
+                    }
                 }
-                table.insert(path.clone(), text.to_owned());
+                Arc::new(table)
             }
-        }
+            // Scope and provenance remain distinct; equal source payloads and
+            // their line indices are charged once, regardless of scope count.
+            None => Arc::clone(&snapshot_sources),
+        };
         contents.insert(scope.clone(), table);
-        transformed_map.insert(scope, transformed);
+        transformed_map.insert(scope, compilation.transformed_source.is_some());
     }
     let sources = CompilationSource {
         contents,
@@ -552,22 +548,119 @@ pub fn source_link(
 ///
 /// Occurrence (scope, path) stays distinct even when payloads are equal, so two
 /// compilations sharing a relative path with different transformed text keep
-/// both. The legacy single-compilation path uses the empty scope key.
+/// both. Unscoped syntax projection uses the empty scope key.
 pub(crate) struct CompilationSource {
-    pub contents: BTreeMap<String, BTreeMap<String, String>>,
-    pub transformed: BTreeMap<String, bool>,
-    pub contracts: BTreeMap<String, String>,
+    contents: BTreeMap<String, Arc<SourceTable>>,
+    transformed: BTreeMap<String, bool>,
+    contracts: BTreeMap<String, String>,
+}
+
+type SourceTable = BTreeMap<String, Arc<SourceBlob>>;
+
+#[derive(Debug)]
+struct SourceBlob {
+    text: Arc<str>,
+    line_ranges: Box<[Range<usize>]>,
+}
+
+/// Intern source payloads independently of compilation membership. The byte
+/// limit measures retained text and line indices, not repeated scope references.
+struct SourcePool {
+    blobs: BTreeMap<String, Arc<SourceBlob>>,
+    retained_bytes: usize,
+    limit: usize,
+}
+impl SourcePool {
+    fn new(limit: usize) -> Self {
+        Self {
+            blobs: BTreeMap::new(),
+            retained_bytes: 0,
+            limit,
+        }
+    }
+    fn intern(&mut self, text: Arc<str>) -> Result<Arc<SourceBlob>, ClewError> {
+        let key = canonical::hash_bytes(text.as_bytes());
+        if let Some(blob) = self.blobs.get(&key) {
+            if blob.text != text {
+                return Err(ClewError::new(
+                    ErrorCode::StateCorrupt,
+                    "source payload hash collision",
+                ));
+            }
+            return Ok(Arc::clone(blob));
+        }
+        let size = text.len().saturating_add(
+            text.lines()
+                .count()
+                .saturating_mul(std::mem::size_of::<Range<usize>>()),
+        );
+        if size > self.limit.saturating_sub(self.retained_bytes) {
+            return Err(ClewError::new(
+                ErrorCode::SliceBudgetExceeded,
+                "documentation unique source payload and line-index byte budget exceeded",
+            ));
+        }
+        let blob = Arc::new(SourceBlob::new(text));
+        self.retained_bytes += size;
+        self.blobs.insert(key, Arc::clone(&blob));
+        Ok(blob)
+    }
+}
+
+impl SourceBlob {
+    fn new(text: Arc<str>) -> Self {
+        let bytes = text.as_bytes();
+        let mut line_ranges = Vec::new();
+        let mut start = 0;
+        // Match `str::lines()` exactly: LF terminates a line, and a CR
+        // immediately before LF is excluded from the line. A bare CR remains
+        // ordinary source text rather than becoming a line separator.
+        for index in 0..bytes.len() {
+            if bytes[index] != b'\n' {
+                continue;
+            }
+            let end = if index > start && bytes[index - 1] == b'\r' {
+                index - 1
+            } else {
+                index
+            };
+            line_ranges.push(start..end);
+            start = index + 1;
+        }
+        if start < bytes.len() {
+            line_ranges.push(start..bytes.len());
+        }
+        Self {
+            text,
+            line_ranges: line_ranges.into_boxed_slice(),
+        }
+    }
+
+    fn snippet(&self, start: u64, end: u64) -> Option<String> {
+        if start == 0 || end < start || end > self.line_ranges.len() as u64 {
+            return None;
+        }
+        Some(
+            self.line_ranges[start as usize - 1..end as usize]
+                .iter()
+                .map(|range| &self.text[range.clone()])
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+}
+
+fn source_table_from_text(text: &BTreeMap<String, Arc<str>>) -> Arc<SourceTable> {
+    Arc::new(
+        text.iter()
+            .map(|(path, text)| (path.clone(), Arc::new(SourceBlob::new(Arc::clone(text)))))
+            .collect(),
+    )
 }
 
 impl CompilationSource {
-    fn text(&self, scope: &str, file: &str) -> Option<&str> {
-        if let Some(text) = self.contents.get(scope).and_then(|table| table.get(file)) {
-            return Some(text);
-        }
-        if scope.is_empty() {
-            return self.contracts.get(file).map(String::as_str);
-        }
-        None
+    fn blob(&self, scope: &str, file: &str) -> Option<&SourceBlob> {
+        self.contents.get(scope)?.get(file).map(Arc::as_ref)
     }
 }
 
@@ -583,26 +676,31 @@ fn add_source(
     let Some(file) = fact["file"].as_str() else {
         return Ok(None);
     };
-    let Some(text) = sources.text(scope, file) else {
-        // A transformed compilation that cannot supply a required file must fail
-        // explicitly rather than silently falling back to another scope or the
-        // original snapshot.
-        if !scope.is_empty() && sources.transformed.get(scope).copied().unwrap_or(false) {
-            return Err(invalid(format!(
-                "transformed compilation {scope} lacks required source file {file}"
-            )));
-        }
-        return Ok(None);
-    };
     let transformed = sources.transformed.get(scope).copied().unwrap_or(false);
+    let blob = sources.blob(scope, file);
+    // Preserve the prior failure ordering: a transformed scope missing a
+    // required file fails before coordinates are inspected.
+    if blob.is_none() && !scope.is_empty() && transformed {
+        return Err(invalid(format!(
+            "transformed compilation {scope} lacks required source file {file}"
+        )));
+    }
     let (Some(start), Some(end)) = (fact["startLine"].as_u64(), fact["endLine"].as_u64()) else {
         return Ok(None);
     };
-    let lines: Vec<_> = text.lines().collect();
-    if start == 0 || end < start || end > lines.len() as u64 {
+    let exact = if let Some(blob) = blob {
+        blob.snippet(start, end)
+    } else if scope.is_empty() {
+        sources
+            .contracts
+            .get(file)
+            .and_then(|text| SourceBlob::new(Arc::from(text.as_str())).snippet(start, end))
+    } else {
+        None
+    };
+    let Some(exact) = exact else {
         return Ok(None);
-    }
-    let exact = lines[start as usize - 1..end as usize].join("\n");
+    };
     let id = source_id(&service.id, identity)?;
     // Transformed source coordinates refer to the persisted transformed bytes,
     // never the original commit snapshot. When transformed, identify the source
@@ -725,9 +823,8 @@ pub fn java_tokens(text: &str) -> Vec<String> {
 
 /// Prepend a compilation scope to an evidence identity so the same symbol or
 /// source path under different scopes is retained as a distinct observation
-/// instead of colliding. An empty scope (legacy single compilation) yields the
-/// unmodified identity, preserving existing records.
-fn scoped_identity(scope: &str, identity: &str) -> String {
+/// instead of colliding. Unscoped syntax facts retain their direct identity.
+pub(super) fn scoped_identity(scope: &str, identity: &str) -> String {
     if scope.is_empty() {
         identity.to_string()
     } else {
@@ -737,13 +834,8 @@ fn scoped_identity(scope: &str, identity: &str) -> String {
 
 /// Resolve the canonical compilation-scope key from a fact's `scope` value.
 ///
-/// Production capture attaches the whole `ReadyGeneration` object as `scope`
-/// (see `capture_session`), so an object's `compilation` field is authoritative
-/// and must name a registered compilation. A nonempty legacy string scope is
-/// accepted unchanged for older records. An empty scope is used only when the
-/// scope is absent, which is valid solely for a single admitted compilation.
-/// A malformed object or an unknown registered scope is an explicit error, never
-/// a silent empty fallback.
+/// Native capture always supplies an explicit registered compilation identity.
+/// Only projection without a compilation model may omit scope.
 fn resolve_scope_key(scope: &Value, known: &BTreeSet<String>) -> Result<String, ClewError> {
     match scope {
         Value::Object(map) => {
@@ -759,8 +851,10 @@ fn resolve_scope_key(scope: &Value, known: &BTreeSet<String>) -> Result<String, 
             }
             Ok(compilation.to_string())
         }
-        Value::String(s) if !s.is_empty() => Ok(s.clone()),
-        _ => Ok(String::new()),
+        Value::Null if known.is_empty() => Ok(String::new()),
+        _ => Err(invalid(
+            "fact requires an explicit registered compilation scope",
+        )),
     }
 }
 
@@ -775,12 +869,32 @@ pub fn project(
     files: &BTreeMap<String, String>,
     transformed: bool,
 ) -> Result<ServiceEvidence, ClewError> {
-    // Legacy single-compilation projection: the flat files map becomes the
-    // empty-scope source table and the contract table.
-    let mut contents = BTreeMap::new();
-    contents.insert(String::new(), files.clone());
-    let mut transformed_map = BTreeMap::new();
-    transformed_map.insert(String::new(), transformed);
+    // This utility projects one shared source table. Native captures instead
+    // use capture_session's independently admitted per-compilation tables.
+    let known: BTreeSet<String> = if facts.iter().any(|(fact, _)| !fact["scope"].is_null()) {
+        service.effective_compilations().into_iter().collect()
+    } else {
+        BTreeSet::new()
+    };
+    let scopes = if known.is_empty() {
+        BTreeSet::from([String::new()])
+    } else {
+        known.clone()
+    };
+    let table = source_table_from_text(
+        &files
+            .iter()
+            .map(|(path, text)| (path.clone(), Arc::from(text.as_str())))
+            .collect(),
+    );
+    let contents = scopes
+        .iter()
+        .map(|scope| (scope.clone(), Arc::clone(&table)))
+        .collect();
+    let transformed_map = scopes
+        .into_iter()
+        .map(|scope| (scope, transformed))
+        .collect();
     let sources = CompilationSource {
         contents,
         transformed: transformed_map,
@@ -794,7 +908,7 @@ pub fn project(
         coverage,
         facts,
         &sources,
-        &BTreeSet::new(),
+        &known,
     )
 }
 
@@ -1128,6 +1242,10 @@ pub fn resolve<'a>(
         .values()
         .filter(|o| {
             o.kind == "SYMBOL"
+                && selector
+                    .scope
+                    .as_ref()
+                    .is_none_or(|scope| o.normalized["scope"].as_str().unwrap_or("") == scope)
                 && o.normalized["ownerIdentity"]
                     .as_str()
                     .is_some_and(|observed| observed.replace('/', ".") == owner)
@@ -1169,20 +1287,19 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        // Production attaches the ReadyGeneration object as scope; its
-        // `compilation` field is authoritative and yields a distinct stable key.
+        // The explicit compilation field yields a distinct stable key.
         let object_scope = json!({ "compilation": ":flows:lead-tinkoff-decision-flow/main" });
         assert_eq!(
             resolve_scope_key(&object_scope, &known).unwrap(),
             ":flows:lead-tinkoff-decision-flow/main"
         );
-        // A nonempty legacy string scope is accepted unchanged.
+        assert!(resolve_scope_key(&json!(":common/main"), &known).is_err());
+        assert!(resolve_scope_key(&Value::Null, &known).is_err());
+        assert!(resolve_scope_key(&json!(42), &known).is_err());
         assert_eq!(
-            resolve_scope_key(&json!(":common/main"), &known).unwrap(),
-            ":common/main"
+            resolve_scope_key(&Value::Null, &BTreeSet::new()).unwrap(),
+            ""
         );
-        // Absent scope (single compilation) yields the empty legacy key.
-        assert_eq!(resolve_scope_key(&Value::Null, &known).unwrap(), "");
         // A malformed object without a compilation identity is an explicit error.
         let malformed = resolve_scope_key(&json!({"runtime_key": "x"}), &known).unwrap_err();
         assert!(
@@ -1224,7 +1341,7 @@ mod tests {
             "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
             "repositoryId":"svc", "repository":"https://example.invalid/svc",
             "language":"java", "profile":"java-17plus-maven-writable-then-seal",
-            "compilation":":/main", "targetRef":"main",
+            "compilations":[":/main"], "targetRef":"main",
             "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
         }))
         .unwrap();
@@ -1287,7 +1404,7 @@ mod tests {
             "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
             "repositoryId":"svc", "repository":"https://example.invalid/svc",
             "language":"java", "profile":"java-17plus-maven-writable-then-seal",
-            "compilation":":/main", "targetRef":"main",
+            "compilations":[":/main"], "targetRef":"main",
             "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
             "contractFiles":[],
         }))
@@ -1313,13 +1430,121 @@ mod tests {
         let mut contents = BTreeMap::new();
         let mut transformed = BTreeMap::new();
         for (scope, table, is_transformed) in scopes {
-            contents.insert(scope.to_string(), table);
+            contents.insert(
+                scope.to_string(),
+                source_table_from_text(
+                    &table
+                        .iter()
+                        .map(|(path, text)| (path.clone(), Arc::from(text.as_str())))
+                        .collect(),
+                ),
+            );
             transformed.insert(scope.to_string(), is_transformed);
         }
         CompilationSource {
             contents,
             transformed,
             contracts,
+        }
+    }
+
+    #[test]
+    fn source_blob_shares_original_text_and_preserves_line_semantics() {
+        let file = "src/main/java/example/Shared.java";
+        let blob = Arc::new(SourceBlob::new(Arc::from("first\r\nsecond\r\n")));
+        let table = Arc::new(BTreeMap::from([(file.to_string(), Arc::clone(&blob))]));
+        let sources = CompilationSource {
+            contents: BTreeMap::from([
+                (":a/main".into(), Arc::clone(&table)),
+                (":b/main".into(), Arc::clone(&table)),
+            ]),
+            transformed: BTreeMap::from([(":a/main".into(), false), (":b/main".into(), false)]),
+            contracts: BTreeMap::new(),
+        };
+
+        assert!(Arc::ptr_eq(
+            sources.contents.get(":a/main").unwrap(),
+            sources.contents.get(":b/main").unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            sources.contents.get(":a/main").unwrap().get(file).unwrap(),
+            sources.contents.get(":b/main").unwrap().get(file).unwrap()
+        ));
+        // This is the existing `text.lines().collect().join("\\n")` contract:
+        // CRLF separators and a trailing newline are not copied into evidence.
+        assert_eq!(blob.snippet(1, 2).as_deref(), Some("first\nsecond"));
+        assert_eq!(blob.snippet(2, 2).as_deref(), Some("second"));
+        assert_eq!(blob.snippet(3, 3), None);
+    }
+
+    #[test]
+    fn source_pool_charges_shared_payload_once_across_128_scopes() {
+        let text: Arc<str> = Arc::from("first\nsecond\n");
+        let required = text.len() + 2 * std::mem::size_of::<Range<usize>>();
+        let mut pool = SourcePool::new(required);
+        let first = pool.intern(Arc::clone(&text)).unwrap();
+        for _ in 0..128 {
+            assert!(Arc::ptr_eq(
+                &first,
+                &pool.intern(Arc::from(text.as_ref())).unwrap()
+            ));
+        }
+        assert_eq!(pool.retained_bytes, required);
+        assert_eq!(first.snippet(1, 2).as_deref(), Some("first\nsecond"));
+        assert!(pool.intern(Arc::from("changed")).is_err());
+        assert_eq!(
+            pool.retained_bytes, required,
+            "rejected payload must not consume budget"
+        );
+    }
+
+    #[test]
+    fn source_pool_preserves_distinct_transformed_bytes_and_counts_line_indices() {
+        let mut pool = SourcePool::new(1024);
+        let first = pool.intern(Arc::from("first\n")).unwrap();
+        let second = pool.intern(Arc::from("second\n")).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(first.snippet(1, 1).as_deref(), Some("first"));
+        assert_eq!(second.snippet(1, 1).as_deref(), Some("second"));
+        assert_eq!(
+            pool.retained_bytes,
+            13 + 2 * std::mem::size_of::<Range<usize>>()
+        );
+        let mut lines = SourcePool::new(10);
+        assert!(lines.intern(Arc::from("\n\n")).is_err());
+    }
+
+    #[test]
+    fn source_blob_ranges_differentially_match_str_lines() {
+        let samples = [
+            "",
+            "a",
+            "\n",
+            "a\n",
+            "a\r\nb",
+            "a\r\n",
+            "a\rb",
+            "a\r\nb\r",
+            "α\r\nβ\nγ",
+            "\r\n\r\n",
+        ];
+        for text in samples {
+            let blob = SourceBlob::new(Arc::from(text));
+            let lines = text.lines().collect::<Vec<_>>();
+            for start in 0..=(lines.len() as u64 + 2) {
+                for end in 0..=(lines.len() as u64 + 2) {
+                    let expected = if start == 0 || end < start || end > lines.len() as u64 {
+                        None
+                    } else {
+                        Some(lines[start as usize - 1..end as usize].join("\n"))
+                    };
+                    assert_eq!(
+                        blob.snippet(start, end),
+                        expected,
+                        "text={text:?} {start}..{end}"
+                    );
+                }
+            }
         }
     }
 
@@ -1461,6 +1686,33 @@ mod tests {
             "package example;\npublic class Service {}\n".into(),
         );
         let sources = compile_sources(vec![(":a/main", table, true)], BTreeMap::new());
+        // Missing transformed source fails before coordinate validation, as it
+        // did before source sharing was introduced.
+        let missing_source = project_scoped(
+            &service,
+            &"a".repeat(40),
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            vec![(
+                json!({
+                    "kind":"DECLARATION","symbolIdentity":"example.Missing",
+                    "ownerIdentity":"example","name":"Missing",
+                    "file":"src/main/java/example/Missing.java",
+                    "scope":{"compilation":":a/main"},
+                }),
+                "binding-digest".into(),
+            )],
+            &sources,
+            &known(&[":a/main"]),
+        )
+        .unwrap_err();
+        assert!(
+            missing_source
+                .message
+                .contains("lacks required source file")
+        );
+
         // Malformed object scope (no compilation identity) is an explicit error.
         let malformed = project_scoped(
             &service,
@@ -1509,7 +1761,7 @@ mod tests {
     }
 
     #[test]
-    fn single_scope_legacy_empty_key_round_trips() {
+    fn single_compilation_preserves_explicit_scope() {
         let service = projection_service();
         let file = "src/main/java/example/Service.java";
         let mut table = BTreeMap::new();
@@ -1517,14 +1769,17 @@ mod tests {
             file.into(),
             "package example;\npublic class Service {}\n".into(),
         );
-        // A single admitted compilation uses the empty-scope legacy key, so a
-        // scope-free fact (scope absent) resolves to the sole source table.
-        let sources = compile_sources(vec![("", table, true)], BTreeMap::new());
+        let sources = compile_sources(vec![(":/main", table, true)], BTreeMap::new());
         let evidence = project_scoped_ok(
             &service,
-            vec![declaration_fact(&Value::Null, "example.Service", file, 2)],
+            vec![declaration_fact(
+                &json!({"compilation": ":/main"}),
+                "example.Service",
+                file,
+                2,
+            )],
             &sources,
-            &[],
+            &[":/main"],
         );
         assert_eq!(evidence.sources.len(), 1);
         let source = evidence.sources.values().next().unwrap();
@@ -1575,7 +1830,7 @@ mod tests {
             "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"S",
             "repositoryId":"svc", "repository":"https://example.invalid/svc",
             "language":"java", "profile":"java-17plus-maven-writable-then-seal",
-            "compilation":":/main", "targetRef":"main",
+            "compilations":[":/main"], "targetRef":"main",
             "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
             "contractFiles":["api/openapi.yaml"],
         }))

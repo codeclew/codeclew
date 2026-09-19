@@ -1,10 +1,8 @@
 //! Multi-compilation and incremental-fact membership regressions (2026-09-16
 //! multisource-incremental-facts-v2). One documented service may select several
 //! explicit same-repository compilation scopes (e.g. a web module delegating
-//! through sibling flow/common modules). This first slice establishes the
-//! compilation-selection contract: a plural `compilations` set supersedes the
-//! legacy singular `compilation` selector while legacy records still load, and
-//! conflicting, empty, or duplicated declarations are typed validation errors.
+//! through sibling flow/common modules). Compilation selection is a plural
+//! authored set; empty and duplicated declarations are typed validation errors.
 
 use clew::documentation::access::RequestScope;
 use clew::documentation::analysis;
@@ -26,8 +24,11 @@ fn service(compilation: &str, compilations: Vec<&str>) -> Service {
         repository: "https://example.invalid/orders".into(),
         language: "java".into(),
         profile: "java-17plus-maven-read-only".into(),
-        compilation: compilation.into(),
-        compilations: compilations.into_iter().map(str::to_owned).collect(),
+        compilations: if compilations.is_empty() {
+            vec![compilation.to_owned()]
+        } else {
+            compilations.into_iter().map(str::to_owned).collect()
+        },
         source: None,
         modules: None,
         target_ref: "main".into(),
@@ -48,29 +49,6 @@ fn one_service_selects_multiple_compilation_scopes() {
         s.effective_compilations(),
         vec![":web:/main", ":flow:/main", ":common:/main"],
         "a plural selection must be honored verbatim and must not invent services"
-    );
-}
-
-/// A legacy singular `compilation` still loads and normalizes to a one-element
-/// set, so existing authored records keep working unchanged.
-#[test]
-fn legacy_singular_record_still_loads_and_normalizes() {
-    let s = service(":/main", vec![]);
-    validate_service(&s).unwrap();
-    assert_eq!(s.effective_compilations(), vec![":/main"]);
-    assert!(s.compilations.is_empty());
-}
-
-/// Declaring both a singular compilation and a plural compilations set is a
-/// conflicting-field validation error, never a silent merge.
-#[test]
-fn conflicting_singular_and_plural_declarations_are_rejected() {
-    let s = service(":/main", vec![":/main"]);
-    let error = validate_service(&s).unwrap_err();
-    assert_eq!(
-        error.code,
-        ErrorCode::InvalidInput,
-        "simultaneous singular/plural must be a typed invalid-input error: {error:?}"
     );
 }
 
@@ -116,25 +94,6 @@ fn compilation_limit_rejects_129_doc_service_selectors() {
     assert!(error.message.contains("at most 128"));
 }
 
-/// Adding the plural `compilations` field must not change the canonical bytes
-/// of a legacy singular record: the new field is skipped when empty, so an
-/// existing persisted record round-trips byte-identically.
-#[test]
-fn legacy_singular_round_trip_preserves_canonical_bytes() {
-    let legacy = service(":/main", vec![]);
-    let bytes = clew::canonical::bytes(&legacy).unwrap();
-    // Re-serialize after a deserialize round-trip: the empty plural set is
-    // omitted, so bytes are stable and the record still validates.
-    let text = String::from_utf8(bytes.clone()).unwrap();
-    let reparsed: Service = serde_json::from_str(&text).unwrap();
-    assert_eq!(
-        clew::canonical::bytes(&reparsed).unwrap(),
-        bytes,
-        "a legacy singular record must round-trip without changing canonical bytes"
-    );
-    assert_eq!(reparsed.effective_compilations(), vec![":/main"]);
-}
-
 // ---------------------------------------------------------------------------
 // Step 3: scope-aware capture and resolution.
 // ---------------------------------------------------------------------------
@@ -164,7 +123,7 @@ fn declaration(symbol: &str, file: &str, scope: Option<&str>, event_target: Opti
         }
     });
     if let Some(scope) = scope {
-        fact["scope"] = json!(scope);
+        fact["scope"] = json!({"compilation":scope});
     }
     fact
 }
@@ -284,25 +243,6 @@ fn identical_symbol_across_scopes_is_not_ambiguous() {
         "identical candidates across scopes must not be ambiguous: {:?}",
         evidence.boundaries
     );
-}
-
-/// A legacy single-compilation fact (no scope key) projects to a single,
-/// scope-free observation with the legacy identity, and no ambiguity.
-#[test]
-fn legacy_single_scope_projection_is_unchanged() {
-    let facts = vec![(
-        declaration("example.Common", "common/Common.java", None, None),
-        "b1".into(),
-    )];
-    let evidence = project_facts(facts);
-    let matching = symbol_observations(&evidence, "example.Common");
-    assert_eq!(matching.len(), 1);
-    assert_eq!(
-        matching[0].normalized.get("scope"),
-        None,
-        "a legacy single-scope record must stay scope-free"
-    );
-    assert!(evidence.boundaries.is_empty());
 }
 
 /// A web -> flow -> common call chain admitted through the compiler's exact

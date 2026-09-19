@@ -41,7 +41,8 @@ fn declaration_set(repo: &Repository, prefix: &str) {
         repo,
         &format!("scenarios/{scenario}.yaml"),
         &json!({
-            "schema":"codeclew-documentation-scenario/1.0",
+            "schema":"codeclew-documentation-process/1.0",
+            "process":{"scope":"Order reservation","participants":["orders"],"trigger":"A reservation request","outcomes":["Reservation result"]},
             "id":scenario,
             "title":format!("{prefix} flow"),
             "summary":"A declared scenario retained as authored input.",
@@ -90,12 +91,31 @@ fn recompose(f: &Fixture, parent: &str) -> (i32, Value) {
     f.run(&["docs", "recompose", "--snapshot", parent])
 }
 
-fn object_path(repo: &Repository, handle: &str) -> std::path::PathBuf {
-    let digest = handle.rsplit_once('/').unwrap().0;
-    repo.root
-        .join(cache::OBJECT_ROOT)
-        .join(digest)
-        .join("object.json")
+fn object_bytes(repo: &Repository, handle: &str) -> Vec<u8> {
+    let (digest, size) = handle.rsplit_once('/').unwrap();
+    let reference = cache::ObjectRef::new(
+        "documentation-test-object".into(),
+        digest.into(),
+        size.parse().unwrap(),
+    );
+    cache::get(repo, &reference, 128 * 1024 * 1024)
+        .unwrap()
+        .expect("snapshot object must be present")
+}
+
+fn delete_object(repo: &Repository, reference: &cache::ObjectRef) {
+    let marker: Value = serde_json::from_slice(
+        &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+    )
+    .unwrap();
+    let database = repo.root.join(marker["database"].as_str().unwrap());
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute(
+            "DELETE FROM objects WHERE digest = ?1",
+            rusqlite::params![reference.digest],
+        )
+        .unwrap();
 }
 
 fn original_capture(f: &Fixture) -> (Repository, Check, String) {
@@ -115,7 +135,7 @@ fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
     let repo = Repository::open(&f.docs).unwrap();
     declaration_set(&repo, "old");
     let (_repo, original, parent) = original_capture(&f);
-    let parent_bytes = fs::read(object_path(&repo, &parent)).unwrap();
+    let parent_bytes = object_bytes(&repo, &parent);
     let latest_path = f.docs.join(".codeclew/cache/latest-check.json");
     let latest_before = fs::read(&latest_path).unwrap();
 
@@ -123,7 +143,7 @@ fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
     declaration_set(&repo, "new");
     fs::write(
         repo.root.join("codeclew-docs.yaml"),
-        "schema: codeclew-documentation/1.0\ntitle: Recomposition title\n",
+        "schema: codeclew-documentation/2.0\ntitle: Recomposition title\n",
     )
     .unwrap();
     fs::rename(&orders, orders.with_extension("offline")).unwrap();
@@ -158,7 +178,7 @@ fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
     assert_eq!(derived_check.services, original.services);
     let parent_manifest: Value = serde_json::from_slice(&parent_bytes).unwrap();
     let derived_manifest: Value =
-        serde_json::from_slice(&fs::read(object_path(&current_repo, &derived)).unwrap()).unwrap();
+        serde_json::from_slice(&object_bytes(&current_repo, &derived)).unwrap();
     assert_eq!(
         parent_manifest["serviceManifests"],
         derived_manifest["serviceManifests"]
@@ -207,10 +227,7 @@ fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
         derived
     );
     assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
-    assert_eq!(
-        fs::read(object_path(&current_repo, &parent)).unwrap(),
-        parent_bytes
-    );
+    assert_eq!(object_bytes(&current_repo, &parent), parent_bytes);
 
     let after_first = cache::inventory(&current_repo).unwrap();
     let started = Instant::now();
@@ -256,14 +273,8 @@ fn recompose_rejects_legacy_service_changed_derived_and_missing_parents() {
 
     let mut legacy = original.clone();
     legacy.source_inputs = None;
-    let legacy_handle = legacy.save_snapshot(&repo).unwrap();
-    let (legacy_code, legacy_error) = recompose(&f, &legacy_handle);
-    assert_ne!(legacy_code, 0);
-    assert!(
-        legacy_error
-            .to_string()
-            .contains("RECOMPOSITION_INPUTS_UNAVAILABLE")
-    );
+    let legacy_error = legacy.save_snapshot(&repo).unwrap_err();
+    assert!(legacy_error.to_string().contains("source-input contract"));
 
     let service_path = f.docs.join("catalog/services/orders.json");
     let service_before = fs::read(&service_path).unwrap();
@@ -305,8 +316,7 @@ fn derived_missing_inputs_and_inconsistent_parent_fail_without_source_fallback()
     let (repo, original, parent) = original_capture(&f);
     let (_, result) = recompose(&f, &parent);
     let derived = result["snapshot"].as_str().unwrap();
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(object_path(&repo, derived)).unwrap()).unwrap();
+    let manifest: Value = serde_json::from_slice(&object_bytes(&repo, derived)).unwrap();
     let composition_ref: cache::ObjectRef =
         serde_json::from_value(manifest["composition"].clone()).unwrap();
     let mut composition: Value = cache::get_json(&repo, &composition_ref, 64 * 1024 * 1024)
@@ -314,12 +324,9 @@ fn derived_missing_inputs_and_inconsistent_parent_fail_without_source_fallback()
         .unwrap();
     let declaration_ref: cache::ObjectRef =
         serde_json::from_value(composition["inputs"].clone()).unwrap();
-    let declaration_path = repo
-        .root
-        .join(cache::OBJECT_ROOT)
-        .join(&declaration_ref.digest)
-        .join("object.json");
-    let declarations = fs::read(&declaration_path).unwrap();
+    let declarations = cache::get(&repo, &declaration_ref, 128 * 1024 * 1024)
+        .unwrap()
+        .unwrap();
     let latest = fs::read(f.docs.join(".codeclew/cache/latest-check.json")).unwrap();
     fs::rename(&orders, orders.with_extension("offline")).unwrap();
     let marker = f.temp.path().join("corrupt-input-source-git");
@@ -334,7 +341,7 @@ fn derived_missing_inputs_and_inconsistent_parent_fail_without_source_fallback()
     )
     .unwrap();
     fs::set_permissions(&git, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::remove_file(&declaration_path).unwrap();
+    delete_object(&repo, &declaration_ref);
     let (code, error) = f.run(&[
         "docs",
         "context",
@@ -350,12 +357,14 @@ fn derived_missing_inputs_and_inconsistent_parent_fail_without_source_fallback()
             .contains("source input manifest is missing"),
         "{error}"
     );
-    fs::write(&declaration_path, declarations).unwrap();
+    assert_eq!(
+        cache::put(&repo, &declaration_ref.schema, &declarations).unwrap(),
+        declaration_ref
+    );
 
     // Same source references with a false parent inputDigest are not a valid
     // original capture. Reader validation must not accept its derivative.
-    let mut false_parent: Value =
-        serde_json::from_slice(&fs::read(object_path(&repo, &parent)).unwrap()).unwrap();
+    let mut false_parent: Value = serde_json::from_slice(&object_bytes(&repo, &parent)).unwrap();
     false_parent["inputDigest"] = json!(format!("sha256:{}", "f".repeat(64)));
     let false_parent_ref = cache::put_json(
         &repo,

@@ -17,7 +17,7 @@ fn service() -> Service {
         "repository":"https://example.invalid/orders",
         "language":"java",
         "profile":"java-17plus-maven-read-only",
-        "compilation":":/main",
+        "compilations":[":/main"],
         "targetRef":"HEAD"
     }))
     .unwrap()
@@ -96,6 +96,7 @@ fn request(path: &str) -> Value {
 fn accepted_version(path: &str, operation_digest: &str) -> review::AcceptedVersion {
     serde_json::from_value(json!({
         "schema":"codeclew-documentation-accepted-version/1.1",
+        "previousNarrativeDigest":digest(&Option::<model::Narrative>::None).unwrap(),
         "work":"work-id",
         "proposal":"proposal-id",
         "invocation":null,
@@ -118,7 +119,7 @@ fn inputs() -> RepositoryInputs {
     let services = BTreeMap::from([(String::from("orders"), service())]);
     RepositoryInputs {
         manifest: model::Manifest {
-            schema: "codeclew-documentation/1.0".into(),
+            schema: "codeclew-documentation/2.0".into(),
             title: "Architecture".into(),
         },
         services,
@@ -159,7 +160,7 @@ fn bindings_bundle(index: &str, child_operation: &model::Operation) -> bindings:
     bindings::Bindings {
         schema: "codeclew-documentation-bindings/1.3".into(),
         input_digest: "sha256:bindings-input".into(),
-        renderer: "codeclew-documentation-html/1.13".into(),
+        renderer: model::RENDERER.into(),
         extractor: "codeclew-documentation-source/1.0".into(),
         revisions: BTreeMap::from([("orders".into(), "a".repeat(40))]),
         coverage: BTreeMap::new(),
@@ -176,7 +177,6 @@ fn bindings_bundle(index: &str, child_operation: &model::Operation) -> bindings:
         target_revisions: BTreeMap::new(),
         update_failures: BTreeMap::new(),
         accepted_versions,
-        heavy: None,
     }
 }
 

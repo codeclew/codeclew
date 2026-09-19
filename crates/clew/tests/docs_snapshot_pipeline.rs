@@ -22,12 +22,20 @@ fn observation(id: &str, service: &str, symbol: &str, marker: &str) -> Observati
     }
 }
 
-fn empty_check() -> Check {
+fn empty_check(repo: &Repository) -> Check {
+    let inputs = repo.inputs().unwrap();
+    let input_digest = clew::canonical::hash(&inputs).unwrap();
     Check {
         schema: "codeclew-documentation-check/1.0".into(),
-        source_inputs: None,
+        source_inputs: Some(clew::documentation::check::SourceInputs {
+            schema: clew::documentation::check::SOURCE_INPUTS_SCHEMA.into(),
+            input_digest: input_digest.clone(),
+            inputs,
+            selected_services: Default::default(),
+            retained_services: Default::default(),
+        }),
         composition: None,
-        input_digest: format!("sha256:{}", "a".repeat(64)),
+        input_digest,
         context_digest: format!("sha256:{}", "b".repeat(64)),
         services: BTreeMap::new(),
         unresolved: BTreeMap::new(),
@@ -46,7 +54,7 @@ fn check_persists_dependencies_through_fact_index_without_whole_map_copy() {
     Repository::init(t.path(), "Architecture").unwrap();
     let repo = Repository::open(t.path()).unwrap();
 
-    let mut check = empty_check();
+    let mut check = empty_check(&repo);
     check.dependencies.insert(
         "web:reserve".into(),
         observation("web:reserve", "web", "example.Reservations.reserve", "web"),
@@ -62,14 +70,12 @@ fn check_persists_dependencies_through_fact_index_without_whole_map_copy() {
 
     let manifest: CheckManifest = check.store_manifest(&repo).unwrap();
     assert!(
-        manifest.dependencies.is_none(),
-        "new captures must not write a whole-map dependency object"
+        serde_json::to_value(&manifest)
+            .unwrap()
+            .get("dependencies")
+            .is_none()
     );
-    let index = manifest
-        .dependencies_index
-        .as_ref()
-        .expect("new captures must reference the fact-index snapshot root")
-        .clone();
+    let index = manifest.dependencies_index.clone();
 
     // The snapshot root is an immutable object that verifies and can be read.
     let root = fact_index::load_snapshot_root(&repo, &index).unwrap();
@@ -79,7 +85,7 @@ fn check_persists_dependencies_through_fact_index_without_whole_map_copy() {
     let encoded = clew::canonical::bytes(&manifest).unwrap();
     let restored: CheckManifest = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(restored.schema, CHECK_MANIFEST_SCHEMA);
-    assert_eq!(restored.dependencies_index, Some(index.clone()));
+    assert_eq!(restored.dependencies_index, index.clone());
     let deps = fact_index::load_observations(
         &repo,
         &root,

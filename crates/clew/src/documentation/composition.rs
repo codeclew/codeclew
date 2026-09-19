@@ -96,7 +96,6 @@ pub(super) fn validate_parent_manifest(
     let parent = Check::load_snapshot_manifest(repo, &value.parent)?;
     if parent.input_digest != original_input_digest
         || parent.composition.is_some()
-        || parent.source_inputs.is_none()
         || parent.source_inputs != derived.source_inputs
         || parent.unresolved != derived.unresolved
         || digest(&parent.service_manifests)? != digest(&derived.service_manifests)?
@@ -174,7 +173,9 @@ pub fn recompose(repo: &Repository, parent: &str) -> Result<(Check, String), Cle
             "RECOMPOSITION_REQUIRES_CAPTURE_PARENT: use the original source-capture snapshot",
         ));
     }
-    let source = original.source_inputs.as_ref().ok_or_else(|| invalid("RECOMPOSITION_INPUTS_UNAVAILABLE: legacy snapshot has no consumed source-input contract"))?;
+    let source = original.source_inputs.as_ref().ok_or_else(|| {
+        invalid("RECOMPOSITION_INPUTS_UNAVAILABLE: snapshot has no consumed source-input contract")
+    })?;
     let inputs = repo.inputs()?;
     compatible(&source.inputs, &inputs)?;
     let input_digest = digest(&inputs)?;

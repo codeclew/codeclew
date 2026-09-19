@@ -3,7 +3,11 @@
 Use this workflow for a separate documentation repository with per-service pages,
 a root overview and named interaction slices. Codeclew 0.6.1 supports Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
 interactions and source-bound domain explanations. Java 17+ remains supported.
-Use one Maven/Gradle compilation per service. The overview can list more services.
+Select exact Maven/Gradle compilation scopes: use singular `compilation` or a
+plural `compilations` array, never both. Up to 128 explicit scopes are admitted;
+this does not promise arbitrary file volume or memory capacity. Keep test scopes
+explicit rather than silently dropping them to pass a budget. The overview can
+list more services than one scenario.
 For Kotlin choose `kotlin-jvm-maven-analysis` or `kotlin-jvm-gradle-analysis`.
 Project/compiler differences remain explicit: Kotlin 1.9 language/API inputs are
 analyzed with language/API 2.0 by the current engine; this is conditional analysis,
@@ -33,7 +37,7 @@ its involved service scope, including helpers, configuration, membership changes
 and empty catalogues. Reads outside registered scopes require an expanded scope
 or an explicit incomplete-read limitation. Citations alone do not track them.
 
-Optional `source.semantic: {"profile":"kotlin-jvm-maven-analysis","compilation":":/main"}`
+Optional `modules.semantic: {"module":"kotlin-k2","enabled":true,"profile":"kotlin-jvm-maven-analysis","compilation":":/main"}`
 requests the existing compiler provider. Provider failure keeps source evidence
 readable and invalidates retained semantic dependencies. Enrichment attaches
 only uniquely mapped equal-revision file/range facts; it does not convert syntax
@@ -72,14 +76,35 @@ identity to its credential-free Git remote, and bind an existing checkout with
 the selected target ref at HEAD. Keep the documentation root separate from every
 source checkout. Commands do not change application source.
 
-For cold recovery, read `codeclew-docs.yaml`, `catalog/services/*.json`,
-`catalog/interactions/*.json` and `scenarios/*.yaml`, bind the relocated checkouts,
-then run `docs check`. Commit the catalogue, scenarios, manual notes and generated
-bundle to the documentation repository. `.codeclew/` holds ignored local paths
-and disposable compiler cache; it is not needed for recovery. Published
-`docs/generated/<bundle>/bindings.json` retains narratives and their dependencies.
-`docs context` returns retained operations as authoring input, explicitly without
-re-verifying their interpretation.
+For recovery, open the existing documentation root and first try its retained
+snapshot/context. Keep `.codeclew/`: it contains immutable evidence, Work records,
+pins and local bindings, not merely disposable scratch. Existing HTML and portable
+`bindings.json` can be read without source repositories. Do not start another
+capture just because a source checkout is unavailable or the agent restarted.
+When new source acquisition is actually required, bind the selected checkout and
+run `docs check --service ID`. A full `docs check` acquires every configured service.
+
+After a successful capture, keep its `snapshot` handle. `context`, `work prepare`,
+and `render` consume saved evidence by default; pass `--snapshot` for an exact
+saved selection. Do not run another check before narrative/render merely to
+establish a fresh baseline. A selected check retains compatible sibling results
+with an explicit retained-source status; it does not reverify their current
+checkout bytes. A selected failure or changed service declaration does not fall
+back to incompatible old evidence.
+
+Catalogue-only process/interaction changes can be applied with `docs recompose
+--root ROOT --snapshot SOURCE_SNAPSHOT` without a build; use the returned snapshot
+for Work or render. Recomposition does not update the latest-check pointer. A
+service profile/root/module change needs an explicit selected capture and cannot
+be silently recomposed. Ordinary consumers also require current catalogue
+compatibility when an old snapshot handle is specified. Frozen published pages
+remain accessible through history.
+
+Commit the catalogue, scenarios, manual notes and generated bundle. Version 0.10
+requires a fresh documentation root and reindexing; old formats are rejected and
+there are no migration commands. Existing data is not deleted automatically.
+Back up the complete current-format state to retain Work, pins and snapshots.
+SQLite WAL/SHM belong with the database; stop writers before filesystem backup.
 
 Service context without `--entrypoint` is the catalogue. Follow every
 `nextCursor` with the same selection and `--cursor`, then request one exact
@@ -260,9 +285,10 @@ including local references and constraints, separately from code behavior.
 clew docs render --root /work/architecture --input /work/orders-narrative.json --input /work/inventory-narrative.json --input /work/checkout-narrative.json --require-complete
 ```
 
-Render rechecks source before atomically publishing `docs/index.html` and an
+Render validates saved evidence and atomically publishes `docs/index.html` and an
 immutable bundle with overview, service/scenario HTML, JSON, Markdown, diagrams
-and bindings. Without `--require-complete`, explicit gaps are allowed and visible.
+and bindings. It starts no capture unless `--refresh` is explicit. Without
+`--require-complete`, explicit gaps are allowed and visible.
 Manual content belongs outside `docs/generated/`; modifications to generated
 outputs cause a conflict. Review readable summaries, branches, contracts and
 clickable source inspectors. HTML is self-contained and requires no model API,
@@ -271,7 +297,7 @@ retained snippets remain viewable offline.
 
 ## Refresh only affected explanations
 
-`docs check` rebuilds current source evidence and compares semantic dependencies
+`docs check --service ID` acquires only the selected service and compares semantic dependencies
 with the portable baseline. Exit 0 means CURRENT; 4 means PARTIALLY_STALE/STALE;
 3 means UNRESOLVED, including a missing baseline or source binding. Other invalid
 inputs and conflicts use the normal CLI error codes. Large reports have
@@ -285,6 +311,29 @@ unaffected text and engineer declarations. Rendering refuses stale retained
 narratives until reviewed replacements are supplied. A digest detects changes;
 it does not prove an agent's explanation. Missing history/source stays
 UNRESOLVED. No hosted LLM or embedded API key is part of this workflow.
+
+## Discover internal processes before authoring
+
+Use `docs process candidates --root ROOT --service ID --snapshot SNAPSHOT` to
+list structural candidates from saved evidence. Follow pagination; `--lane
+internal` separates internal candidates from declared triggers. An explicit
+`--declaration SYMBOL_OBSERVATION_ID` includes a callable even when automatic
+flow discovery has a gap. Candidates are not accepted business processes.
+Preserve exact scope selectors where one symbol exists in several compilations;
+never infer production behavior from a same-named test-scope method.
+
+For source-syntax evidence, call-site counts and lexical branches do not prove
+callee resolution or runtime ordering. Preserve that distinction in explanations.
+The service reader shows internal candidates and saved processes with pending or
+missing-evidence states before a narrative exists. Define the process, recompose
+its source snapshot after the catalogue mutation, then prepare Work from the
+returned snapshot. For a process overview, set `entrypoint: "process-overview"`
+and `contextProfile: "process-v1"` in the Work request. This shares source text
+and defers large callable records behind expansion handles. A navigation summary
+or source alias is not a fully supplied evidence handle: expand it before citing
+its provider fields, or cite the complete source body already supplied.
+Explain the trigger, state transitions, external effects,
+alternatives and gaps; a list of HTTP operations is not a substitute.
 
 ## Prepare immutable author work
 
@@ -391,15 +440,15 @@ usage is never zero. Undispatched slots can be released. A reported cap violatio
 freezes further calls on that account. Reports distinguish actual usage from
 conservative charges. Status pages use cursors for bounded attempts/accounting.
 A crashed coordinator retains reservations in durable `execution/accounts`; keep
-these ledgers with coordinator state when discarding private work caches. Legacy
-`.codeclew/accounts` ledgers migrate on the next reservation, including denied
-reservations. Do not discard unmigrated ledgers or recover a budget as empty.
+these ledgers with coordinator state when discarding private work caches. Old
+`.codeclew/accounts` ledgers are rejected without modification. Initialize fresh
+state for this release; do not treat an unreadable current ledger as an empty budget.
 
 Only the coordinator publishes accepted versions after machine checks, exact
 revision/input checks and separately bound meaning approval. Publications retain
 review, driver, evidence, read and operation digests with limitations. Every view
 shows verification separately from freshness. Changing a captured note or source
-scope invalidates dependent content. Public legacy `docs render` input cannot
+scope invalidates dependent content. Direct `docs render` input cannot
 inherit review acceptance for replaced operations. Protected notes remain outside
 generated outputs. An accepted review is model assessment, not runtime proof.
 
@@ -422,7 +471,6 @@ receipt. The normal configured author/reviewer pipeline can later establish
 be published by this route. Supply `--unassessed` explicitly; it is an output
 classification, not an interactive approval prompt.
 
-Current narrative schema is 1.3; legacy 1.0–1.2 imports remain supported. Prefer
-work/proposals for new authoring so the tool materializes canonical dependency
-IDs and preserves the full captured influence boundary. Direct Narrative imports
-remain useful for migration and retain their existing unassessed meaning status.
+Only narrative schema 1.3 is accepted. Prefer Work/proposals so the tool
+materializes canonical dependency IDs and preserves the captured influence
+boundary. Direct current-format Narrative imports remain unassessed until reviewed.

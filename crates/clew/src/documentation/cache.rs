@@ -8,15 +8,15 @@
 //! mismatches, unsafe paths, and conflicting concurrent writes yield explicit
 //! miss/error behavior, never silently forged evidence.
 //!
-//! Deletion, automatic retention, pack compaction, and migration are out of
-//! scope here; see the operational lifecycle runbook.
+//! Every current documentation root uses one durable SQLite object store.
+//! Legacy loose-object roots are rejected at admission and are never read,
+//! rewritten, migrated, or deleted by this process.
 
 use super::{check, invalid, io_error};
 use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
 
 /// Root for immutable owned objects, relative to the documentation root.
 pub const OBJECT_ROOT: &str = ".codeclew/cache/objects";
@@ -43,119 +43,71 @@ impl ObjectRef {
     }
 }
 
-fn canonical_digest(value: &str) -> bool {
-    value.len() == 71
-        && value.starts_with("sha256:")
-        && value[7..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
-fn object_dir(root: &Path, digest: &str) -> Result<std::path::PathBuf, ClewError> {
-    if !canonical_digest(digest) {
-        return Err(invalid(
-            "object reference digest must be a lowercase sha256 content identity",
-        ));
-    }
-    Ok(root.join(OBJECT_ROOT).join(digest))
-}
-
 /// Content address of `payload` (lowercase `sha256:`-prefixed canonical hash).
 pub fn content_digest(payload: &[u8]) -> String {
     crate::canonical::hash_bytes(payload)
 }
 
-/// Write an immutable object. Byte-identical payloads share one object
-/// regardless of the producer key or schema. Returns the validated reference.
-/// Existing objects are reused after their size is checked; advisory metadata
-/// sidecars are legacy state and are left untouched.
+/// Write immutable payloads to the selected SQLite object store.
 pub fn put(
     repo: &super::store::Repository,
     schema: &str,
     payload: &[u8],
 ) -> Result<ObjectRef, ClewError> {
-    if payload.len() as u64 > check::PORTABLE_CACHE_MAX_BYTES {
-        return Err(ClewError::new(
-            ErrorCode::SliceBudgetExceeded,
-            "documentation object exceeds the portable record budget",
-        ));
-    }
-    let digest = content_digest(payload);
-    let dir = object_dir(&repo.root, &digest)?;
-    let object = dir.join("object.json");
-    if object.exists() {
-        // Content-addressed idempotency: same digest means same bytes. A
-        // pre-existing object with a mismatched size is a corrupt store.
-        let metadata = fs::metadata(&object).map_err(io_error)?;
-        if metadata.len() != payload.len() as u64 {
-            return Err(ClewError::new(
-                ErrorCode::StateCorrupt,
-                "documentation object store has a size-conflicting object",
-            ));
-        }
-        return Ok(ObjectRef::new(
-            schema.to_string(),
-            digest,
-            payload.len() as u64,
-        ));
-    }
-    fs::create_dir_all(&dir).map_err(io_error)?;
-    atomic_write(&object, payload)?;
-    Ok(ObjectRef::new(
-        schema.to_string(),
-        digest,
-        payload.len() as u64,
-    ))
+    let mut result = put_batch(repo, schema, &[payload])?;
+    Ok(result.remove(0))
 }
 
-/// Read and verify an object, honoring a per-read bound. Missing objects are a
-/// distinct miss (Ok(None)); corrupt, unsafe, or oversized objects are
-/// explicit errors.
+/// Explicit bounded durable unit. The caller bounds the serialized payloads.
+pub fn put_batch(
+    repo: &super::store::Repository,
+    schema: &str,
+    payloads: &[&[u8]],
+) -> Result<Vec<ObjectRef>, ClewError> {
+    let references = payloads
+        .iter()
+        .map(|payload| {
+            if payload.len() as u64 > check::PORTABLE_CACHE_MAX_BYTES {
+                return Err(ClewError::new(
+                    ErrorCode::SliceBudgetExceeded,
+                    "documentation object exceeds the portable record budget",
+                ));
+            }
+            Ok(ObjectRef::new(
+                schema.into(),
+                content_digest(payload),
+                payload.len() as u64,
+            ))
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    super::object_layout::with_store(repo, |store| {
+        let rows: Vec<_> = references
+            .iter()
+            .zip(payloads)
+            .map(|(reference, payload)| (reference.digest.as_str(), *payload))
+            .collect();
+        store.put_many(&rows)?;
+        Ok(references)
+    })
+}
+
 pub fn get(
     repo: &super::store::Repository,
     reference: &ObjectRef,
     limit: u64,
 ) -> Result<Option<Vec<u8>>, ClewError> {
-    if !canonical_digest(&reference.digest) {
-        return Err(invalid(
-            "object reference digest must be a lowercase sha256 content identity",
-        ));
-    }
     if reference.size > limit {
         return Err(ClewError::new(
             ErrorCode::ResourceLimit,
             "documentation object exceeds the read bound",
         ));
     }
-    let dir = object_dir(&repo.root, &reference.digest)?;
-    let object = dir.join("object.json");
-    if !object.exists() {
-        return Ok(None);
-    }
-    let metadata = fs::metadata(&object).map_err(io_error)?;
-    if !metadata.is_file() || metadata.len() > limit {
-        return Err(invalid(
-            "documentation object is not a bounded regular file",
-        ));
-    }
-    if metadata.len() != reference.size {
-        return Err(ClewError::new(
-            ErrorCode::StateCorrupt,
-            "documentation object size does not match its reference",
-        ));
-    }
-    let payload = fs::read(&object).map_err(io_error)?;
-    if crate::canonical::hash_bytes(&payload) != reference.digest {
-        return Err(ClewError::new(
-            ErrorCode::StateCorrupt,
-            "documentation object content does not match its reference digest",
-        ));
-    }
-    Ok(Some(payload))
+    super::object_layout::with_store(repo, |store| {
+        store.read(&reference.digest, reference.size, limit)
+    })
 }
 
-/// Verify an object is present and intact (bounded read). A corrupt or missing
-/// object is an explicit error, so a consumer can never accept forged evidence.
+/// Verify an object is present and intact within the caller's portable bound.
 pub fn verify(repo: &super::store::Repository, reference: &ObjectRef) -> Result<(), ClewError> {
     if get(repo, reference, check::PORTABLE_CACHE_MAX_BYTES)?.is_none() {
         return Err(ClewError::new(
@@ -166,32 +118,21 @@ pub fn verify(repo: &super::store::Repository, reference: &ObjectRef) -> Result<
     Ok(())
 }
 
-/// Enumerate all owned object digests present in the store (read-only, for
-/// inventory/reachability). Returns an upper bound on enumeration size.
+/// Enumerate immutable SQLite payload identities with an explicit bound.
 pub fn owned_digests(
     repo: &super::store::Repository,
     limit: usize,
 ) -> Result<Vec<String>, ClewError> {
-    let root = repo.root.join(OBJECT_ROOT);
-    let mut out = Vec::new();
-    if !root.exists() {
-        return Ok(out);
-    }
-    for entry in fs::read_dir(&root).map_err(io_error)? {
-        let entry = entry.map_err(io_error)?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !canonical_digest(&name) || !entry.path().join("object.json").exists() {
-            continue;
-        }
-        out.push(name);
-        if out.len() >= limit {
-            return Err(ClewError::new(
-                ErrorCode::ResourceLimit,
-                "documentation object enumeration exceeds the bound",
-            ));
-        }
-    }
-    Ok(out)
+    Ok(owned_objects(repo, limit)?.into_keys().collect())
+}
+
+pub fn owned_objects(
+    repo: &super::store::Repository,
+    limit: usize,
+) -> Result<std::collections::BTreeMap<String, u64>, ClewError> {
+    super::object_layout::with_store(repo, |store| {
+        Ok(store.enumerate(limit)?.into_iter().collect())
+    })
 }
 
 /// Serialize `value` canonically, store it as an immutable object, and return
@@ -247,7 +188,6 @@ pub struct CaptureManifest {
     /// Whether this capture is reusable. Fully admitted stable inputs are
     /// "REUSABLE"; incomplete external authority is "NON_CACHEABLE" with a
     /// reason, so the user is told why a capture will be re-run.
-    #[serde(default = "default_cacheability")]
     pub cacheability: String,
     #[serde(default)]
     pub reason: Option<String>,
@@ -256,8 +196,27 @@ pub struct CaptureManifest {
 pub const REUSABLE: &str = "REUSABLE";
 pub const NON_CACHEABLE: &str = "NON_CACHEABLE";
 
-fn default_cacheability() -> String {
-    REUSABLE.into()
+fn validate_capture(manifest: &CaptureManifest) -> Result<(), ClewError> {
+    let valid_cacheability = match manifest.cacheability.as_str() {
+        REUSABLE => manifest.reason.is_none(),
+        NON_CACHEABLE => manifest
+            .reason
+            .as_ref()
+            .is_some_and(|reason| !reason.trim().is_empty()),
+        _ => false,
+    };
+    if manifest.schema != CAPTURE_MANIFEST_SCHEMA
+        || manifest.sources.schema != SOURCES_OBJECT_SCHEMA
+        || manifest.observations.schema != super::fact_index::FACT_INDEX_SCHEMA
+        || manifest.contracts.schema != CONTRACTS_OBJECT_SCHEMA
+        || !valid_cacheability
+    {
+        return Err(ClewError::new(
+            ErrorCode::StateCorrupt,
+            "unsupported capture envelope or cacheability authority; saved evidence cannot be reused",
+        ));
+    }
+    Ok(())
 }
 
 /// Mark a capture manifest as non-cacheable with a reason (e.g. incomplete
@@ -275,7 +234,9 @@ pub fn store_capture(
     evidence: &super::model::ServiceEvidence,
 ) -> Result<CaptureManifest, ClewError> {
     let sources = put_json(repo, SOURCES_OBJECT_SCHEMA, &evidence.sources)?;
-    let observations = put_json(repo, OBSERVATIONS_OBJECT_SCHEMA, &evidence.observations)?;
+    // Share canonical observation payloads with the Check dependency index.
+    // The root is immutable and exact; removed whole-map references are rejected.
+    let observations = super::fact_index::store_dependency_map(repo, &evidence.observations)?;
     let contracts = put_json(repo, CONTRACTS_OBJECT_SCHEMA, &evidence.contracts)?;
     Ok(CaptureManifest {
         schema: CAPTURE_MANIFEST_SCHEMA.into(),
@@ -301,16 +262,23 @@ pub fn load_capture(
     repo: &super::store::Repository,
     manifest: &CaptureManifest,
 ) -> Result<super::model::ServiceEvidence, ClewError> {
+    validate_capture(manifest)?;
     let limit = check::PORTABLE_CACHE_MAX_BYTES;
     let sources = get_json(repo, &manifest.sources, limit)?.ok_or_else(|| {
         ClewError::new(ErrorCode::StateCorrupt, "capture sources object is missing")
     })?;
-    let observations = get_json(repo, &manifest.observations, limit)?.ok_or_else(|| {
-        ClewError::new(
-            ErrorCode::StateCorrupt,
-            "capture observations object is missing",
-        )
-    })?;
+    let observations = match manifest.observations.schema.as_str() {
+        super::fact_index::FACT_INDEX_SCHEMA => super::fact_index::load_snapshot_observations(
+            repo,
+            &manifest.observations,
+            super::check::CHECK_DEPENDENCIES_SCOPE,
+        )?,
+        _ => {
+            return Err(invalid(
+                "unsupported capture observation storage schema; reindex sources",
+            ));
+        }
+    };
     let contracts = get_json(repo, &manifest.contracts, limit)?.ok_or_else(|| {
         ClewError::new(
             ErrorCode::StateCorrupt,
@@ -363,8 +331,19 @@ pub fn load_capture_if_valid(
         return Ok(None);
     }
     let manifest: CaptureManifest =
-        serde_json::from_slice(&std::fs::read(&path).map_err(io_error)?)
-            .map_err(|error| invalid(error.to_string()))?;
+        serde_json::from_slice(&std::fs::read(&path).map_err(io_error)?).map_err(|error| {
+            ClewError::new(
+                ErrorCode::StateCorrupt,
+                format!("invalid saved capture envelope: {error}"),
+            )
+        })?;
+    validate_capture(&manifest)?;
+    if manifest.service != service_id {
+        return Err(ClewError::new(
+            ErrorCode::StateCorrupt,
+            "saved capture service does not match its cache selection",
+        ));
+    }
     // A non-cacheable capture (incomplete external authority) is never reused;
     // the caller must recapture.
     if manifest.cacheability == NON_CACHEABLE {
@@ -399,20 +378,9 @@ pub fn save_capture(
     Ok(())
 }
 
-fn atomic_write(path: &std::path::Path, data: &[u8]) -> Result<(), ClewError> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| invalid("object path has no parent"))?;
-    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(io_error)?;
-    temp.write_all(data).map_err(io_error)?;
-    temp.as_file().sync_all().map_err(io_error)?;
-    temp.persist(path).map_err(io_error)?;
-    Ok(())
-}
-
 /// Read-only docs cache inventory: conservative bounded accounting that
 /// distinguishes disposable immutable objects from retained publication
-/// evidence and current/legacy roots. This never deletes or migrates data and
+/// evidence and the current root. This never deletes or migrates data and
 /// never reports an unknown or active root as safely deletable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -430,16 +398,9 @@ pub const INVENTORY_SCHEMA: &str = "codeclew-documentation-cache-inventory/1.0";
 
 /// Compute a read-only inventory of the docs-local cache.
 pub fn inventory(repo: &super::store::Repository) -> Result<Inventory, ClewError> {
-    let limit = 4096usize;
-    let mut object_count = 0usize;
-    let mut object_bytes = 0u64;
-    for digest in owned_digests(repo, limit)? {
-        let dir = repo.root.join(OBJECT_ROOT).join(&digest);
-        if let Ok(metadata) = fs::metadata(dir.join("object.json")) {
-            object_count += 1;
-            object_bytes += metadata.len();
-        }
-    }
+    let objects = owned_objects(repo, usize::MAX)?;
+    let object_count = objects.len();
+    let object_bytes = objects.values().sum();
     // Keyed capture manifests + latest-check are reference envelopes (small).
     let mut manifest_bytes = 0u64;
     let cache_dir = repo.root.join(".codeclew/cache");
@@ -532,16 +493,20 @@ mod tests {
     }
 
     #[test]
-    fn new_object_put_get_and_verify_do_not_emit_advisory_sidecar() {
+    fn new_object_put_get_uses_sqlite_only() {
         let (_t, repo) = setup();
-        let reference = put(&repo, "schema/evidence/1", b"sidecar-free payload").unwrap();
-        let dir = repo.root.join(OBJECT_ROOT).join(&reference.digest);
-
-        assert!(dir.join("object.json").is_file());
-        assert!(!dir.join("meta.json").exists());
+        let reference = put(&repo, "schema/evidence/1", b"sqlite payload").unwrap();
+        assert!(
+            !repo
+                .root
+                .join(OBJECT_ROOT)
+                .join(&reference.digest)
+                .join("object.json")
+                .exists()
+        );
         assert_eq!(
             get(&repo, &reference, 1024).unwrap(),
-            Some(b"sidecar-free payload".to_vec())
+            Some(b"sqlite payload".to_vec())
         );
         verify(&repo, &reference).unwrap();
     }
@@ -573,28 +538,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_advisory_sidecar_remains_readable_and_reusable() {
-        let (_t, repo) = setup();
-        let payload = b"legacy payload";
-        let digest = content_digest(payload);
-        let dir = repo.root.join(OBJECT_ROOT).join(&digest);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("object.json"), payload).unwrap();
-        let legacy_meta = br#"{"schema":"legacy/schema","size":14}"#;
-        fs::write(dir.join("meta.json"), legacy_meta).unwrap();
-        let reference = ObjectRef::new("legacy/schema".into(), digest, payload.len() as u64);
-
-        assert_eq!(
-            get(&repo, &reference, 1024).unwrap(),
-            Some(payload.to_vec())
-        );
-        verify(&repo, &reference).unwrap();
-        let reused = put(&repo, "new/schema", payload).unwrap();
-        assert_eq!(reused.schema, "new/schema");
-        assert_eq!(fs::read(dir.join("meta.json")).unwrap(), legacy_meta);
-    }
-
-    #[test]
     fn round_trip_returns_exact_bytes_and_missing_is_distinct() {
         let (_t, repo) = setup();
         let reference = put(&repo, "schema/evidence/1", b"exact bytes").unwrap();
@@ -614,8 +557,16 @@ mod tests {
     fn corruption_and_mismatched_size_are_explicit_errors() {
         let (_t, repo) = setup();
         let reference = put(&repo, "schema/evidence/1", b"integrity").unwrap();
-        let dir = repo.root.join(OBJECT_ROOT).join(&reference.digest);
-        fs::write(dir.join("object.json"), b"tampered").unwrap();
+        let marker = repo.root.join(".codeclew/cache/object-layout.json");
+        let layout: serde_json::Value = serde_json::from_slice(&fs::read(marker).unwrap()).unwrap();
+        let database = repo.root.join(layout["database"].as_str().unwrap());
+        let connection = rusqlite::Connection::open(database).unwrap();
+        connection
+            .execute(
+                "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+                rusqlite::params![b"tampered".as_slice(), reference.digest],
+            )
+            .unwrap();
         let error = get(&repo, &reference, 1024).unwrap_err();
         assert_eq!(error.code, ErrorCode::StateCorrupt);
     }
@@ -702,16 +653,114 @@ mod tests {
             loaded.sources.values().next().unwrap().text,
             "public class Service {}"
         );
-        // Objects are enumerated once despite two manifests: one for the
-        // sources payload and one shared for the (empty) observations and
-        // contracts payloads, which are byte-identical and deduplicate.
+        // Two manifests share sources, the empty immutable observation index,
+        // and the empty contracts object.
         let digests = owned_digests(&repo, 1000).unwrap();
-        assert_eq!(digests.len(), 2, "deduplicated heavy payload objects");
+        assert_eq!(digests.len(), 3, "deduplicated heavy payload objects");
         // A missing payload object is a corrupt-state error, never forged.
         let mut dangling = a.clone();
         dangling.sources.digest = format!("sha256:{}", "c".repeat(64));
         let error = load_capture(&repo, &dangling).unwrap_err();
         assert_eq!(error.code, ErrorCode::StateCorrupt);
+    }
+
+    #[test]
+    fn capture_reuse_requires_explicit_current_envelope_authority() {
+        let (_t, repo) = setup();
+        let key = format!("sha256:{}", "a".repeat(64));
+        let manifest = store_capture(&repo, &evidence("svc")).unwrap();
+        let current = serde_json::to_value(&manifest).unwrap();
+        let path = capture_manifest_path(&repo, "svc", &key).unwrap();
+        let mut variants = Vec::new();
+        let mut missing = current.clone();
+        missing.as_object_mut().unwrap().remove("cacheability");
+        variants.push(missing);
+        for (field, value) in [
+            ("schema", "codeclew-documentation-capture-manifest/0.9"),
+            ("cacheability", "UNKNOWN"),
+            ("cacheability", NON_CACHEABLE),
+            ("service", "another-service"),
+        ] {
+            let mut invalid = current.clone();
+            invalid[field] = serde_json::json!(value);
+            variants.push(invalid);
+        }
+        for field in ["sources", "observations", "contracts"] {
+            let mut invalid = current.clone();
+            invalid[field]["schema"] = serde_json::json!("unsupported-object/0.9");
+            variants.push(invalid);
+        }
+        let mut contradictory = current.clone();
+        contradictory["reason"] = serde_json::json!("authority is incomplete");
+        variants.push(contradictory);
+        for invalid in variants {
+            let bytes = serde_json::to_vec(&invalid).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            // Invalid authority must fail, never become a miss that repeats analysis.
+            assert_eq!(
+                load_capture_if_valid(&repo, "svc", &key).unwrap_err().code,
+                ErrorCode::StateCorrupt,
+                "{invalid}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+        assert!(load_capture_if_valid(&repo, "svc", &key).unwrap().is_some());
+        let mut non_cacheable = manifest;
+        mark_non_cacheable(&mut non_cacheable, "external authority is incomplete");
+        fs::write(&path, serde_json::to_vec(&non_cacheable).unwrap()).unwrap();
+        assert!(load_capture_if_valid(&repo, "svc", &key).unwrap().is_none());
+        // Non-cacheable captures remain valid immutable snapshot evidence.
+        assert!(load_capture(&repo, &non_cacheable).is_ok());
+        non_cacheable.schema = "unsupported-capture/0.9".into();
+        assert_eq!(
+            load_capture(&repo, &non_cacheable).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
+    }
+
+    #[test]
+    fn capture_and_check_share_fact_payloads_and_reject_old_map_schema() {
+        let (_t, repo) = setup();
+        let mut evidence = evidence("svc");
+        let normalized = serde_json::json!({"name":"process","body":"retained"});
+        let observation = super::super::model::Observation {
+            id: "svc:symbol:process".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: "process".into(),
+            digest: super::super::digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        };
+        evidence
+            .observations
+            .insert(observation.id.clone(), observation);
+        let manifest = store_capture(&repo, &evidence).unwrap();
+        assert_eq!(
+            manifest.observations.schema,
+            super::super::fact_index::FACT_INDEX_SCHEMA
+        );
+        let before = owned_objects(&repo, 1000).unwrap();
+        let check_index =
+            super::super::fact_index::store_dependency_map(&repo, &evidence.observations).unwrap();
+        assert_eq!(check_index, manifest.observations);
+        assert_eq!(
+            before,
+            owned_objects(&repo, 1000).unwrap(),
+            "same facts create no extra payloads or pages"
+        );
+        assert_eq!(
+            serde_json::to_value(load_capture(&repo, &manifest).unwrap().observations).unwrap(),
+            serde_json::to_value(&evidence.observations).unwrap()
+        );
+        // Whole-map observation objects are from the removed pre-index format.
+        let mut unsupported = manifest.clone();
+        unsupported.observations.schema = OBSERVATIONS_OBJECT_SCHEMA.into();
+        assert!(load_capture(&repo, &unsupported).is_err());
+        let mut broken = manifest;
+        broken.observations.digest = format!("sha256:{}", "d".repeat(64));
+        assert!(load_capture(&repo, &broken).is_err());
     }
 
     #[test]
@@ -736,8 +785,13 @@ mod tests {
         assert_eq!(inventory.publication_count, 1);
         assert!(inventory.publication_bytes > 0);
         assert_eq!(inventory.current_root.as_deref(), Some(bundle.as_str()));
-        // Read-only: no deletion or migration occurs.
-        assert!(repo.root.join(OBJECT_ROOT).exists());
+        // Read-only: no deletion or migration occurs. Fresh roots use the
+        // selected SQLite layout and need not create a legacy object tree.
+        assert!(
+            repo.root
+                .join(".codeclew/cache/object-layout.json")
+                .is_file()
+        );
     }
 
     fn evidence_for_test(id: &str, text: &str) -> crate::documentation::model::ServiceEvidence {

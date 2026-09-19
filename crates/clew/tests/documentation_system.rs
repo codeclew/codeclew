@@ -115,7 +115,7 @@ fn docsys_t17_local_proposal_publication_retains_influence_without_inventing_rev
 }
 
 #[test]
-fn docsys_t17_fresh_init_and_legacy_narratives_preserve_protected_material() {
+fn docsys_t17_current_narrative_rejects_obsolete_versions_and_preserves_protected_material() {
     use serde_json::json;
     let f = Fixture::new();
     f.service("orders");
@@ -132,39 +132,54 @@ fn docsys_t17_fresh_init_and_legacy_narratives_preserve_protected_material() {
         "Protected local knowledge.\n",
     )
     .unwrap();
-    for version in ["1.0", "1.1", "1.2", "1.3"] {
-        let checked = f.checked();
-        let mut n = read(f.author("orders", &checked));
-        n["schema"] = json!(format!("codeclew-documentation-narrative/{version}"));
-        let operation = &n["operations"][0];
-        let paragraphs:Vec<_> = operation["events"].as_array().unwrap().iter().enumerate().map(|(i,e)| json!({"id":format!("paragraph-{i}"),"text":"The retained source describes quantity processing.","eventIds":[e["id"]],"dependencyIds":e["dependencyIds"],"sourceIds":e["sourceIds"]})).collect();
-        n["operations"][0]["explanation"] = json!(paragraphs);
-        let path = f.input("legacy.json", &n);
-        let published = f.ok(&["docs", "render", "--input", path.to_str().unwrap()]);
-        assert_eq!(
-            published["documentedOperations"], 1,
-            "{version}: {published}"
+    let checked = f.checked();
+    let mut current = read(f.author("orders", &checked));
+    let title = "Quantity documentation under the current contract";
+    current["operations"][0]["title"] = json!(title);
+    for version in ["1.0", "1.1", "1.2"] {
+        let mut obsolete = current.clone();
+        obsolete["schema"] = json!(format!("codeclew-documentation-narrative/{version}"));
+        let narrative = serde_json::from_value(obsolete.clone()).unwrap();
+        assert!(
+            clew::documentation::render::validate(&narrative, &checked)
+                .unwrap_err()
+                .message
+                .contains("only codeclew-documentation-narrative/1.3")
         );
-        f.ok(&["docs", "init"]);
-        assert_eq!(
-            fs::read_to_string(f.docs.join("AGENTS.md")).unwrap(),
-            "# Maintainer instructions\nKeep exact text.\n"
-        );
-        assert_eq!(
-            fs::read_to_string(f.docs.join("notes/manual.md")).unwrap(),
-            "Protected local knowledge.\n"
-        );
-        assert_eq!(
-            f.ok(&[
-                "docs",
-                "history",
-                "show",
-                "--id",
-                published["bundle"].as_str().unwrap()
-            ])["status"],
-            "FROZEN_SNAPSHOT"
+        let path = f.input("obsolete.json", &obsolete);
+        let (_, rejected) = f.run(&["docs", "render", "--input", path.to_str().unwrap()]);
+        assert_eq!(rejected["documentedOperations"], 0, "{version}: {rejected}");
+        assert!(
+            !rejected["updateFailures"].as_object().unwrap().is_empty(),
+            "{version}: {rejected}"
         );
     }
+    let path = f.input("current.json", &current);
+    let published = f.ok(&["docs", "render", "--input", path.to_str().unwrap()]);
+    assert_eq!(published["documentedOperations"], 1, "{published}");
+    assert!(
+        published["updateFailures"].as_object().unwrap().is_empty(),
+        "{published}"
+    );
+    let bundle = published["bundle"].as_str().unwrap();
+    let bindings = read(f.bundle(bundle, "bindings.json"));
+    assert_eq!(
+        bindings["narratives"]["service:orders"]["operations"][0]["title"],
+        title
+    );
+    f.ok(&["docs", "init"]);
+    assert_eq!(
+        fs::read_to_string(f.docs.join("AGENTS.md")).unwrap(),
+        "# Maintainer instructions\nKeep exact text.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.docs.join("notes/manual.md")).unwrap(),
+        "Protected local knowledge.\n"
+    );
+    assert_eq!(
+        f.ok(&["docs", "history", "show", "--id", bundle])["status"],
+        "FROZEN_SNAPSHOT"
+    );
 }
 
 #[test]
@@ -180,7 +195,7 @@ fn docsys_t15_mutation_boundaries_have_no_known_false_current() {
 
 #[test]
 #[cfg(target_os = "macos")]
-fn docsys_t14_budget_survives_work_cache_loss_and_migrates_legacy_ledger() {
+fn docsys_t14_budget_survives_work_cache_loss_and_rejects_obsolete_ledger() {
     use serde_json::json;
     let f = Fixture::new();
     let source = f.service("orders");
@@ -190,20 +205,21 @@ fn docsys_t14_budget_survives_work_cache_loss_and_migrates_legacy_ledger() {
     assert_eq!(result["status"], "GENERATION_GAP");
     let ledger = f.docs.join("execution/accounts/fixture.json");
     let before = fs::read(&ledger).unwrap();
-    // Exercise migration from the original private ledger location first.
+    // Obsolete layouts are rejected without migrating or resetting spending.
     fs::create_dir_all(f.docs.join(".codeclew/accounts")).unwrap();
     fs::rename(&ledger, f.docs.join(".codeclew/accounts/fixture.json")).unwrap();
     let legacy: clew::documentation::agent_jobs::Config =
         serde_json::from_value(config.clone()).unwrap();
     let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
     assert!(clew::documentation::agent_jobs::reserve(&repo, &legacy, "migration").is_err());
-    // Even an exhausted legacy ledger migrates before denying a new dispatch.
+    // The unsupported file remains intact; no replacement account is created.
     assert_eq!(
         fs::read(f.docs.join(".codeclew/accounts/fixture.json")).unwrap(),
         before
     );
-    assert_eq!(fs::read(&ledger).unwrap(), before);
-    fs::remove_dir_all(f.docs.join(".codeclew")).unwrap();
+    assert!(!ledger.exists());
+    fs::rename(f.docs.join(".codeclew/accounts/fixture.json"), &ledger).unwrap();
+    fs::remove_dir_all(f.docs.join(".codeclew/work")).unwrap();
     f.ok(&[
         "docs",
         "bind",
@@ -2512,7 +2528,7 @@ fn docsys_t05_rejects_wrong_language_ambiguous_and_executable_module_configurati
     let input = f.input("ambiguous-module.json", &ambiguous);
     let (code, error) = f.run(&["docs", "service", "add", "--input", input.to_str().unwrap()]);
     assert_ne!(code, 0);
-    assert!(error.to_string().contains("legacy source.semantic"));
+    assert!(error.to_string().contains("unknown field `semantic`"));
 }
 
 fn spring_source_fixture(
@@ -3261,7 +3277,7 @@ fn docsys_t09_import_association_and_export_preserve_original_bytes() {
         "--expected-input-digest",
         rows["inputDigest"].as_str().unwrap(),
     ]);
-    fs::write(f.docs.join("scenarios/reserve.yaml"),serde_json::to_vec(&serde_json::json!({"schema":"codeclew-documentation-scenario/1.0","id":"reserve","title":"Reserve quantity","summary":"Explicit saved selection","root":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}}})).unwrap()).unwrap();
+    fs::write(f.docs.join("scenarios/reserve.yaml"),serde_json::to_vec(&serde_json::json!({"schema":"codeclew-documentation-process/1.0","process":{"scope":"Order reservation","participants":["orders"],"trigger":"A reservation request","outcomes":["Reservation result"]},"id":"reserve","title":"Reserve quantity","summary":"Explicit saved selection","root":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}}})).unwrap()).unwrap();
     a["targets"].as_array_mut().unwrap().extend([
         serde_json::json!("entity:quantity"),
         serde_json::json!("scenario:reserve"),
@@ -4476,10 +4492,14 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
         .unwrap();
     }
     // A service-only author/reviewer job must not acquire unrelated dynamic
-    // process/view scopes captured as NOT_CHECKED in its source selection.
+    // process/view scopes even when the check retains compatible sibling evidence.
     // Acquisition is explicit; section preparation consumes this selection.
     let (code, selected) = f.run(&["docs", "check", "--service", "other"]);
-    assert_eq!(code, 3, "{selected}");
+    assert_eq!(code, 0, "{selected}");
+    assert_eq!(
+        selected["services"]["orders"]["sourceAuthority"],
+        "RETAINED_SOURCE_NOT_REVERIFIED"
+    );
     assert!(selected["snapshot"].is_string());
     let mut page = f.ok(&[
         "docs",
@@ -4512,17 +4532,41 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
                         .starts_with("VIEW_")
             )
     );
-    let flow = sw["handles"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .find(|(_, h)| {
-            h["kind"] == "DEPENDENCY"
-                && sw["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
-        })
-        .unwrap()
-        .0;
-    let section = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow]},"steps":[]}]});
+    let flow_for = |service: &str| {
+        sw["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, h)| {
+                h["kind"] == "DEPENDENCY"
+                    && sw["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
+                    && sw["checked"]["dependencies"][h["id"].as_str().unwrap()]["service"]
+                        == service
+            })
+            .unwrap()
+            .0
+    };
+    // Sibling evidence remains available for explicit expansion, but a fake
+    // author cannot cite it merely because its handle is registered globally.
+    let foreign = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow_for("orders")]},"steps":[]}]});
+    let foreign_path = f.input("unsupplied-sibling-proposal.json", &foreign);
+    let rejected = f.ok(&[
+        "docs",
+        "proposal",
+        "submit",
+        "--work",
+        &service_work,
+        "--input",
+        foreign_path.to_str().unwrap(),
+    ]);
+    assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
+    assert!(
+        rejected
+            .to_string()
+            .contains("not supplied by a recorded work read"),
+        "{rejected}"
+    );
+    let section = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow_for("other")]},"steps":[]}]});
     let accepted = work_run(
         &f,
         &service_work,

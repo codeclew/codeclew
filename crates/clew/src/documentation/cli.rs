@@ -61,11 +61,6 @@ pub enum Command {
         #[command(subcommand)]
         command: super::evidence_package::Command,
     },
-    /// Compact validated legacy advisory cache metadata.
-    Cache {
-        #[command(subcommand)]
-        command: super::sidecar_compaction::Command,
-    },
     /// Manage explicitly saved evidence-bound entity views.
     View {
         #[command(subcommand)]
@@ -164,7 +159,7 @@ pub enum Command {
 pub struct CheckArgs {
     #[command(flatten)]
     pub page: ListArgs,
-    /// Check selected services only; all others remain explicitly unverified.
+    /// Capture selected services; retain compatible saved siblings without source revalidation.
     #[arg(long = "service")]
     pub services: Vec<String>,
     /// Existing caller-owned 0700 directory for private Maven failure output.
@@ -311,7 +306,6 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Snapshot { command } => super::snapshot_pins::run(command),
         Command::View { command } => super::dataflow::run(command),
         Command::Evidence { command } => super::evidence_package::run(command),
-        Command::Cache { command } => super::sidecar_compaction::run(command),
         Command::Update { command } => super::updates::run(command),
         Command::History { command } => super::history::run(command),
         Command::Process { command } => super::processes::run(command),
@@ -407,12 +401,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 .as_deref()
                 .map(crate::maven_diagnostics::DebugOutput::open)
                 .transpose()?;
-            let checked = check::run_selected_with_diagnostics(
-                &repo,
-                &requested_services,
-                debug_output.as_ref(),
-            )?;
-            let snapshot = checked.save_snapshot(&repo)?;
+            let (checked, snapshot) =
+                check::run_and_save_selected(&repo, &requested_services, debug_output.as_ref())?;
             let mut value = checked.summary();
             value["freshness"] = super::bindings::freshness(
                 super::bindings::baseline(&repo)?.as_ref().map(|(_, b)| b),
@@ -755,8 +745,7 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
     let repo = Repository::open(&args.root)?;
     let selected = args.service.iter().cloned().collect::<BTreeSet<_>>();
     let (checked, snapshot, authority) = if args.refresh {
-        let checked = check::run_selected(&repo, &selected)?;
-        let snapshot = checked.save_snapshot(&repo)?;
+        let (checked, snapshot) = check::run_and_save_selected(&repo, &selected, None)?;
         (checked, snapshot, "CURRENT_SOURCE_CHECK")
     } else {
         let (checked, snapshot) =
@@ -803,7 +792,7 @@ pub(super) fn context_from(
         items,
         args.cursor.as_deref(),
         args.limit as usize,
-        json!({"subject":subject,"snapshot":args.snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","unresolved":checked.unresolved}),
+        json!({"subject":subject,"snapshot":args.snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","sourceAuthorities":checked.source_authorities(),"unresolved":checked.unresolved}),
     )
 }
 
@@ -1290,6 +1279,16 @@ mod tests {
         let root = temporary.path().join("docs");
         Repository::init(&root, "Synthetic docs").unwrap();
         let repo = Repository::open(&root).unwrap();
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"svc-a", "title":"Service A",
+            "repositoryId":"svc-a", "repository":"https://example.invalid/service-a",
+            "language":"java", "profile":"source-syntax", "targetRef":"main",
+            "source":{"roots":["src"],"dialect":"17"}
+        }))
+        .unwrap();
+        repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let inputs = repo.inputs().unwrap();
         let observation = Observation {
             id: "obs-a".into(),
             kind: "ENTRYPOINT".into(),
@@ -1306,8 +1305,7 @@ mod tests {
             schema: "codeclew-documentation-service-evidence/1.0".into(),
             service: "svc-a".into(),
             revision: "rev-a".into(),
-            service_digest:
-                "sha256:2222222222222222222222222222222222222222222222222222222222222222".into(),
+            service_digest: crate::documentation::digest(&service).unwrap(),
             extractor: EXTRACTOR.into(),
             runtime_mode: "SOURCE".into(),
             coverage: "COMPLETE".into(),
@@ -1321,10 +1319,15 @@ mod tests {
         services.insert("svc-a".into(), evidence);
         let checked = check::Check {
             schema: "codeclew-documentation-check/1.0".into(),
-            source_inputs: None,
+            source_inputs: Some(check::SourceInputs {
+                schema: check::SOURCE_INPUTS_SCHEMA.into(),
+                input_digest: repo.input_digest().unwrap(),
+                inputs,
+                selected_services: BTreeSet::from(["svc-a".into()]),
+                retained_services: BTreeSet::new(),
+            }),
             composition: None,
-            input_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-                .into(),
+            input_digest: repo.input_digest().unwrap(),
             context_digest:
                 "sha256:4444444444444444444444444444444444444444444444444444444444444444".into(),
             services,
@@ -1420,12 +1423,18 @@ mod tests {
         save_check_report(&repo, &binding).unwrap();
 
         let digest = binding.snapshot.rsplit_once('/').unwrap().0;
-        let object = repo
-            .root
-            .join(super::super::cache::OBJECT_ROOT)
-            .join(digest)
-            .join("object.json");
-        fs::remove_file(object).unwrap();
+        let marker: serde_json::Value = serde_json::from_slice(
+            &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+        )
+        .unwrap();
+        let database = repo.root.join(marker["database"].as_str().unwrap());
+        let connection = rusqlite::Connection::open(database).unwrap();
+        connection
+            .execute(
+                "DELETE FROM objects WHERE digest = ?1",
+                rusqlite::params![digest],
+            )
+            .unwrap();
         assert!(
             run(Command::Check(CheckArgs {
                 page: ListArgs {

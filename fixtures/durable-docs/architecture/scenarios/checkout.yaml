@@ -1,4 +1,9 @@
-schema: codeclew-documentation-scenario/1.0
+schema: codeclew-documentation-process/1.0
+process:
+  scope: Order checkout and inventory reservation
+  participants: [orders, inventory]
+  trigger: An order requests an inventory reservation
+  outcomes: [Reservation accepted, Request rejected]
 id: checkout
 title: Checkout and inventory reservation
 summary: Validate the order and request an inventory reservation.

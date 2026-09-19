@@ -45,6 +45,8 @@ struct Manifest {
     input_digest: String,
     manifest: super::model::Manifest,
     selected_services: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    retained_services: BTreeSet<String>,
     services: BTreeMap<String, cache::ObjectRef>,
     interactions: BTreeMap<String, cache::ObjectRef>,
     scenarios: BTreeMap<String, cache::ObjectRef>,
@@ -241,7 +243,11 @@ pub(super) fn validate(inputs: &check::SourceInputs) -> Result<(), ClewError> {
         || inputs
             .selected_services
             .iter()
+            .chain(&inputs.retained_services)
             .any(|id| !inputs.inputs.services.contains_key(id))
+        || !inputs
+            .selected_services
+            .is_disjoint(&inputs.retained_services)
     {
         return Err(invalid("source input contract is invalid"));
     }
@@ -269,12 +275,14 @@ fn store_manifest(
     inputs: &RepositoryInputs,
     input_digest: &str,
     selected_services: BTreeSet<String>,
+    retained_services: BTreeSet<String>,
 ) -> Result<cache::ObjectRef, ClewError> {
     let stored = Manifest {
         schema: schema.into(),
         input_digest: input_digest.into(),
         manifest: inputs.manifest.clone(),
         selected_services,
+        retained_services,
         services: store_map(repo, SERVICE_SCHEMA, &inputs.services)?,
         interactions: store_map(repo, INTERACTION_SCHEMA, &inputs.interactions)?,
         scenarios: store_map(repo, SCENARIO_SCHEMA, &inputs.scenarios)?,
@@ -332,6 +340,7 @@ pub(super) fn store(
         &inputs.inputs,
         &inputs.input_digest,
         inputs.selected_services.clone(),
+        inputs.retained_services.clone(),
     )
 }
 
@@ -346,6 +355,7 @@ pub(super) fn load(
         input_digest: manifest.input_digest,
         inputs,
         selected_services: manifest.selected_services,
+        retained_services: manifest.retained_services,
     };
     validate(&result)?;
     Ok(result)
@@ -363,6 +373,7 @@ pub(super) fn store_declarations(
         inputs,
         expected_digest,
         BTreeSet::new(),
+        BTreeSet::new(),
     )
 }
 
@@ -371,7 +382,7 @@ pub(super) fn load_declarations(
     reference: &cache::ObjectRef,
 ) -> Result<(RepositoryInputs, String), ClewError> {
     let manifest = load_manifest(repo, reference, DECLARATION_MANIFEST_SCHEMA)?;
-    if !manifest.selected_services.is_empty() {
+    if !manifest.selected_services.is_empty() || !manifest.retained_services.is_empty() {
         return Err(invalid(
             "declaration input manifest cannot carry selected source services",
         ));
@@ -385,18 +396,12 @@ pub(super) fn load_declarations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documentation::model::Manifest as DocumentationManifest;
     use std::fs;
 
     fn repository() -> (tempfile::TempDir, Repository) {
         let temporary = tempfile::tempdir().unwrap();
-        let repo = Repository {
-            root: temporary.path().to_path_buf(),
-            manifest: DocumentationManifest {
-                schema: "codeclew-documentation/1.0".into(),
-                title: "Architecture".into(),
-            },
-        };
+        Repository::init(temporary.path(), "Architecture").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
         (temporary, repo)
     }
 
@@ -435,8 +440,8 @@ mod tests {
             note["original"]["digest"] = digest(&note["original"]["text"]).unwrap().into();
         }
         let inputs = RepositoryInputs {
-            manifest: DocumentationManifest {
-                schema: "codeclew-documentation/1.0".into(),
+            manifest: super::super::model::Manifest {
+                schema: "codeclew-documentation/2.0".into(),
                 title: "Architecture".into(),
             },
             services: BTreeMap::new(),
@@ -456,43 +461,20 @@ mod tests {
             input_digest: digest(&inputs).unwrap(),
             inputs,
             selected_services: BTreeSet::new(),
+            retained_services: BTreeSet::new(),
         }
     }
 
     fn object_bytes(repo: &Repository) -> u64 {
-        cache::owned_digests(repo, 1024)
+        cache::owned_objects(repo, 1024)
             .unwrap()
-            .into_iter()
-            .map(|digest| {
-                fs::metadata(
-                    repo.root
-                        .join(cache::OBJECT_ROOT)
-                        .join(digest)
-                        .join("object.json"),
-                )
-                .unwrap()
-                .len()
-            })
+            .values()
+            .copied()
             .sum()
     }
 
     fn payload_allocated_bytes(repo: &Repository) -> u64 {
-        use std::os::unix::fs::MetadataExt;
-        cache::owned_digests(repo, 1024)
-            .unwrap()
-            .iter()
-            .map(|digest| {
-                fs::metadata(
-                    repo.root
-                        .join(cache::OBJECT_ROOT)
-                        .join(digest)
-                        .join("object.json"),
-                )
-                .unwrap()
-                .blocks()
-                    * 512
-            })
-            .sum()
+        object_bytes(repo)
     }
 
     #[test]
@@ -612,21 +594,39 @@ mod tests {
         let manifest: Manifest = cache::get_json(&repo, &handle, check::PORTABLE_CACHE_MAX_BYTES)
             .unwrap()
             .unwrap();
-        let object = repo
-            .root
-            .join(cache::OBJECT_ROOT)
-            .join(&manifest.notes["note-00"].original.digest)
-            .join("object.json");
-        let original = fs::read(&object).unwrap();
-        fs::remove_file(&object).unwrap();
+        let reference = &manifest.notes["note-00"].original;
+        let original = cache::get(&repo, reference, check::PORTABLE_CACHE_MAX_BYTES)
+            .unwrap()
+            .unwrap();
+        let marker: Value = serde_json::from_slice(
+            &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+        )
+        .unwrap();
+        let database = repo.root.join(marker["database"].as_str().unwrap());
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute(
+                "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+                rusqlite::params![vec![b'x'; original.len()], reference.digest],
+            )
+            .unwrap();
+        assert_eq!(
+            load(&repo, &handle).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .execute(
+                "DELETE FROM objects WHERE digest = ?1",
+                rusqlite::params![reference.digest],
+            )
+            .unwrap();
         assert!(
             load(&repo, &handle)
                 .unwrap_err()
                 .message
                 .contains("note original object is missing")
         );
-        fs::write(&object, vec![b'x'; original.len()]).unwrap();
-        assert!(load(&repo, &handle).is_err());
     }
 
     #[test]
@@ -690,12 +690,18 @@ mod tests {
 
         let source = source_inputs(0);
         let handle = store(&repo, &source).unwrap();
-        let object = repo
-            .root
-            .join(cache::OBJECT_ROOT)
-            .join(&handle.digest)
-            .join("object.json");
-        fs::write(object, b"corrupt").unwrap();
+        let marker: Value = serde_json::from_slice(
+            &fs::read(repo.root.join(".codeclew/cache/object-layout.json")).unwrap(),
+        )
+        .unwrap();
+        let database = repo.root.join(marker["database"].as_str().unwrap());
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .execute(
+                "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+                rusqlite::params![b"corrupt".as_slice(), handle.digest],
+            )
+            .unwrap();
         assert!(load(&repo, &handle).is_err());
     }
 }

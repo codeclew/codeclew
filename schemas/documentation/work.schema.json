@@ -34,8 +34,11 @@
         },
         "contextProfile": {
           "type": "string",
-          "const": "declarations-v1",
-          "description": "Opt-in bounded declaration context for service section-entities work."
+          "description": "Bounded declaration context for service entities, or source-sharing context for a saved process overview. Subject compatibility is validated by the host.",
+          "enum": [
+            "declarations-v1",
+            "process-v1"
+          ]
         },
         "maxItems": {
           "type": "integer",
@@ -137,7 +140,11 @@
         },
         "contextProfile": {
           "type": "string",
-          "const": "declarations-v1"
+          "enum": [
+            "declarations-v1",
+            "process-v1"
+          ],
+          "description": "Bounded declaration context for service entities, or source-sharing context for a saved process overview. Subject compatibility is validated by the host."
         },
         "subjectReference": {
           "type": "object",

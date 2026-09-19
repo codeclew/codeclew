@@ -213,7 +213,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
     let snapshot = work.snapshot.as_deref().ok_or_else(|| ClewError::new(
         ErrorCode::StaleRequiresReslice,
-        "LEGACY_WORK_REQUIRES_REPREPARE: prepare new work from saved evidence; legacy continuation cannot acquire current sources",
+        "DOCS_REINDEX_REQUIRED: Work requires a saved snapshot; prepare new Work from current-format evidence",
     ))?;
     let now = check::Check::load_snapshot(repo, snapshot)?;
     if now.input_digest != repo.input_digest()? || digest(&now)? != digest(&work.checked)? {

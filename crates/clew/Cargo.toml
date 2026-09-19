@@ -33,6 +33,7 @@ unicode-normalization.workspace = true
 walkdir.workspace = true
 zip.workspace = true
 roxmltree = "0.21.1"
+rusqlite = { version = "0.38.0", default-features = false, features = ["bundled"] }
 
 [build-dependencies]
 hex.workspace = true

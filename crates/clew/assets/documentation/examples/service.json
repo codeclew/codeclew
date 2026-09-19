@@ -6,7 +6,7 @@
   "repository": "https://example.invalid/orders",
   "language": "java",
   "profile": "java-17plus-maven-read-only",
-  "compilation": ":/main",
+  "compilations": [":/main"],
   "targetRef": "main",
   "contractFiles": [
     "src/main/resources/openapi.yaml"
