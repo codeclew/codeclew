@@ -452,6 +452,12 @@ scope invalidates dependent content. Direct `docs render` input cannot
 inherit review acceptance for replaced operations. Protected notes remain outside
 generated outputs. An accepted review is model assessment, not runtime proof.
 
+An accepted `work run` or `proposal publish` already produces a frozen publication.
+Open its returned bundle. Rendering a snapshot prepared before authoring replays
+that snapshot's captured authored baseline and can show the earlier gaps. To
+project newly accepted prose again, recompose the original source-capture snapshot
+after publication and render the new result; neither operation reacquires source.
+
 ## Complete local authoring without an external runner
 
 Prepare and read bounded work with the current assistant, submit a constrained

@@ -567,6 +567,15 @@ fn author_payload(
 }
 
 fn author_output_schema(mut proposal: Value) -> Result<Value, ClewError> {
+    // Summary is a claim with tighter rendering bounds than other claim text.
+    // JSON Schema counts characters; the host additionally checks UTF-8 bytes.
+    proposal["$defs"]["operation"]["properties"]["summary"]["properties"] = serde_json::json!({
+        "text":{
+            "maxLength":super::render::SUMMARY_TEXT_MAX_BYTES,
+            "pattern":"^[^`<]*$",
+            "description":format!("Nonblank plain prose, at most {} UTF-8 bytes (not characters); no backticks or '<'. The host enforces the byte limit.", super::render::SUMMARY_TEXT_MAX_BYTES)
+        }
+    });
     let mut output = super::section_author::output_schema()?;
     output.as_object_mut().unwrap().remove("$id");
     output["title"] = serde_json::json!("Documentation author result");
@@ -1359,6 +1368,34 @@ mod input_cap_tests {
                 ["proposalSchema"],
             generic_body
         );
+    }
+
+    #[test]
+    fn author_summary_schema_advertises_render_limit_without_restricting_other_claims() {
+        let mut work = overview_work();
+        for entrypoint in [Some("process-overview".into()), None] {
+            work.request.entrypoint = entrypoint;
+            let request = author_payload(&work, &[], &Value::Null, &Value::Null).unwrap();
+            let definitions = &request["outputSchema"]["$defs"];
+            let summary = &definitions["operation"]["properties"]["summary"];
+            assert_eq!(summary["$ref"], "#/$defs/claim");
+            let text = &summary["properties"]["text"];
+            assert_eq!(
+                text["maxLength"],
+                super::super::render::SUMMARY_TEXT_MAX_BYTES
+            );
+            assert_eq!(text["pattern"], "^[^`<]*$");
+            assert!(
+                text["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("2048 UTF-8 bytes")
+            );
+            assert_eq!(
+                definitions["claim"]["properties"]["text"]["maxLength"],
+                8192
+            );
+        }
     }
 
     #[test]

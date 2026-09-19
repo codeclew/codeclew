@@ -17,6 +17,8 @@ use std::{
     fs,
 };
 
+pub(super) const SUMMARY_TEXT_MAX_BYTES: usize = 2048;
+
 const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
 pub(super) const STYLE: &str = include_str!("../../assets/documentation/style.css");
 const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
@@ -74,6 +76,15 @@ fn supported_refs(
     Ok(())
 }
 
+fn validate_summary_text(text: &str) -> Result<(), ClewError> {
+    if text.trim().is_empty() || text.contains(['`', '<']) || text.len() > SUMMARY_TEXT_MAX_BYTES {
+        return Err(invalid(format!(
+            "summary.text must be nonblank plain prose of at most {SUMMARY_TEXT_MAX_BYTES} UTF-8 bytes, without backticks or '<'"
+        )));
+    }
+    Ok(())
+}
+
 pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
     if n.schema != "codeclew-documentation-narrative/1.3" {
         return Err(invalid(
@@ -121,14 +132,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
         if !expected.contains(&o.id) || !covered.insert(o.id.clone()) || o.title.trim().is_empty() {
             return Err(invalid("duplicate or out-of-scope operation"));
         }
-        if o.summary.text.trim().is_empty()
-            || o.summary.text.contains(['`', '<'])
-            || o.summary.text.len() > 2048
-        {
-            return Err(invalid(
-                "summary must be brief plain prose without implementation code",
-            ));
-        }
+        validate_summary_text(&o.summary.text)?;
         if super::dataflow::is_root(checked, &n.subject, &o.id) {
             if !o.events.is_empty()
                 || !o.explanation.is_empty()
@@ -2345,6 +2349,24 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
 #[cfg(test)]
 mod process_catalog_tests {
     use super::*;
+
+    #[test]
+    fn summary_text_enforces_utf8_byte_boundary_and_plain_prose() {
+        assert!(validate_summary_text(&"a".repeat(SUMMARY_TEXT_MAX_BYTES)).is_ok());
+        assert!(validate_summary_text(&"\u{044f}".repeat(SUMMARY_TEXT_MAX_BYTES / 2)).is_ok());
+        for invalid_text in [
+            "a".repeat(SUMMARY_TEXT_MAX_BYTES + 1),
+            format!("{}a", "\u{044f}".repeat(SUMMARY_TEXT_MAX_BYTES / 2)),
+            "\n ".into(),
+            "code `example`".into(),
+            "value < limit".into(),
+        ] {
+            let error = validate_summary_text(&invalid_text)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("2048 UTF-8 bytes"), "{error}");
+        }
+    }
 
     #[test]
     fn process_preview_keeps_only_displayed_source_closure_and_saved_links() {

@@ -63,7 +63,9 @@ clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --un
 
 The Work result provides evidence handles; `selection.json` names those handles, and a human/current agent authors the schema-constrained proposal from recorded reads. This is real authoring work, not an automatic consequence of capture. Alternatively, `docs work run --root /work/architecture --work WORK_ID --config /work/execution.json` uses an explicitly configured author/reviewer; do not invent provider credentials or assume it runs free. Local publication remains `UNASSESSED`; configured meaning review is separate.
 
-If a saved-evidence render is needed, `clew docs render --root /work/architecture --snapshot RECOMPOSED_SNAPSHOT` uses it without capture. Keep the returned frozen publication ID/path. Pin the source parent with `clew docs snapshot pin --root /work/architecture --name orders-source-first --snapshot SOURCE_SNAPSHOT` before changing service configuration.
+`proposal publish` and an accepted `work run` already create a frozen publication. Open the bundle returned by that command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
+
+When another projection is needed, run `docs recompose` from the original source-capture snapshot after publication, then render its newly returned snapshot. Both operations use saved evidence without capture. Keep the frozen publication ID/path. Pin the source parent with `clew docs snapshot pin --root /work/architecture --name orders-source-first --snapshot SOURCE_SNAPSHOT` before changing service configuration.
 
 ## Explicit compiler enrichment afterward
 
