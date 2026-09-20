@@ -149,6 +149,9 @@ fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Bindings {
+    /// Presentation target only; does not change source-analysis identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     pub influence_scopes: BTreeMap<String, super::review::InfluenceScope>,
     pub schema: String,
     pub input_digest: String,
@@ -1063,6 +1066,7 @@ mod tests {
             ),
         ]);
         Bindings {
+            documentation_language: None,
             influence_scopes: BTreeMap::new(),
             section_states: BTreeMap::new(),
             target_revisions: BTreeMap::new(),

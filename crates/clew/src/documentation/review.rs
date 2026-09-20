@@ -187,6 +187,7 @@ fn deserialize_previous_digest<'de, D: serde::Deserializer<'de>>(
     Ok(digest)
 }
 pub(super) fn validate_accepted_version(version: &AcceptedVersion) -> Result<(), ClewError> {
+    version.external_request.validate_documentation_language()?;
     if version.schema != ACCEPTED_VERSION_SCHEMA
         || !valid_previous_digest(&version.previous_narrative_digest)
     {

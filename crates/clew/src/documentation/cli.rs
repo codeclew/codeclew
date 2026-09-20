@@ -143,6 +143,9 @@ pub enum Command {
     Render {
         #[arg(long)]
         root: PathBuf,
+        /// Target prose and reader language; existing analysis remains reusable.
+        #[arg(long, value_parser = ["en", "ru"])]
+        language: Option<String>,
         #[arg(long)]
         input: Vec<PathBuf>,
         #[arg(long)]
@@ -438,6 +441,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Changes(args) => changes(args),
         Command::Render {
             root,
+            language,
             input,
             require_complete,
             refresh,
@@ -457,24 +461,15 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 }
             }
             let repo = Repository::open(&root)?;
-            if refresh {
-                super::render::publish_from_current_source(
-                    &repo,
-                    narratives,
-                    require_complete,
-                    failures,
-                )
-            } else if let Some(snapshot) = snapshot {
-                super::render::publish_from_snapshot(
-                    &repo,
-                    narratives,
-                    require_complete,
-                    failures,
-                    &snapshot,
-                )
-            } else {
-                super::render::publish_with_failures(&repo, narratives, require_complete, failures)
-            }
+            super::render::publish_language(
+                &repo,
+                narratives,
+                require_complete,
+                failures,
+                snapshot.as_deref(),
+                refresh,
+                language.as_deref(),
+            )
         }
     }
 }

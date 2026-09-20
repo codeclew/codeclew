@@ -270,3 +270,28 @@ pages for sibling services no longer invalidate their Work. Real authored update
 including custom gap text, still conflict. Proposal records reference the saved
 Work influence, and publication shares identical influence maps across accepted
 operations while retaining distinct historical evidence where necessary.
+
+## Select English or Russian documentation
+
+Pass `--language en` or `--language ru` to `docs work prepare`, or set
+`documentationLanguage` in the request JSON. Conflicting explicit values fail.
+Without an explicit value, Work inherits the current publication language and
+uses English for a root with no selected language. The language participates in
+immutable Work identity and is recorded on accepted operations.
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders --snapshot SOURCE_SNAPSHOT --input /work/visual-request.json --language ru
+clew docs render --root /work/architecture --snapshot SOURCE_SNAPSHOT --language ru
+```
+
+Russian author instructions require ordinary Russian engineering terminology
+without unnecessary English loanwords. Preserve class and method names, paths,
+fields, API and evidence IDs. Publish through the same proposal workflow.
+
+Rendering selects presentation language, not machine translation. Existing prose
+in another or unknown language remains in its accepted version but does not count
+as completed target-language content. The reader shows a translation placeholder
+and links to an available original version. `translationGaps` is separate from
+analysis gaps; it does not trigger capture. Reusing the same source snapshot for
+a translated author Work requires no reindexing. Review the translation normally;
+`--unassessed` still means the explanation has not passed meaning review.

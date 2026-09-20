@@ -28,7 +28,7 @@ node --test scripts/test_documentation_visual_reader.cjs
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
-cargo test --locked -p clew --test documentation_visuals --test documentation_publication_conflict -- --test-threads=1
+cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict -- --test-threads=1
 cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
 cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1

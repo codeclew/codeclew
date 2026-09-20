@@ -606,3 +606,19 @@ classification, not an interactive approval prompt.
 Only narrative schema 1.3 is accepted. Prefer Work/proposals so the tool
 materializes canonical dependency IDs and preserves the captured influence
 boundary. Direct current-format Narrative imports remain unassessed until reviewed.
+
+## Documentation language
+
+Select `en` or `ru` using `docs work prepare --language` or the Work request's
+`documentationLanguage`. Omitted language inherits the active publication, with
+English as the initial default; conflicting explicit values fail. Authors and
+reviewers must preserve code/API/evidence identifiers and write human prose in
+the requested language. For Russian, avoid unnecessary English loanwords.
+
+Use `docs render --language ru --snapshot SAVED_SNAPSHOT --root ROOT` to select
+Russian presentation from retained evidence. Rendering does not translate prose.
+Other-language or unknown-language accepted sections show translation gaps and
+links to available original publications. Prepare a new language-specific Work
+to author their translation; never recapture source merely to change language.
+Old versions remain immutable. Language metadata does not establish semantic or
+linguistic correctness, and unassessed publication remains unassessed.

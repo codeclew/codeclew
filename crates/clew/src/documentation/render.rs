@@ -37,7 +37,8 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
         .replace('<', "\\u003c")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    Ok(TEMPLATE
+    let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
+    Ok(template
         .replace("/*__STYLE__*/", STYLE)
         .replace("/*__SCRIPT__*/", SCRIPT)
         .replace(
@@ -129,6 +130,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
     };
     let mut covered = BTreeSet::new();
     for o in &n.operations {
+        super::language::validate(o.documentation_language.as_deref())?;
         if !expected.contains(&o.id) || !covered.insert(o.id.clone()) || o.title.trim().is_empty() {
             return Err(invalid("duplicate or out-of-scope operation"));
         }
@@ -1209,6 +1211,7 @@ pub fn make_bindings(
         .filter(|(id, _)| reachable_sources.contains(id))
         .collect();
     let mut binding = Bindings {
+        documentation_language: None,
         influence_scopes: BTreeMap::new(),
         schema: "codeclew-documentation-bindings/1.4".into(),
         input_digest: checked.input_digest.clone(),
@@ -1647,6 +1650,7 @@ pub fn publish_with_failures(
         failures,
         BTreeMap::new(),
         EvidenceMode::Saved(None),
+        None,
     )
 }
 
@@ -1665,6 +1669,7 @@ pub fn publish_from_current_source(
         failures,
         BTreeMap::new(),
         EvidenceMode::Refresh,
+        None,
     )
 }
 
@@ -1683,6 +1688,7 @@ pub fn publish_from_snapshot(
         failures,
         BTreeMap::new(),
         EvidenceMode::Saved(Some(snapshot)),
+        None,
     )
 }
 
@@ -1692,6 +1698,18 @@ pub(super) fn publish_reviewed(
     versions: BTreeMap<String, super::review::AcceptedVersion>,
     snapshot: Option<&str>,
 ) -> Result<Value, ClewError> {
+    let language = versions
+        .values()
+        .next()
+        .and_then(|v| v.external_request.documentation_language.clone());
+    if versions
+        .values()
+        .any(|v| v.external_request.documentation_language != language)
+    {
+        return Err(invalid(
+            "one publication proposal must have one documentation language",
+        ));
+    }
     publish_internal(
         repo,
         vec![narrative],
@@ -1699,6 +1717,32 @@ pub(super) fn publish_reviewed(
         BTreeMap::new(),
         versions,
         EvidenceMode::Saved(snapshot),
+        language.as_deref(),
+    )
+}
+
+/// Explicit presentation language does not refresh source analysis.
+pub fn publish_language(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+    snapshot: Option<&str>,
+    refresh: bool,
+    language: Option<&str>,
+) -> Result<Value, ClewError> {
+    publish_internal(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        BTreeMap::new(),
+        if refresh {
+            EvidenceMode::Refresh
+        } else {
+            EvidenceMode::Saved(snapshot)
+        },
+        language,
     )
 }
 
@@ -1715,8 +1759,17 @@ fn publish_internal(
     mut failures: BTreeMap<String, Value>,
     versions: BTreeMap<String, super::review::AcceptedVersion>,
     evidence_mode: EvidenceMode<'_>,
+    language: Option<&str>,
 ) -> Result<Value, ClewError> {
+    super::language::validate(language)?;
     let previous = bindings::baseline(repo)?;
+    let requested_language = language.map(str::to_owned).or_else(|| {
+        previous
+            .as_ref()
+            .and_then(|(_, b)| b.documentation_language.clone())
+    });
+    super::language::validate(requested_language.as_deref())?;
+    let ui_language = requested_language.as_deref().unwrap_or("en");
     for (key, version) in &versions {
         super::review::validate_accepted_version(version)?;
         let (subject, _) = key
@@ -1747,7 +1800,15 @@ fn publish_internal(
         EvidenceMode::Refresh => super::check::run_and_save_selected(repo, &BTreeSet::new(), None)?,
     };
     let snapshot = Some(selected_snapshot.as_str());
-    super::review::scopes(repo, &mut checked, versions.values().cloned())?;
+    // Re-rendering must restore registered-input scope observations for retained
+    // accepted operations as well as newly submitted ones. Their absence is not
+    // evidence that unchanged inputs became stale.
+    let mut scope_versions = previous
+        .as_ref()
+        .map(|(_, binding)| binding.accepted_versions.clone())
+        .unwrap_or_default();
+    scope_versions.extend(versions.clone());
+    super::review::scopes(repo, &mut checked, scope_versions.into_values())?;
     for version in versions.values() {
         if version.source_revisions.iter().any(|(id, revision)| {
             checked
@@ -1895,6 +1956,7 @@ fn publish_internal(
             .retain(|id, _| !target.operations.iter().any(|o| &o.id == id));
     }
     let mut binding = make_bindings(&checked, fresh.clone())?;
+    binding.documentation_language = requested_language.clone();
     let mut narratives = previous
         .as_ref()
         .map(|(_, b)| b.narratives.clone())
@@ -2109,7 +2171,18 @@ fn publish_internal(
             }
         }
     }
-    let incomplete = !checked.unresolved.is_empty()
+    let translation_gap_count = requested_language
+        .as_deref()
+        .map(|language| {
+            narratives
+                .values()
+                .flat_map(|n| &n.operations)
+                .filter(|o| o.documentation_language.as_deref() != Some(language))
+                .count()
+        })
+        .unwrap_or(0);
+    let incomplete = translation_gap_count > 0
+        || !checked.unresolved.is_empty()
         || !failures.is_empty()
         || narratives.values().any(|n| !n.gaps.is_empty())
         || binding
@@ -2173,7 +2246,11 @@ fn publish_internal(
         let mut data = page_data(
             subject,
             title,
-            "Service behavior and explicit evidence boundaries",
+            super::reader::text(
+                ui_language,
+                "Service behavior and explicit evidence boundaries",
+                "Поведение сервиса и границы подтверждённых сведений",
+            ),
             n,
             &checked,
         );
@@ -2240,6 +2317,22 @@ fn publish_internal(
                 }
             }
         }
+        super::language::section_labels(&mut data, ui_language);
+        data["language"] = json!(ui_language);
+        data["requestedDocumentationLanguage"] = json!(requested_language);
+        data["translationGaps"] = super::language::gaps(
+            n,
+            requested_language.as_deref(),
+            previous.as_ref(),
+            old_data.as_ref(),
+            folder,
+            id,
+        )?;
+        data["translationComplete"] = json!(
+            data["translationGaps"]
+                .as_object()
+                .is_some_and(|g| g.is_empty())
+        );
         data["operationSources"] = json!(operation_sources);
         data["operationContracts"] = json!(operation_contracts);
         data["updateFailures"] = json!(
@@ -2252,19 +2345,16 @@ fn publish_internal(
         files.insert(format!("{folder}/{id}.json"), bytes(&data)?);
         files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
         let state = &binding.section_states[subject];
-        files.insert(
-            format!("{folder}/{id}.md"),
-            format!(
-                "Source freshness: {}. See operation states in the accompanying JSON.\n\n{}",
-                state.freshness.as_str(),
-                markdown(title, n, &binding.section_states)
-                    + &super::notes::markdown(&data["notes"])
-                    + &super::processes::markdown(&data["process"])
-                    + &super::dataflow::markdown(&data["view"], n)
-            )
-            .into_bytes(),
-        );
-        for operation in &n.operations {
+        let displayed = super::language::display_narrative(n, requested_language.as_deref());
+        let mut prose =
+            super::language::markdown(title, &displayed, &binding.section_states, ui_language);
+        if ui_language == "en" {
+            prose += &super::notes::markdown(&data["notes"]);
+            prose += &super::processes::markdown(&data["process"]);
+            prose += &super::dataflow::markdown(&data["view"], &displayed);
+        }
+        files.insert(format!("{folder}/{id}.md"), prose.into_bytes());
+        for operation in &displayed.operations {
             let state = &binding.section_states[&format!("{subject}/{}", operation.id)];
             files.insert(
                 format!(
@@ -2281,22 +2371,54 @@ fn publish_internal(
                 .into_bytes(),
             );
         }
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.iter().filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
+        let translation_count = data["translationGaps"].as_object().map_or(0, |g| g.len());
+        let operation_count = displayed
+            .operations
+            .iter()
+            .filter(|o| {
+                !super::sections::contains(&o.id)
+                    && !super::notes::is_root(&o.id)
+                    && o.id != super::processes::OVERVIEW
+                    && o.dataflow.is_none()
+            })
+            .count();
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{}: {operation_count} · {}: {}</p><p>{}: {translation_count}</p><details><summary>{}</summary><pre>{}</pre></details></article>",
+            super::reader::text(ui_language,kind,if kind=="service"{"Сервис"}else{"Процесс"}),escape(id),escape(title),
+            super::reader::text(ui_language,"Documented operations","Описанные операции"),super::reader::text(ui_language,"Gaps","Пробелы"),n.gaps.len(),
+            super::reader::text(ui_language,"Sections requiring translation","Разделы, требующие перевода"),
+            super::reader::text(ui_language,"Revisions, status and update gaps","Версии, состояние и пробелы обновления"),
+            escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
-    files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
-    let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><p>{}</p><details><summary>Declaration and source checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
+    files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
+    let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><details><summary>{}</summary><p>{}</p><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),super::reader::text(ui_language,"Original declaration and source checks","Исходная декларация и проверки по коду"),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
     let update_gaps = if failures.is_empty() {
         String::new()
     } else {
         format!(
-            "<section><h2>Update gaps</h2><p>Valid sections were published; these inputs need attention.</p><pre>{}</pre></section>",
+            "<section><h2>{}</h2><pre>{}</pre></section>",
+            super::reader::text(ui_language, "Update gaps", "Пробелы обновления"),
             escape(&serde_json::to_string_pretty(&failures).map_err(io_error)?)
         )
     };
     let overview = format!(
-        "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><main style=\"margin:auto;max-width:1180px;padding:32px\"><div class=\"eyebrow\">ARCHITECTURE DOCUMENTATION</div><h1>{}</h1><p>Each explanation retains its source revisions. Failed updates remain explicit local gaps.</p><div class=\"coverage-grid\">{cards}</div><h2>Declared service relationships</h2>{relationships}{update_gaps}</main></body></html>\n",
+        "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"{ui_language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><main style=\"margin:auto;max-width:1180px;padding:32px\"><div class=\"eyebrow\">{}</div><h1>{}</h1><p>{}</p><div class=\"coverage-grid\">{cards}</div><h2>{}</h2>{relationships}{update_gaps}</main></body></html>\n",
         escape(&repo.manifest.title),
-        escape(&repo.manifest.title)
+        super::reader::text(
+            ui_language,
+            "ARCHITECTURE DOCUMENTATION",
+            "ДОКУМЕНТАЦИЯ АРХИТЕКТУРЫ"
+        ),
+        escape(&repo.manifest.title),
+        super::reader::text(
+            ui_language,
+            "Each explanation retains its source revisions. Missing translations are separate from analysis gaps.",
+            "Каждое описание сохраняет версии исходников. Отсутствие перевода учитывается отдельно от пробелов анализа."
+        ),
+        super::reader::text(
+            ui_language,
+            "Declared service relationships",
+            "Заявленные связи сервисов"
+        ),
     );
     let gap_count: usize = narratives.values().map(|n| n.gaps.len()).sum();
     commit_bundle(
@@ -2310,7 +2432,7 @@ fn publish_internal(
         previous_bytes.as_deref(),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
+        json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
     )
 }
 
@@ -2329,12 +2451,22 @@ pub(super) fn commit_bundle(
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
     files.insert("overview.html".into(), bundle_overview.into_bytes());
-    let live_overview=overview.replacen("<body>","<body><nav aria-label=\"Snapshot history\" style=\"padding:12px 20px\"><a href=\"history.html\">Snapshot history</a></nav>",1);
+    let history_label = super::reader::text(
+        binding.documentation_language.as_deref().unwrap_or("en"),
+        "Snapshot history",
+        "История публикаций",
+    );
+    let live_overview=overview.replacen("<body>",&format!("<body><nav aria-label=\"{history_label}\" style=\"padding:12px 20px\"><a href=\"history.html\">{history_label}</a></nav>"),1);
     files.insert(
         "root-overview.html".into(),
         live_overview.as_bytes().to_vec(),
     );
-    super::reader::decorate_bundle(&mut files, bundle)?;
+    let ui_language = binding
+        .documentation_language
+        .as_deref()
+        .unwrap_or("en")
+        .to_owned();
+    super::reader::decorate_bundle_language(&mut files, bundle, &ui_language)?;
     let live_overview = String::from_utf8(files["root-overview.html"].clone()).map_err(io_error)?;
     let mut publication =
         super::history::prepare(repo, bundle, &binding, &mut files, input_digest, previous)?;
@@ -2419,13 +2551,19 @@ pub(super) fn commit_bundle(
     // One pointer changes only after all matching documents and bindings exist.
     super::history::index(repo, bundle)?;
     repo.atomic("docs/index.html", live_overview.as_bytes())?;
-    super::reader::connect_starters(repo, bundle, &files.keys().cloned().collect::<Vec<_>>())?;
+    super::reader::connect_starters_language(
+        repo,
+        bundle,
+        &files.keys().cloned().collect::<Vec<_>>(),
+        &ui_language,
+    )?;
     Ok(())
 }
 
 pub(super) fn renderer_digest() -> Result<String, ClewError> {
     digest(&[
         TEMPLATE,
+        include_str!("language.rs"),
         STYLE,
         SCRIPT,
         include_str!("history.rs"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject Cyrillic text from tracked and pending repository content."""
+"""Keep repository prose English while allowing explicit Russian product localization."""
 
 from pathlib import Path
 import os
@@ -11,6 +11,21 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+
+# Russian product messages and their executable examples are intentional.
+# This closed list does not exempt README, runbooks, plans or release notes.
+RUSSIAN_LOCALIZATION_FILES = {
+    "crates/clew/assets/documentation/analysis.js",
+    "crates/clew/assets/documentation/app.js",
+    "crates/clew/assets/documentation/limits.js",
+    "crates/clew/assets/documentation/reader.js",
+    "crates/clew/src/documentation/history.rs",
+    "crates/clew/src/documentation/language.rs",
+    "crates/clew/src/documentation/reader.rs",
+    "crates/clew/src/documentation/render.rs",
+    "crates/clew/tests/documentation_language.rs",
+    "scripts/test_documentation_visual_reader.cjs",
+}
 
 
 def repository_files() -> list[Path]:
@@ -27,6 +42,8 @@ def repository_files() -> list[Path]:
 def main() -> int:
     findings: list[str] = []
     for path in repository_files():
+        if path.relative_to(ROOT).as_posix() in RUSSIAN_LOCALIZATION_FILES:
+            continue
         try:
             metadata = path.lstat()
         except FileNotFoundError:
@@ -42,7 +59,7 @@ def main() -> int:
                 findings.append(f"{path.relative_to(ROOT)}:{line_number}")
 
     if findings:
-        print("Cyrillic text is not allowed; public repository content must be English:", file=sys.stderr)
+        print("Cyrillic text outside explicit product localization is not allowed; repository prose must be English:", file=sys.stderr)
         for finding in findings:
             print(f"  {finding}", file=sys.stderr)
         return 1

@@ -725,6 +725,7 @@ fn materialize(
         let scope = format!("{}/{}", work.subject, id);
         let summary = builder.claim(&scope, "summary", &proposed.summary)?;
         let mut op = Operation {
+            documentation_language: Some(work.request.documentation_language().into()),
             visuals: Vec::new(),
             id,
             title: proposed.title.clone(),

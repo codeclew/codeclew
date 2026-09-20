@@ -195,6 +195,27 @@ needed by older accepted versions. An HTML reader upgrade alone does not require
 reindexing compatible saved analysis. Old private formats are not migrated;
 see the [release boundary](docs/operations/field-documentation.md#release-boundary).
 
+### Choose the documentation language
+
+Use `--language en` or `--language ru` when preparing author Work. The same
+choice is available as `documentationLanguage` in the Work request JSON;
+conflicting values are rejected. Without an explicit choice, new Work inherits
+the publication language, or English if none has been selected.
+
+```bash
+clew docs work prepare --root /work/architecture --subject service:orders --snapshot SAVED_SNAPSHOT --input /work/request.json --language ru
+clew docs render --root /work/architecture --snapshot SAVED_SNAPSHOT --language ru
+```
+
+The language guides the author and the native reader, including flow and decision
+table captions. Russian output should use ordinary Russian engineering terms;
+code, API and evidence identifiers remain unchanged. Language changes authoring
+and publication identity, not source analysis. A render command does not translate
+existing prose: a section in another or unknown language shows a translation gap
+and, when available, a link to its original publication. Old snapshots and accepted
+versions remain intact. Language metadata is not proof of translation quality;
+meaning review and unassessed publication remain separate.
+
 ### Analysis choices and limits
 
 The `source-syntax` profile supports Python, Java and Kotlin 1.9 source scopes

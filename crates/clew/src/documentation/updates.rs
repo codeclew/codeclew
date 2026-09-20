@@ -333,6 +333,12 @@ fn run_queue(
                 schema: "codeclew-documentation-work-request/1.0".into(),
                 audience: "Maintainers reviewing behavior at the coordinator-selected revision"
                     .into(),
+                documentation_language: baseline
+                    .1
+                    .narratives
+                    .get(subject)
+                    .and_then(|n| n.operations.iter().find(|operation| &operation.id == root))
+                    .and_then(|operation| operation.documentation_language.clone()),
                 entrypoint,
                 context_profile: None,
                 max_items: 20,

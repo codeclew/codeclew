@@ -21,8 +21,17 @@ pub(super) fn favicon() -> String {
 }
 
 pub(super) fn page(title: &str, body: &str) -> String {
+    page_language(title, body, "en")
+}
+
+pub(super) fn text<'a>(language: &str, en: &'a str, ru: &'a str) -> &'a str {
+    if language == "ru" { ru } else { en }
+}
+
+pub(super) fn page_language(title: &str, body: &str, language: &str) -> String {
+    let language = text(language, "en", "ru");
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><main class=\"reader-guide\">{body}</main></body></html>",
+        "<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><main class=\"reader-guide\">{body}</main></body></html>",
         render::escape(title),
         render::STYLE
     )
@@ -34,13 +43,32 @@ pub(super) fn navigation(
     history: Option<&str>,
     pages: &[String],
 ) -> String {
+    navigation_language(prefix, overview, history, pages, "en")
+}
+
+pub(super) fn navigation_language(
+    prefix: &str,
+    overview: &str,
+    history: Option<&str>,
+    pages: &[String],
+    language: &str,
+) -> String {
     let _ = pages;
     let icon = ICON.find("<svg").map(|i| &ICON[i..]).unwrap_or(ICON);
+    let label = |en, ru| text(language, en, ru);
+    let history_label = label("History", "История");
+    let documentation = label("Documentation", "Документация");
+    let overview_label = label("Overview", "Обзор");
+    let browse = label("Browse", "Каталог");
+    let help = label("Help", "Справка (английский)");
+    let runbooks = label("Runbooks", "Инструкции (английский)");
+    let search = label("Search document names", "Поиск по названиям документов");
+    let placeholder = label("Search services, processes…", "Найти сервис или процесс…");
     let history_link = history
-        .map(|path| format!("<a href=\"{}\">History</a>", render::escape(path)))
+        .map(|path| format!("<a href=\"{}\">{history_label}</a>", render::escape(path)))
         .unwrap_or_default();
     format!(
-        "<nav class=\"reader-nav\" aria-label=\"Documentation\"><a class=\"reader-brand\" href=\"{}\">{icon}<span>Codeclew</span></a><div class=\"reader-links\"><a href=\"{}\">Overview</a><a href=\"{prefix}catalog.html\">Browse</a><a href=\"{prefix}help.html\">Help</a><a href=\"{prefix}runbooks.html\">Runbooks</a>{history_link}</div><form class=\"reader-search\" action=\"{prefix}catalog.html\" method=\"get\" role=\"search\"><input type=\"search\" name=\"q\" aria-label=\"Search document names\" placeholder=\"Search services, processes…\"></form></nav>",
+        "<nav class=\"reader-nav\" aria-label=\"{documentation}\"><a class=\"reader-brand\" href=\"{}\">{icon}<span>Codeclew</span></a><div class=\"reader-links\"><a href=\"{}\">{overview_label}</a><a href=\"{prefix}catalog.html\">{browse}</a><a href=\"{prefix}help.html\">{help}</a><a href=\"{prefix}runbooks.html\">{runbooks}</a>{history_link}</div><form class=\"reader-search\" action=\"{prefix}catalog.html\" method=\"get\" role=\"search\"><input type=\"search\" name=\"q\" aria-label=\"{search}\" placeholder=\"{placeholder}\"></form></nav>",
         render::escape(overview),
         render::escape(overview)
     )
@@ -61,6 +89,10 @@ pub(super) fn decorate(html: &str, navigation: &str) -> String {
 }
 
 pub(super) fn catalog(files: &BTreeMap<String, Vec<u8>>) -> String {
+    catalog_language(files, "en")
+}
+
+pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str) -> String {
     let rows = files
         .iter()
         .filter_map(|(path, data)| {
@@ -100,7 +132,11 @@ pub(super) fn catalog(files: &BTreeMap<String, Vec<u8>>) -> String {
     let payload = serde_json::to_string(&rows)
         .expect("catalog strings serialize")
         .replace('<', "\\u003c");
-    page("Browse documentation", &format!(r#"<div class="eyebrow">DOCUMENTATION CATALOG</div><h1>Find a service or process</h1><p>Search by name or identifier. Open a document to browse its sections, operations and evidence.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Find documents" placeholder="Service, process or entity flow"><select id="catalog-kind" aria-label="Document type"><option value="">All types</option><option>Service</option><option>Process</option><option>Dataflow</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Enable JavaScript to search this offline catalog, or open the overview from the navigation.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#)).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
+    if language == "ru" {
+        page_language("Каталог документации", &format!(r#"<div class="eyebrow">КАТАЛОГ ДОКУМЕНТАЦИИ</div><h1>Найти сервис или процесс</h1><p>Ищите по названию или идентификатору. Откройте документ, чтобы посмотреть его разделы, операции и подтверждающие данные.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Найти документы" placeholder="Сервис, процесс или движение данных"><select id="catalog-kind" aria-label="Тип документа"><option value="">Все типы</option><option value="Service">Сервис</option><option value="Process">Процесс</option><option value="Dataflow">Движение данных</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Назад</button><button id="catalog-next" type="button">Далее</button></div><noscript><p>Для поиска в локальном каталоге включите JavaScript или откройте обзор через меню.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#), language).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
+    } else {
+        page("Browse documentation", &format!(r#"<div class="eyebrow">DOCUMENTATION CATALOG</div><h1>Find a service or process</h1><p>Search by name or identifier. Open a document to browse its sections, operations and evidence.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Find documents" placeholder="Service, process or entity flow"><select id="catalog-kind" aria-label="Document type"><option value="">All types</option><option>Service</option><option>Process</option><option>Dataflow</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Enable JavaScript to search this offline catalog, or open the overview from the navigation.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#)).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
+    }
 }
 
 pub(super) fn guides(files: &mut BTreeMap<String, Vec<u8>>) {
@@ -153,17 +189,28 @@ fn owned_catalog(bytes: &[u8]) -> bool {
 }
 
 /// Upgrade only byte-identical starter output; preserve any user's guide edits.
+#[cfg(test)]
 pub(super) fn connect_starters(
     repo: &Repository,
     bundle: &str,
     pages: &[String],
 ) -> Result<(), ClewError> {
+    connect_starters_language(repo, bundle, pages, "en")
+}
+
+pub(super) fn connect_starters_language(
+    repo: &Repository,
+    bundle: &str,
+    pages: &[String],
+    language: &str,
+) -> Result<(), ClewError> {
     let starter_nav = navigation("", "help.html", None, &[]);
-    let nav = navigation(
+    let nav = navigation_language(
         &format!("generated/{bundle}/"),
         "index.html",
         Some("history.html"),
         pages,
+        language,
     );
     for (name, title, body) in [
         ("help.html", "Codeclew help", HELP),
@@ -192,7 +239,7 @@ pub(super) fn connect_starters(
                 documents.insert(path.clone(), bytes);
             }
         }
-        let body = catalog(&documents)
+        let body = catalog_language(&documents, language)
             .replace(
                 "\"href\":\"services/",
                 &format!("\"href\":\"generated/{bundle}/services/"),
@@ -211,12 +258,24 @@ pub(super) fn connect_starters(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn decorate_bundle(
     files: &mut BTreeMap<String, Vec<u8>>,
     bundle: &str,
 ) -> Result<(), ClewError> {
+    decorate_bundle_language(files, bundle, "en")
+}
+
+pub(super) fn decorate_bundle_language(
+    files: &mut BTreeMap<String, Vec<u8>>,
+    bundle: &str,
+    language: &str,
+) -> Result<(), ClewError> {
     guides(files);
-    files.insert("catalog.html".into(), catalog(files).into_bytes());
+    files.insert(
+        "catalog.html".into(),
+        catalog_language(files, language).into_bytes(),
+    );
     let pages = files.keys().cloned().collect::<Vec<_>>();
     for (name, contents) in files.iter_mut().filter(|(name, _)| name.ends_with(".html")) {
         let (prefix, overview, history) = if name == "root-overview.html" {
@@ -238,7 +297,7 @@ pub(super) fn decorate_bundle(
                 "../../history.html",
             )
         };
-        let nav = navigation(&prefix, &overview, Some(history), &pages);
+        let nav = navigation_language(&prefix, &overview, Some(history), &pages, language);
         *contents = decorate(
             &String::from_utf8(contents.clone()).map_err(io_error)?,
             &nav,
@@ -251,6 +310,31 @@ pub(super) fn decorate_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn russian_catalog_localizes_controls_without_translating_authored_titles() {
+        let mut files = BTreeMap::from([(
+            "services/orders.html".into(),
+            page(
+                "OrderAPI",
+                "<script id=\"document-data\">{\"title\":\"OrderAPI\"}</script>",
+            )
+            .into_bytes(),
+        )]);
+        decorate_bundle_language(&mut files, "snapshot", "ru").unwrap();
+        let catalog = String::from_utf8_lossy(&files["catalog.html"]);
+        assert!(catalog.contains("<html lang=\"ru\">"));
+        assert!(catalog.contains("Найти сервис или процесс"));
+        assert!(catalog.contains("value=\"Service\">Сервис"));
+        assert!(catalog.contains("OrderAPI"));
+        assert!(catalog.contains("Справка (английский)"));
+        let guide = String::from_utf8_lossy(&files["help.html"]);
+        assert!(guide.contains("<html lang=\"en\">"));
+        assert!(guide.contains("История"));
+        let service = String::from_utf8_lossy(&files["services/orders.html"]);
+        assert!(service.contains("href=\"../catalog.html\""));
+        assert!(service.contains("aria-label=\"Документация\""));
+    }
+
     #[test]
     fn catalog_tracks_publications_but_preserves_user_edits() {
         let root = tempfile::tempdir().unwrap();

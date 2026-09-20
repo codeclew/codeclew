@@ -97,6 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -120,6 +121,21 @@ jobs:
           sha256sum --check codeclew-kotlin23-macos-x86_64.tar.gz.sha256
           sha256sum --check codeclew-linux-x86_64.tar.gz.sha256
           sha256sum --check codeclew-kotlin23-linux-x86_64.tar.gz.sha256
+      - name: Require successful CI for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          for attempt in $(seq 1 120); do
+            result=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$commit&per_page=10" --jq '.workflow_runs | sort_by(.created_at) | last | if . == null or .status != "completed" then "pending" else .conclusion end')
+            case "$result" in
+              success) exit 0 ;;
+              pending) sleep 30 ;;
+              *) printf 'Release CI did not pass: %s\n' "$result" >&2; exit 1 ;;
+            esac
+          done
+          printf '%s\n' 'Timed out waiting for release-commit CI' >&2
+          exit 1
       - name: Publish immutable version assets
         env:
           GH_TOKEN: ${{ github.token }}

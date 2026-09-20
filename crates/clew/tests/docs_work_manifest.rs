@@ -12,6 +12,7 @@ use support::{Fixture, read};
 
 fn request(audience: &str) -> work::Request {
     work::Request {
+        documentation_language: None,
         schema: "codeclew-documentation-work-request/1.0".into(),
         audience: audience.into(),
         entrypoint: None,

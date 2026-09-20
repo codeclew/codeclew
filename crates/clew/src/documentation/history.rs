@@ -24,6 +24,8 @@ pub struct Publication {
     pub parent: Option<String>,
     pub ordinal: u64,
     pub input_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     pub target_revisions: BTreeMap<String, Option<String>>,
     pub sections: BTreeMap<String, SectionState>,
     pub explanation_versions: BTreeMap<String, String>,
@@ -87,6 +89,9 @@ fn load(repo: &Repository, id: &str) -> Result<Publication, ClewError> {
         || p.id != id
         || p.ordinal == 0
         || p.parent.as_ref().is_some_and(|p| !valid(p) || p == id)
+        || p.documentation_language
+            .as_deref()
+            .is_some_and(|language| !matches!(language, "en" | "ru"))
         || p.files.len() > 8192
         || p.sections.len() > 32768
     {
@@ -146,7 +151,15 @@ fn records(repo: &Repository) -> Result<Vec<Publication>, ClewError> {
     rows.sort_by(|a, b| b.ordinal.cmp(&a.ordinal).then(a.id.cmp(&b.id)));
     Ok(rows)
 }
-fn nav(id: &str, parent: Option<&str>, nested: bool) -> String {
+fn nav(id: &str, parent: Option<&str>, nested: bool, language: &str) -> String {
+    let label = |en, ru| super::reader::text(language, en, ru);
+    let previous_label = label("Previous snapshot", "Предыдущий снимок");
+    let snapshot = label("Snapshot", "Снимок");
+    let retained = label(
+        "retained source version",
+        "сохранённая версия исходных данных",
+    );
+    let history_label = label("Snapshot history", "История снимков");
     let history = if nested {
         "../../../history.html"
     } else {
@@ -155,13 +168,13 @@ fn nav(id: &str, parent: Option<&str>, nested: bool) -> String {
     let previous = parent
         .map(|p| {
             format!(
-                "<a href=\"{}{p}/overview.html\">Previous snapshot</a>",
+                "<a href=\"{}{p}/overview.html\">{previous_label}</a>",
                 if nested { "../../" } else { "../" }
             )
         })
         .unwrap_or_default();
     format!(
-        "<details class=\"snapshot-history\"><summary>Snapshot {} · retained source version</summary><nav class=\"snapshot-links\" aria-label=\"Snapshot history\"><a href=\"{history}\">Snapshot history</a>{previous}</nav></details>",
+        "<details class=\"snapshot-history\"><summary>{snapshot} {} · {retained}</summary><nav class=\"snapshot-links\" aria-label=\"{history_label}\"><a href=\"{history}\">{history_label}</a>{previous}</nav></details>",
         &id[..12]
     )
 }
@@ -202,7 +215,15 @@ pub(super) fn prepare(
         }
         html = html.replacen(
             "</nav>",
-            &format!("</nav>{}", nav(id, parent.as_deref(), nested)),
+            &format!(
+                "</nav>{}",
+                nav(
+                    id,
+                    parent.as_deref(),
+                    nested,
+                    binding.documentation_language.as_deref().unwrap_or("en")
+                )
+            ),
             1,
         );
         *contents = html.into_bytes();
@@ -235,6 +256,7 @@ pub(super) fn prepare(
         parent,
         ordinal,
         input_digest: input_digest.into(),
+        documentation_language: binding.documentation_language.clone(),
         target_revisions: binding.target_revisions.clone(),
         sections: binding.section_states.clone(),
         explanation_versions: binding
@@ -254,20 +276,44 @@ pub(super) fn prepare(
 }
 pub(super) fn index(repo: &Repository, current: &str) -> Result<(), ClewError> {
     let rows = records(repo)?;
-    let cards=rows.iter().map(|p|format!("<li><a href=\"generated/{}/overview.html\">Snapshot {} · {}</a>{}<details><summary>Observed targets and tags</summary><pre>{}</pre></details></li>",p.id,p.ordinal,&p.id[..12],if p.id==current{" · Current publication"}else{""},render::escape(&json!({"targets":p.target_revisions,"tags":p.observed_tags}).to_string()))).collect::<String>();
     let publication = load(repo, current)?;
+    let language = publication
+        .documentation_language
+        .as_deref()
+        .unwrap_or("en");
+    let label = |en, ru| super::reader::text(language, en, ru);
+    let snapshot = label("Snapshot", "Снимок");
+    let current_label = label("Current publication", "Текущая публикация");
+    let targets = label("Observed targets and tags", "Сохранённые версии и метки");
+    let cards = rows.iter().map(|p| {
+        let publication_language = match p.documentation_language.as_deref() {
+            Some("en") => label("English", "Английский"),
+            Some("ru") => label("Russian", "Русский"),
+            _ => label("Original version (language unspecified)", "Исходная версия (язык не указан)"),
+        };
+        format!("<li><a href=\"generated/{}/overview.html\">{snapshot} {} · {}</a> · {}{}<details><summary>{targets}</summary><pre>{}</pre></details></li>", p.id, p.ordinal, &p.id[..12], publication_language, if p.id == current { format!(" · {current_label}") } else { String::new() }, render::escape(&json!({"targets":p.target_revisions,"tags":p.observed_tags}).to_string()))
+    }).collect::<String>();
     let pages = publication.files.keys().cloned().collect::<Vec<_>>();
-    let nav =
-        super::reader::navigation(&format!("generated/{current}/"), "index.html", None, &pages);
-    let body = format!(
-        "<h1>Documentation history</h1><p>Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.</p><ol>{cards}</ol>"
+    let nav = super::reader::navigation_language(
+        &format!("generated/{current}/"),
+        "index.html",
+        None,
+        &pages,
+        language,
     );
+    let title = label("Documentation history", "История документации");
+    let explanation = label(
+        "Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.",
+        "Снимки сохраняют версии исходных данных и состояние проверки смысла. Перемещение метки не изменяет снимок. Проверка истории позволяет убедиться в целостности сохранённых файлов и доступности подтверждающих данных.",
+    );
+    let body = format!("<h1>{title}</h1><p>{explanation}</p><ol>{cards}</ol>");
     repo.atomic(
         "docs/history.html",
-        super::reader::decorate(&super::reader::page("Documentation history", &body), &nav)
+        super::reader::decorate(&super::reader::page_language(title, &body, language), &nav)
             .as_bytes(),
     )
 }
+
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::List {
@@ -365,5 +411,47 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 json!({"schema":"codeclew-docs-history-compare/1.0","before":before,"after":after,"beforeTargets":a.target_revisions,"afterTargets":b.target_revisions}),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+    #[test]
+    fn history_localizes_chrome_and_preserves_legacy_language_absence() {
+        let id = "a".repeat(64);
+        let legacy = json!({"schema":"codeclew-documentation-publication/1.0","id":id,"parent":null,"ordinal":1,"inputDigest":"digest","targetRevisions":{},"sections":{},"explanationVersions":{},"observedTags":{},"evidencePackages":[],"files":{}});
+        let mut publication: Publication = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(publication.documentation_language.is_none());
+        assert_eq!(serde_json::to_value(&publication).unwrap(), legacy);
+        let root = tempfile::tempdir().unwrap();
+        Repository::init(root.path(), "Docs").unwrap();
+        let repo = Repository::open(root.path()).unwrap();
+        repo.atomic(&path(&id).unwrap(), &bytes(&publication).unwrap())
+            .unwrap();
+        publication.id = "b".repeat(64);
+        publication.parent = Some(id.clone());
+        publication.ordinal = 2;
+        publication.documentation_language = Some("ru".into());
+        repo.atomic(
+            &path(&publication.id).unwrap(),
+            &bytes(&publication).unwrap(),
+        )
+        .unwrap();
+        index(&repo, &publication.id).unwrap();
+        let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
+        assert!(html.contains("<html lang=\"ru\">"));
+        assert!(html.contains("История документации"));
+        assert!(html.contains("Исходная версия (язык не указан)"));
+        assert!(html.contains("Русский"));
+        assert_eq!(
+            serde_json::to_value(load(&repo, &id).unwrap()).unwrap(),
+            legacy
+        );
+        assert!(
+            nav(&publication.id, Some(&id), true, "ru")
+                .contains(&format!("../../{id}/overview.html"))
+        );
+        assert!(nav(&publication.id, Some(&id), true, "ru").contains("Предыдущий снимок"));
     }
 }

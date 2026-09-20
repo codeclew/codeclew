@@ -72,6 +72,7 @@ fn stage_publication(
     let binding = bindings_with(file, &digest);
 
     let publication = Publication {
+        documentation_language: None,
         schema: "codeclew-documentation-publication/1.0".into(),
         id: id.into(),
         parent: None,

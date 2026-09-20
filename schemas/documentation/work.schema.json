@@ -59,6 +59,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "documentationLanguage": {
+          "type": "string",
+          "enum": [
+            "en",
+            "ru"
+          ],
+          "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
         }
       },
       "required": [
@@ -243,6 +251,14 @@
         },
         "receiptDigest": {
           "type": "string"
+        },
+        "documentationLanguage": {
+          "type": "string",
+          "enum": [
+            "en",
+            "ru"
+          ],
+          "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
         }
       },
       "required": [

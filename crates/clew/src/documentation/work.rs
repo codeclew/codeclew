@@ -29,6 +29,9 @@ pub enum Command {
         /// Select saved evidence; defaults to the latest saved check, never captures.
         #[arg(long)]
         snapshot: Option<String>,
+        /// Language of authored documentation prose, independent of source language.
+        #[arg(long, value_parser = ["en", "ru"])]
+        language: Option<String>,
     },
     Run {
         #[arg(long)]
@@ -77,6 +80,8 @@ fn default_bytes() -> usize {
 pub struct Request {
     pub schema: String,
     pub audience: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     #[serde(default)]
     pub entrypoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +93,47 @@ pub struct Request {
     #[serde(default)]
     pub external_inputs: Vec<String>,
 }
+impl Request {
+    pub fn documentation_language(&self) -> &str {
+        self.documentation_language.as_deref().unwrap_or("en")
+    }
+
+    fn normalize_documentation_language(&mut self) -> Result<(), ClewError> {
+        self.validate_documentation_language()?;
+        self.documentation_language
+            .get_or_insert_with(|| "en".into());
+        Ok(())
+    }
+
+    fn with_language_flag(mut self, language: Option<String>) -> Result<Self, ClewError> {
+        if let Some(language) = language {
+            if self
+                .documentation_language
+                .as_ref()
+                .is_some_and(|input| input != &language)
+            {
+                return Err(invalid(
+                    "--language conflicts with input documentationLanguage",
+                ));
+            }
+            self.documentation_language = Some(language);
+        }
+        self.validate_documentation_language()?;
+        Ok(self)
+    }
+
+    pub(super) fn validate_documentation_language(&self) -> Result<(), ClewError> {
+        if matches!(
+            self.documentation_language.as_deref(),
+            None | Some("en" | "ru")
+        ) {
+            Ok(())
+        } else {
+            Err(invalid("documentationLanguage must be en or ru"))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Selection {
@@ -244,6 +290,7 @@ fn load_stored(repo: &Repository, id: &str) -> Result<StoredWork, ClewError> {
         "DOCS_REINDEX_REQUIRED: unsupported saved work format ({}); initialize a fresh documentation root, run docs check, and prepare new work", error.message)))?;
     stored.validate_identity(id)?;
     validate_context_profile(&stored.subject, &stored.request)?;
+    stored.request.validate_documentation_language()?;
     Ok(stored)
 }
 
@@ -278,10 +325,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             subject,
             input,
             snapshot,
+            language,
         } => prepare_with_snapshot(
             &Repository::open(&root)?,
             subject,
-            store::read(&input, store::MAX_RECORD)?,
+            store::read::<Request>(&input, store::MAX_RECORD)?.with_language_flag(language)?,
             snapshot.as_deref(),
         ),
         Command::Run { root, work, config } => {
@@ -388,6 +436,7 @@ pub fn prepare_with_snapshot(
         .ok_or_else(|| invalid("work subject must be service:ID or scenario:ID"))?;
     // Context projection is part of immutable Work identity. A saved exhaustive
     // section read ledger must not be reused as the compact packet's ledger.
+    request.validate_documentation_language()?;
     normalize_section_profile(&subject, &mut request);
     validate_context_profile(&subject, &request)?;
     let selected = match kind {
@@ -410,6 +459,12 @@ pub fn prepare_with_snapshot(
     };
     let (checked, evidence_snapshot) = Check::retained(repo, snapshot, &selected)?;
     let baseline = bindings::baseline(repo)?;
+    if request.documentation_language.is_none() {
+        request.documentation_language = baseline
+            .as_ref()
+            .and_then(|(_, binding)| binding.documentation_language.clone());
+    }
+    request.normalize_documentation_language()?;
     let retained = baseline
         .as_ref()
         .and_then(|(_, b)| b.narratives.get(&subject).cloned());
@@ -686,7 +741,7 @@ fn section_content_preview(mut record: Value, max_bytes: usize) -> Result<Value,
     };
     let visual_count = content["visuals"].as_array().map_or(0, Vec::len);
     record["content"] = json!({
-        "id":content["id"],"title":text_preview(&content["title"],128),
+        "id":content["id"],"documentationLanguage":content["documentationLanguage"],"title":text_preview(&content["title"],128),
         "summary":{"text":text_preview(&content["summary"]["text"],512)},
         "visuals":[],"visualCount":visual_count,
         "eventCount":content["events"].as_array().map_or(0,Vec::len),
@@ -1043,6 +1098,18 @@ fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewE
         .map(|(key, h)| ((h.kind.as_str(), h.id.as_str()), key.as_str()))
         .collect();
     for item in &mut items {
+        if item["kind"] == "SECTION" {
+            let accepted = item["record"]["content"]["documentationLanguage"].as_str();
+            let status = if item["record"]["content"].is_null() {
+                "NOT_AUTHORED"
+            } else if accepted == Some(work.request.documentation_language()) {
+                "MATCHES_REQUEST"
+            } else {
+                "REQUIRES_TRANSLATION"
+            };
+            item["documentationLanguageStatus"] = json!(status);
+            item["requestedDocumentationLanguage"] = json!(work.request.documentation_language());
+        }
         if let Some(reference) = reverse.get(&(
             item["kind"].as_str().unwrap_or(""),
             item["id"].as_str().unwrap_or(""),
@@ -1259,6 +1326,7 @@ pub(super) fn read_loaded(
         "contextDigest":work.checked.context_digest,"inputDigest":work.checked.input_digest,"authority":"IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
         "influenceCoverage":"RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED","membershipDigest":membership_digest,
         "total":items.len(),"items":[],"omitted":[],"nextCursor":null});
+    output["documentationLanguage"] = json!(work.request.documentation_language());
     if work.subject.starts_with("scenario:") {
         output["subjectReference"] = json!({
             "reference": work.subject,
@@ -1432,6 +1500,7 @@ mod section_context_tests {
             request: Request {
                 schema: "codeclew-documentation-work-request/1.0".into(),
                 audience: "Maintainers".into(),
+                documentation_language: None,
                 entrypoint: Some("section-responsibilities".into()),
                 context_profile: None,
                 max_items: 100,
@@ -1447,6 +1516,62 @@ mod section_context_tests {
             obligations: vec![],
             review_reasons: vec![],
         }
+    }
+
+    #[test]
+    fn documentation_language_changes_work_identity_without_changing_evidence() {
+        let mut work = fixture(1, true);
+        let old = StoredWork::from_runtime(&work, "capture".into());
+        assert!(
+            serde_json::to_value(&old).unwrap()["request"]
+                .get("documentationLanguage")
+                .is_none()
+        );
+        work.request.normalize_documentation_language().unwrap();
+        assert_eq!(work.request.documentation_language(), "en");
+        let english = StoredWork::from_runtime(&work, "capture".into());
+        work.request.documentation_language = Some("ru".into());
+        let russian = StoredWork::from_runtime(&work, "capture".into());
+        assert_ne!(digest(&old).unwrap(), digest(&english).unwrap());
+        assert_ne!(digest(&english).unwrap(), digest(&russian).unwrap());
+        assert_eq!(english.evidence_snapshot, russian.evidence_snapshot);
+        assert_eq!(english.influence, russian.influence);
+        assert_eq!(english.retained, russian.retained);
+        let rows = rows(&work, &Selection::default()).unwrap();
+        let section = rows.iter().find(|row| row["kind"] == "SECTION").unwrap();
+        assert_eq!(
+            section["documentationLanguageStatus"],
+            "REQUIRES_TRANSLATION"
+        );
+        work.retained.as_mut().unwrap().operations[0].documentation_language = Some("en".into());
+        assert_eq!(rows_for_section_language(&work), "REQUIRES_TRANSLATION");
+        work.retained.as_mut().unwrap().operations[0].documentation_language = Some("ru".into());
+        assert_eq!(rows_for_section_language(&work), "MATCHES_REQUEST");
+        work.request.documentation_language = Some("de".into());
+        assert!(work.request.normalize_documentation_language().is_err());
+    }
+
+    fn rows_for_section_language(work: &Work) -> Value {
+        rows(work, &Selection::default())
+            .unwrap()
+            .into_iter()
+            .find(|row| row["kind"] == "SECTION")
+            .unwrap()["documentationLanguageStatus"]
+            .clone()
+    }
+
+    #[test]
+    fn documentation_language_flag_cannot_override_conflicting_input() {
+        let request = fixture(1, false).request;
+        let russian = request.with_language_flag(Some("ru".into())).unwrap();
+        assert_eq!(russian.documentation_language(), "ru");
+        assert!(
+            russian
+                .clone()
+                .with_language_flag(Some("en".into()))
+                .is_err()
+        );
+        assert!(russian.with_language_flag(Some("ru".into())).is_ok());
     }
 
     #[test]

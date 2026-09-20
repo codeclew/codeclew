@@ -135,3 +135,113 @@ test('missing profile sections and discovered but unauthored entries remain expl
  assert.match(html,/Entity ownership and creation roles have no explicit domain declarations/);
  assert.doesNotMatch(html,/creates no entities|No outgoing calls|No Kafka|No cron/);
 });
+
+test('Russian locale translates reader chrome, policies and source controls while retaining authored text',async()=>{
+ const data=fixture();data.language='ru';
+ data.operations[0].visuals[0].nodes[0].meaning.text='Source /tasks/{taskType} OK_CODE';
+ const r=load(data),html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Задачи сервиса/);
+ assert.match(html,/Предметные сущности/);
+ assert.match(html,/Процессы и диаграммы/);
+ assert.match(html,/Актуальность кода: <b>Устарело/);
+ assert.match(html,/Проверка смысла: <b>Смысл не проверен/);
+ assert.match(html,/Source \/tasks\/\{taskType\} OK_CODE/);
+ assert.match(html,/Documented responsibilities/);
+ assert.match(html,/Dispatch work/);
+ assert.doesNotMatch(html,/Source freshness:|Meaning review:|Complete diagram as text/);
+ assert.match(r.e('scenario-nav').innerHTML,/РАЗДЕЛ/);
+ r.run("showEntry(visualKey('section-responsibilities','rules'))");
+ const table=r.e('scenario-content').innerHTML;
+ assert.match(table,/Строки проверяются сверху вниз/);
+ assert.match(table,/Правило выбора строк: <b>FIRST/);
+ assert.match(table,/<th>Условие<\/th><th>Выбранный результат/);
+ assert.match(table,/После выбора: выполнение и результаты/);
+ assert.match(table,/A return exits the inspected branch/);
+ assert.match(table,/Handler failure propagates separately/);
+ r.click({sources:'same-source',sourceOperation:'section-responsibilities'});
+ assert.equal(r.e('source-title').textContent,'Подтверждающий код');
+ assert.match(r.e('source-code').innerHTML,/ACCEPTED SOURCE/);
+ assert.match(r.e('source-foot').innerHTML,/точный сохранённый фрагмент кода/);
+ await r.e('copy-source').onclick();
+ assert.equal(r.e('copy-status').textContent,'Исходный код скопирован');
+});
+test('Russian UNIQUE and UNKNOWN policies explain selection without translating rule identifiers',()=>{
+ for(const [policy,expected] of [['UNIQUE',/не более одной строки/],['UNKNOWN',/Порядок строк не доказывает/]]){
+  const data=fixture();data.language='ru';data.operations[0].visuals[1].hitPolicy=policy;data.operations[0].visuals[1].parent=null;
+  const r=load(data);r.run("showEntry(visualKey('section-responsibilities','rules'))");
+  assert.match(r.e('scenario-content').innerHTML,expected);
+  assert.ok(r.e('scenario-content').innerHTML.includes(`<b>${policy}</b>`));
+  assert.match(r.e('scenario-content').innerHTML,/Локальное решение; его место в общем процессе пока не установлено/);
+ }
+});
+test('Russian catalogue, coverage and contract UI preserve paths, schema keys and authored descriptions',()=>{
+ const data=fixture();data.language='ru';data.catalogue=[{id:'handler',symbol:'handleTask',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/tasks/{taskType}']},sourceIds:[]}];
+ const r=load(data);
+ r.run('catalogue()');assert.match(r.e('catalogue-view').innerHTML,/точек входа/);assert.match(r.e('catalogue-view').innerHTML,/POST/);assert.match(r.e('catalogue-view').innerHTML,/\/tasks\/\{taskType\}/);
+ r.run('coverage()');assert.match(r.e('coverage-view').innerHTML,/Что подтверждено исходным кодом/);
+ const fields=r.run(`fields({type:'object',required:['task_id'],properties:{task_id:{type:'string',description:'Original description'},optionalKey:{type:'integer'}}})`);
+ assert.match(fields,/<th>Поле<\/th><th>Тип/);assert.match(fields,/class="required">обязательно/);assert.match(fields,/class="optional">необязательно/);
+ assert.match(fields,/task_id/);assert.match(fields,/optionalKey/);assert.match(fields,/Original description/);assert.match(fields,/string/);
+});
+test('explicit language gap suppresses foreign prose and visuals, keeps accepted model unchanged and offers original link',()=>{
+ const data=fixture();data.language='ru';data.requestedDocumentationLanguage='ru';
+ data.translationGaps={'section-responsibilities':{requestedLanguage:'ru',availableLanguage:'en',href:'../history/service.html'}};
+ const original=JSON.stringify(data),r=load(data),html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Перевод ещё не подготовлен/);assert.match(html,/Английская версия/);assert.match(html,/href="\.\.\/history\/service.html"/);
+ assert.doesNotMatch(html,/Documented responsibilities|Dispatch work|Receive request|artifact-svg/);
+ assert.doesNotMatch(r.e('scenario-nav').innerHTML,/Dispatch work|Select handler/);
+ assert.equal(r.run('JSON.stringify(publication)'),original);
+ assert.equal(r.e('document-data').textContent,original);
+ r.run("showEntry('section-responsibilities')");
+ assert.match(r.e('scenario-content').innerHTML,/Задачи сервиса/);assert.match(r.e('scenario-content').innerHTML,/Английская версия/);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/Documented responsibilities|Dispatch work/);
+ r.run("showEntry('process-catalog')");assert.doesNotMatch(r.e('scenario-content').innerHTML,/Dispatch work|Select handler/);
+});
+test('unknown-language operation shows original-version gap; absent explicit request retains legacy content',()=>{
+ const data=fixture();data.language='en';data.requestedDocumentationLanguage='en';
+ data.translationGaps={'section-responsibilities':{requestedLanguage:'en',availableLanguage:null,href:'../history/original.html'}};
+ let r=load(data);assert.match(r.e('scenario-content').innerHTML,/Original version/);assert.doesNotMatch(r.e('scenario-content').innerHTML,/Documented responsibilities/);
+ delete data.requestedDocumentationLanguage;r=load(data);assert.match(r.e('scenario-content').innerHTML,/Documented responsibilities/);assert.doesNotMatch(r.e('scenario-content').innerHTML,/Translation pending/);
+ data.language='fr';r=load(data);assert.match(r.e('scenario-content').innerHTML,/Source freshness/);
+});
+test('translation gap does not expose unsafe historical links or mismatched endpoint explanations',()=>{
+ const data=fixture();data.language='ru';data.requestedDocumentationLanguage='ru';
+ const op={...data.operations[0],id:'handler',title:'Foreign authored title',visuals:[]};data.operations.push(op);
+ data.catalogue=[{id:'handler',symbol:'handleTask',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/tasks/{taskType}']},sourceIds:[]}];
+ data.translationGaps={handler:{requestedLanguage:'ru',availableLanguage:'en',href:'javascript:alert(1)'}};
+ const r=load(data);r.run("showEntry('handler')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Перевод ещё не подготовлен/);assert.match(html,/\/tasks\/\{taskType\}/);
+ assert.doesNotMatch(html,/javascript:|Foreign authored title|Documented responsibilities/);
+});
+test('overview translation gap preserves same-language sections and fallback operation navigation',()=>{
+ const data=fixture();data.language='ru';data.requestedDocumentationLanguage='ru';
+ const overview={...data.operations[0],id:'section-overview',title:'Foreign overview',summary:fragment('FOREIGN OVERVIEW'),visuals:[]};
+ data.operations.push(overview);data.sections[0].content=overview;
+ data.operations.push({...overview,id:'missing-operation',title:'FOREIGN OPERATION',summary:fragment('FOREIGN EXPLANATION')});
+ data.translationGaps={'section-overview':{availableLanguage:'en',href:null},'missing-operation':{availableLanguage:'en',href:null}};
+ const r=load(data),html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Перевод ещё не подготовлен/);assert.match(html,/Documented responsibilities/);assert.doesNotMatch(html,/FOREIGN OVERVIEW/);
+ assert.match(r.e('scenario-nav').innerHTML,/missing-operation/);assert.doesNotMatch(r.e('scenario-nav').innerHTML,/FOREIGN OPERATION/);
+ r.run("showEntry('missing-operation')");assert.match(r.e('scenario-content').innerHTML,/Перевод ещё не подготовлен/);assert.doesNotMatch(r.e('scenario-content').innerHTML,/FOREIGN EXPLANATION/);
+});
+test('static chrome translation never rewrites interpolated text even when it equals a chrome key',()=>{
+ const data=fixture();data.language='ru';const r=load(data);
+ assert.equal(r.run('chromeHtml`<p>Source ${"Source"} ${"READ_SOURCE"} ${"/Source/in"}</p>`'),'<p>Исходный код Source READ_SOURCE /Source/in</p>');
+ assert.equal(r.run('chromeHtml`<p>invisible Within SourceMapping</p>`'),'<p>invisible Within SourceMapping</p>');
+});
+test('shared catalogue localizes chrome and retains neutral filtering keys and authored titles',()=>{
+ const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
+ for(const language of ['en','ru']){
+  const nodes=Object.fromEntries(['catalog-data','catalog-query','catalog-kind','catalog-results','catalog-status','catalog-prev','catalog-next'].map(key=>[key,element()]));
+  nodes['catalog-data'].textContent=JSON.stringify([{kind:'Service',id:'orderAPI',title:'Authored title',href:'services/orderAPI.html'},{kind:'Process',id:'p',title:'ProcessTitle',href:'scenarios/p.html'}]);
+  const document={documentElement:{lang:language},querySelector(){return null;},querySelectorAll(){return [];},getElementById(key){return nodes[key];},createElement:element};
+  vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{search:'',pathname:'/catalog.html'}});
+  assert.equal(nodes['catalog-results'].children.length,2);
+  assert.equal(nodes['catalog-results'].children[0].children[0].textContent,'Authored title');
+  assert.equal(nodes['catalog-results'].children[0].children[1].textContent,language==='ru'?'Сервис · orderAPI':'Service · orderAPI');
+  nodes['catalog-kind'].value='Service';nodes['catalog-kind'].listeners.change();assert.equal(nodes['catalog-results'].children.length,1);
+  nodes['catalog-query'].value='absent';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,0);
+  assert.match(nodes['catalog-status'].textContent,language==='ru'?/Документы не найдены/:/No matching/);
+ }
+});
