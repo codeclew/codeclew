@@ -162,6 +162,12 @@
     "group": "Documentation"
   },
   {
+    "title": "Show what happens inside the service.",
+    "url": "./documentation.html#native-visuals",
+    "description": "Service documentation",
+    "group": "Documentation"
+  },
+  {
     "title": "A fresh repository already has help.",
     "url": "./documentation.html#offline-help",
     "description": "Service documentation",
@@ -255,6 +261,12 @@
     "title": "Evidence & studies",
     "url": "./evidence.html",
     "description": "Release references and historical studies, with methods and limitations.",
+    "group": "Research"
+  },
+  {
+    "title": "Internal flows in the generated documentation.",
+    "url": "./evidence.html#release-0-11-0",
+    "description": "Evidence & studies",
     "group": "Research"
   },
   {
