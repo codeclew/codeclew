@@ -1,11 +1,13 @@
 # Codeclew — managed semantic context and changes
 
-Codeclew builds bounded compiler-backed context, validates an edit plan in an
-isolated candidate worktree, and publishes the resulting commit explicitly.
+Codeclew prepares bounded source and compiler context for agents. Use it to
+explain code, maintain source-linked service documentation, trace interactions
+across repositories, or validate an edit plan in an isolated candidate worktree
+before explicitly publishing its commit.
 Use the installed `clew` launcher for public releases or `./clew` from a pinned
 checkout for source development; direct capsule binaries are unsupported.
 
-Version 0.7 separates language extraction from framework interpretation.
+Language extraction is separate from framework interpretation.
 `clew capabilities` lists installed analysis modules and their compiler/JVM
 requirements. Java 17+ and the installed Kotlin engines emit portable annotation
 facts; one Rust Spring module derives entrypoints with separate input and policy
@@ -124,50 +126,102 @@ for the data flow and extension boundaries.
 
 ## Durable service documentation
 
-Codeclew 0.5.0 adds `clew docs` for a separate architecture repository: a root
-service overview, one page per microservice, and named interaction scenarios.
-The agent writes explanations from bounded compiler/source context; Codeclew
-validates source bindings and coverage, renders offline pages and reports which
-fragments are stale after source or declaration changes. Each diagram step opens
-its retained source. Engineer-declared relationships retain their authority.
+`clew docs` maintains documentation in a separate architecture repository. The
+native offline reader brings together a service overview, purpose and
+responsibilities, domain information, incoming and outgoing interactions,
+internal processes, source evidence and publication history. The agent authors
+explanations from recorded evidence; Codeclew validates their bindings, publishes
+immutable versions and tracks which explanations need rechecking when their
+inputs change. Declared relationships retain their declared authority.
 
-Codeclew 0.8.1 initializes offline help at `docs/help.html` and Codeclew runbooks
-at `docs/runbooks.html`, before any service is registered. Every new publication
-includes the guides, cross-page navigation and explicit analysis-provider status.
-Service-specific operational procedures still come from your sources and notes.
+### Internal flows and decisions
 
-Start with `clew docs init --root /work/architecture`, adapt the generated examples,
-and follow the [packaged workflow](skills/codeclew/references/service-documentation.md).
-The [two-service fixture](fixtures/durable-docs/README.md) provides a reproducible
-example with guards, OpenAPI constraints and recovery from a fresh local home.
-Codeclew 0.6.1 keeps reader diagrams bounded to at most 12 source-bound nodes,
-with the full branch evidence retained separately. HTML, Markdown and Mermaid
-use the same compact overview.
+Version 0.11.0 adds typed visuals to ordinary service pages:
 
-Codeclew 0.6.0 adds Kotlin/JVM 1.9+ Maven/Gradle analysis alongside
-Java 17+, up to eight services per scenario, declared Kafka transitions, and
-domain explanation paragraphs linked to diagram steps. There is one compilation
-per service; the overview can contain more services. Kotlin compiler/analyzer
-differences and callback scheduling remain explicit boundaries. The
-[Kotlin fixture](fixtures/durable-docs-kotlin/README.md) verifies compiler-backed
-HTTP/Kafka extraction from a Kotlin 1.9 Maven project.
-Short business overviews appear first; detailed source flow opens on demand.
-Source-bound HTTP/Kafka contract cards and payload tables support projects without
-OpenAPI. They retain explicit interpretation and serialization boundaries.
-Codeclew 0.8.0 adds the `source-syntax` documentation profile for Python,
-Java, and Kotlin 1.9 without a project build or K2. It reads an explicit committed
-source scope, records lexical declarations and control structure, and preserves
-unresolved call targets. Optional compiler enrichment attaches to the same source
-objects. `docs context --format compact` reduces duplicate evidence, and
-`docs changes` provides affected claims with before/after sources.
-See [build-independent documentation](docs/operations/source-documentation.md)
-for setup, freshness rules, and current limitations. Local authors can prepare
-recorded work, submit a proposal, and publish it with `docs proposal publish
---unassessed` without an external model runner. Meaning review remains separate
-from source freshness. Update from 0.7.1 to use this workflow.
+- Execution-flow diagrams explain selected actions, ordering and branch guards.
+- Dependency maps show structural relationships without implying execution order.
+- Decision tables describe conditions and outcomes and can link to a particular
+  node in the same operation's flow diagram. Policies such as `FIRST` include an
+  explanation; they do not establish ordering between separate tables.
 
-No model API or online renderer is required. Project build dependencies remain
-subject to the target environment's configured caches and mirrors.
+Purpose, scope and semantic claims cite evidence delivered to the author. Visuals
+share their owning operation's accepted version, source bindings, freshness and
+meaning-review status. Updating prose cannot silently erase existing diagrams;
+replacing or removing them must be explicit. Old versions remain in history.
+Rendering is local and does not require a CDN, a Mermaid installation or an
+online model service. Tables document decisions; they are not executable DMN.
+
+The overview shows authored service sections before detailed diagrams, and source
+records open from the relevant explanation. Missing content, partial discovery
+and unresolved library or runtime behavior remain visible. An empty inventory
+is not evidence that the service has no internal processes or outgoing calls.
+
+### Start from saved evidence
+
+Initialize a documentation root, register services using the generated examples,
+and select the analysis appropriate to each repository:
+
+```bash
+clew docs init --root /work/architecture
+```
+
+The [packaged workflow](skills/codeclew/references/service-documentation.md)
+covers registration, analysis, authoring, publication and history. For a concrete
+source-bound visual proposal, follow
+[publishing internal flows and decisions](docs/operations/field-documentation.md#publish-internal-flows-and-decisions-in-service-pages).
+Generic Work/proposal authoring and configured process-overview jobs support
+these visuals. The narrow `section-author-v1` contract remains summary-only.
+
+Use `docs check` when source acquisition or freshness checking is needed.
+Ordinary context, Work and rendering consume compatible saved evidence; adding
+an explanation or diagram does not require another indexing pass. Section Work
+starts with a bounded orientation packet, and additional evidence is read on
+demand instead of requiring the author to page through the whole dependency
+inventory. To render an existing snapshot explicitly:
+
+```bash
+clew docs render --root /work/architecture --snapshot SAVED_SNAPSHOT
+```
+
+Use the actual snapshot reference returned by Codeclew. If a previous check
+stopped before saving its final snapshot, `docs snapshot recover` can assemble
+one from intact current-format service captures without the original checkout
+or compiler. Recovery does not reverify source freshness. See
+[saved-capture recovery](docs/operations/field-documentation.md#recover-saved-captures-after-a-failed-check)
+for the required declarations and capture manifests.
+
+Publications share identical retained influence maps while keeping the evidence
+needed by older accepted versions. An HTML reader upgrade alone does not require
+reindexing compatible saved analysis. Old private formats are not migrated;
+see the [release boundary](docs/operations/field-documentation.md#release-boundary).
+
+### Analysis choices and limits
+
+The `source-syntax` profile supports Python, Java and Kotlin 1.9 source scopes
+without running a project build or K2. It records lexical declarations and
+control structure while preserving unresolved targets. Optional compiler
+enrichment attaches to the same source objects. Java 17+ and supported Kotlin/JVM
+Maven/Gradle analysis provide stronger compiler evidence where available.
+Compiler differences, callback scheduling and external-library frontiers remain
+explicit boundaries. See
+[build-independent documentation](docs/operations/source-documentation.md).
+
+Capture alone does not produce a complete business explanation. Selecting useful
+process boundaries and interpreting source still require an author. Local agents
+can submit proposals and publish with `--unassessed`; a model API is optional,
+and meaning review is separate from source freshness. Source citations and
+structural validation do not prove that a model's explanation is correct.
+Complete business-flow discovery, deployed behavior and a universal generator
+plugin SDK are not guaranteed by this release.
+
+Offline help and product runbooks are available at `docs/help.html` and
+`docs/runbooks.html`; service-specific procedures must come from service sources
+and notes. The [two-service fixture](fixtures/durable-docs/README.md) demonstrates
+guards, contracts and recovery, and the
+[Kotlin fixture](fixtures/durable-docs-kotlin/README.md) exercises compiler-backed
+HTTP/Kafka extraction. Project builds still depend on the target environment's
+configured caches and mirrors. See the
+[v0.11.0 release notes](docs/releases/v0.11.0.md) for scope and limitations.
 
 ## Source-build requirements
 
