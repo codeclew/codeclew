@@ -39,6 +39,14 @@ struct PinRecord {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Recover an immutable historical snapshot from explicitly named captures.
+    Recover {
+        #[arg(long)]
+        root: PathBuf,
+        /// Basename of a current-format manifest in .codeclew/cache; repeat per service.
+        #[arg(long = "capture", required = true)]
+        captures: Vec<String>,
+    },
     Pin {
         #[arg(long)]
         root: PathBuf,
@@ -67,6 +75,7 @@ pub enum Command {
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Recover { root, captures } => super::capture_recovery::run(&root, &captures),
         Command::Pin {
             root,
             name,

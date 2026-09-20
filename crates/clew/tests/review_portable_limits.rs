@@ -39,14 +39,14 @@ fn bindings_with(file: &str, digest: &str) -> Bindings {
     let mut hashes = Map::new();
     hashes.insert(file.to_string(), Value::String(digest.to_string()));
     serde_json::from_value(json!({
-        "schema": "codeclew-documentation-bindings/1.3",
+        "schema": "codeclew-documentation-bindings/1.4",
         "inputDigest": "input",
         "renderer": clew::documentation::model::RENDERER,
         "extractor": clew::documentation::model::EXTRACTOR,
         "revisions": {}, "coverage": {}, "catalogues": {}, "fragments": {},
         "observations": {}, "narratives": {}, "outputHashes": hashes,
         "retainedSources": {}, "sectionStates": {}, "targetRevisions": {},
-        "updateFailures": {}, "acceptedVersions": {},
+        "updateFailures": {}, "acceptedVersions": {}, "influenceScopes": {},
     }))
     .unwrap()
 }

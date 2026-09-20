@@ -177,6 +177,7 @@ boundary between editing Codeclew and using its installed-release skill.
 
 - macOS or Linux
 - Python 3.11+
+- Node.js 22 for the development/CI reader tests (not needed to open generated documentation)
 - Git
 - JDK 21
 - the Rust toolchain pinned by `rust-toolchain.toml`

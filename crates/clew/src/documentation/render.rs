@@ -133,6 +133,17 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             return Err(invalid("duplicate or out-of-scope operation"));
         }
         validate_summary_text(&o.summary.text)?;
+        super::visuals::validate_structure(&o.visuals)?;
+        if (o.dataflow.is_some() || super::notes::is_root(&o.id)) && !o.visuals.is_empty() {
+            return Err(invalid(
+                "visual artifacts require a service section, process or operation",
+            ));
+        }
+        for visual in &o.visuals {
+            for claim in super::visuals::fragments(visual) {
+                supported_refs(&claim.dependency_ids, &claim.source_ids, checked, &allowed)?;
+            }
+        }
         if super::dataflow::is_root(checked, &n.subject, &o.id) {
             if !o.events.is_empty()
                 || !o.explanation.is_empty()
@@ -729,7 +740,40 @@ fn default_narrative(
     ids: impl Iterator<Item = String>,
     checked: &Check,
 ) -> Narrative {
-    Narrative{schema:"codeclew-documentation-narrative/1.3".into(),subject,context_digest:checked.context_digest.clone(),operations:vec![],gaps:ids.map(|id|{let gap=super::sections::REQUIRED.iter().find(|(key,_,_)|*key==id).map(|(_,_,purpose)|format!("{purpose} Source-bound section content has not been accepted yet.")).unwrap_or_else(||"Behavior is not yet authored. Load this entrypoint with clew docs context and supply a source-bound sequence.".into());(id,gap)}).collect()}
+    Narrative {
+        schema: "codeclew-documentation-narrative/1.3".into(),
+        subject,
+        context_digest: checked.context_digest.clone(),
+        operations: vec![],
+        gaps: ids
+            .map(|id| {
+                let gap = default_gap(&id);
+                (id, gap)
+            })
+            .collect(),
+    }
+}
+
+fn default_gap(id: &str) -> String {
+    super::sections::REQUIRED
+        .iter()
+        .find(|(key, _, _)| *key == id)
+        .map(|(_, _, purpose)| {
+            format!("{purpose} Source-bound section content has not been accepted yet.")
+        })
+        .unwrap_or_else(|| "Behavior is not yet authored. Load this entrypoint with clew docs context and supply a source-bound sequence.".into())
+}
+
+/// Publishing a sibling service materializes empty reader pages for all subjects.
+/// Those exact generated gaps are not an authored update to previously absent content.
+/// Custom gaps and any authored operation must still participate in conflict checks.
+pub(super) fn is_generated_placeholder(narrative: &Narrative) -> bool {
+    narrative.schema == "codeclew-documentation-narrative/1.3"
+        && narrative.operations.is_empty()
+        && narrative
+            .gaps
+            .iter()
+            .all(|(id, gap)| *gap == default_gap(id))
 }
 
 fn add_binding(
@@ -779,6 +823,30 @@ pub fn make_bindings(
                 &o.summary.source_ids,
                 checked,
             )?;
+            for visual in &o.visuals {
+                let claims = super::visuals::fragments(visual);
+                let deps = claims
+                    .iter()
+                    .flat_map(|f| f.dependency_ids.iter().cloned())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let sources = claims
+                    .iter()
+                    .flat_map(|f| f.source_ids.iter().cloned())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                add_binding(
+                    &mut fragments,
+                    format!("{prefix}/visual-{}", visual.id),
+                    subject,
+                    visual,
+                    &deps,
+                    &sources,
+                    checked,
+                )?;
+            }
             if let Some(g) = &o.dataflow {
                 add_binding(
                     &mut fragments,
@@ -1141,7 +1209,8 @@ pub fn make_bindings(
         .filter(|(id, _)| reachable_sources.contains(id))
         .collect();
     let mut binding = Bindings {
-        schema: "codeclew-documentation-bindings/1.3".into(),
+        influence_scopes: BTreeMap::new(),
+        schema: "codeclew-documentation-bindings/1.4".into(),
         input_digest: checked.input_digest.clone(),
         renderer: RENDERER.into(),
         extractor: EXTRACTOR.into(),
@@ -1277,6 +1346,11 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     }
     for o in &n.operations {
         sources.extend(o.summary.source_ids.clone());
+        for visual in &o.visuals {
+            for claim in super::visuals::fragments(visual) {
+                sources.extend(claim.source_ids.iter().cloned());
+            }
+        }
         if let Some(g) = &o.dataflow {
             sources.extend(
                 g.nodes
@@ -1478,6 +1552,17 @@ pub(super) fn markdown(
         }
     }
     for o in &n.operations {
+        for visual in &o.visuals {
+            out.push_str(&format!("## {}\n\nKind: {}. Source interpretation, not runtime proof.\n\n{}\n\nScope: {}\n\n", escape(&visual.title), escape(&visual.kind), escape(&visual.purpose.text), escape(&visual.scope.text)));
+            for claim in super::visuals::fragments(visual).into_iter().skip(2) {
+                out.push_str(&format!("- {}\n", escape(&claim.text)));
+            }
+            for limit in &visual.limitations {
+                out.push_str(&format!("\nLimit: {}\n", escape(limit)));
+            }
+        }
+    }
+    for o in &n.operations {
         if super::sections::contains(&o.id) || super::notes::is_root(&o.id) {
             continue;
         }
@@ -1640,7 +1725,10 @@ fn publish_internal(
         let retained = previous
             .as_ref()
             .and_then(|(_, b)| b.narratives.get(subject));
-        if digest(&retained)? != version.previous_narrative_digest {
+        let generated_after_preparation = version.previous_narrative_digest
+            == digest(&Option::<&Narrative>::None)?
+            && retained.is_some_and(is_generated_placeholder);
+        if digest(&retained)? != version.previous_narrative_digest && !generated_after_preparation {
             return Err(invalid("published content changed after work preparation"));
         }
     }
@@ -1931,6 +2019,12 @@ fn publish_internal(
     }
     binding.narratives = narratives.clone();
     if let Some((_, old)) = &previous {
+        for (scope, dependencies) in &old.influence_scopes {
+            binding
+                .influence_scopes
+                .entry(scope.clone())
+                .or_insert_with(|| dependencies.clone());
+        }
         for (key, version) in &old.accepted_versions {
             if !accepted.contains(key) {
                 binding
@@ -1977,6 +2071,7 @@ fn publish_internal(
             .filter(|(_, d)| d.kind.starts_with("PROCESS_"))
             .map(|(id, d)| (id.clone(), d.clone())),
     );
+    bindings::prune_influence_scopes(&mut binding);
     super::status::update_states(&mut binding, &checked);
     super::review::verification(&mut binding);
     // Whole-page freshness is an aggregate; each operation keeps its exact content vector.

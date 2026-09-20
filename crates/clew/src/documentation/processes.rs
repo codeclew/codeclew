@@ -539,11 +539,11 @@ fn components(
                                 .get(id)
                                 .is_some_and(|s| &s.revision == revision)
                         })
-                        && v.influence.iter().all(|(id, d)| {
+                        && v.influence.data.dependencies.iter().all(|(id, d)| {
                             checked.dependencies.get(id).is_some_and(|o| &o.digest == d)
                         }) =>
                 {
-                    deps.extend(v.influence.keys().cloned());
+                    deps.extend(v.influence.data.dependencies.keys().cloned());
                     sources = o.summary.source_ids.clone();
                     if sources.is_empty()
                         || sources.iter().any(|id| !checked.sources().contains_key(id))

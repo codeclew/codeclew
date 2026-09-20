@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 pub const VERSION: &str = "2.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.3";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.14";
+pub const RENDERER: &str = "codeclew-documentation-html/1.15";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -350,6 +350,9 @@ pub struct OverviewDiagram {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation {
+    /// Evidence-bound diagrams and decisions, versioned atomically with this operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visuals: Vec<super::visuals::Visual>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataflow: Option<super::dataflow::Graph>,
     pub id: String,

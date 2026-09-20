@@ -17,6 +17,8 @@ use std::fs;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FragmentBinding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub influence_scope: Option<String>,
     pub subject: String,
     pub content_digest: String,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -48,7 +50,8 @@ fn is_false(value: &bool) -> bool {
 /// Share identical evidence within one portable snapshot. Older versions of an
 /// observation or source remain attached to their original fragment.
 pub(super) fn compact(binding: &mut Bindings) {
-    binding.schema = "codeclew-documentation-bindings/1.3".into();
+    prune_influence_scopes(binding);
+    binding.schema = "codeclew-documentation-bindings/1.4".into();
     for fragment in binding.fragments.values_mut() {
         let Some(evidence) = fragment.evidence.as_mut() else {
             continue;
@@ -79,6 +82,25 @@ pub(super) fn compact(binding: &mut Bindings) {
             }
         });
     }
+}
+
+/// Keep only scopes that still own published fragments or accepted versions.
+/// Replacing one operation must not discard a scope retained by its siblings.
+pub(super) fn prune_influence_scopes(binding: &mut Bindings) {
+    let referenced: BTreeSet<_> = binding
+        .fragments
+        .values()
+        .filter_map(|fragment| fragment.influence_scope.as_ref())
+        .chain(
+            binding
+                .accepted_versions
+                .values()
+                .map(|version| &version.influence.scope),
+        )
+        .collect();
+    binding
+        .influence_scopes
+        .retain(|scope, _| referenced.contains(scope));
 }
 
 fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
@@ -127,6 +149,7 @@ fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Bindings {
+    pub influence_scopes: BTreeMap<String, super::review::InfluenceScope>,
     pub schema: String,
     pub input_digest: String,
     pub renderer: String,
@@ -303,6 +326,7 @@ pub fn fragment(
         .filter(|s| !s.is_empty())
         .collect();
     Ok(FragmentBinding {
+        influence_scope: None,
         dependencies_from_evidence: false,
         subject: subject.into(), content_digest: digest(value)?,
         content: serde_json::to_value(value).map_err(io_error)?,
@@ -334,10 +358,11 @@ pub(super) fn capture_baseline(
     repo: &Repository,
 ) -> Result<Option<(BaselineReceipt, Bindings)>, ClewError> {
     let index = repo.path("docs/index.html")?;
-    if !index.exists() {
-        return Ok(None);
-    }
-    let metadata = fs::symlink_metadata(&index).map_err(io_error)?;
+    let metadata = match fs::symlink_metadata(&index) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(error)),
+    };
     if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
         return Err(invalid("documentation index is not a bounded regular file"));
     }
@@ -359,14 +384,32 @@ pub(super) fn capture_baseline(
     if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid("invalid documentation bundle pointer"));
     }
-    let path = repo.path(&format!("docs/generated/{id}/bindings.json"))?;
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+    let relative = format!("docs/generated/{id}/bindings.json");
+    let path = repo.path(&relative)?;
+    let missing_bindings = || {
+        invalid(format!(
+            "DOCS_BASELINE_INCOMPLETE: docs/index.html selects missing {relative}; restore that generated bundle from the same documentation root, or explicitly move the generated docs/index.html aside if discarding the old publication baseline; source capture cannot restore a missing generated bundle"
+        ))
+    };
+    let metadata = fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            missing_bindings()
+        } else {
+            io_error(error)
+        }
+    })?;
     if !metadata.is_file() || metadata.len() > super::check::PORTABLE_CACHE_MAX_BYTES {
         return Err(invalid(
             "documentation bindings are not a bounded regular file",
         ));
     }
-    let raw = fs::read(path).map_err(io_error)?;
+    let raw = fs::read(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            missing_bindings()
+        } else {
+            io_error(error)
+        }
+    })?;
     if raw.len() as u64 > super::check::PORTABLE_CACHE_MAX_BYTES {
         return Err(invalid(
             "documentation bindings grew beyond their record budget",
@@ -379,10 +422,31 @@ pub(super) fn capture_baseline(
         index_digest: canonical::hash_bytes(index_text.as_bytes()),
         bindings_digest: canonical::hash_bytes(&raw),
     };
-    if binding.schema != "codeclew-documentation-bindings/1.3" {
+    if binding.schema != "codeclew-documentation-bindings/1.4" {
         return Err(invalid(
             "DOCS_REINDEX_REQUIRED: unsupported documentation bindings schema; initialize a fresh documentation root and run docs check",
         ));
+    }
+    super::review::resolve_influence_scopes(
+        &mut binding.accepted_versions,
+        &binding.influence_scopes,
+    )?;
+    for (id, fragment) in &binding.fragments {
+        let operation = id.split('/').take(2).collect::<Vec<_>>().join("/");
+        if let Some(version) = binding.accepted_versions.get(&operation)
+            && fragment.influence_scope.as_ref() != Some(&version.influence.scope)
+        {
+            return Err(invalid(
+                "accepted fragment does not match its influence scope",
+            ));
+        }
+        if fragment
+            .influence_scope
+            .as_ref()
+            .is_some_and(|scope| !binding.influence_scopes.contains_key(scope))
+        {
+            return Err(invalid("fragment influence scope is missing"));
+        }
     }
     expand_shared(&mut binding)?;
     for (id, observation) in &binding.observations {
@@ -426,9 +490,19 @@ pub(super) fn capture_baseline(
             ));
         }
     }
-    if binding.renderer != RENDERER {
+    // Renderer identity records how the previous presentation was produced.
+    // Evidence compatibility is governed by the bindings schema and validated
+    // evidence below it, not by a presentation-only version change. Preserve
+    // this identity verbatim; newly rendered bundles use the current renderer.
+    if binding.renderer.is_empty()
+        || binding.renderer.len() > 128
+        || !binding
+            .renderer
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'/' | b'_' | b'-'))
+    {
         return Err(invalid(
-            "DOCS_REINDEX_REQUIRED: unsupported documentation renderer; initialize a fresh documentation root and run docs check",
+            "documentation renderer provenance identity is invalid",
         ));
     }
     let root_matches = binding.output_hashes.get("root-overview.html")
@@ -469,6 +543,16 @@ pub fn verify_outputs(repo: &Repository, id: &str, binding: &Bindings) -> Result
     Ok(())
 }
 
+fn dependency_changes(dependencies: &BTreeMap<String, String>, checked: &Check) -> Vec<Value> {
+    dependencies.iter().filter_map(|(dependency, previous)| {
+        match checked.dependencies.get(dependency) {
+            None => Some(json!({"reason":"DEPENDENCY_UNAVAILABLE","dependency":dependency,"before":previous,"after":Value::Null})),
+            Some(current) if &current.digest != previous => Some(json!({"reason":match current.kind.as_str(){"DECLARED_INTERACTION"=>"DECLARATION_CHANGED","ENTRYPOINT"=>"ROUTE_OR_REGISTRATION_CHANGED","CONTRACT_OPERATION"|"CONTRACT"=>"CONTRACT_CHANGED","SCENARIO_SELECTION"=>"SCENARIO_SELECTION_CHANGED",_=>"SUPPORTED_BEHAVIOR_CHANGED"},"dependency":dependency,"before":previous,"after":current.digest})),
+            _ => None,
+        }
+    }).collect()
+}
+
 pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
     let Some(old) = old else {
         return json!({"status":"UNRESOLVED","reasons":["MISSING_BASELINE"],"affected":[],"unaffected":[],"linkChanges":[],"catalogueChanges":[]});
@@ -478,16 +562,30 @@ pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
     let mut links = Vec::new();
     let mut catalogue = Vec::new();
     let sources = checked.sources();
+    // Each complete scope is compared once. Fragment reports reference the
+    // shared delta instead of multiplying a large changed set by every claim.
+    let mut influence_changes = BTreeMap::new();
+    for (scope, dependencies) in &old.influence_scopes {
+        let changes = if digest(dependencies).ok().as_ref() != Some(scope) {
+            vec![json!({"reason":"INFLUENCE_SCOPE_CORRUPT"})]
+        } else {
+            dependency_changes(&dependencies.dependencies, checked)
+        };
+        if !changes.is_empty() {
+            influence_changes.insert(scope.clone(), changes);
+        }
+    }
     for (id, fragment) in &old.fragments {
         let mut reasons = Vec::new();
-        if old.renderer != RENDERER || old.extractor != EXTRACTOR {
+        if old.extractor != EXTRACTOR {
             reasons.push(json!({"reason":"EVIDENCE_VERSION_CHANGED"}));
         }
-        for (dependency, previous) in &fragment.dependencies {
-            match checked.dependencies.get(dependency){
-                None=>reasons.push(json!({"reason":"DEPENDENCY_UNAVAILABLE","dependency":dependency,"before":previous,"after":Value::Null})),
-                Some(current) if &current.digest!=previous=>reasons.push(json!({"reason":match current.kind.as_str(){"DECLARED_INTERACTION"=>"DECLARATION_CHANGED","ENTRYPOINT"=>"ROUTE_OR_REGISTRATION_CHANGED","CONTRACT_OPERATION"|"CONTRACT"=>"CONTRACT_CHANGED","SCENARIO_SELECTION"=>"SCENARIO_SELECTION_CHANGED",_=>"SUPPORTED_BEHAVIOR_CHANGED"},"dependency":dependency,"before":previous,"after":current.digest})),
-                _=>{},
+        reasons.extend(dependency_changes(&fragment.dependencies, checked));
+        if let Some(scope) = &fragment.influence_scope {
+            if !old.influence_scopes.contains_key(scope) {
+                reasons.push(json!({"reason":"INFLUENCE_SCOPE_UNAVAILABLE","scope":scope}));
+            } else if influence_changes.contains_key(scope) {
+                reasons.push(json!({"reason":"INFLUENCE_SCOPE_CHANGED","scope":scope}));
             }
         }
         for (source_id, old_source) in &fragment.sources {
@@ -542,13 +640,153 @@ pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
     } else {
         "PARTIALLY_STALE"
     };
-    json!({"status":status,"affected":affected,"unaffected":unaffected,"linkChanges":links,"catalogueChanges":catalogue,"scope":"Recorded dependencies and supported static analysis only","sourceAuthorities":checked.source_authorities(),"incompleteSource":incomplete_source,"unresolved":checked.unresolved})
+    json!({"status":status,"influenceChanges":influence_changes,"affected":affected,"unaffected":unaffected,"linkChanges":links,"catalogueChanges":catalogue,"scope":"Recorded dependencies and supported static analysis only","sourceAuthorities":checked.source_authorities(),"incompleteSource":incomplete_source,"unresolved":checked.unresolved})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::documentation::check;
+
+    #[test]
+    fn scope_retention_removes_last_replaced_owner_but_preserves_mixed_siblings() {
+        let mut binding = old(&current());
+        let mut scope_ids = Vec::new();
+        for owner in ["original", "sibling", "accepted-only", "replacement"] {
+            let scope = super::super::review::InfluenceScope {
+                dependencies: BTreeMap::from([(owner.into(), "sha256:recorded".into())]),
+                declarations: BTreeMap::new(),
+            };
+            let id = digest(&scope).unwrap();
+            binding.influence_scopes.insert(id.clone(), scope);
+            scope_ids.push(id);
+        }
+        let [original, sibling, accepted, replacement]: [String; 4] = scope_ids.try_into().unwrap();
+        binding
+            .fragments
+            .get_mut("contract-row")
+            .unwrap()
+            .influence_scope = Some(original.clone());
+        binding
+            .fragments
+            .get_mut("unrelated-summary")
+            .unwrap()
+            .influence_scope = Some(original.clone());
+        binding
+            .fragments
+            .get_mut("transport-edge")
+            .unwrap()
+            .influence_scope = Some(sibling.clone());
+        let version = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-accepted-version/1.2",
+            "work":"w", "proposal":"p", "invocation":null,
+            "reviewDigest":null, "reviewerDriverDigest":null,
+            "evidenceDigest":"e", "readDigest":"r", "operationDigest":"o",
+            "verification":"UNASSESSED", "limitations":[], "sourceRevisions":{},
+            "influence":{"scope":accepted}, "externalFingerprint":"f",
+            "previousNarrativeDigest":digest(&Option::<Narrative>::None).unwrap(),
+            "externalRequest":{"schema":"codeclew-documentation-work-request/1.0","audience":"Maintainers","externalInputs":[]}
+        })).unwrap();
+        binding
+            .accepted_versions
+            .insert("service:other/overview".into(), version);
+        binding
+            .fragments
+            .get_mut("contract-row")
+            .unwrap()
+            .influence_scope = Some(replacement.clone());
+        prune_influence_scopes(&mut binding);
+        assert_eq!(binding.influence_scopes.len(), 4);
+        binding
+            .fragments
+            .get_mut("unrelated-summary")
+            .unwrap()
+            .influence_scope = Some(replacement.clone());
+        prune_influence_scopes(&mut binding);
+        assert!(!binding.influence_scopes.contains_key(&original));
+        for retained in [&sibling, &accepted, &replacement] {
+            assert!(binding.influence_scopes.contains_key(retained));
+        }
+        binding.accepted_versions.clear();
+        compact(&mut binding);
+        assert!(!binding.influence_scopes.contains_key(&accepted));
+        assert_eq!(binding.influence_scopes.len(), 2);
+    }
+
+    #[test]
+    fn shared_influence_preserves_full_invalidation_and_mixed_versions() {
+        let mut checked = current();
+        let mut binding = old(&checked);
+        let scope = super::super::review::InfluenceScope {
+            dependencies: checked
+                .dependencies
+                .iter()
+                .map(|(id, o)| (id.clone(), o.digest.clone()))
+                .collect(),
+            declarations: BTreeMap::new(),
+        };
+        let before = digest(&scope).unwrap();
+        binding.influence_scopes.insert(before.clone(), scope);
+        let mut fragment = binding.fragments["contract-row"].clone();
+        fragment.influence_scope = Some(before.clone());
+        binding.fragments.clear();
+        for i in 0..128 {
+            binding
+                .fragments
+                .insert(format!("claim-{i}"), fragment.clone());
+        }
+        assert!(
+            freshness(Some(&binding), &checked)["affected"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        // The changed fact is outside every fragment's local claim selection.
+        assert!(!fragment.dependencies.contains_key("unrelated"));
+        let observation = checked.dependencies.get_mut("unrelated").unwrap();
+        observation.normalized = json!({"changed":true});
+        observation.digest = digest(&observation.normalized).unwrap();
+        let current_scope = super::super::review::InfluenceScope {
+            dependencies: checked
+                .dependencies
+                .iter()
+                .map(|(id, o)| (id.clone(), o.digest.clone()))
+                .collect(),
+            declarations: BTreeMap::new(),
+        };
+        let after = digest(&current_scope).unwrap();
+        binding
+            .influence_scopes
+            .insert(after.clone(), current_scope);
+        fragment.influence_scope = Some(after);
+        binding.fragments.insert("new-claim".into(), fragment);
+        let report = freshness(Some(&binding), &checked);
+        assert_eq!(report["affected"].as_array().unwrap().len(), 128);
+        assert_eq!(report["unaffected"], json!(["new-claim"]));
+        assert_eq!(report["influenceChanges"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            report["influenceChanges"][&before]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            report["affected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["reasons"].as_array().unwrap().len() == 1)
+        );
+        binding.influence_scopes.remove(&before);
+        assert_eq!(
+            freshness(Some(&binding), &checked)["affected"]
+                .as_array()
+                .unwrap()
+                .len(),
+            128
+        );
+    }
 
     #[test]
     fn baseline_requires_current_format_and_preserves_current_portable_evidence() {
@@ -578,7 +816,7 @@ mod tests {
             1
         );
         let mut variants = Vec::new();
-        for version in ["1.0", "1.1", "1.2"] {
+        for version in ["1.0", "1.1", "1.2", "1.3"] {
             let mut outdated = current.clone();
             outdated["schema"] = json!(format!("codeclew-documentation-bindings/{version}"));
             variants.push(outdated);
@@ -602,6 +840,53 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
         assert!(baseline(&repo).is_ok());
+    }
+
+    #[test]
+    fn renderer_provenance_does_not_invalidate_supported_evidence() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Renderer provenance").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let bundle = "b".repeat(64);
+        let path = repo
+            .path(&format!("docs/generated/{bundle}/bindings.json"))
+            .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let index = format!("<!-- codeclew-bundle {bundle} -->\n");
+        fs::write(repo.path("docs/index.html").unwrap(), &index).unwrap();
+        let checked = current();
+        let mut binding = old(&checked);
+        binding.renderer = "codeclew-documentation-html/1.14".into();
+        binding.output_hashes.insert(
+            "root-overview.html".into(),
+            canonical::hash_bytes(index.as_bytes()),
+        );
+        compact(&mut binding);
+        let bytes = serde_json::to_vec(&binding).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let (_, restored) = baseline(&repo).unwrap().unwrap();
+        assert_eq!(restored.renderer, binding.renderer);
+        assert_eq!(freshness(Some(&restored), &checked)["status"], "CURRENT");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        for identity in [
+            "",
+            " ",
+            "renderer with spaces",
+            "<script>",
+            "renderer\n",
+            &"x".repeat(129),
+        ] {
+            binding.renderer = identity.into();
+            let bytes = serde_json::to_vec(&binding).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(
+                baseline(&repo)
+                    .unwrap_err()
+                    .message
+                    .contains("renderer provenance")
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]
@@ -778,11 +1063,12 @@ mod tests {
             ),
         ]);
         Bindings {
+            influence_scopes: BTreeMap::new(),
             section_states: BTreeMap::new(),
             target_revisions: BTreeMap::new(),
             update_failures: BTreeMap::new(),
             accepted_versions: BTreeMap::new(),
-            schema: "codeclew-documentation-bindings/1.3".into(),
+            schema: "codeclew-documentation-bindings/1.4".into(),
             input_digest: "input".into(),
             renderer: RENDERER.into(),
             extractor: EXTRACTOR.into(),

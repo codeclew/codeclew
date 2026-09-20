@@ -264,6 +264,9 @@ fn capture_selected_with(
     if selected.iter().any(|id| !services.contains_key(id)) {
         return Err(invalid("selected documentation service does not exist"));
     }
+    // Retained annotations are required by the completed check. Reject invalid
+    // baselines and input scopes before any compiler or build can be invoked.
+    super::composition::validate_retained(repository, &inputs)?;
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
     let previous = if selected.is_empty() {
@@ -1086,9 +1089,26 @@ impl Check {
             .as_ref()
             .map(|value| super::composition::store(repo, value))
             .transpose()?;
+        let parent = self
+            .composition
+            .as_ref()
+            .map(|value| Self::load_snapshot_manifest(repo, &value.parent))
+            .transpose()?;
         let mut service_manifests = BTreeMap::new();
         for (id, evidence) in &self.services {
-            service_manifests.insert(id.clone(), super::cache::store_capture(repo, evidence)?);
+            let mut capture = super::cache::store_capture(repo, evidence)?;
+            if let Some(parent) = &parent {
+                let original = parent.service_manifests.get(id).ok_or_else(|| {
+                    invalid("composition service has no original capture manifest")
+                })?;
+                // Recomposition does not upgrade source acquisition authority.
+                // Rebuild all evidence references above, then preserve only this
+                // metadata; validate_parent_manifest still compares the full
+                // envelope, so changed evidence cannot inherit the parent.
+                capture.cacheability = original.cacheability.clone();
+                capture.reason = original.reason.clone();
+            }
+            service_manifests.insert(id.clone(), capture);
         }
         // Dependencies are written through the fact index as per-fact memberships
         // (bounded pages, copy-on-write), not as one whole-map object.
@@ -1194,6 +1214,107 @@ mod tests {
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    #[test]
+    fn retained_baseline_preflight_rejects_invalid_state_before_capture() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Retained baseline preflight").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"orders",
+            "title":"Orders", "repositoryId":"orders",
+            "repository":"https://example.invalid/orders", "language":"java",
+            "profile":"java-17plus-maven-read-only", "compilations":[":/main"], "targetRef":"main"
+        }))
+        .unwrap();
+        repo.service_add(service, Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let inputs = repo.inputs().unwrap();
+        let attempt = |calls: &mut usize| {
+            capture_selected_with(&repo, &BTreeSet::new(), inputs.clone(), |_, _, _| {
+                *calls += 1;
+                Err(invalid("test source is unavailable"))
+            })
+        };
+        // A new documentation root has no published baseline and can capture.
+        let mut calls = 0;
+        let fresh = attempt(&mut calls).unwrap();
+        assert_eq!(calls, 1);
+        assert!(fresh.unresolved.contains_key("orders"));
+        let index = repo.path("docs/index.html").unwrap();
+        fs::write(&index, "manually owned content\n").unwrap();
+        calls = 0;
+        let error = attempt(&mut calls).unwrap_err();
+        assert!(error.message.contains("manually owned"));
+        assert_eq!(calls, 0);
+
+        let bundle = "a".repeat(64);
+        let index_text = format!("<!-- codeclew-bundle {bundle} -->\n");
+        fs::write(&index, &index_text).unwrap();
+        let error = attempt(&mut calls).unwrap_err();
+        assert!(error.message.contains("DOCS_BASELINE_INCOMPLETE"));
+        assert!(
+            error
+                .message
+                .contains(&format!("docs/generated/{bundle}/bindings.json"))
+        );
+        assert!(error.message.contains("restore"));
+        assert!(!error.message.contains(temporary.path().to_str().unwrap()));
+        assert_eq!(calls, 0);
+        assert_eq!(fs::read_to_string(&index).unwrap(), index_text);
+
+        let path = repo
+            .path(&format!("docs/generated/{bundle}/bindings.json"))
+            .unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{malformed bindings").unwrap();
+        let error = attempt(&mut calls).unwrap_err();
+        assert!(error.message.contains("DOCS_REINDEX_REQUIRED"));
+        assert_eq!(calls, 0);
+
+        let mut binding = super::super::render::make_bindings(&fresh, BTreeMap::new()).unwrap();
+        binding.output_hashes.insert(
+            "root-overview.html".into(),
+            crate::canonical::hash_bytes(index_text.as_bytes()),
+        );
+        super::super::bindings::compact(&mut binding);
+        let current = bytes(&binding).unwrap();
+        binding.schema = "codeclew-documentation-bindings/1.2".into();
+        let obsolete = bytes(&binding).unwrap();
+        fs::write(&path, &obsolete).unwrap();
+        let error = attempt(&mut calls).unwrap_err();
+        assert!(error.message.contains("DOCS_REINDEX_REQUIRED"));
+        assert_eq!(calls, 0);
+        assert_eq!(fs::read(&path).unwrap(), obsolete);
+
+        fs::write(&path, &current).unwrap();
+        let mut checked = attempt(&mut calls).unwrap();
+        assert_eq!(calls, 1);
+        attach_retained_annotations(&repo, &mut checked).unwrap();
+        // Preflight does not bypass post-capture validation of concurrent edits.
+        fs::write(&path, &obsolete).unwrap();
+        assert!(
+            attach_retained_annotations(&repo, &mut checked)
+                .unwrap_err()
+                .message
+                .contains("DOCS_REINDEX_REQUIRED")
+        );
+        assert!(checked.source_inputs.is_some());
+    }
+
+    #[test]
+    fn dangling_index_symlink_is_not_treated_as_a_new_root() {
+        use std::os::unix::fs::symlink;
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Dangling baseline").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        symlink(
+            "missing-overview.html",
+            repo.path("docs/index.html").unwrap(),
+        )
+        .unwrap();
+        assert!(super::super::bindings::capture_baseline(&repo).is_err());
+    }
 
     #[test]
     fn catalogue_attachment_uses_captured_notes_and_memberships_across_aba() {

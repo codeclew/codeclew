@@ -34,10 +34,11 @@
         },
         "contextProfile": {
           "type": "string",
-          "description": "Bounded declaration context for service entities, or source-sharing context for a saved process overview. Subject compatibility is validated by the host.",
+          "description": "Compact section orientation (the default for a scoped service section), bounded entity declarations, or source-sharing context for a saved process overview. Subject compatibility is validated by the host.",
           "enum": [
             "declarations-v1",
-            "process-v1"
+            "process-v1",
+            "section-orientation-v1"
           ]
         },
         "maxItems": {
@@ -142,9 +143,10 @@
           "type": "string",
           "enum": [
             "declarations-v1",
-            "process-v1"
+            "process-v1",
+            "section-orientation-v1"
           ],
-          "description": "Bounded declaration context for service entities, or source-sharing context for a saved process overview. Subject compatibility is validated by the host."
+          "description": "Compact section orientation (the default for a scoped service section), bounded entity declarations, or source-sharing context for a saved process overview. Subject compatibility is validated by the host."
         },
         "subjectReference": {
           "type": "object",

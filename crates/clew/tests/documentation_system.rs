@@ -62,7 +62,7 @@ fn docsys_t17_local_proposal_publication_retains_influence_without_inventing_rev
     assert!(version["reviewDigest"].is_null());
     assert!(version["reviewerDriverDigest"].is_null());
     assert!(
-        version["influence"]
+        binding["influenceScopes"][version["influence"]["scope"].as_str().unwrap()]["dependencies"]
             .as_object()
             .unwrap()
             .keys()
@@ -1672,10 +1672,11 @@ fn proposal_submit(f: &Fixture, id: &str, input: &serde_json::Value) -> serde_js
     ])
 }
 fn proposal_artifact(f: &Fixture, result: &serde_json::Value) -> serde_json::Value {
-    read(f.docs.join(format!(
-        ".codeclew/proposals/{}.json",
-        result["proposal"].as_str().unwrap()
-    )))
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    serde_json::to_value(
+        clew::documentation::proposals::load(&repo, result["proposal"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -3183,6 +3184,8 @@ fn docsys_t08_section_work_uses_separate_author_and_reviewer() {
         })
         .unwrap()
         .0;
+    // Scoped section context does not implicitly deliver every service fact.
+    work_read(&f, &work, json!({"references":[handle]}));
     let proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Overview","summary":{"text":"The service processes requested quantities.","evidence":[handle]},"steps":[]}]});
     let result = proposal_submit(&f, &work, &proposal);
     assert_eq!(result["status"], "READY_WITH_LIMITATIONS", "{result}");
@@ -3876,11 +3879,12 @@ fn docsys_t10_reviewed_child_composition_versions_and_stale_source_influence() {
             && fragment.dependencies.contains_key("scenario:child")
     );
     assert!(
-        component.normalized["accepted"]["sourceInfluence"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .all(|k| fragment.dependencies.contains_key(k))
+        baseline.influence_scopes[component.normalized["accepted"]["sourceInfluence"]["scope"]
+            .as_str()
+            .unwrap()]
+        .dependencies
+        .keys()
+        .all(|k| fragment.dependencies.contains_key(k))
     );
     if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T10_REVIEW") {
         fs::create_dir_all(&directory).unwrap();
@@ -4566,6 +4570,9 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
             .contains("not supplied by a recorded work read"),
         "{rejected}"
     );
+    // Scoped section preparation supplies inventory; author claims require
+    // an explicit recorded read of the selected service fact.
+    work_read(&f, &service_work, json!({"references":[flow_for("other")]}));
     let section = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow_for("other")]},"steps":[]}]});
     let accepted = work_run(
         &f,

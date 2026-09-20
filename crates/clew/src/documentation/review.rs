@@ -12,6 +12,7 @@ use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,14 +53,109 @@ pub struct AcceptedVersion {
     pub verification: String,
     pub limitations: Vec<String>,
     pub source_revisions: BTreeMap<String, String>,
-    pub influence: BTreeMap<String, String>,
+    pub influence: Influence,
     pub external_request: Request,
     pub external_fingerprint: String,
     #[serde(deserialize_with = "deserialize_previous_digest")]
     pub previous_narrative_digest: String,
 }
 
-const ACCEPTED_VERSION_SCHEMA: &str = "codeclew-documentation-accepted-version/1.1";
+/// Serialized identity of an immutable influence set. The hydrated map is
+/// shared across accepted operations; only its digest travels in each version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Influence {
+    pub scope: String,
+    #[serde(skip)]
+    pub data: Arc<InfluenceScope>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InfluenceScope {
+    pub dependencies: BTreeMap<String, String>,
+    pub declarations: BTreeMap<String, Observation>,
+}
+
+impl Influence {
+    fn new(dependencies: BTreeMap<String, String>, checked: &Check) -> Result<Self, ClewError> {
+        let declarations = dependencies
+            .keys()
+            .filter_map(|id| {
+                let observation = checked.dependencies.get(id)?;
+                matches!(
+                    observation.kind.as_str(),
+                    "NOTE_ASSOCIATION"
+                        | "DECLARED_INTERACTION"
+                        | "SCENARIO_SELECTION"
+                        | "PROCESS_DEFINITION"
+                        | "VIEW_DEFINITION"
+                        | "PROCESS_SCOPE"
+                        | "VIEW_SCOPE"
+                )
+                .then(|| (id.clone(), observation.clone()))
+            })
+            .collect();
+        let data = InfluenceScope {
+            dependencies,
+            declarations,
+        };
+        Ok(Self {
+            scope: digest(&data)?,
+            data: Arc::new(data),
+        })
+    }
+}
+
+pub(super) fn influence_scopes(
+    versions: &BTreeMap<String, AcceptedVersion>,
+) -> Result<BTreeMap<String, InfluenceScope>, ClewError> {
+    let mut scopes = BTreeMap::new();
+    for version in versions.values() {
+        if !scopes.contains_key(&version.influence.scope) {
+            if digest(version.influence.data.as_ref())? != version.influence.scope {
+                return Err(invalid("accepted influence scope is missing or corrupt"));
+            }
+            scopes.insert(
+                version.influence.scope.clone(),
+                version.influence.data.as_ref().clone(),
+            );
+        }
+    }
+    Ok(scopes)
+}
+
+pub(super) fn resolve_influence_scopes(
+    versions: &mut BTreeMap<String, AcceptedVersion>,
+    scopes: &BTreeMap<String, InfluenceScope>,
+) -> Result<(), ClewError> {
+    let mut shared = BTreeMap::new();
+    for (id, dependencies) in scopes {
+        if digest(dependencies)? != *id {
+            return Err(invalid("accepted influence scope digest is invalid"));
+        }
+        for (key, observation) in &dependencies.declarations {
+            if key != &observation.id
+                || dependencies.dependencies.get(key) != Some(&observation.digest)
+                || digest(&observation.normalized)? != observation.digest
+            {
+                return Err(invalid(
+                    "influence declaration does not match its recorded digest",
+                ));
+            }
+        }
+        shared.insert(id, Arc::new(dependencies.clone()));
+    }
+    for version in versions.values_mut() {
+        version.influence.data = shared
+            .get(&version.influence.scope)
+            .ok_or_else(|| invalid("accepted influence scope is missing"))?
+            .clone();
+    }
+    Ok(())
+}
+
+const ACCEPTED_VERSION_SCHEMA: &str = "codeclew-documentation-accepted-version/1.2";
 fn deserialize_accepted_schema<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {
@@ -351,6 +447,7 @@ pub(super) fn unassessed_versions(
     let mut influence = work.influence.clone();
     influence.remove("documentation:external-inputs");
     influence.insert(scope.id, scope.digest);
+    let influence = Influence::new(influence, &work.checked)?;
     proposal
         .narrative
         .as_ref()
@@ -361,7 +458,7 @@ pub(super) fn unassessed_versions(
             Ok((
                 format!("{}/{}", work.subject, operation.id),
                 AcceptedVersion {
-                    schema: "codeclew-documentation-accepted-version/1.1".into(),
+                    schema: "codeclew-documentation-accepted-version/1.2".into(),
                     work: work.id.clone(),
                     proposal: proposal.id.clone(),
                     invocation: None,
@@ -387,12 +484,26 @@ pub(super) fn unassessed_versions(
         })
         .collect()
 }
-/// Add the entire recorded influence boundary to every rendered fragment of an operation.
+/// Bind every fragment to the complete influence boundary without copying its
+/// map or observations into each operation. Scope hashes preserve mixed versions.
 pub(super) fn attach(
     binding: &mut Bindings,
     checked: &Check,
     versions: BTreeMap<String, AcceptedVersion>,
 ) -> Result<(), ClewError> {
+    let scopes = influence_scopes(&versions)?;
+    for (scope, data) in scopes {
+        for (dependency, expected) in &data.dependencies {
+            if checked
+                .dependencies
+                .get(dependency)
+                .is_none_or(|o| &o.digest != expected)
+            {
+                return Err(invalid("accepted influence changed during publication"));
+            }
+        }
+        binding.influence_scopes.insert(scope, data);
+    }
     for (key, version) in versions {
         let (subject, operation) = key
             .split_once('/')
@@ -405,35 +516,14 @@ pub(super) fn attach(
         if digest(current)? != version.operation_digest {
             return Err(invalid("accepted operation changed during publication"));
         }
-        for (dependency, expected) in &version.influence {
-            if checked
-                .dependencies
-                .get(dependency)
-                .is_none_or(|o| &o.digest != expected)
-            {
-                return Err(invalid("accepted influence changed during publication"));
-            }
-        }
-        for (id, fragment) in binding
+        for (_, fragment) in binding
             .fragments
             .iter_mut()
             .filter(|(id, _)| id.starts_with(&format!("{key}/")))
         {
-            let _ = id;
-            for dependency in version.influence.keys() {
-                let observation = checked.dependencies[dependency].clone();
-                fragment
-                    .dependencies
-                    .insert(dependency.clone(), observation.digest.clone());
-                binding
-                    .observations
-                    .insert(dependency.clone(), observation.clone());
-                if let Some(evidence) = &mut fragment.evidence {
-                    evidence
-                        .observations
-                        .insert(dependency.clone(), observation);
-                    evidence.revisions.extend(version.source_revisions.clone());
-                }
+            fragment.influence_scope = Some(version.influence.scope.clone());
+            if let Some(evidence) = &mut fragment.evidence {
+                evidence.revisions.extend(version.source_revisions.clone());
             }
         }
         binding.accepted_versions.insert(key, version);
@@ -472,13 +562,72 @@ mod tests {
 
     fn version(paths: &[&str]) -> AcceptedVersion {
         serde_json::from_value(json!({
-            "schema":"codeclew-documentation-accepted-version/1.1", "work":"w", "proposal":"p",
+            "schema":"codeclew-documentation-accepted-version/1.2", "work":"w", "proposal":"p",
             "previousNarrativeDigest":digest(&Option::<super::super::model::Narrative>::None).unwrap(),
             "invocation":null,"reviewDigest":null,"reviewerDriverDigest":null,
             "evidenceDigest":"e", "readDigest":"r", "operationDigest":"o", "verification":"VERIFIED",
-            "limitations":[], "sourceRevisions":{}, "influence":{}, "externalFingerprint":"f",
+            "limitations":[], "sourceRevisions":{}, "influence":{"scope":digest(&InfluenceScope::default()).unwrap()}, "externalFingerprint":"f",
             "externalRequest":{"schema":"codeclew-documentation-work-request/1.0","audience":"Maintainers","externalInputs":paths}
         })).unwrap()
+    }
+
+    #[test]
+    fn influence_scope_is_shared_across_large_operation_sets_and_resolves_fail_closed() {
+        let dependencies: BTreeMap<_, _> = (0..120_000)
+            .map(|i| (format!("fact:{i:06}"), format!("sha256:{i:064x}")))
+            .collect();
+        let data = InfluenceScope {
+            dependencies,
+            declarations: BTreeMap::new(),
+        };
+        let scope = digest(&data).unwrap();
+        let mut original = version(&[]);
+        original.influence = Influence {
+            scope: scope.clone(),
+            data: Arc::new(data),
+        };
+        let versions: BTreeMap<_, _> = (0..128)
+            .map(|i| (format!("service:orders/op{i}"), original.clone()))
+            .collect();
+        assert!(
+            versions
+                .values()
+                .all(|v| Arc::ptr_eq(&v.influence.data, &original.influence.data))
+        );
+        let scopes = influence_scopes(&versions).unwrap();
+        assert_eq!(scopes.len(), 1);
+        let wire = serde_json::to_vec(&versions).unwrap();
+        assert!(
+            wire.len() < 256 * 1024,
+            "operation metadata must not multiply 120000 facts"
+        );
+        let mut decoded: BTreeMap<String, AcceptedVersion> = serde_json::from_slice(&wire).unwrap();
+        assert!(resolve_influence_scopes(&mut decoded, &BTreeMap::new()).is_err());
+        resolve_influence_scopes(&mut decoded, &scopes).unwrap();
+        assert_eq!(
+            decoded
+                .values()
+                .next()
+                .unwrap()
+                .influence
+                .data
+                .dependencies
+                .len(),
+            120_000
+        );
+        let shared = &decoded.values().next().unwrap().influence.data;
+        assert!(
+            decoded
+                .values()
+                .all(|v| Arc::ptr_eq(&v.influence.data, shared))
+        );
+        let mut corrupt = scopes;
+        corrupt
+            .get_mut(&scope)
+            .unwrap()
+            .dependencies
+            .remove("fact:000001");
+        assert!(resolve_influence_scopes(&mut decoded, &corrupt).is_err());
     }
 
     #[test]

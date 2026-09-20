@@ -72,6 +72,29 @@ pub fn update_states(binding: &mut Bindings, checked: &Check) {
                     .as_ref()
                     .map(|e| &e.observations)
                     .unwrap_or(&binding.observations);
+                if let Some(scope) = fragment
+                    .influence_scope
+                    .as_ref()
+                    .and_then(|id| binding.influence_scopes.get(id))
+                {
+                    for observation in scope.declarations.values() {
+                        if !observation.service.is_empty() {
+                            services.insert(observation.service.clone());
+                        }
+                        if observation.kind == "DECLARED_INTERACTION" {
+                            for side in ["from", "to"] {
+                                if let Some(service) =
+                                    observation.normalized[side]["service"].as_str()
+                                {
+                                    services.insert(service.into());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(evidence) = &fragment.evidence {
+                        services.extend(evidence.revisions.keys().cloned());
+                    }
+                }
                 for dep in fragment.dependencies.keys() {
                     if let Some(observation) = observations.get(dep) {
                         if !observation.service.is_empty() {
@@ -224,13 +247,19 @@ fn changed_declarations(
     let scenarios = repo.scenarios()?;
     let interactions = repo.interactions()?;
     let mut changed = BTreeSet::new();
-    for observation in binding.observations.values().chain(
-        binding
-            .fragments
-            .values()
-            .filter_map(|fragment| fragment.evidence.as_ref())
-            .flat_map(|evidence| evidence.observations.values()),
-    ) {
+    for observation in binding
+        .influence_scopes
+        .values()
+        .flat_map(|scope| scope.declarations.values())
+        .chain(binding.observations.values())
+        .chain(
+            binding
+                .fragments
+                .values()
+                .filter_map(|fragment| fragment.evidence.as_ref())
+                .flat_map(|evidence| evidence.observations.values()),
+        )
+    {
         let value = &observation.normalized;
         let differs = match observation.kind.as_str() {
             "NOTE_ASSOCIATION" => notes
@@ -307,7 +336,20 @@ fn recorded_input_changes(
             .fragments
             .iter()
             .filter(|(id, _)| id.starts_with(&prefix))
-            .flat_map(|(_, fragment)| fragment.dependencies.keys().cloned())
+            .flat_map(|(_, fragment)| {
+                fragment
+                    .dependencies
+                    .keys()
+                    .chain(
+                        fragment
+                            .influence_scope
+                            .as_ref()
+                            .and_then(|id| binding.influence_scopes.get(id))
+                            .into_iter()
+                            .flat_map(|scope| scope.dependencies.keys()),
+                    )
+                    .cloned()
+            })
             .collect();
         for id in dependencies.intersection(&changed) {
             affected.entry(key.clone()).or_default().push(observation_reason(json!({"reason":"RECORDED_DECLARATION_CHANGED","dependency":id,"requiresRecheck":true})));
@@ -538,7 +580,7 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
             json!({"schema":"codeclew-docs-refresh/1.0","status":"UNCHANGED","statusOnly":true,"bundle":previous.0,"index":"docs/index.html","sections":binding.section_states,"observation":observation,"agentInvocations":0,"captures":0}),
         );
     }
-    binding.schema = "codeclew-documentation-bindings/1.3".into();
+    binding.schema = "codeclew-documentation-bindings/1.4".into();
     binding.output_hashes.clear();
     let bundle = digest(&json!({"binding":binding,"targetInput":input_digest,"statusRenderer":render::renderer_digest()?}))?[7..].to_owned();
     let mut files = BTreeMap::new();

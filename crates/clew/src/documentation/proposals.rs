@@ -58,6 +58,12 @@ pub struct Proposal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProposedOperation {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "provided_visuals"
+    )]
+    pub visuals: Option<Vec<super::visuals::ProposedVisual>>,
     pub entrypoint: String,
     pub title: String,
     pub summary: Claim,
@@ -69,6 +75,12 @@ pub struct ProposedOperation {
     #[serde(default)]
     pub contracts: Vec<Contract>,
 }
+fn provided_visuals<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<super::visuals::ProposedVisual>>, D::Error> {
+    Vec::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProposedAssessment {
@@ -139,6 +151,52 @@ pub struct Artifact {
     pub influence: BTreeMap<String, String>,
     pub meaning_review: String,
 }
+
+// The exact Work identity already retains the full conservative influence map.
+// Keep one authority for those bytes instead of copying them into every proposal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredArtifact {
+    schema: String,
+    artifact: Artifact,
+    influence_digest: String,
+}
+
+impl StoredArtifact {
+    fn from_runtime(mut artifact: Artifact) -> Result<Self, ClewError> {
+        let influence_digest = digest(&std::mem::take(&mut artifact.influence))?;
+        artifact.id.clear();
+        let mut stored = Self {
+            schema: "codeclew-documentation-proposal-record/1.0".into(),
+            artifact,
+            influence_digest,
+        };
+        stored.artifact.id = digest(&stored)?[7..].into();
+        Ok(stored)
+    }
+
+    fn validate_identity(&self, id: &str) -> Result<(), ClewError> {
+        let mut canonical = self.clone();
+        canonical.artifact.id.clear();
+        if self.schema != "codeclew-documentation-proposal-record/1.0"
+            || self.artifact.schema != "codeclew-documentation-proposal-result/1.0"
+            || !self.artifact.influence.is_empty()
+            || self.artifact.id != id
+            || &digest(&canonical)?[7..] != id
+        {
+            return Err(invalid("proposal record digest or schema is invalid"));
+        }
+        Ok(())
+    }
+
+    fn hydrate(mut self, influence: BTreeMap<String, String>) -> Result<Artifact, ClewError> {
+        if digest(&influence)? != self.influence_digest {
+            return Err(invalid("proposal influence does not match its saved work"));
+        }
+        self.artifact.influence = influence;
+        Ok(self.artifact)
+    }
+}
 fn stable(scope: &str, slot: &str) -> Result<String, ClewError> {
     Ok(format!("claim-{}", &digest(&(scope, slot))?[7..27]))
 }
@@ -149,18 +207,10 @@ fn file(id: &str) -> Result<String, ClewError> {
     Ok(format!(".codeclew/proposals/{id}.json"))
 }
 pub fn load(repo: &Repository, id: &str) -> Result<Artifact, ClewError> {
-    let mut result: Artifact = store::read(&repo.path(&file(id)?)?, 4 * 1024 * 1024)?;
-    let recorded = result.id.clone();
-    result.id.clear();
-    let expected = digest(&result)?[7..].to_owned();
-    result.id = recorded;
-    if result.id != id
-        || expected != id
-        || result.schema != "codeclew-documentation-proposal-result/1.0"
-    {
-        return Err(invalid("proposal digest or schema is invalid"));
-    }
-    Ok(result)
+    let stored: StoredArtifact = store::read(&repo.path(&file(id)?)?, 4 * 1024 * 1024)?;
+    stored.validate_identity(id)?;
+    let influence = work::load_influence(repo, &stored.artifact.work)?;
+    stored.hydrate(influence)
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
@@ -244,7 +294,11 @@ pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
     }
     let retained =
         bindings::baseline(repo)?.and_then(|(_, b)| b.narratives.get(&work.subject).cloned());
-    if retained != work.retained {
+    let generated_after_preparation = work.retained.is_none()
+        && retained
+            .as_ref()
+            .is_some_and(render::is_generated_placeholder);
+    if retained != work.retained && !generated_after_preparation {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
             "published content changed after work preparation",
@@ -656,9 +710,22 @@ fn materialize(
             return Err(invalid("operation title exceeds 512 bytes"));
         }
         let id = operation_id(&builder, &proposed.entrypoint)?;
+        if proposed.visuals.is_none()
+            && work.retained.as_ref().is_some_and(|retained| {
+                retained
+                    .operations
+                    .iter()
+                    .any(|operation| operation.id == id && !operation.visuals.is_empty())
+            })
+        {
+            return Err(invalid(
+                "existing visual artifacts require an explicit visuals array: include the reviewed replacement set, or [] to remove them; a summary-only update cannot silently erase diagrams",
+            ));
+        }
         let scope = format!("{}/{}", work.subject, id);
         let summary = builder.claim(&scope, "summary", &proposed.summary)?;
         let mut op = Operation {
+            visuals: Vec::new(),
             id,
             title: proposed.title.clone(),
             summary,
@@ -675,6 +742,10 @@ fn materialize(
         if let Some(gap) = &proposed.summary.uncertainty {
             op.boundaries.push(gap.clone());
         }
+        let proposed_visuals = proposed.visuals.as_deref().unwrap_or_default();
+        op.visuals = super::visuals::materialize(proposed_visuals, |slot, claim| {
+            builder.claim(&scope, slot, claim)
+        })?;
         if super::dataflow::is_root(&work.checked, &work.subject, &op.id) {
             let graph = proposed
                 .dataflow
@@ -683,6 +754,7 @@ fn materialize(
             if !proposed.steps.is_empty()
                 || !proposed.contracts.is_empty()
                 || proposed.assessment.is_some()
+                || !proposed_visuals.is_empty()
             {
                 return Err(invalid(
                     "data-flow graphs are separate from sequence steps, contracts and note assessments",
@@ -706,6 +778,9 @@ fn materialize(
             return Err(invalid(
                 "typed data-flow content requires a saved view root",
             ));
+        }
+        if super::notes::is_root(&op.id) && !op.visuals.is_empty() {
+            return Err(invalid("note assessments cannot contain visual artifacts"));
         }
         if super::notes::is_root(&op.id) {
             let a = proposed
@@ -932,13 +1007,20 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
     } else if !input.uncertainties.is_empty()
         || !input.gaps.is_empty()
         || !work.obligations.is_empty()
+        || input.operations.iter().any(|operation| {
+            operation
+                .visuals
+                .iter()
+                .flatten()
+                .any(|visual| !visual.limitations.is_empty())
+        })
         || claims.values().any(|c| !c["uncertainty"].is_null())
     {
         "READY_WITH_LIMITATIONS"
     } else {
         "READY_FOR_REVIEW"
     };
-    let mut artifact = Artifact {
+    let artifact = Artifact {
         schema: "codeclew-documentation-proposal-result/1.0".into(),
         id: String::new(),
         work: id.into(),
@@ -951,8 +1033,9 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
         influence: work.influence.clone(),
         meaning_review: "UNASSESSED".into(),
     };
-    artifact.id = digest(&artifact)?[7..].into();
-    let encoded = bytes(&artifact)?;
+    let stored = StoredArtifact::from_runtime(artifact)?;
+    let artifact = &stored.artifact;
+    let encoded = bytes(&stored)?;
     if encoded.len() > 4 * 1024 * 1024 {
         return Err(invalid("materialized proposal exceeds 4 MiB"));
     }
@@ -989,6 +1072,9 @@ pub fn show(
     if let Some(n) = &a.narrative {
         for operation in &n.operations {
             rows.push(json!({"kind":"OPERATION","id":operation.id,"record":{"title":operation.title,"summary":operation.summary,"participants":operation.participants,"boundaries":operation.boundaries,"overviewDiagram":operation.overview_diagram}}));
+            for visual in &operation.visuals {
+                rows.push(json!({"kind":"VISUAL","id":format!("{}/{}",operation.id,visual.id),"record":visual}));
+            }
             if let Some(g) = &operation.dataflow {
                 rows.push(json!({"kind":"DATAFLOW_BINDING","id":operation.id,"record":{"schema":g.schema,"view":g.view,"definitionDigest":g.definition_digest,"moduleDigest":g.module_digest}}));
                 for node in &g.nodes {
@@ -1022,4 +1108,78 @@ pub fn show(
         limit,
         json!({"reportSchema":a.schema,"proposal":id,"work":a.work,"status":a.status,"meaningReview":a.meaning_review,"readDigest":a.read_digest,"narrativeDigest":a.narrative.as_ref().map(digest).transpose()?}),
     )
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    fn artifact(influence: BTreeMap<String, String>) -> Artifact {
+        Artifact {
+            schema: "codeclew-documentation-proposal-result/1.0".into(),
+            id: String::new(),
+            work: "a".repeat(64),
+            input: Proposal {
+                schema: "codeclew-documentation-proposal/1.0".into(),
+                operations: vec![],
+                gaps: BTreeMap::new(),
+                uncertainties: vec![],
+            },
+            narrative: None,
+            status: "NEEDS_REPAIR".into(),
+            diagnostics: vec![],
+            claims: BTreeMap::new(),
+            read_digest: "sha256:reads".into(),
+            influence,
+            meaning_review: "UNASSESSED".into(),
+        }
+    }
+
+    #[test]
+    fn large_influence_is_shared_without_changing_its_authority() {
+        let influence: BTreeMap<_, _> = (0..40_000)
+            .map(|i| {
+                (
+                    format!("service:dependency:{i:08}:{}", "x".repeat(40)),
+                    format!("sha256:{}", "b".repeat(64)),
+                )
+            })
+            .collect();
+        assert!(bytes(&influence).unwrap().len() > 4 * 1024 * 1024);
+        let original = artifact(influence.clone());
+        let stored = StoredArtifact::from_runtime(original).unwrap();
+        let encoded = bytes(&stored).unwrap();
+        assert!(encoded.len() < 2048);
+        let decoded: StoredArtifact = serde_json::from_slice(&encoded).unwrap();
+        decoded.validate_identity(&stored.artifact.id).unwrap();
+        let hydrated = decoded.hydrate(influence.clone()).unwrap();
+        assert_eq!(hydrated.influence, influence);
+        assert_eq!(hydrated.work, "a".repeat(64));
+        assert_eq!(hydrated.id, stored.artifact.id);
+        assert!(stored.hydrate(BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn proposal_record_rejects_mutation_and_competing_inline_authority() {
+        let stored = StoredArtifact::from_runtime(artifact(BTreeMap::new())).unwrap();
+        let id = stored.artifact.id.clone();
+        let mut changed = stored.clone();
+        changed.artifact.work = "b".repeat(64);
+        assert!(changed.validate_identity(&id).is_err());
+        let mut changed = stored.clone();
+        changed.influence_digest = "sha256:wrong".into();
+        assert!(changed.validate_identity(&id).is_err());
+        let mut changed = stored;
+        changed
+            .artifact
+            .influence
+            .insert("unexpected".into(), "digest".into());
+        changed.artifact.id.clear();
+        changed.artifact.id = digest(&changed).unwrap()[7..].into();
+        assert!(changed.validate_identity(&changed.artifact.id).is_err());
+        assert!(
+            serde_json::from_slice::<StoredArtifact>(&bytes(&artifact(BTreeMap::new())).unwrap())
+                .is_err()
+        );
+    }
 }

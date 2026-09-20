@@ -303,6 +303,13 @@
             }
           ],
           "description": "Only for docs view prepare: use scenario:<view-id> as entrypoint and empty steps. Summary cites its VIEW_DEFINITION plus code. Domain nodes use exact entity ID/title and cite DOMAIN_ENTITY; other nodes cite source. Name-only edges require candidate/UNKNOWN with meaning.uncertainty. Local read/transform/write edges require source-dataflow and SOURCE_INTERPRETATION; transfer requires declared-contract, DECLARED_TRANSFER, an explicit interaction, source and uncertainty. These classifications do not set review or runtime authority."
+        },
+        "visuals": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/visual"
+          }
         }
       },
       "required": [
@@ -408,6 +415,327 @@
         "authority",
         "matchBasis",
         "meaning"
+      ]
+    },
+    "visualNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "meaning": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/visualClaim"
+            },
+            {
+              "properties": {
+                "text": {
+                  "maxLength": 1024,
+                  "description": "Nonblank label, at most 1024 UTF-8 bytes. The host additionally enforces byte and control-character limits."
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "meaning"
+      ]
+    },
+    "visualEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "meaning": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/visualClaim"
+            },
+            {
+              "properties": {
+                "text": {
+                  "maxLength": 1024,
+                  "description": "Nonblank label, at most 1024 UTF-8 bytes. The host additionally enforces byte and control-character limits."
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "to",
+        "meaning"
+      ]
+    },
+    "visualRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "$ref": "#/$defs/visualClaim"
+        },
+        "outcome": {
+          "$ref": "#/$defs/visualClaim"
+        }
+      },
+      "required": [
+        "condition",
+        "outcome"
+      ]
+    },
+    "visual": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "kind": {
+          "enum": [
+            "execution-flow",
+            "dependency-map",
+            "decision-table"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "purpose": {
+          "$ref": "#/$defs/visualClaim"
+        },
+        "scope": {
+          "$ref": "#/$defs/visualClaim"
+        },
+        "limitations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/visualNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/visualEdge"
+          }
+        },
+        "parent": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "artifact": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+                },
+                "node": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+                }
+              },
+              "required": [
+                "artifact",
+                "node"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hitPolicy": {
+          "enum": [
+            "FIRST",
+            "UNIQUE",
+            "UNKNOWN",
+            null
+          ]
+        },
+        "policyExplanation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/visualClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/visualRule"
+          }
+        },
+        "afterSelection": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/visualClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "purpose",
+        "scope",
+        "limitations"
+      ],
+      "description": "A typed source interpretation, atomically versioned with its containing operation. Graphs require nodes and evidence-bound edges, and forbid decision fields. Tables require nonempty rules, hitPolicy and policyExplanation; parent references an execution-flow node in this same operation, or is null for a local decision with unknown global placement. FIRST/UNIQUE are interpretations, not verified executable DMN. Keep action execution failures in afterSelection, outside selection rows.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "execution-flow",
+                "dependency-map"
+              ]
+            },
+            "nodes": {
+              "minItems": 1
+            },
+            "parent": {
+              "type": "null"
+            },
+            "hitPolicy": {
+              "type": "null"
+            },
+            "policyExplanation": {
+              "type": "null"
+            },
+            "rules": {
+              "maxItems": 0
+            },
+            "afterSelection": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "nodes"
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "decision-table"
+            },
+            "nodes": {
+              "maxItems": 0
+            },
+            "edges": {
+              "maxItems": 0
+            },
+            "hitPolicy": {
+              "enum": [
+                "FIRST",
+                "UNIQUE",
+                "UNKNOWN"
+              ]
+            },
+            "policyExplanation": {
+              "$ref": "#/$defs/visualClaim"
+            },
+            "rules": {
+              "minItems": 1
+            }
+          },
+          "required": [
+            "hitPolicy",
+            "policyExplanation",
+            "rules"
+          ]
+        }
+      ]
+    },
+    "visualClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "At most 4096 UTF-8 bytes; node and edge labels at most 1024 UTF-8 bytes."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string"
+          }
+        },
+        "checks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/assertion"
+          }
+        },
+        "uncertainty": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "text",
+        "evidence"
       ]
     }
   }

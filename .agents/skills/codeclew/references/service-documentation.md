@@ -84,6 +84,21 @@ capture just because a source checkout is unavailable or the agent restarted.
 When new source acquisition is actually required, bind the selected checkout and
 run `docs check --service ID`. A full `docs check` acquires every configured service.
 
+If capture succeeded but check never returned a snapshot, do not immediately
+repeat acquisition. Inspect the reported baseline error: a surviving generated
+`docs/index.html` may select a deleted `docs/generated/<bundle>/bindings.json`.
+Restore that bundle, or explicitly preserve and move the generated index aside
+when discarding the old publication. Never silently delete authored material.
+With matching current catalogue records and intact captures, use `docs snapshot
+recover --root ROOT --capture MANIFEST_BASENAME` (repeat `--capture` for each
+selected service). Basenames are explicit files from this root's `.codeclew/cache`;
+do not guess by modification time. Recovery reads saved evidence without source
+access and returns a snapshot; it does not update latest-check or claim current
+freshness. Keep its `RETAINED_SOURCE_NOT_REVERIFIED` authority and pass the returned
+snapshot to context/Work/render. Unsupported policy authority or mismatched
+catalogue input must fail, not trigger an automatic recapture. Old formats remain
+unsupported.
+
 After a successful capture, keep its `snapshot` handle. `context`, `work prepare`,
 and `render` consume saved evidence by default; pass `--snapshot` for an exact
 saved selection. Do not run another check before narrative/render merely to
@@ -206,7 +221,118 @@ Each paragraph has `id`, `text`, `eventIds`, `dependencyIds` and `sourceIds`.
 Every non-`end` diagram event must be covered by an overview or detail paragraph,
 and paragraphs retain the evidence of every referenced event. One paragraph can
 cover many steps. The validator checks references and coverage, not the truth or
-usefulness of the prose. Narrative 1.0/1.1/1.2 remain readable for existing bundles.
+usefulness of the prose. Narrative 1.0/1.1/1.2 are unsupported by the current release.
+
+## Answer reader questions before choosing diagrams
+
+Write useful service analysis from the delivered evidence, not a list of classes,
+DTO fields or generated artifacts. Ordinary author jobs carry `readerGuidance`
+scoped to their selected section; full-service Work gets all five questions.
+A focused operation/process job does not acquire unrelated service-wide inventory
+obligations. The guidance does not add output fields or new discovery capability.
+Answer with a supported statement or a precise unknown; request a bounded
+registered expansion when it can resolve a material question.
+
+| Section | Reader question and evidence needed |
+|---|---|
+| Overview | What outcome does this service provide, for whom, and where does its responsibility end? Lead with supported domain behavior, main objects and scenarios. Separate owner intent and inferred purpose from source facts. |
+| Responsibilities | Which entry-rooted scenarios and variant conditions lead to which effects or outgoing boundaries? A local fragment without a supported parent connection remains local detail, not a complete thread. |
+| Domain entities | What does this service create, change or consume? Separate business meaning from DTO/storage representation; inspect identifiers and concrete lifecycle, persistence or remote-call sites. Object allocation or a request identifier does not establish business creation, ownership or a committed record. |
+| Ingress contracts | What can start work, with which contract and activation conditions? Distinguish discovered, searched-with-none-in-declared-scope, not analyzed and unresolved dynamic registration. Missing returned handlers or an unavailable analyzer do not prove absence. |
+| Egress contracts | What exact call, send or write can a selected scenario reach, under which guard and with what failure behavior? Retain concrete sites even when destination identity is unresolved. Separate systems, clients, internal helpers and configuration dependencies; an injected client does not prove it is called. |
+
+A computational thread is a statically supported causal scenario rooted in an
+entrypoint, including branches, effects, outgoing boundaries and termination or
+unresolved continuation. It is not an OS thread or an arbitrary dependency graph.
+A reusable internal fragment can be documented before its parent is known, with
+that gap explicit. Trace only supported entry-to-egress relations; do not connect
+every entrypoint to every destination.
+
+Separate construction, selection, queue insertion, invocation and completion.
+Collection iteration does not establish FIFO or completion of an external effect.
+An asynchronous path stops at submission unless its continuation and correlation
+are supported. Explain acknowledgement and business completion as separate facts.
+Keep the prose and diagram consistent about order, guards and unresolved branches.
+
+Choose one primary visual for the reader's question. Keep simple binary guards
+inline by default; a linked table is useful for decisions with more than two
+outcomes. Explain input origins, missing/default values and rule policy in ordinary
+language. Put failures while executing a selected action after selection. The
+narrow `section-summary/1.0` contract remains entities-only and summary-only: its
+guidance distinguishes domain lifecycle from representation without authorizing
+visuals or new response fields. Structural checks do not prove that the model
+answered these questions correctly; source and meaning review remain necessary.
+
+## Native internal-flow diagrams and decision tables (0.11.0)
+
+Use saved Work evidence to add `visuals` to a proposed operation, including a
+service section. For service-level internal behavior, prepare the responsibilities
+section with this request:
+
+```json
+{"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","entrypoint":"section-responsibilities","maxItems":100,"maxBytes":49152}
+```
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders --snapshot SAVED_SNAPSHOT --input /work/visual-request.json
+clew docs work read --root /work/architecture --work WORK_ID --input /work/selection.json
+clew docs proposal submit --root /work/architecture --work WORK_ID --input /work/proposal.json
+clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --unassessed
+```
+
+Select the returned section reference as the operation's `entrypoint`, retain its
+evidence-bound `summary`, and use `steps: []` for a section. Its optional `visuals`
+array contains typed records with `id`, `kind`, `title`, evidence-bound `purpose`
+and `scope`, and nonempty `limitations`. Every claim has `text` and `evidence`
+references delivered by recorded Work reads. Expand exact callable/source handles,
+follow pagination and read the relevant helpers. Do not cite unread records or
+interpret a navigation summary as a complete method body. No capture is required
+solely to author another visual from the same saved evidence.
+
+Supported visual kinds:
+
+- `execution-flow`: `nodes` contain `id` and evidence-bound `meaning`; `edges`
+  contain `id`, `from`, `to` and evidence-bound `meaning`. Describe ordering and
+  branch conditions explicitly; preserve early exits and asynchronous boundaries.
+- `dependency-map`: the same graph fields describe structural relationships.
+  Structural dependencies do not establish execution order or runtime activation.
+- `decision-table`: `rules` contain evidence-bound `condition` and `outcome`.
+  `parent: {"artifact":"FLOW_ID","node":"NODE_ID"}` must point to an
+  execution-flow node in the same operation. If only a local handler is supported,
+  omit the parent, name its local scope and retain the missing connection as an
+  explicit limitation. Do not fabricate a relationship to the main process.
+
+Decision tables require `hitPolicy` and evidence-bound `policyExplanation`.
+`FIRST` selects the first matching row; it does not order separate tables or limit
+an output to a single action. `UNIQUE` asserts mutually exclusive matches;
+`UNKNOWN` records that the evidence cannot establish the policy. Explain the
+source basis or uncertainty. These are documentation tables, not executable DMN,
+and the validator cannot prove the policy's semantic correctness. Optional
+`afterSelection` is a claim for later execution outcomes, such as send failure;
+do not insert such failures into pre-action selection rules.
+
+Explain why each block was selected, its trigger and its omitted scope. An accepted
+HTTP explanation does not prove full internal-flow coverage. Inputs are closed
+typed data, not Mermaid/HTML/script imports; the native reader renders local
+assets without requiring a CDN. Visuals share their containing operation's
+version, retained evidence, freshness and meaning review. Updating the operation
+replaces them atomically; independent artifact review/lifecycle is not provided.
+`--unassessed` retains unreviewed meaning, including in diagrams.
+When updating an operation that already has visuals, supply the complete reviewed
+`visuals` array. Omission is rejected so a summary edit cannot silently erase them.
+An explicit `visuals: []` removes them from the new version; historical versions
+remain available. Existing diagrams are never silently reaccepted with new prose.
+
+The narrow `section-author-v1` job only authors a section summary. It cannot emit
+visuals. Use general Work/proposal authoring or a configured process-overview job;
+read the actual supplied job schema before delegating. This workflow does not
+automatically detect every business flow or verify runtime behavior.
+
+Publishing another service may create an empty placeholder page for this one;
+that alone does not invalidate previously prepared Work. Real authored changes,
+including custom gap descriptions, still require new Work. Identical saved
+influence maps are shared in proposals/publication rather than copied into each
+accepted operation; no new source analysis is implied by that representation.
 
 ## Reader comprehension and source checks
 

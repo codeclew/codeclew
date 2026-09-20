@@ -15,6 +15,7 @@ const SCHEMA: &str = "codeclew-documentation-composition/1.0";
 const MANIFEST_SCHEMA: &str = "codeclew-documentation-composition-manifest/1.0";
 const OPERATION_SCHEMA: &str = "codeclew-documentation-composition-operation/1.0";
 const VERSION_SCHEMA: &str = "codeclew-documentation-composition-accepted-version/1.0";
+const INFLUENCE_SCHEMA: &str = "codeclew-documentation-composition-influence/1.0";
 const SCOPE_SCHEMA: &str = "codeclew-documentation-composition-input-scope/1.0";
 const MAX_RECORDS: usize = 4096;
 
@@ -48,6 +49,8 @@ struct Manifest {
     baseline: Option<bindings::BaselineReceipt>,
     operations: BTreeMap<String, cache::ObjectRef>,
     accepted_versions: BTreeMap<String, cache::ObjectRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    influence_scopes: BTreeMap<String, cache::ObjectRef>,
     scopes: BTreeMap<String, cache::ObjectRef>,
 }
 
@@ -132,6 +135,16 @@ fn capture_retained(
         versions,
         scopes,
     })
+}
+
+/// Fail before source acquisition when retained documentation cannot be read.
+/// Attachment still captures and validates these inputs after source acquisition;
+/// this preflight is not a frozen snapshot or a substitute for that final check.
+pub(super) fn validate_retained(
+    repo: &Repository,
+    inputs: &RepositoryInputs,
+) -> Result<(), ClewError> {
+    capture_retained(repo, inputs).map(|_| ())
 }
 
 fn attach(
@@ -317,6 +330,11 @@ pub(super) fn store(repo: &Repository, value: &Composition) -> Result<cache::Obj
             VERSION_SCHEMA,
             &value.retained.versions.accepted_versions,
         )?,
+        influence_scopes: store_map(
+            repo,
+            INFLUENCE_SCHEMA,
+            &review::influence_scopes(&value.retained.versions.accepted_versions)?,
+        )?,
         scopes: store_map(repo, SCOPE_SCHEMA, &value.retained.scopes)?,
     };
     cache::put_json(repo, MANIFEST_SCHEMA, &manifest)
@@ -340,6 +358,9 @@ pub(super) fn load(
     if input_digest != m.input_digest {
         return Err(invalid("composition declaration digest mismatch"));
     }
+    let mut accepted_versions = load_map(repo, VERSION_SCHEMA, m.accepted_versions)?;
+    let influence_scopes = load_map(repo, INFLUENCE_SCHEMA, m.influence_scopes)?;
+    review::resolve_influence_scopes(&mut accepted_versions, &influence_scopes)?;
     Ok(Composition {
         schema: SCHEMA.into(),
         parent: m.parent,
@@ -350,7 +371,7 @@ pub(super) fn load(
             baseline: m.baseline,
             versions: processes::RetainedVersions {
                 operations: load_map(repo, OPERATION_SCHEMA, m.operations)?,
-                accepted_versions: load_map(repo, VERSION_SCHEMA, m.accepted_versions)?,
+                accepted_versions,
             },
             scopes: load_map(repo, SCOPE_SCHEMA, m.scopes)?,
         },

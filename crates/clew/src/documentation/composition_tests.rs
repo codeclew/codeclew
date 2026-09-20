@@ -95,7 +95,7 @@ fn request(path: &str) -> Value {
 
 fn accepted_version(path: &str, operation_digest: &str) -> review::AcceptedVersion {
     serde_json::from_value(json!({
-        "schema":"codeclew-documentation-accepted-version/1.1",
+        "schema":"codeclew-documentation-accepted-version/1.2",
         "previousNarrativeDigest":digest(&Option::<model::Narrative>::None).unwrap(),
         "work":"work-id",
         "proposal":"proposal-id",
@@ -108,7 +108,7 @@ fn accepted_version(path: &str, operation_digest: &str) -> review::AcceptedVersi
         "verification":"VERIFIED",
         "limitations":[],
         "sourceRevisions":{"orders":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        "influence":{},
+        "influence":{"scope":digest(&review::InfluenceScope::default()).unwrap()},
         "externalRequest":request(path),
         "externalFingerprint":"sha256:fingerprint"
     }))
@@ -158,7 +158,11 @@ fn bindings_bundle(index: &str, child_operation: &model::Operation) -> bindings:
         accepted_version("manual/b.md", "sha256:unreachable-operation"),
     );
     bindings::Bindings {
-        schema: "codeclew-documentation-bindings/1.3".into(),
+        influence_scopes: BTreeMap::from([(
+            digest(&review::InfluenceScope::default()).unwrap(),
+            review::InfluenceScope::default(),
+        )]),
+        schema: "codeclew-documentation-bindings/1.4".into(),
         input_digest: "sha256:bindings-input".into(),
         renderer: model::RENDERER.into(),
         extractor: "codeclew-documentation-source/1.0".into(),

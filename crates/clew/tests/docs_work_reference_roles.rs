@@ -383,6 +383,8 @@ fn omitted_role_rows_are_not_recorded_as_supplied() {
     )
     .unwrap();
     commit(&source);
+    // Authoring consumes saved evidence; it never captures this changed source.
+    f.checked();
     let request_path = request(&f, "omitted-roles-request.json", None, 2_048);
     let page = f.ok(&[
         "docs",

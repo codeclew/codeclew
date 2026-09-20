@@ -5,6 +5,7 @@ pub mod agent_jobs;
 pub mod analysis;
 pub mod bindings;
 pub mod cache;
+mod capture_recovery;
 pub mod check;
 pub mod cli;
 pub mod composition;
@@ -34,6 +35,7 @@ pub mod status;
 pub mod store;
 mod syntax;
 pub mod updates;
+pub mod visuals;
 pub mod work;
 
 use crate::error::{ClewError, ErrorCode};

@@ -4087,7 +4087,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                 event_ids: vec!["accepted".into()],
             }],
         };
-        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.3".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{assessment:None,dataflow:None,overview_diagram:Some(overview),interface_contracts:vec![],id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:explain(&events),participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
+        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.3".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{visuals:Vec::new(),assessment:None,dataflow:None,overview_diagram:Some(overview),interface_contracts:vec![],id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:explain(&events),participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
     }
     let scenario = &checked.scenarios["checkout"];
     let first = scenario
@@ -4252,6 +4252,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         subject: "scenario:checkout".into(),
         context_digest: checked.context_digest.clone(),
         operations: vec![Operation {
+            visuals: Vec::new(),
             dataflow: None,
             assessment: None,
             overview_diagram: Some(OverviewDiagram {

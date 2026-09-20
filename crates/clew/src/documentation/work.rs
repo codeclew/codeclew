@@ -134,6 +134,7 @@ pub struct Work {
     pub review_reasons: Vec<Value>,
 }
 
+const SECTION_ORIENTATION_PROFILE: &str = "section-orientation-v1";
 const WORK_SCHEMA: &str = "codeclew-documentation-work/1.0";
 const WORK_MANIFEST_SCHEMA: &str = "codeclew-documentation-work-manifest/1.0";
 
@@ -237,12 +238,24 @@ fn directory(id: &str) -> Result<String, ClewError> {
     }
     Ok(format!(".codeclew/work/{id}"))
 }
-pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
+fn load_stored(repo: &Repository, id: &str) -> Result<StoredWork, ClewError> {
     let path = repo.path(&format!("{}/work.json", directory(id)?))?;
     let stored: StoredWork = store::read(&path, 64 * 1024 * 1024).map_err(|error| invalid(format!(
         "DOCS_REINDEX_REQUIRED: unsupported saved work format ({}); initialize a fresh documentation root, run docs check, and prepare new work", error.message)))?;
     stored.validate_identity(id)?;
     validate_context_profile(&stored.subject, &stored.request)?;
+    Ok(stored)
+}
+
+pub(super) fn load_influence(
+    repo: &Repository,
+    id: &str,
+) -> Result<BTreeMap<String, String>, ClewError> {
+    Ok(load_stored(repo, id)?.influence)
+}
+
+pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
+    let stored = load_stored(repo, id)?;
     let checked = Check::load_snapshot(repo, &stored.evidence_snapshot)?;
     Ok(stored.into_runtime(checked))
 }
@@ -300,9 +313,33 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
     prepare_with_snapshot(repo, subject, request, None)
 }
 
+fn normalize_section_profile(subject: &str, request: &mut Request) {
+    if request.context_profile.is_none()
+        && subject.starts_with("service:")
+        && request
+            .entrypoint
+            .as_deref()
+            .is_some_and(super::sections::contains)
+    {
+        request.context_profile = Some(SECTION_ORIENTATION_PROFILE.into());
+    }
+}
+
 fn validate_context_profile(subject: &str, request: &Request) -> Result<(), ClewError> {
     match request.context_profile.as_deref() {
         None => Ok(()),
+        Some(SECTION_ORIENTATION_PROFILE)
+            if subject.starts_with("service:")
+                && request
+                    .entrypoint
+                    .as_deref()
+                    .is_some_and(super::sections::contains) =>
+        {
+            Ok(())
+        }
+        Some(SECTION_ORIENTATION_PROFILE) => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: section-orientation-v1 requires one service section",
+        )),
         Some("process-v1")
             if subject.starts_with("scenario:")
                 && request.entrypoint.as_deref() == Some(super::processes::OVERVIEW) =>
@@ -333,7 +370,7 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
 pub fn prepare_with_snapshot(
     repo: &Repository,
     subject: String,
-    request: Request,
+    mut request: Request,
     snapshot: Option<&str>,
 ) -> Result<Value, ClewError> {
     if request.schema != "codeclew-documentation-work-request/1.0"
@@ -349,6 +386,9 @@ pub fn prepare_with_snapshot(
     let (kind, id) = subject
         .split_once(':')
         .ok_or_else(|| invalid("work subject must be service:ID or scenario:ID"))?;
+    // Context projection is part of immutable Work identity. A saved exhaustive
+    // section read ledger must not be reused as the compact packet's ledger.
+    normalize_section_profile(&subject, &mut request);
     validate_context_profile(&subject, &request)?;
     let selected = match kind {
         "service" if repo.services()?.contains_key(id) => BTreeSet::from([id.to_owned()]),
@@ -630,6 +670,166 @@ fn reference_roles(work: &Work, reference: &str) -> Vec<&'static str> {
     roles
 }
 
+fn section_content_preview(mut record: Value, max_bytes: usize) -> Result<Value, ClewError> {
+    let budget = (max_bytes / 3).max(2048);
+    if record["content"].is_null() || bytes(&record)?.len() <= budget {
+        return Ok(record);
+    }
+    let content = record["content"].take();
+    let text_preview = |value: &Value, chars| {
+        value
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(chars)
+            .collect::<String>()
+    };
+    let visual_count = content["visuals"].as_array().map_or(0, Vec::len);
+    record["content"] = json!({
+        "id":content["id"],"title":text_preview(&content["title"],128),
+        "summary":{"text":text_preview(&content["summary"]["text"],512)},
+        "visuals":[],"visualCount":visual_count,
+        "eventCount":content["events"].as_array().map_or(0,Vec::len),
+        "contractCount":content["interfaceContracts"].as_array().map_or(0,Vec::len)
+    });
+    record["contentProjection"] = json!({
+        "kind":"RETAINED_ORIENTATION_ONLY","fullContentDeferred":true,
+        "fullContentDigest":digest(&content)?,"fullContentBytes":bytes(&content)?.len(),
+        "summaryMayBeTruncated":true,"deferredVisualDetails":visual_count,
+        "nextRead":"Use docs section show for the full retained operation; then explicitly expand its source/dependency references before citing claims. This preview is not a replacement operation and does not authorize dropping retained artifacts."
+    });
+    if let Some(visuals) = content["visuals"].as_array() {
+        for visual in visuals {
+            let preview = json!({"id":visual["id"],"kind":visual["kind"],
+                "title":text_preview(&visual["title"],80),
+                "nodeCount":visual["nodes"].as_array().map_or(0,Vec::len),
+                "edgeCount":visual["edges"].as_array().map_or(0,Vec::len),
+                "ruleCount":visual["rules"].as_array().map_or(0,Vec::len)});
+            record["content"]["visuals"]
+                .as_array_mut()
+                .unwrap()
+                .push(preview);
+            if bytes(&record)?.len() > budget {
+                record["content"]["visuals"].as_array_mut().unwrap().pop();
+                break;
+            }
+        }
+    }
+    record["contentProjection"]["omittedVisualIdentities"] =
+        json!(visual_count.saturating_sub(record["content"]["visuals"].as_array().unwrap().len()));
+    Ok(record)
+}
+
+// Initial context is an orientation packet, not an exhaustive evidence dump.
+// Full evidence remains immutable and available through recorded expansions;
+// preview limits never narrow the Work's conservative influence set.
+fn compact_section_rows(
+    work: &Work,
+    service: &str,
+    section: &str,
+) -> Result<Vec<Value>, ClewError> {
+    const PREVIEW_ITEMS: usize = 8;
+    const PREVIEW_BYTES: usize = 8192;
+    let mut rows: Vec<_> = super::sections::records(service, work.retained.as_ref())
+        .into_iter()
+        .filter(|record| record["id"] == section)
+        .map(|record| Ok(json!({"kind":"SECTION","id":section,"record":section_content_preview(record,work.request.max_bytes)?})))
+        .collect::<Result<_, ClewError>>()?;
+    let mut inventory = super::sections::inventory(service, &work.checked);
+    if let Some(public) = inventory["publicBoundaries"].as_array_mut() {
+        let count = public.len();
+        public.truncate(PREVIEW_ITEMS);
+        inventory["publicBoundaryCount"] = json!(count);
+        inventory["omittedPublicBoundaries"] = json!(count.saturating_sub(PREVIEW_ITEMS));
+    }
+    rows.push(
+        json!({"kind":"BOUNDARY_INVENTORY","id":format!("inventory:{service}"),"record":inventory}),
+    );
+    let mut seeds = Vec::new();
+    if let Some(operation) = work.retained.as_ref().and_then(|n| {
+        n.operations
+            .iter()
+            .find(|operation| operation.id == section)
+    }) {
+        seeds.extend(
+            operation
+                .summary
+                .dependency_ids
+                .iter()
+                .map(|id| (id, "retained-section-summary")),
+        );
+        for visual in &operation.visuals {
+            for fragment in super::visuals::fragments(visual) {
+                seeds.extend(
+                    fragment
+                        .dependency_ids
+                        .iter()
+                        .map(|id| (id, "retained-section-visual")),
+                );
+            }
+        }
+    }
+    if let Some(evidence) = work.checked.services.get(service) {
+        for entry in evidence.entrypoints.iter().take(PREVIEW_ITEMS) {
+            seeds.extend(
+                entry
+                    .dependency_ids
+                    .iter()
+                    .filter(|id| {
+                        work.checked.dependencies.get(*id).is_some_and(|d| {
+                            matches!(
+                                d.kind.as_str(),
+                                "SYMBOL"
+                                    | "SEMANTIC_SYMBOL"
+                                    | "ENTRYPOINT"
+                                    | "HTTP"
+                                    | "ROUTE"
+                                    | "SPRING_ROUTE"
+                            )
+                        })
+                    })
+                    .map(|id| (id, "discovered-entrypoint-declaration")),
+            );
+        }
+    }
+    let in_scope = |d: &&Observation| {
+        (d.service == service || d.kind == "DOMAIN_ENTITY") && work.influence.contains_key(&d.id)
+    };
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for dependency in work.checked.dependencies.values().filter(in_scope) {
+        *counts.entry(dependency.kind.as_str()).or_default() += 1;
+    }
+    let total: usize = counts.values().sum();
+    let mut supplied = BTreeSet::new();
+    let mut preview_bytes = 0usize;
+    for (id, reason) in seeds {
+        if supplied.len() == PREVIEW_ITEMS || supplied.contains(id) {
+            continue;
+        }
+        let Some(dependency) = work.checked.dependencies.get(id).filter(in_scope) else {
+            continue;
+        };
+        let record =
+            json!({"kind":"DEPENDENCY","id":id,"record":dependency,"selectionReason":reason});
+        let size = bytes(&record)?.len();
+        if size > PREVIEW_BYTES.saturating_sub(preview_bytes) {
+            continue;
+        }
+        preview_bytes += size;
+        supplied.insert(id.clone());
+        rows.push(record);
+    }
+    rows.push(json!({"kind":"EVIDENCE_DISCOVERY","id":format!("evidence-index:{service}"),"record":{
+        "section":section,"availableDependencyCount":total,"countsByKind":counts,
+        "suppliedDependencyCount":supplied.len(),"deferredDependencyCount":total.saturating_sub(supplied.len()),
+        "previewLimits":{"maxItems":PREVIEW_ITEMS,"maxBytes":PREVIEW_BYTES},
+        "selection":"Retained selected-section dependencies, then discovered entrypoint declarations. No arbitrary symbol sampling.",
+        "nextRead":"Use sourceReferences/dependencyReferences with work expand, or a query with kind and symbolContains. Deferred facts are not absent or unsupported; read them before citing them.",
+        "influenceCoverage":"Full captured Work influence is unchanged by this context preview."
+    }}));
+    Ok(rows)
+}
+
 fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     if selection.references.len() > 8
         || selection.symbols.len() > 8
@@ -709,19 +909,14 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
                 "select a section separately from source expansions",
             ));
         }
-        let mut rows: Vec<Value> = super::sections::records(id, work.retained.as_ref())
-            .into_iter()
-            .map(|r| json!({"kind":"SECTION","id":r["id"],"record":r}))
-            .collect();
-        rows.push(json!({"kind":"BOUNDARY_INVENTORY","id":format!("inventory:{id}"),"record":super::sections::inventory(id,&work.checked)}));
-        rows.extend(
-            work.checked
-                .dependencies
-                .values()
-                .filter(|d| d.service == id || d.kind == "DOMAIN_ENTITY")
-                .map(|d| json!({"kind":"DEPENDENCY","id":d.id,"record":d})),
-        );
-        rows
+        let section = selection
+            .references
+            .first()
+            .and_then(|reference| work.handles.get(reference))
+            .map(|handle| handle.id.as_str())
+            .or(work.request.entrypoint.as_deref())
+            .ok_or_else(|| invalid("section selection requires an explicit section"))?;
+        compact_section_rows(work, id, section)?
     } else if let Some(query) = &selection.query {
         if query.kind.trim().is_empty() {
             return Err(invalid(
@@ -1170,4 +1365,210 @@ pub fn initial_context_complete(state: &ReadState) -> bool {
         cursor = receipt.next_cursor.clone();
     }
     false
+}
+
+#[cfg(test)]
+mod section_context_tests {
+    use super::*;
+
+    fn fixture(count: usize, retained: bool) -> Work {
+        let mut dependencies = BTreeMap::new();
+        let mut handles = BTreeMap::from([
+            (
+                "section2".into(),
+                Handle {
+                    kind: "SECTION".into(),
+                    id: "section-responsibilities".into(),
+                },
+            ),
+            (
+                "s1".into(),
+                Handle {
+                    kind: "SOURCE".into(),
+                    id: "retained-source".into(),
+                },
+            ),
+        ]);
+        let mut influence = BTreeMap::new();
+        for i in 0..count {
+            let id = format!("orders:symbol:{i:05}");
+            let normalized = json!({"name":format!("Handler{i}"),"kind":"function"});
+            let fact_digest = digest(&normalized).unwrap();
+            dependencies.insert(
+                id.clone(),
+                Observation {
+                    id: id.clone(),
+                    kind: "SYMBOL".into(),
+                    service: "orders".into(),
+                    symbol: format!("Handler{i}"),
+                    digest: fact_digest.clone(),
+                    normalized,
+                    source_ids: vec!["retained-source".into()],
+                },
+            );
+            handles.insert(
+                format!("d{i}"),
+                Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.clone(),
+                },
+            );
+            influence.insert(id, fact_digest);
+        }
+        let checked: Check = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-check/1.0","inputDigest":"input","contextDigest":"context",
+            "services":{},"unresolved":{},"interactions":{},"scenarios":{},"dependencies":dependencies
+        })).unwrap();
+        let narrative = retained.then(|| serde_json::from_value(json!({
+            "schema":"codeclew-documentation-narrative/1.3","subject":"service:orders","contextDigest":"context",
+            "operations":[{"id":"section-responsibilities","title":"Responsibilities","participants":[],"events":[],
+                "summary":{"id":"summary","text":"Explain the selected handler.",
+                    "dependencyIds":[format!("orders:symbol:{:05}",count-1)],"sourceIds":["retained-source"]}}]
+        })).unwrap());
+        Work {
+            schema: WORK_SCHEMA.into(),
+            id: "work".into(),
+            subject: "service:orders".into(),
+            request: Request {
+                schema: "codeclew-documentation-work-request/1.0".into(),
+                audience: "Maintainers".into(),
+                entrypoint: Some("section-responsibilities".into()),
+                context_profile: None,
+                max_items: 100,
+                max_bytes: 49152,
+                external_inputs: vec![],
+            },
+            checked,
+            snapshot: None,
+            retained: narrative,
+            external_inputs: BTreeMap::new(),
+            handles,
+            influence,
+            obligations: vec![],
+            review_reasons: vec![],
+        }
+    }
+
+    #[test]
+    fn section_projection_version_separates_old_and_new_immutable_work_ledgers() {
+        let mut work = fixture(1, false);
+        let old = StoredWork::from_runtime(&work, "capture".into());
+        let old_bytes = bytes(&old).unwrap();
+        let old_id = digest(&old).unwrap();
+        normalize_section_profile(&work.subject, &mut work.request);
+        assert_eq!(
+            work.request.context_profile.as_deref(),
+            Some(SECTION_ORIENTATION_PROFILE)
+        );
+        validate_context_profile(&work.subject, &work.request).unwrap();
+        let current = StoredWork::from_runtime(&work, "capture".into());
+        assert_ne!(digest(&current).unwrap(), old_id);
+        assert_eq!(bytes(&old).unwrap(), old_bytes);
+        let current_id = digest(&current).unwrap();
+        normalize_section_profile(&work.subject, &mut work.request);
+        assert_eq!(
+            digest(&StoredWork::from_runtime(&work, "capture".into())).unwrap(),
+            current_id
+        );
+        work.request.entrypoint = None;
+        assert!(validate_context_profile(&work.subject, &work.request).is_err());
+        assert!(validate_context_profile("scenario:process", &current.request).is_err());
+    }
+
+    #[test]
+    fn large_section_initial_context_uses_exact_retained_seeds_not_all_dependencies() {
+        let work = fixture(20_000, true);
+        let original_influence = work.influence.clone();
+        let rows = rows(&work, &Selection::default()).unwrap();
+        assert_eq!(rows.iter().filter(|r| r["kind"] == "SECTION").count(), 1);
+        let dependencies: Vec<_> = rows.iter().filter(|r| r["kind"] == "DEPENDENCY").collect();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0]["reference"], "d19999");
+        assert_eq!(dependencies[0]["sourceReferences"], json!(["s1"]));
+        let discovery = rows
+            .iter()
+            .find(|r| r["kind"] == "EVIDENCE_DISCOVERY")
+            .unwrap();
+        assert_eq!(discovery["record"]["availableDependencyCount"], 20_000);
+        assert_eq!(discovery["record"]["deferredDependencyCount"], 19_999);
+        assert!(bytes(&rows).unwrap().len() < 8192);
+        assert_eq!(work.influence, original_influence);
+    }
+
+    #[test]
+    fn large_retained_visuals_reprepare_as_orientation_without_mutating_content() {
+        let mut work = fixture(10, true);
+        let fragment = |id: String, text: String| {
+            json!({"id":id,"text":text,
+            "dependencyIds":["orders:symbol:00009"],"sourceIds":["retained-source"]})
+        };
+        let visuals = (0..2).map(|g| serde_json::from_value(json!({
+            "schema":super::super::visuals::SCHEMA,"generator":super::super::visuals::GENERATOR,
+            "id":format!("flow{g}"),"kind":"execution-flow","title":format!("Retained flow {g}"),
+            "purpose":fragment(format!("purpose{g}"),"Explain retained execution".into()),
+            "scope":fragment(format!("scope{g}"),"One retained method".into()),"limitations":["Static interpretation only."],
+            "nodes":(0..64).map(|n|json!({"id":format!("node{n}"),"meaning":fragment(format!("node{g}-{n}"),"x".repeat(1024))})).collect::<Vec<_>>()
+        })).unwrap()).collect::<Vec<super::super::visuals::Visual>>();
+        super::super::visuals::validate_structure(&visuals).unwrap();
+        work.retained.as_mut().unwrap().operations[0].visuals = visuals;
+        let original = bytes(&work.retained).unwrap();
+        assert!(original.len() > work.request.max_bytes);
+        let initial = rows(&work, &Selection::default()).unwrap();
+        assert!(bytes(&initial).unwrap().len() < work.request.max_bytes);
+        let section = initial.iter().find(|r| r["kind"] == "SECTION").unwrap();
+        assert_eq!(
+            section["record"]["contentProjection"]["fullContentDeferred"],
+            true
+        );
+        assert_eq!(section["record"]["content"]["visualCount"], 2);
+        assert_eq!(section["record"]["content"]["visuals"][0]["id"], "flow0");
+        assert!(
+            section["record"]["content"]["visuals"][0]
+                .get("nodes")
+                .is_none()
+        );
+        assert_eq!(bytes(&work.retained).unwrap(), original);
+        let explicit = rows(
+            &work,
+            &Selection {
+                references: vec!["section2".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(bytes(&explicit).unwrap().len() < work.request.max_bytes);
+    }
+
+    #[test]
+    fn unseeded_sections_explain_discovery_without_random_fact_sampling() {
+        let work = fixture(20_000, false);
+        let initial = rows(&work, &Selection::default()).unwrap();
+        assert!(!initial.iter().any(|r| r["kind"] == "DEPENDENCY"));
+        let expanded = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "SYMBOL".into(),
+                    symbol_contains: "Handler19999".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0]["reference"], "d19999");
+        let selected = rows(
+            &work,
+            &Selection {
+                references: vec!["section2".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(selected.len() < 10);
+        assert_eq!(
+            selected.iter().find(|r| r["kind"] == "SECTION").unwrap()["id"],
+            "section-responsibilities"
+        );
+    }
 }

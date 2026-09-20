@@ -1067,6 +1067,7 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
     {
         return Err(invalid("unknown baseline fragment"));
     }
+    let mut included_scopes = BTreeSet::new();
     for change in affected
         .iter()
         .filter(|c| args.fragment.as_ref().is_none_or(|id| c["fragment"] == *id))
@@ -1074,6 +1075,14 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
         let id = change["fragment"].as_str().unwrap();
         let fragment = &old.fragments[id];
         dependencies.extend(fragment.dependencies.keys().cloned());
+        if let Some(scope) = &fragment.influence_scope
+            && included_scopes.insert(scope.clone())
+            && let Some(changes) = report["influenceChanges"][scope].as_array()
+        {
+            for change in changes {
+                items.push(json!({"kind":"INFLUENCE_DEPENDENCY_CHANGE","scope":scope,"id":change["dependency"],"change":change,"beforeAuthority":"RETAINED_INFLUENCE_DIGEST","afterAuthority":"CURRENT_SOURCE_CHECK","requiredAction":"REVIEW_RECORDED_WORK_INFLUENCE"}));
+            }
+        }
         source_ids.extend(fragment.sources.keys().cloned());
         items.push(json!({"kind":"AFFECTED_CLAIM","id":id,"subject":fragment.subject,"oldClaim":fragment.content,"oldClaimDigest":fragment.content_digest,"reasons":change["reasons"],"affectedViewId":id,"authority":"RETAINED_CLAIM_REQUIRES_REVIEW","oldClaimAvailable":!fragment.content.is_null()}));
     }
