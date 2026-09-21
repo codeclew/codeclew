@@ -197,7 +197,9 @@ fn capture_local_with_diagnostics(
         {
             return Ok(reused);
         }
-        let mut source = super::syntax::capture(service, &repo)?;
+        let mut source = super::progress::run("ACQUIRE_SYNTAX_EVIDENCE", || {
+            super::syntax::capture(service, &repo)
+        })?;
         if let Some(semantic) = semantic {
             let mut provider = service.clone();
             provider.source = None;
@@ -242,22 +244,23 @@ fn capture_local_with_diagnostics(
     } else {
         SessionLanguage::Java
     };
-    eprintln!("CODEDEBUG doctor START for {}", service.id);
-    let readiness = operations::doctor(
-        &runtime,
-        DoctorScope::Task,
-        Some(&repo),
-        Some(&service.target_ref),
-        Some(DoctorTask {
-            language,
-            profile_id: &service.profile,
-            operation: DoctorOperation::Analysis,
-            compilations: &compilations,
-            committed: false,
-            working_tree: false,
-            maven_settings: None,
-        }),
-    )?;
+    let readiness = super::progress::run("SOURCE_ADMISSION", || {
+        operations::doctor(
+            &runtime,
+            DoctorScope::Task,
+            Some(&repo),
+            Some(&service.target_ref),
+            Some(DoctorTask {
+                language,
+                profile_id: &service.profile,
+                operation: DoctorOperation::Analysis,
+                compilations: &compilations,
+                committed: false,
+                working_tree: false,
+                maven_settings: None,
+            }),
+        )
+    })?;
     if readiness["status"] != "PASS" {
         let action = readiness["nextAction"]
             .as_str()
@@ -267,7 +270,6 @@ fn capture_local_with_diagnostics(
             format!("documentation source admission requires action: {action}"),
         ));
     }
-    eprintln!("CODEDEBUG doctor PASS for {}", service.id);
     let revision = git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     let service_digest = digest(service)?;
     // Revalidate current admission and repository state even when cached bytes exist.
@@ -283,36 +285,33 @@ fn capture_local_with_diagnostics(
         service.id,
         cache_key.trim_start_matches("sha256:")
     );
-    let session = SessionAuthority::open(
-        &repo,
-        &service.target_ref,
-        language,
-        &compilations,
-        None,
-        ModelCachePolicy::NonCacheable,
-        None,
-    )?;
-    let result = capture_session(&session, service, &service_digest, debug_output);
+    let session = super::progress::run("OPEN_ANALYSIS_SESSION", || {
+        SessionAuthority::open(
+            &repo,
+            &service.target_ref,
+            language,
+            &compilations,
+            None,
+            ModelCachePolicy::NonCacheable,
+            None,
+        )
+    })?;
+    let result = super::progress::run("ACQUIRE_COMPILER_EVIDENCE", || {
+        capture_session(&session, service, &service_digest, debug_output)
+    });
     // Only use supported lifecycle operations; documentation records have no session dependency.
-    let cleanup = session.abort().and_then(|_| session.gc(false)).map(|_| ());
+    let cleanup = super::progress::run("CLOSE_ANALYSIS_SESSION", || {
+        session.abort().and_then(|_| session.gc(false)).map(|_| ())
+    });
     let mut evidence = match result {
         Ok(evidence) => evidence,
         Err(error) => {
-            eprintln!("CODEDEBUG capture_session ERR for {}: {error}", service.id);
             cleanup?;
             return Err(error);
         }
     };
-    eprintln!(
-        "CODEDEBUG capture_session OK for {} ({} sources, {} observations)",
-        service.id,
-        evidence.sources.len(),
-        evidence.observations.len()
-    );
     super::contracts::capture(service, &repo, &mut evidence)?;
-    eprintln!("CODEDEBUG contracts OK for {}", service.id);
     super::modules::attach(service, &mut evidence)?;
-    eprintln!("CODEDEBUG modules OK for {}", service.id);
     cleanup?;
     if git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])? != revision {
         return Err(ClewError::new(
@@ -320,12 +319,14 @@ fn capture_local_with_diagnostics(
             "service revision changed during documentation extraction",
         ));
     }
-    let _lock = repository.lock()?;
+    let _lock = super::progress::run("WAIT_CAPTURE_STORE_LOCK", || repository.lock())?;
     // New-format captures persist a small reference envelope: the heavy
     // payload lives once in the immutable object store, and the keyed cache
     // path holds validated object references instead of a duplicated full
     // ServiceEvidence serialization.
-    let mut manifest = super::cache::store_capture(repository, &evidence)?;
+    let mut manifest = super::progress::run("STORE_CAPTURE", || {
+        super::cache::store_capture(repository, &evidence)
+    })?;
     // Maven/external-state capture has no complete build/settings/dependency
     // authority in the reuse key, so it is explicitly non-cacheable (recapture
     // on the next run) rather than silently reusable.
@@ -334,7 +335,6 @@ fn capture_local_with_diagnostics(
         "Maven/external-state capture lacks complete build/settings/dependency authority",
     );
     repository.atomic(&cache_path, &bytes(&manifest)?)?;
-    eprintln!("CODEDEBUG cache write OK for {}", service.id);
     Ok(evidence)
 }
 
@@ -344,16 +344,14 @@ fn capture_session(
     service_digest: &str,
     debug_output: Option<&crate::maven_diagnostics::DebugOutput>,
 ) -> Result<ServiceEvidence, ClewError> {
-    let ready = generation_service::ensure_session_generation_with_diagnostics(
-        session,
-        debug_output,
-        generation_service::wants_writable_then_seal(&service.profile),
-        &service.annotation_processor_paths,
-    )?;
-    eprintln!(
-        "CODEDEBUG capture_session ensure_generation OK for {}",
-        service.id
-    );
+    let ready = super::progress::run("ENSURE_COMPILER_GENERATION", || {
+        generation_service::ensure_session_generation_with_diagnostics(
+            session,
+            debug_output,
+            generation_service::wants_writable_then_seal(&service.profile),
+            &service.annotation_processor_paths,
+        )
+    })?;
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     // A writable-then-seal generation persists the exact transformed source
@@ -363,10 +361,6 @@ fn capture_session(
     // source table is keyed per compilation scope instead of sharing the
     // set-level first-present reference across all scopes.
     let snapshot = generation_service::load_snapshot(&store, &ready)?;
-    eprintln!(
-        "CODEDEBUG capture_session load_snapshot OK for {}",
-        service.id
-    );
     let mut snapshot_text: BTreeMap<String, Arc<str>> = BTreeMap::new();
     for entry in &snapshot.worktree {
         if let Some(reference) = &entry.content {
@@ -381,10 +375,6 @@ fn capture_session(
     let mut total = 0u64;
     for compilation in &ready.compilations {
         let lease = store.read(&compilation.generation, MAX_EVIDENCE as usize)?;
-        eprintln!(
-            "CODEDEBUG capture_session read generation OK for {}",
-            service.id
-        );
         let generation: GenerationManifest =
             serde_json::from_slice(lease.bytes()).map_err(io_error)?;
         let scope = json!({"compilation": compilation.compilation});
@@ -414,10 +404,6 @@ fn capture_session(
             facts.push((value, fact.payload.digest.clone()));
             Ok(())
         })?;
-        eprintln!(
-            "CODEDEBUG capture_session visit_facts OK for {} (count={count})",
-            service.id
-        );
     }
     if service.language == "kotlin" {
         facts = super::kotlin::project_facts(facts)?;
@@ -461,11 +447,6 @@ fn capture_session(
     } else {
         Arc::new(SourceTable::new())
     };
-    eprintln!(
-        "CODEDEBUG capture_session reading sources for {} (wanted={})",
-        service.id,
-        wanted.len()
-    );
     for compilation in &ready.compilations {
         let scope = compilation.compilation.clone();
         let table = match &compilation.transformed_source {
@@ -945,14 +926,6 @@ pub(crate) fn project_scoped(
     let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (fact, binding) in &facts {
         if fact["kind"] == "BOUNDARY" {
-            if fact["code"].as_str() == Some("JAVA_COMPILER_DIAGNOSTIC") {
-                eprintln!(
-                    "CODEDEBUG JAVA_COMPILER_DIAGNOSTIC diagnosticCode={} file={} line={}",
-                    fact["diagnosticCode"].as_str().unwrap_or("?"),
-                    fact["file"].as_str().unwrap_or("?"),
-                    fact["line"]
-                );
-            }
             evidence.boundaries.push(
                 fact["code"]
                     .as_str()

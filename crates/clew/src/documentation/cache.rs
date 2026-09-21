@@ -102,9 +102,52 @@ pub fn get(
             "documentation object exceeds the read bound",
         ));
     }
+    with_read_session(repo, |session| session.get(reference, limit))
+}
+
+/// A closure-scoped reader for a caller-bounded traversal of immutable objects.
+/// Store selection and its shared lifecycle barrier are held once, while each
+/// object still passes the ordinary size, digest, and corruption checks. The
+/// reader neither caches payloads nor retains the store beyond the callback.
+pub(super) struct ReadSession<'a> {
+    store: &'a super::sqlite_objects::SqliteObjects,
+}
+
+impl ReadSession<'_> {
+    pub(super) fn get(
+        &self,
+        reference: &ObjectRef,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>, ClewError> {
+        if reference.size > limit {
+            return Err(ClewError::new(
+                ErrorCode::ResourceLimit,
+                "documentation object exceeds the read bound",
+            ));
+        }
+        self.store.read(&reference.digest, reference.size, limit)
+    }
+}
+
+pub(super) fn with_read_session<T>(
+    repo: &super::store::Repository,
+    operation: impl FnOnce(&ReadSession<'_>) -> Result<T, ClewError>,
+) -> Result<T, ClewError> {
     super::object_layout::with_store(repo, |store| {
-        store.read(&reference.digest, reference.size, limit)
+        #[cfg(test)]
+        READ_ADMISSIONS.with(|count| count.set(count.get() + 1));
+        operation(&ReadSession { store })
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    static READ_ADMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn take_read_admissions() -> usize {
+    READ_ADMISSIONS.with(|count| count.replace(0))
 }
 
 /// Verify an object is present and intact within the caller's portable bound.

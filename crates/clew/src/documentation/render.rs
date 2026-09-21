@@ -361,9 +361,6 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             return Err(invalid("sequence contains an unclosed group"));
         }
         validate_overview(o)?;
-        if o.overview_diagram.is_none() {
-            return Err(invalid("narrative 1.3 requires a bounded overview diagram"));
-        }
         // Source-bound diagrams must preserve known conditions and return branches.
         if kind == "service"
             && checked.services[id]
@@ -1753,6 +1750,28 @@ enum EvidenceMode<'a> {
 }
 
 fn publish_internal(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
+    evidence_mode: EvidenceMode<'_>,
+    language: Option<&str>,
+) -> Result<Value, ClewError> {
+    super::progress::run("PUBLISH_DOCUMENTATION", || {
+        publish_internal_phases(
+            repo,
+            incoming,
+            require_complete,
+            failures,
+            versions,
+            evidence_mode,
+            language,
+        )
+    })
+}
+
+fn publish_internal_phases(
     repo: &Repository,
     mut incoming: Vec<Narrative>,
     require_complete: bool,

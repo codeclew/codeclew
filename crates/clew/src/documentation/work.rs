@@ -302,8 +302,10 @@ pub(super) fn load_influence(
 }
 
 pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
-    let stored = load_stored(repo, id)?;
-    let checked = Check::load_snapshot(repo, &stored.evidence_snapshot)?;
+    let stored = super::progress::run("LOAD_WORK_RECORD", || load_stored(repo, id))?;
+    let checked = super::progress::run("LOAD_RETAINED_SNAPSHOT", || {
+        Check::load_snapshot(repo, &stored.evidence_snapshot)
+    })?;
     Ok(stored.into_runtime(checked))
 }
 
@@ -1297,7 +1299,7 @@ pub(super) fn read_loaded(
     selection: Selection,
 ) -> Result<Value, ClewError> {
     let id = work.id.as_str();
-    let items = rows(work, &selection)?;
+    let items = super::progress::run("BUILD_CONTEXT_ROWS", || rows(work, &selection))?;
     let membership: Vec<_> = items.iter().map(|i| json!([i["kind"], i["id"]])).collect();
     let membership_digest = digest(&membership)?;
     let mut binding_selection = selection.clone();
@@ -1372,7 +1374,7 @@ pub(super) fn read_loaded(
     if consumed < output["total"].as_u64().unwrap() as usize {
         output["nextCursor"] = json!(format!("{prefix}:{consumed}"));
     }
-    let _lock = repo.lock()?;
+    let _lock = super::progress::run("WAIT_READ_RECEIPT_LOCK", || repo.lock())?;
     let mut state = read_state(repo, id)?;
     if state.work != id {
         return Err(invalid("read ledger belongs to another work"));
@@ -1401,7 +1403,9 @@ pub(super) fn read_loaded(
             "work read ledger exceeds its bound; prepare narrower work",
         ));
     }
-    repo.atomic(&format!("{}/reads.json", directory(id)?), &encoded)?;
+    super::progress::run("SAVE_READ_RECEIPT", || {
+        repo.atomic(&format!("{}/reads.json", directory(id)?), &encoded)
+    })?;
     Ok(output)
 }
 

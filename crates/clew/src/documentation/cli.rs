@@ -305,6 +305,20 @@ fn inspect<T: serde::Serialize>(
 }
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
+    let phase = match &command {
+        Command::Work { .. } => "docs.work",
+        Command::Check(_) => "docs.check",
+        Command::Render { .. } => "docs.render",
+        Command::Proposal { .. } => "docs.proposal",
+        Command::Context(_) => "docs.context",
+        Command::Evidence { .. } => "docs.evidence",
+        Command::Update { .. } => "docs.update",
+        _ => "docs.command",
+    };
+    super::progress::run(phase, || run_inner(command))
+}
+
+fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::Snapshot { command } => super::snapshot_pins::run(command),
         Command::View { command } => super::dataflow::run(command),

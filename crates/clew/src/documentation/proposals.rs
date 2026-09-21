@@ -874,32 +874,8 @@ fn materialize(
                     .collect(),
             });
         }
-        let nodes: Vec<_> = op
-            .events
-            .iter()
-            .filter(|e| e.kind != "end" && e.kind != "else")
-            .take(12)
-            .enumerate()
-            .map(|(i, e)| DiagramNode {
-                id: format!("node-{i}"),
-                text: e.text.chars().take(84).collect(),
-                participant: e
-                    .to
-                    .clone()
-                    .or_else(|| e.from.clone())
-                    .unwrap_or_else(|| participants[1].id.clone()),
-                column: (i % 4) as u8,
-                row: (i / 4) as u8,
-                event_ids: vec![e.id.clone()],
-            })
-            .collect();
-        op.overview_diagram = Some(OverviewDiagram {
-            nodes,
-            edges: Vec::new(),
-        });
-        if op.events.iter().filter(|e| e.kind != "end").count() > 12 {
-            op.boundaries.push("The overview shows the first twelve steps; the complete sequence and explanation retain every step.".into());
-        }
+        // A sequence is not an overview topology. Keep its branch and return events
+        // intact instead of manufacturing disconnected overview nodes that hide it.
         op.boundaries.extend(
             work.obligations
                 .iter()

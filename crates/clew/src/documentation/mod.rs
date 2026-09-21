@@ -23,6 +23,7 @@ pub mod object_layout;
 pub mod process_candidates;
 mod process_context;
 pub mod processes;
+pub mod progress;
 pub mod proposals;
 mod reader;
 pub mod render;

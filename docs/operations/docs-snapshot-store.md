@@ -6,6 +6,37 @@ readers implement. It is the working contract for the docs snapshot pipeline
 (docs_snapshot_pipeline.rs) and the production wiring in
 `crates/clew/src/documentation/*`.
 
+## Watching a documentation command
+
+Documentation commands emit JSON Lines progress on stderr by default, keeping
+stdout as the command's JSON result. Save both separately while reproducing a
+problem; for example:
+
+```sh
+clew docs work read --root docs --work "$work" --input read-request.json \
+  > result.json 2> progress.jsonl
+```
+
+Each `codeclew-documentation-progress/1.0` event includes a static `phase`,
+`event` (`STARTED`, `HEARTBEAT`, `COMPLETED`, or `FAILED`), `elapsedMs`, process
+`pid`, and `spanId` / `parentSpanId`. A running phase emits a heartbeat about
+every five seconds. Nested spans identify the active subphase; a heartbeat for
+its parent only means the enclosing operation remains active. A heartbeat is
+not a percentage estimate or proof that a compiler subprocess is advancing.
+An abrupt process kill can leave a start/heartbeat without a terminal event.
+
+`LOAD_RETAINED_SNAPSHOT` and `BUILD_CONTEXT_ROWS` consume saved evidence.
+`ACQUIRE_COMPILER_EVIDENCE` and `ENSURE_COMPILER_GENERATION` occur only on the
+source-acquisition path. Lock phases distinguish waiting for a writer from
+processing evidence. Progress carries no source text, paths, service IDs, or
+error details; existing launcher/compiler diagnostics may also appear on stderr,
+so consumers should select the progress schema rather than assume every line is
+JSON. Failed command details remain in the normal command error output.
+
+Set `CODECLEW_DOCS_PROGRESS=off` to disable these progress messages. Redirected
+stderr is supported and does not require a terminal. A closed stderr pipe does
+not make the documentation command fail.
+
 ## Explicit named snapshot retention
 
 Pin an exact saved documentation snapshot without copying its payloads:

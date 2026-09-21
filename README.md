@@ -243,6 +243,10 @@ guards, contracts and recovery, and the
 HTTP/Kafka extraction. Project builds still depend on the target environment's
 configured caches and mirrors. See the
 [v0.11.0 release notes](docs/releases/v0.11.0.md) for scope and limitations.
+Version 0.11.1 speeds up retained snapshot reads, adds phase and heartbeat logs
+on stderr, and fixes disconnected proposal overviews. See the
+[v0.11.1 fix notes](docs/releases/v0.11.1.md) and
+[debugging instructions](docs/operations/docs-snapshot-store.md#watching-a-documentation-command).
 
 ## Source-build requirements
 

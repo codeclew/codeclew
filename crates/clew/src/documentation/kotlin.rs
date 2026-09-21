@@ -362,7 +362,8 @@ mod tests {
         );
         let mut overview = narrative.clone();
         overview.operations[0].overview_diagram = None;
-        assert!(render::validate(&overview, &checked).is_err());
+        render::validate(&overview, &checked).unwrap();
+        assert!(render::mermaid(&overview.operations[0]).starts_with("sequenceDiagram"));
         overview.operations[0].overview_diagram = Some(serde_json::from_value(json!({
             "nodes":[{"id":"accept","text":"Accept stock","participant":"p0","column":0,"row":0,"eventIds":["send"]},
                 {"id":"received","text":"Batch received","participant":"p0","column":1,"row":0,"eventIds":["send"]}],

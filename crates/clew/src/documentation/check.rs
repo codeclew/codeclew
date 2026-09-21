@@ -300,7 +300,9 @@ fn capture_selected_with(
             unresolved.insert(id.clone(), json!({"status":"NOT_CHECKED","reason":"SERVICE_NOT_SELECTED","nextAction":"Select this service explicitly to check its current source."}));
             continue;
         }
-        match capture(service, inputs.evidence_expectations.get(id), targets) {
+        match super::progress::run("ACQUIRE_SERVICE_EVIDENCE", || {
+            capture(service, inputs.evidence_expectations.get(id), targets)
+        }) {
             Ok(value) => {
                 evidence.insert(id.clone(), value);
             }
@@ -1164,7 +1166,9 @@ impl Check {
                 "DOCS_REINDEX_REQUIRED: unsupported documentation snapshot schema; initialize a fresh documentation root and run docs check",
             ));
         }
-        let source_inputs = Some(super::source_inputs::load(repo, &manifest.source_inputs)?);
+        let source_inputs = Some(super::progress::run("LOAD_SOURCE_INPUT_CONTRACT", || {
+            super::source_inputs::load(repo, &manifest.source_inputs)
+        })?);
         let composition = manifest
             .composition
             .as_ref()
@@ -1184,13 +1188,20 @@ impl Check {
         }
         let mut services = BTreeMap::new();
         for (id, capture) in &manifest.service_manifests {
-            services.insert(id.clone(), super::cache::load_capture(repo, capture)?);
+            services.insert(
+                id.clone(),
+                super::progress::run("LOAD_RETAINED_SERVICE", || {
+                    super::cache::load_capture(repo, capture)
+                })?,
+            );
         }
-        let dependencies = super::fact_index::load_snapshot_observations(
-            repo,
-            &manifest.dependencies_index,
-            CHECK_DEPENDENCIES_SCOPE,
-        )?;
+        let dependencies = super::progress::run("LOAD_RETAINED_DEPENDENCIES", || {
+            super::fact_index::load_snapshot_observations(
+                repo,
+                &manifest.dependencies_index,
+                CHECK_DEPENDENCIES_SCOPE,
+            )
+        })?;
         let checked = Check {
             schema: "codeclew-documentation-check/1.0".into(),
             input_digest: manifest.input_digest,

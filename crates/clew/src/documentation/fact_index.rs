@@ -137,6 +137,16 @@ fn read_page(
     root: &FactIndexRoot,
     bucket: usize,
 ) -> Result<Option<FactPage>, ClewError> {
+    read_page_with(root, bucket, |reference| {
+        cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)
+    })
+}
+
+fn read_page_with(
+    root: &FactIndexRoot,
+    bucket: usize,
+    read: impl FnOnce(&cache::ObjectRef) -> Result<Option<Vec<u8>>, ClewError>,
+) -> Result<Option<FactPage>, ClewError> {
     if bucket >= BUCKETS || root.buckets.len() != BUCKETS || root.bucket_counts.len() != BUCKETS {
         return Err(invalid("fact index root has an invalid bucket shape"));
     }
@@ -149,13 +159,12 @@ fn read_page(
         stats.attempts += 1;
         stats.bytes = stats.bytes.saturating_add(reference.size);
     });
-    let payload =
-        cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)?.ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::StateCorrupt,
-                "fact index page reference is missing from the store",
-            )
-        })?;
+    let payload = read(reference)?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::StateCorrupt,
+            "fact index page reference is missing from the store",
+        )
+    })?;
     let page: FactPage =
         serde_json::from_slice(&payload).map_err(|error| invalid(error.to_string()))?;
     if page.schema != FACT_PAGE_SCHEMA
@@ -564,55 +573,64 @@ pub fn load_snapshot_observations(
     reference: &cache::ObjectRef,
     scope: &str,
 ) -> Result<std::collections::BTreeMap<String, super::model::Observation>, ClewError> {
-    let payload =
-        cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)?.ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::StateCorrupt,
-                "fact index snapshot root is missing",
-            )
-        })?;
-    let root: FactIndexRoot =
-        serde_json::from_slice(&payload).map_err(|error| invalid(error.to_string()))?;
-    if root.schema != FACT_INDEX_SCHEMA || root.protocol != FACT_INDEX_SCHEMA {
-        return Err(invalid("fact index root schema or protocol is invalid"));
-    }
+    cache::with_read_session(repo, |session| {
+        let payload = session
+            .get(reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
+            .ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::StateCorrupt,
+                    "fact index snapshot root is missing",
+                )
+            })?;
+        let root: FactIndexRoot =
+            serde_json::from_slice(&payload).map_err(|error| invalid(error.to_string()))?;
+        if root.schema != FACT_INDEX_SCHEMA || root.protocol != FACT_INDEX_SCHEMA {
+            return Err(invalid("fact index root schema or protocol is invalid"));
+        }
 
-    let mut selected = Vec::new();
-    for bucket in 0..BUCKETS {
-        let Some(page) = read_page(repo, &root, bucket)? else {
-            if root.bucket_counts[bucket] != 0 {
+        let mut selected = Vec::new();
+        for bucket in 0..BUCKETS {
+            let Some(page) = read_page_with(&root, bucket, |reference| {
+                session.get(reference, super::check::PORTABLE_CACHE_MAX_BYTES)
+            })?
+            else {
+                if root.bucket_counts[bucket] != 0 {
+                    return Err(ClewError::new(
+                        ErrorCode::StateCorrupt,
+                        "fact index bucket count disagrees with a missing page",
+                    ));
+                }
+                continue;
+            };
+            if page.entries.len() as u64 != root.bucket_counts[bucket] {
                 return Err(ClewError::new(
                     ErrorCode::StateCorrupt,
-                    "fact index bucket count disagrees with a missing page",
+                    "fact index page entry count disagrees with the root",
                 ));
             }
-            continue;
-        };
-        if page.entries.len() as u64 != root.bucket_counts[bucket] {
-            return Err(ClewError::new(
-                ErrorCode::StateCorrupt,
-                "fact index page entry count disagrees with the root",
-            ));
+            selected.extend(
+                page.entries
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.key.domain == OBSERVATION_DOMAIN && entry.key.scope == scope
+                    })
+                    .map(|entry| (entry.key.semantic, entry.payload)),
+            );
         }
-        selected.extend(
-            page.entries
-                .into_iter()
-                .filter(|entry| entry.key.domain == OBSERVATION_DOMAIN && entry.key.scope == scope)
-                .map(|entry| (entry.key.semantic, entry.payload)),
-        );
-    }
 
-    let mut out = std::collections::BTreeMap::new();
-    for (semantic, reference) in selected {
-        let payload = cache::get(repo, &reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
-            .ok_or_else(|| {
-                ClewError::new(ErrorCode::StateCorrupt, "observation payload is missing")
-            })?;
-        let observation: super::model::Observation =
-            serde_json::from_slice(&payload).map_err(|error| invalid(error.to_string()))?;
-        out.insert(semantic, observation);
-    }
-    Ok(out)
+        let mut out = std::collections::BTreeMap::new();
+        for (semantic, reference) in selected {
+            let payload = session
+                .get(&reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
+                .ok_or_else(|| {
+                    ClewError::new(ErrorCode::StateCorrupt, "observation payload is missing")
+                })?;
+            let observation: super::model::Observation =
+                serde_json::from_slice(&payload).map_err(|error| invalid(error.to_string()))?;
+            out.insert(semantic, observation);
+        }
+        Ok(out)
+    })
 }
 
 /// Store a scope's observations as per-fact memberships and return the
@@ -1424,13 +1442,22 @@ mod tests {
 
         for scope in ["scope-a", "scope-b", "scope-does-not-exist"] {
             reset_page_read_stats();
+            cache::take_read_admissions();
             let old_root = load_snapshot_root(&repo, &snapshot).unwrap();
             let old = load_observations(&repo, &old_root, scope).unwrap();
             let old_stats = page_read_stats();
+            let old_admissions = cache::take_read_admissions();
 
             reset_page_read_stats();
             let new = load_snapshot_observations(&repo, &snapshot, scope).unwrap();
             let new_stats = page_read_stats();
+            let new_admissions = cache::take_read_admissions();
+            assert_eq!(old_admissions, 1 + bucket_count * 2 + old.len());
+            assert_eq!(new_admissions, 1);
+            println!(
+                "FACT_INDEX_ADMISSIONS scope={scope} legacyTwoPass={old_admissions} v011SinglePassExpected={} session={new_admissions}",
+                1 + bucket_count + old.len()
+            );
 
             assert_eq!(new, old, "single-pass output differs for {scope}");
             assert_eq!(old_stats.attempts, bucket_count * 2);
@@ -1513,6 +1540,58 @@ mod tests {
         bad_schema.buckets[bucket] = Some(bad_page_ref);
         let bad_schema_ref = snapshot_for_root(&repo, &bad_schema);
         assert!(load_snapshot_observations(&repo, &bad_schema_ref, "scope-a").is_err());
+    }
+
+    #[test]
+    fn session_snapshot_preserves_observation_read_validation() {
+        for fault in ["missing", "digest", "size", "bound"] {
+            let (_t, repo) = setup();
+            let (_, mut root) = populated_snapshot(&repo);
+            let (bucket, mut selected_page) = root
+                .buckets
+                .iter()
+                .enumerate()
+                .filter_map(|(bucket, reference)| {
+                    reference.as_ref().map(|r| (bucket, page(&repo, r)))
+                })
+                .find(|(_, page)| {
+                    page.entries
+                        .iter()
+                        .any(|entry| entry.key.scope == "scope-a")
+                })
+                .unwrap();
+            let entry = selected_page
+                .entries
+                .iter_mut()
+                .find(|entry| entry.key.scope == "scope-a")
+                .unwrap();
+            match fault {
+                "missing" => remove_object(&repo, &entry.payload.digest),
+                "digest" => {
+                    let mut payload = cache::get(
+                        &repo,
+                        &entry.payload,
+                        super::super::check::PORTABLE_CACHE_MAX_BYTES,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    payload[0] ^= 1;
+                    corrupt_object(&repo, &entry.payload.digest, &payload);
+                }
+                "size" => entry.payload.size += 1,
+                "bound" => entry.payload.size = super::super::check::PORTABLE_CACHE_MAX_BYTES + 1,
+                _ => unreachable!(),
+            }
+            root.buckets[bucket] =
+                Some(cache::put_json(&repo, FACT_PAGE_SCHEMA, &selected_page).unwrap());
+            let snapshot = snapshot_for_root(&repo, &root);
+            let old = load_snapshot_root(&repo, &snapshot)
+                .and_then(|root| load_observations(&repo, &root, "scope-a"))
+                .unwrap_err();
+            let new = load_snapshot_observations(&repo, &snapshot, "scope-a").unwrap_err();
+            assert_eq!(new.code, old.code, "{fault}");
+            assert_eq!(new.message, old.message, "{fault}");
+        }
     }
 
     #[test]

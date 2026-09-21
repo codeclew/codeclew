@@ -1713,6 +1713,105 @@ fn docsys_t03_materializes_stable_claims_without_meaning_acceptance() {
 }
 
 #[test]
+fn docsys_t03_proposal_sequence_preserves_branches_and_arrows_without_fake_overview() {
+    use clew::documentation::{model::*, render};
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+    commit(&source);
+    let (work, mut input, _) = proposal_fixture(&f);
+    let evidence = input["operations"][0]["summary"]["evidence"].clone();
+    let steps = input["operations"][0]["steps"].as_array_mut().unwrap();
+    steps.insert(0, json!({"kind":"message","from":"caller","to":"orders","meaning":{"text":"Request a reservation.","evidence":evidence}}));
+    // Keep the authored alternatives and an explicitly addressed reply. The host
+    // must not replace this structure with disconnected, numbered overview nodes.
+    let returned = steps.last_mut().unwrap();
+    returned["kind"] = json!("return");
+    returned["from"] = json!("orders");
+    returned["to"] = json!("caller");
+    let submitted = proposal_submit(&f, &work, &input);
+    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+    let artifact = proposal_artifact(&f, &submitted);
+    let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+    let operation = &narrative.operations[0];
+    assert!(operation.overview_diagram.is_none());
+    let diagram = render::mermaid(operation);
+    assert!(diagram.starts_with("sequenceDiagram\n"));
+    assert!(diagram.contains("caller->>service-orders: Request a reservation."));
+    assert!(diagram.contains("    alt A negative requested quantity"));
+    assert!(diagram.contains("    end\n"));
+    assert!(diagram.contains("service-orders-->>caller: The operation returns"));
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        submitted["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let path = format!("diagrams/service-orders-{}.mmd", operation.id);
+    let published_diagram =
+        fs::read_to_string(f.bundle(published["bundle"].as_str().unwrap(), &path)).unwrap();
+    assert!(published_diagram.starts_with("%% Source freshness:"));
+    assert_eq!(published_diagram.split_once('\n').unwrap().1, diagram);
+
+    // Explicit, evidence-linked overviews are still supported and validated.
+    let mut explicit = narrative.clone();
+    let op = &mut explicit.operations[0];
+    let first = op.events.first().unwrap().id.clone();
+    let last = op.events.last().unwrap().id.clone();
+    op.overview_diagram = Some(OverviewDiagram {
+        nodes: vec![
+            DiagramNode {
+                id: "request".into(),
+                text: "Request".into(),
+                participant: "caller".into(),
+                column: 0,
+                row: 0,
+                event_ids: vec![first.clone()],
+            },
+            DiagramNode {
+                id: "result".into(),
+                text: "Result".into(),
+                participant: "service-orders".into(),
+                column: 1,
+                row: 0,
+                event_ids: vec![last.clone()],
+            },
+        ],
+        edges: vec![DiagramEdge {
+            id: "transition".into(),
+            from: "request".into(),
+            to: "result".into(),
+            text: "Source interpretation".into(),
+            event_ids: vec![first, last],
+        }],
+    });
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let checked = clew::documentation::work::load(&repo, &work)
+        .unwrap()
+        .checked;
+    render::validate(&explicit, &checked).unwrap();
+    assert!(render::mermaid(&explicit.operations[0]).contains("request -->"));
+    explicit.operations[0]
+        .overview_diagram
+        .as_mut()
+        .unwrap()
+        .edges[0]
+        .to = "missing".into();
+    assert!(render::validate(&explicit, &checked).is_err());
+
+    // Large sequences remain retained; the bounded display reports its missing
+    // authored overview instead of inventing a linear control-flow graph.
+    let mut large = operation.clone();
+    while large.events.len() <= 12 {
+        large.events.extend(operation.events.clone());
+    }
+    assert!(render::mermaid(&large).contains("A bounded overview has not been authored"));
+}
+
+#[test]
 fn docsys_t03_rejects_opposite_outcomes_hidden_branches_and_forged_handles() {
     use serde_json::json;
     let f = Fixture::new();
