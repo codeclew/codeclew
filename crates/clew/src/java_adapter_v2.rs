@@ -30,7 +30,7 @@ const JAVA_ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-java-compiler-adapter/1.0"
 pub const JAVA_ANALYZER_SOURCE: &str = include_str!("java_analyzer.java");
 pub(crate) const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_JAVA_FACTS: usize = 262_144;
-const MAX_FACT_BYTES: usize = 64 * 1024;
+const MAX_FACT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
