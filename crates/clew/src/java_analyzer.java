@@ -84,7 +84,8 @@ final class CodeclewJavaAnalyzer {
     private static final int INHERITED_CALLABLES_BYTES = 50_000;
     // Bound a method's documentation flow so its declaration fact stays under
     // the per-fact byte budget; a long body is truncated with a boundary.
-    private static final int DOCUMENTATION_FLOW_BYTES = 45_000;
+    // Widened (45k -> 150k) to expand persistence/egress flows for task-manager docs.
+    private static final int DOCUMENTATION_FLOW_BYTES = 150_000;
     // Bound a single annotation definition so it never makes a registry shard
     // exceed the per-fact byte budget. Oversized members are truncated and the
     // definition is explicitly marked bounded instead of silently dropped.
@@ -508,7 +509,7 @@ final class CodeclewJavaAnalyzer {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("kind", kind);
                 if (hasSourceRange(tree)) anchor(row, tree);
-                if (events.size() < 512) events.add(row);
+                if (events.size() < 2048) events.add(row);
                 else boundaries.add("DOCUMENTATION_FLOW_EVENT_BUDGET");
                 return row;
             }

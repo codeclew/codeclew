@@ -1475,7 +1475,7 @@ pub fn mermaid(o: &Operation) -> String {
         }
         return out;
     }
-    if o.events.len() > 12 {
+    if o.events.len() > 64 {
         return "flowchart LR\n    pending[\"A bounded overview has not been authored. Full source evidence is retained separately.\"]\n".into();
     }
     let mut out="sequenceDiagram\n    autonumber\n    %% Agent-interpreted static source; declared edges are not compiler calls.\n".to_owned();

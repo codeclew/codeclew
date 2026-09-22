@@ -1812,6 +1812,120 @@ fn docsys_t03_proposal_sequence_preserves_branches_and_arrows_without_fake_overv
 }
 
 #[test]
+fn docsys_t03_proposal_can_declare_an_external_sequence_participant() {
+    use clew::documentation::{model::*, render};
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+    commit(&source);
+    let (work, mut input, _) = proposal_fixture(&f);
+    let evidence = input["operations"][0]["summary"]["evidence"].clone();
+    let op = input["operations"][0].as_object_mut().unwrap();
+    op.insert(
+        "participants".into(),
+        json!([{"id": "db", "label": "Database", "service": null}]),
+    );
+    let steps = op["steps"].as_array_mut().unwrap();
+    steps.insert(
+        0,
+        json!({"kind":"message","from":"caller","to":"orders","meaning":{"text":"Request a reservation.","evidence":evidence}}),
+    );
+    steps.push(json!({"kind":"message","from":"orders","to":"db","meaning":{"text":"Persist the reservation row.","evidence":evidence}}));
+    steps.push(json!({"kind":"return","from":"db","to":"orders","meaning":{"text":"Row persisted.","evidence":evidence}}));
+    steps.push(json!({"kind":"return","from":"orders","to":"caller","meaning":{"text":"The operation returns.","evidence":evidence}}));
+    // A step that references an undeclared participant is rejected before any
+    // submit registers published content, keeping the work valid below.
+    let mut unknown = input.clone();
+    unknown["operations"][0]["steps"][0]["from"] = json!("cache");
+    let rejected = proposal_submit(&f, &work, &unknown);
+    assert_ne!(rejected["status"], "READY_WITH_LIMITATIONS", "{rejected}");
+    let submitted = proposal_submit(&f, &work, &input);
+    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+    let artifact = proposal_artifact(&f, &submitted);
+    let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+    let operation = &narrative.operations[0];
+    assert!(operation
+        .participants
+        .iter()
+        .any(|p| p.id == "db" && p.label == "Database" && p.service.is_none()));
+    let diagram = render::mermaid(operation);
+    assert!(
+        diagram.contains("service-orders->>db: Persist the reservation row."),
+        "{diagram}"
+    );
+    assert!(
+        diagram.contains("db-->>service-orders: Row persisted."),
+        "{diagram}"
+    );
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        submitted["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let path = format!("diagrams/service-orders-{}.mmd", operation.id);
+    let published_diagram =
+        fs::read_to_string(f.bundle(published["bundle"].as_str().unwrap(), &path)).unwrap();
+    assert!(published_diagram.starts_with("%% Source freshness:"));
+    assert_eq!(published_diagram.split_once('\n').unwrap().1, diagram);
+}
+
+#[test]
+fn docsys_t03_proposal_authored_explanation_replaces_step_echo() {
+    use clew::documentation::model::*;
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+    commit(&source);
+    let (work, mut input, _) = proposal_fixture(&f);
+    let evidence = input["operations"][0]["summary"]["evidence"].clone();
+    let op = input["operations"][0].as_object_mut().unwrap();
+    op.insert(
+        "explanation".into(),
+        json!([
+            {"text":"Клиент запрашивает резервирование; сервис валидирует количество и сохраняет решение.","evidence":evidence},
+            {"text":"При отрицательном количестве выбрасывается исключение, вызывающее ответ с ошибкой.","evidence":evidence}
+        ]),
+    );
+    let steps = op["steps"].as_array_mut().unwrap();
+    steps.insert(
+        0,
+        json!({"kind":"message","from":"caller","to":"orders","meaning":{"text":"Reserve.","evidence":evidence}}),
+    );
+    let submitted = proposal_submit(&f, &work, &input);
+    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+    let artifact = proposal_artifact(&f, &submitted);
+    let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+    let operation = &narrative.operations[0];
+    let visible: Vec<&str> = operation
+        .explanation
+        .iter()
+        .filter(|p| !p.detail)
+        .map(|p| p.text.as_str())
+        .collect();
+    assert!(
+        visible.contains(&"Клиент запрашивает резервирование; сервис валидирует количество и сохраняет решение."),
+        "authored narrative prose must be present in What happens: {visible:?}"
+    );
+    assert!(
+        visible.contains(&"При отрицательном количестве выбрасывается исключение, вызывающее ответ с ошибкой."),
+        "authored narrative prose must be present in What happens: {visible:?}"
+    );
+    assert!(
+        operation.events.iter().any(|e| e.text == "Reserve."),
+        "arrow label must keep the short step meaning"
+    );
+    assert!(
+        operation.explanation.iter().all(|p| !p.event_ids.is_empty()),
+        "every explanation paragraph must reference a diagram step"
+    );
+}
+
+#[test]
 fn docsys_t03_rejects_opposite_outcomes_hidden_branches_and_forged_handles() {
     use serde_json::json;
     let f = Fixture::new();

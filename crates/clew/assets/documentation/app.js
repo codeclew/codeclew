@@ -445,7 +445,7 @@ const chip=m=>chromeHtml`<span class="http-method ${esc(m.toLowerCase())}">${esc
 function nav(){const q=$('search').value.toLowerCase().trim();$('scenario-nav').innerHTML=entries.filter(e=>[label(e),e.symbol,JSON.stringify(e.trigger),e.searchText||''].join(' ').toLowerCase().includes(q)).map(e=>chromeHtml`<button class="scenario-link" data-entry="${esc(e.id)}" ${current?.id===e.id?'aria-current="page"':''}><span class="nav-icon">${esc(t(method(e)))}</span><span>${esc(label(e))}</span>${!operation(e)?chromeHtml`<span class="nav-issue" title="Explicit documentation gap"></span>`:''}</button>`).join('')||chromeHtml`<p class="no-results">No matching operations</p>`;}
 function wrap(text,max=28){const out=[''];for(const word of text.split(' ')){const i=out.length-1;if(out[i]&&out[i].length+word.length+1>max)out.push(word);else out[i]+=(out[i]?' ':'')+word;}return out;}
 function diagram(o){
- const W=Math.max(800,(o.participants.length-1)*215+170);const xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-170)/Math.max(1,o.participants.length-1)]));let y=94,stack=[],frames=[],rows=[];
+ const W=Math.max(800,(o.participants.length-1)*215+240);const xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,o.participants.length-1)]));let y=94,stack=[],frames=[],rows=[];
  for(const e of o.events){const h=['alt','else','loop','opt'].includes(e.kind)?40:e.kind==='end'?18:e.kind==='note'?65:72;rows.push({e,y,h,depth:stack.length});if(e.kind==='alt'||e.kind==='loop'||e.kind==='opt')stack.push({y,depth:stack.length});if(e.kind==='end'){const f=stack.pop();frames.push({...f,end:y+h-5});}y+=h;}
  const H=y+25;
  let svg=chromeHtml`<svg class="sequence-svg" style="min-width:${W}px" viewBox="0 0 ${W} ${H}" role="group" aria-label="Sequence diagram: ${esc(o.title)}"><defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#608365"/></marker></defs>`;
@@ -481,7 +481,7 @@ function interactionOverview(o){
 }
 function overviewDiagram(o){
  const d=o.overviewDiagram;
- if(!d)return o.events.length<=12?diagram(o):chromeHtml`<p class="empty-note">A bounded overview diagram has not been authored. Source evidence remains available below.</p>`;
+ if(!d)return o.events.length<=64?diagram(o):chromeHtml`<p class="empty-note">A bounded overview diagram has not been authored. Source evidence remains available below.</p>`;
  const W=(Math.max(...d.nodes.map(n=>n.column))+1)*280+20,H=(Math.max(...d.nodes.map(n=>n.row))+1)*160+30;
  const pos=Object.fromEntries(d.nodes.map(n=>[n.id,{x:150+n.column*280,y:90+n.row*160}]));
  let svg=chromeHtml`<svg class="overview-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="Overview diagram: ${esc(o.title)}"><defs><marker id="overview-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#64806a"/></marker></defs>`;
@@ -504,10 +504,10 @@ function interfaceContracts(e){
  const cards=operation(e)?.interfaceContracts||[];
  if(!cards.length)return '';
  const boundaries=cards.filter(c=>c.kind!=='payload'),payloads=cards.filter(c=>c.kind==='payload');
- const chosenBoundary=boundaries.find(c=>c.id===contractId)||boundaries[0],chosenPayload=payloads.find(c=>c.id===payloadId)||payloads[0];
+ const chosenPayload=payloads.find(c=>c.id===payloadId)||payloads[0];
  const render=c=>chromeHtml`<section class="contract-card"><h3><span class="contract-kind">${esc(c.kind.toUpperCase())}</span> ${esc(c.title)}</h3><div class="table-wrap"><table><thead><tr><th>Contract element</th><th>Value / behavior</th><th>Evidence</th></tr></thead><tbody>${c.rows.map(r=>chromeHtml`<tr><td><code>${esc(r.label)}</code></td><td class="contract-value">${esc(r.value)}</td><td>${button(r.sourceIds)}</td></tr>`).join('')}</tbody></table></div>${c.boundaries.length?chromeHtml`<p class="flow-note">${c.boundaries.map(esc).join(' ')}</p>`:''}</section>`;
  const select=(values,chosen,name,label)=>chromeHtml`<label class="contract-selector">${label} · ${values.length}<select data-contract-select="${name}" aria-label="${label}">${values.map(c=>chromeHtml`<option value="${esc(c.id)}" ${c.id===chosen.id?'selected':''}>${esc(c.title)}</option>`).join('')}</select></label>`;
- return chromeHtml`<p class="schema-description">Source-derived interface descriptions authored from the retained code. These are separate from published OpenAPI contracts and do not prove deployed wire compatibility.</p>${chosenBoundary?select(boundaries,chosenBoundary,'boundary',t('Interface contract'))+render(chosenBoundary):''}${chosenPayload?chromeHtml`<details class="payload-library"><summary>Payload fields and nested types · ${payloads.length} schemas</summary>${select(payloads,chosenPayload,'payload',t('Payload schema'))}${render(chosenPayload)}</details>`:''}`;
+ return chromeHtml`<p class="schema-description">Source-derived interface descriptions authored from the retained code. These are separate from published OpenAPI contracts and do not prove deployed wire compatibility.</p>${boundaries.map(render).join('')}${chosenPayload?chromeHtml`<details class="payload-library"><summary>Payload fields and nested types · ${payloads.length} schemas</summary>${select(payloads,chosenPayload,'payload',t('Payload schema'))}${render(chosenPayload)}</details>`:''}`;
 }
 function type(s){if(!s)return '—';if(s.$ref)return esc(s.$ref);if(s.type==='array')return chromeHtml`array&lt;${type(s.items)}&gt;`;return esc(s.type||(s.allOf?'allOf':s.oneOf?'oneOf':s.anyOf?'anyOf':'object'))+(s.format?chromeHtml` <span class="optional">${esc(s.format)}</span>`:'');}
 function constraints(s){return Object.entries(s||{}).filter(([k])=>['format','enum','pattern','minLength','maxLength','minimum','maximum','exclusiveMinimum','exclusiveMaximum','minItems','maxItems','uniqueItems','nullable','default','readOnly','writeOnly','additionalProperties'].includes(k)).map(([k,v])=>chromeHtml`${esc(k)}: ${esc(typeof v==='object'?JSON.stringify(v):v)}`).join(chromeHtml`<br>`)||'—';}
