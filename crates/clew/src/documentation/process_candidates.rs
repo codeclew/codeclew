@@ -1,8 +1,7 @@
 //! Deterministic structural candidates, never inferred business processes.
 use super::{
-    bytes, invalid,
+    invalid,
     model::{Entrypoint, Observation, ServiceEvidence},
-    store::{self, Repository},
 };
 use crate::error::ClewError;
 use serde_json::{Value, json};
