@@ -222,7 +222,7 @@ pub fn catalog(
             }
         }
         let mut reasons = Vec::new();
-        let accessor = accessor_or_synthetic(declaration["symbol"].as_str().unwrap_or(""));
+        let accessor = accessor_or_synthetic(declaration["name"].as_str().unwrap_or(""));
         if declaration["dependencyIds"]
             .as_array()
             .unwrap()
@@ -700,5 +700,87 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["worker-helper"]);
         assert_eq!(result.summary["suppressedCount"], 1);
+    }
+    // Real evidence stores a full JVM descriptor in the observation symbol while
+    // the method name lives in `normalized.name`. The accessor filter must key on
+    // the NAME, not the symbol descriptor, or equals/getters are never filtered.
+    fn add_method_named(
+        e: &mut ServiceEvidence,
+        id: &str,
+        scope: &str,
+        symbol: &str,
+        name: &str,
+        events: Option<Vec<Value>>,
+    ) {
+        let mut normalized = json!({"declarationKind":"METHOD","scope":scope,"name":name,"ownerIdentity":"class:Worker"});
+        if let Some(events) = events {
+            normalized["documentation"] = json!({"events":events,"parameterTypes":[]});
+            for (ordinal, mut event) in events.into_iter().enumerate() {
+                event["ordinal"] = json!(ordinal);
+                event["scope"] = json!(scope);
+                let event_id = format!("{id}-event-{ordinal}");
+                e.observations.insert(
+                    event_id.clone(),
+                    Observation {
+                        id: event_id,
+                        kind: "FLOW".into(),
+                        service: "svc".into(),
+                        symbol: symbol.into(),
+                        normalized: event,
+                        digest: "digest".into(),
+                        source_ids: vec![],
+                    },
+                );
+            }
+        }
+        e.observations.insert(
+            id.into(),
+            Observation {
+                id: id.into(),
+                kind: "SYMBOL".into(),
+                service: "svc".into(),
+                symbol: symbol.into(),
+                normalized,
+                digest: "digest".into(),
+                source_ids: vec![],
+            },
+        );
+    }
+    #[test]
+    fn accessor_filter_uses_method_name_not_full_symbol_descriptor() {
+        let mut e = evidence();
+        add_method(&mut e, "obj-a", ":obj", "a", Some(vec![]));
+        add_method(&mut e, "obj-b", ":obj", "b", Some(vec![]));
+        add_method_named(
+            &mut e,
+            "obj-equals",
+            ":obj",
+            "method:class:X#equals(Ljava/lang/Object;)Z",
+            "equals",
+            Some(vec![
+                json!({"kind":"IF"}),
+                json!({"kind":"CALL","target":"a"}),
+                json!({"kind":"CALL","target":"b"}),
+            ]),
+        );
+        add_method(
+            &mut e,
+            "obj-transform",
+            ":obj",
+            "transform",
+            Some(vec![
+                json!({"kind":"IF"}),
+                json!({"kind":"CALL","target":"a"}),
+                json!({"kind":"CALL","target":"b"}),
+            ]),
+        );
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        let ids: Vec<_> = result
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["obj-transform"]);
+        assert_eq!(result.summary["accessorFilteredCount"], 1);
     }
 }
