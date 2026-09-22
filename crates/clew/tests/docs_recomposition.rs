@@ -226,6 +226,32 @@ fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
         ])["snapshot"],
         derived
     );
+    let prepared = f.ok(&[
+        "docs",
+        "process",
+        "prepare",
+        "--id",
+        "new-flow",
+        "--overview",
+        "--snapshot",
+        &derived,
+    ]);
+    assert_eq!(prepared["snapshot"], derived);
+    assert!(prepared["items"].as_array().unwrap().iter().any(|item| {
+        item["kind"] == "PROCESS_ROOT"
+            && item["id"] == "process-overview"
+            && item["referenceRoles"] == json!(["operation", "gap"])
+    }));
+    let inspected = f.ok(&[
+        "docs",
+        "process",
+        "inspect",
+        "--input",
+        repo.root.join("scenarios/new-flow.yaml").to_str().unwrap(),
+        "--snapshot",
+        &derived,
+    ]);
+    assert_eq!(inspected["snapshot"], derived);
     assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
     assert_eq!(object_bytes(&current_repo, &parent), parent_bytes);
 

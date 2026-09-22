@@ -44,13 +44,14 @@ Use the latest list/show `inputDigest`, including `sha256:`, for each catalog mu
 Select one method from returned evidence. `docs process candidates --root /work/architecture --service orders --snapshot SOURCE_SNAPSHOT --declaration SYMBOL_OBSERVATION_ID` supports an explicit callable root even where automatic discovery is incomplete. A candidate is navigation, not accepted business meaning. Create a process definition using the existing process schema/fixture: exact service/selector, explicit requested scope, participants, trigger/outcomes, bounded `maxDepth`/`maxNodes`, and only declared interactions. Source methods must use the selector values exposed by retained evidence rather than guessed JVM identities.
 
 ```sh
-clew docs process inspect --root /work/architecture --input /work/process.json
+clew docs recompose --root /work/architecture --snapshot SOURCE_SNAPSHOT
+clew docs process inspect --root /work/architecture --input /work/process.json --snapshot ENTITY_SNAPSHOT
 clew docs process list --root /work/architecture
 clew docs process put --root /work/architecture --input /work/process.json --expected-input-digest INPUT_DIGEST
 clew docs recompose --root /work/architecture --snapshot SOURCE_SNAPSHOT
 ```
 
-`inspect` consumes latest compatible retained evidence. `put` changes declarations, so use the returned recomposed snapshot for authoring; recomposition executes no analyzer and does not update latest. Do not use default `process prepare` here: it selects latest, which predates the added declaration.
+The first recomposition returns `ENTITY_SNAPSHOT`, including entities written after capture; use it for inspection. The second returns `RECOMPOSED_SNAPSHOT`, including the process. Recomposition executes no analyzer and does not update latest. Pass `--snapshot RECOMPOSED_SNAPSHOT` to `docs process prepare --id PROCESS_ID --overview` or to `docs work prepare`. The default still selects latest, which predates the added declaration.
 
 Prepare `/work/request.json` as `{"schema":"codeclew-documentation-work-request/1.0","audience":"Worker maintainers","entrypoint":"process-overview","contextProfile":"process-v1","maxItems":100,"maxBytes":40960}`. Use the ID authored in the process definition:
 
@@ -61,7 +62,7 @@ clew docs proposal submit --root /work/architecture --work WORK_ID --input /work
 clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --unassessed
 ```
 
-The Work result provides evidence handles; `selection.json` names those handles, and a human/current agent authors the schema-constrained proposal from recorded reads. This is real authoring work, not an automatic consequence of capture. Alternatively, `docs work run --root /work/architecture --work WORK_ID --config /work/execution.json` uses an explicitly configured author/reviewer; do not invent provider credentials or assume it runs free. Local publication remains `UNASSESSED`; configured meaning review is separate.
+The Work result includes `PROCESS_ROOT` handles for the process overview and process-specific behavior. Use the overview handle as a proposal operation target when `entrypoint` is `process-overview`; prepare another Work without `entrypoint` to author the process-specific root. The handles have `operation`/`gap` roles but not `evidence`: cite source and dependency handles delivered by recorded reads. `selection.json` names those handles, and a human/current agent authors the schema-constrained proposal from recorded reads. This is real authoring work, not an automatic consequence of capture. Alternatively, `docs work run --root /work/architecture --work WORK_ID --config /work/execution.json` uses an explicitly configured author/reviewer; do not invent provider credentials or assume it runs free. Local publication remains `UNASSESSED`; configured meaning review is separate.
 
 `proposal publish` and an accepted `work run` already create a frozen publication. Open the bundle returned by that command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
 

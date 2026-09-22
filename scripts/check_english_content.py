@@ -24,6 +24,7 @@ RUSSIAN_LOCALIZATION_FILES = {
     "crates/clew/src/documentation/reader.rs",
     "crates/clew/src/documentation/render.rs",
     "crates/clew/tests/documentation_language.rs",
+    "crates/clew/tests/documentation_system.rs",
     "scripts/test_documentation_visual_reader.cjs",
 }
 

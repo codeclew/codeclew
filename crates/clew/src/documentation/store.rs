@@ -8,7 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-pub const MAX_RECORD: u64 = 2 * 1024 * 1024;
+pub const MAX_RECORD: u64 = 128 * 1024 * 1024;
 pub const MAX_RECORDS: usize = 1024;
 
 #[derive(Debug)]

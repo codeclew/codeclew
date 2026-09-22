@@ -229,6 +229,18 @@ test('static chrome translation never rewrites interpolated text even when it eq
  assert.equal(r.run('chromeHtml`<p>Source ${"Source"} ${"READ_SOURCE"} ${"/Source/in"}</p>`'),'<p>Исходный код Source READ_SOURCE /Source/in</p>');
  assert.equal(r.run('chromeHtml`<p>invisible Within SourceMapping</p>`'),'<p>invisible Within SourceMapping</p>');
 });
+test('reader tracks the header height without requiring ResizeObserver',()=>{
+ const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ let height=66,update,observed,variable;
+ const header={getBoundingClientRect:()=>({height})};
+ const document={documentElement:{lang:'en',style:{setProperty:(name,value)=>{variable=[name,value];}}},querySelector:key=>key==='.reader-nav'?header:null,querySelectorAll:()=>[],getElementById:()=>null};
+ vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{pathname:'/guide.html',search:''},ResizeObserver:class{constructor(callback){update=callback;}observe(element){observed=element;}}});
+ assert.equal(observed,header);
+ assert.deepEqual(variable,['--reader-header-height','66px']);
+ height=110;update();assert.deepEqual(variable,['--reader-header-height','110px']);
+ vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{pathname:'/guide.html',search:''}});
+ assert.deepEqual(variable,['--reader-header-height','110px']);
+});
 test('shared catalogue localizes chrome and retains neutral filtering keys and authored titles',()=>{
  const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
  const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});

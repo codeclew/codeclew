@@ -74,6 +74,18 @@ pub struct ProposedOperation {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub contracts: Vec<Contract>,
+    #[serde(default)]
+    pub participants: Vec<ParticipantInput>,
+    #[serde(default)]
+    pub explanation: Vec<Claim>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticipantInput {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub service: Option<String>,
 }
 fn provided_visuals<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -326,7 +338,10 @@ pub(super) fn evidence_reference_allowed(handle: &work::Handle) -> bool {
 }
 
 pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) -> bool {
-    if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
+    if !matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    ) {
         return false;
     }
     work.request.entrypoint.as_ref().is_none_or(|entrypoint| {
@@ -340,7 +355,10 @@ pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) ->
 }
 
 pub(super) fn gap_reference_allowed(handle: &work::Handle) -> bool {
-    matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE")
+    matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    )
 }
 
 impl Builder<'_> {
@@ -688,8 +706,11 @@ fn materialize(
                 .unwrap_or_else(|| work.subject[9..].into()));
         }
         let handle = builder.handle(reference)?;
-        if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
-            return Err(invalid("operation requires an entrypoint work reference"));
+        if !matches!(
+            handle.kind.as_str(),
+            "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+        ) {
+            return Err(invalid("operation requires an authorable work reference"));
         }
         if !operation_reference_allowed(work, handle) {
             return Err(invalid("operation is outside the requested entrypoint"));
@@ -842,7 +863,51 @@ fn materialize(
             n.operations.push(op);
             continue;
         }
-        builder.steps(&scope, &proposed.steps, "step", 0, &mut op, &actors)?;
+        let mut op_actors = actors.clone();
+        for declared in &proposed.participants {
+            if !store::valid_id(&declared.id)
+                || op_actors
+                    .insert(declared.id.clone(), declared.id.clone())
+                    .is_some()
+            {
+                return Err(invalid(format!(
+                    "invalid or duplicate declared participant {}",
+                    declared.id
+                )));
+            }
+            op.participants.push(Participant {
+                id: declared.id.clone(),
+                label: declared.label.clone(),
+                service: declared.service.clone(),
+            });
+        }
+        builder.steps(&scope, &proposed.steps, "step", 0, &mut op, &op_actors)?;
+        if !proposed.explanation.is_empty() {
+            // Authored narrative is added to the per-step echo so arrows can stay
+            // short while "What happens" carries the domain prose. Anchor each
+            // paragraph to the first non-end event and fold in its evidence so
+            // required step coverage and evidence retention hold.
+            let anchor = op.events.iter().find(|e| e.kind != "end").cloned();
+            for (i, claim) in proposed.explanation.iter().enumerate() {
+                let mut fragment = builder.claim(&scope, &format!("narrative/{i}"), claim)?;
+                let mut event_ids = Vec::new();
+                if let Some(event) = &anchor {
+                    event_ids.push(event.id.clone());
+                    fragment
+                        .dependency_ids
+                        .extend(event.dependency_ids.iter().cloned());
+                    fragment.source_ids.extend(event.source_ids.iter().cloned());
+                }
+                op.explanation.push(Explanation {
+                    id: stable(&scope, &format!("paragraph/narrative/{i}"))?,
+                    text: fragment.text,
+                    event_ids,
+                    dependency_ids: fragment.dependency_ids,
+                    source_ids: fragment.source_ids,
+                    detail: false,
+                });
+            }
+        }
         if proposed.contracts.len() > 64 {
             return Err(invalid("proposal exceeds 64 contracts"));
         }
