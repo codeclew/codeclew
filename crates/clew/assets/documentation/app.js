@@ -481,7 +481,7 @@ function interactionOverview(o){
 }
 function overviewDiagram(o){
  const d=o.overviewDiagram;
- if(!d)return o.events.length<=12?diagram(o):chromeHtml`<p class="empty-note">A bounded overview diagram has not been authored. Source evidence remains available below.</p>`;
+ if(!d)return o.events.length<=64?diagram(o):chromeHtml`<p class="empty-note">A bounded overview diagram has not been authored. Source evidence remains available below.</p>`;
  const W=(Math.max(...d.nodes.map(n=>n.column))+1)*280+20,H=(Math.max(...d.nodes.map(n=>n.row))+1)*160+30;
  const pos=Object.fromEntries(d.nodes.map(n=>[n.id,{x:150+n.column*280,y:90+n.row*160}]));
  let svg=chromeHtml`<svg class="overview-svg" viewBox="0 0 ${W} ${H}" role="group" aria-label="Overview diagram: ${esc(o.title)}"><defs><marker id="overview-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#64806a"/></marker></defs>`;

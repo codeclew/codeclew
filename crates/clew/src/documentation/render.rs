@@ -1253,7 +1253,14 @@ pub fn make_bindings(
     Ok(binding)
 }
 
-fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked: &Check) -> Value {
+fn page_data(
+    subject: &str,
+    title: &str,
+    subtitle: &str,
+    n: &Narrative,
+    checked: &Check,
+    suppress: &BTreeSet<String>,
+) -> Value {
     let service_id = subject.strip_prefix("service:");
     let catalogue = service_id
         .and_then(|id| checked.services.get(id))
@@ -1295,7 +1302,7 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     let process_candidates = service_id
         .and_then(|id| checked.services.get(id))
         .map(|evidence| {
-            let catalog = super::process_candidates::catalog(evidence, &BTreeSet::new())
+            let catalog = super::process_candidates::catalog(evidence, &BTreeSet::new(), suppress)
                 .expect("an empty explicit selection cannot name an invalid declaration");
             let internal: Vec<_> = catalog
                 .records
@@ -1307,7 +1314,7 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
                 .as_u64()
                 .unwrap_or(0)
                 .saturating_sub(internal.len() as u64);
-            json!({"summary":catalog.summary,"internal":internal,"omittedInternal":omitted})
+            json!({"summary":catalog.summary,"internal":internal,"omittedInternal":omitted,"suppressed":suppress})
         });
     let saved_processes: Vec<_> = checked
         .dependencies
@@ -1475,7 +1482,7 @@ pub fn mermaid(o: &Operation) -> String {
         }
         return out;
     }
-    if o.events.len() > 12 {
+    if o.events.len() > 64 {
         return "flowchart LR\n    pending[\"A bounded overview has not been authored. Full source evidence is retained separately.\"]\n".into();
     }
     let mut out="sequenceDiagram\n    autonumber\n    %% Agent-interpreted static source; declared edges are not compiler calls.\n".to_owned();
@@ -1807,6 +1814,7 @@ fn publish_internal_phases(
     if let Some((id, binding)) = &previous {
         bindings::verify_outputs(repo, id, binding)?;
     }
+    let suppress = super::process_candidates::load_suppress(repo)?;
     let root = repo.path("docs/index.html")?;
     let previous_bytes = if root.exists() {
         Some(fs::read(&root).map_err(io_error)?)
@@ -2272,6 +2280,7 @@ fn publish_internal_phases(
             ),
             n,
             &checked,
+            &suppress,
         );
         for process in data["savedProcesses"].as_array_mut().into_iter().flatten() {
             if let Some(id) = process["id"].as_str().map(str::to_owned) {
@@ -2687,7 +2696,14 @@ mod process_catalog_tests {
             operations: vec![],
             gaps: BTreeMap::new(),
         };
-        let data = page_data("service:svc", "Service", "", &narrative, &checked);
+        let data = page_data(
+            "service:svc",
+            "Service",
+            "",
+            &narrative,
+            &checked,
+            &BTreeSet::new(),
+        );
         assert_eq!(
             data["processCandidates"]["internal"]
                 .as_array()
@@ -2696,6 +2712,26 @@ mod process_catalog_tests {
             8
         );
         assert_eq!(data["processCandidates"]["omittedInternal"], 2);
+        let suppress = BTreeSet::from([format!(":main@method-00")]);
+        let filtered = page_data(
+            "service:svc",
+            "Service",
+            "",
+            &narrative,
+            &checked,
+            &suppress,
+        );
+        assert_eq!(
+            filtered["processCandidates"]["suppressed"],
+            json!([":main@method-00"])
+        );
+        assert!(
+            filtered["processCandidates"]["internal"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["symbol"].as_str() != Some("method-00"))
+        );
         assert_eq!(data["sources"].as_object().unwrap().len(), 8);
         for candidate in data["processCandidates"]["internal"].as_array().unwrap() {
             for source in candidate["sourceIds"].as_array().unwrap() {

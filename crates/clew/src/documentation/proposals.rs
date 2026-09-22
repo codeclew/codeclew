@@ -880,12 +880,13 @@ fn materialize(
             // required step coverage and evidence retention hold.
             let anchor = op.events.iter().find(|e| e.kind != "end").cloned();
             for (i, claim) in proposed.explanation.iter().enumerate() {
-                let mut fragment =
-                    builder.claim(&scope, &format!("narrative/{i}"), claim)?;
+                let mut fragment = builder.claim(&scope, &format!("narrative/{i}"), claim)?;
                 let mut event_ids = Vec::new();
                 if let Some(event) = &anchor {
                     event_ids.push(event.id.clone());
-                    fragment.dependency_ids.extend(event.dependency_ids.iter().cloned());
+                    fragment
+                        .dependency_ids
+                        .extend(event.dependency_ids.iter().cloned());
                     fragment.source_ids.extend(event.source_ids.iter().cloned());
                 }
                 op.explanation.push(Explanation {

@@ -84,6 +84,7 @@ final class CodeclewJavaAnalyzer {
     private static final int INHERITED_CALLABLES_BYTES = 50_000;
     // Bound a method's documentation flow so its declaration fact stays under
     // the per-fact byte budget; a long body is truncated with a boundary.
+    // Widened (45k -> 150k) to expand persistence/egress flows for task-manager docs.
     private static final int DOCUMENTATION_FLOW_BYTES = 150_000;
     // Bound a single annotation definition so it never makes a registry shard
     // exceed the per-fact byte budget. Oversized members are truncated and the
