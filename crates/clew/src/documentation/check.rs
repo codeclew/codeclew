@@ -828,30 +828,13 @@ pub fn compose(
         truncated: false,
         transitions: BTreeSet::new(),
     };
-    let involved: BTreeSet<_> = s
-        .interactions
-        .iter()
-        .flat_map(|id| {
-            [
-                interactions[id].from.service.as_str(),
-                interactions[id].to.service.as_str(),
-            ]
-        })
-        .chain([s.root.service.as_str()])
-        .collect();
-    if involved.len() > 8 {
+    let root = resolution(&s.root, services);
+    if matches!(root.status.as_str(), "RESOLVED" | "SOURCE_MATCH") {
+        walker.walk(&s.root.service, &root.candidates[0], 0)?;
+    } else {
         walker
             .boundaries
-            .insert("MORE_THAN_EIGHT_SERVICES_NOT_SUPPORTED_IN_ONE_SCENARIO".into());
-    } else {
-        let root = resolution(&s.root, services);
-        if matches!(root.status.as_str(), "RESOLVED" | "SOURCE_MATCH") {
-            walker.walk(&s.root.service, &root.candidates[0], 0)?;
-        } else {
-            walker
-                .boundaries
-                .insert(format!("SCENARIO_ROOT_{}", root.status));
-        }
+            .insert(format!("SCENARIO_ROOT_{}", root.status));
     }
     for interaction in &s.interactions {
         if !walker.transitions.contains(interaction) {
@@ -1013,7 +996,7 @@ impl Check {
         if checked.input_digest != repo.input_digest()? {
             return Err(crate::error::ClewError::new(
                 crate::error::ErrorCode::StaleRequiresReslice,
-                "retained documentation check is stale; run docs check explicitly",
+                "retained documentation check is stale; if only entities, processes, interactions or notes changed, run docs recompose --snapshot ORIGINAL_CAPTURE and use its returned --snapshot; if service or source-selection inputs changed, run docs check explicitly",
             ));
         }
         let services = repo.services()?;
@@ -1225,6 +1208,43 @@ mod tests {
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    #[test]
+    fn scenario_with_many_declared_services_is_not_rejected_before_traversal() {
+        let mut interactions = BTreeMap::new();
+        let mut ids = Vec::new();
+        for index in 0..9 {
+            let id = format!("link-{index}");
+            let interaction: Interaction = serde_json::from_value(json!({
+                "schema":"codeclew-documentation-interaction/1.0", "id":id,
+                "title":"Declared link", "from":{"service":format!("source-{index}")},
+                "to":{"service":format!("target-{index}")},
+                "transport":{"kind":"http"},
+                "declaration":{"origin":"human","rationale":"Explicitly declared"}
+            }))
+            .unwrap();
+            ids.push(id.clone());
+            interactions.insert(id, interaction);
+        }
+        let scenario: Scenario = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-process/1.0", "id":"large",
+            "title":"Large process", "summary":"Multiple services",
+            "root":{"service":"root"}, "interactions":ids
+        }))
+        .unwrap();
+        let result = compose(&scenario, &BTreeMap::new(), &interactions, &BTreeMap::new()).unwrap();
+        assert!(
+            result
+                .boundaries
+                .iter()
+                .any(|boundary| boundary == "SCENARIO_ROOT_INCOMPLETE")
+        );
+        assert!(
+            !result.boundaries.iter().any(
+                |boundary| boundary == "MORE_THAN_EIGHT_SERVICES_NOT_SUPPORTED_IN_ONE_SCENARIO"
+            )
+        );
+    }
 
     #[test]
     fn retained_baseline_preflight_rejects_invalid_state_before_capture() {

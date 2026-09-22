@@ -558,6 +558,21 @@ pub fn prepare_with_snapshot(
             );
         }
     }
+    if kind == "scenario" && repo.scenarios()?[id].process.is_some() {
+        for (index, root) in super::processes::expected(&checked, id)
+            .into_iter()
+            .filter(|root| root == id || root == super::processes::OVERVIEW)
+            .enumerate()
+        {
+            handles.insert(
+                format!("process{}", index + 1),
+                Handle {
+                    kind: "PROCESS_ROOT".into(),
+                    id: root,
+                },
+            );
+        }
+    }
     let mut influence: BTreeMap<String, String> = checked
         .dependencies
         .iter()
@@ -913,6 +928,22 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
         .subject
         .split_once(':')
         .ok_or_else(|| invalid("invalid stored work subject"))?;
+    let process_root = selection.references.first().and_then(|reference| {
+        work.handles
+            .get(reference)
+            .filter(|handle| handle.kind == "PROCESS_ROOT")
+    });
+    if let Some(handle) = process_root {
+        if selection.references.len() != 1
+            || !selection.symbols.is_empty()
+            || selection.query.is_some()
+        {
+            return Err(invalid(
+                "select a process section separately from evidence expansions",
+            ));
+        }
+        return annotate_rows(work, vec![process_root_row(work, &handle.id)]);
+    }
     let section_selection = kind == "service"
         && ((selection.references.is_empty()
             && selection.symbols.is_empty()
@@ -1056,6 +1087,15 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     };
     if selection.query.is_none() && selection.references.is_empty() && selection.symbols.is_empty()
     {
+        if kind == "scenario" {
+            let roots: Vec<_> = work
+                .handles
+                .values()
+                .filter(|handle| handle.kind == "PROCESS_ROOT")
+                .map(|handle| process_root_row(work, &handle.id))
+                .collect();
+            items.splice(0..0, roots);
+        }
         if kind == "service" && !section_selection {
             for row in super::sections::records(id, work.retained.as_ref()) {
                 items.push(json!({"kind":"SECTION","id":row["id"],"record":row}));
@@ -1083,6 +1123,20 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     } else {
         Ok(projected)
     }
+}
+
+fn process_root_row(work: &Work, id: &str) -> Value {
+    let authored = work.retained.as_ref().is_some_and(|narrative| {
+        narrative
+            .operations
+            .iter()
+            .any(|operation| operation.id == id)
+    });
+    json!({"kind":"PROCESS_ROOT","id":id,"record":{
+        "subject":work.subject,"status":if authored {"AUTHORED"} else {"AWAITING_AUTHORING"},
+        "purpose":if id == super::processes::OVERVIEW {"Cross-service process overview"} else {"Selected process behavior"},
+        "instruction":"Use this work reference as a proposal operation or gap target; cite separately read source and dependency references for claims."
+    }})
 }
 
 fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewError> {

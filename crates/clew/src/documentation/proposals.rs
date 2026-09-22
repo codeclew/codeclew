@@ -338,7 +338,10 @@ pub(super) fn evidence_reference_allowed(handle: &work::Handle) -> bool {
 }
 
 pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) -> bool {
-    if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
+    if !matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    ) {
         return false;
     }
     work.request.entrypoint.as_ref().is_none_or(|entrypoint| {
@@ -352,7 +355,10 @@ pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) ->
 }
 
 pub(super) fn gap_reference_allowed(handle: &work::Handle) -> bool {
-    matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE")
+    matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    )
 }
 
 impl Builder<'_> {
@@ -700,8 +706,11 @@ fn materialize(
                 .unwrap_or_else(|| work.subject[9..].into()));
         }
         let handle = builder.handle(reference)?;
-        if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
-            return Err(invalid("operation requires an entrypoint work reference"));
+        if !matches!(
+            handle.kind.as_str(),
+            "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+        ) {
+            return Err(invalid("operation requires an authorable work reference"));
         }
         if !operation_reference_allowed(work, handle) {
             return Err(invalid("operation is outside the requested entrypoint"));

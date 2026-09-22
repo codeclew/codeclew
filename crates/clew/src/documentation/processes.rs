@@ -140,6 +140,9 @@ pub enum Command {
         root: PathBuf,
         #[arg(long)]
         input: PathBuf,
+        /// Inspect against saved evidence, including a recomposed snapshot.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
     Prepare {
         #[arg(long)]
@@ -148,6 +151,9 @@ pub enum Command {
         id: String,
         #[arg(long)]
         overview: bool,
+        /// Prepare against saved evidence, including a recomposed snapshot.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
 }
 #[derive(Debug, Subcommand)]
@@ -267,7 +273,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 Some(&expected_input_digest),
             )
         }
-        Command::Inspect { input, .. } => {
+        Command::Inspect {
+            input, snapshot, ..
+        } => {
             let definition = load_definition(&repo, &input)?;
             let scenarios = BTreeMap::from([(definition.id.clone(), definition.clone())]);
             let mut selected: BTreeSet<_> = definition
@@ -287,7 +295,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     interaction.to.service.clone(),
                 ]);
             }
-            let (saved, snapshot) = super::check::Check::retained(&repo, None, &selected)?;
+            let (saved, snapshot) =
+                super::check::Check::retained(&repo, snapshot.as_deref(), &selected)?;
             let checked = super::check::assemble(
                 saved.input_digest,
                 saved.services,
@@ -299,11 +308,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 json!({"status":"TRANSIENT","saved":false,"snapshot":snapshot,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","definition":definition,"context":checked.scenarios[&definition.id],"linkedSubviews":definition.process.as_ref().map(|p|&p.linked_subviews),"limitation":"Linked child explanations are checked only for an explicitly saved definition."}),
             )
         }
-        Command::Prepare { id, overview, .. } => {
+        Command::Prepare {
+            id,
+            overview,
+            snapshot,
+            ..
+        } => {
             if !repo.scenarios()?.contains_key(&id) {
                 return Err(invalid("unknown process"));
             }
-            work::prepare(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?)
+            work::prepare_with_snapshot(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?, snapshot.as_deref())
         }
     }
 }
