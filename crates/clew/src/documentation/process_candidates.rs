@@ -2,6 +2,7 @@
 use super::{
     invalid,
     model::{Entrypoint, Observation, ServiceEvidence},
+    store::{self, Repository},
 };
 use crate::error::ClewError;
 use serde_json::{Value, json};
@@ -264,6 +265,10 @@ pub fn catalog(
             }
             continue;
         }
+        if suppress.contains(&format!("{}@{}", scope, observation.symbol)) {
+            suppressed += 1;
+            continue;
+        }
         let mut record = declaration.clone();
         record["reasons"] = json!(reasons);
         record["lane"] = json!(if trigger_ids.is_empty() {
@@ -323,6 +328,26 @@ pub fn catalog(
         "sourceBoundaryCount":evidence.boundaries.len(),
         "detailAuthority":"Selected immutable snapshot; preview strings may be truncated"});
     Ok(Catalog { records, summary })
+}
+
+/// Reads the persisted `scope@symbol` suppress list. Absence of the file is
+/// an empty list, not an error. The file lives outside `RepositoryInputs` so
+/// suppressing a candidate does not invalidate the retained check/digest.
+pub fn load_suppress(repo: &Repository) -> Result<BTreeSet<String>, ClewError> {
+    let path = repo.path("catalog/process-candidates-suppress.json")?;
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let raw: Value = store::read(&path, store::MAX_RECORD)?;
+    Ok(raw["suppressed"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -640,5 +665,22 @@ mod tests {
             catalog(&e, &BTreeSet::from(["obj-equals".into()]), &BTreeSet::new()).unwrap();
         assert_eq!(declared.records[0]["reasons"], json!(["EXPLICIT_ROOT"]));
         assert_eq!(declared.summary["accessorFilteredCount"], 0);
+    }
+    #[test]
+    fn suppressed_scope_symbol_is_excluded_and_counted() {
+        let mut e = evidence();
+        add_method(&mut e, "worker-find", ":worker", "find", Some(vec![]));
+        add_method(&mut e, "worker-dispatch", ":worker", "dispatch", Some(vec![]));
+        add_method(&mut e, "worker-run", ":worker", "run", Some(orchestration()));
+        add_method(&mut e, "worker-helper", ":worker", "helper", Some(orchestration()));
+        let suppress = BTreeSet::from([":worker@run".to_owned()]);
+        let result = catalog(&e, &BTreeSet::new(), &suppress).unwrap();
+        let ids: Vec<_> = result
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["worker-helper"]);
+        assert_eq!(result.summary["suppressedCount"], 1);
     }
 }
