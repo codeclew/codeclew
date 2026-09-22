@@ -726,4 +726,33 @@ mod format_tests {
         definition.schema = "codeclew-documentation-process/1.0".into();
         assert!(validate(&definition, &BTreeMap::new()).is_err());
     }
+
+    #[test]
+    fn suppress_add_is_persistent_and_idempotent_and_lists_back() {
+        let root = std::env::temp_dir().join(format!("clew-suppress-cli-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Repository::init(&root, "test").unwrap();
+        let add = || {
+            run(Command::Suppress {
+                root: root.clone(),
+                command: SuppressCommand::Add {
+                    symbol: vec![":main@equals".to_owned(), ":main@equals".to_owned()],
+                },
+            })
+            .unwrap()
+        };
+        let first = add();
+        assert_eq!(first["status"], "SAVED");
+        assert_eq!(first["suppressedCount"], 1); // idempotent: duplicate entry collapses
+        let again = add();
+        assert_eq!(again["status"], "SAVED");
+        assert_eq!(again["suppressedCount"], 1);
+        let listed = run(Command::Suppress {
+            root: root.clone(),
+            command: SuppressCommand::List {},
+        })
+        .unwrap();
+        assert_eq!(listed["suppressed"], json!([":main@equals"]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
