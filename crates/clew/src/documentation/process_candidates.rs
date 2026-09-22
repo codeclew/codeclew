@@ -670,9 +670,27 @@ mod tests {
     fn suppressed_scope_symbol_is_excluded_and_counted() {
         let mut e = evidence();
         add_method(&mut e, "worker-find", ":worker", "find", Some(vec![]));
-        add_method(&mut e, "worker-dispatch", ":worker", "dispatch", Some(vec![]));
-        add_method(&mut e, "worker-run", ":worker", "run", Some(orchestration()));
-        add_method(&mut e, "worker-helper", ":worker", "helper", Some(orchestration()));
+        add_method(
+            &mut e,
+            "worker-dispatch",
+            ":worker",
+            "dispatch",
+            Some(vec![]),
+        );
+        add_method(
+            &mut e,
+            "worker-run",
+            ":worker",
+            "run",
+            Some(orchestration()),
+        );
+        add_method(
+            &mut e,
+            "worker-helper",
+            ":worker",
+            "helper",
+            Some(orchestration()),
+        );
         let suppress = BTreeSet::from([":worker@run".to_owned()]);
         let result = catalog(&e, &BTreeSet::new(), &suppress).unwrap();
         let ids: Vec<_> = result

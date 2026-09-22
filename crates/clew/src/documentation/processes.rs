@@ -229,7 +229,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 }
                 SuppressCommand::List {} => {
                     let current = super::process_candidates::load_suppress(&repo)?;
-                    Ok(json!({"schema":"codeclew-documentation-process-candidates-suppress/1.0","suppressed":current}))
+                    Ok(
+                        json!({"schema":"codeclew-documentation-process-candidates-suppress/1.0","suppressed":current}),
+                    )
                 }
             }
         }
@@ -306,9 +308,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 fn validate_suppress_entry(entry: &str) -> Result<(), ClewError> {
-    let (scope, symbol) = entry.split_once('@').ok_or_else(|| {
-        invalid("suppress entry must be <scope>@<symbol>")
-    })?;
+    let (scope, symbol) = entry
+        .split_once('@')
+        .ok_or_else(|| invalid("suppress entry must be <scope>@<symbol>"))?;
     if scope.is_empty() || symbol.is_empty() {
         return Err(invalid("suppress entry must be <scope>@<symbol>"));
     }
@@ -729,7 +731,8 @@ mod format_tests {
 
     #[test]
     fn suppress_add_is_persistent_and_idempotent_and_lists_back() {
-        let root = std::env::temp_dir().join(format!("clew-suppress-cli-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("clew-suppress-cli-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         Repository::init(&root, "test").unwrap();
         let add = || {

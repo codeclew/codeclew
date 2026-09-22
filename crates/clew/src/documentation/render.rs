@@ -2696,7 +2696,14 @@ mod process_catalog_tests {
             operations: vec![],
             gaps: BTreeMap::new(),
         };
-        let data = page_data("service:svc", "Service", "", &narrative, &checked, &BTreeSet::new());
+        let data = page_data(
+            "service:svc",
+            "Service",
+            "",
+            &narrative,
+            &checked,
+            &BTreeSet::new(),
+        );
         assert_eq!(
             data["processCandidates"]["internal"]
                 .as_array()
@@ -2706,7 +2713,14 @@ mod process_catalog_tests {
         );
         assert_eq!(data["processCandidates"]["omittedInternal"], 2);
         let suppress = BTreeSet::from([format!(":main@method-00")]);
-        let filtered = page_data("service:svc", "Service", "", &narrative, &checked, &suppress);
+        let filtered = page_data(
+            "service:svc",
+            "Service",
+            "",
+            &narrative,
+            &checked,
+            &suppress,
+        );
         assert_eq!(
             filtered["processCandidates"]["suppressed"],
             json!([":main@method-00"])

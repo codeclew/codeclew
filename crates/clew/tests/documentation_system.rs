@@ -1845,10 +1845,12 @@ fn docsys_t03_proposal_can_declare_an_external_sequence_participant() {
     let artifact = proposal_artifact(&f, &submitted);
     let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
     let operation = &narrative.operations[0];
-    assert!(operation
-        .participants
-        .iter()
-        .any(|p| p.id == "db" && p.label == "Database" && p.service.is_none()));
+    assert!(
+        operation
+            .participants
+            .iter()
+            .any(|p| p.id == "db" && p.label == "Database" && p.service.is_none())
+    );
     let diagram = render::mermaid(operation);
     assert!(
         diagram.contains("service-orders->>db: Persist the reservation row."),
@@ -1908,11 +1910,15 @@ fn docsys_t03_proposal_authored_explanation_replaces_step_echo() {
         .map(|p| p.text.as_str())
         .collect();
     assert!(
-        visible.contains(&"Клиент запрашивает резервирование; сервис валидирует количество и сохраняет решение."),
+        visible.contains(
+            &"Клиент запрашивает резервирование; сервис валидирует количество и сохраняет решение."
+        ),
         "authored narrative prose must be present in What happens: {visible:?}"
     );
     assert!(
-        visible.contains(&"При отрицательном количестве выбрасывается исключение, вызывающее ответ с ошибкой."),
+        visible.contains(
+            &"При отрицательном количестве выбрасывается исключение, вызывающее ответ с ошибкой."
+        ),
         "authored narrative prose must be present in What happens: {visible:?}"
     );
     assert!(
@@ -1920,7 +1926,10 @@ fn docsys_t03_proposal_authored_explanation_replaces_step_echo() {
         "arrow label must keep the short step meaning"
     );
     assert!(
-        operation.explanation.iter().all(|p| !p.event_ids.is_empty()),
+        operation
+            .explanation
+            .iter()
+            .all(|p| !p.event_ids.is_empty()),
         "every explanation paragraph must reference a diagram step"
     );
 }
