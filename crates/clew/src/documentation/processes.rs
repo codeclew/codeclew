@@ -105,6 +105,16 @@ pub enum Command {
         declaration: Vec<String>,
         #[arg(long, default_value = "all", value_parser = ["all", "internal", "trigger"])]
         lane: String,
+        /// Ad-hoc scope@symbol entries to exclude for this query (not persisted).
+        #[arg(long)]
+        suppress: Vec<String>,
+    },
+    /// Manage the persisted list of rejected candidates (scope@symbol).
+    Suppress {
+        #[arg(long)]
+        root: PathBuf,
+        #[command(subcommand)]
+        command: SuppressCommand,
     },
     List {
         #[command(flatten)]
@@ -140,13 +150,24 @@ pub enum Command {
         overview: bool,
     },
 }
+#[derive(Debug, Subcommand)]
+pub enum SuppressCommand {
+    /// Add scope@symbol entries to the reject list (idempotent).
+    Add {
+        #[arg(long)]
+        symbol: Vec<String>,
+    },
+    /// Print the current reject list.
+    List {},
+}
 pub fn run(command: Command) -> Result<Value, ClewError> {
     let root = match &command {
         Command::List { page } | Command::Candidates { page, .. } => &page.root,
         Command::Show { root, .. }
         | Command::Put { root, .. }
         | Command::Inspect { root, .. }
-        | Command::Prepare { root, .. } => root,
+        | Command::Prepare { root, .. }
+        | Command::Suppress { root, .. } => root,
     };
     let repo = Repository::open(root)?;
     match command {
@@ -156,15 +177,22 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             snapshot,
             declaration,
             lane,
+            suppress,
         } => {
             let (checked, handle) = Check::retained(
                 &repo,
                 snapshot.as_deref(),
                 &BTreeSet::from([service.clone()]),
             )?;
+            let mut selected = super::process_candidates::load_suppress(&repo)?;
+            for entry in suppress {
+                validate_suppress_entry(&entry)?;
+                selected.insert(entry);
+            }
             let catalogue = super::process_candidates::catalog(
                 &checked.services[&service],
                 &declaration.into_iter().collect(),
+                &selected,
             )?;
             let records: Vec<_> = catalogue
                 .records
@@ -179,8 +207,31 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 records,
                 page.cursor.as_deref(),
                 page.limit as usize,
-                json!({"snapshot":handle,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","lane":lane,"catalogue":catalogue.summary}),
+                json!({"snapshot":handle,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","lane":lane,"suppressed":selected,"catalogue":catalogue.summary}),
             )
+        }
+        Command::Suppress { root, command } => {
+            let repo = Repository::open(&root)?;
+            match command {
+                SuppressCommand::Add { symbol } => {
+                    let _lock = repo.lock()?;
+                    let mut current = super::process_candidates::load_suppress(&repo)?;
+                    for entry in symbol {
+                        validate_suppress_entry(&entry)?;
+                        current.insert(entry);
+                    }
+                    let data = super::bytes(&json!({
+                        "schema": "codeclew-documentation-process-candidates-suppress/1.0",
+                        "suppressed": current
+                    }))?;
+                    repo.atomic("catalog/process-candidates-suppress.json", &data)?;
+                    Ok(json!({"status":"SAVED","suppressedCount":current.len()}))
+                }
+                SuppressCommand::List {} => {
+                    let current = super::process_candidates::load_suppress(&repo)?;
+                    Ok(json!({"schema":"codeclew-documentation-process-candidates-suppress/1.0","suppressed":current}))
+                }
+            }
         }
         Command::List { page } => {
             let records=repo.scenarios()?.into_values().map(|s|json!({"id":s.id,"title":s.title,"kind":if s.process.is_some(){"SAVED_PROCESS"}else{"SAVED_VIEW"},"subject":format!("scenario:{}",s.id)})).collect::<Vec<_>>();
@@ -253,6 +304,15 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             work::prepare(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?)
         }
     }
+}
+fn validate_suppress_entry(entry: &str) -> Result<(), ClewError> {
+    let (scope, symbol) = entry.split_once('@').ok_or_else(|| {
+        invalid("suppress entry must be <scope>@<symbol>")
+    })?;
+    if scope.is_empty() || symbol.is_empty() {
+        return Err(invalid("suppress entry must be <scope>@<symbol>"));
+    }
+    Ok(())
 }
 fn load_definition(repo: &Repository, path: &std::path::Path) -> Result<Scenario, ClewError> {
     let s: Scenario = store::read(path, 256 * 1024)?;
