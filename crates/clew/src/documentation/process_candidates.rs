@@ -1,7 +1,8 @@
 //! Deterministic structural candidates, never inferred business processes.
 use super::{
-    invalid,
+    bytes, invalid,
     model::{Entrypoint, Observation, ServiceEvidence},
+    store::{self, Repository},
 };
 use crate::error::ClewError;
 use serde_json::{Value, json};
@@ -30,6 +31,34 @@ pub fn public_boundary(entry: &Entrypoint) -> bool {
             .get("frameworkDeclarations")
             .and_then(Value::as_array)
             .is_some_and(|v| !v.is_empty())
+}
+fn accessor_or_synthetic(symbol: &str) -> bool {
+    let s = symbol;
+    let accessor_prefix = |prefix: &str| {
+        s.len() > prefix.len()
+            && s.starts_with(prefix)
+            && s[prefix.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+    };
+    matches!(
+        s,
+        "equals"
+            | "hashCode"
+            | "toString"
+            | "clone"
+            | "getClass"
+            | "compareTo"
+            | "compare"
+            | "builder"
+            | "build"
+            | "toBuilder"
+    ) || accessor_prefix("get")
+        || accessor_prefix("set")
+        || accessor_prefix("is")
+        || accessor_prefix("has")
+        || accessor_prefix("with")
 }
 fn scope(observation: &Observation) -> &str {
     observation.normalized["scope"].as_str().unwrap_or("")
@@ -84,6 +113,7 @@ pub fn callables(evidence: &ServiceEvidence) -> Vec<Value> {
 pub fn catalog(
     evidence: &ServiceEvidence,
     explicit: &BTreeSet<String>,
+    suppress: &BTreeSet<String>,
 ) -> Result<Catalog, ClewError> {
     if explicit
         .iter()
@@ -113,6 +143,8 @@ pub fn catalog(
     }
     let mut records = Vec::new();
     let mut unavailable = 0;
+    let mut suppressed = 0;
+    let mut accessor_filtered = 0;
     let mut unavailable_scopes = BTreeSet::new();
     for declaration in &declarations {
         let id = declaration["id"].as_str().unwrap();
@@ -190,6 +222,7 @@ pub fn catalog(
             }
         }
         let mut reasons = Vec::new();
+        let accessor = accessor_or_synthetic(declaration["symbol"].as_str().unwrap_or(""));
         if declaration["dependencyIds"]
             .as_array()
             .unwrap()
@@ -215,10 +248,10 @@ pub fn catalog(
         if !trigger_ids.is_empty() {
             reasons.push("DISCOVERED_TRIGGER");
         }
-        if targets.len() >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
+        if !accessor && targets.len() >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
             reasons.push("INTERNAL_ORCHESTRATION_CANDIDATE");
         }
-        if lexical_calls >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
+        if !accessor && lexical_calls >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
             reasons.push("LEXICAL_ORCHESTRATION_CANDIDATE");
             gaps.insert("LEXICAL_CALL_TARGETS_UNRESOLVED".into());
         }
@@ -227,6 +260,9 @@ pub fn catalog(
             unavailable_scopes.insert(scope.to_owned());
         }
         if reasons.is_empty() {
+            if accessor {
+                accessor_filtered += 1;
+            }
             continue;
         }
         let mut record = declaration.clone();
@@ -273,6 +309,8 @@ pub fn catalog(
         "status":if declarations.is_empty() {"UNKNOWN"} else {"PARTIAL"},
         "consideredCallableCount":declarations.len(),"candidateCount":records.len(),
         "triggerCandidateCount":triggers,"internalCandidateCount":internal,
+        "suppressedCount":suppressed,
+        "accessorFilteredCount":accessor_filtered,
         "flowUnavailableCount":unavailable,
         "unavailableScopeCount":unavailable_scopes.len(),
         "unavailableScopes":unavailable_scopes.iter().take(8).map(|scope|preview_text(scope,128)).collect::<Vec<_>>(),
@@ -382,15 +420,19 @@ mod tests {
             "record_declaration",
         ] {
             assert!(
-                catalog(&e, &BTreeSet::from([kind.into()])).is_err(),
+                catalog(&e, &BTreeSet::from([kind.into()]), &BTreeSet::new()).is_err(),
                 "{kind}"
             );
         }
         assert_eq!(
-            catalog(&e, &BTreeSet::from(["method_declaration".into()]))
-                .unwrap()
-                .records
-                .len(),
+            catalog(
+                &e,
+                &BTreeSet::from(["method_declaration".into()]),
+                &BTreeSet::new()
+            )
+            .unwrap()
+            .records
+            .len(),
             1
         );
     }
@@ -413,7 +455,7 @@ mod tests {
             "run",
             Some(orchestration()),
         );
-        let result = catalog(&e, &BTreeSet::new()).unwrap();
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
         assert_eq!(result.records.len(), 1);
         assert_eq!(result.records[0]["id"], "worker-main");
         assert_eq!(result.records[0]["localCallTargetCount"], 2);
@@ -433,7 +475,7 @@ mod tests {
                 json!({"kind":"CALL","authority":"SYNTAX","targetStatus":"UNRESOLVED"}),
             ]),
         );
-        let result = catalog(&e, &BTreeSet::new()).unwrap();
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
         assert_eq!(result.records.len(), 1);
         assert_eq!(
             result.records[0]["reasons"],
@@ -453,11 +495,11 @@ mod tests {
     fn missing_flow_is_visible_and_explicit_root_is_preserved() {
         let mut e = evidence();
         add_method(&mut e, "worker", ":main", "run", None);
-        let empty = catalog(&e, &BTreeSet::new()).unwrap();
+        let empty = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
         assert!(empty.records.is_empty());
         assert_eq!(empty.summary["status"], "PARTIAL");
         assert_eq!(empty.summary["flowUnavailableCount"], 1);
-        let selected = catalog(&e, &BTreeSet::from(["worker".into()])).unwrap();
+        let selected = catalog(&e, &BTreeSet::from(["worker".into()]), &BTreeSet::new()).unwrap();
         assert_eq!(selected.records[0]["status"], "NEEDS_EVIDENCE");
         assert!(
             selected.records[0]["gaps"]
@@ -465,9 +507,18 @@ mod tests {
                 .unwrap()
                 .contains(&json!("METHOD_FLOW_UNAVAILABLE"))
         );
-        assert!(catalog(&e, &BTreeSet::from(["not-a-method".into()])).is_err());
+        assert!(
+            catalog(
+                &e,
+                &BTreeSet::from(["not-a-method".into()]),
+                &BTreeSet::new()
+            )
+            .is_err()
+        );
         assert_eq!(
-            catalog(&evidence(), &BTreeSet::new()).unwrap().summary["status"],
+            catalog(&evidence(), &BTreeSet::new(), &BTreeSet::new())
+                .unwrap()
+                .summary["status"],
             "UNKNOWN"
         );
     }
@@ -486,7 +537,7 @@ mod tests {
             dependency_ids: vec!["method".into()],
             boundaries: vec![],
         });
-        let result = catalog(&e, &BTreeSet::new()).unwrap();
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
         assert_eq!(result.records[0]["lane"], "trigger");
         assert!(
             result.records[0]["gaps"]
@@ -503,16 +554,21 @@ mod tests {
         add_method(&mut e, "b", ":b", "run", Some(vec![]));
         add_method(&mut e, "a", ":a", "run", Some(vec![]));
         let selected = BTreeSet::from(["a".into(), "b".into()]);
-        let first = catalog(&e, &selected).unwrap();
+        let first = catalog(&e, &selected, &BTreeSet::new()).unwrap();
         let mut rebuilt = e.clone();
         rebuilt.observations = e.observations.into_iter().rev().collect();
-        assert_eq!(first.records, catalog(&rebuilt, &selected).unwrap().records);
+        assert_eq!(
+            first.records,
+            catalog(&rebuilt, &selected, &BTreeSet::new())
+                .unwrap()
+                .records
+        );
         assert_eq!(first.records[0]["id"], "a");
         let mut duplicate = rebuilt.observations["a"].clone();
         duplicate.id = "a-conflict".into();
         duplicate.normalized["name"] = json!("conflicting");
         rebuilt.observations.insert(duplicate.id.clone(), duplicate);
-        let conflicted = catalog(&rebuilt, &selected).unwrap();
+        let conflicted = catalog(&rebuilt, &selected, &BTreeSet::new()).unwrap();
         assert_eq!(conflicted.records.len(), 2);
         assert!(
             conflicted.records[0]["gaps"]
@@ -527,5 +583,63 @@ mod tests {
                 .len(),
             2
         );
+    }
+    #[test]
+    fn accessor_symbols_are_not_nominated_as_orchestration_candidates() {
+        let mut e = evidence();
+        add_method(
+            &mut e,
+            "obj-equals",
+            ":obj",
+            "equals",
+            Some(orchestration()),
+        );
+        add_method(
+            &mut e,
+            "obj-getname",
+            ":obj",
+            "getName",
+            Some(orchestration()),
+        );
+        add_method(
+            &mut e,
+            "worker-run",
+            ":worker",
+            "run",
+            Some(orchestration()),
+        );
+        // orchestration() CALL targets find/dispatch must be declared callables so
+        // "run" resolves 2 local targets and is nominated as an orchestration candidate.
+        add_method(&mut e, "worker-find", ":worker", "find", Some(vec![]));
+        add_method(
+            &mut e,
+            "worker-dispatch",
+            ":worker",
+            "dispatch",
+            Some(vec![]),
+        );
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        let ids: Vec<_> = result
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["worker-run"]);
+        assert_eq!(result.summary["accessorFilteredCount"], 2);
+    }
+    #[test]
+    fn accessor_is_preserved_when_declared_as_explicit_root() {
+        let mut e = evidence();
+        add_method(
+            &mut e,
+            "obj-equals",
+            ":obj",
+            "equals",
+            Some(orchestration()),
+        );
+        let declared =
+            catalog(&e, &BTreeSet::from(["obj-equals".into()]), &BTreeSet::new()).unwrap();
+        assert_eq!(declared.records[0]["reasons"], json!(["EXPLICIT_ROOT"]));
+        assert_eq!(declared.summary["accessorFilteredCount"], 0);
     }
 }
