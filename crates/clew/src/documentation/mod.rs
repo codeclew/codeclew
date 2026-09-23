@@ -20,6 +20,7 @@ mod language;
 pub mod model;
 pub mod notes;
 pub mod object_layout;
+pub mod plantuml;
 pub mod process_candidates;
 mod process_context;
 pub mod processes;
