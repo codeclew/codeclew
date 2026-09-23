@@ -29,7 +29,10 @@ pub fn activity_from_flow(events: &Value, symbol: &str) -> Option<String> {
                 }
             }
             "THROW" => out.push_str(&format!(":throw {};\n", text)),
-            "BOUNDARY" => out.push_str(&format!("note right\n  {} (не развёрнуто)\nend note\n", text)),
+            "BOUNDARY" => out.push_str(&format!(
+                "note right\n  {} (не развёрнуто)\nend note\n",
+                text
+            )),
             _ => out.push_str(&format!(":{};\n", text)), // STATEMENT, CALL, LOCAL
         }
     }
