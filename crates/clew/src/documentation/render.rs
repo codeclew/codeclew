@@ -2898,17 +2898,16 @@ mod tests {
     #[test]
     fn auto_flow_puml_is_emitted_when_events_empty() {
         let flow = json!([
-            {"kind":"STATEMENT","text":"orders.validate(request)"},
-            {"kind":"RETURN","text":"buildResponse(request)"}
+            {"kind":"CALL","resolution":"COMPILER_EXACT","target":"method:class:ru.tins.CheckoutService#charge()V"},
+            {"kind":"RETURN"}
         ]);
-        let symbol = "method:class:CheckoutService#checkout";
+        let symbol = "method:class:ru.tins.CheckoutController#checkout";
         let title = "Checkout flow";
         let doc = auto_flow_puml(&flow, symbol, title).unwrap();
         assert!(doc.contains("title Checkout flow"), "{doc}");
-        assert!(doc.contains(":orders.validate(request);"), "{doc}");
-        assert!(doc.contains(":buildResponse(request)"), "{doc}");
+        assert!(doc.contains(":CheckoutService#charge;"), "{doc}");
         assert!(
-            doc.contains("' evidence: method:class:CheckoutService#checkout"),
+            doc.contains("' evidence: method:class:ru.tins.CheckoutController#checkout"),
             "{doc}"
         );
     }
