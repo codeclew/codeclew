@@ -35,6 +35,7 @@ mod section_author;
 pub mod sections;
 pub mod snapshot_pins;
 mod source_inputs;
+pub mod source_steps;
 pub(crate) mod sqlite_objects;
 pub mod status;
 pub mod store;

@@ -1450,8 +1450,44 @@ fn page_data(
 /// If an operation has no authored events, produce an auto PlantUML activity
 /// document from the operation's root FLOW evidence. Returns `None` when there
 /// is authored content or no usable flow.
-fn auto_flow_puml(flow: &serde_json::Value, symbol: &str, title: &str) -> Option<String> {
+fn auto_flow_puml(
+    checked: &Check,
+    flow: &serde_json::Value,
+    symbol: &str,
+    title: &str,
+) -> Option<String> {
+    // Prefer source deepening: a retained TRANSFORMED_SOURCE yields readable
+    // step text (assignments, returns, catch). Fall back to the FLOW renderer
+    // when the source is absent or not parseable.
+    if let Some(source) = method_source(checked, symbol) {
+        if let Some(doc) = super::source_steps::document(&source, symbol, title) {
+            return Some(doc);
+        }
+    }
     super::process_flow::document(flow, symbol, title)
+}
+
+/// Look up a method's retained `TRANSFORMED_SOURCE` observation by symbol.
+fn method_source(checked: &Check, symbol: &str) -> Option<String> {
+    let obs = checked.services.values().find_map(|e| {
+        e.observations
+            .values()
+            .find(|o| o.kind == "TRANSFORMED_SOURCE" && o.symbol == symbol)
+    })?;
+    let norm = &obs.normalized;
+    if let Some(s) = norm
+        .pointer("/documentation/source")
+        .and_then(Value::as_str)
+    {
+        return Some(s.to_string());
+    }
+    if let Some(s) = norm.pointer("/source").and_then(Value::as_str) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = norm.as_str() {
+        return Some(s.to_string());
+    }
+    None
 }
 
 /// Write a `.puml` diagram into the bundle and, when a PlantUML renderer is
@@ -2526,7 +2562,7 @@ fn publish_internal_phases(
             if operation.events.is_empty() {
                 let service = (kind == "service").then_some(id);
                 if let Some((flow, symbol)) = root_flow_events(&checked, operation, service) {
-                    if let Some(puml) = auto_flow_puml(flow, symbol, &operation.title) {
+                    if let Some(puml) = auto_flow_puml(&checked, flow, symbol, &operation.title) {
                         insert_diagram(
                             &mut files,
                             format!("diagrams/{}-{}", subject.replace(':', "-"), operation.id),
@@ -2544,7 +2580,7 @@ fn publish_internal_phases(
         if kind == "service" {
             for gap_id in n.gaps.keys() {
                 if let Some((flow, symbol)) = root_flow_events_by_id(&checked, gap_id, Some(id)) {
-                    if let Some(puml) = auto_flow_puml(flow, symbol, gap_id) {
+                    if let Some(puml) = auto_flow_puml(&checked, flow, symbol, gap_id) {
                         insert_diagram(
                             &mut files,
                             format!("diagrams/{}-{}", subject.replace(':', "-"), gap_id),
@@ -2960,13 +2996,75 @@ mod tests {
         ]);
         let symbol = "method:class:ru.tins.CheckoutController#checkout";
         let title = "Checkout flow";
-        let doc = auto_flow_puml(&flow, symbol, title).unwrap();
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::new(),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let doc = auto_flow_puml(&checked, &flow, symbol, title).unwrap();
         assert!(doc.contains("title Checkout flow"), "{doc}");
         assert!(doc.contains(":CheckoutService#charge;"), "{doc}");
         assert!(
             doc.contains("' evidence: method:class:ru.tins.CheckoutController#checkout"),
             "{doc}"
         );
+    }
+
+    #[test]
+    fn source_deepening_is_preferred_when_source_retained() {
+        let source = "\
+public void handle(Long taskId) {
+    TaskInstance ti = null;
+    if (ti == null) {
+        ti = svc.create(taskId);
+    }
+    return ti;
+}";
+        let symbol = "method:class:svc.TaskService#handle";
+        let flow = json!([{"kind":"BOUNDARY"}]);
+        let src_obs = Observation {
+            id: "svc:source:handle".into(),
+            kind: "TRANSFORMED_SOURCE".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"source":source}}),
+            digest: "d".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        let mut evidence = evidence;
+        evidence.observations.insert(src_obs.id.clone(), src_obs);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let doc = auto_flow_puml(&checked, &flow, symbol, "t").unwrap();
+        // Source deepening wins over the shallow BOUNDARY flow.
+        assert!(doc.contains(":Вход: handle(taskId);"), "{doc}");
+        assert!(doc.contains(":ti = null;"), "{doc}");
+        assert!(doc.contains("if (ti == null) then (да)"), "{doc}");
+        assert!(!doc.contains("BOUNDARY"), "{doc}");
     }
 
     #[test]
