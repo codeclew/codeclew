@@ -2329,8 +2329,6 @@ fn publish_internal_phases(
     }
     binding.update_failures = failures.clone();
     binding.output_hashes.clear();
-    let bundle =
-        digest(&json!({"binding":binding,"rendererAssets":renderer_digest()?}))?[7..].to_owned();
     let mut files = BTreeMap::new();
     let mut cards = String::new();
     for (subject, n) in &narratives {
@@ -2540,7 +2538,7 @@ fn publish_internal_phases(
                     && o.dataflow.is_none()
             })
             .count();
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{}: {operation_count} · {}: {}</p><p>{}: {translation_count}</p><details><summary>{}</summary><pre>{}</pre></details></article>",
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/__BUNDLE__/{folder}/{}.html\">{}</a></h2><p>{}: {operation_count} · {}: {}</p><p>{}: {translation_count}</p><details><summary>{}</summary><pre>{}</pre></details></article>",
             super::reader::text(ui_language,kind,if kind=="service"{"Сервис"}else{"Процесс"}),escape(id),escape(title),
             super::reader::text(ui_language,"Documented operations","Описанные операции"),super::reader::text(ui_language,"Gaps","Пробелы"),n.gaps.len(),
             super::reader::text(ui_language,"Sections requiring translation","Разделы, требующие перевода"),
@@ -2548,6 +2546,22 @@ fn publish_internal_phases(
             escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
+    // The bundle identity covers every output file (including auto-generated
+    // diagrams), so any change to the rendered output produces a fresh
+    // immutable bundle instead of conflicting with an existing one.
+    let output_digest = digest(
+        &files
+            .iter()
+            .map(|(path, data)| (path.clone(), crate::canonical::hash_bytes(data)))
+            .collect::<BTreeMap<_, _>>(),
+    )?;
+    let bundle = digest(&json!({
+        "binding": binding,
+        "rendererAssets": renderer_digest()?,
+        "output": output_digest
+    }))?[7..]
+        .to_owned();
+    let cards = cards.replace("__BUNDLE__", &bundle);
     let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><details><summary>{}</summary><p>{}</p><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),super::reader::text(ui_language,"Original declaration and source checks","Исходная декларация и проверки по коду"),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
     let update_gaps = if failures.is_empty() {
         String::new()
