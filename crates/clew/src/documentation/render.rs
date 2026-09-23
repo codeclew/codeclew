@@ -1454,6 +1454,20 @@ fn auto_flow_puml(flow: &serde_json::Value, symbol: &str, title: &str) -> Option
     super::process_flow::document(flow, symbol, title)
 }
 
+/// Write a `.puml` diagram into the bundle and, when a PlantUML renderer is
+/// available, pre-render and include the sibling `.svg`.
+fn insert_diagram(
+    files: &mut BTreeMap<String, Vec<u8>>,
+    base: String,
+    puml: String,
+    jar: Option<&std::path::Path>,
+) {
+    files.insert(format!("{base}.puml"), puml.as_bytes().to_vec());
+    if let Ok(Some(svg)) = super::plantuml::render_svg(puml.as_bytes(), jar) {
+        files.insert(format!("{base}.svg"), svg);
+    }
+}
+
 /// Resolve a root method's flow evidence for a candidate symbol list.
 /// SYMBOL observations (with `documentation.events`) live in the service
 /// evidence (mirror `check::Walker::walk`), not `checked.dependencies`.
@@ -2341,6 +2355,9 @@ fn publish_internal_phases(
     binding.update_failures = failures.clone();
     binding.output_hashes.clear();
     let mut files = BTreeMap::new();
+    let plantuml_jar = std::env::var("PLANTUML_JAR")
+        .ok()
+        .map(std::path::PathBuf::from);
     let mut cards = String::new();
     for (subject, n) in &narratives {
         let (kind, id) = subject
@@ -2509,16 +2526,14 @@ fn publish_internal_phases(
             if operation.events.is_empty() {
                 let service = (kind == "service").then_some(id);
                 if let Some((flow, symbol)) = root_flow_events(&checked, operation, service) {
-                    files.insert(
-                        format!(
-                            "diagrams/{}-{}.puml",
-                            subject.replace(':', "-"),
-                            operation.id
-                        ),
-                        auto_flow_puml(flow, symbol, &operation.title)
-                            .map(String::into_bytes)
-                            .unwrap_or_default(),
-                    );
+                    if let Some(puml) = auto_flow_puml(flow, symbol, &operation.title) {
+                        insert_diagram(
+                            &mut files,
+                            format!("diagrams/{}-{}", subject.replace(':', "-"), operation.id),
+                            puml,
+                            plantuml_jar.as_deref(),
+                        );
+                    }
                 }
             }
         }
@@ -2529,12 +2544,14 @@ fn publish_internal_phases(
         if kind == "service" {
             for gap_id in n.gaps.keys() {
                 if let Some((flow, symbol)) = root_flow_events_by_id(&checked, gap_id, Some(id)) {
-                    files.insert(
-                        format!("diagrams/{}-{}.puml", subject.replace(':', "-"), gap_id),
-                        auto_flow_puml(flow, symbol, gap_id)
-                            .map(String::into_bytes)
-                            .unwrap_or_default(),
-                    );
+                    if let Some(puml) = auto_flow_puml(flow, symbol, gap_id) {
+                        insert_diagram(
+                            &mut files,
+                            format!("diagrams/{}-{}", subject.replace(':', "-"), gap_id),
+                            puml,
+                            plantuml_jar.as_deref(),
+                        );
+                    }
                 }
             }
         }
@@ -2559,9 +2576,11 @@ fn publish_internal_phases(
                         escape(&unresolved.join("; "))
                     ));
                 }
-                files.insert(
-                    format!("diagrams/{}-states.puml", subject.replace(':', "-")),
-                    puml.into_bytes(),
+                insert_diagram(
+                    &mut files,
+                    format!("diagrams/{}-states", subject.replace(':', "-")),
+                    puml,
+                    plantuml_jar.as_deref(),
                 );
             }
         }

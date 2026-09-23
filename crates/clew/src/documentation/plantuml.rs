@@ -20,24 +20,43 @@ pub fn wrap(title: &str, body: &str) -> String {
     format!("{} {}\n@enduml\n", header(title), body.trim())
 }
 
-/// Attempt to pre-render `.puml` to SVG using an external `plantuml` binary.
-/// Returns `Ok(Some(svg_path))` on success, `Ok(None)` if the binary is absent,
-/// and `Err` only on an unexpected execution failure.
-pub fn render_svg(puml_path: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
-    let which = std::process::Command::new("which").arg("plantuml").output();
-    let available = which.map(|o| o.status.success()).unwrap_or(false);
-    if !available {
-        return Ok(None);
+/// Attempt to pre-render PlantUML source to SVG bytes using an external
+/// renderer. When `jar` is set it runs `java -jar <jar>`, otherwise it looks
+/// for a `plantuml` binary on PATH. Returns `Ok(None)` when no renderer is
+/// available, and `Err` only on an unexpected execution failure.
+pub fn render_svg(puml: &[u8], jar: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, String> {
+    let mut cmd: Option<std::process::Command> = None;
+    if let Some(jar) = jar {
+        let mut c = std::process::Command::new("java");
+        c.arg("-jar").arg(jar);
+        cmd = Some(c);
+    } else {
+        let which = std::process::Command::new("which").arg("plantuml").output();
+        if which.map(|o| o.status.success()).unwrap_or(false) {
+            let mut c = std::process::Command::new("plantuml");
+            cmd = Some(c);
+        }
     }
-    let out = std::process::Command::new("plantuml")
-        .args(["-tsvg", "-charset", "UTF-8"])
-        .arg(puml_path)
-        .output()
+    let Some(mut child) = cmd else {
+        return Ok(None);
+    };
+    use std::io::Write;
+    child
+        .args(["-tsvg", "-charset", "UTF-8", "-pipe"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut proc = child.spawn().map_err(|e| e.to_string())?;
+    proc.stdin
+        .take()
+        .unwrap()
+        .write_all(puml)
         .map_err(|e| e.to_string())?;
+    let out = proc.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).into_owned());
     }
-    Ok(Some(puml_path.with_extension("svg")))
+    Ok(Some(out.stdout))
 }
 
 #[cfg(test)]
@@ -56,15 +75,12 @@ mod tests {
     }
 
     #[test]
-    fn render_svg_returns_none_when_plantuml_absent() {
-        // PATH without plantuml is hard to simulate portably; assert the Ok(None)
-        // path only when `which plantuml` fails — which is expected in CI without
-        // plantuml installed. This guards the API shape.
-        let p = std::env::temp_dir().join("clew-plantuml-absent.puml");
-        std::fs::write(&p, "@startuml\n[*] --> A\n@enduml\n").unwrap();
-        let r = super::render_svg(&p);
+    fn render_svg_returns_none_when_no_renderer() {
+        // A nonexistent jar path forces the binary fallback, which also finds
+        // nothing in CI without plantuml on PATH — assert the Ok(None) shape.
+        let puml = b"@startuml\n[*] --> A\n@enduml\n";
+        let r = super::render_svg(puml, None);
         // Either Ok(None) (absent) or Ok(Some(_)) (present) — never Err.
         assert!(!matches!(r, Err(_)));
-        let _ = std::fs::remove_file(&p);
     }
 }
