@@ -2538,6 +2538,33 @@ fn publish_internal_phases(
                 }
             }
         }
+        // Declarative state diagram: scenarios/<id>-states.yaml → a PlantUML
+        // state diagram. Unresolved transitions are surfaced as limitations
+        // rather than dropped.
+        if kind == "scenario" {
+            if let Some((mut puml, unresolved)) =
+                super::process_states::load_and_render(repo, &checked, id)?
+            {
+                if !unresolved.is_empty() {
+                    for u in &unresolved {
+                        puml = format!("' unresolved: {}\n{}", u, puml);
+                    }
+                    cards.push_str(&format!(
+                        "<p class=\"state-limitations\">{}: {}</p>",
+                        super::reader::text(
+                            ui_language,
+                            "State transitions without evidence",
+                            "Переходы состояния без подтверждающих сведений"
+                        ),
+                        escape(&unresolved.join("; "))
+                    ));
+                }
+                files.insert(
+                    format!("diagrams/{}-states.puml", subject.replace(':', "-")),
+                    puml.into_bytes(),
+                );
+            }
+        }
         let translation_count = data["translationGaps"].as_object().map_or(0, |g| g.len());
         let operation_count = displayed
             .operations
