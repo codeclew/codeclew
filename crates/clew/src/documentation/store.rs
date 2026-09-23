@@ -309,6 +309,11 @@ impl Repository {
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_owned();
+            if id.ends_with("-states") {
+                // Declarative process-state schema (scenarios/<id>-states.yaml),
+                // not a documentation record; loaded on demand by process_states.
+                continue;
+            }
             if !valid_id(&id) || result.len() >= MAX_RECORDS {
                 return Err(invalid("invalid or excessive documentation records"));
             }
@@ -720,6 +725,22 @@ mod tests {
         Repository::init(t.path(), "Architecture").unwrap();
         let r = Repository::open(t.path()).unwrap();
         (t, r)
+    }
+    #[test]
+    fn records_skip_declarative_state_schema_files() {
+        let (_t, r) = setup();
+        let dir = r.root.join("scenarios");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("task.yaml"), "kind: record").unwrap();
+        fs::write(
+            dir.join("task-states.yaml"),
+            "schema: codeclew-documentation-process-states/1.0",
+        )
+        .unwrap();
+        let rows: BTreeMap<String, serde_json::Value> = r.records("scenarios", "yaml").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows.contains_key("task"));
+        assert!(!rows.contains_key("task-states"));
     }
     #[test]
     fn current_git_clone_initializes_local_state_and_binds_without_changing_declarations() {
