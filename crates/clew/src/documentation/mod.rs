@@ -22,6 +22,7 @@ pub mod notes;
 pub mod object_layout;
 pub mod plantuml;
 pub mod process_candidates;
+pub mod process_flow;
 mod process_context;
 pub mod processes;
 pub mod progress;
