@@ -1447,6 +1447,50 @@ fn page_data(
     json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
+/// If an operation has no authored events, produce an auto PlantUML activity
+/// document from the operation's root FLOW evidence. Returns `None` when there
+/// is authored content or no usable flow.
+fn auto_flow_puml(flow: &serde_json::Value, symbol: &str, title: &str) -> Option<String> {
+    super::process_flow::document(flow, symbol, title)
+}
+
+/// Resolve an operation's root FLOW evidence (`documentation.events` array) and
+/// the root method symbol from the checked dependency map, mirroring
+/// `check::Walker::walk`, which reads a method's flow from its SYMBOL
+/// observation's `documentation.events`. Candidate root symbols: the
+/// matching entrypoint's method symbol (for a service), the operation id, and
+/// any operation boundary that names the root method.
+fn root_flow_events<'a>(
+    checked: &'a Check,
+    operation: &Operation,
+    service: Option<&str>,
+) -> Option<(&'a Value, &'a str)> {
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(service) = service {
+        if let Some(entry) = checked
+            .services
+            .get(service)
+            .and_then(|e| e.entrypoints.iter().find(|ep| ep.id == operation.id))
+        {
+            candidates.push(entry.symbol.as_str());
+        }
+    }
+    candidates.push(operation.id.as_str());
+    candidates.extend(operation.boundaries.iter().map(String::as_str));
+    for symbol in candidates {
+        if let Some(obs) = checked
+            .dependencies
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+        {
+            if let Some(events) = obs.normalized.pointer("/documentation/events") {
+                return Some((events, &obs.symbol));
+            }
+        }
+    }
+    None
+}
+
 pub fn mermaid(o: &Operation) -> String {
     if let Some(g) = &o.dataflow {
         return super::dataflow::mermaid(g);
@@ -2398,6 +2442,24 @@ fn publish_internal_phases(
                 )
                 .into_bytes(),
             );
+            // Un-authored operations get an auto PlantUML activity document
+            // from the root method's FLOW evidence; authored events take
+            // priority and suppress it.
+            if operation.events.is_empty() {
+                let service = (kind == "service").then_some(id);
+                if let Some((flow, symbol)) = root_flow_events(&checked, operation, service) {
+                    files.insert(
+                        format!(
+                            "diagrams/{}-{}.puml",
+                            subject.replace(':', "-"),
+                            operation.id
+                        ),
+                        auto_flow_puml(flow, symbol, &operation.title)
+                            .map(String::into_bytes)
+                            .unwrap_or_default(),
+                    );
+                }
+            }
         }
         let translation_count = data["translationGaps"].as_object().map_or(0, |g| g.len());
         let operation_count = displayed
@@ -2744,5 +2806,100 @@ mod process_catalog_tests {
             "../scenarios/worker.html#process-overview"
         );
         assert_eq!(data["savedProcesses"][0]["status"], "AWAITING_AUTHORING");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_flow_puml_is_emitted_when_events_empty() {
+        let flow = json!([
+            {"kind":"STATEMENT","text":"orders.validate(request)"},
+            {"kind":"RETURN","text":"buildResponse(request)"}
+        ]);
+        let symbol = "method:class:CheckoutService#checkout";
+        let title = "Checkout flow";
+        let doc = auto_flow_puml(&flow, symbol, title).unwrap();
+        assert!(doc.contains("title Checkout flow"), "{doc}");
+        assert!(doc.contains(":orders.validate(request);"), "{doc}");
+        assert!(doc.contains(":buildResponse(request)"), "{doc}");
+        assert!(
+            doc.contains("' evidence: method:class:CheckoutService#checkout"),
+            "{doc}"
+        );
+    }
+
+    #[test]
+    fn root_flow_events_resolves_entrypoint_method_symbol() {
+        let flow = json!([{"kind":"STATEMENT","text":"load()"}]);
+        let symbol = "method:class:CheckoutService#checkout";
+        let symbol_obs = Observation {
+            id: "svc:symbol:x".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":flow}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[{"id":"ep1","service":"svc","symbol":symbol,"kind":"ENTRYPOINT","trigger":{},"sourceIds":[],"dependencyIds":[],"boundaries":[]}],
+            "observations":{},"sources":{}
+        }))
+        .unwrap();
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::from([(symbol_obs.id.clone(), symbol_obs)]),
+            source_inputs: None,
+            composition: None,
+        };
+        let operation = Operation {
+            documentation_language: None,
+            visuals: vec![],
+            dataflow: None,
+            id: "ep1".into(),
+            title: "Checkout flow".into(),
+            summary: Fragment {
+                id: "s".into(),
+                text: String::new(),
+                dependency_ids: vec![],
+                source_ids: vec![],
+            },
+            assessment: None,
+            explanation: vec![],
+            interface_contracts: vec![],
+            overview_diagram: None,
+            participants: vec![],
+            events: vec![],
+            findings: vec![],
+            boundaries: vec![],
+        };
+        let (events, sym) = root_flow_events(&checked, &operation, Some("svc")).unwrap();
+        assert_eq!(sym, symbol);
+        assert_eq!(events[0]["text"], "load()");
+        // Operation id == method symbol resolves even without an entrypoint.
+        let op2 = Operation {
+            id: symbol.into(),
+            ..operation.clone()
+        };
+        let (_, sym2) = root_flow_events(&checked, &op2, None).unwrap();
+        assert_eq!(sym2, symbol);
+        // An operation with no matching root yields None.
+        let op3 = Operation {
+            id: "unrelated".into(),
+            ..operation
+        };
+        assert!(root_flow_events(&checked, &op3, None).is_none());
     }
 }
