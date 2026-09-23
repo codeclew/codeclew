@@ -1477,12 +1477,32 @@ fn root_flow_events<'a>(
     }
     candidates.push(operation.id.as_str());
     candidates.extend(operation.boundaries.iter().map(String::as_str));
+    // SYMBOL observations (with documentation.events) live in the service
+    // evidence (mirror Walker::walk), not checked.dependencies. Prefer the
+    // named service, then all services, then checked.dependencies (fallback).
     for symbol in candidates {
-        if let Some(obs) = checked
-            .dependencies
-            .values()
-            .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
-        {
+        let obs = checked
+            .services
+            .get(service.unwrap_or(""))
+            .and_then(|e| {
+                e.observations
+                    .values()
+                    .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+            })
+            .or_else(|| {
+                checked.services.values().find_map(|e| {
+                    e.observations
+                        .values()
+                        .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+                })
+            })
+            .or_else(|| {
+                checked
+                    .dependencies
+                    .values()
+                    .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+            });
+        if let Some(obs) = obs {
             if let Some(events) = obs.normalized.pointer("/documentation/events") {
                 return Some((events, &obs.symbol));
             }
@@ -2852,6 +2872,10 @@ mod tests {
             "observations":{},"sources":{}
         }))
         .unwrap();
+        // realistic: SYMBOL observations (with documentation.events) live in the
+        // service evidence, not checked.dependencies — mirror Walker::walk.
+        let mut evidence = evidence;
+        evidence.observations.insert(symbol_obs.id.clone(), symbol_obs);
         let checked = Check {
             schema: "test".into(),
             input_digest: "digest".into(),
@@ -2860,7 +2884,7 @@ mod tests {
             unresolved: BTreeMap::new(),
             interactions: BTreeMap::new(),
             scenarios: BTreeMap::new(),
-            dependencies: BTreeMap::from([(symbol_obs.id.clone(), symbol_obs)]),
+            dependencies: BTreeMap::new(),
             source_inputs: None,
             composition: None,
         };
