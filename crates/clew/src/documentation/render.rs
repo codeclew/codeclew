@@ -2875,7 +2875,9 @@ mod tests {
         // realistic: SYMBOL observations (with documentation.events) live in the
         // service evidence, not checked.dependencies — mirror Walker::walk.
         let mut evidence = evidence;
-        evidence.observations.insert(symbol_obs.id.clone(), symbol_obs);
+        evidence
+            .observations
+            .insert(symbol_obs.id.clone(), symbol_obs);
         let checked = Check {
             schema: "test".into(),
             input_digest: "digest".into(),
