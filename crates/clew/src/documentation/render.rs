@@ -1454,6 +1454,47 @@ fn auto_flow_puml(flow: &serde_json::Value, symbol: &str, title: &str) -> Option
     super::process_flow::document(flow, symbol, title)
 }
 
+/// Resolve a root method's flow evidence for a candidate symbol list.
+/// SYMBOL observations (with `documentation.events`) live in the service
+/// evidence (mirror `check::Walker::walk`), not `checked.dependencies`.
+/// Prefer the named service, then all services, then `checked.dependencies`
+/// as a fallback.
+fn resolve_flow<'a>(
+    checked: &'a Check,
+    service: Option<&str>,
+    candidates: &[&str],
+) -> Option<(&'a Value, &'a str)> {
+    for symbol in candidates {
+        let obs = checked
+            .services
+            .get(service.unwrap_or(""))
+            .and_then(|e| {
+                e.observations
+                    .values()
+                    .find(|o| o.kind == "SYMBOL" && o.symbol == *symbol)
+            })
+            .or_else(|| {
+                checked.services.values().find_map(|e| {
+                    e.observations
+                        .values()
+                        .find(|o| o.kind == "SYMBOL" && o.symbol == *symbol)
+                })
+            })
+            .or_else(|| {
+                checked
+                    .dependencies
+                    .values()
+                    .find(|o| o.kind == "SYMBOL" && o.symbol == *symbol)
+            });
+        if let Some(obs) = obs {
+            if let Some(events) = obs.normalized.pointer("/documentation/events") {
+                return Some((events, &obs.symbol));
+            }
+        }
+    }
+    None
+}
+
 /// Resolve an operation's root FLOW evidence (`documentation.events` array) and
 /// the root method symbol from the checked dependency map, mirroring
 /// `check::Walker::walk`, which reads a method's flow from its SYMBOL
@@ -1477,38 +1518,29 @@ fn root_flow_events<'a>(
     }
     candidates.push(operation.id.as_str());
     candidates.extend(operation.boundaries.iter().map(String::as_str));
-    // SYMBOL observations (with documentation.events) live in the service
-    // evidence (mirror Walker::walk), not checked.dependencies. Prefer the
-    // named service, then all services, then checked.dependencies (fallback).
-    for symbol in candidates {
-        let obs = checked
+    resolve_flow(checked, service, &candidates)
+}
+
+/// Resolve an unauthored gap operation's root FLOW evidence by its entrypoint
+/// id (gap operations are not present in `operations[]`, so they carry no
+/// boundaries; the entrypoint's root method symbol is the only candidate).
+fn root_flow_events_by_id<'a>(
+    checked: &'a Check,
+    id: &str,
+    service: Option<&str>,
+) -> Option<(&'a Value, &'a str)> {
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(service) = service {
+        if let Some(entry) = checked
             .services
-            .get(service.unwrap_or(""))
-            .and_then(|e| {
-                e.observations
-                    .values()
-                    .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
-            })
-            .or_else(|| {
-                checked.services.values().find_map(|e| {
-                    e.observations
-                        .values()
-                        .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
-                })
-            })
-            .or_else(|| {
-                checked
-                    .dependencies
-                    .values()
-                    .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
-            });
-        if let Some(obs) = obs {
-            if let Some(events) = obs.normalized.pointer("/documentation/events") {
-                return Some((events, &obs.symbol));
-            }
+            .get(service)
+            .and_then(|e| e.entrypoints.iter().find(|ep| ep.id == id))
+        {
+            candidates.push(entry.symbol.as_str());
         }
     }
-    None
+    candidates.push(id);
+    resolve_flow(checked, service, &candidates)
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -2481,6 +2513,22 @@ fn publish_internal_phases(
                 }
             }
         }
+        // Gap entrypoints are un-authored operations that are absent from
+        // `operations[]`; they still get an auto PlantUML activity document
+        // when their root method's flow is retained. Authored operations are
+        // never here, so this cannot override manual content.
+        if kind == "service" {
+            for gap_id in n.gaps.keys() {
+                if let Some((flow, symbol)) = root_flow_events_by_id(&checked, gap_id, Some(id)) {
+                    files.insert(
+                        format!("diagrams/{}-{}.puml", subject.replace(':', "-"), gap_id),
+                        auto_flow_puml(flow, symbol, gap_id)
+                            .map(String::into_bytes)
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+        }
         let translation_count = data["translationGaps"].as_object().map_or(0, |g| g.len());
         let operation_count = displayed
             .operations
@@ -2927,5 +2975,50 @@ mod tests {
             ..operation
         };
         assert!(root_flow_events(&checked, &op3, None).is_none());
+    }
+
+    #[test]
+    fn root_flow_events_by_id_resolves_gap_entrypoint_symbol() {
+        let flow = json!([{"kind":"STATEMENT","text":"start()"}]);
+        let symbol = "method:class:CheckoutService#start";
+        let symbol_obs = Observation {
+            id: "svc:symbol:start".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":flow}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[{"id":"svc-abc123","service":"svc","symbol":symbol,"kind":"ENTRYPOINT","trigger":{},"sourceIds":[],"dependencyIds":[],"boundaries":[]}],
+            "observations":{},"sources":{}
+        }))
+        .unwrap();
+        let mut evidence = evidence;
+        evidence
+            .observations
+            .insert(symbol_obs.id.clone(), symbol_obs);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        // A gap operation is absent from operations[]; resolve purely by id.
+        let (events, sym) = root_flow_events_by_id(&checked, "svc-abc123", Some("svc")).unwrap();
+        assert_eq!(sym, symbol);
+        assert_eq!(events[0]["text"], "start()");
+        // Unknown gap id yields None.
+        assert!(root_flow_events_by_id(&checked, "svc-missing", Some("svc")).is_none());
     }
 }
