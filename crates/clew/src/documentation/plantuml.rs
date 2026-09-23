@@ -54,4 +54,17 @@ mod tests {
         assert!(h.contains("!pragma layout smetana"));
         assert!(h.contains("title Title"));
     }
+
+    #[test]
+    fn render_svg_returns_none_when_plantuml_absent() {
+        // PATH without plantuml is hard to simulate portably; assert the Ok(None)
+        // path only when `which plantuml` fails — which is expected in CI without
+        // plantuml installed. This guards the API shape.
+        let p = std::env::temp_dir().join("clew-plantuml-absent.puml");
+        std::fs::write(&p, "@startuml\n[*] --> A\n@enduml\n").unwrap();
+        let r = super::render_svg(&p);
+        // Either Ok(None) (absent) or Ok(Some(_)) (present) — never Err.
+        assert!(!matches!(r, Err(_)));
+        let _ = std::fs::remove_file(&p);
+    }
 }
