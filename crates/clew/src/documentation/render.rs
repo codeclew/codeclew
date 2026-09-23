@@ -1459,40 +1459,51 @@ fn auto_flow_puml(flow: &serde_json::Value, symbol: &str, title: &str) -> Option
 /// evidence (mirror `check::Walker::walk`), not `checked.dependencies`.
 /// Prefer the named service, then all services, then `checked.dependencies`
 /// as a fallback.
+///
+/// A symbol can be captured more than once (e.g. a shallow `BOUNDARY`-only
+/// entry plus a fully expanded method flow). When several observations match,
+/// the one with the most `documentation.events` is chosen — i.e. the deepest
+/// retained flow — so a shallow stub never wins over the expanded method body.
 fn resolve_flow<'a>(
     checked: &'a Check,
     service: Option<&str>,
     candidates: &[&str],
 ) -> Option<(&'a Value, &'a str)> {
-    for symbol in candidates {
-        let obs = checked
-            .services
-            .get(service.unwrap_or(""))
-            .and_then(|e| {
-                e.observations
-                    .values()
-                    .find(|o| o.kind == "SYMBOL" && o.symbol == *symbol)
-            })
-            .or_else(|| {
-                checked.services.values().find_map(|e| {
-                    e.observations
-                        .values()
-                        .find(|o| o.kind == "SYMBOL" && o.symbol == *symbol)
-                })
-            })
-            .or_else(|| {
-                checked
-                    .dependencies
-                    .values()
-                    .find(|o| o.kind == "SYMBOL" && o.symbol == *symbol)
-            });
-        if let Some(obs) = obs {
-            if let Some(events) = obs.normalized.pointer("/documentation/events") {
-                return Some((events, &obs.symbol));
+    for &symbol in candidates {
+        let matches = |o: &Observation| o.kind == "SYMBOL" && o.symbol == symbol;
+        let mut obs: Vec<&Observation> = Vec::new();
+        if let Some(e) = checked.services.get(service.unwrap_or("")) {
+            obs.extend(e.observations.values().filter(|o| matches(*o)));
+        }
+        if obs.is_empty() {
+            for e in checked.services.values() {
+                obs.extend(e.observations.values().filter(|o| matches(*o)));
             }
+        }
+        if obs.is_empty() {
+            obs.extend(checked.dependencies.values().filter(|o| matches(*o)));
+        }
+        if let Some(obs) = deepest_flow(&obs) {
+            let events = obs.normalized.pointer("/documentation/events")?;
+            return Some((events, &obs.symbol));
         }
     }
     None
+}
+
+/// Return the matching observation with the most `documentation.events` (the
+/// deepest retained flow), or `None` if none carries events.
+fn deepest_flow<'a>(obs: &[&'a Observation]) -> Option<&'a Observation> {
+    obs.iter()
+        .filter(|o| o.normalized.pointer("/documentation/events").is_some())
+        .max_by_key(|o| {
+            o.normalized
+                .pointer("/documentation/events")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        })
+        .copied()
 }
 
 /// Resolve an operation's root FLOW evidence (`documentation.events` array) and
@@ -3033,5 +3044,62 @@ mod tests {
         assert_eq!(events[0]["text"], "start()");
         // Unknown gap id yields None.
         assert!(root_flow_events_by_id(&checked, "svc-missing", Some("svc")).is_none());
+    }
+
+    #[test]
+    fn resolve_flow_prefers_deepest_observation_for_symbol() {
+        let symbol = "method:class:svc.TaskService#changeStatus";
+        let shallow = Observation {
+            id: "svc:symbol:aaa-shallow".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":[{"kind":"BOUNDARY"}]}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let deep = Observation {
+            id: "svc:symbol:zzz-deep".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":[
+                {"kind":"CALL","target":"method:class:svc.TaskService#changeStatus()V"},
+                {"kind":"IF","condition":"ready"},
+                {"kind":"CALL","target":"method:class:svc.Repo#save()V"},
+                {"kind":"END"},
+                {"kind":"RETURN"}
+            ]}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        let mut evidence = evidence;
+        // Id order (BTreeMap) puts the shallow observation first, so a naive
+        // `.find()` would return the 1-event stub; the resolver must prefer
+        // the deepest retained flow (5 events).
+        evidence.observations.insert(shallow.id.clone(), shallow);
+        evidence.observations.insert(deep.id.clone(), deep);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let (events, sym) = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        assert_eq!(sym, symbol);
+        assert_eq!(events.as_array().map(Vec::len), Some(5));
     }
 }

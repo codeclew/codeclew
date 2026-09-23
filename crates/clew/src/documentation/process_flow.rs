@@ -25,6 +25,25 @@ fn method_label(symbol: &str) -> String {
     }
 }
 
+/// True when a `method:class:<package>...` target belongs to the runtime/JDK
+/// rather than the service domain. Framework plumbing (collections, Optional,
+/// Spring, JDBC) adds noise to a process diagram and is filtered out.
+fn is_framework_symbol(symbol: &str) -> bool {
+    let package = symbol.strip_prefix("method:class:").unwrap_or(symbol);
+    const PREFIXES: &[&str] = &[
+        "java.",
+        "javax.",
+        "sun.",
+        "com.sun.",
+        "kotlin.",
+        "org.springframework",
+        "org.apache.",
+        "org.slf4j",
+        "lombok.",
+    ];
+    PREFIXES.iter().any(|p| package.starts_with(p))
+}
+
 /// Render a flow event array into PlantUML activity body.
 /// Returns `None` if the flow has no usable steps.
 pub fn activity_from_flow(events: &Value, symbol: &str) -> Option<String> {
@@ -64,7 +83,7 @@ pub fn activity_from_flow(events: &Value, symbol: &str) -> Option<String> {
             },
             "CALL" | "CONSTRUCT" => {
                 let target = row["target"].as_str().unwrap_or("");
-                if !target.is_empty() {
+                if !target.is_empty() && !is_framework_symbol(target) {
                     out.push_str(&format!(":{};\n", esc(&method_label(target))));
                 }
             }
@@ -110,8 +129,9 @@ pub fn activity_from_flow(events: &Value, symbol: &str) -> Option<String> {
 pub fn document(events: &Value, symbol: &str, title: &str) -> Option<String> {
     let body = activity_from_flow(events, symbol)?;
     Some(format!(
-        "@startuml\n!theme plain\n!pragma layout smetana\ntitle {}\nstart\n{body}\n@enduml\n",
-        super::plantuml::escape(title)
+        "@startuml\n!theme plain\n!pragma layout smetana\ntitle {}\nstart\n:Вход: {};\n{body}\n@enduml\n",
+        super::plantuml::escape(title),
+        super::plantuml::escape(&method_label(symbol))
     ))
 }
 
@@ -163,5 +183,34 @@ mod tests {
     fn empty_flow_returns_none() {
         let events = json!([]);
         assert!(super::activity_from_flow(&events, "s").is_none());
+    }
+
+    #[test]
+    fn framework_calls_are_filtered_out() {
+        let events = json!([
+            {"kind":"CALL","target":"method:class:java.util.Optional#ofNullable(Ljava/lang/Object;)Ljava/util/Optional;"},
+            {"kind":"CALL","target":"method:class:org.springframework.data.repository.CrudRepository#save(Ljava/lang/Object;)Ljava/lang/Object;"},
+            {"kind":"CALL","target":"method:class:ru.tins.task.service.TaskService#save(Lru/Task;)V"},
+            {"kind":"RETURN"}
+        ]);
+        let body = super::activity_from_flow(&events, "method:s").unwrap();
+        assert!(!body.contains("Optional#ofNullable"), "{body}");
+        assert!(!body.contains("CrudRepository#save"), "{body}");
+        assert!(body.contains(":TaskService#save;"), "{body}");
+    }
+
+    #[test]
+    fn document_emits_vhod_header() {
+        let events = json!([
+            {"kind":"CALL","target":"method:class:ru.tins.svc.TaskService#changeStatus()V"},
+            {"kind":"RETURN"}
+        ]);
+        let doc = super::document(
+            &events,
+            "method:class:ru.tins.svc.TaskService#changeStatus()V",
+            "t",
+        )
+        .unwrap();
+        assert!(doc.contains(":Вход: TaskService#changeStatus;\n"), "{doc}");
     }
 }
