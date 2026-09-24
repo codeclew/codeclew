@@ -1262,6 +1262,7 @@ fn page_data(
     suppress: &BTreeSet<String>,
     state_diagram: Option<&str>,
     lifecycle: &[(String, String, String)],
+    activity_transitions: Option<&str>,
 ) -> Value {
     let service_id = subject.strip_prefix("service:");
     let catalogue = service_id
@@ -1446,7 +1447,7 @@ fn page_data(
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"lifecycleOperations":lifecycle.iter().map(|(n,_,t)|json!({"name":n,"tree":t})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"activityTransitions":activity_transitions,"lifecycleOperations":lifecycle.iter().map(|(n,_,t)|json!({"name":n,"tree":t})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 /// If an operation has no authored events, produce an auto PlantUML activity
@@ -2473,6 +2474,13 @@ fn publish_internal_phases(
         } else {
             None
         };
+        let activity_transitions = if kind == "scenario" {
+            super::process_states::load(repo, id)?
+                .and_then(|schema| super::process_states::activity_transitions_puml(&schema))
+                .map(|_| format!("scenario-{id}-activity-transitions"))
+        } else {
+            None
+        };
         let lifecycle: Vec<(String, String, String)> = if kind == "scenario" {
             let mut out = Vec::new();
             if let Some(schema) = super::process_states::load(repo, id)? {
@@ -2507,6 +2515,7 @@ fn publish_internal_phases(
             &suppress,
             state_diagram.as_deref(),
             &lifecycle,
+            activity_transitions.as_deref(),
         );
         for process in data["savedProcesses"].as_array_mut().into_iter().flatten() {
             if let Some(id) = process["id"].as_str().map(str::to_owned) {
@@ -2685,6 +2694,21 @@ fn publish_internal_phases(
                     &mut diagrams,
                     format!("diagrams/{}-states", subject.replace(':', "-")),
                     puml,
+                );
+            }
+            // Compact "activity on transitions" diagram: each lifecycle operation
+            // becomes a branch leading to the states it transitions into.
+            if let Some(activity) = super::process_states::load(repo, id)?
+                .and_then(|schema| super::process_states::activity_transitions_puml(&schema))
+            {
+                insert_diagram(
+                    &mut files,
+                    &mut diagrams,
+                    format!(
+                        "diagrams/{}-activity-transitions",
+                        subject.replace(':', "-")
+                    ),
+                    activity,
                 );
             }
             // Compact activity diagram per lifecycle operation named by the
@@ -3024,6 +3048,7 @@ mod process_catalog_tests {
             &BTreeSet::new(),
             None,
             &[],
+            None,
         );
         assert_eq!(
             data["processCandidates"]["internal"]
@@ -3043,6 +3068,7 @@ mod process_catalog_tests {
             &suppress,
             None,
             &[],
+            None,
         );
         assert_eq!(
             filtered["processCandidates"]["suppressed"],

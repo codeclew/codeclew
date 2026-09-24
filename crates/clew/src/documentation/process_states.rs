@@ -119,6 +119,63 @@ pub fn render_puml(s: &ProcessStates, checked: &Check) -> (String, Vec<String>) 
     (out, unresolved)
 }
 
+/// Render a compact "activity on transitions" diagram: each lifecycle operation
+/// named by a state-schema transition becomes a branch that leads to the states
+/// it transitions into. Mirrors the approved draft's "ACTIVITY на переходы": one
+/// branch per operation, each action names a target state. Returns `None` when
+/// no transition names an operation.
+pub fn activity_transitions_puml(s: &ProcessStates) -> Option<String> {
+    // Group transitions by operation, preserving first-seen order.
+    let mut groups: Vec<(&str, Vec<&Transition>)> = Vec::new();
+    for t in &s.transitions {
+        if t.operation.is_empty() {
+            continue;
+        }
+        if let Some((_, ts)) = groups.iter_mut().find(|(op, _)| *op == t.operation) {
+            ts.push(t);
+        } else {
+            groups.push((&t.operation, vec![t]));
+        }
+    }
+    if groups.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "@startuml\n!theme plain\n!pragma layout smetana\ntitle {} — активности переходов\nstart\n",
+        plantuml::escape(&s.title)
+    ));
+    for (i, (op, ts)) in groups.iter().enumerate() {
+        let branch = if i == 0 { "if" } else { "elseif" };
+        out.push_str(&format!(
+            "{branch} (операция) then ({}: {})\n",
+            plantuml::escape(op),
+            plantuml::escape(op)
+        ));
+        let mut seen: Vec<&str> = Vec::new();
+        for t in ts {
+            if seen.contains(&t.to.as_str()) {
+                continue;
+            }
+            seen.push(&t.to);
+            let self_loop = t.from == t.to;
+            let suffix = if self_loop {
+                " (самопереход)"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "  :→ {} (из {}){};\n",
+                plantuml::escape(&t.to),
+                plantuml::escape(&t.from),
+                suffix
+            ));
+        }
+    }
+    out.push_str("endif\nstop\n@enduml\n");
+    Some(out)
+}
+
 /// Load `<id>-states.yaml` (if present) and render it, returning the PlantUML
 /// document plus any unresolved transitions. Returns `None` when no schema file
 /// exists for the id.
@@ -236,5 +293,23 @@ transitions:
             vec!["FINISHED".to_string(), "ERROR".to_string()]
         );
         assert_eq!(s.transitions.len(), 2);
+    }
+
+    #[test]
+    fn activity_transitions_groups_by_operation() {
+        let puml = activity_transitions_puml(&states("s")).unwrap();
+        assert!(puml.contains("title Управление жизненным циклом задачи — активности переходов"));
+        assert!(puml.contains("if (операция) then (changeTaskStatus: changeTaskStatus)"));
+        assert!(puml.contains(":→ WAIT_DECISION (из PROCESSING);"), "{puml}");
+        assert!(puml.contains("elseif (операция) then (restartTask: restartTask)"));
+        assert!(puml.contains(":→ WAIT (из ERROR);"), "{puml}");
+        assert!(puml.ends_with("endif\nstop\n@enduml\n"), "{puml}");
+    }
+
+    #[test]
+    fn activity_transitions_none_without_operations() {
+        let mut s = states("s");
+        s.transitions.clear();
+        assert!(activity_transitions_puml(&s).is_none());
     }
 }
