@@ -135,6 +135,61 @@ pub fn document(events: &Value, symbol: &str, title: &str) -> Option<String> {
     ))
 }
 
+/// Render a flow as an indented pseudocode tree (readable in a `<pre>` block)
+/// instead of a diagram image. Root line carries the method, then each step is
+/// indented by block depth; branches and loops open a level, `else` continues
+/// the current block.
+pub fn tree(events: &Value, symbol: &str) -> Option<String> {
+    let rows = events.as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    out.push_str(&format!("Вход: {}\n", method_label(symbol)));
+    let mut depth = 0usize;
+    let indent = |d: usize| "  ".repeat(d);
+    for row in rows {
+        let kind = row["kind"].as_str().unwrap_or("");
+        match kind {
+            "IF" => {
+                out.push_str(&format!("{}if ({}) then\n", indent(depth), condition(&row)));
+                depth += 1;
+            }
+            "ELSE" | "ELSEIF" => {
+                depth = depth.saturating_sub(1);
+                out.push_str(&format!("{}else\n", indent(depth)));
+                depth += 1;
+            }
+            "END" => depth = depth.saturating_sub(1),
+            "LOOP" => {
+                out.push_str(&format!("{}loop ({})\n", indent(depth), condition(&row)));
+                depth += 1;
+            }
+            "CALL" | "CONSTRUCT" => {
+                let target = row["target"].as_str().unwrap_or("");
+                if !target.is_empty() && !is_framework_symbol(target) {
+                    out.push_str(&format!("{}{}\n", indent(depth), method_label(target)));
+                }
+            }
+            "RETURN" => out.push_str(&format!("{}return\n", indent(depth))),
+            "THROW" => out.push_str(&format!("{}throw\n", indent(depth))),
+            "BOUNDARY" => out.push_str(&format!("{}... (не развёрнуто)\n", indent(depth))),
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+/// Readable condition text from a flow row's `condition` field.
+fn condition(row: &Value) -> String {
+    let c = row["condition"].as_str().unwrap_or("");
+    if c.len() > 72 {
+        format!("{}...", &c[..69])
+    } else {
+        c.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -183,6 +238,35 @@ mod tests {
     fn empty_flow_returns_none() {
         let events = json!([]);
         assert!(super::activity_from_flow(&events, "s").is_none());
+        assert!(super::tree(&events, "s").is_none());
+    }
+
+    #[test]
+    fn tree_renders_indented_pseudocode_branches() {
+        let events = json!([
+            {"kind":"IF","condition":"anyTask.isPresent()"},
+            {"kind":"CALL","target":"method:class:ru.tins.svc.Handler#handle()V"},
+            {"kind":"ELSE"},
+            {"kind":"CALL","target":"method:class:ru.tins.svc.Other#do()V"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:ru.tins.svc.Repo#save()V"},
+            {"kind":"RETURN"}
+        ]);
+        let tree = super::tree(
+            &events,
+            "method:class:ru.tins.svc.TaskService#changeStatus()V",
+        )
+        .unwrap();
+        assert!(
+            tree.starts_with("Вход: TaskService#changeStatus\n"),
+            "{tree}"
+        );
+        assert!(
+            tree.contains("if (anyTask.isPresent()) then\n  Handler#handle"),
+            "{tree}"
+        );
+        assert!(tree.contains("else\n  Other#do"), "{tree}");
+        assert!(tree.contains("Repo#save\nreturn"), "{tree}");
     }
 
     #[test]
