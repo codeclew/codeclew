@@ -152,7 +152,11 @@ pub fn tree(events: &Value, symbol: &str) -> Option<String> {
         let kind = row["kind"].as_str().unwrap_or("");
         match kind {
             "IF" => {
-                out.push_str(&format!("{}if ({}) then\n", indent(depth), condition(&row)));
+                out.push_str(&format!(
+                    "{}[D] if ({}) then\n",
+                    indent(depth),
+                    condition(&row)
+                ));
                 depth += 1;
             }
             "ELSE" | "ELSEIF" => {
@@ -162,13 +166,26 @@ pub fn tree(events: &Value, symbol: &str) -> Option<String> {
             }
             "END" => depth = depth.saturating_sub(1),
             "LOOP" => {
-                out.push_str(&format!("{}loop ({})\n", indent(depth), condition(&row)));
+                out.push_str(&format!(
+                    "{}[D] loop ({})\n",
+                    indent(depth),
+                    condition(&row)
+                ));
                 depth += 1;
             }
             "CALL" | "CONSTRUCT" => {
                 let target = row["target"].as_str().unwrap_or("");
                 if !target.is_empty() && !is_framework_symbol(target) {
-                    out.push_str(&format!("{}{}\n", indent(depth), method_label(target)));
+                    let prefix = match step_kind(kind, target) {
+                        Some(c) => format!("[{c}] "),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!(
+                        "{}{}{}\n",
+                        indent(depth),
+                        prefix,
+                        method_label(target)
+                    ));
                 }
             }
             "RETURN" => out.push_str(&format!("{}return\n", indent(depth))),
@@ -187,6 +204,28 @@ fn condition(row: &Value) -> String {
         format!("{}...", &c[..69])
     } else {
         c.to_string()
+    }
+}
+
+/// Classify a flow step into a readability category for the pseudocode tree:
+/// `W` (write / state change), `R` (read), `D` (decision). Returns `None` for
+/// control-flow or unclassifiable steps, which are rendered without a prefix.
+fn step_kind(kind: &str, target: &str) -> Option<&'static str> {
+    if matches!(kind, "IF" | "LOOP") {
+        return Some("D");
+    }
+    let method = target.rsplit('#').next().unwrap_or(target);
+    let method = method.split('(').next().unwrap_or(method);
+    const WRITE: &[&str] = &[
+        "set", "update", "save", "add", "remove", "close", "delete", "builder", "build", "<init>",
+    ];
+    const READ: &[&str] = &["get", "find", "is", "has", "contains", "load"];
+    if WRITE.iter().any(|p| method.starts_with(p)) {
+        Some("W")
+    } else if READ.iter().any(|p| method.starts_with(p)) {
+        Some("R")
+    } else {
+        None
     }
 }
 
@@ -262,11 +301,78 @@ mod tests {
             "{tree}"
         );
         assert!(
-            tree.contains("if (anyTask.isPresent()) then\n  Handler#handle"),
+            tree.contains("[D] if (anyTask.isPresent()) then\n  Handler#handle"),
             "{tree}"
         );
         assert!(tree.contains("else\n  Other#do"), "{tree}");
-        assert!(tree.contains("Repo#save\nreturn"), "{tree}");
+        assert!(tree.contains("[W] Repo#save\nreturn"), "{tree}");
+    }
+
+    #[test]
+    fn tree_prefixes_write_calls_with_w() {
+        let events = json!([
+            {"kind":"CALL","target":"method:class:ru.tins.svc.Repo#save()V"},
+            {"kind":"CALL","target":"method:class:ru.tins.svc.TaskDao#setTaskStatus()V"},
+            {"kind":"RETURN"}
+        ]);
+        let tree = super::tree(
+            &events,
+            "method:class:ru.tins.svc.TaskService#changeStatus()V",
+        )
+        .unwrap();
+        assert!(tree.contains("[W] Repo#save"), "{tree}");
+        assert!(tree.contains("[W] TaskDao#setTaskStatus"), "{tree}");
+    }
+
+    #[test]
+    fn tree_prefixes_read_calls_with_r() {
+        let events = json!([
+            {"kind":"CALL","target":"method:class:ru.tins.svc.TaskDao#getTaskStatus()V"},
+            {"kind":"CALL","target":"method:class:ru.tins.svc.TaskService#findTask()V"},
+            {"kind":"RETURN"}
+        ]);
+        let tree = super::tree(
+            &events,
+            "method:class:ru.tins.svc.TaskService#changeStatus()V",
+        )
+        .unwrap();
+        assert!(tree.contains("[R] TaskDao#getTaskStatus"), "{tree}");
+        assert!(tree.contains("[R] TaskService#findTask"), "{tree}");
+    }
+
+    #[test]
+    fn tree_prefixes_decisions_with_d() {
+        let events = json!([
+            {"kind":"IF","condition":"task != null"},
+            {"kind":"CALL","target":"method:class:ru.tins.svc.Repo#save()V"},
+            {"kind":"END"},
+            {"kind":"LOOP","condition":"for-each"},
+            {"kind":"END"}
+        ]);
+        let tree = super::tree(
+            &events,
+            "method:class:ru.tins.svc.TaskService#changeStatus()V",
+        )
+        .unwrap();
+        assert!(tree.contains("[D] if (task != null) then"), "{tree}");
+        assert!(tree.contains("[D] loop (for-each)"), "{tree}");
+    }
+
+    #[test]
+    fn tree_leaves_control_and_unclassifiable_steps_without_prefix() {
+        let events = json!([
+            {"kind":"CALL","target":"method:class:ru.tins.svc.Handler#perform()V"},
+            {"kind":"THROW"},
+            {"kind":"RETURN"}
+        ]);
+        let tree = super::tree(
+            &events,
+            "method:class:ru.tins.svc.TaskService#changeStatus()V",
+        )
+        .unwrap();
+        assert!(tree.contains("\nHandler#perform\n"), "{tree}");
+        assert!(tree.contains("\nthrow\n"), "{tree}");
+        assert!(tree.contains("\nreturn\n"), "{tree}");
     }
 
     #[test]
