@@ -59,6 +59,58 @@ pub fn render_svg(puml: &[u8], jar: Option<&std::path::Path>) -> Result<Option<V
     Ok(Some(out.stdout))
 }
 
+/// Pre-render many PlantUML sources to SVG in a single renderer invocation.
+/// Each entry is `(bundle-relative base path, puml source)`; the base includes
+/// its directory prefix (e.g. `diagrams/scenario-x-states`). All diagrams are
+/// written to a temp dir and passed to one `plantuml`/`java -jar` process, then
+/// the produced SVG bytes are returned keyed by the same base. Returns
+/// `Ok(None)` when no renderer is available.
+pub fn batch_render_svg(
+    sources: &[(String, String)],
+    jar: Option<&std::path::Path>,
+) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
+    let mut cmd: Option<std::process::Command> = if let Some(jar) = jar {
+        let mut c = std::process::Command::new("java");
+        c.arg("-jar").arg(jar);
+        Some(c)
+    } else {
+        let which = std::process::Command::new("which").arg("plantuml").output();
+        if which.map(|o| o.status.success()).unwrap_or(false) {
+            Some(std::process::Command::new("plantuml"))
+        } else {
+            None
+        }
+    };
+    let Some(mut cmd) = cmd else {
+        return Ok(None);
+    };
+    let tmp = std::env::temp_dir().join(format!("clew-puml-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let mut paths = Vec::with_capacity(sources.len());
+    for (base, puml) in sources {
+        let name = base.rsplit('/').next().unwrap_or(base);
+        let p = tmp.join(format!("{name}.puml"));
+        std::fs::write(&p, puml.as_bytes()).map_err(|e| e.to_string())?;
+        paths.push(p);
+    }
+    cmd.arg("-tsvg").arg("-charset").arg("UTF-8");
+    let out = cmd.args(&paths).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    let mut result = Vec::with_capacity(sources.len());
+    for (base, _) in sources {
+        let name = base.rsplit('/').next().unwrap_or(base);
+        if let Ok(bytes) = std::fs::read(tmp.join(format!("{name}.svg"))) {
+            result.push((base.clone(), bytes));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(Some(result))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

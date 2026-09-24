@@ -1491,17 +1491,29 @@ fn method_source(checked: &Check, symbol: &str) -> Option<String> {
     None
 }
 
-/// Write a `.puml` diagram into the bundle and, when a PlantUML renderer is
-/// available, pre-render and include the sibling `.svg`.
+/// Collect a `.puml` diagram into the bundle and remember it for the batch SVG
+/// pre-render (all diagrams are rendered by one renderer process afterwards).
 fn insert_diagram(
     files: &mut BTreeMap<String, Vec<u8>>,
+    diagrams: &mut Vec<(String, String)>,
     base: String,
     puml: String,
-    jar: Option<&std::path::Path>,
 ) {
     files.insert(format!("{base}.puml"), puml.as_bytes().to_vec());
-    if let Ok(Some(svg)) = super::plantuml::render_svg(puml.as_bytes(), jar) {
-        files.insert(format!("{base}.svg"), svg);
+    diagrams.push((base, puml));
+}
+
+/// Pre-render every collected diagram to SVG in a single renderer invocation
+/// and add the `.svg` siblings to the bundle.
+fn batch_render_diagrams(
+    files: &mut BTreeMap<String, Vec<u8>>,
+    diagrams: &[(String, String)],
+    jar: Option<&std::path::Path>,
+) {
+    if let Ok(Some(svgs)) = super::plantuml::batch_render_svg(diagrams, jar) {
+        for (base, svg) in svgs {
+            files.insert(format!("{base}.svg"), svg);
+        }
     }
 }
 
@@ -2392,6 +2404,7 @@ fn publish_internal_phases(
     binding.update_failures = failures.clone();
     binding.output_hashes.clear();
     let mut files = BTreeMap::new();
+    let mut diagrams: Vec<(String, String)> = Vec::new();
     let plantuml_jar = std::env::var("PLANTUML_JAR")
         .ok()
         .map(std::path::PathBuf::from);
@@ -2572,9 +2585,9 @@ fn publish_internal_phases(
                     if let Some(puml) = auto_flow_puml(&checked, flow, symbol, &operation.title) {
                         insert_diagram(
                             &mut files,
+                            &mut diagrams,
                             format!("diagrams/{}-{}", subject.replace(':', "-"), operation.id),
                             puml,
-                            plantuml_jar.as_deref(),
                         );
                     }
                 }
@@ -2590,9 +2603,9 @@ fn publish_internal_phases(
                     if let Some(puml) = auto_flow_puml(&checked, flow, symbol, gap_id) {
                         insert_diagram(
                             &mut files,
+                            &mut diagrams,
                             format!("diagrams/{}-{}", subject.replace(':', "-"), gap_id),
                             puml,
-                            plantuml_jar.as_deref(),
                         );
                     }
                 }
@@ -2621,9 +2634,9 @@ fn publish_internal_phases(
                 }
                 insert_diagram(
                     &mut files,
+                    &mut diagrams,
                     format!("diagrams/{}-states", subject.replace(':', "-")),
                     puml,
-                    plantuml_jar.as_deref(),
                 );
             }
         }
@@ -2645,6 +2658,9 @@ fn publish_internal_phases(
             super::reader::text(ui_language,"Revisions, status and update gaps","Версии, состояние и пробелы обновления"),
             escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
+    // Pre-render every auto-generated diagram to SVG in one renderer process
+    // (avoid spawning a JVM per diagram), then commit the bundle.
+    batch_render_diagrams(&mut files, &diagrams, plantuml_jar.as_deref());
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
     // The bundle identity covers every output file (including auto-generated
     // diagrams), so any change to the rendered output produces a fresh
