@@ -1260,6 +1260,7 @@ fn page_data(
     n: &Narrative,
     checked: &Check,
     suppress: &BTreeSet<String>,
+    state_diagram: Option<&str>,
 ) -> Value {
     let service_id = subject.strip_prefix("service:");
     let catalogue = service_id
@@ -1444,7 +1445,7 @@ fn page_data(
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 /// If an operation has no authored events, produce an auto PlantUML activity
@@ -2428,6 +2429,11 @@ fn publish_internal_phases(
             })
             .or_else(|| old_data.as_ref().and_then(|d| d["title"].as_str()))
             .unwrap_or(id);
+        let state_diagram = if kind == "scenario" {
+            super::process_states::load(repo, id)?.map(|_| format!("scenario-{id}-states"))
+        } else {
+            None
+        };
         let mut data = page_data(
             subject,
             title,
@@ -2439,6 +2445,7 @@ fn publish_internal_phases(
             n,
             &checked,
             &suppress,
+            state_diagram.as_deref(),
         );
         for process in data["savedProcesses"].as_array_mut().into_iter().flatten() {
             if let Some(id) = process["id"].as_str().map(str::to_owned) {
@@ -2940,6 +2947,7 @@ mod process_catalog_tests {
             &narrative,
             &checked,
             &BTreeSet::new(),
+            None,
         );
         assert_eq!(
             data["processCandidates"]["internal"]
@@ -2957,6 +2965,7 @@ mod process_catalog_tests {
             &narrative,
             &checked,
             &suppress,
+            None,
         );
         assert_eq!(
             filtered["processCandidates"]["suppressed"],
