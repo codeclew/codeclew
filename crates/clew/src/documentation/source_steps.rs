@@ -150,11 +150,19 @@ fn keep_args(s: &str) -> String {
     let s = s.trim();
     if let Some(open) = s.find('(') {
         let callee = s[..open].trim();
-        let inner = &s[open + 1..s.len().saturating_sub(1)];
-        if inner.len() <= 60 {
-            format!("{callee}({inner})")
-        } else {
-            format!("{callee}(...)")
+        // A closing `)` may be on a later line (multi-line call); collapse to
+        // `(...)` rather than slicing past the open paren.
+        let close = s[open + 1..].find(')').map(|rel| open + 1 + rel);
+        match close {
+            Some(close) => {
+                let inner = &s[open + 1..close];
+                if inner.len() <= 60 {
+                    format!("{callee}({inner})")
+                } else {
+                    format!("{callee}(...)")
+                }
+            }
+            None => format!("{callee}(...)"),
         }
     } else {
         s.to_string()
@@ -661,6 +669,14 @@ public ChangeTaskStatusResponse changeTaskStatus(Long taskId, ChangeTaskStatusRe
             shorten_statement("taskInstance = anyTask.get();"),
             "taskInstance = anyTask.get(...)"
         );
+    }
+
+    #[test]
+    fn keep_args_collapses_multiline_call_without_closing_paren() {
+        // A call opened on this line but closed on a later line must not panic
+        // or slice past the open paren.
+        assert_eq!(keep_args("log.info("), "log.info(...)");
+        assert_eq!(keep_args("log.info(\n  message"), "log.info(...)");
     }
 
     #[test]
