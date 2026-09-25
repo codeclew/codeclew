@@ -361,21 +361,13 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
         }
         if line.starts_with("if (") {
             let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!(
-                "{}[D] if ({}) then\n",
-                indent(d),
-                condition(line)
-            ));
+            out.push_str(&format!("{}[D] if ({}) then\n", indent(d), condition(line)));
             stack.push(true);
             continue;
         }
         if line.starts_with("while (") || line.starts_with("for (") {
             let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!(
-                "{}[D] loop ({})\n",
-                indent(d),
-                condition(line)
-            ));
+            out.push_str(&format!("{}[D] loop ({})\n", indent(d), condition(line)));
             stack.push(true);
             continue;
         }
@@ -395,12 +387,7 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
         let stmt = tree_statement(line);
         if !stmt.is_empty() {
             let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!(
-                "{}{}{}\n",
-                indent(d),
-                statement_kind(&stmt),
-                stmt
-            ));
+            out.push_str(&format!("{}{}{}\n", indent(d), statement_kind(&stmt), stmt));
         }
     }
     if out.trim().is_empty() {
@@ -863,9 +850,15 @@ void log() {
         // `task.getType()` lines), and the `=` inside the string literal is
         // not misread as an assignment (no `count = {}` corruption).
         assert!(tree.contains("[W] log.info("), "{tree}");
-        assert!(tree.contains("\"count={}\", taskId, task.getType()"), "{tree}");
+        assert!(
+            tree.contains("\"count={}\", taskId, task.getType()"),
+            "{tree}"
+        );
         assert!(!tree.contains("\"count = {}"), "{tree}");
-        assert!(tree.contains("[D] if (task != null) then\n  svc.handle(task)"), "{tree}");
+        assert!(
+            tree.contains("[D] if (task != null) then\n  svc.handle(task)"),
+            "{tree}"
+        );
     }
 
     #[test]
