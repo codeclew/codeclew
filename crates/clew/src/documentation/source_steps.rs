@@ -77,6 +77,33 @@ fn method_body(src: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Split a method body (lines inside the braces) into logically complete
+/// statements, joining lines that continue an expression (multi-line calls,
+/// builder chains) with a single space. A statement ends at a block close
+/// (`}`), a trailing `;`, or a trailing `{` (a control-flow header).
+fn split_statements(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for raw in body.split('\n') {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(line);
+        let trimmed = cur.trim();
+        if trimmed.starts_with('}') || trimmed.ends_with(';') || trimmed.ends_with('{') {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Readable signature for the "Вход:" line, e.g. `changeTaskStatus(taskId, request)`.
 fn signature(head: &str, symbol: &str) -> String {
     let name = method_name(symbol);
@@ -739,6 +766,36 @@ void run() {
         assert!(
             tree.contains("[D] if (x) then\n  svc.a()\n  svc.b()\n  svc.c()"),
             "{tree}"
+        );
+    }
+
+    #[test]
+    fn split_statements_joins_multiline_call_and_builder_chain() {
+        let body = "\
+Date changeDate = DateTimeHolder.getCurrentTime();
+log.info(
+    \"count={}, type={}\",
+    taskId,
+    task.getType()
+);
+taskStatusHistoryDao = TaskStatusHistoryDao.builder()
+    .taskInstance(taskInstance)
+    .changeUser(user)
+    .build();
+if (priority != null) {
+    taskInstance.setTaskPriority(priority);
+}";
+        let stmts = split_statements(body);
+        assert_eq!(
+            stmts,
+            vec![
+                "Date changeDate = DateTimeHolder.getCurrentTime();",
+                "log.info( \"count={}, type={}\", taskId, task.getType() );",
+                "taskStatusHistoryDao = TaskStatusHistoryDao.builder() .taskInstance(taskInstance) .changeUser(user) .build();",
+                "if (priority != null) {",
+                "taskInstance.setTaskPriority(priority);",
+                "}",
+            ]
         );
     }
 }
