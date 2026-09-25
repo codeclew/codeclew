@@ -1470,8 +1470,28 @@ fn auto_flow_puml(
     super::process_flow::document(flow, symbol, title)
 }
 
-/// Look up a method's retained `TRANSFORMED_SOURCE` observation by symbol.
+/// Look up a method's retained `TRANSFORMED_SOURCE` observation by symbol,
+/// preferring the source_text resolved through the `SYMBOL` observation's
+/// `source_ids` (the source-linked path used on real evidence) and falling
+/// back to the legacy TRANSFORMED_SOURCE observation body.
 fn method_source(checked: &Check, symbol: &str) -> Option<String> {
+    let sources = checked.sources();
+    let via_source_ids = checked
+        .services
+        .values()
+        .find_map(|e| {
+            e.observations
+                .values()
+                .find(|o| o.kind == "SYMBOL" && o.symbol == symbol)
+        })
+        .and_then(|o| {
+            o.source_ids
+                .iter()
+                .find_map(|id| sources.get(id).map(|s| s.text.clone()))
+        });
+    if via_source_ids.is_some() {
+        return via_source_ids;
+    }
     let obs = checked.services.values().find_map(|e| {
         e.observations
             .values()
@@ -3357,5 +3377,56 @@ public void handle(Long taskId) {
         let (events, sym) = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
         assert_eq!(sym, symbol);
         assert_eq!(events.as_array().map(Vec::len), Some(5));
+    }
+
+    #[test]
+    fn method_source_resolves_via_symbol_source_ids() {
+        let symbol = "method:class:svc.TaskService#handle";
+        let source_text = "public void handle(Long id) {\n  svc.doSomething(id);\n}";
+        let sym_obs = Observation {
+            id: "svc:symbol:handle".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({}),
+            digest: "d".into(),
+            source_ids: vec!["svc:source:handle".into()],
+        };
+        let source = Source {
+            id: "svc:source:handle".into(),
+            service: "svc".into(),
+            revision: "rev".into(),
+            file: "TaskService.java".into(),
+            start_line: 1,
+            end_line: 3,
+            text: source_text.into(),
+            text_digest: "d".into(),
+            evidence_digest: "d".into(),
+            authority: "TRANSFORMED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        evidence.observations.insert(sym_obs.id.clone(), sym_obs);
+        evidence.sources.insert(source.id.clone(), source);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        assert_eq!(method_source(&checked, symbol).as_deref(), Some(source_text));
     }
 }
