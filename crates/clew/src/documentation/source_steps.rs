@@ -96,10 +96,18 @@ fn signature(head: &str, symbol: &str) -> String {
         })
         .unwrap_or_default();
     if params.is_empty() {
-        format!("{name}()")
+        name
     } else {
         format!("{name}({params})")
     }
+}
+
+/// Tree-header signature: like `signature` but always renders the call parens,
+/// e.g. `changeStatus()` for an empty parameter list.
+fn tree_signature(head: &str, symbol: &str) -> String {
+    let s = signature(head, symbol);
+    // signature returns `name` (no parens) for empty params; append `()`.
+    if s.contains('(') { s } else { format!("{s}()") }
 }
 
 /// Shorten a call/assignment statement to a readable single-line label.
@@ -225,7 +233,7 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
     let head = no_comments[..open].trim();
     let body = &no_comments[open + 1..close];
     let mut out = String::new();
-    out.push_str(&format!("Вход: {}\n", signature(head, symbol)));
+    out.push_str(&format!("Вход: {}\n", tree_signature(head, symbol)));
     let mut depth = 0usize;
     let indent = |d: usize| "  ".repeat(d);
     for raw in body.split('\n') {
