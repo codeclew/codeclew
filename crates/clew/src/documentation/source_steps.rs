@@ -234,7 +234,11 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
     let body = &no_comments[open + 1..close];
     let mut out = String::new();
     out.push_str(&format!("Вход: {}\n", tree_signature(head, symbol)));
-    let mut depth = 0usize;
+    // Stack of open blocks. `true` = renderable control flow (if/loop) and
+    // contributes to depth; `false` = a skipped block (try/catch/finally/
+    // switch/do) whose braces balance without moving depth, so a skipped block
+    // nested inside an `if` no longer mis-indents its siblings.
+    let mut stack: Vec<bool> = Vec::new();
     let indent = |d: usize| "  ".repeat(d);
     for raw in body.split('\n') {
         let line = raw.trim();
@@ -244,75 +248,79 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
         if line.starts_with('}') {
             let rest = line.trim_start_matches('}').trim();
             if rest.starts_with("else if (") || rest.starts_with("elseif (") {
-                depth = depth.saturating_sub(1);
+                stack.pop();
+                let d = stack.iter().filter(|&&r| r).count();
                 out.push_str(&format!(
                     "{}[D] else if ({}) then\n",
-                    indent(depth),
+                    indent(d),
                     condition(line)
                 ));
-                depth += 1;
+                stack.push(true);
             } else if rest.starts_with("else") {
-                depth = depth.saturating_sub(1);
-                out.push_str(&format!("{}else\n", indent(depth)));
-                depth += 1;
+                stack.pop();
+                let d = stack.iter().filter(|&&r| r).count();
+                out.push_str(&format!("{}else\n", indent(d)));
+                stack.push(true);
+            } else if rest.starts_with("catch (") || rest.starts_with("finally") {
+                // try → catch / finally transition: both are skipped blocks.
+                stack.pop();
+                stack.push(false);
+            } else if rest.starts_with("while (") {
+                // do-while: close the `do`, nothing further rendered.
+                stack.pop();
             } else {
-                depth = depth.saturating_sub(1);
+                stack.pop();
             }
             continue;
         }
         if line.starts_with("else if (") || line.starts_with("elseif (") {
-            depth = depth.saturating_sub(1);
+            stack.pop();
+            let d = stack.iter().filter(|&&r| r).count();
             out.push_str(&format!(
                 "{}[D] else if ({}) then\n",
-                indent(depth),
+                indent(d),
                 condition(line)
             ));
-            depth += 1;
+            stack.push(true);
             continue;
         }
         if line.starts_with("else") {
-            depth = depth.saturating_sub(1);
-            out.push_str(&format!("{}else\n", indent(depth)));
-            depth += 1;
+            stack.pop();
+            let d = stack.iter().filter(|&&r| r).count();
+            out.push_str(&format!("{}else\n", indent(d)));
+            stack.push(true);
             continue;
         }
         if line.starts_with("if (") {
-            out.push_str(&format!(
-                "{}[D] if ({}) then\n",
-                indent(depth),
-                condition(line)
-            ));
-            depth += 1;
+            let d = stack.iter().filter(|&&r| r).count();
+            out.push_str(&format!("{}[D] if ({}) then\n", indent(d), condition(line)));
+            stack.push(true);
             continue;
         }
         if line.starts_with("while (") || line.starts_with("for (") {
-            out.push_str(&format!(
-                "{}[D] loop ({})\n",
-                indent(depth),
-                condition(line)
-            ));
-            depth += 1;
+            let d = stack.iter().filter(|&&r| r).count();
+            out.push_str(&format!("{}[D] loop ({})\n", indent(d), condition(line)));
+            stack.push(true);
             continue;
         }
         if line.starts_with("try")
+            || line.starts_with("switch (")
+            || line.starts_with("do")
             || line.starts_with("catch (")
             || line.starts_with("finally")
-            || line.starts_with("switch (")
             || line.starts_with("case ")
             || line.starts_with("default")
             || line.starts_with("break")
-            || line.starts_with("do")
         {
+            if line.starts_with("try") || line.starts_with("switch (") || line.starts_with("do") {
+                stack.push(false);
+            }
             continue;
         }
         let stmt = tree_statement(line);
         if !stmt.is_empty() {
-            out.push_str(&format!(
-                "{}{}{}\n",
-                indent(depth),
-                statement_kind(&stmt),
-                stmt
-            ));
+            let d = stack.iter().filter(|&&r| r).count();
+            out.push_str(&format!("{}{}{}\n", indent(d), statement_kind(&stmt), stmt));
         }
     }
     if out.trim().is_empty() {
@@ -694,5 +702,27 @@ private void changeStatus() {
     #[test]
     fn tree_returns_none_on_unparseable_source() {
         assert!(tree("no body here", "method:x").is_none());
+    }
+
+    #[test]
+    fn tree_keeps_depth_through_skipped_try_catch() {
+        let src = "\
+void run() {
+    if (x) {
+        try {
+            svc.a();
+        } catch (E e) {
+            svc.b();
+        }
+        svc.c();
+    }
+}";
+        let tree = tree(src, "method:class:svc.TaskService#run()V").unwrap();
+        // The try/catch body stays at the enclosing `if` depth: a(), b(), c()
+        // all indented one level.
+        assert!(
+            tree.contains("[D] if (x) then\n  svc.a()\n  svc.b()\n  svc.c()"),
+            "{tree}"
+        );
     }
 }

@@ -2511,7 +2511,17 @@ fn publish_internal_phases(
                     }
                     if let Some((flow, symbol)) = lifecycle_flow(&checked, &t.operation) {
                         if let Some(puml) = auto_flow_puml(&checked, flow, symbol, &t.operation) {
-                            let tree = super::process_flow::tree(flow, symbol).unwrap_or_default();
+                            // Prefer the source-deepened tree (retained
+                            // TRANSFORMED_SOURCE) for data-flow text; fall back
+                            // to the FLOW renderer when the source is absent or
+                            // unparseable.
+                            let tree = match method_source(&checked, symbol) {
+                                Some(source) => super::source_steps::tree(&source, symbol)
+                                    .unwrap_or_else(|| {
+                                        super::process_flow::tree(flow, symbol).unwrap_or_default()
+                                    }),
+                                None => super::process_flow::tree(flow, symbol).unwrap_or_default(),
+                            };
                             out.push((t.operation.clone(), puml, tree));
                         }
                     }
