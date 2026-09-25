@@ -207,6 +207,23 @@ fn condition(row: &Value) -> String {
     }
 }
 
+/// Classify a method name as write (`W`) or read (`R`) by verb prefix.
+/// Shared by the FLOW tree (`step_kind`) and the source-deepened tree
+/// (`source_steps`).
+pub(crate) fn method_write_read(name: &str) -> Option<&'static str> {
+    const WRITE: &[&str] = &[
+        "set", "update", "save", "add", "remove", "close", "delete", "builder", "build", "<init>",
+    ];
+    const READ: &[&str] = &["get", "find", "is", "has", "contains", "load"];
+    if WRITE.iter().any(|p| name.starts_with(p)) {
+        Some("W")
+    } else if READ.iter().any(|p| name.starts_with(p)) {
+        Some("R")
+    } else {
+        None
+    }
+}
+
 /// Classify a flow step into a readability category for the pseudocode tree:
 /// `W` (write / state change), `R` (read), `D` (decision). Returns `None` for
 /// control-flow or unclassifiable steps, which are rendered without a prefix.
@@ -216,17 +233,7 @@ fn step_kind(kind: &str, target: &str) -> Option<&'static str> {
     }
     let method = target.rsplit('#').next().unwrap_or(target);
     let method = method.split('(').next().unwrap_or(method);
-    const WRITE: &[&str] = &[
-        "set", "update", "save", "add", "remove", "close", "delete", "builder", "build", "<init>",
-    ];
-    const READ: &[&str] = &["get", "find", "is", "has", "contains", "load"];
-    if WRITE.iter().any(|p| method.starts_with(p)) {
-        Some("W")
-    } else if READ.iter().any(|p| method.starts_with(p)) {
-        Some("R")
-    } else {
-        None
-    }
+    method_write_read(method)
 }
 
 #[cfg(test)]
