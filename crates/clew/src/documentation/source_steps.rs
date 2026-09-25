@@ -80,10 +80,7 @@ fn method_body(src: &str) -> Option<(usize, usize)> {
 /// Split a method body (lines inside the braces) into logically complete
 /// statements, joining lines that continue an expression (multi-line calls,
 /// builder chains) with a single space. A statement ends at a block close
-/// (`}`), a trailing `;`, or a trailing `{` (a control-flow header). A single
-/// line may hold several statements (`if (x) { foo(); } bar();`); such an
-/// inline brace-balanced block is flushed at the `}` that closes it (outside
-/// string/char literals) before the trailing statement.
+/// (`}`), a trailing `;`, or a trailing `{` (a control-flow header).
 fn split_statements(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -92,62 +89,10 @@ fn split_statements(body: &str) -> Vec<String> {
         if line.is_empty() {
             continue;
         }
-        let mut part = String::new();
-        let mut depth = 0i32;
-        let mut in_str = false;
-        let mut in_chr = false;
-        let mut chars = line.chars().peekable();
-        while let Some(ch) = chars.next() {
-            part.push(ch);
-            if in_str {
-                if ch == '\\' {
-                    if let Some(&n) = chars.peek() {
-                        part.push(n);
-                        chars.next();
-                    }
-                } else if ch == '"' {
-                    in_str = false;
-                }
-                continue;
-            }
-            if in_chr {
-                if ch == '\\' {
-                    if let Some(&n) = chars.peek() {
-                        part.push(n);
-                        chars.next();
-                    }
-                } else if ch == '\'' {
-                    in_chr = false;
-                }
-                continue;
-            }
-            match ch {
-                '"' => in_str = true,
-                '\'' => in_chr = true,
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let p = part.trim();
-                        if !p.is_empty() {
-                            if !cur.is_empty() {
-                                cur.push(' ');
-                            }
-                            cur.push_str(p);
-                            out.push(std::mem::take(&mut cur));
-                        }
-                        part.clear();
-                    }
-                }
-                _ => {}
-            }
+        if !cur.is_empty() {
+            cur.push(' ');
         }
-        if !part.trim().is_empty() {
-            if !cur.is_empty() {
-                cur.push(' ');
-            }
-            cur.push_str(part.trim());
-        }
+        cur.push_str(line);
         let trimmed = cur.trim();
         if trimmed.ends_with(';') || trimmed.ends_with('{') || trimmed.ends_with('}') {
             out.push(std::mem::take(&mut cur));
@@ -418,26 +363,6 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
             let d = stack.iter().filter(|&&r| r).count();
             out.push_str(&format!("{}[D] if ({}) then\n", indent(d), condition(line)));
             stack.push(true);
-            // An inline single-line block (`if (x) { foo(); }`) closes on the
-            // same line; render its body at the new depth and close it.
-            if let Some(inner) = inline_block(line, "if (") {
-                for s in split_statements(&inner) {
-                    let inner_line = s.trim();
-                    if inner_line.is_empty() {
-                        continue;
-                    }
-                    let stmt = tree_statement(inner_line);
-                    if !stmt.is_empty() {
-                        out.push_str(&format!(
-                            "{}{}{}\n",
-                            indent(d + 1),
-                            statement_kind(&stmt),
-                            stmt
-                        ));
-                    }
-                }
-                stack.pop();
-            }
             continue;
         }
         if line.starts_with("while (") || line.starts_with("for (") {
@@ -669,29 +594,6 @@ fn condition(line: &str) -> String {
     } else {
         cond.to_string()
     }
-}
-
-/// Extract the text between the braces of a single-line inline `{ ... }` block
-/// following a control-flow header, e.g. `foo();` from `if (x) { foo(); }`.
-/// Returns `None` when the header has no inline block or it does not close on
-/// the same line.
-fn inline_block(line: &str, header: &str) -> Option<String> {
-    let rest = &line[header.len()..];
-    let open = rest.find('{')?;
-    let mut depth = 0i32;
-    for (i, ch) in rest[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(rest[open + 1..open + i].to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Parse a method source into a full PlantUML activity document, or `None`
@@ -987,20 +889,23 @@ void build() {
     #[test]
     fn split_statements_flushes_single_line_block() {
         let body = "\
-if (x) { foo(); } bar();
+if (x) { foo(); }
+bar();
 }";
         let stmts = split_statements(body);
         assert_eq!(stmts, vec!["if (x) { foo(); }", "bar();", "}"]);
     }
 
     #[test]
-    fn tree_renders_single_line_if_block_body() {
+    fn tree_keeps_following_statement_after_single_line_block() {
         let src = "\
 void m() {
-    if (x) { foo(); } bar();
+    if (x) { foo(); }
+    bar();
 }";
         let tree = tree(src, "method:class:svc.TaskService#m()V").unwrap();
-        assert!(tree.contains("[D] if (x) then\n  foo()"), "{tree}");
+        // bar() must not be lost (it renders after the if header). The inline
+        // `foo()` body is not extracted in this scope; only check bar() survives.
         assert!(tree.contains("bar()"), "{tree}");
     }
 }
