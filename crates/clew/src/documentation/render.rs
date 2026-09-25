@@ -3427,6 +3427,9 @@ public void handle(Long taskId) {
             source_inputs: None,
             composition: None,
         };
-        assert_eq!(method_source(&checked, symbol).as_deref(), Some(source_text));
+        assert_eq!(
+            method_source(&checked, symbol).as_deref(),
+            Some(source_text)
+        );
     }
 }

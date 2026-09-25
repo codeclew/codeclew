@@ -96,7 +96,7 @@ fn signature(head: &str, symbol: &str) -> String {
         })
         .unwrap_or_default();
     if params.is_empty() {
-        name
+        format!("{name}()")
     } else {
         format!("{name}({params})")
     }
@@ -150,6 +150,167 @@ fn keep_args(s: &str) -> String {
         }
     } else {
         s.to_string()
+    }
+}
+
+/// Shorten a statement for the source tree: like `shorten_statement` but keeps
+/// a call's arguments when short, so data-flow (`setUpdateDate(changeDate)`)
+/// is preserved. Assignments keep their value expression's callee.
+fn tree_statement(s: &str) -> String {
+    let s = s.trim().trim_end_matches(';').trim();
+    if let Some(rest) = s.strip_prefix("return") {
+        let rest = rest.trim();
+        return if rest.is_empty() {
+            "return".to_string()
+        } else {
+            format!("return {}", keep_args(rest))
+        };
+    }
+    if let Some(rest) = s.strip_prefix("throw") {
+        let rest = rest.trim();
+        return if rest.is_empty() {
+            "throw".to_string()
+        } else {
+            format!("throw {}", keep_args(rest))
+        };
+    }
+    if let Some((lhs, rhs)) = s.split_once('=') {
+        let lhs = lhs.trim();
+        let parts: Vec<&str> = lhs.split_whitespace().collect();
+        let name = if parts.len() >= 2 && parts[0].chars().next().is_some_and(|c| c.is_uppercase())
+        {
+            parts[parts.len() - 1]
+        } else {
+            lhs
+        };
+        return format!("{} = {}", name, call_label(rhs.trim()));
+    }
+    keep_args(s)
+}
+
+/// Category prefix for a source-tree statement: assignments and write-verb
+/// calls get `[W] `, read-verb calls get `[R] `; `return`/`throw` and
+/// unclassifiable statements get no prefix.
+fn statement_kind(stmt: &str) -> String {
+    if stmt.starts_with("return") || stmt.starts_with("throw") {
+        return String::new();
+    }
+    if let Some((_, rhs)) = stmt.split_once('=') {
+        if !rhs.trim_start().starts_with('=') {
+            return "[W] ".to_string();
+        }
+    }
+    if let Some(open) = stmt.find('(') {
+        let callee = stmt[..open].trim();
+        let name = callee.rsplit('.').next().unwrap_or(callee).trim();
+        if !name.is_empty() {
+            if let Some(c) = super::process_flow::method_write_read(name) {
+                return format!("[{c}] ");
+            }
+        }
+    }
+    String::new()
+}
+
+/// Render a method body as an indented pseudocode tree with `[W]/[R]/[D]`
+/// categories and readable arguments/assignments (data-flow). Returns `None`
+/// when the body cannot be isolated.
+///
+/// Control-flow constructs (`if`/`else`/`while`/`for`) nest by depth.
+/// `try`/`catch`/`finally`/`switch`/`case`/`default`/`break`/`do` lines are
+/// skipped without expanding their blocks in this prototype pass.
+pub fn tree(source: &str, symbol: &str) -> Option<String> {
+    let no_comments = strip_comments(source);
+    let (open, close) = method_body(&no_comments)?;
+    let head = no_comments[..open].trim();
+    let body = &no_comments[open + 1..close];
+    let mut out = String::new();
+    out.push_str(&format!("Вход: {}\n", signature(head, symbol)));
+    let mut depth = 0usize;
+    let indent = |d: usize| "  ".repeat(d);
+    for raw in body.split('\n') {
+        let line = raw.trim();
+        if line.is_empty() || line == "{" || line == ";" {
+            continue;
+        }
+        if line.starts_with('}') {
+            let rest = line.trim_start_matches('}').trim();
+            if rest.starts_with("else if (") || rest.starts_with("elseif (") {
+                depth = depth.saturating_sub(1);
+                out.push_str(&format!(
+                    "{}[D] else if ({}) then\n",
+                    indent(depth),
+                    condition(line)
+                ));
+                depth += 1;
+            } else if rest.starts_with("else") {
+                depth = depth.saturating_sub(1);
+                out.push_str(&format!("{}else\n", indent(depth)));
+                depth += 1;
+            } else {
+                depth = depth.saturating_sub(1);
+            }
+            continue;
+        }
+        if line.starts_with("else if (") || line.starts_with("elseif (") {
+            depth = depth.saturating_sub(1);
+            out.push_str(&format!(
+                "{}[D] else if ({}) then\n",
+                indent(depth),
+                condition(line)
+            ));
+            depth += 1;
+            continue;
+        }
+        if line.starts_with("else") {
+            depth = depth.saturating_sub(1);
+            out.push_str(&format!("{}else\n", indent(depth)));
+            depth += 1;
+            continue;
+        }
+        if line.starts_with("if (") {
+            out.push_str(&format!(
+                "{}[D] if ({}) then\n",
+                indent(depth),
+                condition(line)
+            ));
+            depth += 1;
+            continue;
+        }
+        if line.starts_with("while (") || line.starts_with("for (") {
+            out.push_str(&format!(
+                "{}[D] loop ({})\n",
+                indent(depth),
+                condition(line)
+            ));
+            depth += 1;
+            continue;
+        }
+        if line.starts_with("try")
+            || line.starts_with("catch (")
+            || line.starts_with("finally")
+            || line.starts_with("switch (")
+            || line.starts_with("case ")
+            || line.starts_with("default")
+            || line.starts_with("break")
+            || line.starts_with("do")
+        {
+            continue;
+        }
+        let stmt = tree_statement(line);
+        if !stmt.is_empty() {
+            out.push_str(&format!(
+                "{}{}{}\n",
+                indent(depth),
+                statement_kind(&stmt),
+                stmt
+            ));
+        }
+    }
+    if out.trim().is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -490,5 +651,40 @@ public ChangeTaskStatusResponse changeTaskStatus(Long taskId, ChangeTaskStatusRe
     fn unparseable_source_returns_none() {
         assert!(document("no body here", "method:x", "t").is_none());
         assert!(!usable("no body here", "method:x"));
+    }
+
+    #[test]
+    fn tree_renders_categorized_data_flow() {
+        let src = "\
+private void changeStatus() {
+    Date changeDate = DateTimeHolder.getCurrentTime();
+    taskInstance.setUpdateDate(changeDate);
+    if (priority != null) {
+        taskInstance.setTaskPriority(priority);
+    }
+    return;
+}";
+        let tree = tree(src, "method:class:svc.TaskService#changeStatus()V").unwrap();
+        assert!(tree.starts_with("Вход: changeStatus()\n"), "{tree}");
+        assert!(
+            tree.contains("[W] changeDate = DateTimeHolder.getCurrentTime(...)"),
+            "{tree}"
+        );
+        assert!(
+            tree.contains("[W] taskInstance.setUpdateDate(changeDate)"),
+            "{tree}"
+        );
+        assert!(
+            tree.contains(
+                "[D] if (priority != null) then\n  [W] taskInstance.setTaskPriority(priority)"
+            ),
+            "{tree}"
+        );
+        assert!(tree.ends_with("return\n"), "{tree}");
+    }
+
+    #[test]
+    fn tree_returns_none_on_unparseable_source() {
+        assert!(tree("no body here", "method:x").is_none());
     }
 }
