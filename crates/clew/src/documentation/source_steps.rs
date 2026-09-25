@@ -177,9 +177,25 @@ fn keep_args(s: &str) -> String {
     let s = s.trim();
     if let Some(open) = s.find('(') {
         let callee = s[..open].trim();
-        // A closing `)` may be on a later line (multi-line call); collapse to
-        // `(...)` rather than slicing past the open paren.
-        let close = s[open + 1..].find(')').map(|rel| open + 1 + rel);
+        // Find the outer closing `)`: skip over nested calls (which have their
+        // own parens) so `f(g(x))` keeps `(g(x))`, not `(g(x`. If no outer `)`
+        // is found on this line (multi-line call), collapse to `(...)`.
+        let bytes = s.as_bytes();
+        let mut depth = 0usize;
+        let mut close = None;
+        for (i, &b) in bytes.iter().enumerate().skip(open + 1) {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
         match close {
             Some(close) => {
                 let inner = &s[open + 1..close];
@@ -736,6 +752,19 @@ public ChangeTaskStatusResponse changeTaskStatus(Long taskId, ChangeTaskStatusRe
         // or slice past the open paren.
         assert_eq!(keep_args("log.info("), "log.info(...)");
         assert_eq!(keep_args("log.info(\n  message"), "log.info(...)");
+    }
+
+    #[test]
+    fn keep_args_respects_nested_parentheses() {
+        // The closing `)` must be the outer one, not a nested call's paren.
+        assert_eq!(
+            keep_args("repo.closeErrorsForTask(taskInstance.getTaskId())"),
+            "repo.closeErrorsForTask(taskInstance.getTaskId())"
+        );
+        assert_eq!(
+            keep_args("svc.build(req.withId(taskId).withName(name))"),
+            "svc.build(req.withId(taskId).withName(name))"
+        );
     }
 
     #[test]
