@@ -196,6 +196,40 @@ fn keep_args(s: &str) -> String {
     }
 }
 
+/// Index of the first `=` that acts as an assignment separator: at paren/bracket
+/// depth zero and outside string/char literals. Returns `None` when every `=`
+/// sits inside a nested call or a literal, e.g. a multi-line
+/// `log.info("count={}", x)` — that must not be misread as an assignment.
+fn assignment_eq(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Shorten a statement for the source tree: like `shorten_statement` but keeps
 /// a call's arguments when short, so data-flow (`setUpdateDate(changeDate)`)
 /// is preserved. Assignments keep their value expression's callee.
@@ -217,8 +251,9 @@ fn tree_statement(s: &str) -> String {
             format!("throw {}", keep_args(rest))
         };
     }
-    if let Some((lhs, rhs)) = s.split_once('=') {
-        let lhs = lhs.trim();
+    if let Some(eq) = assignment_eq(&s) {
+        let lhs = s[..eq].trim();
+        let rhs = s[eq + 1..].trim();
         let parts: Vec<&str> = lhs.split_whitespace().collect();
         let name = if parts.len() >= 2 && parts[0].chars().next().is_some_and(|c| c.is_uppercase())
         {
@@ -226,7 +261,7 @@ fn tree_statement(s: &str) -> String {
         } else {
             lhs
         };
-        return format!("{} = {}", name, call_label(rhs.trim()));
+        return format!("{} = {}", name, call_label(rhs));
     }
     keep_args(s)
 }
@@ -267,17 +302,17 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
     let (open, close) = method_body(&no_comments)?;
     let head = no_comments[..open].trim();
     let body = &no_comments[open + 1..close];
+    let statements = split_statements(body);
     let mut out = String::new();
     out.push_str(&format!("Вход: {}\n", tree_signature(head, symbol)));
     // Stack of open blocks. `true` = renderable control flow (if/loop) and
     // contributes to depth; `false` = a skipped block (try/catch/finally/
-    // switch/do) whose braces balance without moving depth, so a skipped block
-    // nested inside an `if` no longer mis-indents its siblings.
+    // switch/do) whose braces balance without moving depth.
     let mut stack: Vec<bool> = Vec::new();
     let indent = |d: usize| "  ".repeat(d);
-    for raw in body.split('\n') {
+    for raw in &statements {
         let line = raw.trim();
-        if line.is_empty() || line == "{" || line == ";" {
+        if line.is_empty() {
             continue;
         }
         if line.starts_with('}') {
@@ -297,11 +332,9 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
                 out.push_str(&format!("{}else\n", indent(d)));
                 stack.push(true);
             } else if rest.starts_with("catch (") || rest.starts_with("finally") {
-                // try → catch / finally transition: both are skipped blocks.
                 stack.pop();
                 stack.push(false);
             } else if rest.starts_with("while (") {
-                // do-while: close the `do`, nothing further rendered.
                 stack.pop();
             } else {
                 stack.pop();
@@ -328,34 +361,46 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
         }
         if line.starts_with("if (") {
             let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}[D] if ({}) then\n", indent(d), condition(line)));
+            out.push_str(&format!(
+                "{}[D] if ({}) then\n",
+                indent(d),
+                condition(line)
+            ));
             stack.push(true);
             continue;
         }
         if line.starts_with("while (") || line.starts_with("for (") {
             let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}[D] loop ({})\n", indent(d), condition(line)));
+            out.push_str(&format!(
+                "{}[D] loop ({})\n",
+                indent(d),
+                condition(line)
+            ));
             stack.push(true);
             continue;
         }
-        if line.starts_with("try")
-            || line.starts_with("switch (")
-            || line.starts_with("do")
-            || line.starts_with("catch (")
+        if line.starts_with("try") || line.starts_with("switch (") || line.starts_with("do") {
+            stack.push(false);
+            continue;
+        }
+        if line.starts_with("catch (")
             || line.starts_with("finally")
             || line.starts_with("case ")
             || line.starts_with("default")
             || line.starts_with("break")
+            || line == "{"
         {
-            if line.starts_with("try") || line.starts_with("switch (") || line.starts_with("do") {
-                stack.push(false);
-            }
             continue;
         }
         let stmt = tree_statement(line);
         if !stmt.is_empty() {
             let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}{}{}\n", indent(d), statement_kind(&stmt), stmt));
+            out.push_str(&format!(
+                "{}{}{}\n",
+                indent(d),
+                statement_kind(&stmt),
+                stmt
+            ));
         }
     }
     if out.trim().is_empty() {
@@ -796,6 +841,55 @@ if (priority != null) {
                 "taskInstance.setTaskPriority(priority);",
                 "}",
             ]
+        );
+    }
+
+    #[test]
+    fn tree_renders_multiline_call_as_one_statement() {
+        let src = "\
+void log() {
+    log.info(
+        \"count={}\",
+        taskId,
+        task.getType()
+    );
+    if (task != null) {
+        svc.handle(task);
+    }
+}";
+        let tree = tree(src, "method:class:svc.TaskService#log()V").unwrap();
+        // The multi-line log.info(...) call is aggregated into a single
+        // statement (previously torn into separate `"count={}",` / `taskId,` /
+        // `task.getType()` lines), and the `=` inside the string literal is
+        // not misread as an assignment (no `count = {}` corruption).
+        assert!(tree.contains("[W] log.info("), "{tree}");
+        assert!(tree.contains("\"count={}\", taskId, task.getType()"), "{tree}");
+        assert!(!tree.contains("\"count = {}"), "{tree}");
+        assert!(tree.contains("[D] if (task != null) then\n  svc.handle(task)"), "{tree}");
+    }
+
+    #[test]
+    fn tree_collapses_builder_chain_into_one_assignment() {
+        let src = "\
+void build() {
+    TaskStatusHistoryDao dao = TaskStatusHistoryDao.builder()
+        .taskInstance(taskInstance)
+        .changeUser(user)
+        .build();
+    if (dao != null) {
+        repo.save(dao);
+    }
+}";
+        let tree = tree(src, "method:class:svc.TaskService#build()V").unwrap();
+        assert!(
+            tree.contains("[W] dao = TaskStatusHistoryDao.builder(...)"),
+            "{tree}"
+        );
+        assert!(!tree.contains(".taskInstance(taskInstance)"), "{tree}");
+        assert!(!tree.contains(".changeUser(user)"), "{tree}");
+        assert!(
+            tree.contains("[D] if (dao != null) then\n  [W] repo.save(dao)"),
+            "{tree}"
         );
     }
 }
