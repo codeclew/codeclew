@@ -1,0 +1,171 @@
+{
+  "schema": "codeclew-documentation-reader-obligations/1.0",
+  "fixture": "documentation-pragmatic-m1",
+  "authorInput": "authoring/checkout-brief.md",
+  "positiveObligations": [
+    {
+      "id": "checkout-trigger",
+      "question": "What source operation handles the selected checkout request?",
+      "expectedFacts": [
+        "The root is the POST /checkout handler CheckoutController.checkout(ReservationRequest)."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#checkout(example.orders.ReservationRequest)",
+          "line": 18,
+          "kind": "entrypoint"
+        }
+      ]
+    },
+    {
+      "id": "quantity-guard-and-exit",
+      "question": "What condition rejects the request before the following calls, and where is it computed?",
+      "expectedFacts": [
+        "checkout calls hasPositiveQuantity(request); the helper accepts a non-null request whose quantity is greater than zero.",
+        "When the helper returns false, checkout returns the literal invalid quantity before either repository.save or InventoryClient.reserve."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#checkout(example.orders.ReservationRequest)",
+          "line": 20,
+          "kind": "guard-and-early-return"
+        },
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#hasPositiveQuantity(example.orders.ReservationRequest)",
+          "line": 27,
+          "kind": "helper-predicate"
+        }
+      ]
+    },
+    {
+      "id": "repository-save-attempt",
+      "question": "Which repository operation is invoked on the valid path, and what does source evidence establish about persistence?",
+      "expectedFacts": [
+        "The valid path invokes ReservationRepository.save(request) before InventoryClient.reserve(request).",
+        "This establishes a method-call attempt only; the fixture has no repository implementation and does not establish persistence or commit."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#checkout(example.orders.ReservationRequest) -> example.orders.ReservationRepository#save(example.orders.ReservationRequest)",
+          "line": 23,
+          "kind": "call-site"
+        },
+        {
+          "path": "orders/src/main/java/example/orders/ReservationRepository.java",
+          "symbol": "example.orders.ReservationRepository#save(example.orders.ReservationRequest)",
+          "line": 4,
+          "kind": "interface-declaration"
+        }
+      ]
+    },
+    {
+      "id": "outbound-post",
+      "question": "What outbound HTTP operation does the valid path call?",
+      "expectedFacts": [
+        "checkout calls InventoryClient.reserve(request).",
+        "reserve invokes RestTemplate.postForObject with inventoryBaseUrl + /reservations, the ReservationRequest body, and String.class.",
+        "The URL base is injected from inventory.base-url; the fixture does not establish a configured concrete host or a completed remote operation."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#checkout(example.orders.ReservationRequest) -> example.orders.InventoryClient#reserve(example.orders.ReservationRequest)",
+          "line": 24,
+          "kind": "call-site"
+        },
+        {
+          "path": "orders/src/main/java/example/orders/InventoryClient.java",
+          "symbol": "example.orders.InventoryClient#reserve(example.orders.ReservationRequest)",
+          "line": 19,
+          "kind": "outbound-call-site"
+        },
+        {
+          "path": "orders/src/main/java/example/orders/InventoryClient.java",
+          "symbol": "example.orders.InventoryClient#inventoryBaseUrl",
+          "line": 12,
+          "kind": "configuration-key"
+        }
+      ]
+    }
+  ],
+  "negativeControls": [
+    {
+      "id": "uninvoked-save-callback",
+      "expectedFacts": [
+        "CheckoutController.prepareSaveCallback creates a Runnable whose lambda body calls ReservationRepository.save(request).",
+        "The callback method is not called by checkout. No invocation or scheduling of the returned Runnable appears in this fixture; an external caller could invoke it, which is outside the fixture evidence."
+      ],
+      "mustNotClaim": [
+        "The callback saves a reservation during checkout.",
+        "The callback is invoked or scheduled in this fixture.",
+        "The callback's save call runs during checkout."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#prepareSaveCallback(example.orders.ReservationRequest)",
+          "line": 31,
+          "kind": "uninvoked-method"
+        },
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#prepareSaveCallback(example.orders.ReservationRequest) -> lambda -> example.orders.ReservationRepository#save(example.orders.ReservationRequest)",
+          "line": 32,
+          "kind": "uninvoked-callback-body"
+        }
+      ]
+    },
+    {
+      "id": "constructed-restclient-request",
+      "expectedFacts": [
+        "InventoryClient.prepareReservationRequest builds and returns a RestClient.RequestBodySpec for POST to inventoryBaseUrl + /reservations with the request body.",
+        "The method does not call retrieve(), response-body extraction, or exchange(), is not called by checkout or reserve, and does not establish an outbound request."
+      ],
+      "mustNotClaim": [
+        "The RestClient request is sent.",
+        "The request builder method is part of the checkout call path."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/InventoryClient.java",
+          "symbol": "example.orders.InventoryClient#prepareReservationRequest(example.orders.ReservationRequest)",
+          "line": 23,
+          "kind": "request-construction-only"
+        }
+      ]
+    },
+    {
+      "id": "unrelated-ready-operation",
+      "expectedFacts": [
+        "CheckoutController.ready handles GET /ready as a separate sibling entrypoint and is not called by checkout."
+      ],
+      "mustNotClaim": [
+        "The readiness endpoint participates in checkout."
+      ],
+      "references": [
+        {
+          "path": "orders/src/main/java/example/orders/CheckoutController.java",
+          "symbol": "example.orders.CheckoutController#ready()",
+          "line": 35,
+          "kind": "unrelated-entrypoint"
+        }
+      ]
+    }
+  ],
+  "preservationControls": [
+    {
+      "id": "manual-note",
+      "path": "notes/checkout.md",
+      "expectedText": "Manual note for the M1 update exercise: retain this sentence when refreshing\nthe checkout explanation."
+    },
+    {
+      "id": "unrelated-operation",
+      "symbol": "example.orders.CheckoutController#ready()",
+      "expectedBehavior": "An update to checkout leaves the independent GET /ready operation documented."
+    }
+  ]
+}
