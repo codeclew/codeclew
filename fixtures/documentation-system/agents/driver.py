@@ -116,36 +116,50 @@ if job["role"] == "reviewer":
         delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))
         issue_evidence = props["issues"]["items"]["properties"]["evidence"]["items"]
         assert set(issue_evidence["enum"]) == delivered if delivered else issue_evidence is False
-    verdict = "APPROVE"
-    if mode == "reject" or (
-        mode == "require-fallback"
-        and "Fallback" not in payload["content"]["operations"][0]["summary"]["text"]
-    ):
-        verdict = "REJECT"
-    if mode == "needs-evidence":
-        verdict = "NEEDS_EVIDENCE"
-    issues = [] if verdict == "APPROVE" else [{
-        "severity": "ERROR", "claim": next(iter(payload["claims"])),
-        "reason": "The fixture requires a corrected explanation." if verdict == "REJECT"
-        else "Required target resolution is absent from the captured source provider.",
-        "evidence": [],
-    }]
-    if options.get("issueEvidenceReference") is not None:
-        issues = [{
-            "severity": "LIMITATION", "claim": next(iter(payload["claims"])),
-            "reason": "The fixture records a bounded review limitation.",
-            "evidence": [options["issueEvidenceReference"]],
+    result = None
+    if mode == "reviewer-expand":
+        target = options["expansionReference"]
+        delivered = {item["reference"] for page in payload["evidence"]["pages"]
+                     for item in page["items"] if "reference" in item}
+        delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))
+        if target not in delivered:
+            result = {"action": "expand", "selection": {"references": [target]}}
+        else:
+            expanded = next(item for page in payload["evidence"]["pages"]
+                            for item in page["items"] if item.get("reference") == target)
+            assert expanded["kind"] == "SOURCE"
+            assert options["expandedSourceSentinel"] in json.dumps(expanded, ensure_ascii=False)
+    if result is None:
+        verdict = "APPROVE"
+        if mode == "reject" or (
+            mode == "require-fallback"
+            and "Fallback" not in payload["content"]["operations"][0]["summary"]["text"]
+        ):
+            verdict = "REJECT"
+        if mode == "needs-evidence":
+            verdict = "NEEDS_EVIDENCE"
+        issues = [] if verdict == "APPROVE" else [{
+            "severity": "ERROR", "claim": next(iter(payload["claims"])),
+            "reason": "The fixture requires a corrected explanation." if verdict == "REJECT"
+            else "Required target resolution is absent from the captured source provider.",
+            "evidence": [],
         }]
-    result = {"action": "review", "review": {
-        "schema": "codeclew-documentation-review/1.0", "work": job["work"],
-        "proposal": "0" * 64 if mode == "replay" else payload["proposal"],
-        "evidenceDigest": payload["evidenceDigest"], "verdict": verdict,
-        "assessedClaims": list(payload["claims"]),
-        "assessedOperations": [operation["id"] for operation in payload["content"]["operations"]],
-        "issues": issues, "limitations": ["Deterministic fixture review; no real model quality claim."],
-    }}
-    if mode == "object-coverage":
-        result["review"]["assessedClaims"] = [{"claim": claim, "supported": True} for claim in payload["claims"]]
+        if options.get("issueEvidenceReference") is not None:
+            issues = [{
+                "severity": "LIMITATION", "claim": next(iter(payload["claims"])),
+                "reason": "The fixture records a bounded review limitation.",
+                "evidence": [options["issueEvidenceReference"]],
+            }]
+        result = {"action": "review", "review": {
+            "schema": "codeclew-documentation-review/1.0", "work": job["work"],
+            "proposal": "0" * 64 if mode == "replay" else payload["proposal"],
+            "evidenceDigest": payload["evidenceDigest"], "verdict": verdict,
+            "assessedClaims": list(payload["claims"]),
+            "assessedOperations": [operation["id"] for operation in payload["content"]["operations"]],
+            "issues": issues, "limitations": ["Deterministic fixture review; no real model quality claim."],
+        }}
+        if mode == "object-coverage":
+            result["review"]["assessedClaims"] = [{"claim": claim, "supported": True} for claim in payload["claims"]]
 else:
     if mode.startswith("section-"):
         contract = payload["outputContract"]

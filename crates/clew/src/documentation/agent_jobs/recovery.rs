@@ -8,7 +8,7 @@
 use super::super::{bytes, digest, invalid, io_error};
 use super::{
     Usage,
-    store::{self, Repository},
+    store::{self, Repository, WriteLock},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -43,11 +43,12 @@ struct CheckpointFile<T> {
     checkpoint: T,
 }
 
-/// Persist a new immutable checkpoint. Save the returned reference in the run
-/// report in a separate atomic write; a crash between those writes leaves only
-/// an unselected immutable file.
-pub(super) fn save_checkpoint<T: Serialize>(
+/// Persist one immutable checkpoint while the caller already owns this
+/// repository's write lock. Keep the repository/guard pairing local to the
+/// reviewed publication callback; this is not a cross-repository transaction API.
+pub(super) fn save_checkpoint_locked<T: Serialize>(
     repo: &Repository,
+    guard: &WriteLock,
     run: &str,
     sequence: u64,
     checkpoint: &T,
@@ -63,7 +64,7 @@ pub(super) fn save_checkpoint<T: Serialize>(
     };
     let encoded = bounded_bytes(&file, "recovery checkpoint")?;
     let path = checkpoint_path(run, sequence, &checkpoint_digest)?;
-    persist_immutable(repo, &path, &encoded, "checkpoint")?;
+    persist_immutable_locked(repo, guard, &path, &encoded, "checkpoint")?;
     Ok(CheckpointRef {
         schema: CHECKPOINT_REF_SCHEMA.into(),
         run: run.into(),
@@ -536,12 +537,22 @@ fn persist_immutable(
     encoded: &[u8],
     label: &str,
 ) -> Result<(), crate::error::ClewError> {
+    let guard = repo.lock()?;
+    persist_immutable_locked(repo, &guard, relative, encoded, label)
+}
+
+fn persist_immutable_locked(
+    repo: &Repository,
+    _guard: &WriteLock,
+    relative: &str,
+    encoded: &[u8],
+    label: &str,
+) -> Result<(), crate::error::ClewError> {
     if encoded.len() > MAX_RECOVERY_BYTES {
         return Err(invalid(format!(
             "{label} exceeds the recovery record bound"
         )));
     }
-    let _lock = repo.lock()?;
     let path = repo.path(relative)?;
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {

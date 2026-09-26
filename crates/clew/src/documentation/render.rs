@@ -2377,9 +2377,7 @@ pub(super) fn publish_reviewed_with_receipt(
     versions: BTreeMap<String, super::review::AcceptedVersion>,
     snapshot: Option<&str>,
     requested_language: Option<&str>,
-    before_switch: Option<
-        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
-    >,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<Value, ClewError> {
     if versions.values().any(|version| {
         version.external_request.documentation_language.as_deref() != requested_language
@@ -2478,6 +2476,9 @@ pub(super) struct PublicationReceipt {
     pub effective_language: String,
 }
 
+type BeforePublicationSwitch<'a> =
+    &'a mut (dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError> + 'a);
+
 struct PublicationReceiptRequest {
     requested_language: Option<String>,
     affected_subjects: BTreeSet<String>,
@@ -2520,9 +2521,7 @@ fn publish_internal_with_receipt(
     language: Option<&str>,
     released: bool,
     receipt_request: Option<PublicationReceiptRequest>,
-    before_switch: Option<
-        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
-    >,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<Value, ClewError> {
     super::progress::run("PUBLISH_DOCUMENTATION", || {
         publish_internal_phases(
@@ -2552,9 +2551,7 @@ fn publish_internal_phases(
     language: Option<&str>,
     released: bool,
     receipt_request: Option<PublicationReceiptRequest>,
-    before_switch: Option<
-        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
-    >,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<Value, ClewError> {
     super::language::validate(language)?;
     let previous = bindings::baseline(repo)?;
@@ -3549,9 +3546,7 @@ fn commit_bundle_with_mode(
     previous_bytes: Option<&[u8]>,
     released: bool,
     receipt_request: Option<&PublicationReceiptRequest>,
-    mut before_switch: Option<
-        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
-    >,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<(), ClewError> {
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
@@ -3684,7 +3679,7 @@ fn commit_bundle_with_mode(
     // Keep history navigation available after a working render while the
     // index itself contains only explicit releases.
     super::history::index(repo, bundle)?;
-    if let Some(callback) = before_switch.as_deref_mut() {
+    if let Some(callback) = before_switch {
         let receipt = receipt
             .as_ref()
             .ok_or_else(|| invalid("pre-switch callback requires a publication receipt"))?;
@@ -4785,8 +4780,7 @@ mod publication_receipt_tests {
     use super::*;
 
     const SUBJECT: &str = "scenario:receipt-test";
-    type TestHook<'a> =
-        &'a mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>;
+    type TestHook<'a> = BeforePublicationSwitch<'a>;
 
     fn repository() -> (tempfile::TempDir, Repository) {
         let directory = tempfile::tempdir().unwrap();

@@ -1,6 +1,12 @@
 #![cfg(unix)]
+#[path = "support/documentation_call_recovery.rs"]
+mod call_recovery;
+#[path = "support/documentation_publication_recovery.rs"]
+mod publication_recovery;
 #[path = "support/documentation_qualification.rs"]
 mod qualification;
+#[path = "support/documentation_reviewer_recovery.rs"]
+mod reviewer_recovery;
 #[path = "support/documentation.rs"]
 mod support;
 use std::fs;
@@ -2256,12 +2262,14 @@ fn execution_config(
         include_str!("../../../fixtures/documentation-system/agents/driver.py"),
     )
     .unwrap();
-    let runtime = if std::path::Path::new("/opt/homebrew").is_dir() {
-        "/opt/homebrew"
-    } else {
-        python[1].as_str().unwrap()
-    };
-    let role = |options: serde_json::Value| json!({"adapter":"macos-seatbelt-stdio/1.0","model":"deterministic-fixture","usageAuthority":"TRANSPORT_METADATA","command":[python[0],"-I","-S",script,options.to_string()],"runtimeReads":[runtime,script],"cap":{"maximum":{"inputTokens":500000,"outputTokens":20000,"costUnits":10},"overheadInputTokens":10,"timeoutMs":5000,"outputBytes":65536}});
+    let mut runtime_reads =
+        std::collections::BTreeSet::from([python[1].as_str().unwrap().to_owned()]);
+    runtime_reads.insert(script.to_string_lossy().into_owned());
+    if std::path::Path::new("/opt/homebrew").is_dir() {
+        runtime_reads.insert("/opt/homebrew".into());
+    }
+    let runtime_reads: Vec<_> = runtime_reads.into_iter().collect();
+    let role = |options: serde_json::Value| json!({"adapter":"macos-seatbelt-stdio/1.0","model":"deterministic-fixture","usageAuthority":"TRANSPORT_METADATA","command":[python[0],"-I","-S",script,options.to_string()],"runtimeReads":runtime_reads.clone(),"cap":{"maximum":{"inputTokens":500000,"outputTokens":20000,"costUnits":10},"overheadInputTokens":10,"timeoutMs":5000,"outputBytes":65536}});
     json!({"schema":"codeclew-documentation-execution/1.0","author":role(author),"reviewer":role(reviewer),"fallback":fallback.clone().map(role),"authorCalls":2,"reviewerCalls":if fallback.is_some(){3}else{2},"fallbackCalls":if fallback.is_some(){1}else{0},"repairAttempts":1,"expansions":0,"budget":{"account":"fixture","costUnit":"fixture-unit","ceiling":{"inputTokens":10000000,"outputTokens":1000000,"costUnits":1000},"stopLoss":{"inputTokens":9999999,"outputTokens":999999,"costUnits":999}}})
 }
 #[cfg(target_os = "macos")]
@@ -2305,6 +2313,78 @@ fn checkpoint_reference(run: &str, record: &serde_json::Value) -> serde_json::Va
         "sequence":record["sequence"],
         "checkpointDigest":record["checkpointDigest"],
     })
+}
+
+#[cfg(target_os = "macos")]
+fn flat_file_inventory(directory: &std::path::Path) -> std::collections::BTreeMap<String, u64> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().into_string().unwrap(),
+                entry.metadata().unwrap().len(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn directory_entries(directory: &std::path::Path) -> std::collections::BTreeSet<String> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn tree_file_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn visit(
+        root: &std::path::Path,
+        current: &std::path::Path,
+        files: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let file_type = entry.file_type().unwrap();
+            if file_type.is_dir() {
+                visit(root, &path, files);
+            } else {
+                assert!(
+                    file_type.is_file(),
+                    "unexpected non-file artifact: {path:?}"
+                );
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                files.insert(relative, fs::read(path).unwrap());
+            }
+        }
+    }
+
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
+#[cfg(target_os = "macos")]
+fn selected_checkpoint_path(
+    f: &Fixture,
+    run: &str,
+    reference: &serde_json::Value,
+) -> std::path::PathBuf {
+    let sequence = reference["sequence"].as_u64().unwrap();
+    let digest = reference["checkpointDigest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    f.docs.join(format!(
+        ".codeclew/jobs/{run}/checkpoints/{sequence:016x}-{digest}.json"
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -2698,6 +2778,344 @@ fn docsys_t04_seeded_reserved_before_first_attempt_resumes_the_same_run() {
         .map(|(id, _)| id.clone())
         .collect();
     assert_eq!(reserved_after, reserved_before);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_seeded_post_switch_publish_checkpoint_finishes_without_redispatch() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap().to_owned();
+    let original_report = run_report(&f, &accepted);
+    let original_attempts = original_report["attempts"].clone();
+    assert!(
+        original_attempts
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|attempt| { attempt["status"] == "COMPLETED" })
+    );
+    let reviewer_attempt = original_attempts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attempt| attempt["role"] == "reviewer")
+        .expect("accepted run includes a reviewer dispatch");
+    let reviewer_invocation = reviewer_attempt["invocation"].clone();
+    let original_proposal = original_report["proposal"].clone();
+    let original_review = original_report["review"].clone();
+    let bundle = original_report["publication"]["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publish_checkpoint = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "PUBLISH" && !checkpoint["publicationReceipt"].is_null()
+    });
+    assert!(publish_checkpoint["checkpoint"]["publicationReceipt"].is_object());
+
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let checkpoint = checkpoint_reference(&run, &publish_checkpoint);
+    let mut seeded_report = original_report.clone();
+    seeded_report["status"] = json!("REVIEWED");
+    seeded_report["publication"] = serde_json::Value::Null;
+    seeded_report["accounting"] = serde_json::Value::Null;
+    seeded_report["checkpoint"] = checkpoint;
+    assert_eq!(seeded_report["attempts"], original_attempts);
+    assert_eq!(seeded_report["proposal"], original_proposal);
+    assert_eq!(seeded_report["review"], original_review);
+    fs::write(&report_path, serde_json::to_vec(&seeded_report).unwrap()).unwrap();
+
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let original_account = read(&account_path);
+    let original_reservations = original_account["reservations"].as_object().unwrap();
+    let mut paid_slots = std::collections::BTreeMap::new();
+    let mut seeded_account = original_account.clone();
+    let reservations = seeded_account["reservations"].as_object_mut().unwrap();
+    let mut restored_slots = Vec::new();
+    for (id, reservation) in reservations.iter_mut() {
+        if reservation["run"] != run {
+            continue;
+        }
+        if reservation["status"] == "RELEASED_NOT_DISPATCHED" {
+            reservation["status"] = json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+            restored_slots.push(id.clone());
+        } else {
+            paid_slots.insert(id.clone(), original_reservations[id].clone());
+        }
+    }
+    assert!(
+        !restored_slots.is_empty(),
+        "unused calls were released at acceptance"
+    );
+    for (id, paid) in &paid_slots {
+        assert_eq!(
+            reservations[id], *paid,
+            "paid reservation changed during seeding"
+        );
+    }
+    fs::write(&account_path, serde_json::to_vec(&seeded_account).unwrap()).unwrap();
+
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let generated_before = directory_entries(&f.docs.join("docs/generated"));
+    let generated_bytes_before = tree_file_snapshot(&f.docs.join("docs/generated"));
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_before = fs::read(f.docs.join("docs/history.html")).unwrap();
+    let results_directory = f.docs.join(".codeclew/job-results");
+    let results_before = flat_file_inventory(&results_directory);
+    let result_bytes_before = tree_file_snapshot(&results_directory);
+    let bundle_before = fs::read(f.bundle(&bundle, "services/orders.json")).unwrap();
+    let bundle_files_before = tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}")));
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["run"], run);
+    assert_eq!(resumed["status"], "ACCEPTED", "{resumed}");
+    let final_report = run_report(&f, &resumed);
+    assert_eq!(final_report["attempts"], original_attempts);
+    assert_eq!(
+        final_report["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|attempt| attempt["role"] == "reviewer")
+            .unwrap()["invocation"],
+        reviewer_invocation
+    );
+    assert_eq!(final_report["proposal"], original_proposal);
+    assert_eq!(final_report["review"], original_review);
+    assert_eq!(final_report["publication"], original_report["publication"]);
+    let terminal_checkpoint = read(selected_checkpoint_path(
+        &f,
+        &run,
+        &final_report["checkpoint"],
+    ));
+    assert_eq!(terminal_checkpoint["checkpoint"]["phase"], "TERMINAL");
+    assert_eq!(
+        terminal_checkpoint["checkpoint"]["publicationReceipt"],
+        publish_checkpoint["checkpoint"]["publicationReceipt"]
+    );
+    assert_eq!(fs::read(index_path).unwrap(), index_before);
+    assert_eq!(fs::read(latest_path).unwrap(), latest_before);
+    assert_eq!(
+        directory_entries(&f.docs.join("docs/generated")),
+        generated_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join("docs/generated")),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(
+        fs::read(f.docs.join("docs/history.html")).unwrap(),
+        history_html_before
+    );
+    assert_eq!(
+        flat_file_inventory(&f.docs.join(".codeclew/job-results")),
+        results_before
+    );
+    assert_eq!(tree_file_snapshot(&results_directory), result_bytes_before);
+    assert_eq!(
+        fs::read(f.bundle(&bundle, "services/orders.json")).unwrap(),
+        bundle_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}"))),
+        bundle_files_before
+    );
+    let final_account = read(&account_path);
+    assert_eq!(final_account, original_account);
+    for (id, paid) in paid_slots {
+        assert_eq!(final_account["reservations"][id], paid);
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_repeated_accepted_retries_reuse_checkpoint_without_storage_growth() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap().to_owned();
+    let report = run_report(&f, &accepted);
+    let attempts = report["attempts"].clone();
+    let checkpoint_reference = report["checkpoint"].clone();
+    let checkpoint_directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let checkpoints_before = flat_file_inventory(&checkpoint_directory);
+    let checkpoint_bytes =
+        fs::read(selected_checkpoint_path(&f, &run, &checkpoint_reference)).unwrap();
+    let bundle = report["publication"]["bundle"].as_str().unwrap();
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let account_before = fs::read(&account_path).unwrap();
+    let generated_before = directory_entries(&f.docs.join("docs/generated"));
+    let generated_bytes_before = tree_file_snapshot(&f.docs.join("docs/generated"));
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_before = fs::read(f.docs.join("docs/history.html")).unwrap();
+    let bundle_files_before = tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}")));
+    let results_before = flat_file_inventory(&f.docs.join(".codeclew/job-results"));
+    let results_bytes_before = tree_file_snapshot(&f.docs.join(".codeclew/job-results"));
+
+    for retry in 0..3 {
+        let repeated = work_run(&f, &work, &config);
+        assert_eq!(repeated["run"], run, "retry {retry}: {repeated}");
+        assert_eq!(repeated["status"], "ACCEPTED", "retry {retry}: {repeated}");
+        let repeated_report = run_report(&f, &repeated);
+        assert_eq!(repeated_report["attempts"], attempts);
+        assert_eq!(repeated_report["checkpoint"], checkpoint_reference);
+        assert_eq!(repeated_report["publication"]["bundle"], bundle);
+        let checkpoints_after = flat_file_inventory(&checkpoint_directory);
+        assert_eq!(checkpoints_after, checkpoints_before, "retry {retry}");
+        assert_eq!(checkpoints_after.len(), checkpoints_before.len());
+        assert_eq!(
+            fs::read(selected_checkpoint_path(&f, &run, &checkpoint_reference)).unwrap(),
+            checkpoint_bytes
+        );
+        assert_eq!(fs::read(&index_path).unwrap(), index_before);
+        assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+        assert_eq!(fs::read(&account_path).unwrap(), account_before);
+        assert_eq!(
+            directory_entries(&f.docs.join("docs/generated")),
+            generated_before
+        );
+        assert_eq!(
+            tree_file_snapshot(&f.docs.join("docs/generated")),
+            generated_bytes_before
+        );
+        assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+        assert_eq!(
+            fs::read(f.docs.join("docs/history.html")).unwrap(),
+            history_html_before
+        );
+        assert_eq!(
+            flat_file_inventory(&f.docs.join(".codeclew/job-results")),
+            results_before
+        );
+        assert_eq!(
+            tree_file_snapshot(&f.docs.join(".codeclew/job-results")),
+            results_bytes_before
+        );
+        assert_eq!(
+            tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}"))),
+            bundle_files_before
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_accepted_retry_rejects_changed_config_without_mutation() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap();
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let checkpoint_reference = run_report(&f, &accepted)["checkpoint"].clone();
+    let checkpoint_path = selected_checkpoint_path(&f, run, &checkpoint_reference);
+    let checkpoint_directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let report_before = fs::read(&report_path).unwrap();
+    let checkpoint_before = fs::read(&checkpoint_path).unwrap();
+    let checkpoints_before = flat_file_inventory(&checkpoint_directory);
+    let account_before = fs::read(&account_path).unwrap();
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let generated_before = directory_entries(&f.docs.join("docs/generated"));
+    let generated_bytes_before = tree_file_snapshot(&f.docs.join("docs/generated"));
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_before = fs::read(f.docs.join("docs/history.html")).unwrap();
+    let results_before = flat_file_inventory(&f.docs.join(".codeclew/job-results"));
+    let results_bytes_before = tree_file_snapshot(&f.docs.join(".codeclew/job-results"));
+    let bundle = run_report(&f, &accepted)["publication"]["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle_files_before = tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}")));
+
+    let mut changed_config = config.clone();
+    let prior_cap = changed_config["author"]["cap"]["maximum"]["inputTokens"]
+        .as_u64()
+        .unwrap();
+    changed_config["author"]["cap"]["maximum"]["inputTokens"] = json!(prior_cap + 1);
+    let config_path = f.input("changed-accepted-config.json", &changed_config);
+    let (code, refusal) = f.run(&[
+        "docs",
+        "work",
+        "run",
+        "--work",
+        &work,
+        "--config",
+        config_path.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "changed accepted config was allowed: {refusal}");
+    assert!(
+        refusal.to_string().contains("RECOVERY_CONFIG_MISMATCH"),
+        "{refusal}"
+    );
+    assert_eq!(fs::read(&report_path).unwrap(), report_before);
+    assert_eq!(fs::read(&checkpoint_path).unwrap(), checkpoint_before);
+    assert_eq!(
+        flat_file_inventory(&checkpoint_directory),
+        checkpoints_before
+    );
+    assert_eq!(fs::read(&account_path).unwrap(), account_before);
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+    assert_eq!(
+        directory_entries(&f.docs.join("docs/generated")),
+        generated_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join("docs/generated")),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(
+        fs::read(f.docs.join("docs/history.html")).unwrap(),
+        history_html_before
+    );
+    assert_eq!(
+        flat_file_inventory(&f.docs.join(".codeclew/job-results")),
+        results_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join(".codeclew/job-results")),
+        results_bytes_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}"))),
+        bundle_files_before
+    );
 }
 
 #[test]
