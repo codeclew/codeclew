@@ -2277,6 +2277,164 @@ fn work_run(f: &Fixture, id: &str, config: &serde_json::Value) -> serde_json::Va
         path.to_str().unwrap(),
     ])
 }
+
+#[cfg(target_os = "macos")]
+fn find_checkpoint_record(
+    f: &Fixture,
+    run: &str,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let mut files: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(read)
+        .find(|record| predicate(&record["checkpoint"]))
+        .expect("matching immutable recovery checkpoint exists")
+}
+
+#[cfg(target_os = "macos")]
+fn checkpoint_reference(run: &str, record: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema":"codeclew-documentation-recovery-checkpoint-ref/1.0",
+        "run":run,
+        "sequence":record["sequence"],
+        "checkpointDigest":record["checkpointDigest"],
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn reset_run_reservations_to_reserved(f: &Fixture, run: &str) -> Vec<String> {
+    let path = f.docs.join("execution/accounts/fixture.json");
+    let mut ledger = read(&path);
+    let reservations = ledger["reservations"].as_object_mut().unwrap();
+    let mut ids = Vec::new();
+    for (id, reservation) in reservations {
+        if reservation["run"] == run {
+            reservation["status"] = serde_json::json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+            ids.push(id.clone());
+        }
+    }
+    ids.sort();
+    assert!(!ids.is_empty(), "seeded run has finite reservations");
+    fs::write(path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+    ids
+}
+
+#[cfg(target_os = "macos")]
+fn reader_pointer_bytes(f: &Fixture) -> Option<Vec<u8>> {
+    match fs::read(f.docs.join("docs/index.html")) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("cannot read prior reader selection: {error}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_reader_pointer(f: &Fixture, bytes: Option<&[u8]>) {
+    let path = f.docs.join("docs/index.html");
+    match bytes {
+        Some(bytes) => fs::write(path, bytes).unwrap(),
+        None => match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("cannot restore prior reader selection: {error}"),
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn seed_checkpointed_zero_attempt_run(
+    f: &Fixture,
+    work: &str,
+    config: &serde_json::Value,
+) -> (String, Vec<String>) {
+    // Reuse a real immutable AUTHOR checkpoint, then seed the mutable report
+    // and ledger to the durable state immediately after finite reservation and
+    // before the first attempt. The test invokes the public run path below.
+    // Keep the original reader selection: the successful fixture run below is
+    // only a source for immutable checkpoint/result records, not a new baseline
+    // for this deliberately seeded crash state.
+    let index_before = reader_pointer_bytes(f);
+    let completed = work_run(f, work, config);
+    assert_eq!(completed["status"], "ACCEPTED", "{completed}");
+    let run = completed["run"].as_str().unwrap().to_owned();
+    let initial = find_checkpoint_record(f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && !checkpoint["pages"].as_array().unwrap().is_empty()
+            && checkpoint["pendingCall"].is_null()
+            && checkpoint["proposalId"].is_null()
+    });
+    let mut report = run_report(f, &completed);
+    report["status"] = serde_json::json!("PREPARED");
+    report["attempts"] = serde_json::json!([]);
+    report["proposal"] = serde_json::Value::Null;
+    report["review"] = serde_json::Value::Null;
+    report["publication"] = serde_json::Value::Null;
+    report["gap"] = serde_json::Value::Null;
+    report["accounting"] = serde_json::Value::Null;
+    report["checkpoint"] = checkpoint_reference(&run, &initial);
+    fs::write(
+        f.docs.join(format!(".codeclew/jobs/{run}.json")),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let reservations = reset_run_reservations_to_reserved(f, &run);
+    restore_reader_pointer(f, index_before.as_deref());
+    let expected = config["authorCalls"].as_u64().unwrap()
+        + config["reviewerCalls"].as_u64().unwrap()
+        + config["fallbackCalls"].as_u64().unwrap();
+    assert_eq!(reservations.len() as u64, expected);
+    (run, reservations)
+}
+
+#[cfg(target_os = "macos")]
+fn seed_saved_author_result_recovery(
+    f: &Fixture,
+    work: &str,
+    config: &serde_json::Value,
+) -> (String, String) {
+    let index_before = reader_pointer_bytes(f);
+    let completed = work_run(f, work, config);
+    assert_ne!(completed["status"], "ACCEPTED", "{completed}");
+    let run = completed["run"].as_str().unwrap().to_owned();
+    let mut report = run_report(f, &completed);
+    let mut author = report["attempts"][0].clone();
+    let invocation = author["invocation"].as_str().unwrap().to_owned();
+    let saved = find_checkpoint_record(f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["pendingCall"]["identity"]["invocation"] == invocation
+            && checkpoint["pendingCall"]["status"] == "RESULT_SAVED"
+    });
+    author["status"] = serde_json::json!("DISPATCHED");
+    report["status"] = serde_json::json!("PREPARED");
+    report["attempts"] = serde_json::json!([author]);
+    report["proposal"] = serde_json::Value::Null;
+    report["review"] = serde_json::Value::Null;
+    report["publication"] = serde_json::Value::Null;
+    report["gap"] = serde_json::Value::Null;
+    report["accounting"] = serde_json::Value::Null;
+    report["checkpoint"] = checkpoint_reference(&run, &saved);
+    fs::write(
+        f.docs.join(format!(".codeclew/jobs/{run}.json")),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    reset_run_reservations_to_reserved(f, &run);
+    let result_path = f
+        .docs
+        .join(format!(".codeclew/job-results/{invocation}.json"));
+    fs::write(&result_path, b"corrupt saved author result\n").unwrap();
+    restore_reader_pointer(f, index_before.as_deref());
+    (run, invocation)
+}
+
 fn run_report(f: &Fixture, result: &serde_json::Value) -> serde_json::Value {
     read(f.docs.join(format!(
         ".codeclew/jobs/{}.json",
@@ -2352,6 +2510,238 @@ fn docsys_t04_separate_isolated_roles_accept_and_note_changes_invalidate() {
     assert_eq!(changed["sections"]["service:orders"]["freshness"], "STALE");
     let retained = read(f.bundle(changed["bundle"].as_str().unwrap(), "services/orders.json"));
     assert_eq!(data["operations"], retained["operations"]);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_terminal_run_with_corrupt_saved_author_result_refuses_repayment() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({"mode":"malformed"}), None);
+    let config_path = f.input("terminal-recovery-config.json", &config);
+    let result = work_run(&f, &work, &config);
+    let report = run_report(&f, &result);
+    assert_ne!(result["status"], "ACCEPTED", "{result}");
+    assert!(
+        report["attempts"].as_array().unwrap().len() >= 2,
+        "{report}"
+    );
+    assert_eq!(report["attempts"][0]["role"], "author");
+    assert_eq!(report["attempts"][0]["status"], "COMPLETED");
+    assert_eq!(report["attempts"][1]["role"], "reviewer");
+
+    let run = report["run"].as_str().unwrap();
+    let author_invocation = report["attempts"][0]["invocation"].as_str().unwrap();
+    let author_result = f
+        .docs
+        .join(format!(".codeclew/job-results/{author_invocation}.json"));
+    assert!(author_result.is_file());
+    fs::write(&author_result, b"corrupt saved author result\n").unwrap();
+    let pointer_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let pointer_before = fs::read(&pointer_path).unwrap();
+    let report_before = fs::read(&report_path).unwrap();
+    let account_before = fs::read(&account_path).unwrap();
+
+    for _ in 0..2 {
+        let (code, refusal) = f.run(&[
+            "docs",
+            "work",
+            "run",
+            "--work",
+            &work,
+            "--config",
+            config_path.to_str().unwrap(),
+        ]);
+        assert_ne!(
+            code, 0,
+            "terminal result was silently dispatched again: {refusal}"
+        );
+        assert!(
+            refusal
+                .to_string()
+                .contains("RECOVERY_TERMINAL_RESULT_PRESENT"),
+            "{refusal}"
+        );
+        assert_eq!(fs::read(&pointer_path).unwrap(), pointer_before);
+        assert_eq!(fs::read(&report_path).unwrap(), report_before);
+        assert_eq!(fs::read(&account_path).unwrap(), account_before);
+    }
+    assert_eq!(
+        fs::read(&author_result).unwrap(),
+        b"corrupt saved author result\n"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_nonterminal_corrupt_saved_author_result_is_a_sticky_refusal() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({"mode":"malformed"}), None);
+    let config_path = f.input("active-recovery-config.json", &config);
+    let (run, invocation) = seed_saved_author_result_recovery(&f, &work, &config);
+    let pointer_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let report = read(&report_path);
+    assert_eq!(report["status"], "PREPARED");
+    assert_eq!(report["attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(report["attempts"][0]["invocation"], invocation);
+    assert_eq!(report["checkpoint"]["run"], run);
+    let reference = &report["checkpoint"];
+    let checkpoint_path = f.docs.join(format!(
+        ".codeclew/jobs/{run}/checkpoints/{:016x}-{}.json",
+        reference["sequence"].as_u64().unwrap(),
+        reference["checkpointDigest"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap()
+    ));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let pointer_before = fs::read(&pointer_path).unwrap();
+    let report_before = fs::read(&report_path).unwrap();
+    let checkpoint_before = fs::read(&checkpoint_path).unwrap();
+    let account_before = fs::read(&account_path).unwrap();
+
+    for _ in 0..2 {
+        let (code, refusal) = f.run(&[
+            "docs",
+            "work",
+            "run",
+            "--work",
+            &work,
+            "--config",
+            config_path.to_str().unwrap(),
+        ]);
+        assert_ne!(code, 0, "corrupt saved result was accepted: {refusal}");
+        assert!(
+            refusal.to_string().contains("RECOVERY_RECORD_CORRUPT"),
+            "{refusal}"
+        );
+        assert_eq!(fs::read(&pointer_path).unwrap(), pointer_before);
+        assert_eq!(fs::read(&report_path).unwrap(), report_before);
+        assert_eq!(fs::read(&checkpoint_path).unwrap(), checkpoint_before);
+        assert_eq!(fs::read(&account_path).unwrap(), account_before);
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_terminal_zero_dispatch_run_allows_corrected_input_cap() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut too_small = execution_config(&f, json!({}), json!({}), None);
+    too_small["author"]["cap"]["maximum"]["inputTokens"] = json!(1);
+    let first = work_run(&f, &work, &too_small);
+    let first_report = run_report(&f, &first);
+    assert!(first_report["attempts"].as_array().unwrap().is_empty());
+    assert!(
+        first_report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("INPUT_CAP_EXCEEDED"),
+        "{first_report}"
+    );
+
+    let corrected = execution_config(&f, json!({}), json!({}), None);
+    let second = work_run(&f, &work, &corrected);
+    assert_eq!(second["status"], "ACCEPTED", "{second}");
+    assert_ne!(first["run"], second["run"]);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_seeded_reserved_before_first_attempt_resumes_the_same_run() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let (run, reserved_before) = seed_checkpointed_zero_attempt_run(&f, &work, &config);
+    let latest = read(
+        f.docs
+            .join(format!(".codeclew/work/{work}/latest-run.json")),
+    );
+    assert_eq!(latest["run"], run);
+    let seeded_report = read(f.docs.join(format!(".codeclew/jobs/{run}.json")));
+    assert_eq!(seeded_report["status"], "PREPARED");
+    assert!(seeded_report["attempts"].as_array().unwrap().is_empty());
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["run"], run, "recovery allocated a different run");
+    assert_eq!(resumed["status"], "ACCEPTED", "{resumed}");
+    let final_report = run_report(&f, &resumed);
+    assert!(
+        final_report["attempts"].as_array().unwrap().len() >= 2,
+        "resumed={resumed}; report={final_report}"
+    );
+    let account: serde_json::Value =
+        serde_json::from_slice(&fs::read(account_path).unwrap()).unwrap();
+    let reserved_after: Vec<_> = account["reservations"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, value)| value["run"] == run)
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert_eq!(reserved_after, reserved_before);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_cancel_marker_is_scoped_to_one_run() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let (cancelled_run, _) = seed_checkpointed_zero_attempt_run(&f, &work, &config);
+    let reader_before = reader_pointer_bytes(&f);
+
+    let cancellation = f.ok(&["docs", "work", "cancel", "--work", &work]);
+    assert_eq!(cancellation["run"], cancelled_run);
+    let cancelled = work_run(&f, &work, &config);
+    assert_eq!(cancelled["status"], "CANCELLED", "{cancelled}");
+    assert_eq!(reader_pointer_bytes(&f), reader_before);
+    let cancelled_report = run_report(&f, &cancelled);
+    assert!(cancelled_report["attempts"].as_array().unwrap().is_empty());
+    let old_marker = f
+        .docs
+        .join(format!(".codeclew/jobs/{cancelled_run}/cancel.json"));
+    assert!(old_marker.is_file());
+    assert!(
+        !f.docs
+            .join(format!(".codeclew/work/{work}/cancel.json"))
+            .exists()
+    );
+
+    let next = work_run(&f, &work, &config);
+    assert_eq!(next["status"], "ACCEPTED", "{next}");
+    assert_ne!(next["run"], cancelled_run);
+    assert!(run_report(&f, &next)["attempts"].as_array().unwrap().len() >= 2);
+    assert!(old_marker.is_file());
+    assert!(
+        !f.docs
+            .join(format!(
+                ".codeclew/jobs/{}/cancel.json",
+                next["run"].as_str().unwrap()
+            ))
+            .exists(),
+        "prior run cancellation leaked into its successor"
+    );
 }
 
 #[test]

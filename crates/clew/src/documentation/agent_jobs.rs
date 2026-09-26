@@ -6,7 +6,16 @@ use super::{
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
+    os::fd::AsRawFd,
+    os::unix::fs::OpenOptionsExt,
+    path::PathBuf,
+};
+
+#[path = "agent_jobs/recovery.rs"]
+mod recovery;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -68,7 +77,7 @@ pub struct Role {
     pub network: bool,
     pub cap: Cap,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Usage {
     #[serde(default)]
@@ -235,6 +244,48 @@ pub fn reserve(repo: &Repository, config: &Config, run: &str) -> Result<Vec<Stri
     save_account(repo, &config.budget, &ledger)?;
     Ok(ids)
 }
+
+fn ensure_reserved(repo: &Repository, config: &Config, run: &str) -> Result<(), ClewError> {
+    let existing: BTreeMap<_, _> = account(repo, &config.budget)?
+        .reservations
+        .into_iter()
+        .filter(|(_, reservation)| reservation.run == run)
+        .collect();
+    if existing.is_empty() {
+        reserve(repo, config, run)?;
+        return Ok(());
+    }
+    let mut expected = BTreeMap::new();
+    for (role, driver, count) in [
+        ("author", Some(&config.author), config.author_calls),
+        ("reviewer", Some(&config.reviewer), config.reviewer_calls),
+        ("fallback", config.fallback.as_ref(), config.fallback_calls),
+    ] {
+        let Some(driver) = driver else {
+            continue;
+        };
+        for ordinal in 0..count {
+            expected.insert(
+                digest(&(run, role, ordinal))?,
+                (role.to_owned(), driver.cap.maximum.clone()),
+            );
+        }
+    }
+    if existing.len() != expected.len()
+        || existing.iter().any(|(id, reservation)| {
+            expected.get(id).is_none_or(|(role, maximum)| {
+                reservation.role != *role
+                    || reservation.maximum != *maximum
+                    || reservation.status == "RELEASED_NOT_DISPATCHED"
+            })
+        })
+    {
+        return Err(invalid(
+            "RECOVERY_ACCOUNTING_MISMATCH: original finite reservations do not match this run config",
+        ));
+    }
+    Ok(())
+}
 pub fn dispatch(
     repo: &Repository,
     budget: &Budget,
@@ -262,6 +313,104 @@ pub fn dispatch(
     save_account(repo, budget, &ledger)?;
     Ok(id)
 }
+
+fn reservation(
+    repo: &Repository,
+    budget: &Budget,
+    id: &str,
+    run: &str,
+    role: &str,
+) -> Result<Reservation, ClewError> {
+    let value = account(repo, budget)?
+        .reservations
+        .remove(id)
+        .ok_or_else(|| invalid("RECOVERY_RESERVATION_MISSING: reserved call is absent"))?;
+    if value.run != run || value.role != role {
+        return Err(invalid(
+            "RECOVERY_RESERVATION_MISMATCH: saved call refers to another run or role",
+        ));
+    }
+    Ok(value)
+}
+
+fn next_reserved(
+    repo: &Repository,
+    budget: &Budget,
+    run: &str,
+    role: &str,
+) -> Result<String, ClewError> {
+    account(repo, budget)?
+        .reservations
+        .into_iter()
+        .find(|(_, value)| value.run == run && value.role == role && value.status == "RESERVED")
+        .map(|(id, _)| id)
+        .ok_or_else(|| invalid("CALLS_EXHAUSTED: no reserved call remains for this role"))
+}
+
+fn dispatch_reserved(
+    repo: &Repository,
+    budget: &Budget,
+    id: &str,
+    run: &str,
+    role: &str,
+) -> Result<(), ClewError> {
+    let _lock = repo.lock()?;
+    let mut ledger = account(repo, budget)?;
+    if ledger
+        .reservations
+        .values()
+        .any(|r| r.status == "BOUND_VIOLATED")
+    {
+        return Err(invalid(
+            "ACCOUNTING_BOUND_VIOLATED: this account cannot dispatch further calls",
+        ));
+    }
+    let reservation = ledger
+        .reservations
+        .get_mut(id)
+        .ok_or_else(|| invalid("unknown reservation"))?;
+    if reservation.run != run || reservation.role != role || reservation.status != "RESERVED" {
+        return Err(invalid(
+            "RECOVERY_RESERVATION_MISMATCH: selected account slot is not reserved for this call",
+        ));
+    }
+    reservation.status = "DISPATCHED".into();
+    save_account(repo, budget, &ledger)
+}
+
+fn reconciliation(
+    maximum: &Amount,
+    usage: Option<&Usage>,
+    overhead: u64,
+) -> Result<(Amount, String, bool), ClewError> {
+    let usage_value = usage.cloned().unwrap_or_default();
+    let actual_input = usage_value
+        .input_tokens
+        .map(|tokens| {
+            tokens
+                .checked_add(overhead)
+                .ok_or_else(|| invalid("usage overflow"))
+        })
+        .transpose()?;
+    let charged = Amount {
+        input_tokens: actual_input.unwrap_or(maximum.input_tokens),
+        output_tokens: usage_value.output_tokens.unwrap_or(maximum.output_tokens),
+        cost_units: usage_value.cost_units.unwrap_or(maximum.cost_units),
+    };
+    let violated = !charged.within(maximum);
+    let status = if violated {
+        "BOUND_VIOLATED"
+    } else if actual_input.is_none()
+        || usage_value.output_tokens.is_none()
+        || usage_value.cost_units.is_none()
+    {
+        "UNRECONCILED_MAXIMUM_RETAINED"
+    } else {
+        "RECONCILED"
+    };
+    Ok((charged, status.into(), violated))
+}
+
 pub fn reconcile(
     repo: &Repository,
     budget: &Budget,
@@ -275,32 +424,20 @@ pub fn reconcile(
         .reservations
         .get_mut(id)
         .ok_or_else(|| invalid("unknown reservation"))?;
-    if reservation.status != "DISPATCHED" {
-        return Err(invalid("reservation already reconciled or not dispatched"));
+    let (charged, status, violated) =
+        reconciliation(&reservation.maximum, usage.as_ref(), overhead)?;
+    if reservation.status == "DISPATCHED" {
+        reservation.charged = charged;
+        reservation.actual = usage;
+        reservation.status = status;
+    } else if reservation.charged != charged
+        || reservation.actual != usage
+        || reservation.status != status
+    {
+        return Err(invalid(
+            "RECOVERY_ACCOUNTING_MISMATCH: reservation was reconciled with different result data",
+        ));
     }
-    let u = usage.clone().unwrap_or_default();
-    let actual_input = u
-        .input_tokens
-        .map(|n| {
-            n.checked_add(overhead)
-                .ok_or_else(|| invalid("usage overflow"))
-        })
-        .transpose()?;
-    reservation.charged = Amount {
-        input_tokens: actual_input.unwrap_or(reservation.maximum.input_tokens),
-        output_tokens: u.output_tokens.unwrap_or(reservation.maximum.output_tokens),
-        cost_units: u.cost_units.unwrap_or(reservation.maximum.cost_units),
-    };
-    reservation.actual = usage;
-    let violated = !reservation.charged.within(&reservation.maximum);
-    reservation.status = if violated {
-        "BOUND_VIOLATED"
-    } else if actual_input.is_none() || u.output_tokens.is_none() || u.cost_units.is_none() {
-        "UNRECONCILED_MAXIMUM_RETAINED"
-    } else {
-        "RECONCILED"
-    }
-    .into();
     save_account(repo, budget, &ledger)?;
     if violated {
         return Err(invalid(
@@ -374,12 +511,183 @@ pub struct RunReport {
     pub accounting: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<recovery::CheckpointRef>,
 }
+
+const RUN_CHECKPOINT_SCHEMA: &str = "codeclew-documentation-agent-run-checkpoint/1.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PendingCall {
+    identity: recovery::CallIdentity,
+    status: String,
+    failure: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunCheckpoint {
+    schema: String,
+    run: String,
+    work: String,
+    snapshot: String,
+    config_digest: String,
+    driver_digests: BTreeMap<String, String>,
+    phase: String,
+    pages: Vec<Value>,
+    source_parts: Vec<Value>,
+    feedback: Value,
+    previous: Value,
+    previous_section: Value,
+    repairs_remaining: u32,
+    expansions_remaining: u32,
+    fallback: bool,
+    fallback_candidates: u32,
+    read_digest: String,
+    pending_call: Option<PendingCall>,
+    proposal_id: Option<String>,
+    proposal_read_digest: Option<String>,
+    proposal_evidence_digest: Option<String>,
+    reviewer_invocation: Option<String>,
+    reviewer_driver_digest: Option<String>,
+    reviewer_identity: Option<recovery::CallIdentity>,
+    review: Option<Value>,
+}
+
+impl RunCheckpoint {
+    fn new(
+        report: &RunReport,
+        snapshot: String,
+        config_digest: String,
+        driver_digests: BTreeMap<String, String>,
+        read_digest: String,
+    ) -> Self {
+        Self {
+            schema: RUN_CHECKPOINT_SCHEMA.into(),
+            run: report.run.clone(),
+            work: report.work.clone(),
+            snapshot,
+            config_digest,
+            driver_digests,
+            phase: "AUTHOR".into(),
+            pages: Vec::new(),
+            source_parts: Vec::new(),
+            feedback: Value::Null,
+            previous: Value::Null,
+            previous_section: Value::Null,
+            repairs_remaining: 0,
+            expansions_remaining: 0,
+            fallback: false,
+            fallback_candidates: 0,
+            read_digest,
+            pending_call: None,
+            proposal_id: None,
+            proposal_read_digest: None,
+            proposal_evidence_digest: None,
+            reviewer_invocation: None,
+            reviewer_driver_digest: None,
+            reviewer_identity: None,
+            review: None,
+        }
+    }
+
+    fn validate(
+        &self,
+        report: &RunReport,
+        config_digest: &str,
+        driver_digests: &BTreeMap<String, String>,
+    ) -> Result<(), ClewError> {
+        if self.schema != RUN_CHECKPOINT_SCHEMA
+            || self.run != report.run
+            || self.work != report.work
+        {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_MISMATCH: saved phase belongs to another run or Work",
+            ));
+        }
+        if self.config_digest != config_digest || &self.driver_digests != driver_digests {
+            return Err(invalid(
+                "RECOVERY_CONFIG_MISMATCH: execution config or admitted driver changed during a nonterminal run",
+            ));
+        }
+        if !matches!(
+            self.phase.as_str(),
+            "AUTHOR" | "REVIEWER" | "PUBLISH" | "TERMINAL"
+        ) || self
+            .read_digest
+            .strip_prefix("sha256:")
+            .is_none_or(|hex| hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_CORRUPT: invalid phase or context bound",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn save_run_checkpoint(
+    repo: &Repository,
+    report: &mut RunReport,
+    checkpoint: &RunCheckpoint,
+) -> Result<(), ClewError> {
+    let sequence = report.checkpoint.as_ref().map_or(Ok(1), |reference| {
+        reference
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_SEQUENCE_OVERFLOW"))
+    })?;
+    report.checkpoint = Some(recovery::save_checkpoint(
+        repo,
+        &report.run,
+        sequence,
+        checkpoint,
+    )?);
+    save_report(repo, report)
+}
+
+fn load_run_checkpoint(
+    repo: &Repository,
+    report: &RunReport,
+    config_digest: &str,
+    driver_digests: &BTreeMap<String, String>,
+) -> Result<Option<RunCheckpoint>, ClewError> {
+    let Some(reference) = report.checkpoint.as_ref() else {
+        if report.attempts.is_empty() {
+            return Ok(None);
+        }
+        return Err(invalid(
+            "RECOVERY_LEGACY_STATE: dispatched run has no durable phase checkpoint",
+        ));
+    };
+    let checkpoint: RunCheckpoint = recovery::load_checkpoint(repo, reference)?;
+    checkpoint.validate(report, config_digest, driver_digests)?;
+    Ok(Some(checkpoint))
+}
+
 fn report_path(run: &str) -> Result<String, ClewError> {
     if run.len() != 32 || !run.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err(invalid("invalid run identity"));
     }
     Ok(format!(".codeclew/jobs/{run}.json"))
+}
+fn latest_report(repo: &Repository, work: &str) -> Result<Option<RunReport>, ClewError> {
+    let pointer_path = repo.path(&format!(".codeclew/work/{work}/latest-run.json"))?;
+    if !pointer_path.exists() {
+        return Ok(None);
+    }
+    let pointer: Value = store::read(&pointer_path, store::MAX_RECORD)?;
+    let run = pointer["run"]
+        .as_str()
+        .ok_or_else(|| invalid("RECOVERY_REPORT_CORRUPT: latest run pointer is invalid"))?;
+    let report: RunReport = store::read(&repo.path(&report_path(run)?)?, 4 * 1024 * 1024)?;
+    if report.work != work || report.run != run {
+        return Err(invalid(
+            "RECOVERY_REPORT_MISMATCH: latest report belongs to another Work or run",
+        ));
+    }
+    Ok(Some(report))
 }
 fn save_report(repo: &Repository, report: &RunReport) -> Result<(), ClewError> {
     let _lock = repo.lock()?;
@@ -393,6 +701,27 @@ fn save_report(repo: &Repository, report: &RunReport) -> Result<(), ClewError> {
         &bytes(&serde_json::json!({"run":report.run}))?,
     )
 }
+
+fn terminal_status(status: &str) -> bool {
+    matches!(
+        status,
+        "ACCEPTED" | "CANCELLED" | "EXHAUSTED" | "NEEDS_EVIDENCE" | "GENERATION_GAP"
+    )
+}
+
+fn should_resume(report: &RunReport) -> bool {
+    !terminal_status(&report.status) && (report.checkpoint.is_some() || !report.attempts.is_empty())
+}
+
+fn terminal_has_saved_output(report: &RunReport) -> bool {
+    terminal_status(&report.status)
+        && (!report.attempts.is_empty() || report.proposal.is_some() || report.review.is_some())
+}
+
+fn is_recovery_refusal(error: &ClewError) -> bool {
+    error.message.starts_with("RECOVERY_")
+}
+
 pub fn status(
     repo: &Repository,
     work: &str,
@@ -423,14 +752,18 @@ pub fn status(
 }
 pub fn cancel(repo: &Repository, work: &str) -> Result<Value, ClewError> {
     super::work::load(repo, work)?;
+    let report = latest_report(repo, work)?.ok_or_else(|| {
+        invalid("NO_ACTIVE_RUN: prepare or start a Work run before cancelling it")
+    })?;
     // Cancellation is an idempotent signal on its own path, independent of the
     // publication/account lock; a busy coordinator must not prevent cancellation.
+    // The marker belongs to this run so it cannot cancel a corrected later run.
     repo.atomic(
-        &format!(".codeclew/work/{work}/cancel.json"),
-        &bytes(&serde_json::json!({"schema":"codeclew-documentation-cancel/1.0","work":work}))?,
+        &format!(".codeclew/jobs/{}/cancel.json", report.run),
+        &bytes(&serde_json::json!({"schema":"codeclew-documentation-cancel/1.0","work":work,"run":report.run.clone()}))?,
     )?;
     Ok(
-        serde_json::json!({"schema":"codeclew-documentation-cancel/1.0","status":"CANCELLATION_REQUESTED","work":work}),
+        serde_json::json!({"schema":"codeclew-documentation-cancel/1.0","status":"CANCELLATION_REQUESTED","work":work,"run":report.run}),
     )
 }
 fn validate_author_contract(work: &super::work::Work, c: &Config) -> Result<(), ClewError> {
@@ -453,7 +786,7 @@ fn validate_author_contract(work: &super::work::Work, c: &Config) -> Result<(), 
     Ok(())
 }
 
-fn validate_config(repo: &Repository, c: &Config) -> Result<(), ClewError> {
+fn validate_config(repo: &Repository, c: &Config) -> Result<BTreeMap<String, String>, ClewError> {
     if c.schema != "codeclew-documentation-execution/1.0"
         || !(1..=16).contains(&c.repair_attempts)
         || c.expansions > 16
@@ -469,13 +802,18 @@ fn validate_config(repo: &Repository, c: &Config) -> Result<(), ClewError> {
             "execution needs finite calls covering initial authoring, mandatory review, at least one repair and configured expansions/fallback",
         ));
     }
-    for role in std::iter::once(&c.author)
-        .chain(std::iter::once(&c.reviewer))
-        .chain(c.fallback.iter())
+    let mut digests = BTreeMap::new();
+    for (name, role) in std::iter::once(("author", &c.author))
+        .chain(std::iter::once(("reviewer", &c.reviewer)))
+        .chain(c.fallback.iter().map(|role| ("fallback", role)))
     {
-        super::agent_adapter::admit(repo, role)?;
+        let admission = super::agent_adapter::admit(repo, role)?;
+        let driver_digest = admission["driverDigest"]
+            .as_str()
+            .ok_or_else(|| invalid("missing driver admission digest"))?;
+        digests.insert(name.into(), driver_digest.into());
     }
-    Ok(())
+    Ok(digests)
 }
 
 fn job_envelope(
@@ -957,107 +1295,375 @@ fn call(
     repo: &Repository,
     c: &Config,
     report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
     role_name: &str,
     driver: &Role,
     payload: Value,
     author_contract: Option<Value>,
 ) -> Result<(Value, String, String), ClewError> {
-    let invocation = uuid::Uuid::new_v4().simple().to_string();
-    let request = job_envelope(report, role_name, driver, &invocation, payload);
-    let request_bytes = ensure_input_cap(driver, &request)?;
+    let cancel_path = repo.path(&format!(".codeclew/jobs/{}/cancel.json", report.run))?;
+    if checkpoint.pending_call.is_none() && cancel_path.exists() {
+        return Err(invalid(
+            "CANCELLED: cancellation was requested before preparing a new call",
+        ));
+    }
     let admission = super::agent_adapter::admit(repo, driver)?;
-    let reservation = dispatch(repo, &c.budget, &report.run, role_name)?;
-    report.attempts.push(Attempt {
-        invocation: invocation.clone(),
-        model: driver.model.clone(),
-        usage_authority: driver.usage_authority.clone(),
-        role: role_name.into(),
-        input_digest: digest(&request)?,
-        request_bytes: Some(request_bytes),
-        reservation: reservation.clone(),
-        status: "DISPATCHED".into(),
-        admission: admission.clone(),
-        failure: None,
-        usage: None,
-        result_digest: None,
-        captured_stdout_bytes: 0,
-        captured_stderr_bytes: 0,
-        author_contract,
-        adapted_proposal: None,
-    });
-    save_report(repo, report)?;
-    let executed = super::agent_adapter::execute(
+    let driver_digest = admission["driverDigest"]
+        .as_str()
+        .ok_or_else(|| invalid("missing driver admission digest"))?
+        .to_owned();
+    if checkpoint
+        .driver_digests
+        .get(role_name)
+        .is_none_or(|expected| expected != &driver_digest)
+    {
+        return Err(invalid(
+            "RECOVERY_DRIVER_MISMATCH: admitted driver changed during the run",
+        ));
+    }
+    let config_digest = report
+        .config_digest
+        .as_deref()
+        .ok_or_else(|| invalid("recovery run has no configuration digest"))?;
+    let read_digest = digest(&super::work::read_state(repo, &report.work)?)?;
+    if read_digest != checkpoint.read_digest {
+        return Err(invalid(
+            "RECOVERY_CONTEXT_MISMATCH: recorded Work reads changed since the selected checkpoint",
+        ));
+    }
+
+    let mut resumed = false;
+    let (identity, input, request, attempt_index) = if let Some(pending) = &checkpoint.pending_call
+    {
+        resumed = true;
+        let identity = pending.identity.clone();
+        if identity.run != report.run
+            || identity.work != report.work
+            || identity.config_digest != config_digest
+            || identity.driver_digest != driver_digest
+            || identity.role != role_name
+            || identity.model != driver.model
+            || identity.usage_authority != driver.usage_authority
+            || identity.snapshot != checkpoint.snapshot
+        {
+            return Err(invalid(
+                "RECOVERY_CALL_BINDING_MISMATCH: pending invocation does not match this run config or Work snapshot",
+            ));
+        }
+        let request = job_envelope(report, role_name, driver, &identity.invocation, payload);
+        ensure_input_cap(driver, &request)?;
+        let candidate = recovery::InputRecord::new(
+            recovery::CallBinding {
+                run: report.run.clone(),
+                work: report.work.clone(),
+                snapshot: identity.snapshot.clone(),
+                reservation: identity.reservation.clone(),
+                invocation: identity.invocation.clone(),
+                role: role_name.into(),
+                model: driver.model.clone(),
+                usage_authority: driver.usage_authority.clone(),
+                config_digest: config_digest.into(),
+                driver_digest: driver_digest.clone(),
+            },
+            request.clone(),
+        )?;
+        if candidate.identity != identity {
+            return Err(invalid(
+                "RECOVERY_CALL_BINDING_MISMATCH: regenerated semantic input differs from the saved invocation",
+            ));
+        }
+        let input = recovery::load_input(repo, &identity)?;
+        if input.request != request {
+            return Err(invalid(
+                "RECOVERY_INPUT_BINDING_MISMATCH: regenerated request differs from the immutable input",
+            ));
+        }
+        let attempt_index = report
+            .attempts
+            .iter()
+            .position(|attempt| attempt.invocation == identity.invocation)
+            .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: pending attempt is absent"))?;
+        let attempt = &report.attempts[attempt_index];
+        if attempt.reservation != identity.reservation
+            || attempt.role != role_name
+            || attempt.model != driver.model
+            || attempt.input_digest != identity.input_digest
+        {
+            return Err(invalid(
+                "RECOVERY_REPORT_MISMATCH: attempt does not match its immutable input binding",
+            ));
+        }
+        (identity, input, request, attempt_index)
+    } else {
+        let invocation = uuid::Uuid::new_v4().simple().to_string();
+        let reservation = next_reserved(repo, &c.budget, &report.run, role_name)?;
+        let request = job_envelope(report, role_name, driver, &invocation, payload);
+        let request_bytes = ensure_input_cap(driver, &request)?;
+        let snapshot = checkpoint.snapshot.clone();
+        let input = recovery::InputRecord::new(
+            recovery::CallBinding {
+                run: report.run.clone(),
+                work: report.work.clone(),
+                snapshot,
+                reservation: reservation.clone(),
+                invocation: invocation.clone(),
+                role: role_name.into(),
+                model: driver.model.clone(),
+                usage_authority: driver.usage_authority.clone(),
+                config_digest: config_digest.into(),
+                driver_digest: driver_digest.clone(),
+            },
+            request.clone(),
+        )?;
+        recovery::save_input(repo, &input)?;
+        report.attempts.push(Attempt {
+            invocation,
+            model: driver.model.clone(),
+            usage_authority: driver.usage_authority.clone(),
+            role: role_name.into(),
+            input_digest: input.identity.input_digest.clone(),
+            request_bytes: Some(request_bytes),
+            reservation,
+            status: "PREPARED".into(),
+            admission: admission.clone(),
+            failure: None,
+            usage: None,
+            result_digest: None,
+            captured_stdout_bytes: 0,
+            captured_stderr_bytes: 0,
+            author_contract: author_contract.clone(),
+            adapted_proposal: None,
+        });
+        let attempt_index = report.attempts.len() - 1;
+        checkpoint.pending_call = Some(PendingCall {
+            identity: input.identity.clone(),
+            status: "PREPARED".into(),
+            failure: None,
+        });
+        save_run_checkpoint(repo, report, checkpoint)?;
+        (input.identity.clone(), input, request, attempt_index)
+    };
+
+    if let Some(pending) = checkpoint.pending_call.as_ref()
+        && pending.status == "FAILED"
+    {
+        return Err(invalid(pending.failure.as_deref().unwrap_or(
+            "RECOVERY_DRIVER_FAILURE: saved attempt already failed",
+        )));
+    }
+
+    if let Some(saved) = recovery::try_load_result(repo, &input)? {
+        if checkpoint
+            .pending_call
+            .as_ref()
+            .is_some_and(|pending| pending.status == "RESULT_SAVED")
+            || resumed
+        {
+            return finish_saved_result(
+                repo,
+                c,
+                report,
+                checkpoint,
+                attempt_index,
+                &identity,
+                saved,
+                &driver_digest,
+                driver,
+            );
+        }
+    } else if resumed
+        && checkpoint
+            .pending_call
+            .as_ref()
+            .is_some_and(|pending| pending.status == "RESULT_SAVED")
+    {
+        return Err(invalid(
+            "RECOVERY_RESULT_MISSING: checkpoint selected a saved result that is absent",
+        ));
+    }
+
+    let reservation = reservation(
         repo,
-        driver,
-        &request,
-        &repo.path(&format!(".codeclew/work/{}/cancel.json", report.work))?,
-    );
-    let attempt = report.attempts.last_mut().unwrap();
-    let mut reply = None;
-    match executed {
+        &c.budget,
+        &identity.reservation,
+        &report.run,
+        role_name,
+    )?;
+    if resumed
+        && (reservation.status == "DISPATCHED"
+            || (reservation.status == "UNRECONCILED_MAXIMUM_RETAINED"
+                && reservation.actual.is_none()
+                && reservation.charged == reservation.maximum))
+    {
+        if reservation.status == "DISPATCHED" {
+            reconcile(
+                repo,
+                &c.budget,
+                &identity.reservation,
+                None,
+                driver.cap.overhead_input_tokens,
+            )?;
+        }
+        report.attempts[attempt_index].status = "INTERRUPTED_MAXIMUM_RETAINED".into();
+        report.attempts[attempt_index].failure =
+            Some("RECOVERY_INTERRUPTED_NO_DURABLE_RESULT".into());
+        checkpoint.pending_call = None;
+        save_run_checkpoint(repo, report, checkpoint)?;
+        return call(
+            repo,
+            c,
+            report,
+            checkpoint,
+            role_name,
+            driver,
+            request["payload"].clone(),
+            author_contract,
+        );
+    }
+
+    if reservation.status != "RESERVED" {
+        return Err(invalid(
+            "RECOVERY_ACCOUNTING_MISMATCH: pending result has no replayable account reservation",
+        ));
+    }
+    if cancel_path.exists() {
+        return Err(invalid(
+            "CANCELLED: cancellation was requested before dispatch",
+        ));
+    }
+    dispatch_reserved(
+        repo,
+        &c.budget,
+        &identity.reservation,
+        &report.run,
+        role_name,
+    )?;
+    report.attempts[attempt_index].status = "DISPATCHED".into();
+    if let Some(pending) = checkpoint.pending_call.as_mut() {
+        pending.status = "DISPATCHED".into();
+    }
+    save_run_checkpoint(repo, report, checkpoint)?;
+
+    let executed = super::agent_adapter::execute(repo, driver, &request, &cancel_path);
+    let (reply, failure) = match executed {
         Ok(result) => {
-            attempt.admission = result.admission;
-            attempt.captured_stdout_bytes = result.stdout_bytes;
-            attempt.captured_stderr_bytes = result.stderr_bytes;
-            attempt.failure = result.failure;
+            report.attempts[attempt_index].admission = result.admission;
+            report.attempts[attempt_index].captured_stdout_bytes = result.stdout_bytes;
+            report.attempts[attempt_index].captured_stderr_bytes = result.stderr_bytes;
+            let mut reply = None;
+            let mut failure = result.failure;
             if let Some(output) = result.output {
                 match serde_json::from_value::<Reply>(output) {
                     Ok(value)
                         if value.schema == "codeclew-documentation-agent-result/1.0"
-                            && value.invocation == invocation
+                            && value.invocation == identity.invocation
                             && value.role == role_name
                             && value.model == driver.model =>
                     {
-                        attempt.usage = value.usage.clone();
-                        attempt.result_digest = Some(digest(&value.result)?);
                         reply = Some(value);
                     }
-                    _ => attempt.failure = Some("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH".into()),
+                    _ => failure = Some("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH".into()),
                 }
+            } else if failure.is_none() {
+                failure = Some("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH".into());
             }
+            (reply, failure)
         }
-        Err(error) => attempt.failure = Some(error.message),
-    }
-    // Only the trusted transport envelope supplies usage; fields inside model output are ignored.
-    let accounting = reconcile(
-        repo,
-        &c.budget,
-        &reservation,
-        if driver.usage_authority == "TRANSPORT_METADATA" {
-            attempt.usage.clone()
-        } else {
-            None
-        },
-        driver.cap.overhead_input_tokens,
-    );
-    if let Err(error) = accounting {
-        attempt.failure = Some(error.message);
-    }
-    attempt.status = if attempt.failure.is_some() {
-        "FAILED"
-    } else {
-        "COMPLETED"
-    }
-    .into();
+        Err(error) => (None, Some(error.message)),
+    };
+
     if let Some(value) = &reply {
-        let _lock = repo.lock()?;
-        repo.atomic(&format!(".codeclew/job-results/{invocation}.json"),&bytes(&serde_json::json!({"schema":"codeclew-documentation-job-result/1.0","invocation":invocation,"work":report.work,"role":role_name,"model":driver.model,"resultDigest":digest(&value.result)?,"result":value.result}))?)?;
+        recovery::save_result(
+            repo,
+            &input,
+            value.usage.clone(),
+            value.result.clone(),
+            report.attempts[attempt_index].captured_stdout_bytes,
+            report.attempts[attempt_index].captured_stderr_bytes,
+        )?;
+        report.attempts[attempt_index].usage = value.usage.clone();
+        report.attempts[attempt_index].result_digest = Some(digest(&value.result)?);
+        if let Some(pending) = checkpoint.pending_call.as_mut() {
+            pending.status = "RESULT_SAVED".into();
+        }
+        save_run_checkpoint(repo, report, checkpoint)?;
     }
-    let failure = attempt.failure.clone();
-    let driver_digest = attempt.admission["driverDigest"]
-        .as_str()
-        .ok_or_else(|| invalid("missing driver admission digest"))?
-        .to_owned();
-    save_report(repo, report)?;
     if let Some(failure) = failure {
+        report.attempts[attempt_index].status = "FAILED".into();
+        report.attempts[attempt_index].failure = Some(failure.clone());
+        if let Some(pending) = checkpoint.pending_call.as_mut() {
+            pending.status = "FAILED".into();
+            pending.failure = Some(failure.clone());
+        }
+        save_run_checkpoint(repo, report, checkpoint)?;
+        reconcile(
+            repo,
+            &c.budget,
+            &identity.reservation,
+            None,
+            driver.cap.overhead_input_tokens,
+        )?;
+        save_report(repo, report)?;
         return Err(invalid(failure));
     }
+    finish_saved_result(
+        repo,
+        c,
+        report,
+        checkpoint,
+        attempt_index,
+        &identity,
+        recovery::load_result(repo, &input)?,
+        &driver_digest,
+        driver,
+    )
+}
+
+fn finish_saved_result(
+    repo: &Repository,
+    config: &Config,
+    report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
+    attempt_index: usize,
+    identity: &recovery::CallIdentity,
+    saved: recovery::SavedResult,
+    driver_digest: &str,
+    driver: &Role,
+) -> Result<(Value, String, String), ClewError> {
+    let usage = if identity.usage_authority == "TRANSPORT_METADATA" {
+        saved.usage.clone()
+    } else {
+        None
+    };
+    let accounting = reconcile(
+        repo,
+        &config.budget,
+        &identity.reservation,
+        usage,
+        driver.cap.overhead_input_tokens,
+    );
+    let attempt = &mut report.attempts[attempt_index];
+    attempt.usage = saved.usage.clone();
+    attempt.result_digest = Some(saved.result_digest.clone());
+    attempt.captured_stdout_bytes = saved.stdout_bytes;
+    attempt.captured_stderr_bytes = saved.stderr_bytes;
+    if let Err(error) = accounting {
+        attempt.status = "FAILED".into();
+        attempt.failure = Some(error.message.clone());
+        if let Some(pending) = checkpoint.pending_call.as_mut() {
+            pending.status = "FAILED".into();
+            pending.failure = Some(error.message.clone());
+        }
+        save_run_checkpoint(repo, report, checkpoint)?;
+        return Err(error);
+    }
+    attempt.status = "COMPLETED".into();
+    attempt.failure = None;
+    save_report(repo, report)?;
     Ok((
-        reply
-            .ok_or_else(|| invalid("missing driver response"))?
-            .result,
-        invocation,
-        driver_digest,
+        saved.result,
+        identity.invocation.clone(),
+        driver_digest.into(),
     ))
 }
 pub(super) fn evidence_with_parts(
@@ -1462,12 +2068,154 @@ fn process_overview_shape_feedback(missing_field: &str) -> Value {
     })
 }
 
+fn persist_phase(
+    repo: &Repository,
+    report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
+    phase: &str,
+    pages: &[Value],
+    source_parts: &[Value],
+    feedback: &Value,
+    previous: &Value,
+    previous_section: &Value,
+    repairs: u32,
+    expansions: u32,
+    fallback: bool,
+    fallback_candidates: u32,
+) -> Result<(), ClewError> {
+    checkpoint.phase = phase.into();
+    checkpoint.pages = pages.to_vec();
+    checkpoint.source_parts = source_parts.to_vec();
+    checkpoint.feedback = feedback.clone();
+    checkpoint.previous = previous.clone();
+    checkpoint.previous_section = previous_section.clone();
+    checkpoint.repairs_remaining = repairs;
+    checkpoint.expansions_remaining = expansions;
+    checkpoint.fallback = fallback;
+    checkpoint.fallback_candidates = fallback_candidates;
+    checkpoint.read_digest = digest(&super::work::read_state(repo, &report.work)?)?;
+    checkpoint.pending_call = None;
+    save_run_checkpoint(repo, report, checkpoint)
+}
+
+fn advance_after_feedback(
+    repo: &Repository,
+    report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
+    config: &Config,
+    pages: &[Value],
+    source_parts: &[Value],
+    feedback: &Value,
+    previous: &Value,
+    previous_section: &Value,
+    repairs: &mut u32,
+    expansions: u32,
+    fallback: &mut bool,
+    fallback_candidates: &mut u32,
+) -> Result<(), ClewError> {
+    if !*fallback && *repairs > 0 {
+        *repairs -= 1;
+    } else if config.fallback.is_some()
+        && (!*fallback || fallback_candidates.saturating_add(1) < config.fallback_calls)
+    {
+        *fallback = true;
+        *fallback_candidates = fallback_candidates.saturating_add(1);
+    } else {
+        return Err(invalid(
+            "REPAIR_EXHAUSTED: proposal did not pass validation or review after the configured repair and fallback path",
+        ));
+    }
+    persist_phase(
+        repo,
+        report,
+        checkpoint,
+        "AUTHOR",
+        pages,
+        source_parts,
+        feedback,
+        previous,
+        previous_section,
+        *repairs,
+        expansions,
+        *fallback,
+        *fallback_candidates,
+    )
+}
+
+fn publish_checkpoint(
+    repo: &Repository,
+    work: &super::work::Work,
+    report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
+) -> Result<(), ClewError> {
+    let proposal_id = checkpoint
+        .proposal_id
+        .as_deref()
+        .ok_or_else(|| invalid("RECOVERY_PUBLICATION_MISMATCH: proposal identity is absent"))?;
+    let proposal = super::proposals::load(repo, proposal_id)?;
+    let review: super::review::MeaningReview = serde_json::from_value(
+        checkpoint
+            .review
+            .clone()
+            .ok_or_else(|| invalid("RECOVERY_PUBLICATION_MISMATCH: approved review is absent"))?,
+    )
+    .map_err(|_| invalid("RECOVERY_PUBLICATION_MISMATCH: approved review is corrupt"))?;
+    let identity = checkpoint
+        .reviewer_identity
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_PUBLICATION_MISMATCH: reviewer invocation is absent"))?;
+    if identity.role != "reviewer"
+        || checkpoint.reviewer_invocation.as_deref() != Some(&identity.invocation)
+        || checkpoint.reviewer_driver_digest.as_deref() != Some(&identity.driver_digest)
+        || checkpoint.proposal_read_digest.is_none()
+        || checkpoint.proposal_evidence_digest.as_deref() != Some(&review.evidence_digest)
+    {
+        return Err(invalid(
+            "RECOVERY_PUBLICATION_MISMATCH: reviewer, evidence, or read binding is incomplete",
+        ));
+    }
+    let read_digest = checkpoint.proposal_read_digest.as_deref().unwrap();
+    let evidence_digest = checkpoint.proposal_evidence_digest.as_deref().unwrap();
+    let versions = super::review::versions(
+        work,
+        &proposal,
+        &review,
+        &identity.invocation,
+        &identity.driver_digest,
+        evidence_digest,
+        read_digest,
+    )?;
+
+    super::proposals::current(repo, work)?;
+    let narrative = proposal
+        .narrative
+        .clone()
+        .ok_or_else(|| invalid("missing checked narrative"))?;
+    let publication =
+        super::render::publish_reviewed(repo, narrative, versions, work.snapshot.as_deref())?;
+    report.publication =
+        Some(serde_json::json!({"bundle":publication["bundle"],"status":publication["status"]}));
+    report.status = "ACCEPTED".into();
+    checkpoint.phase = "TERMINAL".into();
+    save_run_checkpoint(repo, report, checkpoint)
+}
+
 fn execute_run(
     repo: &Repository,
     work: &super::work::Work,
-    c: &Config,
+    config: &Config,
     report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
 ) -> Result<(), ClewError> {
+    let snapshot = work
+        .snapshot
+        .as_deref()
+        .ok_or_else(|| invalid("DOCS_REINDEX_REQUIRED: Work has no retained snapshot"))?;
+    if checkpoint.work != work.id || checkpoint.snapshot != snapshot {
+        return Err(invalid(
+            "RECOVERY_CHECKPOINT_MISMATCH: Work snapshot differs from the selected run phase",
+        ));
+    }
     if work.obligations.iter().any(|o| {
         matches!(
             o["kind"].as_str(),
@@ -1478,89 +2226,268 @@ fn execute_run(
             "NEEDS_EVIDENCE: restore required work inputs before dispatch",
         ));
     }
-    let mut pages = Vec::new();
-    let mut source_parts = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut seen_cursors = std::collections::BTreeSet::new();
-    let contract = c.author_output_contract.as_deref();
+    let contract = config.author_output_contract.as_deref();
     let process_overview = contract.is_none()
         && super::processes::overview(
             &work.checked,
             &work.subject,
             work.request.entrypoint.as_deref().unwrap_or(""),
         );
-    preflight_initial_context(repo, report, work, c, &pages, &source_parts)?;
-    loop {
-        if let Some(current) = cursor.as_ref()
-            && !seen_cursors.insert(current.clone())
-        {
-            return Err(invalid("NEEDS_EVIDENCE: initial Work page cursor repeated"));
+    let mut pages = checkpoint.pages.clone();
+    let mut source_parts = checkpoint.source_parts.clone();
+    if pages.is_empty() {
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::BTreeSet::new();
+        preflight_initial_context(repo, report, work, config, &pages, &source_parts)?;
+        loop {
+            if let Some(current) = cursor.as_ref()
+                && !seen_cursors.insert(current.clone())
+            {
+                return Err(invalid("NEEDS_EVIDENCE: initial Work page cursor repeated"));
+            }
+            let page = super::work::read_loaded(
+                repo,
+                work,
+                super::work::Selection {
+                    cursor: cursor.clone(),
+                    ..Default::default()
+                },
+            )?;
+            read_omitted_source_parts(repo, work, &page, &mut source_parts, config, report)?;
+            let next_cursor = page["nextCursor"].as_str().map(str::to_owned);
+            if next_cursor
+                .as_deref()
+                .is_some_and(|next| cursor.as_deref() == Some(next))
+            {
+                return Err(invalid(
+                    "NEEDS_EVIDENCE: initial Work page made no cursor progress",
+                ));
+            }
+            pages.push(page);
+            preflight_initial_context(repo, report, work, config, &pages, &source_parts)?;
+            cursor = next_cursor;
+            if cursor.is_none() {
+                break;
+            }
         }
-        let page = super::work::read_loaded(
-            repo,
-            work,
-            super::work::Selection {
-                cursor: cursor.clone(),
-                ..Default::default()
-            },
-        )?;
-        read_omitted_source_parts(repo, work, &page, &mut source_parts, c, report)?;
-        let next_cursor = page["nextCursor"].as_str().map(str::to_owned);
-        if next_cursor
-            .as_deref()
-            .is_some_and(|next| cursor.as_deref() == Some(next))
+        // Reject an unaffordable immutable context before source recheck.
+        super::proposals::current(repo, work)?;
+        let reads = super::work::read_state(repo, &work.id)?;
+        let delivered_parts =
+            super::work_parts::delivered_source_references(work, &reads, &source_parts)?;
+        if reads.untracked_reads
+            || !super::work_parts::initial_context_complete_with_packet_parts(
+                work,
+                &reads,
+                &delivered_parts,
+            )?
         {
             return Err(invalid(
-                "NEEDS_EVIDENCE: initial Work page made no cursor progress",
+                "NEEDS_EVIDENCE: work influence, initial reads, or packet-delivered SOURCE parts are incomplete",
             ));
         }
-        pages.push(page);
-        preflight_initial_context(repo, report, work, c, &pages, &source_parts)?;
-        cursor = next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    // Reject an unaffordable immutable context before work performs its
-    // source recheck. Freshness validation still precedes reservation/dispatch.
-    super::proposals::current(repo, work)?;
-    let reads = super::work::read_state(repo, &work.id)?;
-    let delivered_parts =
-        super::work_parts::delivered_source_references(work, &reads, &source_parts)?;
-    if reads.untracked_reads
-        || !super::work_parts::initial_context_complete_with_packet_parts(
-            work,
-            &reads,
-            &delivered_parts,
-        )?
-    {
+        checkpoint.repairs_remaining = config.repair_attempts;
+        checkpoint.expansions_remaining = config.expansions;
+        checkpoint.fallback = false;
+        checkpoint.fallback_candidates = 0;
+        persist_phase(
+            repo,
+            report,
+            checkpoint,
+            "AUTHOR",
+            &pages,
+            &source_parts,
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+            config.repair_attempts,
+            config.expansions,
+            false,
+            0,
+        )?;
+    } else if digest(&super::work::read_state(repo, &work.id)?)? != checkpoint.read_digest {
         return Err(invalid(
-            "NEEDS_EVIDENCE: work influence, initial reads, or packet-delivered SOURCE parts are incomplete",
+            "RECOVERY_CONTEXT_MISMATCH: Work read state changed since the selected checkpoint",
         ));
     }
-    reserve(repo, c, &report.run)?;
-    let mut feedback = Value::Null;
-    let mut previous = Value::Null;
-    let mut previous_section = Value::Null;
-    let mut repairs = c.repair_attempts;
-    let mut expansions = c.expansions;
-    let mut fallback = false;
-    let mut fallback_candidates = 0;
+    ensure_reserved(repo, config, &report.run)?;
+    if checkpoint.phase != "PUBLISH" {
+        super::proposals::current(repo, work)?;
+    }
+    let mut feedback = checkpoint.feedback.clone();
+    let mut previous = checkpoint.previous.clone();
+    let mut previous_section = checkpoint.previous_section.clone();
+    let mut repairs = checkpoint.repairs_remaining;
+    let mut expansions = checkpoint.expansions_remaining;
+    let mut fallback = checkpoint.fallback;
+    let mut fallback_candidates = checkpoint.fallback_candidates;
+
     loop {
+        if checkpoint.phase == "PUBLISH" {
+            return publish_checkpoint(repo, work, report, checkpoint);
+        }
+        if checkpoint.phase == "REVIEWER" {
+            let proposal_id = checkpoint.proposal_id.as_deref().ok_or_else(|| {
+                invalid("RECOVERY_CHECKPOINT_CORRUPT: reviewer phase has no proposal")
+            })?;
+            let proposal = super::proposals::load(repo, proposal_id)?;
+            let read_state = super::work::read_state(repo, &work.id)?;
+            let read_digest = digest(&read_state)?;
+            if read_digest != checkpoint.read_digest {
+                return Err(invalid(
+                    "RECOVERY_CONTEXT_MISMATCH: reviewer read state differs from its selected phase",
+                ));
+            }
+            let evidence_digest =
+                digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
+            let payload = reviewer_payload_with_parts(
+                work,
+                &pages,
+                &source_parts,
+                &proposal,
+                &evidence_digest,
+                contract.is_some(),
+                &read_state,
+            )?;
+            checkpoint.proposal_read_digest = Some(read_digest.clone());
+            checkpoint.proposal_evidence_digest = Some(evidence_digest.clone());
+            if checkpoint.pending_call.is_none() {
+                save_run_checkpoint(repo, report, checkpoint)?;
+            }
+            let (result, invocation, driver_digest) = call(
+                repo,
+                config,
+                report,
+                checkpoint,
+                "reviewer",
+                &config.reviewer,
+                payload,
+                None,
+            )?;
+            if result["action"] == "expand" {
+                if contract.is_some() {
+                    super::section_author::validate_expand(&result)?;
+                }
+                add_expansion(
+                    repo,
+                    work,
+                    &result,
+                    &mut ExpansionContext {
+                        pages: &mut pages,
+                        source_parts: &mut source_parts,
+                        remaining: &mut expansions,
+                        config,
+                        report,
+                    },
+                )?;
+                persist_phase(
+                    repo,
+                    report,
+                    checkpoint,
+                    "REVIEWER",
+                    &pages,
+                    &source_parts,
+                    &feedback,
+                    &previous,
+                    &previous_section,
+                    repairs,
+                    expansions,
+                    fallback,
+                    fallback_candidates,
+                )?;
+                continue;
+            }
+            if result["action"] != "review"
+                || result
+                    .as_object()
+                    .is_none_or(|m| m.keys().any(|k| !matches!(k.as_str(), "action" | "review")))
+            {
+                return Err(invalid("reviewer result has an invalid action"));
+            }
+            let review: super::review::MeaningReview =
+                serde_json::from_value(result["review"].clone())
+                    .map_err(|_| invalid("review violates its closed schema"))?;
+            let reviewer_delivered = super::section_author::reviewer_delivered_handles(
+                work,
+                &pages,
+                &source_parts,
+                &read_state,
+            )?;
+            super::section_author::validate_reviewer_issue_evidence(&review, &reviewer_delivered)?;
+            super::review::validate(work, &proposal, &review, &evidence_digest)?;
+            report.review = Some(result["review"].clone());
+            report.status = "REVIEWED".into();
+            checkpoint.review = report.review.clone();
+            checkpoint.reviewer_invocation = Some(invocation.clone());
+            checkpoint.reviewer_driver_digest = Some(driver_digest.clone());
+            checkpoint.reviewer_identity = checkpoint
+                .pending_call
+                .as_ref()
+                .map(|pending| pending.identity.clone());
+            if review.verdict == "NEEDS_EVIDENCE" {
+                save_run_checkpoint(repo, report, checkpoint)?;
+                return Err(invalid(
+                    "NEEDS_EVIDENCE: reviewer requires unavailable evidence; inspect its recorded issues",
+                ));
+            }
+            if review.verdict == "APPROVE" {
+                checkpoint.pending_call = None;
+                persist_phase(
+                    repo,
+                    report,
+                    checkpoint,
+                    "PUBLISH",
+                    &pages,
+                    &source_parts,
+                    &feedback,
+                    &previous,
+                    &previous_section,
+                    repairs,
+                    expansions,
+                    fallback,
+                    fallback_candidates,
+                )?;
+                return publish_checkpoint(repo, work, report, checkpoint);
+            }
+            feedback = serde_json::json!({"kind":"MEANING_REVIEW_ISSUES","issues":review.issues,"limitations":review.limitations});
+            previous = serde_json::to_value(&proposal.input).map_err(io_error)?;
+            advance_after_feedback(
+                repo,
+                report,
+                checkpoint,
+                config,
+                &pages,
+                &source_parts,
+                &feedback,
+                &previous,
+                &previous_section,
+                &mut repairs,
+                expansions,
+                &mut fallback,
+                &mut fallback_candidates,
+            )?;
+            continue;
+        }
+        if checkpoint.phase != "AUTHOR" {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_CORRUPT: unsupported nonterminal execution phase",
+            ));
+        }
         let (role, driver) = if fallback {
             (
                 "fallback",
-                c.fallback
+                config
+                    .fallback
                     .as_ref()
                     .ok_or_else(|| invalid("REPAIR_EXHAUSTED"))?,
             )
         } else {
-            ("author", &c.author)
+            ("author", &config.author)
         };
         let payload = selected_author_payload(
             repo,
             work,
-            c,
+            config,
             &AuthorPrompt {
                 pages: &pages,
                 source_parts: &source_parts,
@@ -1578,7 +2505,16 @@ fn execute_run(
         } else {
             None
         };
-        let (result, invocation, _) = call(repo, c, report, role, driver, payload, author_binding)?;
+        let (result, invocation, _) = call(
+            repo,
+            config,
+            report,
+            checkpoint,
+            role,
+            driver,
+            payload,
+            author_binding,
+        )?;
         match result["action"].as_str() {
             Some("expand") => {
                 if contract.is_some() {
@@ -1592,9 +2528,24 @@ fn execute_run(
                         pages: &mut pages,
                         source_parts: &mut source_parts,
                         remaining: &mut expansions,
-                        config: c,
+                        config,
                         report,
                     },
+                )?;
+                persist_phase(
+                    repo,
+                    report,
+                    checkpoint,
+                    "AUTHOR",
+                    &pages,
+                    &source_parts,
+                    &feedback,
+                    &previous,
+                    &previous_section,
+                    repairs,
+                    expansions,
+                    fallback,
+                    fallback_candidates,
                 )?;
                 continue;
             }
@@ -1617,7 +2568,6 @@ fn execute_run(
             ));
         }
         report.status = "AUTHORED".into();
-        save_report(repo, report)?;
         let input = if let Some(contract) = contract {
             if contract != super::section_author::CONTRACT {
                 return Err(invalid(
@@ -1678,10 +2628,7 @@ fn execute_run(
                 {
                     attempt.adapted_proposal = Some(proposal_id.into());
                 }
-                save_report(repo, report)?;
             }
-            report.status = "CHECKED".into();
-            save_report(repo, report)?;
             if !proposal.status.starts_with("READY_") {
                 if proposal.diagnostics.iter().any(|d| {
                     matches!(
@@ -1698,241 +2645,307 @@ fn execute_run(
                     ));
                 }
                 feedback = serde_json::json!({"kind":"MACHINE_DIAGNOSTICS","diagnostics":proposal.diagnostics});
-            } else {
-                loop {
-                    let read_state = super::work::read_state(repo, &work.id)?;
-                    let read_digest = digest(&read_state)?;
-                    let evidence_digest =
-                        digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
-                    let payload = reviewer_payload_with_parts(
-                        work,
-                        &pages,
-                        &source_parts,
-                        &proposal,
-                        &evidence_digest,
-                        contract.is_some(),
-                        &read_state,
-                    )?;
-                    let (result, invocation, driver_digest) =
-                        call(repo, c, report, "reviewer", &c.reviewer, payload, None)?;
-                    if result["action"] == "expand" {
-                        if contract.is_some() {
-                            super::section_author::validate_expand(&result)?;
-                        }
-                        add_expansion(
-                            repo,
-                            work,
-                            &result,
-                            &mut ExpansionContext {
-                                pages: &mut pages,
-                                source_parts: &mut source_parts,
-                                remaining: &mut expansions,
-                                config: c,
-                                report,
-                            },
-                        )?;
-                        continue;
-                    }
-                    if result["action"] != "review"
-                        || result.as_object().is_none_or(|m| {
-                            m.keys().any(|k| !matches!(k.as_str(), "action" | "review"))
-                        })
-                    {
-                        return Err(invalid("reviewer result has an invalid action"));
-                    }
-                    let review: super::review::MeaningReview =
-                        serde_json::from_value(result["review"].clone())
-                            .map_err(|_| invalid("review violates its closed schema"))?;
-                    let reviewer_delivered = super::section_author::reviewer_delivered_handles(
-                        work,
-                        &pages,
-                        &source_parts,
-                        &read_state,
-                    )?;
-                    super::section_author::validate_reviewer_issue_evidence(
-                        &review,
-                        &reviewer_delivered,
-                    )?;
-                    super::review::validate(work, &proposal, &review, &evidence_digest)?;
-                    report.review = Some(result["review"].clone());
-                    report.status = "REVIEWED".into();
-                    save_report(repo, report)?;
-                    if review.verdict == "NEEDS_EVIDENCE" {
-                        return Err(invalid(
-                            "NEEDS_EVIDENCE: reviewer requires unavailable evidence; inspect its recorded issues",
-                        ));
-                    }
-                    if review.verdict == "APPROVE" {
-                        super::proposals::current(repo, work)?;
-                        let versions = super::review::versions(
-                            work,
-                            &proposal,
-                            &review,
-                            &invocation,
-                            &driver_digest,
-                            &evidence_digest,
-                            &read_digest,
-                        )?;
-                        let publication = super::render::publish_reviewed(
-                            repo,
-                            proposal
-                                .narrative
-                                .clone()
-                                .ok_or_else(|| invalid("missing checked narrative"))?,
-                            versions,
-                            work.snapshot.as_deref(),
-                        )?;
-                        report.publication = Some(
-                            serde_json::json!({"bundle":publication["bundle"],"status":publication["status"]}),
-                        );
-                        report.status = "ACCEPTED".into();
-                        save_report(repo, report)?;
-                        return Ok(());
-                    }
-                    feedback = serde_json::json!({"kind":"MEANING_REVIEW_ISSUES","issues":review.issues,"limitations":review.limitations});
-                    break;
-                }
+                advance_after_feedback(
+                    repo,
+                    report,
+                    checkpoint,
+                    config,
+                    &pages,
+                    &source_parts,
+                    &feedback,
+                    &previous,
+                    &previous_section,
+                    &mut repairs,
+                    expansions,
+                    &mut fallback,
+                    &mut fallback_candidates,
+                )?;
+                continue;
             }
+            checkpoint.proposal_id = Some(proposal_id.into());
+            checkpoint.proposal_read_digest = None;
+            checkpoint.proposal_evidence_digest = None;
+            checkpoint.reviewer_identity = None;
+            checkpoint.review = None;
+            report.status = "CHECKED".into();
+            persist_phase(
+                repo,
+                report,
+                checkpoint,
+                "REVIEWER",
+                &pages,
+                &source_parts,
+                &feedback,
+                &previous,
+                &previous_section,
+                repairs,
+                expansions,
+                fallback,
+                fallback_candidates,
+            )?;
+        } else {
+            advance_after_feedback(
+                repo,
+                report,
+                checkpoint,
+                config,
+                &pages,
+                &source_parts,
+                &feedback,
+                &previous,
+                &previous_section,
+                &mut repairs,
+                expansions,
+                &mut fallback,
+                &mut fallback_candidates,
+            )?;
         }
-        if !fallback && repairs > 0 {
-            repairs -= 1;
-            continue;
-        }
-        if c.fallback.is_some() && (!fallback || fallback_candidates + 1 < c.fallback_calls) {
-            fallback = true;
-            fallback_candidates += 1;
-            continue;
-        }
-        return Err(invalid(
-            "REPAIR_EXHAUSTED: proposal did not pass validation or review after the configured repair and fallback path",
-        ));
     }
 }
-struct RunLock(PathBuf);
+struct RunLock(File);
 impl Drop for RunLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // SAFETY: the guard owns this open lock descriptor until Drop.
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
+}
+
+fn acquire_run_lock(repo: &Repository, work: &str) -> Result<RunLock, ClewError> {
+    let path = repo.path(&format!(".codeclew/work/{work}/run.lock"))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(io_error)?;
+    if !file.metadata().map_err(io_error)?.is_file() {
+        return Err(invalid("documentation run lock is not a regular file"));
+    }
+    // SAFETY: flock takes ownership of no Rust state and the FD remains open
+    // for the complete coordinator run.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(crate::error::ClewError::new(
+                crate::error::ErrorCode::WwConflict,
+                "WORK_ALREADY_RUNNING: inspect or cancel the existing run before recovery",
+            ));
+        }
+        return Err(io_error(error));
+    }
+    Ok(RunLock(file))
 }
 pub fn run(
     repo: &Repository,
     id: &str,
     config_path: Option<&std::path::Path>,
 ) -> Result<Value, ClewError> {
+    // Hold stable per-Work ownership before loading or mutating repository state.
+    let _run_lock = acquire_run_lock(repo, id)?;
     let work = super::work::load(repo, id)?;
-    let pointer = repo.path(&format!(".codeclew/work/{id}/latest-run.json"))?;
-    if pointer.exists() {
-        let value = status(repo, id, None, 20)?;
-        if value["status"] == "ACCEPTED" {
-            return Ok(value);
-        }
-    }
     if work.snapshot.is_none() {
         return Err(crate::error::ClewError::new(
             crate::error::ErrorCode::StaleRequiresReslice,
             "DOCS_REINDEX_REQUIRED: Work requires a saved snapshot; prepare new Work before running an agent",
         ));
     }
-    let lock_path = repo.path(&format!(".codeclew/work/{id}/run.lock"))?;
-    use std::io::Write;
-    let mut lock = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-        .map_err(|_| {
-            invalid("WORK_ALREADY_RUNNING: inspect or cancel the existing run before recovery")
-        })?;
-    writeln!(lock, "{}", std::process::id()).map_err(io_error)?;
-    let _lock = RunLock(lock_path);
-    let mut report = RunReport {
-        schema: "codeclew-documentation-work-run/1.0".into(),
-        run: uuid::Uuid::new_v4().simple().to_string(),
-        work: id.into(),
-        status: "PREPARED".into(),
-        config_digest: None,
-        attempts: Vec::new(),
-        proposal: None,
-        review: None,
-        publication: None,
-        gap: None,
-        accounting: None,
-        context_budget: None,
-    };
-    save_report(repo, &report)?;
-    let config:Result<Config,ClewError>=config_path.ok_or_else(||invalid("MISSING_EXECUTION_CONFIGURATION: configure isolated author/reviewer drivers and finite budgets")).and_then(|path|store::read(path,store::MAX_RECORD));
-    let mut admitted = None;
-    let outcome = match config {
-        Ok(c) => {
-            report.config_digest = Some(digest(&c)?);
-            match validate_author_contract(&work, &c).and_then(|_| validate_config(repo, &c)) {
-                Ok(()) => {
-                    let result = execute_run(repo, &work, &c, &mut report);
-                    admitted = Some(c);
-                    result
+    let prior = latest_report(repo, id)?;
+    if prior
+        .as_ref()
+        .is_some_and(|report| report.status == "ACCEPTED")
+    {
+        return status(repo, id, None, 20);
+    }
+    let terminal_has_saved_output = prior.as_ref().is_some_and(terminal_has_saved_output);
+    if terminal_has_saved_output {
+        return Err(invalid(
+            "RECOVERY_TERMINAL_RESULT_PRESENT: this run already has recorded attempts or reusable output; inspect its retained report before preparing a new Work",
+        ));
+    }
+    let config: Result<Config, ClewError> = config_path
+        .ok_or_else(|| {
+            invalid("MISSING_EXECUTION_CONFIGURATION: configure isolated author/reviewer drivers and finite budgets")
+        })
+        .and_then(|path| store::read(path, store::MAX_RECORD));
+    let resume = prior.as_ref().is_some_and(should_resume);
+    if resume && config.is_err() {
+        return Err(invalid(format!(
+            "RECOVERY_CONFIG_MISMATCH: cannot resume a dispatched run without its execution configuration ({})",
+            config.as_ref().unwrap_err().message
+        )));
+    }
+    let (mut report, mut checkpoint, admitted) = if resume {
+        let c = config.as_ref().expect("resume checked configuration");
+        validate_author_contract(&work, c)?;
+        let driver_digests = validate_config(repo, c)?;
+        let config_digest = digest(c)?;
+        let report = prior.unwrap();
+        if report.config_digest.as_deref() != Some(config_digest.as_str()) {
+            return Err(invalid(
+                "RECOVERY_CONFIG_MISMATCH: execution configuration changed during a dispatched run",
+            ));
+        }
+        let checkpoint = load_run_checkpoint(repo, &report, &config_digest, &driver_digests)?
+            .ok_or_else(|| {
+                invalid("RECOVERY_CHECKPOINT_MISSING: active run has no phase record")
+            })?;
+        if work.snapshot.as_deref() != Some(checkpoint.snapshot.as_str()) {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_MISMATCH: selected Work snapshot changed during the run",
+            ));
+        }
+        (report, Some(checkpoint), Some(c.clone()))
+    } else {
+        let mut report = RunReport {
+            schema: "codeclew-documentation-work-run/1.0".into(),
+            run: uuid::Uuid::new_v4().simple().to_string(),
+            work: id.into(),
+            status: "PREPARED".into(),
+            config_digest: None,
+            attempts: Vec::new(),
+            proposal: None,
+            review: None,
+            publication: None,
+            gap: None,
+            accounting: None,
+            context_budget: None,
+            checkpoint: None,
+        };
+        let mut checkpoint = None;
+        let mut admitted = None;
+        if let Ok(c) = &config {
+            report.config_digest = Some(digest(c)?);
+            match validate_author_contract(&work, c).and_then(|_| validate_config(repo, c)) {
+                Ok(driver_digests) => {
+                    let checkpoint_value = RunCheckpoint::new(
+                        &report,
+                        work.snapshot.clone().unwrap_or_default(),
+                        report.config_digest.clone().unwrap(),
+                        driver_digests,
+                        digest(&super::work::read_state(repo, id)?)?,
+                    );
+                    checkpoint = Some(checkpoint_value);
+                    admitted = Some(c.clone());
                 }
-                Err(error) => Err(error),
+                Err(error) => {
+                    save_report(repo, &report)?;
+                    report.gap = Some(serde_json::json!({"reason":error.message}));
+                    return finalize_failed_run(repo, &work, &mut report, None, None, error);
+                }
             }
         }
-        Err(error) => Err(error),
+        save_report(repo, &report)?;
+        (report, checkpoint, admitted)
     };
-    if let Some(c) = admitted {
+
+    let outcome = match (&config, admitted.as_ref(), checkpoint.as_mut()) {
+        (Ok(c), Some(_), Some(checkpoint)) => {
+            if report.checkpoint.is_none() {
+                save_run_checkpoint(repo, &mut report, checkpoint)?;
+            }
+            execute_run(repo, &work, c, &mut report, checkpoint)
+        }
+        (Err(error), _, _) => Err(invalid(&error.message)),
+        _ => Err(invalid("execution configuration was not admitted")),
+    };
+    if let Err(error) = outcome {
+        if is_recovery_refusal(&error) {
+            return Err(error);
+        }
+        return finalize_failed_run(
+            repo,
+            &work,
+            &mut report,
+            checkpoint.as_mut(),
+            admitted.as_ref(),
+            error,
+        );
+    }
+    if let Some(c) = admitted.as_ref() {
         release_unused(repo, &c.budget, &report.run)?;
         let ledger = account(repo, &c.budget)?;
         report.accounting = Some(serde_json::json!(
-            ledger
-                .reservations
-                .iter()
-                .filter(|(_, r)| r.run == report.run)
-                .map(|(id, r)| serde_json::json!({"reservation":id,"record":r}))
+            ledger.reservations.iter()
+                .filter(|(_, reservation)| reservation.run == report.run)
+                .map(|(reservation_id, reservation)| serde_json::json!({"reservation":reservation_id,"record":reservation}))
                 .collect::<Vec<_>>()
         ));
     }
-    if let Err(error) = outcome {
-        report.status = if error.message.contains("CANCELLED") {
-            "CANCELLED"
-        } else if error.message.contains("EXHAUSTED") {
-            "EXHAUSTED"
-        } else if error.message.contains("NEEDS_EVIDENCE")
-            || matches!(error.code, crate::error::ErrorCode::StaleRequiresReslice)
-        {
-            "NEEDS_EVIDENCE"
+    save_report(repo, &report)?;
+    status(repo, id, None, 20)
+}
+
+fn finalize_failed_run(
+    repo: &Repository,
+    work: &super::work::Work,
+    report: &mut RunReport,
+    checkpoint: Option<&mut RunCheckpoint>,
+    config: Option<&Config>,
+    error: ClewError,
+) -> Result<Value, ClewError> {
+    if let Some(config) = config {
+        release_unused(repo, &config.budget, &report.run)?;
+        let ledger = account(repo, &config.budget)?;
+        report.accounting = Some(serde_json::json!(
+            ledger.reservations.iter()
+                .filter(|(_, reservation)| reservation.run == report.run)
+                .map(|(reservation_id, reservation)| serde_json::json!({"reservation":reservation_id,"record":reservation}))
+                .collect::<Vec<_>>()
+        ));
+    }
+    report.status = if error.message.contains("CANCELLED") {
+        "CANCELLED"
+    } else if error.message.contains("EXHAUSTED") {
+        "EXHAUSTED"
+    } else if error.message.contains("NEEDS_EVIDENCE")
+        || matches!(error.code, crate::error::ErrorCode::StaleRequiresReslice)
+    {
+        "NEEDS_EVIDENCE"
+    } else {
+        "GENERATION_GAP"
+    }
+    .into();
+    report.gap = Some(serde_json::json!({
+        "reason":error.message,
+        "nextAction":"Inspect the recorded limitation, restore evidence or execution configuration, then prepare work against the latest publication."
+    }));
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.phase = "TERMINAL".into();
+        save_run_checkpoint(repo, report, checkpoint)?;
+    }
+    if report.status != "CANCELLED"
+        && !error.message.contains("INPUT_CAP_EXCEEDED")
+        && !error.message.contains("AUTHOR_CONTRACT_")
+        && !error
+            .message
+            .contains("INITIAL_SOURCE_EXCEEDS_WORK_BYTE_BUDGET")
+    {
+        let failure = BTreeMap::from([(
+            work.subject.clone(),
+            serde_json::json!({"reason":"GENERATION_GAP","nextAction":error.message}),
+        )]);
+        let publication = if let Some(snapshot) = work.snapshot.as_deref() {
+            super::render::publish_from_snapshot(repo, vec![], false, failure, snapshot)
         } else {
-            "GENERATION_GAP"
-        }
-        .into();
-        report.gap = Some(
-            serde_json::json!({"reason":error.message,"nextAction":"Inspect the recorded limitation, restore evidence or execution configuration, then prepare work against the latest publication."}),
-        );
-        if !error.message.contains("INPUT_CAP_EXCEEDED")
-            && !error.message.contains("AUTHOR_CONTRACT_")
-            && !error
-                .message
-                .contains("INITIAL_SOURCE_EXCEEDS_WORK_BYTE_BUDGET")
-        {
-            let failure = BTreeMap::from([(
-                work.subject.clone(),
-                serde_json::json!({"reason":"GENERATION_GAP","nextAction":error.message}),
-            )]);
-            let publication = if let Some(snapshot) = work.snapshot.as_deref() {
-                super::render::publish_from_snapshot(repo, vec![], false, failure, snapshot)
-            } else {
-                super::render::publish_with_failures(repo, vec![], false, failure)
-            };
-            match publication {
-                Ok(publication) => {
-                    report.publication = Some(
-                        serde_json::json!({"bundle":publication["bundle"],"status":publication["status"]}),
-                    )
-                }
-                Err(error) => {
-                    report.gap.as_mut().unwrap()["publicationFailure"] =
-                        serde_json::json!(error.message);
-                }
+            super::render::publish_with_failures(repo, vec![], false, failure)
+        };
+        match publication {
+            Ok(publication) => {
+                report.publication = Some(
+                    serde_json::json!({"bundle":publication["bundle"],"status":publication["status"]}),
+                )
+            }
+            Err(error) => {
+                report.gap.as_mut().unwrap()["publicationFailure"] =
+                    serde_json::json!(error.message);
             }
         }
     }
-    save_report(repo, &report)?;
-    status(repo, id, None, 20)
+    save_report(repo, report)?;
+    status(repo, &report.work, None, 20)
 }
 
 #[cfg(test)]
@@ -1992,6 +3005,116 @@ mod input_cap_tests {
             }
             _ => {}
         }
+    }
+
+    #[test]
+    fn checkpointed_zero_attempt_run_keeps_its_original_reservations() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Run recovery").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let maximum = Amount {
+            input_tokens: 100,
+            output_tokens: 10,
+            cost_units: 1,
+        };
+        let role = Role {
+            adapter: "macos-seatbelt-stdio/1.0".into(),
+            model: "resume-fixture".into(),
+            usage_authority: "MAXIMUM_ONLY".into(),
+            command: vec!["/usr/bin/true".into()],
+            runtime_reads: Vec::new(),
+            environment: Vec::new(),
+            network: false,
+            cap: Cap {
+                maximum: maximum.clone(),
+                overhead_input_tokens: 0,
+                timeout_ms: 1_000,
+                output_bytes: 1_024,
+            },
+        };
+        let config = Config {
+            schema: "codeclew-documentation-execution/1.0".into(),
+            author: role.clone(),
+            reviewer: role,
+            author_output_contract: None,
+            fallback: None,
+            author_calls: 2,
+            reviewer_calls: 2,
+            fallback_calls: 0,
+            repair_attempts: 1,
+            expansions: 0,
+            budget: Budget {
+                account: "resume-fixture".into(),
+                cost_unit: "fixture-unit".into(),
+                ceiling: Amount {
+                    input_tokens: 2_000,
+                    output_tokens: 200,
+                    cost_units: 20,
+                },
+                stop_loss: Amount {
+                    input_tokens: 1_000,
+                    output_tokens: 100,
+                    cost_units: 10,
+                },
+            },
+        };
+        let run = "c".repeat(32);
+        let mut reserved = reserve(&repo, &config, &run).unwrap();
+        reserved.sort();
+        let report = RunReport {
+            schema: "codeclew-documentation-work-run/1.0".into(),
+            run: run.clone(),
+            work: "a".repeat(64),
+            status: "PREPARED".into(),
+            config_digest: Some(digest(&config).unwrap()),
+            attempts: Vec::new(),
+            proposal: None,
+            review: None,
+            publication: None,
+            gap: None,
+            accounting: None,
+            context_budget: None,
+            checkpoint: Some(recovery::CheckpointRef {
+                schema: "codeclew-documentation-recovery-checkpoint-ref/1.0".into(),
+                run: run.clone(),
+                sequence: 1,
+                checkpoint_digest: format!("sha256:{}", "0".repeat(64)),
+            }),
+        };
+        assert!(should_resume(&report));
+        assert!(!terminal_has_saved_output(&report));
+        let before = account(&repo, &config.budget).unwrap();
+        assert_eq!(
+            before
+                .reservations
+                .iter()
+                .filter(|(_, value)| value.run == run && value.status == "RESERVED")
+                .count(),
+            reserved.len()
+        );
+
+        ensure_reserved(&repo, &config, &run).unwrap();
+
+        let after = account(&repo, &config.budget).unwrap();
+        let after_ids: Vec<_> = after
+            .reservations
+            .iter()
+            .filter(|(_, value)| value.run == run)
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert_eq!(after_ids, reserved);
+        for id in &reserved {
+            assert_eq!(
+                serde_json::to_value(&before.reservations[id]).unwrap(),
+                serde_json::to_value(&after.reservations[id]).unwrap()
+            );
+        }
+        assert!(is_recovery_refusal(&invalid(
+            "RECOVERY_RESULT_CORRUPT: fixture"
+        )));
+        assert!(!is_recovery_refusal(&invalid(
+            "ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH"
+        )));
     }
 
     #[test]
@@ -2397,6 +3520,7 @@ mod input_cap_tests {
             gap: None,
             accounting: None,
             context_budget: None,
+            checkpoint: None,
         };
         let mut driver = Role {
             adapter: "test-only".into(),
@@ -2448,5 +3572,179 @@ mod input_cap_tests {
         assert!(ensure_input_cap(&driver, &actual).is_err());
         driver.cap.overhead_input_tokens = u64::MAX;
         assert!(ensure_input_cap(&driver, &actual).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn saved_author_result_replays_from_dispatched_reservation_without_second_call() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Agent recovery").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let work = "a".repeat(64);
+        let run = "b".repeat(32);
+        let maximum = Amount {
+            input_tokens: 20_000,
+            output_tokens: 2_000,
+            cost_units: 10,
+        };
+        let driver = Role {
+            adapter: "macos-seatbelt-stdio/1.0".into(),
+            model: "recovery-fixture".into(),
+            usage_authority: "TRANSPORT_METADATA".into(),
+            command: vec!["/usr/bin/true".into()],
+            runtime_reads: Vec::new(),
+            environment: Vec::new(),
+            network: false,
+            cap: Cap {
+                maximum: maximum.clone(),
+                overhead_input_tokens: 3,
+                timeout_ms: 1_000,
+                output_bytes: 16_384,
+            },
+        };
+        let config = Config {
+            schema: "codeclew-documentation-execution/1.0".into(),
+            author: driver.clone(),
+            reviewer: driver.clone(),
+            author_output_contract: None,
+            fallback: None,
+            author_calls: 1,
+            reviewer_calls: 1,
+            fallback_calls: 0,
+            repair_attempts: 0,
+            expansions: 0,
+            budget: Budget {
+                account: "recovery-fixture".into(),
+                cost_unit: "fixture-unit".into(),
+                ceiling: Amount {
+                    input_tokens: 100_000,
+                    output_tokens: 10_000,
+                    cost_units: 100,
+                },
+                stop_loss: Amount {
+                    input_tokens: 90_000,
+                    output_tokens: 9_000,
+                    cost_units: 90,
+                },
+            },
+        };
+        let config_digest = digest(&config).unwrap();
+        let admission = super::super::agent_adapter::admit(&repo, &driver).unwrap();
+        let driver_digest = admission["driverDigest"].as_str().unwrap().to_owned();
+        let read_digest = digest(&super::super::work::read_state(&repo, &work).unwrap()).unwrap();
+        let mut report = RunReport {
+            schema: "codeclew-documentation-work-run/1.0".into(),
+            run: run.clone(),
+            work: work.clone(),
+            status: "PREPARED".into(),
+            config_digest: Some(config_digest.clone()),
+            attempts: Vec::new(),
+            proposal: None,
+            review: None,
+            publication: None,
+            gap: None,
+            accounting: None,
+            context_budget: None,
+            checkpoint: None,
+        };
+        let mut checkpoint = RunCheckpoint::new(
+            &report,
+            format!("sha256:{}/1", "0".repeat(64)),
+            config_digest.clone(),
+            BTreeMap::from([("author".into(), driver_digest.clone())]),
+            read_digest,
+        );
+        checkpoint.pages = vec![json!({"items":[],"nextCursor":null})];
+        let reservation_ids = reserve(&repo, &config, &run).unwrap();
+        let reservation_id = reservation_ids.first().unwrap().clone();
+        let invocation = uuid::Uuid::new_v4().simple().to_string();
+        let request = job_envelope(
+            &report,
+            "author",
+            &driver,
+            &invocation,
+            json!({"instruction":"fixture author request"}),
+        );
+        let input = recovery::InputRecord::new(
+            recovery::CallBinding {
+                run: run.clone(),
+                work: work.clone(),
+                snapshot: checkpoint.snapshot.clone(),
+                reservation: reservation_id.clone(),
+                invocation: invocation.clone(),
+                role: "author".into(),
+                model: driver.model.clone(),
+                usage_authority: driver.usage_authority.clone(),
+                config_digest,
+                driver_digest: driver_digest.clone(),
+            },
+            request.clone(),
+        )
+        .unwrap();
+        recovery::save_input(&repo, &input).unwrap();
+        dispatch_reserved(&repo, &config.budget, &reservation_id, &run, "author").unwrap();
+        let request_bytes = bytes(&request).unwrap().len();
+        report.attempts.push(Attempt {
+            invocation: invocation.clone(),
+            model: driver.model.clone(),
+            usage_authority: driver.usage_authority.clone(),
+            role: "author".into(),
+            input_digest: input.identity.input_digest.clone(),
+            request_bytes: Some(request_bytes),
+            reservation: reservation_id.clone(),
+            status: "DISPATCHED".into(),
+            admission,
+            failure: None,
+            usage: None,
+            result_digest: None,
+            captured_stdout_bytes: 0,
+            captured_stderr_bytes: 0,
+            author_contract: None,
+            adapted_proposal: None,
+        });
+        checkpoint.pending_call = Some(PendingCall {
+            identity: input.identity.clone(),
+            status: "DISPATCHED".into(),
+            failure: None,
+        });
+        // Simulate interruption after the validated result is durable but
+        // before the selected checkpoint/account reconciliation advances.
+        let authored = json!({"action":"proposal","proposal":{"fixture":"saved"}});
+        recovery::save_result(
+            &repo,
+            &input,
+            Some(Usage {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                cost_units: Some(1),
+            }),
+            authored.clone(),
+            128,
+            0,
+        )
+        .unwrap();
+        save_run_checkpoint(&repo, &mut report, &checkpoint).unwrap();
+
+        let (replayed, replayed_invocation, replayed_driver) = call(
+            &repo,
+            &config,
+            &mut report,
+            &mut checkpoint,
+            "author",
+            &driver,
+            request["payload"].clone(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(replayed, authored);
+        assert_eq!(replayed_invocation, invocation);
+        assert_eq!(replayed_driver, driver_digest);
+        assert_eq!(report.attempts.len(), 1);
+        assert_eq!(report.attempts[0].status, "COMPLETED");
+        let saved_reservation =
+            reservation(&repo, &config.budget, &reservation_id, &run, "author").unwrap();
+        assert_eq!(saved_reservation.status, "RECONCILED");
+        assert_eq!(saved_reservation.charged.input_tokens, 13);
+        assert_eq!(saved_reservation.charged.output_tokens, 5);
     }
 }
