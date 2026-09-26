@@ -196,6 +196,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn interrupted_new_root_activation_retries_after_process_kill() {
+        use std::os::unix::fs::MetadataExt;
+
         if let Some(path) = std::env::var_os("CODECLEW_CRASH_ROOT") {
             Repository::init(std::path::Path::new(&path), "Storage fixture").unwrap();
             std::process::abort();
@@ -212,9 +214,13 @@ mod tests {
         assert!(!child.wait().unwrap().success());
         assert!(!root.path().join("codeclew-docs.yaml").exists());
         assert!(!root.path().join(MARKER).exists());
-        fs::remove_file(root.path().join(".codeclew/write.lock")).unwrap();
+        let lock_path = root.path().join(".codeclew/write.lock");
+        let crashed_lock = fs::metadata(&lock_path).unwrap();
         let initialized = Repository::init(root.path(), "Storage fixture").unwrap();
         assert_eq!(initialized["status"], "READY");
+        let retried_lock = fs::metadata(&lock_path).unwrap();
+        assert_eq!(retried_lock.dev(), crashed_lock.dev());
+        assert_eq!(retried_lock.ino(), crashed_lock.ino());
         let repo = Repository::open(root.path()).unwrap();
         assert!(repo.root.join(&layout(&repo).database).is_file());
     }
