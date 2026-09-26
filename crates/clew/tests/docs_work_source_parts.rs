@@ -665,15 +665,15 @@ fn source_part_requests_are_strict_work_scoped_retryable_and_concurrency_safe() 
         let output = if output.status.success() {
             output
         } else {
-            let detail = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(
-                detail.contains("documentation writer lock exists"),
-                "{detail}"
-            );
+            let error: Value =
+                serde_json::from_slice(&output.stdout).unwrap_or_else(|parse_error| {
+                    panic!(
+                        "could not parse conflict error JSON ({parse_error}); stdout={} stderr={}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    )
+                });
+            assert_eq!(error["error"]["code"], "WW_CONFLICT", "{error}");
             f.run_raw(args)
         };
         assert!(
@@ -1788,10 +1788,13 @@ fn manual_source_parts_do_not_dispatch_or_publish_an_oversized_author_request() 
     )
     .unwrap();
     fs::set_permissions(&driver, fs::Permissions::from_mode(0o700)).unwrap();
-    let config = f.input(
-        "source-part-execution.json",
-        &execution_config(&driver, "source-parts-fixture"),
+    let mut config_value = execution_config(&driver, "source-parts-fixture");
+    config_value["author"]["cap"]["maximum"]["inputTokens"] = json!(100_000);
+    assert_eq!(
+        config_value["reviewer"]["cap"]["maximum"]["inputTokens"],
+        json!(1_000_000)
     );
+    let config = f.input("source-part-execution.json", &config_value);
 
     fs::rename(&source_repo, source_repo.with_extension("offline")).unwrap();
     let latest_path = f.docs.join(".codeclew/cache/latest-check.json");
@@ -1831,24 +1834,12 @@ fn manual_source_parts_do_not_dispatch_or_publish_an_oversized_author_request() 
         String::from_utf8_lossy(&output.stderr)
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "NEEDS_EVIDENCE", "{result}");
+    assert_eq!(result["status"], "GENERATION_GAP", "{result}");
     assert!(
         result["gap"]["reason"]
             .as_str()
             .unwrap()
-            .contains("INITIAL_SOURCE_EXCEEDS_WORK_BYTE_BUDGET")
-    );
-    assert!(
-        result["gap"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("Manual docs work read-part")
-    );
-    assert!(
-        result["gap"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("automatic author request")
+            .contains("INPUT_CAP_EXCEEDED: SOURCE_PART packet alone exceeds the author input cap")
     );
     assert!(result["publication"].is_null(), "{result}");
     assert_eq!(fs::read(&index_path).unwrap(), index_before);
@@ -1863,6 +1854,24 @@ fn manual_source_parts_do_not_dispatch_or_publish_an_oversized_author_request() 
         ".codeclew/jobs/{}.json",
         result["run"].as_str().unwrap()
     )));
+    assert_eq!(
+        report["contextBudget"]["stage"], "SOURCE_PART_PACKET_LOWER_BOUND",
+        "{report}"
+    );
+    assert_eq!(
+        report["contextBudget"]["status"], "LOWER_BOUND_EXCEEDS_CAP",
+        "{report}"
+    );
+    assert_eq!(report["contextBudget"]["authorInputCapBytes"], 100_000);
+    assert_eq!(report["contextBudget"]["reviewerInputCapBytes"], 1_000_000);
+    assert!(
+        report["contextBudget"]["sourcePartsArrayBytes"]
+            .as_u64()
+            .unwrap()
+            > report["contextBudget"]["authorInputCapBytes"]
+                .as_u64()
+                .unwrap()
+    );
     assert!(
         report["attempts"].as_array().unwrap().is_empty(),
         "{report}"
@@ -1919,7 +1928,7 @@ fn manual_source_parts_do_not_dispatch_or_publish_an_oversized_author_request() 
         &json!({
             "schema":"codeclew-source-part-author-guard-evidence/1.0",
             "status":result["status"],
-            "diagnosticCode":"INITIAL_SOURCE_EXCEEDS_WORK_BYTE_BUDGET",
+            "diagnosticCode":"INPUT_CAP_EXCEEDED",
             "diagnostic":result["gap"]["reason"],
             "manualPartCount":parts,
             "sourcePartReceiptCount":read_state.source_part_receipts.len(),
@@ -1998,7 +2007,7 @@ fn non_source_oversized_author_context_keeps_legacy_failure_publication() {
     assert_eq!(result["status"], "NEEDS_EVIDENCE", "{result}");
     assert_eq!(
         result["gap"]["reason"],
-        "NEEDS_EVIDENCE: a required initial record exceeds the work budget",
+        "NEEDS_EVIDENCE: a non-SOURCE initial or expanded record exceeds the admitted Work byte budget",
         "{result}"
     );
     assert!(result["publication"].is_object(), "{result}");

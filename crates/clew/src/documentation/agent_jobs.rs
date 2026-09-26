@@ -990,6 +990,36 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
         "sections":sections,
         "outputMode":if summary_only { "section-summary" } else { "proposal" },
     });
+    if !summary_only
+        && super::processes::overview(
+            &work.checked,
+            &work.subject,
+            work.request.entrypoint.as_deref().unwrap_or(""),
+        )
+    {
+        guidance["processQuestions"] = serde_json::json!([
+            {
+                "id":"trigger-inputs",
+                "readerQuestion":"Where evidence makes it material, what trigger starts this process and which supplied inputs affect its path?"
+            },
+            {
+                "id":"guards-order-outcomes",
+                "readerQuestion":"Which relevant helper checks, guards and early exits select branches, and what order of actions and outcomes does the evidence support?"
+            },
+            {
+                "id":"effects-failures",
+                "readerQuestion":"Which effects and failure branches can this process reach, and what completion or rollback behavior is actually shown?"
+            },
+            {
+                "id":"outbound-operations",
+                "readerQuestion":"For each material reachable outbound call, which protocol or client and operation are evidenced? Include HTTP method/path and exchanged request/response only when available."
+            },
+            {
+                "id":"configured-destination",
+                "readerQuestion":"For configured destinations, which configuration key supplies them, and is the actual resolved destination evidenced? Keep configured keys distinct from actual addresses."
+            }
+        ]);
+    }
     if summary_only {
         guidance["format"] = serde_json::json!(
             "Return only the admitted section title, summary with evidence and optional uncertainties. Do not emit diagrams, tables or a full proposal through this narrow contract."
@@ -1081,7 +1111,7 @@ fn author_payload_with_parts(
             }
         }
         let instruction = format!(
-            "{} This job writes one process overview: use entrypoint {}. Put the evidence-backed trigger, ordered behavior, decisions, error branches, outcomes and limits in summary.text using readable paragraphs with concrete behavior. steps must be []; contracts, participants and explanation must be omitted or []. assessment and dataflow must be omitted or null. Do not add a separate sequence operation to this proposal. Cite supplied references in summary.evidence. Put missing activation, provider or runtime proof in summary.uncertainty or proposal.uncertainties, or request a registered expansion. gaps is empty/omitted when an overview is supplied; only when no overview can be supported, use operations=[] and gaps keyed by the same scenario subject. Never invent gap label keys.",
+            "{} This job writes one process overview: use entrypoint {}. Address each material readerGuidance.processQuestions item where supported by delivered evidence; do not turn the checklist into a system inventory. Put the evidence-backed trigger, ordered behavior, decisions, error branches, outcomes and limits in summary.text using readable paragraphs with concrete behavior. steps must be []; contracts, participants and explanation must be omitted or []. assessment and dataflow must be omitted or null. Do not add a separate sequence operation to this proposal. Cite supplied references in summary.evidence. If necessary evidence is missing, request a registered expansion when it could resolve the question; otherwise state the precise limit in summary.uncertainty or proposal.uncertainties. gaps is empty/omitted when an overview is supplied; only when no overview can be supported, use operations=[] and gaps keyed by the same scenario subject. Never invent gap label keys.",
             payload["instruction"].as_str().unwrap_or(""),
             work.subject,
         );
@@ -1181,6 +1211,14 @@ fn reviewer_payload_with_parts(
         "languageContract":language_contract(work),
         "evidence":evidence_with_parts(work,pages,source_parts), "content":proposal.narrative, "claims":proposal.claims
     });
+    let process_overview = super::processes::overview(
+        &work.checked,
+        &work.subject,
+        work.request.entrypoint.as_deref().unwrap_or(""),
+    );
+    if process_overview {
+        payload["readerGuidance"] = reader_guidance(work, false);
+    }
     let schema_path = if section_contract {
         payload["outputContract"] = super::section_author::reviewer_binding_with_parts(
             work,
@@ -1202,10 +1240,16 @@ fn reviewer_payload_with_parts(
         )?;
         "outputSchema"
     };
+    let process_review_guidance = if process_overview {
+        " For this process overview, assess every material readerGuidance.processQuestions item against the summary and delivered evidence. If the answer omits material behavior that the packet does support, return verdict REJECT and add a blocking ERROR issue with claim=null and relevant delivered Work handles as evidence. A precise, evidence-scoped unknown is a valid answer when it still explains the selected process; this includes unresolved deployment destination, activation, persistence or provider completion. Request registered expansion when missing evidence blocks a useful explanation and a registered read could resolve it. Use NEEDS_EVIDENCE with the exact limitation only when missing evidence prevents a useful selected-process explanation and the limit cannot be honestly bounded. Do not demand irrelevant categories, invent values or turn missing evidence into a negative claim."
+    } else {
+        ""
+    };
     payload["instruction"] = serde_json::json!(format!(
-        "{} Follow {} exactly: assessedClaims and assessedOperations contain ID strings, while issue evidence contains delivered Work handles, not source IDs. Preserve the complete bound identity strings.",
+        "{} Follow {} exactly: assessedClaims and assessedOperations contain ID strings, while issue evidence contains delivered Work handles, not source IDs. Preserve the complete bound identity strings.{}",
         payload["instruction"].as_str().unwrap_or_default(),
-        schema_path
+        schema_path,
+        process_review_guidance
     ));
     Ok(payload)
 }
@@ -4430,6 +4474,15 @@ mod input_cap_tests {
         // There is no section target in this Work: generic review must not use
         // the section binding helper, which requires that unrelated target.
         let request = reviewer_payload(&work, &pages, &proposal, "evidence-digest", false).unwrap();
+        let author_request = author_payload(&work, &pages, &Value::Null, &Value::Null).unwrap();
+        assert_eq!(request["readerGuidance"], author_request["readerGuidance"]);
+        assert_eq!(
+            request["readerGuidance"]["processQuestions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
         assert_eq!(request["languageContract"]["documentationLanguage"], "ru");
         assert!(request.get("outputContract").is_none());
         let output = &request["outputSchema"];
@@ -4473,6 +4526,28 @@ mod input_cap_tests {
             properties["verdict"]["enum"],
             json!(["APPROVE", "REJECT", "NEEDS_EVIDENCE"])
         );
+
+        let mut ordinary_work = work.clone();
+        ordinary_work.subject = "service:orders".into();
+        ordinary_work.request.entrypoint = Some("section-egress".into());
+        let ordinary_author =
+            author_payload(&ordinary_work, &pages, &Value::Null, &Value::Null).unwrap();
+        assert!(
+            ordinary_author["readerGuidance"]
+                .get("processQuestions")
+                .is_none()
+        );
+        let mut ordinary_proposal = proposal.clone();
+        ordinary_proposal.narrative.as_mut().unwrap().subject = ordinary_work.subject.clone();
+        let ordinary_reviewer = reviewer_payload(
+            &ordinary_work,
+            &pages,
+            &ordinary_proposal,
+            "evidence-digest",
+            false,
+        )
+        .unwrap();
+        assert!(ordinary_reviewer.get("readerGuidance").is_none());
 
         let unknown_pages = vec![json!({"items":[{"reference":"unknown-handle"}]})];
         let error = reviewer_payload(&work, &unknown_pages, &proposal, "evidence-digest", false)
