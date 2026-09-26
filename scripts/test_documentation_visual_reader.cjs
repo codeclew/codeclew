@@ -47,6 +47,25 @@ test('default service overview exposes the first native graph and all visual nav
  assert.match(r.e('scenario-nav').innerHTML,/Select handler/);
  assert.equal(r.run('inventoryEntries().length'),0);
 });
+test('meaning review labels identify model approval in English and Russian',()=>{
+ const data=fixture();
+ data.sectionState.verification='VERIFIED';
+ data.operationStates['section-responsibilities']={freshness:'CURRENT',verification:'VERIFIED_WITH_LIMITATIONS'};
+ const en=load(data),enBanner=en.e('freshness-status').innerHTML,enPage=en.e('scenario-content').innerHTML;
+ assert.match(enBanner,/<strong>CURRENT<\/strong>/);
+ assert.match(enBanner,/Meaning review: Model approved/);
+ assert.match(enPage,/Meaning review: <b>Model approved with limitations<\/b>/);
+ assert.match(enBanner,/Model review approves an interpretation; evidence links do not prove every statement in the prose\./);
+ assert.equal(en.data.sectionState.verification,'VERIFIED');
+ const ru=load({...data,language:'ru'}),ruBanner=ru.e('freshness-status').innerHTML,ruPage=ru.e('scenario-content').innerHTML;
+ assert.match(ruBanner,/<strong>Актуально<\/strong>/);
+ assert.match(ruBanner,/Проверка смысла: Одобрено моделью/);
+ assert.match(ruPage,/Проверка смысла: <b>Одобрено моделью с оговорками<\/b>/);
+ assert.match(ruBanner,/Модельное одобрение — это оценка интерпретации; ссылки на источники не доказывают каждое утверждение в тексте\./);
+ assert.equal(ru.data.sectionState.verification,'VERIFIED');
+ const unassessedData=fixture();unassessedData.sectionState.verification='UNASSESSED';
+ assert.match(load(unassessedData).e('freshness-status').innerHTML,/Meaning review: UNASSESSED/);
+});
 test('decision and parent node links are reciprocal and preserve owner authority',()=>{
  const r=load(),key=r.run("visualKey('section-responsibilities','rules')");
  r.click({visualTarget:key});
@@ -174,7 +193,7 @@ test('authored overview visuals precede a separate unreviewed local outline',()=
  const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
  const authored=html.indexOf('Authored process overview visuals'),generated=html.indexOf('Static source outline');
  assert.ok(authored>=0&&generated>authored,html);
- assert.match(html,/Dispatch work/);assert.match(html,/Meaning review: <b>VERIFIED/);
+ assert.match(html,/Dispatch work/);assert.match(html,/Meaning review: <b>Model approved/);
  assert.match(html,/not an authored or reviewed explanation/);
 });
 
