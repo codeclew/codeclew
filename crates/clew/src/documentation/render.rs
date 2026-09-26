@@ -1921,10 +1921,13 @@ impl ProcessRootResolution<'_> {
     }
 }
 
+type ProcessRootSourceRecords = (BTreeMap<String, Source>, BTreeMap<String, String>);
+type ProcessOutlineProjection = (Value, BTreeMap<String, Source>, Option<(String, String)>);
+
 fn process_root_source_records(
     checked: &Check,
     root: &ProcessRootResolution<'_>,
-) -> Result<(BTreeMap<String, Source>, BTreeMap<String, String>), ClewError> {
+) -> Result<ProcessRootSourceRecords, ClewError> {
     let mut records = BTreeMap::new();
     let mut digests = BTreeMap::new();
     let (Some(service_id), [observation]) = (root.service.as_deref(), root.observations.as_slice())
@@ -1961,7 +1964,7 @@ fn process_outline_from_root(
     subject: &str,
     title: &str,
     root: &ProcessRootResolution<'_>,
-) -> Result<(Value, BTreeMap<String, Source>, Option<(String, String)>), ClewError> {
+) -> Result<ProcessOutlineProjection, ClewError> {
     let (sources, source_record_digests) = process_root_source_records(checked, root)?;
     let root_metadata = root.metadata(&source_record_digests);
     if let Some(reason) = root.gap {
@@ -3034,7 +3037,7 @@ fn publish_internal_phases(
                 }) {
                     let copied = if let Some((bundle, _)) = &previous {
                         copy_retained_process_outline(
-                            &repo,
+                            repo,
                             bundle,
                             outline,
                             &mut files,
@@ -3066,7 +3069,7 @@ fn publish_internal_phases(
                 let (outline, sources, artifact) = process_outline_from_root(
                     &checked,
                     subject,
-                    &data["process"]["definition"]["title"]
+                    data["process"]["definition"]["title"]
                         .as_str()
                         .unwrap_or(title),
                     &root,

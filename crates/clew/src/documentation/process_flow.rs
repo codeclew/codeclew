@@ -118,10 +118,10 @@ fn boundary_codes(documentation: &Value, events: &Value) -> Vec<String> {
     let mut codes = Vec::new();
     if let Some(rows) = documentation["boundaries"].as_array() {
         for row in rows {
-            if let Some(code) = row.as_str().filter(|code| !code.is_empty()) {
-                if !codes.iter().any(|old| old == code) {
-                    codes.push(code.to_owned());
-                }
+            if let Some(code) = row.as_str().filter(|code| !code.is_empty())
+                && !codes.iter().any(|old| old == code)
+            {
+                codes.push(code.to_owned());
             }
         }
     }
@@ -567,14 +567,13 @@ fn sequence_terminates(steps: &[ProjectionStep]) -> bool {
     last_terminates
 }
 
-fn if_regions(
-    steps: &[ProjectionStep],
-    start: usize,
-) -> Option<(usize, usize, Option<(usize, usize)>, usize)> {
+type IfRegionRanges = (usize, usize, Option<(usize, usize)>, usize);
+
+fn if_regions(steps: &[ProjectionStep], start: usize) -> Option<IfRegionRanges> {
     let mut depth = 1usize;
     let mut else_index = None;
-    for index in start + 1..steps.len() {
-        match &steps[index] {
+    for (index, step) in steps.iter().enumerate().skip(start + 1) {
+        match step {
             ProjectionStep::If(_) => depth += 1,
             ProjectionStep::Else if depth == 1 => {
                 if else_index.replace(index).is_some() {
