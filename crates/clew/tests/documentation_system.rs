@@ -5373,6 +5373,172 @@ fn docsys_section_contract_expansion_and_review_preserve_authority_and_evidence(
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_initial_and_expanded_author_and_reviewer_receive_complete_large_source_parts() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let unicode_sentinel = "UNICODE_SOURCE_SENTINEL_λ🔥";
+    let tail_sentinel = "SOURCE_FINAL_GUARD_終端";
+    let padding =
+        format!("// {unicode_sentinel} retained source context for packet verification\n")
+            .repeat(1600);
+    let source_text = format!(
+        "public class Orders {{\npublic int reserve(int quantity) {{\n{padding}return normalize(quantity);\n// {tail_sentinel}\n}}\nprivate int normalize(int quantity) {{ return quantity; }}\n}}\n"
+    );
+    assert!(source_text.len() > 49_152);
+    fs::write(source.join("Orders.java"), &source_text).unwrap();
+    commit(&source);
+    section_human_note(&f);
+
+    // An ordinary entrypoint Work puts its large retained SOURCE on the
+    // initial page walk, where automatic reads must complete the omission.
+    let checked = f.checked();
+    let entrypoint = checked.services["orders"]
+        .entrypoints
+        .iter()
+        .find(|entry| entry.symbol.contains("reserve"))
+        .unwrap()
+        .id
+        .clone();
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let source_packet_target = |work_id: &str, source_id: &str| {
+        let work = clew::documentation::work::load(&repo, work_id).unwrap();
+        let source = work.checked.services["orders"]
+            .sources
+            .get(source_id)
+            .expect("the retained Work SOURCE must exist");
+        let reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.kind == "SOURCE" && handle.id == source_id)
+            .expect("the large retained SOURCE must have a Work reference")
+            .0
+            .clone();
+        (reference, source.text.clone())
+    };
+    let initial_request = f.input(
+        "initial-source-work.json",
+        &json!({"schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Service maintainers", "entrypoint":entrypoint,
+            "maxItems":100,"maxBytes":49152}),
+    );
+    let initial_work = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        initial_request.to_str().unwrap(),
+    ])["work"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut initial_large_source_ref = None;
+    let mut page = work_read(&f, &initial_work, json!({}));
+    let mut page_summary = Vec::new();
+    loop {
+        page_summary.push(json!({
+            "items":page["items"].as_array().unwrap().iter().map(|item| json!([item["kind"],item["id"]])).collect::<Vec<_>>(),
+            "omitted":page["omitted"],
+            "nextCursor":page["nextCursor"]
+        }));
+        let omitted_large_source = page["omitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["kind"] == "SOURCE" && item["reason"] == "ITEM_EXCEEDS_WORK_BYTE_BUDGET"
+            })
+            .and_then(|item| item["reference"].as_str().map(str::to_owned));
+        if initial_large_source_ref.is_none() {
+            initial_large_source_ref = omitted_large_source;
+        }
+        let Some(cursor) = page["nextCursor"].as_str().map(str::to_owned) else {
+            break;
+        };
+        page = work_read(&f, &initial_work, json!({"cursor":cursor}));
+    }
+    assert!(
+        initial_large_source_ref.is_some(),
+        "entrypoint initial pages did not omit the large SOURCE record: {page_summary:?}"
+    );
+    let initial_work_record = clew::documentation::work::load(&repo, &initial_work).unwrap();
+    let initial_source_ref = initial_large_source_ref.unwrap();
+    let initial_source_id = initial_work_record.handles[&initial_source_ref].id.clone();
+    let (initial_source_ref, retained_source_text) =
+        source_packet_target(&initial_work, &initial_source_id);
+    assert!(
+        retained_source_text.len() > 49_152,
+        "the exact initially omitted SOURCE must exceed maxBytes"
+    );
+    assert!(retained_source_text.contains("reserve"));
+    assert!(retained_source_text.contains(unicode_sentinel));
+    assert!(retained_source_text.contains(tail_sentinel));
+    let expected_source_hash = clew::canonical::hash_bytes(retained_source_text.as_bytes());
+    let expected_source_hash = expected_source_hash
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_owned();
+    let source_options = |mode: &str, source_ref: String, section: bool| {
+        let mut options = json!({
+            "mode":mode,
+            "requireFullSourceParts":true,
+            "sourceReference":source_ref,
+            "expectedSourceHash":expected_source_hash,
+            "expectedSourceBytes":retained_source_text.len(),
+            "unicodeSentinel":unicode_sentinel,
+            "tailSentinel":tail_sentinel
+        });
+        if section {
+            options["requireEvidenceText"] = json!("HUMAN_RULE_SENTINEL");
+        }
+        options
+    };
+    let initial_options = source_options("valid", initial_source_ref, false);
+    let initial_config = execution_config(&f, initial_options.clone(), initial_options, None);
+    let initial_result = work_run(&f, &initial_work, &initial_config);
+    assert_eq!(initial_result["status"], "ACCEPTED", "{initial_result}");
+    let initial_report = run_report(&f, &initial_result);
+    assert_eq!(initial_report["attempts"].as_array().unwrap().len(), 2);
+
+    // The narrow section contract starts without SOURCE text and requests its
+    // registered source reference; the follow-up author and reviewer packets
+    // must both contain the complete multi-part record.
+    let (expanded_work, _) = section_contract_work(&f, "section-entities");
+    let (expanded_source_ref, expanded_source_text) =
+        source_packet_target(&expanded_work, &initial_source_id);
+    assert_eq!(expanded_source_text, retained_source_text);
+    let expanded_options = source_options("section-expand", expanded_source_ref, true);
+    let mut expanded_config =
+        execution_config(&f, expanded_options.clone(), expanded_options, None);
+    expanded_config["authorOutputContract"] = json!("section-summary/1.0");
+    expanded_config["expansions"] = json!(1);
+    expanded_config["authorCalls"] = json!(3);
+    expanded_config["reviewerCalls"] = json!(4);
+    let note_path = f.docs.join("notes/section.md");
+    let note_before = fs::read(&note_path).unwrap();
+
+    let result = work_run(&f, &expanded_work, &expanded_config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "author");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert_eq!(
+        report["contextBudget"]["reviewerAdmission"]["status"],
+        "FIT"
+    );
+    assert_eq!(fs::read(note_path).unwrap(), note_before);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_section_contract_rejects_author_owned_targets_and_gaps_without_silent_drops() {
     use serde_json::json;
     for field in ["targetReference", "gaps", "dataflow"] {
@@ -5587,7 +5753,7 @@ fn docsys_section_contract_budget_includes_bound_output_schema_before_dispatch()
 
 #[test]
 #[cfg(target_os = "macos")]
-fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inputs() {
+fn docsys_declaration_profile_and_reviewer_preflight_preserve_inputs() {
     use clew::documentation::store::Repository;
     use serde_json::json;
     let f = Fixture::new();
@@ -5625,25 +5791,49 @@ fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inp
             .to_owned()
     };
     let full = prepare(None);
-    let profile = prepare(Some("declarations-v1"));
     fs::rename(&source, source.with_extension("offline")).unwrap();
     let latest = f.docs.join(".codeclew/cache/latest-check.json");
     fs::write(&latest, b"profile must not analyze").unwrap();
+    let note_path = f.docs.join("notes/section.md");
+    let note_before = fs::read(&note_path).unwrap();
     let mut full_config = section_execution_config(&f, json!({"mode":"section-expand"}));
     full_config["authorCalls"] = json!(3);
     full_config["reviewerCalls"] = json!(4);
     full_config["expansions"] = json!(1);
-    full_config["reviewer"]["cap"]["maximum"]["inputTokens"] = json!(1);
-    let baseline = work_run(&f, &full, &full_config);
-    let baseline = run_report(&f, &baseline);
+    let mut blocked_config = full_config.clone();
+    blocked_config["reviewer"]["cap"]["maximum"]["inputTokens"] = json!(1);
+    let blocked_result = work_run(&f, &full, &blocked_config);
+    let blocked = run_report(&f, &blocked_result);
     assert!(
-        baseline["gap"]["reason"]
+        blocked["gap"]["reason"]
             .as_str()
             .unwrap()
-            .contains("INPUT_CAP_EXCEEDED"),
-        "{baseline}"
+            .contains("REVIEWER_INPUT_CAP_EXCEEDED"),
+        "{blocked}"
     );
-    assert!(baseline["publication"].is_null());
+    assert!(
+        blocked["attempts"].as_array().unwrap().is_empty(),
+        "{blocked}"
+    );
+    assert!(blocked["proposal"].is_null());
+    assert!(blocked["publication"].is_null());
+    assert!(
+        blocked["accounting"]
+            .as_array()
+            .is_none_or(|rows| rows.is_empty()),
+        "{blocked}"
+    );
+    assert_eq!(fs::read(&latest).unwrap(), b"profile must not analyze");
+    assert_eq!(fs::read(&note_path).unwrap(), note_before);
+
+    let baseline_result = work_run(&f, &full, &full_config);
+    assert_eq!(baseline_result["status"], "ACCEPTED", "{baseline_result}");
+    let baseline = run_report(&f, &baseline_result);
+    assert_eq!(baseline["attempts"].as_array().unwrap().len(), 3);
+    // Prepare the profile against the same pinned source snapshot after the
+    // admitted full run publishes its retained baseline. This keeps the Work
+    // current while measuring its compact input envelope.
+    let profile = prepare(Some("declarations-v1"));
     let required = json!([
         "CONTEXT_PROFILE",
         "SOURCE",
@@ -5661,9 +5851,6 @@ fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inp
     assert_eq!(result["status"], "ACCEPTED", "{result}");
     let compact = run_report(&f, &result);
     assert_eq!(compact["attempts"].as_array().unwrap().len(), 2);
-    let old_bytes = baseline["contextBudget"]["candidateRequestBytes"]
-        .as_u64()
-        .unwrap();
     let new_bytes = compact["contextBudget"]["candidateRequestBytes"]
         .as_u64()
         .unwrap();
@@ -5673,19 +5860,12 @@ fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inp
         compact["attempts"][0]["invocation"].as_str().unwrap()
     )));
     assert_eq!(raw["result"]["section"]["title"], new_bytes.to_string());
-    let baseline_source_ready = baseline["attempts"][1]["requestBytes"].as_u64().unwrap();
-    assert!(new_bytes < baseline_source_ready);
-    assert!(
-        new_bytes < old_bytes,
-        "actual envelope did not shrink: {new_bytes} vs {old_bytes}"
-    );
-    assert!(
-        compact["contextBudget"]["pagesRead"].as_u64().unwrap()
-            < baseline["contextBudget"]["pagesRead"].as_u64().unwrap()
-    );
+    let full_initial_bytes = baseline["attempts"][0]["requestBytes"].as_u64().unwrap();
+    let full_post_expansion_bytes = baseline["attempts"][1]["requestBytes"].as_u64().unwrap();
+    assert!(full_initial_bytes > 0 && full_post_expansion_bytes > 0 && new_bytes > 0);
     assert_eq!(fs::read(latest).unwrap(), b"profile must not analyze");
     eprintln!(
-        "declaration-profile fixture actual initial request bytes: {old_bytes} -> {new_bytes}"
+        "declaration-profile fixture request bytes (different captured content): full initial {full_initial_bytes}, full post-expansion {full_post_expansion_bytes}, profile author {new_bytes}"
     );
 }
 

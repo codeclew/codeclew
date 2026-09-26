@@ -57,6 +57,35 @@ if mode == "denials":
 payload = job["payload"]
 if "requireEvidenceText" in options:
     assert options["requireEvidenceText"] in json.dumps(payload["evidence"])
+if options.get("requireFullSourceParts"):
+    evidence = payload["evidence"]
+    source_parts = evidence.get("sourceParts")
+    if not source_parts:
+        # The first author request may ask for the explicit source expansion;
+        # it cannot author content until the subsequent packet includes parts.
+        assert job["role"] == "author" and options.get("mode") == "section-expand"
+    else:
+        assert isinstance(source_parts, list)
+        reference = options["sourceReference"]
+        parts = sorted((part for part in source_parts if part["reference"] == reference),
+                       key=lambda part: part["startByte"])
+        assert len(parts) >= 2
+        offset = 0
+        fragments = []
+        for index, part in enumerate(parts):
+            fragment = part["text"]
+            encoded = fragment.encode("utf-8")
+            assert part["startByte"] == offset
+            assert part["endByte"] - part["startByte"] == len(encoded)
+            assert part["totalTextBytes"] == options["expectedSourceBytes"]
+            assert (part.get("nextCursor") is not None) == (index + 1 < len(parts))
+            offset = part["endByte"]
+            fragments.append(fragment)
+        full_text = "".join(fragments)
+        assert offset == options["expectedSourceBytes"]
+        assert hashlib.sha256(full_text.encode("utf-8")).hexdigest() == options["expectedSourceHash"]
+        assert options["unicodeSentinel"] in full_text
+        assert options["tailSentinel"] in parts[-1]["text"]
 if "requireEvidenceKinds" in options:
     kinds = {item["kind"] for page in payload["evidence"]["pages"] for item in page["items"]}
     assert set(options["requireEvidenceKinds"]) <= kinds
@@ -84,6 +113,7 @@ if job["role"] == "reviewer":
         assert {item["$ref"] for item in schema["oneOf"]} == {"#/$defs/reviewAction", "#/$defs/expandAction"}
         assert schema["$defs"]["expandAction"]["properties"]["action"]["const"] == "expand"
         delivered = {item["reference"] for page in payload["evidence"]["pages"] for item in page["items"] if "reference" in item}
+        delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))
         issue_evidence = props["issues"]["items"]["properties"]["evidence"]["items"]
         assert set(issue_evidence["enum"]) == delivered if delivered else issue_evidence is False
     verdict = "APPROVE"
@@ -126,6 +156,7 @@ else:
         assert contract["targetReference"] == section["reference"]
         delivered = {item["reference"] for item in rows
                      if "evidence" in item.get("referenceRoles", [])}
+        delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))
 
         def evidence_enums(value):
             if isinstance(value, dict):
@@ -144,15 +175,23 @@ else:
                                   ensure_ascii=False, separators=(",", ":")).encode()
         assert contract["outputSchemaDigest"] == "sha256:" + hashlib.sha256(schema_bytes).hexdigest()
         sources = [item for item in rows if item["kind"] == "SOURCE"]
-        if mode == "section-expand" and not sources:
+        requested_source = options.get("sourceReference")
+        requested_parts_delivered = requested_source and any(
+            part["reference"] == requested_source
+            for part in payload["evidence"].get("sourceParts", []))
+        if mode == "section-expand" and requested_source and not requested_parts_delivered:
+            result = {"action": "expand", "selection": {"references": [requested_source]}}
+        elif mode == "section-expand" and not sources and not payload["evidence"].get("sourceParts"):
             linked = next(ref for item in rows for ref in item.get("sourceReferences", [])
                           if ref not in delivered)
             result = {"action": "expand", "selection": {"references": [linked]}}
         else:
             evidence_ref = options.get("evidenceRef") or (
-                sources[0]["reference"] if sources else next(
-                    item["reference"] for item in rows
-                    if item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL"))
+                sources[0]["reference"] if sources else (
+                    payload["evidence"]["sourceParts"][0]["reference"]
+                    if payload["evidence"].get("sourceParts") else next(
+                        item["reference"] for item in rows
+                        if item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL")))
             if mode == "section-unseen":
                 assert evidence_ref not in delivered
             time.sleep(options.get("delayMs", 0) / 1000)

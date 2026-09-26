@@ -10,7 +10,7 @@ use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-const REQUEST_SCHEMA: &str = "codeclew-documentation-source-part-request/1.0";
+pub(super) const REQUEST_SCHEMA: &str = "codeclew-documentation-source-part-request/1.0";
 const RESPONSE_SCHEMA: &str = "codeclew-documentation-source-part/1.0";
 const RECEIPT_SCHEMA: &str = "codeclew-documentation-source-part-receipt/1.0";
 const CURSOR_VERSION: &str = "source-part-v1";
@@ -60,6 +60,17 @@ pub fn read_part(
     id: &str,
     request: SourcePartRequest,
 ) -> Result<Value, ClewError> {
+    let work = work::load(repo, id)?;
+    read_part_loaded(repo, &work, request)
+}
+
+/// Read a part from a Work already loaded by the caller. This keeps automatic
+/// packet assembly bound to the same immutable Work as the page receipts.
+pub(super) fn read_part_loaded(
+    repo: &super::store::Repository,
+    work: &Work,
+    request: SourcePartRequest,
+) -> Result<Value, ClewError> {
     if request.schema != REQUEST_SCHEMA {
         return Err(invalid(
             "unsupported source-part request schema; expected codeclew-documentation-source-part-request/1.0",
@@ -78,15 +89,12 @@ pub fn read_part(
         return Err(invalid("source-part cursor exceeds its size limit"));
     }
 
-    // Loading Work resolves only its validated manifest and immutable
-    // snapshot; it does not consult latest-check or invoke source acquisition.
-    let work = work::load(repo, id)?;
     let snapshot = work
         .snapshot
         .as_deref()
         .filter(|snapshot| !snapshot.is_empty())
         .ok_or_else(|| invalid("source-part reads require an immutable Work snapshot"))?;
-    let source = source_for_reference(&work, &request.reference)?;
+    let source = source_for_reference(work, &request.reference)?;
     let record_digest = digest(source)?;
     let start = match request.cursor.as_deref() {
         None => 0,
@@ -100,14 +108,14 @@ pub fn read_part(
             &source.text,
         )?,
     };
-    let part = build_part(&work, &request.reference, source, start)?;
+    let part = build_part(work, &request.reference, source, start)?;
 
     // Source lookup, parent validation, and sizing happen before the short
     // read-modify-write critical section. The existing repository lock is
     // intentionally non-blocking; callers can retry a conflict.
     let _lock = repo.lock()?;
-    let mut state = work::read_state(repo, id)?;
-    if state.work != id {
+    let mut state = work::read_state(repo, &work.id)?;
+    if state.work != work.id {
         return Err(invalid("read ledger belongs to another work"));
     }
     if let Some(existing) = state.source_part_receipts.get(&part.receipt.receipt_digest) {
@@ -127,7 +135,10 @@ pub fn read_part(
             "work read ledger exceeds its bound; prepare narrower work",
         ));
     }
-    repo.atomic(&format!("{}/reads.json", work::directory(id)?), &encoded)?;
+    repo.atomic(
+        &format!("{}/reads.json", work::directory(&work.id)?),
+        &encoded,
+    )?;
     Ok(part.response)
 }
 
@@ -556,6 +567,156 @@ pub(super) fn initial_context_complete_with_parts(
     Ok(false)
 }
 
+/// Validate complete SOURCE text that is present in this exact role packet.
+/// A complete read ledger alone is deliberately insufficient: only returned
+/// SOURCE_PART fragments count, and their text/ranges are rebound to the
+/// immutable SOURCE bytes and typed receipts recorded by `read_part_loaded`.
+pub(super) fn delivered_source_references(
+    work: &Work,
+    state: &ReadState,
+    parts: &[Value],
+) -> Result<std::collections::BTreeSet<String>, ClewError> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if parts.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    if state.work != work.id {
+        return Err(invalid("SOURCE_PART packet belongs to another Work"));
+    }
+    let mut ranges: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    for response in parts {
+        let reference = response["reference"]
+            .as_str()
+            .ok_or_else(|| invalid("SOURCE_PART packet is missing a reference"))?;
+        let source = source_for_reference(work, reference)?;
+        let snapshot = work
+            .snapshot
+            .as_deref()
+            .ok_or_else(|| invalid("SOURCE_PART packet requires an immutable snapshot"))?;
+        let record_digest = digest(source)?;
+        let metadata = source_metadata(source)?;
+        let start = response["startByte"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| invalid("SOURCE_PART packet has an invalid start offset"))?;
+        let end = response["endByte"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| invalid("SOURCE_PART packet has an invalid end offset"))?;
+        let expected = response_for_range(
+            work,
+            reference,
+            source,
+            &metadata,
+            &record_digest,
+            start,
+            end,
+        )?;
+        if response != &expected || response_size(response)? > work.request.max_bytes {
+            return Err(invalid(
+                "SOURCE_PART packet text, range, snapshot, or digest does not match retained evidence",
+            ));
+        }
+        let receipt = SourcePartReceipt {
+            schema: RECEIPT_SCHEMA.into(),
+            work: work.id.clone(),
+            snapshot: snapshot.into(),
+            reference: reference.into(),
+            source_id: source.id.clone(),
+            record_digest,
+            start_byte: start,
+            end_byte: end,
+            total_text_bytes: source.text.len(),
+            fragment_digest: response["fragmentDigest"]
+                .as_str()
+                .ok_or_else(|| invalid("SOURCE_PART packet has no fragment digest"))?
+                .to_owned(),
+            next_cursor: response["nextCursor"].as_str().map(str::to_owned),
+            receipt_digest: response["receiptDigest"]
+                .as_str()
+                .ok_or_else(|| invalid("SOURCE_PART packet has no receipt digest"))?
+                .to_owned(),
+        };
+        if state.source_part_receipts.get(&receipt.receipt_digest) != Some(&receipt) {
+            return Err(invalid(
+                "SOURCE_PART packet has no matching recorded receipt",
+            ));
+        }
+        ranges
+            .entry(reference.to_owned())
+            .or_default()
+            .push((start, end));
+    }
+
+    let mut delivered = BTreeSet::new();
+    for (reference, mut source_ranges) in ranges {
+        let source = source_for_reference(work, &reference)?;
+        source_ranges.sort_unstable();
+        if source.text.is_empty() {
+            if source_ranges != [(0, 0)] {
+                return Err(invalid("SOURCE_PART packet has an incomplete empty SOURCE"));
+            }
+        } else {
+            let mut covered = 0;
+            for (start, end) in source_ranges {
+                if start != covered || end <= start {
+                    return Err(invalid(
+                        "SOURCE_PART packet contains a gap, overlap, or no-progress range",
+                    ));
+                }
+                covered = end;
+            }
+            if covered != source.text.len() {
+                return Err(invalid(
+                    "SOURCE_PART packet does not contain complete SOURCE text",
+                ));
+            }
+        }
+        delivered.insert(reference);
+    }
+    Ok(delivered)
+}
+
+/// Require packet-delivered parts for every SOURCE omitted from the default
+/// page walk, in addition to the independently validated persisted receipts.
+pub(super) fn initial_context_complete_with_packet_parts(
+    work: &Work,
+    state: &ReadState,
+    delivered: &std::collections::BTreeSet<String>,
+) -> Result<bool, ClewError> {
+    if !initial_context_complete_with_parts(work, state)? {
+        return Ok(false);
+    }
+    let mut cursor: Option<String> = None;
+    for _ in 0..=state.receipts.len() {
+        let Some(receipt) = state.receipts.values().find(|receipt| {
+            receipt.selection.references.is_empty()
+                && receipt.selection.symbols.is_empty()
+                && receipt.selection.query.is_none()
+                && receipt.selection.cursor == cursor
+        }) else {
+            return Ok(false);
+        };
+        for omitted in &receipt.omitted {
+            let Some(reference) = omitted["reference"].as_str() else {
+                return Ok(false);
+            };
+            if omitted["kind"] != "SOURCE" || !delivered.contains(reference) {
+                return Ok(false);
+            }
+        }
+        let Some(next_cursor) = receipt.next_cursor.clone() else {
+            return Ok(true);
+        };
+        if cursor.as_deref() == Some(next_cursor.as_str()) {
+            return Ok(false);
+        }
+        cursor = Some(next_cursor);
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,6 +1031,34 @@ mod tests {
         receipts
     }
 
+    fn collect_packet(work: &Work, source: &Source) -> (Vec<Value>, Vec<SourcePartReceipt>) {
+        let record_digest = digest(source).unwrap();
+        let mut start = 0;
+        let mut responses = Vec::new();
+        let mut receipts = Vec::new();
+        loop {
+            let part = build_part(work, "s1", source, start).unwrap();
+            responses.push(part.response.clone());
+            receipts.push(part.receipt.clone());
+            match part.receipt.next_cursor.as_deref() {
+                Some(cursor) => {
+                    start = parse_cursor(
+                        cursor,
+                        &work.id,
+                        work.snapshot.as_deref().unwrap(),
+                        "s1",
+                        &source.id,
+                        &record_digest,
+                        &source.text,
+                    )
+                    .unwrap();
+                }
+                None => break,
+            }
+        }
+        (responses, receipts)
+    }
+
     fn state_with_parts(
         work: &Work,
         receipts: impl IntoIterator<Item = SourcePartReceipt>,
@@ -974,6 +1163,34 @@ mod tests {
             .source_part_receipts
             .insert("sha256:wrong-key".into(), first);
         assert!(!source_part_complete(&work, &mismatched_key, "s1").unwrap());
+    }
+
+    #[test]
+    fn source_packet_requires_exact_complete_fragments_and_matching_receipts() {
+        let (work, source) = fixture("x".repeat(9000), 2048);
+        let (packet, receipts) = collect_packet(&work, &source);
+        assert!(packet.len() >= 3);
+        let state = state_with_parts(&work, receipts);
+        assert_eq!(
+            delivered_source_references(&work, &state, &packet).unwrap(),
+            std::collections::BTreeSet::from(["s1".to_owned()])
+        );
+
+        // Complete receipts from an earlier read do not make a source visible
+        // to this role when its packet contains no source fragments.
+        assert!(
+            delivered_source_references(&work, &state, &[])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(delivered_source_references(&work, &state, &packet[..packet.len() - 1]).is_err());
+
+        let mut tampered = packet.clone();
+        tampered[0]["text"] = json!("forged replacement text");
+        assert!(delivered_source_references(&work, &state, &tampered).is_err());
+
+        let no_receipts = state_with_parts(&work, []);
+        assert!(delivered_source_references(&work, &no_receipts, &packet).is_err());
     }
 
     #[test]
@@ -1092,6 +1309,22 @@ mod tests {
             .unwrap()
             .omitted = vec![omitted_source];
         assert!(initial_context_complete_with_parts(&work, &exact_source_only).unwrap());
+        assert!(
+            !initial_context_complete_with_packet_parts(
+                &work,
+                &exact_source_only,
+                &std::collections::BTreeSet::new()
+            )
+            .unwrap()
+        );
+        assert!(
+            initial_context_complete_with_packet_parts(
+                &work,
+                &exact_source_only,
+                &std::collections::BTreeSet::from(["s1".to_owned()])
+            )
+            .unwrap()
+        );
 
         let mut with_other_source = exact_source_only.clone();
         with_other_source
