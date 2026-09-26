@@ -174,7 +174,7 @@ pub fn tree(events: &Value, symbol: &str) -> Option<String> {
                 out.push_str(&format!(
                     "{}[D] if ({}) then\n",
                     indent(depth),
-                    condition(&row)
+                    condition(row)
                 ));
                 depth += 1;
             }
@@ -185,11 +185,7 @@ pub fn tree(events: &Value, symbol: &str) -> Option<String> {
             }
             "END" => depth = depth.saturating_sub(1),
             "LOOP" => {
-                out.push_str(&format!(
-                    "{}[D] loop ({})\n",
-                    indent(depth),
-                    condition(&row)
-                ));
+                out.push_str(&format!("{}[D] loop ({})\n", indent(depth), condition(row)));
                 depth += 1;
             }
             "CALL" | "CONSTRUCT" => {

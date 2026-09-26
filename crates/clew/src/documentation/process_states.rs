@@ -266,7 +266,7 @@ fn simple_symbol_name(symbol: &str) -> Option<&str> {
     let tail = if let Some((_, method)) = symbol.rsplit_once('#') {
         method
     } else {
-        symbol.rsplit(|ch| matches!(ch, '.' | '/' | '$')).next()?
+        symbol.rsplit(['.', '/', '$']).next()?
     };
     let name = tail.split('(').next()?;
     (!name.is_empty()).then_some(name)

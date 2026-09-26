@@ -421,7 +421,7 @@ fn signature(head: &str, symbol: &str) -> String {
         .map(|inner| {
             inner
                 .split(',')
-                .filter_map(|p| p.trim().split_whitespace().last())
+                .filter_map(|p| p.split_whitespace().last())
                 .collect::<Vec<_>>()
                 .join(", ")
         })
@@ -624,10 +624,10 @@ fn statement_kind(stmt: &str) -> String {
     if let Some(open) = first_code_byte(stmt, b'(') {
         let callee = stmt[..open].trim();
         let name = callee.rsplit('.').next().unwrap_or(callee).trim();
-        if !name.is_empty() {
-            if let Some(c) = super::process_flow::method_write_read(name) {
-                return format!("[{c}] ");
-            }
+        if !name.is_empty()
+            && let Some(c) = super::process_flow::method_write_read(name)
+        {
+            return format!("[{c}] ");
         }
     }
     String::new()
@@ -683,8 +683,6 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
             } else if rest.starts_with("catch (") || rest.starts_with("finally") {
                 stack.pop();
                 stack.push(false);
-            } else if rest.starts_with("while (") {
-                stack.pop();
             } else {
                 stack.pop();
             }

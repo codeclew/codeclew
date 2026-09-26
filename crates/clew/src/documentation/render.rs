@@ -1253,6 +1253,9 @@ pub fn make_bindings(
     Ok(binding)
 }
 
+// Keep the explicit page inputs visible here; bundling them would broaden this
+// focused renderer cleanup into an unrelated data-model refactor.
+#[allow(clippy::too_many_arguments)]
 fn page_data(
     subject: &str,
     title: &str,
@@ -1478,17 +1481,17 @@ fn auto_flow_puml(checked: &Check, flow: ResolvedFlow<'_>, title: &str) -> Optio
     // Prefer source deepening: a retained TRANSFORMED_SOURCE yields readable
     // step text (assignments, returns, catch). Fall back to the FLOW renderer
     // when the source is absent or not parseable.
-    if let Some(source) = method_source(checked, flow) {
-        if let (Some(puml), Some(tree)) = (
+    if let Some(source) = method_source(checked, flow)
+        && let (Some(puml), Some(tree)) = (
             super::source_steps::document(&source, symbol, title),
             super::source_steps::tree(&source, symbol),
-        ) {
-            return Some(AutoFlow {
-                puml,
-                tree,
-                origin: "source",
-            });
-        }
+        )
+    {
+        return Some(AutoFlow {
+            puml,
+            tree,
+            origin: "source",
+        });
     }
     Some(AutoFlow {
         puml: super::process_flow::document(flow.events, symbol, title)?,
@@ -1592,22 +1595,22 @@ fn resolve_flow<'a>(
         let mut obs: Vec<&Observation> = Vec::new();
         if let Some(service) = service {
             if let Some(evidence) = checked.services.get(service) {
-                obs.extend(evidence.observations.values().filter(|o| matches(*o)));
+                obs.extend(evidence.observations.values().filter(|o| matches(o)));
             }
             if obs.is_empty() {
                 obs.extend(
                     checked
                         .dependencies
                         .values()
-                        .filter(|o| matches(*o) && o.service == service),
+                        .filter(|o| matches(o) && o.service == service),
                 );
             }
         } else {
             for e in checked.services.values() {
-                obs.extend(e.observations.values().filter(|o| matches(*o)));
+                obs.extend(e.observations.values().filter(|o| matches(o)));
             }
             if obs.is_empty() {
-                obs.extend(checked.dependencies.values().filter(|o| matches(*o)));
+                obs.extend(checked.dependencies.values().filter(|o| matches(o)));
             }
         }
         let identities: BTreeSet<_> = obs
@@ -1688,14 +1691,13 @@ fn root_flow_events<'a>(
     service: Option<&str>,
 ) -> Option<ResolvedFlow<'a>> {
     let mut candidates: Vec<&str> = Vec::new();
-    if let Some(service) = service {
-        if let Some(entry) = checked
+    if let Some(service) = service
+        && let Some(entry) = checked
             .services
             .get(service)
             .and_then(|e| e.entrypoints.iter().find(|ep| ep.id == operation.id))
-        {
-            candidates.push(entry.symbol.as_str());
-        }
+    {
+        candidates.push(entry.symbol.as_str());
     }
     candidates.push(operation.id.as_str());
     candidates.extend(operation.boundaries.iter().map(String::as_str));
@@ -1711,14 +1713,13 @@ fn root_flow_events_by_id<'a>(
     service: Option<&str>,
 ) -> Option<ResolvedFlow<'a>> {
     let mut candidates: Vec<&str> = Vec::new();
-    if let Some(service) = service {
-        if let Some(entry) = checked
+    if let Some(service) = service
+        && let Some(entry) = checked
             .services
             .get(service)
             .and_then(|e| e.entrypoints.iter().find(|ep| ep.id == id))
-        {
-            candidates.push(entry.symbol.as_str());
-        }
+    {
+        candidates.push(entry.symbol.as_str());
     }
     candidates.push(id);
     resolve_flow(checked, service, &candidates)
@@ -2030,6 +2031,8 @@ pub fn publish_language(
 
 /// Render saved evidence and release the resulting immutable snapshot only
 /// when the caller explicitly opts in.
+// Preserve the established wrapper API rather than grouping unrelated options.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_language_with_mode(
     repo: &Repository,
     incoming: Vec<Narrative>,
@@ -2062,6 +2065,8 @@ enum EvidenceMode<'a> {
     Refresh,
 }
 
+// Keep the explicit phase inputs aligned with the existing publish wrapper.
+#[allow(clippy::too_many_arguments)]
 fn publish_internal(
     repo: &Repository,
     incoming: Vec<Narrative>,
@@ -2086,6 +2091,8 @@ fn publish_internal(
     })
 }
 
+// Keep the explicit phase inputs aligned with the existing publish wrapper.
+#[allow(clippy::too_many_arguments)]
 fn publish_internal_phases(
     repo: &Repository,
     mut incoming: Vec<Narrative>,
@@ -2605,16 +2612,16 @@ fn publish_internal_phases(
                 {
                     continue;
                 }
-                if let Some(flow) = lifecycle_flow(&checked, &t.operation) {
-                    if let Some(generated) = auto_flow_puml(&checked, flow, &t.operation) {
-                        out.push(LifecycleArtifact {
-                            name: t.operation.clone(),
-                            tree: generated.tree,
-                            origin: generated.origin,
-                            diagram_stem: lifecycle_diagram_stem(subject, &t.operation, flow)?,
-                            puml: generated.puml,
-                        });
-                    }
+                if let Some(flow) = lifecycle_flow(&checked, &t.operation)
+                    && let Some(generated) = auto_flow_puml(&checked, flow, &t.operation)
+                {
+                    out.push(LifecycleArtifact {
+                        name: t.operation.clone(),
+                        tree: generated.tree,
+                        origin: generated.origin,
+                        diagram_stem: lifecycle_diagram_stem(subject, &t.operation, flow)?,
+                        puml: generated.puml,
+                    });
                 }
             }
             out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2757,15 +2764,15 @@ fn publish_internal_phases(
             // priority and suppress it.
             if operation.events.is_empty() {
                 let service = (kind == "service").then_some(id);
-                if let Some(flow) = root_flow_events(&checked, operation, service) {
-                    if let Some(generated) = auto_flow_puml(&checked, flow, &operation.title) {
-                        insert_diagram(
-                            &mut files,
-                            &mut diagrams,
-                            format!("diagrams/{}-{}", subject.replace(':', "-"), operation.id),
-                            generated.puml,
-                        );
-                    }
+                if let Some(flow) = root_flow_events(&checked, operation, service)
+                    && let Some(generated) = auto_flow_puml(&checked, flow, &operation.title)
+                {
+                    insert_diagram(
+                        &mut files,
+                        &mut diagrams,
+                        format!("diagrams/{}-{}", subject.replace(':', "-"), operation.id),
+                        generated.puml,
+                    );
                 }
             }
         }
@@ -2775,15 +2782,15 @@ fn publish_internal_phases(
         // never here, so this cannot override manual content.
         if kind == "service" {
             for gap_id in n.gaps.keys() {
-                if let Some(flow) = root_flow_events_by_id(&checked, gap_id, Some(id)) {
-                    if let Some(generated) = auto_flow_puml(&checked, flow, gap_id) {
-                        insert_diagram(
-                            &mut files,
-                            &mut diagrams,
-                            format!("diagrams/{}-{}", subject.replace(':', "-"), gap_id),
-                            generated.puml,
-                        );
-                    }
+                if let Some(flow) = root_flow_events_by_id(&checked, gap_id, Some(id))
+                    && let Some(generated) = auto_flow_puml(&checked, flow, gap_id)
+                {
+                    insert_diagram(
+                        &mut files,
+                        &mut diagrams,
+                        format!("diagrams/{}-{}", subject.replace(':', "-"), gap_id),
+                        generated.puml,
+                    );
                 }
             }
         }

@@ -68,6 +68,8 @@ pub fn render_svg(puml: &[u8], jar: Option<&Path>) -> Result<Option<Vec<u8>>, St
     Ok(Some(output.stdout))
 }
 
+type RenderedSvgArtifacts = Vec<(String, Vec<u8>)>;
+
 /// Pre-render many PlantUML sources to SVG in a single renderer invocation.
 /// Each entry is `(bundle-relative base path, puml source)`; the returned bytes
 /// retain those same keys. Inputs use ordinal temporary filenames, so equal
@@ -76,7 +78,7 @@ pub fn render_svg(puml: &[u8], jar: Option<&Path>) -> Result<Option<Vec<u8>>, St
 pub fn batch_render_svg(
     sources: &[(String, String)],
     jar: Option<&Path>,
-) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
+) -> Result<Option<RenderedSvgArtifacts>, String> {
     let Some(cmd) = renderer_command(jar) else {
         return Ok(None);
     };
@@ -86,7 +88,7 @@ pub fn batch_render_svg(
 fn batch_render_svg_with_command(
     sources: &[(String, String)],
     mut cmd: Command,
-) -> Result<Vec<(String, Vec<u8>)>, String> {
+) -> Result<RenderedSvgArtifacts, String> {
     if sources.len() > MAX_BATCH_DIAGRAMS {
         return Err("PlantUML batch exceeds the diagram count limit".into());
     }
@@ -116,17 +118,14 @@ fn batch_render_svg_with_command(
     let mut total_output_bytes = 0_u64;
     for (index, (base, _)) in sources.iter().enumerate() {
         let svg = temporary.path().join(format!("diagram-{index:06}.svg"));
-        match read_bounded_svg(&svg)? {
-            Some(bytes) => {
-                total_output_bytes = total_output_bytes
-                    .checked_add(bytes.len() as u64)
-                    .ok_or_else(|| "PlantUML batch output size overflow".to_string())?;
-                if total_output_bytes > MAX_RENDERED_TOTAL_BYTES {
-                    return Err("PlantUML batch exceeds the SVG output size limit".into());
-                }
-                result.push((base.clone(), bytes));
+        if let Some(bytes) = read_bounded_svg(&svg)? {
+            total_output_bytes = total_output_bytes
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| "PlantUML batch output size overflow".to_string())?;
+            if total_output_bytes > MAX_RENDERED_TOTAL_BYTES {
+                return Err("PlantUML batch exceeds the SVG output size limit".into());
             }
-            None => {}
+            result.push((base.clone(), bytes));
         }
     }
     Ok(result)
@@ -394,6 +393,6 @@ mod tests {
     fn render_svg_returns_none_when_no_renderer() {
         let puml = b"@startuml\n[*] --> A\n@enduml\n";
         let r = super::render_svg(puml, None);
-        assert!(!matches!(r, Err(_)));
+        assert!(r.is_ok());
     }
 }
