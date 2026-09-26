@@ -2835,6 +2835,9 @@ fn execute_run(
             "RECOVERY_CHECKPOINT_MISMATCH: Work snapshot differs from the selected run phase",
         ));
     }
+    if checkpoint.phase == "PUBLISH" {
+        return publish_checkpoint(repo, work, config, report, checkpoint);
+    }
     if work.obligations.iter().any(|o| {
         matches!(
             o["kind"].as_str(),

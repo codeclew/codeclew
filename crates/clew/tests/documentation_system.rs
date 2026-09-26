@@ -2943,6 +2943,143 @@ fn docsys_t04_seeded_post_switch_publish_checkpoint_finishes_without_redispatch(
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_t04_seeded_post_switch_publish_corrupt_reads_refuses_without_mutation() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap().to_owned();
+    let original_report = run_report(&f, &accepted);
+    let original_attempts = original_report["attempts"].clone();
+    let bundle = original_report["publication"]["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publish_checkpoint = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "PUBLISH" && !checkpoint["publicationReceipt"].is_null()
+    });
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let mut seeded_report = original_report.clone();
+    seeded_report["status"] = json!("REVIEWED");
+    seeded_report["publication"] = serde_json::Value::Null;
+    seeded_report["accounting"] = serde_json::Value::Null;
+    seeded_report["checkpoint"] = checkpoint_reference(&run, &publish_checkpoint);
+    fs::write(&report_path, serde_json::to_vec(&seeded_report).unwrap()).unwrap();
+
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let original_account = read(&account_path);
+    let mut seeded_account = original_account.clone();
+    let reservations = seeded_account["reservations"].as_object_mut().unwrap();
+    let mut restored_slots = Vec::new();
+    for (id, reservation) in reservations.iter_mut() {
+        if reservation["run"] == run && reservation["status"] == "RELEASED_NOT_DISPATCHED" {
+            reservation["status"] = json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+            restored_slots.push(id.clone());
+        }
+    }
+    assert!(
+        !restored_slots.is_empty(),
+        "unused calls were released at acceptance"
+    );
+    fs::write(&account_path, serde_json::to_vec(&seeded_account).unwrap()).unwrap();
+
+    let checkpoint_directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let checkpoints_before = flat_file_inventory(&checkpoint_directory);
+    let checkpoint_bytes_before = tree_file_snapshot(&checkpoint_directory);
+    let seeded_report_bytes = fs::read(&report_path).unwrap();
+    let seeded_account_bytes = fs::read(&account_path).unwrap();
+    let reads_path = f.docs.join(format!(".codeclew/work/{work}/reads.json"));
+    let original_reads = fs::read(&reads_path).unwrap();
+    let corrupted_reads = b"{ malformed reads ledger".to_vec();
+    fs::write(&reads_path, &corrupted_reads).unwrap();
+
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let generated_directory = f.docs.join("docs/generated");
+    let generated_before = directory_entries(&generated_directory);
+    let generated_bytes_before = tree_file_snapshot(&generated_directory);
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_path = f.docs.join("docs/history.html");
+    let history_html_before = fs::read(&history_html_path).unwrap();
+    let results_directory = f.docs.join(".codeclew/job-results");
+    let results_before = tree_file_snapshot(&results_directory);
+
+    let config_path = f.input("post-switch-recovery-config.json", &config);
+    let (code, refusal) = f.run(&[
+        "docs",
+        "work",
+        "run",
+        "--work",
+        &work,
+        "--config",
+        config_path.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "corrupt reads were accepted: {refusal}");
+    assert!(
+        refusal
+            .to_string()
+            .contains("RECOVERY_PUBLICATION_READS_MISMATCH"),
+        "expected an explicit publication recovery refusal: {refusal}"
+    );
+    assert_eq!(fs::read(&reads_path).unwrap(), corrupted_reads);
+    assert_eq!(fs::read(&report_path).unwrap(), seeded_report_bytes);
+    let refused_report = read(&report_path);
+    assert_eq!(refused_report["status"], "REVIEWED");
+    assert!(refused_report["gap"].is_null());
+    assert_eq!(refused_report["attempts"], original_attempts);
+    assert_eq!(fs::read(&account_path).unwrap(), seeded_account_bytes);
+    assert_eq!(
+        flat_file_inventory(&checkpoint_directory),
+        checkpoints_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&checkpoint_directory),
+        checkpoint_bytes_before
+    );
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+    assert_eq!(directory_entries(&generated_directory), generated_before);
+    assert_eq!(
+        tree_file_snapshot(&generated_directory),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(fs::read(&history_html_path).unwrap(), history_html_before);
+    assert_eq!(tree_file_snapshot(&results_directory), results_before);
+
+    fs::write(&reads_path, &original_reads).unwrap();
+    let recovered = work_run(&f, &work, &config);
+    assert_eq!(recovered["run"], run);
+    assert_eq!(recovered["status"], "ACCEPTED", "{recovered}");
+    let recovered_report = run_report(&f, &recovered);
+    assert_eq!(recovered_report["attempts"], original_attempts);
+    assert!(recovered_report["gap"].is_null());
+    assert_eq!(recovered_report["publication"]["bundle"], bundle);
+    assert_eq!(tree_file_snapshot(&results_directory), results_before);
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+    assert_eq!(directory_entries(&generated_directory), generated_before);
+    assert_eq!(
+        tree_file_snapshot(&generated_directory),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(fs::read(&history_html_path).unwrap(), history_html_before);
+    assert_eq!(read(&account_path), original_account);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_t04_repeated_accepted_retries_reuse_checkpoint_without_storage_growth() {
     use serde_json::json;
 
