@@ -54,20 +54,41 @@ are never invented simply because a library body is in scope.
 
 ## Outbound HTTP egress guidance
 
-Spring `RestClient` fluent chains are detected from their resolved method
-authority. A standard executed chain yields exactly one usable egress:
+Spring `RestClient` chains are recognized from resolved method owners and a
+supported direct fluent chain. The response-consumption terminals
+`ResponseSpec.body(Class|ParameterizedTypeReference)`, `toEntity(...)`, and
+`toBodilessEntity()`, plus `RequestHeadersSpec.exchange(...)`, qualify one
+request-chain egress event. This is static chain evidence; it does not prove
+remote delivery or success, and response-consumption metadata does not claim
+the exact dispatch point:
 
 ```java
 client.post().uri("/orders/{id}", id).retrieve().body(String.class);
-// adapter: SPRING_REST_CLIENT_URI/1.0, method: POST, path: /orders/{id}
+// adapter: SPRING_REST_CLIENT_URI/2.0, method: POST, path: /orders/{id}
+// executionEvidence: SUPPORTED_FLUENT_REQUEST_CHAIN
+// dispatchTiming: WITHIN_CHAIN_VERSION_DEPENDENT
 ```
 
+- Spring Web 6.1.13 executes while evaluating `retrieve()`, while 6.2.18
+  defers execution to response consumption. Since captured evidence does not
+  bind the Spring Web version, a standalone `retrieve()` retains a candidate
+  method/path and an explicit version-dependent boundary; it does not emit a
+  qualified `http.method`. `exchange(...)` is an execution boundary in both
+  checked versions and records `EXCHANGE_CALL` timing.
+- `uri(...)` and `RequestBodySpec.body(Object)` only construct a request
+  specification. They remain ordinary call evidence without a qualified
+  egress. The `RequestBodySpec.body(Object)` builder overload is distinct from
+  the `ResponseSpec.body(Class|ParameterizedTypeReference)` consumption
+  overloads.
 - A relative literal path (or URI template) is kept as the path; a literal
   absolute URL is split so its authority never masquerades as a route path. URI
   templates remain templates, never exact concrete routes.
 - `method(HttpMethod.CONSTANT)` resolves the verb statically.
-- A configured client or an unexecuted request specification (for example
-  `client.post()` without a resolvable `uri`) produces no egress.
+- Only supported same-expression fluent chains with resolved Spring method
+  owners are classified. Aliases, interstatement chains, other response
+  terminals, and unresolved/dynamic URLs remain unknown or carry an explicit
+  boundary; this adapter does not infer callback scheduling or runtime
+  reachability.
 - `RestTemplate` literal-suffix extraction (with `@Value` destination config
   keys) is preserved. Unrelated fluent lookalikes named `get`/`post`/`uri` are
   not confused with a Spring client.

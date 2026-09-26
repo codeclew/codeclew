@@ -318,8 +318,16 @@ const RESTCLIENT_STUBS: &[(&str, &str)] = &[
         "package org.springframework.http; public enum HttpMethod { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS }",
     ),
     (
+        "org/springframework/http/ResponseEntity.java",
+        "package org.springframework.http; public class ResponseEntity<T> {}",
+    ),
+    (
         "org/springframework/beans/factory/annotation/Value.java",
         "package org.springframework.beans.factory.annotation; public @interface Value { String value(); }",
+    ),
+    (
+        "org/springframework/core/ParameterizedTypeReference.java",
+        "package org.springframework.core; public abstract class ParameterizedTypeReference<T> {}",
     ),
     (
         "org/springframework/web/client/RestTemplate.java",
@@ -336,21 +344,38 @@ public class RestTemplate {
         r#"
 package org.springframework.web.client;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
+import org.springframework.core.ParameterizedTypeReference;
 public class RestClient {
     public static RestClient create() { return new RestClient(); }
-    public RequestBodySpec get() { return null; }
-    public RequestBodySpec head() { return null; }
-    public RequestBodySpec post() { return null; }
-    public RequestBodySpec put() { return null; }
-    public RequestBodySpec patch() { return null; }
-    public RequestBodySpec delete() { return null; }
-    public RequestBodySpec options() { return null; }
-    public RequestBodySpec method(HttpMethod m) { return null; }
-    public interface RequestBodySpec {
-        RequestBodySpec uri(String uri, Object... uriVariables);
-        ResponseSpec retrieve();
+    public RequestBodyUriSpec get() { return null; }
+    public RequestBodyUriSpec head() { return null; }
+    public RequestBodyUriSpec post() { return null; }
+    public RequestBodyUriSpec put() { return null; }
+    public RequestBodyUriSpec patch() { return null; }
+    public RequestBodyUriSpec delete() { return null; }
+    public RequestBodyUriSpec options() { return null; }
+    public RequestBodyUriSpec method(HttpMethod m) { return null; }
+    public interface UriSpec<S> {
+        S uri(String uri, Object... uriVariables);
     }
-    public interface ResponseSpec { <T> T body(Class<T> type); }
+    public interface RequestHeadersSpec<S> {
+        ResponseSpec retrieve();
+        <T> T exchange(ExchangeFunction<T> exchangeFunction);
+        <T> T exchange(ExchangeFunction<T> exchangeFunction, boolean close);
+        interface ExchangeFunction<T> { T exchange(Object request, Object response); }
+    }
+    public interface RequestBodySpec extends RequestHeadersSpec<RequestBodySpec> {
+        RequestBodySpec body(Object body);
+    }
+    public interface RequestBodyUriSpec extends RequestBodySpec, UriSpec<RequestBodySpec> {}
+    public interface ResponseSpec {
+        <T> T body(Class<T> type);
+        <T> T body(ParameterizedTypeReference<T> type);
+        <T> ResponseEntity<T> toEntity(Class<T> type);
+        <T> ResponseEntity<T> toEntity(ParameterizedTypeReference<T> type);
+        ResponseEntity<Void> toBodilessEntity();
+    }
 }
 "#,
     ),
@@ -417,11 +442,39 @@ fn egress(observation: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-/// A real JDK 21 compiler-to-docs pass proves the repaired fluent-chain
-/// traversal: `client.post().uri("/orders").retrieve().body(...)` yields
-/// exactly one usable egress (POST, /orders), configured-but-unexecuted
-/// request specifications yield none, absolute URLs split authority from path,
-/// and `method(HttpMethod.POST)` resolves the verb statically.
+fn observation_for<'a>(
+    observations: &'a BTreeMap<String, clew::documentation::model::Observation>,
+    name: &str,
+) -> &'a Value {
+    observations
+        .values()
+        .find(|observation| observation.kind == "SYMBOL" && observation.normalized["name"] == name)
+        .map(|observation| &observation.normalized)
+        .unwrap_or_else(|| panic!("missing declaration {name}"))
+}
+
+fn call_target_matches(observation: &Value, fragment: &str) -> bool {
+    observation["documentation"]["events"]
+        .as_array()
+        .is_some_and(|events| {
+            events.iter().any(|event| {
+                event["kind"] == "CALL"
+                    && event["target"]
+                        .as_str()
+                        .is_some_and(|target| target.contains(fragment))
+            })
+        })
+}
+
+/// A real JDK 21 compiler-to-docs pass checks resolved Spring RestClient calls.
+/// API semantics were cross-checked against cached `spring-web` 6.1.13 and
+/// 6.2.18 sources: 6.1.13 executes during `retrieve()`, while 6.2.18 defers to
+/// response consumption; `exchange(...)` executes in both. Both versions
+/// consume the response through body/toEntity/toBodilessEntity. Since this
+/// evidence does not bind a dependency version, retrieve-only has a version
+/// boundary, while resolved response consumption and exchange qualify the
+/// request chain. Request construction, including `RequestBodySpec.body(Object)`,
+/// has no send.
 #[test]
 fn restclient_fluent_chains_produce_single_usable_egress_on_jdk21() {
     let fixture = (
@@ -432,6 +485,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpMethod;
+import org.springframework.core.ParameterizedTypeReference;
 public class OrdersClient {
     private final RestClient http = RestClient.create();
     private final RestTemplate rt = new RestTemplate();
@@ -443,9 +497,45 @@ public class OrdersClient {
     public String list() {
         return http.get().uri("https://api.example.com/v1/items").retrieve().body(String.class);
     }
-    public void configure() {
-        http.post().retrieve();
+    public void constructOnly() {
+        http.post().uri("/construct-only");
     }
+    public void requestBodyOnly() {
+        http.post().uri("/request-body-only").body("payload");
+    }
+    public void retrieveOnly() {
+        http.post().uri("/retrieve-only").retrieve();
+    }
+    public String typedBody() {
+        return http.get().uri("/typed").retrieve().body(new ParameterizedTypeReference<String>() {});
+    }
+    public void exchangeOnly() {
+        http.post().uri("/exchange-only").exchange((request, response) -> "exchanged");
+    }
+    public Object entity() {
+        return http.get().uri("/entity").retrieve().toEntity(String.class);
+    }
+    public Object typedEntity() {
+        return http.get().uri("/typed-entity").retrieve()
+                .toEntity(new ParameterizedTypeReference<String>() {});
+    }
+    public Object bodilessEntity() {
+        return http.delete().uri("/bodiless").retrieve().toBodilessEntity();
+    }
+    public void labelledExit(boolean x) {
+        outer: {
+            if (x) break outer;
+            reserve("labelled");
+        }
+        done();
+    }
+    public void loopJumps(boolean x) {
+        while (x) {
+            if (x) break;
+            continue;
+        }
+    }
+    private void done() {}
     public String viaMethod(String id) {
         return http.method(HttpMethod.POST).uri("/method/{id}", id).retrieve().body(String.class);
     }
@@ -508,7 +598,21 @@ class Impostor {
     assert_eq!(reserve.len(), 1, "one egress per executed request");
     assert_eq!(reserve[0]["http"]["method"], "POST");
     assert_eq!(reserve[0]["http"]["path"], "/orders/{id}");
-    assert_eq!(reserve[0]["http"]["adapter"], "SPRING_REST_CLIENT_URI/1.0");
+    assert_eq!(reserve[0]["http"]["adapter"], "SPRING_REST_CLIENT_URI/2.0");
+    assert_eq!(
+        reserve[0]["http"]["executionEvidence"],
+        "SUPPORTED_FLUENT_REQUEST_CHAIN"
+    );
+    assert_eq!(
+        reserve[0]["http"]["dispatchTiming"],
+        "WITHIN_CHAIN_VERSION_DEPENDENT"
+    );
+    assert!(
+        reserve[0]["target"]
+            .as_str()
+            .unwrap()
+            .contains("RestClient$ResponseSpec#body(Ljava/lang/Class;)")
+    );
 
     // An absolute literal URL is split into authority and normalized path.
     let list = find("list");
@@ -517,8 +621,145 @@ class Impostor {
     assert_eq!(list[0]["http"]["authority"], "api.example.com");
     assert_eq!(list[0]["http"]["path"], "/v1/items");
 
-    // A configured-but-unexecuted request specification is not an egress.
-    assert!(find("configure").is_empty());
+    // URI construction and RequestBodySpec.body(Object) remain ordinary calls.
+    let construct_only = observation_for(&evidence.observations, "constructOnly");
+    assert!(egress(construct_only).is_empty());
+    assert!(call_target_matches(
+        construct_only,
+        "RestClient$UriSpec#uri(Ljava/lang/String;[Ljava/lang/Object;)"
+    ));
+    let request_body_only = observation_for(&evidence.observations, "requestBodyOnly");
+    assert!(egress(request_body_only).is_empty());
+    assert!(call_target_matches(
+        request_body_only,
+        "RestClient$RequestBodySpec#body(Ljava/lang/Object;)"
+    ));
+
+    // retrieve() alone is retained as a candidate plus version boundary rather
+    // than a false send claim: the cached Spring 6.1.13 and 6.2.18 sources differ.
+    let retrieve_only = observation_for(&evidence.observations, "retrieveOnly");
+    assert!(egress(retrieve_only).is_empty());
+    let retrieve_event = retrieve_only["documentation"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| {
+            event["http"]["boundary"] == "SPRING_REST_CLIENT_RETRIEVE_EXECUTION_VERSION_DEPENDENT"
+        })
+        .expect("retrieve-only source call must retain its explicit boundary");
+    assert_eq!(retrieve_event["http"]["candidateMethod"], "POST");
+    assert_eq!(retrieve_event["http"]["candidatePath"], "/retrieve-only");
+    assert!(
+        retrieve_event["target"]
+            .as_str()
+            .unwrap()
+            .contains("RestClient$RequestHeadersSpec#retrieve()")
+    );
+    assert!(call_target_matches(
+        retrieve_only,
+        "RestClient$RequestHeadersSpec#retrieve()"
+    ));
+
+    // The resolved ResponseSpec overloads qualify a consumed request chain.
+    let typed_body = find("typedBody");
+    assert_eq!(typed_body.len(), 1);
+    assert_eq!(typed_body[0]["http"]["method"], "GET");
+    assert_eq!(typed_body[0]["http"]["path"], "/typed");
+    assert!(typed_body[0]["target"].as_str().unwrap().contains(
+        "RestClient$ResponseSpec#body(Lorg/springframework/core/ParameterizedTypeReference;)"
+    ));
+
+    // Every supported resolved ResponseSpec consumption overload qualifies its
+    // chain once, without making an exact dispatch-time claim.
+    for (name, target, method, path) in [
+        (
+            "entity",
+            "RestClient$ResponseSpec#toEntity(Ljava/lang/Class;)",
+            "GET",
+            "/entity",
+        ),
+        (
+            "typedEntity",
+            "RestClient$ResponseSpec#toEntity(Lorg/springframework/core/ParameterizedTypeReference;)",
+            "GET",
+            "/typed-entity",
+        ),
+        (
+            "bodilessEntity",
+            "RestClient$ResponseSpec#toBodilessEntity()",
+            "DELETE",
+            "/bodiless",
+        ),
+    ] {
+        let consumed = find(name);
+        assert_eq!(consumed.len(), 1, "{name} qualifies exactly one chain");
+        assert_eq!(consumed[0]["http"]["method"], method);
+        assert_eq!(consumed[0]["http"]["path"], path);
+        assert_eq!(
+            consumed[0]["http"]["dispatchTiming"],
+            "WITHIN_CHAIN_VERSION_DEPENDENT"
+        );
+        assert!(consumed[0]["target"].as_str().unwrap().contains(target));
+    }
+
+    // A labelled statement is an opaque whole-method boundary. Its potentially
+    // skipped body must not leak the reserve call as an unconditional action.
+    let labelled_exit = observation_for(&evidence.observations, "labelledExit");
+    assert!(!call_target_matches(
+        labelled_exit,
+        "OrdersClient#reserve(Ljava/lang/String;)Ljava/lang/String;"
+    ));
+    assert!(call_target_matches(labelled_exit, "OrdersClient#done()V"));
+    assert!(
+        labelled_exit["documentation"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"] == "BOUNDARY")
+    );
+    assert!(
+        labelled_exit["documentation"]["boundaries"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("LABELED_STATEMENT_FLOW_REQUIRES_SOURCE_REVIEW"))
+    );
+
+    // Direct break/continue jumps inside ordinary loop scanning retain explicit
+    // gaps instead of being flattened into ordinary source order.
+    let loop_jumps = observation_for(&evidence.observations, "loopJumps");
+    for boundary in [
+        "BREAK_FLOW_REQUIRES_SOURCE_REVIEW",
+        "CONTINUE_FLOW_REQUIRES_SOURCE_REVIEW",
+    ] {
+        assert!(
+            loop_jumps["documentation"]["boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(boundary))
+        );
+    }
+    assert!(
+        loop_jumps["documentation"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["kind"] == "BOUNDARY")
+            .count()
+            >= 2
+    );
+
+    // exchange is an execution boundary even without response-body extraction.
+    let exchange = find("exchangeOnly");
+    assert_eq!(exchange.len(), 1);
+    assert_eq!(exchange[0]["http"]["method"], "POST");
+    assert_eq!(exchange[0]["http"]["path"], "/exchange-only");
+    assert_eq!(exchange[0]["http"]["dispatchTiming"], "EXCHANGE_CALL");
+    assert!(
+        exchange[0]["target"]
+            .as_str()
+            .unwrap()
+            .contains("RestClient$RequestHeadersSpec#exchange(")
+    );
 
     // method(HttpMethod.CONSTANT) resolves the verb statically.
     let via = find("viaMethod");

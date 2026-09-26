@@ -1,10 +1,13 @@
 import com.sun.source.tree.AnnotationTree;
 import com.sun.source.tree.BinaryTree;
+import com.sun.source.tree.BreakTree;
 import com.sun.source.tree.ConditionalExpressionTree;
+import com.sun.source.tree.ContinueTree;
 import com.sun.source.tree.ThrowTree;
 import com.sun.source.tree.SynchronizedTree;
 import com.sun.source.tree.IfTree;
 import com.sun.source.tree.LiteralTree;
+import com.sun.source.tree.LabeledStatementTree;
 import com.sun.source.tree.ReturnTree;
 import com.sun.source.tree.WhileLoopTree;
 import com.sun.source.tree.ForLoopTree;
@@ -86,6 +89,17 @@ final class CodeclewJavaAnalyzer {
     // the per-fact byte budget; a long body is truncated with a boundary.
     // Widened (45k -> 150k) to expand persistence/egress flows for task-manager docs.
     private static final int DOCUMENTATION_FLOW_BYTES = 150_000;
+    private static final String REST_CLIENT_OWNER = "class:org.springframework.web.client.RestClient";
+    private static final String REST_CLIENT_URI_SPEC_OWNER =
+            "class:org.springframework.web.client.RestClient$UriSpec";
+    private static final String REST_CLIENT_REQUEST_HEADERS_SPEC_OWNER =
+            "class:org.springframework.web.client.RestClient$RequestHeadersSpec";
+    private static final String REST_CLIENT_REQUEST_BODY_SPEC_OWNER =
+            "class:org.springframework.web.client.RestClient$RequestBodySpec";
+    private static final String REST_CLIENT_RESPONSE_SPEC_OWNER =
+            "class:org.springframework.web.client.RestClient$ResponseSpec";
+    private static final String REST_CLIENT_RETRIEVE_VERSION_BOUNDARY =
+            "SPRING_REST_CLIENT_RETRIEVE_EXECUTION_VERSION_DEPENDENT";
     // Bound a single annotation definition so it never makes a registry shard
     // exceed the per-fact byte budget. Oversized members are truncated and the
     // definition is explicitly marked bounded instead of silently dropped.
@@ -548,6 +562,21 @@ final class CodeclewJavaAnalyzer {
                 event("LOOP", tree).put("condition", "do-while"); scan(tree.getStatement(), null);
                 scan(tree.getCondition(), null); event("END", tree); return null;
             }
+            @Override public Void visitLabeledStatement(LabeledStatementTree tree, Void unused) {
+                boundaries.add("LABELED_STATEMENT_FLOW_REQUIRES_SOURCE_REVIEW");
+                event("BOUNDARY", tree);
+                return null;
+            }
+            @Override public Void visitBreak(BreakTree tree, Void unused) {
+                boundaries.add("BREAK_FLOW_REQUIRES_SOURCE_REVIEW");
+                event("BOUNDARY", tree);
+                return null;
+            }
+            @Override public Void visitContinue(ContinueTree tree, Void unused) {
+                boundaries.add("CONTINUE_FLOW_REQUIRES_SOURCE_REVIEW");
+                event("BOUNDARY", tree);
+                return null;
+            }
             @Override public Void visitSwitch(SwitchTree tree, Void unused) {
                 boundaries.add("SWITCH_FLOW_REQUIRES_SOURCE_REVIEW"); event("BOUNDARY", tree); return null;
             }
@@ -646,52 +675,150 @@ final class CodeclewJavaAnalyzer {
                     if (!result.containsKey("path")) result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
                     return result;
                 }
-                if (owner.equals("class:org.springframework.web.client.RestClient")) {
-                    String verb = switch (name) {
-                        case "get" -> "GET";
-                        case "post" -> "POST";
-                        case "put" -> "PUT";
-                        case "delete" -> "DELETE";
-                        case "patch" -> "PATCH";
-                        case "head" -> "HEAD";
-                        case "options" -> "OPTIONS";
-                        case "method" -> httpMethodConstant(call);
-                        default -> null;
-                    };
-                    if (verb == null) return result;
-                    Tree uri = restClientUri(call);
-                    if (uri == null) return result;
-                    result.put("adapter", "SPRING_REST_CLIENT_URI/1.0");
-                    result.put("method", verb);
-                    // Separate a normalized request path from authority/host: a
-                    // literal relative path (or URI template) is kept as the path;
-                    // a literal absolute URL is split so its authority never
-                    // masquerades as a route path. URI templates remain templates,
-                    // never exact concrete routes. A configured client or a request
-                    // specification without a resolvable uri is not an executed
-                    // request and produces no egress (restClientUri returns null).
-                    if (uri instanceof LiteralTree literal && literal.getValue() instanceof String value) {
-                        if (value.startsWith("/")) {
-                            result.put("path", value);
-                        } else if (value.startsWith("http://") || value.startsWith("https://")) {
-                            int scheme = value.indexOf("://") + 3;
-                            int slash = value.indexOf('/', scheme);
-                            if (slash < 0) {
-                                result.put("authority", value.substring(scheme));
-                                result.put("path", "/");
-                            } else {
-                                result.put("authority", value.substring(scheme, slash));
-                                result.put("path", value.substring(slash));
-                            }
-                        } else {
-                            result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
-                        }
-                    } else {
-                        result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                if (owner.equals(REST_CLIENT_REQUEST_HEADERS_SPEC_OWNER)) {
+                    if (name.equals("retrieve")) {
+                        RestClientRequest request = restClientRequest(call);
+                        if (request != null) return restClientHttp(request, null);
+                    } else if (name.equals("exchange")) {
+                        RestClientRequest request = restClientRequest(call);
+                        if (request != null) return restClientHttp(request, "EXCHANGE_CALL");
                     }
-                    return result;
+                }
+                if (owner.equals(REST_CLIENT_RESPONSE_SPEC_OWNER)
+                        && isResponseConsumption(call, method)) {
+                    RestClientRequest request = restClientResponseRequest(call);
+                    if (request != null) return restClientHttp(request, "WITHIN_CHAIN_VERSION_DEPENDENT");
                 }
                 return result;
+            }
+
+            private final class RestClientRequest {
+                private final String method;
+                private final Tree uri;
+
+                private RestClientRequest(String method, Tree uri) {
+                    this.method = method;
+                    this.uri = uri;
+                }
+            }
+
+            private Map<String, Object> restClientHttp(RestClientRequest request, String executionTiming) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                // Version 2 qualifies a resolved fluent request chain at response
+                // consumption or exchange. This is not a claim about exact I/O
+                // timing: Spring 6.1 can execute in retrieve(), while Spring 6.2
+                // defers execution to consumption. retrieve() alone stays bounded.
+                result.put("adapter", "SPRING_REST_CLIENT_URI/2.0");
+                if (executionTiming != null) {
+                    result.put("method", request.method);
+                    result.put("executionEvidence", "SUPPORTED_FLUENT_REQUEST_CHAIN");
+                    result.put("dispatchTiming", executionTiming);
+                } else {
+                    result.put("boundary", REST_CLIENT_RETRIEVE_VERSION_BOUNDARY);
+                    result.put("candidateMethod", request.method);
+                }
+
+                if (request.uri instanceof LiteralTree literal && literal.getValue() instanceof String value) {
+                    if (value.startsWith("/")) {
+                        result.put(executionTiming != null ? "path" : "candidatePath", value);
+                    } else if (value.startsWith("http://") || value.startsWith("https://")) {
+                        int scheme = value.indexOf("://") + 3;
+                        int slash = value.indexOf('/', scheme);
+                        String authority = slash < 0 ? value.substring(scheme) : value.substring(scheme, slash);
+                        String path = slash < 0 ? "/" : value.substring(slash);
+                        result.put(executionTiming != null ? "authority" : "candidateAuthority", authority);
+                        result.put(executionTiming != null ? "path" : "candidatePath", path);
+                    } else {
+                        result.put(
+                                executionTiming != null ? "boundary" : "candidateBoundary",
+                                "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                    }
+                } else {
+                    result.put(
+                            executionTiming != null ? "boundary" : "candidateBoundary",
+                            "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                }
+                return result;
+            }
+
+            private boolean isResponseConsumption(MethodInvocationTree call, ExecutableElement method) {
+                String name = method.getSimpleName().toString();
+                if (name.equals("toBodilessEntity")) {
+                    return call.getArguments().isEmpty() && method.getParameters().isEmpty();
+                }
+                if (!(name.equals("body") || name.equals("toEntity"))
+                        || call.getArguments().size() != 1
+                        || method.getParameters().size() != 1) {
+                    return false;
+                }
+                String parameterType = types.erasure(method.getParameters().get(0).asType()).toString();
+                return parameterType.equals("java.lang.Class")
+                        || parameterType.equals("org.springframework.core.ParameterizedTypeReference");
+            }
+
+            private RestClientRequest restClientResponseRequest(MethodInvocationTree bodyCall) {
+                Tree receiver = methodReceiver(bodyCall);
+                if (!(receiver instanceof MethodInvocationTree retrieveCall)) return null;
+                ExecutableElement retrieveMethod = resolvedMethod(retrieveCall);
+                if (retrieveMethod == null
+                        || !ownerOf(retrieveMethod).equals(REST_CLIENT_REQUEST_HEADERS_SPEC_OWNER)
+                        || !retrieveMethod.getSimpleName().contentEquals("retrieve")) {
+                    return null;
+                }
+                return restClientRequest(retrieveCall);
+            }
+
+            private RestClientRequest restClientRequest(MethodInvocationTree executionCall) {
+                Tree receiver = methodReceiver(executionCall);
+                if (receiver instanceof MethodInvocationTree bodyCall) {
+                    ExecutableElement bodyMethod = resolvedMethod(bodyCall);
+                    if (isRequestBodyBuilderCall(bodyCall, bodyMethod)) {
+                        receiver = methodReceiver(bodyCall);
+                    }
+                }
+                if (!(receiver instanceof MethodInvocationTree uriCall)) return null;
+                ExecutableElement uriMethod = resolvedMethod(uriCall);
+                if (uriMethod == null
+                        || !ownerOf(uriMethod).equals(REST_CLIENT_URI_SPEC_OWNER)
+                        || !uriMethod.getSimpleName().contentEquals("uri")
+                        || uriCall.getArguments().isEmpty()) {
+                    return null;
+                }
+                Tree verbTree = methodReceiver(uriCall);
+                if (!(verbTree instanceof MethodInvocationTree verbCall)) return null;
+                ExecutableElement verbMethod = resolvedMethod(verbCall);
+                if (verbMethod == null || !ownerOf(verbMethod).equals(REST_CLIENT_OWNER)) return null;
+                String verb = switch (verbMethod.getSimpleName().toString()) {
+                    case "get" -> "GET";
+                    case "post" -> "POST";
+                    case "put" -> "PUT";
+                    case "delete" -> "DELETE";
+                    case "patch" -> "PATCH";
+                    case "head" -> "HEAD";
+                    case "options" -> "OPTIONS";
+                    case "method" -> httpMethodConstant(verbCall);
+                    default -> null;
+                };
+                return verb == null ? null : new RestClientRequest(verb, uriCall.getArguments().get(0));
+            }
+
+            private boolean isRequestBodyBuilderCall(MethodInvocationTree call, ExecutableElement method) {
+                return method != null
+                        && ownerOf(method).equals(REST_CLIENT_REQUEST_BODY_SPEC_OWNER)
+                        && method.getSimpleName().contentEquals("body")
+                        && call.getArguments().size() == 1
+                        && method.getParameters().size() == 1
+                        && types.erasure(method.getParameters().get(0).asType()).toString().equals("java.lang.Object");
+            }
+
+            private Tree methodReceiver(MethodInvocationTree call) {
+                return call.getMethodSelect() instanceof MemberSelectTree select ? select.getExpression() : null;
+            }
+
+            private ExecutableElement resolvedMethod(MethodInvocationTree call) {
+                TreePath path = TreePath.getPath(getCurrentPath(), call);
+                Element target = path == null ? null : trees.getElement(path);
+                return target instanceof ExecutableElement method ? method : null;
             }
 
             /** Resolve the HTTP verb from a statically-typed `method(HttpMethod.CONSTANT)`
@@ -714,31 +841,6 @@ final class CodeclewJavaAnalyzer {
                 return null;
             }
 
-            /** For `restClient.verb().uri(url)` (and the longer fluent chains
-             *  `client.post().uri(url).retrieve().body(...)`), return the `url`
-             *  argument tree. The verb call (`client.post()`) sits beneath a
-             *  `MemberSelect("uri")` whose parent is the `uri(...)` invocation,
-             *  so we walk through an intervening MemberSelect before matching the
-             *  receiver/selector identity. Older forms where the uri invocation is
-             *  the direct parent are also accepted. */
-            private Tree restClientUri(MethodInvocationTree verbCall) {
-                TreePath path = getCurrentPath().getParentPath();
-                if (path == null) return null;
-                Tree leaf = path.getLeaf();
-                if (leaf instanceof MemberSelectTree select) {
-                    if (!select.getIdentifier().contentEquals("uri")) return null;
-                    path = path.getParentPath();
-                    if (path == null) return null;
-                    leaf = path.getLeaf();
-                }
-                if (leaf instanceof MethodInvocationTree chain
-                        && chain.getMethodSelect() instanceof MemberSelectTree select
-                        && select.getIdentifier().contentEquals("uri")
-                        && !chain.getArguments().isEmpty()) {
-                    return chain.getArguments().get(0);
-                }
-                return null;
-            }
         }
 
         private TreePath getCurrentPathOfAnalyzer() { return getCurrentPath(); }
