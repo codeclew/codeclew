@@ -105,6 +105,16 @@ pub enum Command {
         declaration: Vec<String>,
         #[arg(long, default_value = "all", value_parser = ["all", "internal", "trigger"])]
         lane: String,
+        /// Ad-hoc scope@symbol entries to exclude for this query (not persisted).
+        #[arg(long)]
+        suppress: Vec<String>,
+    },
+    /// Manage the persisted list of rejected candidates (scope@symbol).
+    Suppress {
+        #[arg(long)]
+        root: PathBuf,
+        #[command(subcommand)]
+        command: SuppressCommand,
     },
     List {
         #[command(flatten)]
@@ -130,6 +140,9 @@ pub enum Command {
         root: PathBuf,
         #[arg(long)]
         input: PathBuf,
+        /// Inspect against saved evidence, including a recomposed snapshot.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
     Prepare {
         #[arg(long)]
@@ -138,7 +151,20 @@ pub enum Command {
         id: String,
         #[arg(long)]
         overview: bool,
+        /// Prepare against saved evidence, including a recomposed snapshot.
+        #[arg(long)]
+        snapshot: Option<String>,
     },
+}
+#[derive(Debug, Subcommand)]
+pub enum SuppressCommand {
+    /// Add scope@symbol entries to the reject list (idempotent).
+    Add {
+        #[arg(long)]
+        symbol: Vec<String>,
+    },
+    /// Print the current reject list.
+    List {},
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     let root = match &command {
@@ -146,7 +172,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Show { root, .. }
         | Command::Put { root, .. }
         | Command::Inspect { root, .. }
-        | Command::Prepare { root, .. } => root,
+        | Command::Prepare { root, .. }
+        | Command::Suppress { root, .. } => root,
     };
     let repo = Repository::open(root)?;
     match command {
@@ -156,15 +183,22 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             snapshot,
             declaration,
             lane,
+            suppress,
         } => {
             let (checked, handle) = Check::retained(
                 &repo,
                 snapshot.as_deref(),
                 &BTreeSet::from([service.clone()]),
             )?;
+            let mut selected = super::process_candidates::load_suppress(&repo)?;
+            for entry in suppress {
+                validate_suppress_entry(&entry)?;
+                selected.insert(entry);
+            }
             let catalogue = super::process_candidates::catalog(
                 &checked.services[&service],
                 &declaration.into_iter().collect(),
+                &selected,
             )?;
             let records: Vec<_> = catalogue
                 .records
@@ -179,8 +213,33 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 records,
                 page.cursor.as_deref(),
                 page.limit as usize,
-                json!({"snapshot":handle,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","lane":lane,"catalogue":catalogue.summary}),
+                json!({"snapshot":handle,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","lane":lane,"suppressed":selected,"catalogue":catalogue.summary}),
             )
+        }
+        Command::Suppress { root, command } => {
+            let repo = Repository::open(&root)?;
+            match command {
+                SuppressCommand::Add { symbol } => {
+                    let _lock = repo.lock()?;
+                    let mut current = super::process_candidates::load_suppress(&repo)?;
+                    for entry in symbol {
+                        validate_suppress_entry(&entry)?;
+                        current.insert(entry);
+                    }
+                    let data = super::bytes(&json!({
+                        "schema": "codeclew-documentation-process-candidates-suppress/1.0",
+                        "suppressed": current
+                    }))?;
+                    repo.atomic("catalog/process-candidates-suppress.json", &data)?;
+                    Ok(json!({"status":"SAVED","suppressedCount":current.len()}))
+                }
+                SuppressCommand::List {} => {
+                    let current = super::process_candidates::load_suppress(&repo)?;
+                    Ok(
+                        json!({"schema":"codeclew-documentation-process-candidates-suppress/1.0","suppressed":current}),
+                    )
+                }
+            }
         }
         Command::List { page } => {
             let records=repo.scenarios()?.into_values().map(|s|json!({"id":s.id,"title":s.title,"kind":if s.process.is_some(){"SAVED_PROCESS"}else{"SAVED_VIEW"},"subject":format!("scenario:{}",s.id)})).collect::<Vec<_>>();
@@ -214,7 +273,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 Some(&expected_input_digest),
             )
         }
-        Command::Inspect { input, .. } => {
+        Command::Inspect {
+            input, snapshot, ..
+        } => {
             let definition = load_definition(&repo, &input)?;
             let scenarios = BTreeMap::from([(definition.id.clone(), definition.clone())]);
             let mut selected: BTreeSet<_> = definition
@@ -234,7 +295,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     interaction.to.service.clone(),
                 ]);
             }
-            let (saved, snapshot) = super::check::Check::retained(&repo, None, &selected)?;
+            let (saved, snapshot) =
+                super::check::Check::retained(&repo, snapshot.as_deref(), &selected)?;
             let checked = super::check::assemble(
                 saved.input_digest,
                 saved.services,
@@ -246,13 +308,27 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 json!({"status":"TRANSIENT","saved":false,"snapshot":snapshot,"authority":"PINNED_SNAPSHOT_NOT_REVERIFIED","definition":definition,"context":checked.scenarios[&definition.id],"linkedSubviews":definition.process.as_ref().map(|p|&p.linked_subviews),"limitation":"Linked child explanations are checked only for an explicitly saved definition."}),
             )
         }
-        Command::Prepare { id, overview, .. } => {
+        Command::Prepare {
+            id,
+            overview,
+            snapshot,
+            ..
+        } => {
             if !repo.scenarios()?.contains_key(&id) {
                 return Err(invalid("unknown process"));
             }
-            work::prepare(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?)
+            work::prepare_with_snapshot(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?, snapshot.as_deref())
         }
     }
+}
+fn validate_suppress_entry(entry: &str) -> Result<(), ClewError> {
+    let (scope, symbol) = entry
+        .split_once('@')
+        .ok_or_else(|| invalid("suppress entry must be <scope>@<symbol>"))?;
+    if scope.is_empty() || symbol.is_empty() {
+        return Err(invalid("suppress entry must be <scope>@<symbol>"));
+    }
+    Ok(())
 }
 fn load_definition(repo: &Repository, path: &std::path::Path) -> Result<Scenario, ClewError> {
     let s: Scenario = store::read(path, 256 * 1024)?;
@@ -665,5 +741,35 @@ mod format_tests {
         assert!(validate(&definition, &BTreeMap::new()).is_err());
         definition.schema = "codeclew-documentation-process/1.0".into();
         assert!(validate(&definition, &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn suppress_add_is_persistent_and_idempotent_and_lists_back() {
+        let root =
+            std::env::temp_dir().join(format!("clew-suppress-cli-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Repository::init(&root, "test").unwrap();
+        let add = || {
+            run(Command::Suppress {
+                root: root.clone(),
+                command: SuppressCommand::Add {
+                    symbol: vec![":main@equals".to_owned(), ":main@equals".to_owned()],
+                },
+            })
+            .unwrap()
+        };
+        let first = add();
+        assert_eq!(first["status"], "SAVED");
+        assert_eq!(first["suppressedCount"], 1); // idempotent: duplicate entry collapses
+        let again = add();
+        assert_eq!(again["status"], "SAVED");
+        assert_eq!(again["suppressedCount"], 1);
+        let listed = run(Command::Suppress {
+            root: root.clone(),
+            command: SuppressCommand::List {},
+        })
+        .unwrap();
+        assert_eq!(listed["suppressed"], json!([":main@equals"]));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -555,7 +555,13 @@ fn docsys_t13_history_preserves_moved_tags_and_recovers_without_private_cache() 
     );
     let checked = f.checked();
     let narrative = f.author("orders", &checked);
-    let result = f.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
+    let result = f.ok(&[
+        "docs",
+        "render",
+        "--input",
+        narrative.to_str().unwrap(),
+        "--publish",
+    ]);
     let old = result["bundle"].as_str().unwrap().to_owned();
     let original = fs::read(f.bundle(&old, "services/orders.html")).unwrap();
     fs::write(
@@ -595,6 +601,8 @@ fn docsys_t13_history_preserves_moved_tags_and_recovers_without_private_cache() 
     );
     drop(producer);
     fs::remove_dir_all(f.docs.join(".codeclew")).unwrap();
+    assert_ne!(f.run(&["docs", "check"]).0, 0);
+    f.ok(&["docs", "init", "--title", "Service documentation"]);
     assert_eq!(
         f.checked().services["orders"].revision,
         new["revision"].as_str().unwrap()
@@ -629,6 +637,128 @@ fn docsys_t13_history_preserves_moved_tags_and_recovers_without_private_cache() 
         }
         copy(&f.docs.join("docs"), std::path::Path::new(&directory));
     }
+}
+
+#[test]
+fn docsys_t17_render_is_working_until_explicit_release_and_release_is_immutable() {
+    use serde_json::Value;
+
+    fn render(f: &Fixture, narrative: &Value, name: &str, publish: bool) -> Value {
+        let input = f.input(name, narrative);
+        let mut args = vec!["docs", "render", "--input", input.to_str().unwrap()];
+        if publish {
+            args.push("--publish");
+        }
+        f.ok(&args)
+    }
+
+    fn current_id(f: &Fixture) -> String {
+        let index = fs::read_to_string(f.docs.join("docs/index.html")).unwrap();
+        index
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("<!-- codeclew-bundle ")
+            .unwrap()
+            .strip_suffix(" -->")
+            .unwrap()
+            .to_owned()
+    }
+
+    fn bundle_count(f: &Fixture) -> usize {
+        fs::read_dir(f.docs.join("docs/generated"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && entry.file_name().to_string_lossy().len() == 64
+            })
+            .count()
+    }
+
+    let f = Fixture::new();
+    f.service("orders");
+    let checked = f.checked();
+    let authored = f.author("orders", &checked);
+    let mut narrative = read(authored);
+    narrative["operations"][0]["title"] = "Working render one".into();
+    let working_one = render(&f, &narrative, "working-one.json", false);
+    let working_one_id = working_one["bundle"].as_str().unwrap().to_owned();
+    assert_eq!(working_one["released"], false);
+    assert_eq!(current_id(&f), working_one_id);
+    assert_eq!(
+        read(f.bundle(&working_one_id, "publication.json"))["ordinal"],
+        0
+    );
+    assert!(
+        f.ok(&["docs", "history", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let history = fs::read_to_string(f.docs.join("docs/history.html")).unwrap();
+    assert!(history.contains("<ol></ol>"));
+
+    narrative["operations"][0]["title"] = "Working render two".into();
+    let working_two = render(&f, &narrative, "working-two.json", false);
+    let working_two_id = working_two["bundle"].as_str().unwrap().to_owned();
+    assert_ne!(working_one_id, working_two_id);
+    assert_eq!(current_id(&f), working_two_id);
+    assert!(
+        f.ok(&["docs", "history", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let working_bundle_count = bundle_count(&f);
+    let repeated_working = render(&f, &narrative, "working-two-repeat.json", false);
+    assert_eq!(repeated_working["bundle"], working_two_id);
+    assert_eq!(bundle_count(&f), working_bundle_count);
+
+    let released = render(&f, &narrative, "release.json", true);
+    let released_id = released["bundle"].as_str().unwrap().to_owned();
+    assert_eq!(released["released"], true);
+    assert_ne!(working_two_id, released_id);
+    assert_eq!(current_id(&f), released_id);
+    let history = f.ok(&["docs", "history", "list"]);
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(history["items"][0]["id"], released_id);
+    assert_eq!(history["items"][0]["ordinal"], 1);
+    let saved_release = fs::read(f.bundle(&released_id, "services/orders.html")).unwrap();
+
+    let repeated = render(&f, &narrative, "release-repeat.json", true);
+    assert_eq!(repeated["bundle"], released_id);
+    assert_eq!(
+        f.ok(&["docs", "history", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    narrative["operations"][0]["title"] = "Working render after release".into();
+    let later_working = render(&f, &narrative, "working-after-release.json", false);
+    assert_eq!(later_working["released"], false);
+    assert_eq!(current_id(&f), later_working["bundle"]);
+    assert_eq!(
+        f.ok(&["docs", "history", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        fs::read(f.bundle(&released_id, "services/orders.html")).unwrap(),
+        saved_release
+    );
+    let history = fs::read_to_string(f.docs.join("docs/history.html")).unwrap();
+    let cards = history
+        .split_once("<ol>")
+        .and_then(|(_, html)| html.split_once("</ol>"))
+        .map(|(html, _)| html)
+        .unwrap();
+    assert!(cards.contains(&released_id));
+    assert!(!cards.contains(later_working["bundle"].as_str().unwrap()));
 }
 
 #[test]
@@ -1809,6 +1939,129 @@ fn docsys_t03_proposal_sequence_preserves_branches_and_arrows_without_fake_overv
         large.events.extend(operation.events.clone());
     }
     assert!(render::mermaid(&large).contains("A bounded overview has not been authored"));
+}
+
+#[test]
+fn docsys_t03_proposal_can_declare_an_external_sequence_participant() {
+    use clew::documentation::{model::*, render};
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+    commit(&source);
+    let (work, mut input, _) = proposal_fixture(&f);
+    let evidence = input["operations"][0]["summary"]["evidence"].clone();
+    let op = input["operations"][0].as_object_mut().unwrap();
+    op.insert(
+        "participants".into(),
+        json!([{"id": "db", "label": "Database", "service": null}]),
+    );
+    let steps = op["steps"].as_array_mut().unwrap();
+    steps.insert(
+        0,
+        json!({"kind":"message","from":"caller","to":"orders","meaning":{"text":"Request a reservation.","evidence":evidence}}),
+    );
+    steps.push(json!({"kind":"message","from":"orders","to":"db","meaning":{"text":"Persist the reservation row.","evidence":evidence}}));
+    steps.push(json!({"kind":"return","from":"db","to":"orders","meaning":{"text":"Row persisted.","evidence":evidence}}));
+    steps.push(json!({"kind":"return","from":"orders","to":"caller","meaning":{"text":"The operation returns.","evidence":evidence}}));
+    // A step that references an undeclared participant is rejected before any
+    // submit registers published content, keeping the work valid below.
+    let mut unknown = input.clone();
+    unknown["operations"][0]["steps"][0]["from"] = json!("cache");
+    let rejected = proposal_submit(&f, &work, &unknown);
+    assert_ne!(rejected["status"], "READY_WITH_LIMITATIONS", "{rejected}");
+    let submitted = proposal_submit(&f, &work, &input);
+    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+    let artifact = proposal_artifact(&f, &submitted);
+    let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+    let operation = &narrative.operations[0];
+    assert!(
+        operation
+            .participants
+            .iter()
+            .any(|p| p.id == "db" && p.label == "Database" && p.service.is_none())
+    );
+    let diagram = render::mermaid(operation);
+    assert!(
+        diagram.contains("service-orders->>db: Persist the reservation row."),
+        "{diagram}"
+    );
+    assert!(
+        diagram.contains("db-->>service-orders: Row persisted."),
+        "{diagram}"
+    );
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        submitted["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    let path = format!("diagrams/service-orders-{}.mmd", operation.id);
+    let published_diagram =
+        fs::read_to_string(f.bundle(published["bundle"].as_str().unwrap(), &path)).unwrap();
+    assert!(published_diagram.starts_with("%% Source freshness:"));
+    assert_eq!(published_diagram.split_once('\n').unwrap().1, diagram);
+}
+
+#[test]
+fn docsys_t03_proposal_authored_explanation_replaces_step_echo() {
+    use clew::documentation::model::*;
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+    commit(&source);
+    let (work, mut input, _) = proposal_fixture(&f);
+    let evidence = input["operations"][0]["summary"]["evidence"].clone();
+    let op = input["operations"][0].as_object_mut().unwrap();
+    op.insert(
+        "explanation".into(),
+        json!([
+            {"text":"Клиент запрашивает резервирование; сервис валидирует количество и сохраняет решение.","evidence":evidence},
+            {"text":"При отрицательном количестве выбрасывается исключение, вызывающее ответ с ошибкой.","evidence":evidence}
+        ]),
+    );
+    let steps = op["steps"].as_array_mut().unwrap();
+    steps.insert(
+        0,
+        json!({"kind":"message","from":"caller","to":"orders","meaning":{"text":"Reserve.","evidence":evidence}}),
+    );
+    let submitted = proposal_submit(&f, &work, &input);
+    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+    let artifact = proposal_artifact(&f, &submitted);
+    let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+    let operation = &narrative.operations[0];
+    let visible: Vec<&str> = operation
+        .explanation
+        .iter()
+        .filter(|p| !p.detail)
+        .map(|p| p.text.as_str())
+        .collect();
+    assert!(
+        visible.contains(
+            &"Клиент запрашивает резервирование; сервис валидирует количество и сохраняет решение."
+        ),
+        "authored narrative prose must be present in What happens: {visible:?}"
+    );
+    assert!(
+        visible.contains(
+            &"При отрицательном количестве выбрасывается исключение, вызывающее ответ с ошибкой."
+        ),
+        "authored narrative prose must be present in What happens: {visible:?}"
+    );
+    assert!(
+        operation.events.iter().any(|e| e.text == "Reserve."),
+        "arrow label must keep the short step meaning"
+    );
+    assert!(
+        operation
+            .explanation
+            .iter()
+            .all(|p| !p.event_ids.is_empty()),
+        "every explanation paragraph must reference a diagram step"
+    );
 }
 
 #[test]

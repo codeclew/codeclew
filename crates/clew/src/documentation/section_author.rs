@@ -356,6 +356,8 @@ pub fn adapt(
         dataflow: None,
         steps: Vec::new(),
         contracts: Vec::new(),
+        participants: Vec::new(),
+        explanation: Vec::new(),
     };
     Ok(Proposal {
         schema: "codeclew-documentation-proposal/1.0".into(),

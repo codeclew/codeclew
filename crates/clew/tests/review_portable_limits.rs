@@ -75,6 +75,7 @@ fn stage_publication(
         documentation_language: None,
         schema: "codeclew-documentation-publication/1.0".into(),
         id: id.into(),
+        released: true,
         parent: None,
         ordinal: 1,
         input_digest: "input".into(),

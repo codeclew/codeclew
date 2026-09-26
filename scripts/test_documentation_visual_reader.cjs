@@ -15,6 +15,17 @@ function fixture(){
  const op={id:'section-responsibilities',title:'Responsibilities',summary:fragment('Documented responsibilities'),participants:[],events:[],explanation:[],findings:[],boundaries:[],interfaceContracts:[],visuals:[flow,decision]};
  return {subject:'service:sample',title:'Sample',subtitle:'Example',catalogue:[],contracts:[],operations:[op],sections:[{id:'section-overview',title:'Overview',gap:'Awaiting overview'},{id:op.id,title:op.title,content:op}],notes:[],sources:{'same-source':source('CURRENT SOURCE')},operationSources:{[op.id]:{'same-source':source('ACCEPTED SOURCE')}},operationStates:{[op.id]:{freshness:'STALE',verification:'UNASSESSED'}},sectionState:{freshness:'CURRENT',verification:'VERIFIED'},sourceAuthorities:{},revisions:{sample:'abc'},boundaries:[],interactions:[],gaps:{},coverage:{},boundaryInventory:{publicBoundaries:[],gaps:[]}};
 }
+function processFixture(svgAvailable=false,lifecycleName='changeTaskStatus'){
+ const data=fixture();data.subject='scenario:checkout';data.catalogue=[];
+ const operation={id:'approve-request',title:'Approve request',summary:fragment('Accepted process operation details'),participants:[],events:[],explanation:[],findings:[],boundaries:[],interfaceContracts:[],visuals:[],dataflow:null,assessment:null,overviewDiagram:null,documentationLanguage:null};
+ const overview={...operation,id:'process-overview',title:'Process overview',summary:fragment('Accepted process overview')};
+ data.operations.push(overview,operation);
+ data.process={definition:{title:'Checkout process',process:{scope:'One checkout',trigger:'A checkout request arrives',participants:['orders'],objects:[],outcomes:['Checkout accepted']}},authority:'Accepted process definition',targetChanged:false,targetGaps:[],linkedSubviews:[]};
+ data.stateDiagram='scenario-checkout-states';data.stateDiagramSvg=svgAvailable;
+ data.activityTransitions='scenario-checkout-activity-transitions';data.activityTransitionsSvg=svgAvailable;
+ data.lifecycleOperations=[{name:lifecycleName,tree:'Entry: updateStatus()\n  return result',origin:'source',diagramStem:'scenario-checkout-lifecycle-8a41c7d0301b2f9c',svgAvailable}];
+ return data;
+}
 function load(data=fixture()){
  const elements=new Map(),listeners={};
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:false,innerHTML:'',textContent:'',isConnected:true,classList:{add(){},remove(){}},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
@@ -97,6 +108,34 @@ test('process catalog lists typed visuals without requiring an HTTP selection',(
  assert.match(html,/Processes and diagrams · 2/);
  assert.match(html,/<svg class="artifact-svg"/);
  assert.match(html,/<th>Selected result/);
+});
+
+test('process pages keep PlantUML downloads and text when SVG rendering is unavailable',()=>{
+ const data=processFixture(false),r=load(data);r.run("showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Declared process-state schema/);
+ assert.match(html,/States and transitions come from the captured process-state schema/);
+ assert.match(html,/Static source bindings do not show runtime execution/);
+ assert.match(html,/PlantUML SVG preview is unavailable/);
+ assert.match(html,/Entry: updateStatus/);
+ assert.match(html,/Source syntax summary/);
+ assert.match(html,/href="\.\.\/diagrams\/scenario-checkout-lifecycle-8a41c7d0301b2f9c\.puml"/);
+ assert.doesNotMatch(html,/<img[^>]+scenario-checkout-(?:states|activity-transitions|lifecycle)/);
+ assert.match(r.e('scenario-nav').innerHTML,/data-entry="approve-request"/);
+ r.run("showEntry('approve-request')");
+ assert.match(r.e('scenario-content').innerHTML,/Accepted process operation details/);
+});
+
+test('process SVG previews render only for returned assets and authored details override matching lifecycle output',()=>{
+ const data=processFixture(true,'approve-request'),r=load(data);r.run("showEntry('process-overview')");
+ let html=r.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="diagram-img"/g)||[]).length,2);
+ assert.doesNotMatch(html,/PlantUML SVG preview is unavailable/);
+ assert.doesNotMatch(html,/Entry: updateStatus/);
+ assert.doesNotMatch(html,/scenario-checkout-lifecycle-8a41c7d0301b2f9c\.puml/);
+ assert.match(r.e('scenario-nav').innerHTML,/data-entry="approve-request"/);
+ r.run("showEntry('approve-request')");
+ assert.match(r.e('scenario-content').innerHTML,/Accepted process operation details/);
 });
 
 test('missing accepted source map cannot fall back to unrelated current evidence',()=>{
@@ -228,6 +267,18 @@ test('static chrome translation never rewrites interpolated text even when it eq
  const data=fixture();data.language='ru';const r=load(data);
  assert.equal(r.run('chromeHtml`<p>Source ${"Source"} ${"READ_SOURCE"} ${"/Source/in"}</p>`'),'<p>Исходный код Source READ_SOURCE /Source/in</p>');
  assert.equal(r.run('chromeHtml`<p>invisible Within SourceMapping</p>`'),'<p>invisible Within SourceMapping</p>');
+});
+test('reader tracks the header height without requiring ResizeObserver',()=>{
+ const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ let height=66,update,observed,variable;
+ const header={getBoundingClientRect:()=>({height})};
+ const document={documentElement:{lang:'en',style:{setProperty:(name,value)=>{variable=[name,value];}}},querySelector:key=>key==='.reader-nav'?header:null,querySelectorAll:()=>[],getElementById:()=>null};
+ vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{pathname:'/guide.html',search:''},ResizeObserver:class{constructor(callback){update=callback;}observe(element){observed=element;}}});
+ assert.equal(observed,header);
+ assert.deepEqual(variable,['--reader-header-height','66px']);
+ height=110;update();assert.deepEqual(variable,['--reader-header-height','110px']);
+ vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{pathname:'/guide.html',search:''}});
+ assert.deepEqual(variable,['--reader-header-height','110px']);
 });
 test('shared catalogue localizes chrome and retains neutral filtering keys and authored titles',()=>{
  const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');

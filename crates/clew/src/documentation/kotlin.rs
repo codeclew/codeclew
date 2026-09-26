@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_kotlin_services_compose_and_ninth_is_an_explicit_boundary() {
+    fn nine_kotlin_services_compose_without_an_artificial_participant_boundary() {
         let checked = chain(8);
         let scenario = &checked.scenarios["import"];
         assert_eq!(
@@ -303,13 +303,26 @@ mod tests {
             checked.interactions["next0"].topic["caller"]["status"],
             "MATCH"
         );
-        let too_many = chain(9);
-        assert!(too_many.scenarios["import"].steps.is_empty());
-        assert!(
-            too_many.scenarios["import"]
-                .boundaries
-                .contains(&"MORE_THAN_EIGHT_SERVICES_NOT_SUPPORTED_IN_ONE_SCENARIO".into())
+        let expanded_check = chain(9);
+        let expanded = &expanded_check.scenarios["import"];
+        assert_eq!(
+            expanded
+                .steps
+                .iter()
+                .filter(|step| step.kind == "DECLARED_KAFKA_TRANSITION")
+                .count(),
+            8
         );
+        assert_eq!(
+            expanded
+                .steps
+                .iter()
+                .map(|step| &step.service)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            9
+        );
+        assert!(!expanded.truncated);
     }
 
     #[test]

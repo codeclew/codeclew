@@ -15,6 +15,7 @@ pub(super) const DECLARATION_MANIFEST_SCHEMA: &str =
 const SERVICE_SCHEMA: &str = "codeclew-documentation-source-input-service/1.0";
 const INTERACTION_SCHEMA: &str = "codeclew-documentation-source-input-interaction/1.0";
 const SCENARIO_SCHEMA: &str = "codeclew-documentation-source-input-scenario/1.0";
+const PROCESS_STATE_SCHEMA: &str = "codeclew-documentation-source-input-process-state/1.0";
 const ENTITY_SCHEMA: &str = "codeclew-documentation-source-input-entity/1.0";
 const NOTE_METADATA_SCHEMA: &str = "codeclew-documentation-source-input-note-metadata/1.0";
 const NOTE_ORIGINAL_SCHEMA: &str = "codeclew-documentation-source-input-note-original/1.0";
@@ -50,6 +51,8 @@ struct Manifest {
     services: BTreeMap<String, cache::ObjectRef>,
     interactions: BTreeMap<String, cache::ObjectRef>,
     scenarios: BTreeMap<String, cache::ObjectRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    process_states: BTreeMap<String, cache::ObjectRef>,
     entities: BTreeMap<String, cache::ObjectRef>,
     notes: BTreeMap<String, NoteReferences>,
     evidence_expectations: BTreeMap<String, cache::ObjectRef>,
@@ -207,6 +210,19 @@ fn validate_keyed_inputs(inputs: &RepositoryInputs) -> Result<(), ClewError> {
             return Err(invalid("source input scenario key does not match its ID"));
         }
     }
+    if inputs.process_states.len() > MAX_ITEMS {
+        return Err(invalid(
+            "source input process-state map exceeds its record bound",
+        ));
+    }
+    for (id, process_state) in &inputs.process_states {
+        if !inputs.scenarios.contains_key(id) {
+            return Err(invalid(
+                "source input process-state has no matching scenario",
+            ));
+        }
+        super::process_states::validate(process_state, id)?;
+    }
     for (id, entity) in &inputs.entities {
         if id != &entity.id {
             return Err(invalid("source input entity key does not match its ID"));
@@ -286,6 +302,7 @@ fn store_manifest(
         services: store_map(repo, SERVICE_SCHEMA, &inputs.services)?,
         interactions: store_map(repo, INTERACTION_SCHEMA, &inputs.interactions)?,
         scenarios: store_map(repo, SCENARIO_SCHEMA, &inputs.scenarios)?,
+        process_states: store_map(repo, PROCESS_STATE_SCHEMA, &inputs.process_states)?,
         entities: store_map(repo, ENTITY_SCHEMA, &inputs.entities)?,
         notes: store_notes(repo, &inputs.notes)?,
         evidence_expectations: store_map(repo, EXPECTATION_SCHEMA, &inputs.evidence_expectations)?,
@@ -318,6 +335,7 @@ fn hydrate_manifest(repo: &Repository, manifest: &Manifest) -> Result<Repository
         services: load_map(repo, SERVICE_SCHEMA, &manifest.services)?,
         interactions: load_map(repo, INTERACTION_SCHEMA, &manifest.interactions)?,
         scenarios: load_map(repo, SCENARIO_SCHEMA, &manifest.scenarios)?,
+        process_states: load_map(repo, PROCESS_STATE_SCHEMA, &manifest.process_states)?,
         entities: load_map(repo, ENTITY_SCHEMA, &manifest.entities)?,
         notes: load_notes(repo, &manifest.notes)?,
         evidence_expectations: load_map(repo, EXPECTATION_SCHEMA, &manifest.evidence_expectations)?,
@@ -405,6 +423,25 @@ mod tests {
         (temporary, repo)
     }
 
+    fn process_state(id: &str, title: &str) -> super::super::process_states::ProcessStates {
+        serde_yaml_ng::from_str(&format!(
+            "schema: {}\nid: {id}\ntitle: {title}\ninitial: NEW\nfinal: [DONE]\nstates:\n  NEW: waiting\n  DONE: finished\ntransitions: []\n",
+            super::super::process_states::SCHEMA
+        ))
+        .unwrap()
+    }
+
+    fn scenario(id: &str) -> super::super::model::Scenario {
+        serde_json::from_value(serde_json::json!({
+            "schema":"codeclew-documentation-process/1.0",
+            "id":id,"title":id,"summary":"A bounded process declaration",
+            "root":{"service":"orders"},"interactions":[],"maxDepth":4,"maxNodes":64,
+            "process":{"scope":id,"participants":["orders"],"objects":[],
+                "trigger":"request","outcomes":["complete"],"linkedSubviews":[]}
+        }))
+        .unwrap()
+    }
+
     fn source_inputs(note_count: usize) -> check::SourceInputs {
         let mut notes: BTreeMap<String, Value> = (0..note_count)
             .map(|index| {
@@ -447,6 +484,7 @@ mod tests {
             services: BTreeMap::new(),
             interactions: BTreeMap::new(),
             scenarios: BTreeMap::new(),
+            process_states: BTreeMap::new(),
             entities: BTreeMap::new(),
             notes,
             evidence_expectations: BTreeMap::new(),
@@ -471,6 +509,56 @@ mod tests {
             .values()
             .copied()
             .sum()
+    }
+
+    #[test]
+    fn process_state_snapshots_round_trip_and_old_empty_manifests_load() {
+        let (_temporary, repo) = repository();
+        let mut source = source_inputs(0);
+        source
+            .inputs
+            .scenarios
+            .insert("checkout".into(), scenario("checkout"));
+        let declared = process_state("checkout", "Checkout lifecycle");
+        source
+            .inputs
+            .process_states
+            .insert("checkout".into(), declared.clone());
+        source.input_digest = digest(&source.inputs).unwrap();
+
+        let handle = store(&repo, &source).unwrap();
+        let saved_manifest: Manifest =
+            cache::get_json(&repo, &handle, check::PORTABLE_CACHE_MAX_BYTES)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            saved_manifest.process_states["checkout"].schema,
+            PROCESS_STATE_SCHEMA
+        );
+        assert_eq!(
+            load(&repo, &handle).unwrap().inputs.process_states["checkout"],
+            declared
+        );
+
+        let declaration_digest = digest(&source.inputs).unwrap();
+        let declaration = store_declarations(&repo, &source.inputs, &declaration_digest).unwrap();
+        let (loaded, loaded_digest) = load_declarations(&repo, &declaration).unwrap();
+        assert_eq!(loaded_digest, declaration_digest);
+        assert_eq!(loaded.process_states["checkout"], declared);
+
+        let empty = store(&repo, &source_inputs(0)).unwrap();
+        let mut legacy: Value = cache::get_json(&repo, &empty, check::PORTABLE_CACHE_MAX_BYTES)
+            .unwrap()
+            .unwrap();
+        legacy.as_object_mut().unwrap().remove("processStates");
+        let legacy_handle = cache::put_json(&repo, MANIFEST_SCHEMA, &legacy).unwrap();
+        assert!(
+            load(&repo, &legacy_handle)
+                .unwrap()
+                .inputs
+                .process_states
+                .is_empty()
+        );
     }
 
     fn payload_allocated_bytes(repo: &Repository) -> u64 {

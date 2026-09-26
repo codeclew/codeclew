@@ -243,7 +243,7 @@ fn proposal_submission_uses_handles_and_role_predicates() {
     };
     let entry_ref = handle("SECTION", Some(&entrypoint));
     let evidence_ref = handle("ENTRYPOINT", None);
-    let section_ref = handle("SECTION", None);
+    let section_ref = handle("SECTION", Some("section-overview"));
     let source_ref = handle("SOURCE", None);
     let scope_ref = frozen["handles"]
         .as_object()
@@ -282,7 +282,7 @@ fn proposal_submission_uses_handles_and_role_predicates() {
     }
 
     let mut section_evidence = valid.clone();
-    section_evidence["operations"][0]["summary"]["evidence"] = json!([section_ref]);
+    section_evidence["operations"][0]["summary"]["evidence"] = json!([entry_ref]);
     submit_invalid(
         &f,
         &work,
@@ -337,7 +337,7 @@ fn proposal_submission_uses_handles_and_role_predicates() {
         &work,
         &source_operation,
         "proposal-source-operation.json",
-        "operation requires an entrypoint work reference",
+        "operation requires an authorable work reference",
     );
     let mut source_gap = valid.clone();
     source_gap["gaps"] = json!({source_ref:"Source is not an operation or gap target."});
@@ -349,6 +349,19 @@ fn proposal_submission_uses_handles_and_role_predicates() {
         "gap requires an entrypoint reference",
     );
 
+    let other_section_input = f.input(
+        "proposal-other-section-selection.json",
+        &json!({"references":[section_ref.clone()]}),
+    );
+    f.ok(&[
+        "docs",
+        "work",
+        "read",
+        "--work",
+        &work,
+        "--input",
+        other_section_input.to_str().unwrap(),
+    ]);
     let mut other_section = valid.clone();
     other_section["operations"][0]["entrypoint"] = json!(section_ref);
     submit_invalid(
@@ -359,6 +372,19 @@ fn proposal_submission_uses_handles_and_role_predicates() {
         "operation is outside the requested entrypoint",
     );
 
+    let scope_input = f.input(
+        "proposal-scope-selection.json",
+        &json!({"references":[scope_ref.clone()]}),
+    );
+    f.ok(&[
+        "docs",
+        "work",
+        "read",
+        "--work",
+        &work,
+        "--input",
+        scope_input.to_str().unwrap(),
+    ]);
     let mut scope_only = valid;
     scope_only["operations"][0]["summary"]["evidence"] = json!([scope_ref]);
     submit_invalid(
@@ -512,6 +538,17 @@ fn scenario_subject_page_exposes_operation_and_gap_target() {
         page["subjectReference"]["referenceRoles"],
         json!(["operation", "gap"])
     );
+    let initial_roots = page["items"].as_array().unwrap();
+    assert!(initial_roots.iter().any(|item| {
+        item["kind"] == "PROCESS_ROOT"
+            && item["id"] == "process-overview"
+            && item["referenceRoles"] == json!(["operation", "gap"])
+    }));
+    assert!(initial_roots.iter().any(|item| {
+        item["kind"] == "PROCESS_ROOT"
+            && item["id"] == "reserve"
+            && item["referenceRoles"] == json!(["gap"])
+    }));
     while let Some(cursor) = page["nextCursor"].as_str().map(str::to_owned) {
         let input = f.input("scenario-roles-selection.json", &json!({"cursor":cursor}));
         page = f.ok(&[
@@ -532,7 +569,14 @@ fn scenario_subject_page_exposes_operation_and_gap_target() {
         .find(|(_, handle)| handle["id"] == dependency.id)
         .map(|(reference, _)| reference.clone())
         .unwrap();
-    let scenario_proposal = proposal("scenario:reserve", &evidence);
+    let overview = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, handle)| handle["kind"] == "PROCESS_ROOT" && handle["id"] == "process-overview")
+        .map(|(reference, _)| reference.clone())
+        .unwrap();
+    let scenario_proposal = proposal(&overview, &evidence);
     submit_ready(
         &f,
         &work,

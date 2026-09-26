@@ -8,7 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-pub const MAX_RECORD: u64 = 2 * 1024 * 1024;
+pub const MAX_RECORD: u64 = 128 * 1024 * 1024;
 pub const MAX_RECORDS: usize = 1024;
 
 #[derive(Debug)]
@@ -29,6 +29,8 @@ pub struct RepositoryInputs {
     pub services: BTreeMap<String, Service>,
     pub interactions: BTreeMap<String, Interaction>,
     pub scenarios: BTreeMap<String, Scenario>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub process_states: BTreeMap<String, super::process_states::ProcessStates>,
     pub entities: BTreeMap<String, super::entities::Entity>,
     pub notes: BTreeMap<String, Value>,
     pub evidence_expectations: BTreeMap<String, super::evidence_package::Expectation>,
@@ -312,7 +314,19 @@ impl Repository {
             if !valid_id(&id) || result.len() >= MAX_RECORDS {
                 return Err(invalid("invalid or excessive documentation records"));
             }
-            result.insert(id, read(&entry.path(), MAX_RECORD)?);
+            let record_path = self.path(&format!("{directory}/{id}.{extension}"))?;
+            if directory == "scenarios" && extension == "yaml" && id.ends_with("-states") {
+                let value: Value = read(&record_path, MAX_RECORD)?;
+                if value.get("schema").and_then(Value::as_str)
+                    == Some(super::process_states::SCHEMA)
+                {
+                    // Only the explicit state-schema type is a sidecar. A
+                    // scenario whose ordinary ID ends in `-states` remains a
+                    // record, as do records in every other directory.
+                    continue;
+                }
+            }
+            result.insert(id, read(&record_path, MAX_RECORD)?);
         }
         Ok(result)
     }
@@ -374,11 +388,13 @@ impl Repository {
     pub fn inputs(&self) -> Result<RepositoryInputs, ClewError> {
         self.ensure_manifest_current()?;
         // Parse independently authored files without rewriting their bytes/comments.
+        let scenarios = self.scenarios()?;
         Ok(RepositoryInputs {
             manifest: self.manifest.clone(),
             services: self.services()?,
             interactions: self.interactions()?,
-            scenarios: self.scenarios()?,
+            process_states: super::process_states::records(self, &scenarios)?,
+            scenarios,
             entities: super::entities::records(self)?,
             notes: super::notes::snapshot(self)?,
             evidence_expectations: super::evidence_package::policies(self)?,
@@ -715,11 +731,107 @@ mod tests {
             annotation_processor_paths: vec![],
         }
     }
+    fn scenario(id: &str, service_id: &str) -> Scenario {
+        serde_json::from_value(serde_json::json!({
+            "schema":"codeclew-documentation-process/1.0",
+            "id":id,"title":id,"summary":"A bounded process declaration",
+            "root":{"service":service_id},"interactions":[],"maxDepth":4,"maxNodes":64,
+            "process":{"scope":id,"participants":[service_id],"objects":[],
+                "trigger":"request","outcomes":["complete"],"linkedSubviews":[]}
+        }))
+        .unwrap()
+    }
     fn setup() -> (tempfile::TempDir, Repository) {
         let t = tempfile::tempdir().unwrap();
         Repository::init(t.path(), "Architecture").unwrap();
         let r = Repository::open(t.path()).unwrap();
         (t, r)
+    }
+    #[test]
+    fn records_skip_only_actual_state_sidecars_and_preserve_suffix_ids() {
+        let (_t, r) = setup();
+        let dir = r.root.join("scenarios");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("task.yaml"), "kind: record").unwrap();
+        fs::write(
+            dir.join("task-states.yaml"),
+            "schema: codeclew-documentation-process-states/1.0",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("order-states.yaml"),
+            r#"{"schema":"ordinary-scenario","id":"order-states"}"#,
+        )
+        .unwrap();
+        let rows: BTreeMap<String, serde_json::Value> = r.records("scenarios", "yaml").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains_key("task"));
+        assert!(rows.contains_key("order-states"));
+        assert!(!rows.contains_key("task-states"));
+
+        let services = r.root.join("catalog/services");
+        fs::create_dir_all(&services).unwrap();
+        fs::write(
+            services.join("orders-states.json"),
+            r#"{"id":"orders-states"}"#,
+        )
+        .unwrap();
+        let rows: BTreeMap<String, serde_json::Value> =
+            r.records("catalog/services", "json").unwrap();
+        assert!(rows.contains_key("orders-states"));
+    }
+
+    #[test]
+    fn empty_process_state_field_is_omitted_from_legacy_input_serialization() {
+        let (_t, r) = setup();
+        let inputs = r.inputs().unwrap();
+        let encoded = crate::canonical::bytes(&inputs).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(value.get("processStates").is_none());
+    }
+
+    #[test]
+    fn repository_inputs_capture_and_validate_belonging_state_sidecars() {
+        let (_t, r) = setup();
+        r.service_add(service("orders"), Some(&r.input_digest().unwrap()))
+            .unwrap();
+        r.atomic(
+            "scenarios/checkout.yaml",
+            &crate::canonical::bytes(&scenario("checkout", "orders")).unwrap(),
+        )
+        .unwrap();
+        // A scenario named `order-states` is an ordinary process declaration,
+        // even when `order.yaml` also exists. Its own sidecar has the doubled
+        // suffix `order-states-states.yaml`.
+        for id in ["order", "order-states"] {
+            r.atomic(
+                &format!("scenarios/{id}.yaml"),
+                &crate::canonical::bytes(&scenario(id, "orders")).unwrap(),
+            )
+            .unwrap();
+        }
+        let order_states = "schema: codeclew-documentation-process-states/1.0\nid: order-states\ntitle: Order lifecycle\ninitial: NEW\nfinal: [DONE]\nstates:\n  NEW: waiting\n  DONE: finished\ntransitions: []\n";
+        r.atomic(
+            "scenarios/order-states-states.yaml",
+            order_states.as_bytes(),
+        )
+        .unwrap();
+        let before = r.input_digest().unwrap();
+        let valid = "schema: codeclew-documentation-process-states/1.0\nid: checkout\ntitle: Checkout lifecycle\ninitial: NEW\nfinal: [DONE]\nstates:\n  NEW: waiting\n  DONE: finished\ntransitions: []\n";
+        r.atomic("scenarios/checkout-states.yaml", valid.as_bytes())
+            .unwrap();
+        let inputs = r.inputs().unwrap();
+        assert_eq!(inputs.process_states["checkout"].initial, "NEW");
+        assert!(inputs.scenarios.contains_key("order"));
+        assert!(inputs.scenarios.contains_key("order-states"));
+        assert!(!inputs.process_states.contains_key("order"));
+        assert_eq!(inputs.process_states["order-states"].initial, "NEW");
+        assert_ne!(digest(&inputs).unwrap(), before);
+
+        let invalid_sidecar = valid.replace("initial: NEW", "initial: UNDECLARED");
+        r.atomic("scenarios/checkout-states.yaml", invalid_sidecar.as_bytes())
+            .unwrap();
+        assert!(r.inputs().is_err());
     }
     #[test]
     fn current_git_clone_initializes_local_state_and_binds_without_changing_declarations() {

@@ -74,6 +74,18 @@ pub struct ProposedOperation {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub contracts: Vec<Contract>,
+    #[serde(default)]
+    pub participants: Vec<ParticipantInput>,
+    #[serde(default)]
+    pub explanation: Vec<Claim>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParticipantInput {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub service: Option<String>,
 }
 fn provided_visuals<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -326,7 +338,10 @@ pub(super) fn evidence_reference_allowed(handle: &work::Handle) -> bool {
 }
 
 pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) -> bool {
-    if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
+    if !matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    ) {
         return false;
     }
     work.request.entrypoint.as_ref().is_none_or(|entrypoint| {
@@ -340,7 +355,10 @@ pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) ->
 }
 
 pub(super) fn gap_reference_allowed(handle: &work::Handle) -> bool {
-    matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE")
+    matches!(
+        handle.kind.as_str(),
+        "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+    )
 }
 
 impl Builder<'_> {
@@ -615,6 +633,48 @@ impl Builder<'_> {
 
 type MaterializedProposal = (Narrative, BTreeMap<String, Value>, Vec<Value>);
 
+fn validate_specialized_fields(
+    work: &Work,
+    root: &str,
+    proposed: &ProposedOperation,
+) -> Result<(), ClewError> {
+    if proposed.participants.len() > 22 {
+        return Err(invalid("proposal exceeds 22 additional participants"));
+    }
+    if proposed.explanation.len() > 64 {
+        return Err(invalid("proposal exceeds 64 explanation paragraphs"));
+    }
+    if proposed.participants.iter().any(|participant| {
+        !store::valid_id(&participant.id)
+            || participant.label.trim().is_empty()
+            || participant.label.len() > 512
+            || participant
+                .service
+                .as_ref()
+                .is_some_and(|service| !store::valid_id(service))
+    }) {
+        return Err(invalid("invalid proposal participant identity or label"));
+    }
+
+    let has_sequence_only_fields =
+        !proposed.participants.is_empty() || !proposed.explanation.is_empty();
+    if has_sequence_only_fields && super::dataflow::is_root(&work.checked, &work.subject, root) {
+        return Err(invalid(
+            "data-flow views do not accept sequence participants or explanation paragraphs",
+        ));
+    }
+    if has_sequence_only_fields
+        && (super::sections::contains(root)
+            || super::notes::is_root(root)
+            || super::processes::overview(&work.checked, &work.subject, root))
+    {
+        return Err(invalid(
+            "summary-only roots do not accept sequence participants or explanation paragraphs",
+        ));
+    }
+    Ok(())
+}
+
 fn materialize(
     work: &Work,
     input: &Proposal,
@@ -688,8 +748,11 @@ fn materialize(
                 .unwrap_or_else(|| work.subject[9..].into()));
         }
         let handle = builder.handle(reference)?;
-        if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
-            return Err(invalid("operation requires an entrypoint work reference"));
+        if !matches!(
+            handle.kind.as_str(),
+            "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
+        ) {
+            return Err(invalid("operation requires an authorable work reference"));
         }
         if !operation_reference_allowed(work, handle) {
             return Err(invalid("operation is outside the requested entrypoint"));
@@ -710,6 +773,7 @@ fn materialize(
             return Err(invalid("operation title exceeds 512 bytes"));
         }
         let id = operation_id(&builder, &proposed.entrypoint)?;
+        validate_specialized_fields(work, &id, proposed)?;
         if proposed.visuals.is_none()
             && work.retained.as_ref().is_some_and(|retained| {
                 retained
@@ -756,9 +820,11 @@ fn materialize(
                 || !proposed.contracts.is_empty()
                 || proposed.assessment.is_some()
                 || !proposed_visuals.is_empty()
+                || !proposed.participants.is_empty()
+                || !proposed.explanation.is_empty()
             {
                 return Err(invalid(
-                    "data-flow graphs are separate from sequence steps, contracts and note assessments",
+                    "data-flow graphs are separate from sequence steps, contracts, participants, explanation paragraphs and note assessments",
                 ));
             }
             op.dataflow = Some(super::dataflow::materialize(
@@ -826,9 +892,13 @@ fn materialize(
             || super::notes::is_root(&op.id)
             || super::processes::overview(&work.checked, &work.subject, &op.id)
         {
-            if !proposed.steps.is_empty() || !proposed.contracts.is_empty() {
+            if !proposed.steps.is_empty()
+                || !proposed.contracts.is_empty()
+                || !proposed.participants.is_empty()
+                || !proposed.explanation.is_empty()
+            {
                 return Err(invalid(
-                    "section proposals use a supported summary; operation sequences are separate",
+                    "summary-only proposals use a supported summary; operation sequences, participants and explanation paragraphs are separate",
                 ));
             }
             if super::processes::overview(&work.checked, &work.subject, &op.id) {
@@ -842,7 +912,54 @@ fn materialize(
             n.operations.push(op);
             continue;
         }
-        builder.steps(&scope, &proposed.steps, "step", 0, &mut op, &actors)?;
+        let mut op_actors = actors.clone();
+        for declared in &proposed.participants {
+            if !store::valid_id(&declared.id)
+                || op_actors
+                    .insert(declared.id.clone(), declared.id.clone())
+                    .is_some()
+            {
+                return Err(invalid(format!(
+                    "invalid or duplicate declared participant {}",
+                    declared.id
+                )));
+            }
+            op.participants.push(Participant {
+                id: declared.id.clone(),
+                label: declared.label.clone(),
+                service: declared.service.clone(),
+            });
+        }
+        if op.participants.len() > 24 {
+            return Err(invalid("sequence exceeds 24 participants"));
+        }
+        builder.steps(&scope, &proposed.steps, "step", 0, &mut op, &op_actors)?;
+        if !proposed.explanation.is_empty() {
+            // Authored narrative is added to the per-step echo so arrows can stay
+            // short while "What happens" carries the domain prose. Anchor each
+            // paragraph to the first non-end event and fold in its evidence so
+            // required step coverage and evidence retention hold.
+            let anchor = op.events.iter().find(|e| e.kind != "end").cloned();
+            for (i, claim) in proposed.explanation.iter().enumerate() {
+                let mut fragment = builder.claim(&scope, &format!("narrative/{i}"), claim)?;
+                let mut event_ids = Vec::new();
+                if let Some(event) = &anchor {
+                    event_ids.push(event.id.clone());
+                    fragment
+                        .dependency_ids
+                        .extend(event.dependency_ids.iter().cloned());
+                    fragment.source_ids.extend(event.source_ids.iter().cloned());
+                }
+                op.explanation.push(Explanation {
+                    id: stable(&scope, &format!("paragraph/narrative/{i}"))?,
+                    text: fragment.text,
+                    event_ids,
+                    dependency_ids: fragment.dependency_ids,
+                    source_ids: fragment.source_ids,
+                    detail: false,
+                });
+            }
+        }
         if proposed.contracts.len() > 64 {
             return Err(invalid("proposal exceeds 64 contracts"));
         }
@@ -1158,5 +1275,120 @@ mod storage_tests {
             serde_json::from_slice::<StoredArtifact>(&bytes(&artifact(BTreeMap::new())).unwrap())
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod operation_input_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn work(root: &str) -> Work {
+        let subject = "scenario:dispatch".to_string();
+        let mut checked = check::assemble(
+            "input".into(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let (id, kind) = if root == super::super::processes::OVERVIEW {
+            ("process:dispatch", "PROCESS_DEFINITION")
+        } else {
+            ("view:dispatch", "VIEW_DEFINITION")
+        };
+        checked.dependencies.insert(
+            id.into(),
+            super::super::model::Observation {
+                id: id.into(),
+                kind: kind.into(),
+                service: String::new(),
+                symbol: id.into(),
+                normalized: json!({}),
+                digest: "digest".into(),
+                source_ids: Vec::new(),
+            },
+        );
+        Work {
+            schema: "codeclew-documentation-work/1.0".into(),
+            id: "work".into(),
+            subject: subject.clone(),
+            request: work::Request {
+                schema: "codeclew-documentation-work-request/1.0".into(),
+                audience: "Maintainers".into(),
+                documentation_language: None,
+                entrypoint: Some(root.into()),
+                context_profile: None,
+                max_items: 20,
+                max_bytes: 40960,
+                external_inputs: Vec::new(),
+            },
+            checked,
+            snapshot: Some("snapshot".into()),
+            retained: None,
+            external_inputs: BTreeMap::new(),
+            handles: BTreeMap::new(),
+            influence: BTreeMap::new(),
+            obligations: Vec::new(),
+            review_reasons: Vec::new(),
+        }
+    }
+
+    fn proposal(participants: Vec<ParticipantInput>, explanation: Vec<Claim>) -> Proposal {
+        Proposal {
+            schema: "codeclew-documentation-proposal/1.0".into(),
+            operations: vec![ProposedOperation {
+                entrypoint: "scenario:dispatch".into(),
+                title: "Dispatch".into(),
+                summary: Claim {
+                    text: String::new(),
+                    evidence: Vec::new(),
+                    checks: Vec::new(),
+                    uncertainty: None,
+                },
+                assessment: None,
+                dataflow: None,
+                steps: Vec::new(),
+                contracts: Vec::new(),
+                participants,
+                explanation,
+                visuals: None,
+            }],
+            gaps: BTreeMap::new(),
+            uncertainties: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn summary_and_dataflow_roots_reject_sequence_only_fields() {
+        let participant = || {
+            vec![ParticipantInput {
+                id: "worker".into(),
+                label: "Worker".into(),
+                service: None,
+            }]
+        };
+        let explanation = || {
+            vec![Claim {
+                text: "The worker handles the request.".into(),
+                evidence: vec!["source-1".into()],
+                checks: Vec::new(),
+                uncertainty: None,
+            }]
+        };
+        for (root, expected) in [
+            (super::super::processes::OVERVIEW, "summary-only"),
+            (super::super::dataflow::ROOT, "data-flow"),
+        ] {
+            for proposal in [
+                proposal(participant(), Vec::new()),
+                proposal(Vec::new(), explanation()),
+            ] {
+                let error =
+                    materialize(&work(root), &proposal, &work::ReadState::default()).unwrap_err();
+                assert!(error.message.contains(expected), "{}", error.message);
+            }
+        }
     }
 }

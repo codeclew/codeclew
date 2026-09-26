@@ -1,5 +1,7 @@
 (()=>{
  const ru=document.documentElement.lang==='ru',label=(en,ruText)=>ru?ruText:en;
+ const header=document.querySelector('.reader-nav');
+ if(header){const measure=()=>document.documentElement.style.setProperty('--reader-header-height',`${header.getBoundingClientRect().height}px`);measure();if(typeof ResizeObserver==='function')new ResizeObserver(measure).observe(header);}
  const main=document.querySelector('main.reader-guide');
  if(main&&!main.classList.contains('catalog-page')){
   const headings=[...main.querySelectorAll('h2')];

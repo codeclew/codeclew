@@ -8,6 +8,7 @@ fn publish(f: &Fixture, inputs: &[std::path::PathBuf]) -> Value {
     for input in inputs {
         args.extend(["--input", input.to_str().unwrap()]);
     }
+    args.push("--publish");
     f.ok(&args)
 }
 fn directory_bytes(root: &Path) -> u64 {
