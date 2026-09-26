@@ -768,6 +768,429 @@ fn docsys_t17_render_is_working_until_explicit_release_and_release_is_immutable(
 }
 
 #[test]
+fn docsys_t17_same_citation_false_claims_require_semantic_review() {
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
+
+    let f = Fixture::new();
+    let repo = f.service("orders");
+    fs::remove_file(repo.join("Orders.java")).unwrap();
+    for (name, text) in [
+        (
+            "CheckoutController.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/CheckoutController.java"
+            ),
+        ),
+        (
+            "InventoryClient.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/InventoryClient.java"
+            ),
+        ),
+        (
+            "ReservationRepository.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/ReservationRepository.java"
+            ),
+        ),
+        (
+            "ReservationRequest.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/ReservationRequest.java"
+            ),
+        ),
+    ] {
+        fs::write(repo.join(name), text).unwrap();
+    }
+    commit(&repo);
+
+    let checked = f.checked();
+    let service = &checked.services["orders"];
+    let entry = service
+        .entrypoints
+        .iter()
+        .find(|entry| entry.trigger["name"] == "checkout")
+        .expect("checkout entrypoint from the frozen M1 source");
+    let flow = |kind: &str, matches: &dyn Fn(&clew::documentation::model::Observation) -> bool| {
+        service
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "FLOW"
+                    && observation.symbol == entry.symbol
+                    && observation.normalized["kind"] == kind
+                    && matches(observation)
+            })
+            .unwrap_or_else(|| panic!("missing {kind} flow for {}", entry.symbol))
+    };
+    let guard = flow("IF", &|_| true);
+    let invalid_return = flow("RETURN", &|observation| {
+        observation.normalized["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("invalid quantity"))
+    });
+    let reserve_return = flow("RETURN", &|observation| {
+        observation.normalized["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("inventory.reserve"))
+    });
+    let save_call = flow("CALL", &|observation| {
+        observation.normalized["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("reservations.save"))
+    });
+    let callback = service
+        .observations
+        .values()
+        .find(|observation| {
+            observation.kind == "FLOW"
+                && observation.symbol.contains("prepareSaveCallback")
+                && observation.normalized["kind"] == "DEFERRED"
+                && observation.normalized["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("reservations.save"))
+        })
+        .expect("separate callback producer in the frozen M1 source");
+    let guard_text = guard.normalized["text"].as_str().unwrap();
+    assert!(
+        guard_text.contains("!hasPositiveQuantity(request)"),
+        "{guard_text}"
+    );
+
+    let request = f.input(
+        "checkout-work.json",
+        &json!({
+            "schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Service maintainers",
+            "entrypoint":entry.id,
+            "maxItems":100,
+            "maxBytes":49152
+        }),
+    );
+    let mut page = work_prepare(&f, &request);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(&f, &work, json!({"cursor":cursor}));
+    }
+    let frozen = frozen_work(&f, &work);
+    let handle_ref = |kind: &str, id: &str| -> String {
+        frozen["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, handle)| handle["kind"] == kind && handle["id"] == id)
+            .unwrap_or_else(|| panic!("missing {kind} handle for {id}"))
+            .0
+            .clone()
+    };
+    let entry_ref = handle_ref("ENTRYPOINT", &entry.id);
+    let guard_ref = handle_ref("DEPENDENCY", &guard.id);
+    let invalid_ref = handle_ref("DEPENDENCY", &invalid_return.id);
+    let reserve_ref = handle_ref("DEPENDENCY", &reserve_return.id);
+    let save_ref = handle_ref("DEPENDENCY", &save_call.id);
+    let callback_ref = handle_ref("DEPENDENCY", &callback.id);
+    let mut evidence_refs = BTreeSet::new();
+    for observation in [guard, invalid_return, reserve_return, save_call, callback] {
+        evidence_refs.insert(handle_ref("DEPENDENCY", &observation.id));
+        for source in &observation.source_ids {
+            evidence_refs.insert(handle_ref("SOURCE", source));
+        }
+    }
+    let delivered_entry = work_read(&f, &work, json!({"references":[entry_ref]}));
+    assert!(
+        delivered_entry["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["reference"] == entry_ref && row["id"] == entry.id })
+    );
+    let evidence_refs: Vec<_> = evidence_refs.into_iter().collect();
+    let mut supplied = BTreeSet::new();
+    for refs in evidence_refs.chunks(8) {
+        let delivered = work_read(&f, &work, json!({"references":refs}));
+        supplied.extend(
+            delivered["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|row| row["reference"].as_str().map(str::to_owned)),
+        );
+    }
+    assert_eq!(supplied, evidence_refs.iter().cloned().collect());
+
+    let evidence = |dependency: &str, observation: &clew::documentation::model::Observation| {
+        let mut refs = vec![dependency.to_owned()];
+        refs.extend(
+            observation
+                .source_ids
+                .iter()
+                .map(|source| handle_ref("SOURCE", source)),
+        );
+        refs.sort();
+        refs.dedup();
+        refs
+    };
+    let predicate = |reference: &str, field: &str, expected: Value| {
+        json!({
+            "kind":"factEquals",
+            "evidence":reference,
+            "field":field,
+            "expected":expected
+        })
+    };
+    let claim = |text: &str, refs: Vec<String>, checks: Vec<Value>| json!({"text":text,"evidence":refs,"checks":checks});
+    let guard_claim = || {
+        claim(
+            "The checkout takes the invalid branch when !hasPositiveQuantity(request) is true.",
+            evidence(&guard_ref, guard),
+            vec![predicate(
+                &guard_ref,
+                "text",
+                guard.normalized["text"].clone(),
+            )],
+        )
+    };
+    let save_claim =
+        |text: &str, checks: Vec<Value>| claim(text, evidence(&save_ref, save_call), checks);
+    let proposal = json!({
+        "schema":"codeclew-documentation-proposal/1.0",
+        "operations":[{
+            "entrypoint":entry_ref,
+            "title":"Checkout reservation",
+            "summary":claim("Selected checkout operation.", vec![entry_ref.clone()], vec![]),
+            "steps":[{
+                "kind":"alt",
+                "meaning":guard_claim(),
+                "children":[{
+                    "kind":"return",
+                    "meaning":claim(
+                        "Returns the invalid quantity response.",
+                        evidence(&invalid_ref, invalid_return),
+                        vec![predicate(&invalid_ref, "text", invalid_return.normalized["text"].clone())]
+                    ),
+                    "from":"orders",
+                    "to":"caller"
+                }],
+                "otherwise":[
+                    {
+                        "kind":"note",
+                        "meaning":save_claim(
+                            "The source calls the reservation repository save method.",
+                            vec![predicate(&save_ref, "kind", json!("CALL"))]
+                        ),
+                        "from":"orders"
+                    },
+                    {
+                        "kind":"return",
+                        "meaning":claim(
+                            "Returns the inventory reservation result.",
+                            evidence(&reserve_ref, reserve_return),
+                            vec![predicate(&reserve_ref, "text", reserve_return.normalized["text"].clone())]
+                        ),
+                        "from":"orders",
+                        "to":"caller"
+                    }
+                ]
+            }]
+        }]
+    });
+
+    let submit = |input: &Value| proposal_submit(&f, &work, input);
+    let artifact = |result: &Value| proposal_artifact(&f, result);
+    let slot = |artifact: &Value, expected: &str| -> Value {
+        artifact["claims"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|claim| claim["slot"] == expected)
+            .unwrap_or_else(|| panic!("missing claim slot {expected}: {artifact}"))
+            .clone()
+    };
+    let report_case = |name: &str, result: &Value, artifact: &Value, slot_name: &str| {
+        let claim = slot(artifact, slot_name);
+        json!({
+            "case":name,
+            "proposalStatus":artifact["status"],
+            "meaningReview":artifact["meaningReview"],
+            "claimText":claim["fragment"]["text"],
+            "checkResults":claim["checks"],
+            "diagnostics":artifact["diagnostics"],
+            "proposal":result["proposal"]
+        })
+    };
+
+    let positive_result = submit(&proposal);
+    assert!(
+        positive_result["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    let positive_artifact = artifact(&positive_result);
+    assert_eq!(
+        slot(&positive_artifact, "step/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(
+        slot(&positive_artifact, "step/0/otherwise/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(positive_artifact["meaningReview"], "UNASSESSED");
+
+    let mut false_guard = proposal.clone();
+    false_guard["operations"][0]["steps"][0]["meaning"]["text"] =
+        json!("The checkout takes the invalid branch when hasPositiveQuantity(request) is true.");
+    let inverted_guard = guard_text.replace(
+        "!hasPositiveQuantity(request)",
+        "hasPositiveQuantity(request)",
+    );
+    assert_ne!(inverted_guard, guard_text);
+    false_guard["operations"][0]["steps"][0]["meaning"]["checks"][0]["expected"] =
+        json!(inverted_guard);
+    let false_guard_result = submit(&false_guard);
+    let false_guard_artifact = artifact(&false_guard_result);
+    assert_eq!(false_guard_artifact["status"], "NEEDS_REPAIR");
+    assert_eq!(
+        slot(&false_guard_artifact, "step/0")["checks"][0]["status"],
+        "CONTRADICTED"
+    );
+    assert!(
+        false_guard_artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| { d["code"] == "CLAIM_CONTRADICTED" && d["slot"] == "step/0" })
+    );
+    assert_eq!(
+        slot(&false_guard_artifact, "step/0")["meaning"],
+        "UNASSESSED"
+    );
+
+    let save_text =
+        "The repository save commits the reservation durably before inventory is contacted.";
+    let mut save_with_unknown = proposal.clone();
+    save_with_unknown["operations"][0]["steps"][0]["otherwise"][0]["meaning"] = save_claim(
+        save_text,
+        vec![
+            predicate(&save_ref, "kind", json!("CALL")),
+            predicate(&save_ref, "persistenceOutcome", json!("COMMITTED")),
+        ],
+    );
+    let save_unknown_result = submit(&save_with_unknown);
+    let save_unknown_artifact = artifact(&save_unknown_result);
+    assert_eq!(save_unknown_artifact["status"], "NEEDS_REPAIR");
+    assert_eq!(
+        slot(&save_unknown_artifact, "step/0/otherwise/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(
+        slot(&save_unknown_artifact, "step/0/otherwise/0")["checks"][1]["status"],
+        "UNKNOWN"
+    );
+    assert!(
+        save_unknown_artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| {
+                d["code"] == "UNSUPPORTED_CLAIM_NEEDS_GAP" && d["slot"] == "step/0/otherwise/0"
+            })
+    );
+    assert_eq!(
+        slot(&save_unknown_artifact, "step/0/otherwise/0")["meaning"],
+        "UNASSESSED"
+    );
+
+    let mut save_with_only_unrelated = proposal.clone();
+    save_with_only_unrelated["operations"][0]["steps"][0]["otherwise"][0]["meaning"] =
+        save_claim(save_text, vec![predicate(&save_ref, "kind", json!("CALL"))]);
+    let save_only_result = submit(&save_with_only_unrelated);
+    let save_only_artifact = artifact(&save_only_result);
+    assert!(
+        save_only_artifact["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    assert_eq!(
+        slot(&save_only_artifact, "step/0/otherwise/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(
+        slot(&save_only_artifact, "step/0/otherwise/0")["meaning"],
+        "UNASSESSED"
+    );
+    assert_eq!(save_only_artifact["meaningReview"], "UNASSESSED");
+
+    let deferred_check = json!({
+        "kind":"factEquals",
+        "evidence":callback_ref,
+        "field":"executionDuringCheckout",
+        "expected":true
+    });
+    let callback_kind_check = predicate(&callback_ref, "kind", json!("DEFERRED"));
+    let callback_false_text =
+        "The checkout executes the deferred save callback during this request.";
+    let mut callback_false = proposal.clone();
+    callback_false["operations"][0]["explanation"] = json!([claim(
+        callback_false_text,
+        evidence(&callback_ref, callback),
+        vec![callback_kind_check, deferred_check],
+    )]);
+    let callback_result = submit(&callback_false);
+    let callback_artifact = artifact(&callback_result);
+    let callback_claim = slot(&callback_artifact, "narrative/0");
+    assert_eq!(callback_artifact["status"], "NEEDS_REPAIR");
+    assert_eq!(callback_claim["checks"][0]["status"], "SUPPORTED");
+    assert_eq!(callback_claim["checks"][1]["status"], "UNKNOWN");
+    assert!(
+        callback_artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| { d["code"] == "UNSUPPORTED_CLAIM_NEEDS_GAP" && d["slot"] == "narrative/0" })
+    );
+    assert_eq!(callback_claim["meaning"], "UNASSESSED");
+
+    let source_text = |observation: &clew::documentation::model::Observation| {
+        observation
+            .source_ids
+            .iter()
+            .map(|source| service.sources[source].text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let cases = json!({
+        "schema":"codeclew-m1-semantic-regression/1.0",
+        "source":{
+            "guard":guard.normalized["text"],
+            "guardSource":source_text(guard),
+            "saveCall":save_call.normalized["text"],
+            "saveSource":source_text(save_call),
+            "repositoryInterface":include_str!("../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/ReservationRepository.java"),
+            "deferredCallback":callback.normalized["text"],
+            "callbackSource":source_text(callback),
+            "checkoutSource":include_str!("../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/CheckoutController.java")
+        },
+        "evidence":{
+            "guard":guard.id,
+            "save":save_call.id,
+            "callback":callback.id,
+            "allReferencesWereReturnedByRecordedWorkReads":true
+        },
+        "cases":[
+            report_case("guard-positive-control", &positive_result, &positive_artifact, "step/0"),
+            report_case("guard-inverted-same-citation", &false_guard_result, &false_guard_artifact, "step/0"),
+            report_case("save-commit-with-unsupported-predicate", &save_unknown_result, &save_unknown_artifact, "step/0/otherwise/0"),
+            report_case("false-save-prose-only-unrelated-true-predicate", &save_only_result, &save_only_artifact, "step/0/otherwise/0"),
+            report_case("false-callback-execution", &callback_result, &callback_artifact, "narrative/0")
+        ]
+    });
+    println!("M1_SEMANTIC_CASES={cases}");
+}
+
+#[test]
 fn docsys_t13_interrupted_publication_is_repaired_without_target_rollback() {
     let producer = Fixture::new();
     let source = producer.service("orders");
