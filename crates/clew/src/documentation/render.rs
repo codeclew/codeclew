@@ -1260,6 +1260,9 @@ fn page_data(
     n: &Narrative,
     checked: &Check,
     suppress: &BTreeSet<String>,
+    state_diagram: Option<&str>,
+    lifecycle: &[LifecycleArtifact],
+    activity_transitions: Option<&str>,
 ) -> Value {
     let service_id = subject.strip_prefix("service:");
     let catalogue = service_id
@@ -1444,7 +1447,281 @@ fn page_data(
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+}
+
+struct LifecycleArtifact {
+    name: String,
+    tree: String,
+    origin: &'static str,
+    diagram_stem: String,
+    puml: String,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedFlow<'a> {
+    observation: &'a Observation,
+    events: &'a Value,
+}
+
+struct AutoFlow {
+    puml: String,
+    tree: String,
+    origin: &'static str,
+}
+
+/// If an operation has no authored events, produce an auto PlantUML activity
+/// document from the operation's root FLOW evidence. Returns `None` when there
+/// is authored content or no usable flow.
+fn auto_flow_puml(checked: &Check, flow: ResolvedFlow<'_>, title: &str) -> Option<AutoFlow> {
+    let symbol = flow.observation.symbol.as_str();
+    // Prefer source deepening: a retained TRANSFORMED_SOURCE yields readable
+    // step text (assignments, returns, catch). Fall back to the FLOW renderer
+    // when the source is absent or not parseable.
+    if let Some(source) = method_source(checked, flow) {
+        if let (Some(puml), Some(tree)) = (
+            super::source_steps::document(&source, symbol, title),
+            super::source_steps::tree(&source, symbol),
+        ) {
+            return Some(AutoFlow {
+                puml,
+                tree,
+                origin: "source",
+            });
+        }
+    }
+    Some(AutoFlow {
+        puml: super::process_flow::document(flow.events, symbol, title)?,
+        tree: super::process_flow::tree(flow.events, symbol).unwrap_or_default(),
+        origin: "flow",
+    })
+}
+
+/// Look up a method's retained `TRANSFORMED_SOURCE` observation by symbol,
+/// preferring the source_text resolved through the `SYMBOL` observation's
+/// `source_ids` (the source-linked path used on real evidence) and falling
+/// back to the legacy TRANSFORMED_SOURCE observation body.
+fn method_source(checked: &Check, flow: ResolvedFlow<'_>) -> Option<String> {
+    let symbol = &flow.observation.symbol;
+    let service = checked.services.get(&flow.observation.service)?;
+    let linked: Vec<_> = flow
+        .observation
+        .source_ids
+        .iter()
+        .filter_map(|id| service.sources.get(id))
+        .collect();
+    if !flow.observation.source_ids.is_empty() {
+        return (flow.observation.source_ids.len() == 1 && linked.len() == 1)
+            .then(|| linked[0].text.clone());
+    }
+
+    // Older captures stored source text on a TRANSFORMED_SOURCE observation.
+    // Accept it only within the selected service, symbol and normalized scope.
+    let scope = flow.observation.normalized.get("scope");
+    let mut legacy = BTreeSet::new();
+    for observation in service.observations.values().filter(|observation| {
+        observation.kind == "TRANSFORMED_SOURCE"
+            && observation.symbol == *symbol
+            && observation.normalized.get("scope") == scope
+    }) {
+        let normalized = &observation.normalized;
+        let text = normalized
+            .pointer("/documentation/source")
+            .or_else(|| normalized.pointer("/source"))
+            .and_then(Value::as_str)
+            .or_else(|| normalized.as_str());
+        if let Some(text) = text {
+            legacy.insert(text.to_owned());
+        }
+    }
+    (legacy.len() == 1).then(|| legacy.into_iter().next().unwrap())
+}
+
+/// Collect a `.puml` diagram into the bundle and remember it for the batch SVG
+/// pre-render (all diagrams are rendered by one renderer process afterwards).
+fn insert_diagram(
+    files: &mut BTreeMap<String, Vec<u8>>,
+    diagrams: &mut Vec<(String, String)>,
+    base: String,
+    puml: String,
+) {
+    files.insert(format!("{base}.puml"), puml.as_bytes().to_vec());
+    diagrams.push((base, puml));
+}
+
+/// Pre-render every collected diagram to SVG in a single renderer invocation
+/// and add the `.svg` siblings to the bundle.
+fn batch_render_diagrams(
+    files: &mut BTreeMap<String, Vec<u8>>,
+    diagrams: &[(String, String)],
+    jar: Option<&std::path::Path>,
+) -> BTreeMap<String, bool> {
+    let mut availability: BTreeMap<_, _> = diagrams
+        .iter()
+        .map(|(base, _)| (base.clone(), false))
+        .collect();
+    if let Ok(Some(svgs)) = super::plantuml::batch_render_svg(diagrams, jar) {
+        for (base, svg) in svgs {
+            let valid_svg = std::str::from_utf8(&svg).is_ok_and(|text| text.contains("<svg"));
+            if valid_svg {
+                files.insert(format!("{base}.svg"), svg);
+                availability.insert(base, true);
+            }
+        }
+    }
+    availability
+}
+
+/// Resolve a root method's flow evidence for a candidate symbol list.
+/// SYMBOL observations (with `documentation.events`) live in the service
+/// evidence (mirror `check::Walker::walk`), not `checked.dependencies`.
+/// Prefer the named service, then all services, then `checked.dependencies`
+/// as a fallback.
+///
+/// A symbol can be captured more than once (e.g. a shallow `BOUNDARY`-only
+/// entry plus a fully expanded method flow). When several observations match,
+/// the one with the most `documentation.events` is chosen — i.e. the deepest
+/// retained flow — so a shallow stub never wins over the expanded method body.
+fn resolve_flow<'a>(
+    checked: &'a Check,
+    service: Option<&str>,
+    candidates: &[&str],
+) -> Option<ResolvedFlow<'a>> {
+    for &symbol in candidates {
+        let matches = |o: &Observation| o.kind == "SYMBOL" && o.symbol == symbol;
+        let mut obs: Vec<&Observation> = Vec::new();
+        if let Some(service) = service {
+            if let Some(evidence) = checked.services.get(service) {
+                obs.extend(evidence.observations.values().filter(|o| matches(*o)));
+            }
+            if obs.is_empty() {
+                obs.extend(
+                    checked
+                        .dependencies
+                        .values()
+                        .filter(|o| matches(*o) && o.service == service),
+                );
+            }
+        } else {
+            for e in checked.services.values() {
+                obs.extend(e.observations.values().filter(|o| matches(*o)));
+            }
+            if obs.is_empty() {
+                obs.extend(checked.dependencies.values().filter(|o| matches(*o)));
+            }
+        }
+        let identities: BTreeSet<_> = obs
+            .iter()
+            .map(|observation| {
+                (
+                    observation.service.as_str(),
+                    observation.normalized["scope"].as_str().unwrap_or(""),
+                )
+            })
+            .collect();
+        if identities.len() != 1 {
+            continue;
+        }
+        if let Some(obs) = deepest_flow(&obs) {
+            let events = obs.normalized.pointer("/documentation/events")?;
+            return Some(ResolvedFlow {
+                observation: obs,
+                events,
+            });
+        }
+    }
+    None
+}
+
+/// Return the matching observation with the most `documentation.events` (the
+/// deepest retained flow), or `None` if none carries events.
+fn deepest_flow<'a>(obs: &[&'a Observation]) -> Option<&'a Observation> {
+    obs.iter()
+        .filter(|o| o.normalized.pointer("/documentation/events").is_some())
+        .max_by_key(|o| {
+            o.normalized
+                .pointer("/documentation/events")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        })
+        .copied()
+}
+
+/// Resolve a lifecycle operation only when its exact full symbol or exact
+/// simple method name identifies one retained service and scope.
+fn lifecycle_flow<'a>(checked: &'a Check, operation: &str) -> Option<ResolvedFlow<'a>> {
+    let symbol = super::process_states::resolve_operation_symbol(checked, operation)?;
+    resolve_flow(checked, None, &[symbol])
+}
+
+fn lifecycle_diagram_stem(
+    subject: &str,
+    operation: &str,
+    flow: ResolvedFlow<'_>,
+) -> Result<String, ClewError> {
+    let identity = digest(&json!({
+        "subject": subject,
+        "operation": operation,
+        "service": flow.observation.service,
+        "scope": flow.observation.normalized["scope"],
+        "symbol": flow.observation.symbol,
+        "observation": flow.observation.id,
+    }))?;
+    let short_hash = identity.strip_prefix("sha256:").unwrap_or(&identity);
+    Ok(format!(
+        "{}-lifecycle-{}",
+        subject.replace(':', "-"),
+        &short_hash[..16]
+    ))
+}
+
+/// Resolve an operation's root FLOW evidence (`documentation.events` array) and
+/// the root method symbol from the checked dependency map, mirroring
+/// `check::Walker::walk`, which reads a method's flow from its SYMBOL
+/// observation's `documentation.events`. Candidate root symbols: the
+/// matching entrypoint's method symbol (for a service), the operation id, and
+/// any operation boundary that names the root method.
+fn root_flow_events<'a>(
+    checked: &'a Check,
+    operation: &Operation,
+    service: Option<&str>,
+) -> Option<ResolvedFlow<'a>> {
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(service) = service {
+        if let Some(entry) = checked
+            .services
+            .get(service)
+            .and_then(|e| e.entrypoints.iter().find(|ep| ep.id == operation.id))
+        {
+            candidates.push(entry.symbol.as_str());
+        }
+    }
+    candidates.push(operation.id.as_str());
+    candidates.extend(operation.boundaries.iter().map(String::as_str));
+    resolve_flow(checked, service, &candidates)
+}
+
+/// Resolve an unauthored gap operation's root FLOW evidence by its entrypoint
+/// id (gap operations are not present in `operations[]`, so they carry no
+/// boundaries; the entrypoint's root method symbol is the only candidate).
+fn root_flow_events_by_id<'a>(
+    checked: &'a Check,
+    id: &str,
+    service: Option<&str>,
+) -> Option<ResolvedFlow<'a>> {
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(service) = service {
+        if let Some(entry) = checked
+            .services
+            .get(service)
+            .and_then(|e| e.entrypoints.iter().find(|ep| ep.id == id))
+        {
+            candidates.push(entry.symbol.as_str());
+        }
+    }
+    candidates.push(id);
+    resolve_flow(checked, service, &candidates)
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -1655,6 +1932,7 @@ pub fn publish_with_failures(
         BTreeMap::new(),
         EvidenceMode::Saved(None),
         None,
+        false,
     )
 }
 
@@ -1674,6 +1952,7 @@ pub fn publish_from_current_source(
         BTreeMap::new(),
         EvidenceMode::Refresh,
         None,
+        false,
     )
 }
 
@@ -1693,6 +1972,7 @@ pub fn publish_from_snapshot(
         BTreeMap::new(),
         EvidenceMode::Saved(Some(snapshot)),
         None,
+        false,
     )
 }
 
@@ -1722,6 +2002,7 @@ pub(super) fn publish_reviewed(
         versions,
         EvidenceMode::Saved(snapshot),
         language.as_deref(),
+        false,
     )
 }
 
@@ -1735,6 +2016,30 @@ pub fn publish_language(
     refresh: bool,
     language: Option<&str>,
 ) -> Result<Value, ClewError> {
+    publish_language_with_mode(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        snapshot,
+        refresh,
+        language,
+        false,
+    )
+}
+
+/// Render saved evidence and release the resulting immutable snapshot only
+/// when the caller explicitly opts in.
+pub fn publish_language_with_mode(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+    snapshot: Option<&str>,
+    refresh: bool,
+    language: Option<&str>,
+    released: bool,
+) -> Result<Value, ClewError> {
     publish_internal(
         repo,
         incoming,
@@ -1747,6 +2052,7 @@ pub fn publish_language(
             EvidenceMode::Saved(snapshot)
         },
         language,
+        released,
     )
 }
 
@@ -1764,6 +2070,7 @@ fn publish_internal(
     versions: BTreeMap<String, super::review::AcceptedVersion>,
     evidence_mode: EvidenceMode<'_>,
     language: Option<&str>,
+    released: bool,
 ) -> Result<Value, ClewError> {
     super::progress::run("PUBLISH_DOCUMENTATION", || {
         publish_internal_phases(
@@ -1774,6 +2081,7 @@ fn publish_internal(
             versions,
             evidence_mode,
             language,
+            released,
         )
     })
 }
@@ -1786,6 +2094,7 @@ fn publish_internal_phases(
     versions: BTreeMap<String, super::review::AcceptedVersion>,
     evidence_mode: EvidenceMode<'_>,
     language: Option<&str>,
+    released: bool,
 ) -> Result<Value, ClewError> {
     super::language::validate(language)?;
     let previous = bindings::baseline(repo)?;
@@ -2233,10 +2542,13 @@ fn publish_internal_phases(
     }
     binding.update_failures = failures.clone();
     binding.output_hashes.clear();
-    let bundle =
-        digest(&json!({"binding":binding,"rendererAssets":renderer_digest()?}))?[7..].to_owned();
     let mut files = BTreeMap::new();
+    let mut diagrams: Vec<(String, String)> = Vec::new();
+    let plantuml_jar = std::env::var("PLANTUML_JAR")
+        .ok()
+        .map(std::path::PathBuf::from);
     let mut cards = String::new();
+    let mut pending_pages: Vec<(String, String, Value)> = Vec::new();
     for (subject, n) in &narratives {
         let (kind, id) = subject
             .split_once(':')
@@ -2270,6 +2582,46 @@ fn publish_internal_phases(
             })
             .or_else(|| old_data.as_ref().and_then(|d| d["title"].as_str()))
             .unwrap_or(id);
+        let process_state_schema = if kind == "scenario" {
+            super::process_states::captured(&checked, id)
+        } else {
+            None
+        };
+        let state_diagram = process_state_schema.map(|_| format!("scenario-{id}-states"));
+        let activity_puml = process_state_schema
+            .and_then(|schema| super::process_states::activity_transitions_puml(schema, &checked));
+        let activity_transitions = activity_puml
+            .as_ref()
+            .map(|_| format!("scenario-{id}-activity-transitions"));
+        let lifecycle: Vec<LifecycleArtifact> = if let Some(schema) = process_state_schema {
+            let mut out = Vec::new();
+            let mut seen = BTreeSet::new();
+            for t in &schema.transitions {
+                if t.operation.is_empty()
+                    || !seen.insert(t.operation.clone())
+                    || n.operations
+                        .iter()
+                        .any(|operation| operation.id == t.operation)
+                {
+                    continue;
+                }
+                if let Some(flow) = lifecycle_flow(&checked, &t.operation) {
+                    if let Some(generated) = auto_flow_puml(&checked, flow, &t.operation) {
+                        out.push(LifecycleArtifact {
+                            name: t.operation.clone(),
+                            tree: generated.tree,
+                            origin: generated.origin,
+                            diagram_stem: lifecycle_diagram_stem(subject, &t.operation, flow)?,
+                            puml: generated.puml,
+                        });
+                    }
+                }
+            }
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            out
+        } else {
+            Vec::new()
+        };
         let mut data = page_data(
             subject,
             title,
@@ -2281,6 +2633,9 @@ fn publish_internal_phases(
             n,
             &checked,
             &suppress,
+            state_diagram.as_deref(),
+            &lifecycle,
+            activity_transitions.as_deref(),
         );
         for process in data["savedProcesses"].as_array_mut().into_iter().flatten() {
             if let Some(id) = process["id"].as_str().map(str::to_owned) {
@@ -2370,8 +2725,7 @@ fn publish_internal_phases(
                 .collect::<BTreeMap<_, _>>()
         );
         super::status::attach(&mut data, subject, &binding);
-        files.insert(format!("{folder}/{id}.json"), bytes(&data)?);
-        files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
+        pending_pages.push((folder.to_owned(), id.to_owned(), data.clone()));
         let state = &binding.section_states[subject];
         let displayed = super::language::display_narrative(n, requested_language.as_deref());
         let mut prose =
@@ -2398,6 +2752,92 @@ fn publish_internal_phases(
                 )
                 .into_bytes(),
             );
+            // Un-authored operations get an auto PlantUML activity document
+            // from the root method's FLOW evidence; authored events take
+            // priority and suppress it.
+            if operation.events.is_empty() {
+                let service = (kind == "service").then_some(id);
+                if let Some(flow) = root_flow_events(&checked, operation, service) {
+                    if let Some(generated) = auto_flow_puml(&checked, flow, &operation.title) {
+                        insert_diagram(
+                            &mut files,
+                            &mut diagrams,
+                            format!("diagrams/{}-{}", subject.replace(':', "-"), operation.id),
+                            generated.puml,
+                        );
+                    }
+                }
+            }
+        }
+        // Gap entrypoints are un-authored operations that are absent from
+        // `operations[]`; they still get an auto PlantUML activity document
+        // when their root method's flow is retained. Authored operations are
+        // never here, so this cannot override manual content.
+        if kind == "service" {
+            for gap_id in n.gaps.keys() {
+                if let Some(flow) = root_flow_events_by_id(&checked, gap_id, Some(id)) {
+                    if let Some(generated) = auto_flow_puml(&checked, flow, gap_id) {
+                        insert_diagram(
+                            &mut files,
+                            &mut diagrams,
+                            format!("diagrams/{}-{}", subject.replace(':', "-"), gap_id),
+                            generated.puml,
+                        );
+                    }
+                }
+            }
+        }
+        // Declarative state diagram: scenarios/<id>-states.yaml → a PlantUML
+        // state diagram. Unresolved transitions are surfaced as limitations
+        // rather than dropped.
+        if kind == "scenario" {
+            if let Some(schema) = process_state_schema {
+                let (mut puml, unresolved) = super::process_states::render_puml(schema, &checked);
+                if !unresolved.is_empty() {
+                    for u in &unresolved {
+                        puml = format!("' unresolved: {}\n{}", u, puml);
+                    }
+                    cards.push_str(&format!(
+                        "<p class=\"state-limitations\">{}: {}</p>",
+                        super::reader::text(
+                            ui_language,
+                            "State transitions without evidence",
+                            "Переходы состояния без подтверждающих сведений"
+                        ),
+                        escape(&unresolved.join("; "))
+                    ));
+                }
+                insert_diagram(
+                    &mut files,
+                    &mut diagrams,
+                    format!("diagrams/{}-states", subject.replace(':', "-")),
+                    puml,
+                );
+            }
+            // Compact "activity on transitions" diagram: each lifecycle operation
+            // becomes a branch leading to the states it transitions into.
+            if let Some(activity) = activity_puml {
+                insert_diagram(
+                    &mut files,
+                    &mut diagrams,
+                    format!(
+                        "diagrams/{}-activity-transitions",
+                        subject.replace(':', "-")
+                    ),
+                    activity,
+                );
+            }
+            // Compact activity diagram per lifecycle operation named by the
+            // state schema's transitions, so the process page can list every
+            // sub-process like the approved draft.
+            for artifact in &lifecycle {
+                insert_diagram(
+                    &mut files,
+                    &mut diagrams,
+                    format!("diagrams/{}", artifact.diagram_stem),
+                    artifact.puml.clone(),
+                );
+            }
         }
         let translation_count = data["translationGaps"].as_object().map_or(0, |g| g.len());
         let operation_count = displayed
@@ -2410,14 +2850,65 @@ fn publish_internal_phases(
                     && o.dataflow.is_none()
             })
             .count();
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{}: {operation_count} · {}: {}</p><p>{}: {translation_count}</p><details><summary>{}</summary><pre>{}</pre></details></article>",
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/__BUNDLE__/{folder}/{}.html\">{}</a></h2><p>{}: {operation_count} · {}: {}</p><p>{}: {translation_count}</p><details><summary>{}</summary><pre>{}</pre></details></article>",
             super::reader::text(ui_language,kind,if kind=="service"{"Сервис"}else{"Процесс"}),escape(id),escape(title),
             super::reader::text(ui_language,"Documented operations","Описанные операции"),super::reader::text(ui_language,"Gaps","Пробелы"),n.gaps.len(),
             super::reader::text(ui_language,"Sections requiring translation","Разделы, требующие перевода"),
             super::reader::text(ui_language,"Revisions, status and update gaps","Версии, состояние и пробелы обновления"),
             escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
+    // Pre-render every auto-generated diagram to SVG in one renderer process
+    // (avoid spawning a JVM per diagram), then commit the bundle.
+    let svg_availability = batch_render_diagrams(&mut files, &diagrams, plantuml_jar.as_deref());
+    for (folder, id, mut data) in pending_pages {
+        data["stateDiagramSvg"] = json!(
+            data["stateDiagram"]
+                .as_str()
+                .and_then(|stem| svg_availability.get(&format!("diagrams/{stem}")))
+                .copied()
+                .unwrap_or(false)
+        );
+        data["activityTransitionsSvg"] = json!(
+            data["activityTransitions"]
+                .as_str()
+                .and_then(|stem| svg_availability.get(&format!("diagrams/{stem}")))
+                .copied()
+                .unwrap_or(false)
+        );
+        for lifecycle in data["lifecycleOperations"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            let stem = lifecycle["diagramStem"].as_str().unwrap_or("");
+            lifecycle["svgAvailable"] = json!(
+                svg_availability
+                    .get(&format!("diagrams/{stem}"))
+                    .copied()
+                    .unwrap_or(false)
+            );
+        }
+        files.insert(format!("{folder}/{id}.json"), bytes(&data)?);
+        files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
+    }
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
+    // The bundle identity covers every output file (including auto-generated
+    // diagrams), so any change to the rendered output produces a fresh
+    // immutable bundle instead of conflicting with an existing one.
+    let output_digest = digest(
+        &files
+            .iter()
+            .map(|(path, data)| (path.clone(), crate::canonical::hash_bytes(data)))
+            .collect::<BTreeMap<_, _>>(),
+    )?;
+    let bundle = digest(&json!({
+        "binding": binding,
+        "rendererAssets": renderer_digest()?,
+        "output": output_digest,
+        "released": released
+    }))?[7..]
+        .to_owned();
+    let cards = cards.replace("__BUNDLE__", &bundle);
     let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><details><summary>{}</summary><p>{}</p><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),super::reader::text(ui_language,"Original declaration and source checks","Исходная декларация и проверки по коду"),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
     let update_gaps = if failures.is_empty() {
         String::new()
@@ -2449,7 +2940,7 @@ fn publish_internal_phases(
         ),
     );
     let gap_count: usize = narratives.values().map(|n| n.gaps.len()).sum();
-    commit_bundle(
+    commit_bundle_with_mode(
         repo,
         &bundle,
         binding,
@@ -2458,9 +2949,10 @@ fn publish_internal_phases(
         &checked.input_digest,
         previous.as_ref(),
         previous_bytes.as_deref(),
+        released,
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
+        json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
     )
 }
 
@@ -2469,12 +2961,37 @@ fn publish_internal_phases(
 pub(super) fn commit_bundle(
     repo: &Repository,
     bundle: &str,
+    binding: Bindings,
+    files: BTreeMap<String, Vec<u8>>,
+    overview: &str,
+    input_digest: &str,
+    previous: Option<&(String, Bindings)>,
+    previous_bytes: Option<&[u8]>,
+) -> Result<(), ClewError> {
+    commit_bundle_with_mode(
+        repo,
+        bundle,
+        binding,
+        files,
+        overview,
+        input_digest,
+        previous,
+        previous_bytes,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_bundle_with_mode(
+    repo: &Repository,
+    bundle: &str,
     mut binding: Bindings,
     mut files: BTreeMap<String, Vec<u8>>,
     overview: &str,
     input_digest: &str,
     previous: Option<&(String, Bindings)>,
     previous_bytes: Option<&[u8]>,
+    released: bool,
 ) -> Result<(), ClewError> {
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
@@ -2497,7 +3014,7 @@ pub(super) fn commit_bundle(
     super::reader::decorate_bundle_language(&mut files, bundle, &ui_language)?;
     let live_overview = String::from_utf8(files["root-overview.html"].clone()).map_err(io_error)?;
     let mut publication =
-        super::history::prepare(repo, bundle, &binding, &mut files, input_digest, previous)?;
+        super::history::prepare(repo, bundle, &binding, &mut files, input_digest, released)?;
     binding.output_hashes = files
         .iter()
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
@@ -2577,6 +3094,8 @@ pub(super) fn commit_bundle(
         }
     }
     // One pointer changes only after all matching documents and bindings exist.
+    // Keep history navigation available after a working render while the
+    // index itself contains only explicit releases.
     super::history::index(repo, bundle)?;
     repo.atomic("docs/index.html", live_overview.as_bytes())?;
     super::reader::connect_starters_language(
@@ -2703,6 +3222,9 @@ mod process_catalog_tests {
             &narrative,
             &checked,
             &BTreeSet::new(),
+            None,
+            &[],
+            None,
         );
         assert_eq!(
             data["processCandidates"]["internal"]
@@ -2720,6 +3242,9 @@ mod process_catalog_tests {
             &narrative,
             &checked,
             &suppress,
+            None,
+            &[],
+            None,
         );
         assert_eq!(
             filtered["processCandidates"]["suppressed"],
@@ -2744,5 +3269,490 @@ mod process_catalog_tests {
             "../scenarios/worker.html#process-overview"
         );
         assert_eq!(data["savedProcesses"][0]["status"], "AWAITING_AUTHORING");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flow_observation(symbol: &str, service: &str, events: Value) -> Observation {
+        Observation {
+            id: format!("{service}:symbol:{symbol}"),
+            kind: "SYMBOL".into(),
+            service: service.into(),
+            symbol: symbol.into(),
+            normalized: json!({"scope":":main","documentation":{"events":events}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn auto_flow_puml_is_emitted_when_events_empty() {
+        let flow = json!([
+            {"kind":"CALL","resolution":"COMPILER_EXACT","target":"method:class:ru.tins.CheckoutService#charge()V"},
+            {"kind":"RETURN"}
+        ]);
+        let symbol = "method:class:ru.tins.CheckoutController#checkout";
+        let title = "Checkout flow";
+        let observation = flow_observation(symbol, "", flow.clone());
+        let resolved = ResolvedFlow {
+            observation: &observation,
+            events: &flow,
+        };
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::new(),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let doc = auto_flow_puml(&checked, resolved, title).unwrap();
+        assert!(doc.puml.contains("title Checkout flow"), "{}", doc.puml);
+        assert!(doc.puml.contains(":CheckoutService#charge"), "{}", doc.puml);
+        assert!(
+            doc.puml
+                .contains("' evidence: method:class:ru.tins.CheckoutController#checkout"),
+            "{}",
+            doc.puml
+        );
+    }
+
+    #[test]
+    fn source_deepening_is_preferred_when_source_retained() {
+        let source = "\
+public void handle(Long taskId) {
+    TaskInstance ti = null;
+    if (ti == null) {
+        ti = svc.create(taskId);
+    }
+    return ti;
+}";
+        let symbol = "method:class:svc.TaskService#handle";
+        let flow = json!([{"kind":"BOUNDARY"}]);
+        let src_obs = Observation {
+            id: "svc:source:handle".into(),
+            kind: "TRANSFORMED_SOURCE".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"scope":":main","documentation":{"source":source}}),
+            digest: "d".into(),
+            source_ids: vec![],
+        };
+        let flow_obs = flow_observation(symbol, "svc", flow.clone());
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        let mut evidence = evidence;
+        evidence.observations.insert(src_obs.id.clone(), src_obs);
+        evidence.observations.insert(flow_obs.id.clone(), flow_obs);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let doc = auto_flow_puml(&checked, resolved, "t").unwrap();
+        // Source deepening wins over the shallow BOUNDARY flow.
+        assert_eq!(doc.origin, "source");
+        assert!(
+            doc.puml.contains(":Entry: handle（taskId）;"),
+            "{}",
+            doc.puml
+        );
+        assert!(doc.puml.contains(":ti = null;"), "{}", doc.puml);
+        assert!(
+            doc.puml.contains("if (ti == null) then (yes)"),
+            "{}",
+            doc.puml
+        );
+        assert!(!doc.puml.contains("BOUNDARY"), "{}", doc.puml);
+    }
+
+    #[test]
+    fn root_flow_events_resolves_entrypoint_method_symbol() {
+        let flow = json!([{"kind":"STATEMENT","text":"load()"}]);
+        let symbol = "method:class:CheckoutService#checkout";
+        let symbol_obs = Observation {
+            id: "svc:symbol:x".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":flow}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[{"id":"ep1","service":"svc","symbol":symbol,"kind":"ENTRYPOINT","trigger":{},"sourceIds":[],"dependencyIds":[],"boundaries":[]}],
+            "observations":{},"sources":{}
+        }))
+        .unwrap();
+        // realistic: SYMBOL observations (with documentation.events) live in the
+        // service evidence, not checked.dependencies — mirror Walker::walk.
+        let mut evidence = evidence;
+        evidence
+            .observations
+            .insert(symbol_obs.id.clone(), symbol_obs);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let operation = Operation {
+            documentation_language: None,
+            visuals: vec![],
+            dataflow: None,
+            id: "ep1".into(),
+            title: "Checkout flow".into(),
+            summary: Fragment {
+                id: "s".into(),
+                text: String::new(),
+                dependency_ids: vec![],
+                source_ids: vec![],
+            },
+            assessment: None,
+            explanation: vec![],
+            interface_contracts: vec![],
+            overview_diagram: None,
+            participants: vec![],
+            events: vec![],
+            findings: vec![],
+            boundaries: vec![],
+        };
+        let resolved = root_flow_events(&checked, &operation, Some("svc")).unwrap();
+        assert_eq!(resolved.observation.symbol, symbol);
+        assert_eq!(resolved.events[0]["text"], "load()");
+        // Operation id == method symbol resolves even without an entrypoint.
+        let op2 = Operation {
+            id: symbol.into(),
+            ..operation.clone()
+        };
+        let resolved2 = root_flow_events(&checked, &op2, None).unwrap();
+        assert_eq!(resolved2.observation.symbol, symbol);
+        // An operation with no matching root yields None.
+        let op3 = Operation {
+            id: "unrelated".into(),
+            ..operation
+        };
+        assert!(root_flow_events(&checked, &op3, None).is_none());
+    }
+
+    #[test]
+    fn root_flow_events_by_id_resolves_gap_entrypoint_symbol() {
+        let flow = json!([{"kind":"STATEMENT","text":"start()"}]);
+        let symbol = "method:class:CheckoutService#start";
+        let symbol_obs = Observation {
+            id: "svc:symbol:start".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":flow}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[{"id":"svc-abc123","service":"svc","symbol":symbol,"kind":"ENTRYPOINT","trigger":{},"sourceIds":[],"dependencyIds":[],"boundaries":[]}],
+            "observations":{},"sources":{}
+        }))
+        .unwrap();
+        let mut evidence = evidence;
+        evidence
+            .observations
+            .insert(symbol_obs.id.clone(), symbol_obs);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        // A gap operation is absent from operations[]; resolve purely by id.
+        let resolved = root_flow_events_by_id(&checked, "svc-abc123", Some("svc")).unwrap();
+        assert_eq!(resolved.observation.symbol, symbol);
+        assert_eq!(resolved.events[0]["text"], "start()");
+        // Unknown gap id yields None.
+        assert!(root_flow_events_by_id(&checked, "svc-missing", Some("svc")).is_none());
+    }
+
+    #[test]
+    fn resolve_flow_prefers_deepest_observation_for_symbol() {
+        let symbol = "method:class:svc.TaskService#changeStatus";
+        let shallow = Observation {
+            id: "svc:symbol:aaa-shallow".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":[{"kind":"BOUNDARY"}]}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let deep = Observation {
+            id: "svc:symbol:zzz-deep".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"documentation":{"events":[
+                {"kind":"CALL","target":"method:class:svc.TaskService#changeStatus()V"},
+                {"kind":"IF","condition":"ready"},
+                {"kind":"CALL","target":"method:class:svc.Repo#save()V"},
+                {"kind":"END"},
+                {"kind":"RETURN"}
+            ]}}),
+            digest: "digest".into(),
+            source_ids: vec![],
+        };
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"digest","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        let mut evidence = evidence;
+        // Id order (BTreeMap) puts the shallow observation first, so a naive
+        // `.find()` would return the 1-event stub; the resolver must prefer
+        // the deepest retained flow (5 events).
+        evidence.observations.insert(shallow.id.clone(), shallow);
+        evidence.observations.insert(deep.id.clone(), deep);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        assert_eq!(resolved.observation.symbol, symbol);
+        assert_eq!(resolved.events.as_array().map(Vec::len), Some(5));
+    }
+
+    #[test]
+    fn lifecycle_resolution_requires_exact_unambiguous_symbol_and_scope() {
+        let shared = "method:class:orders.TaskService#changeTaskStatus(Ljava/lang/Long;)V";
+        let mut first: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"orders","revision":"r1",
+            "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"entrypoints":[],"observations":{},"sources":{},"contracts":{}
+        })).unwrap();
+        let mut second: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"billing","revision":"r2",
+            "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"entrypoints":[],"observations":{},"sources":{},"contracts":{}
+        })).unwrap();
+        let first_obs =
+            flow_observation(shared, "orders", json!([{"kind":"RETURN","text":"orders"}]));
+        let second_obs = flow_observation(
+            shared,
+            "billing",
+            json!([{"kind":"RETURN","text":"billing"}]),
+        );
+        first.observations.insert(first_obs.id.clone(), first_obs);
+        second
+            .observations
+            .insert(second_obs.id.clone(), second_obs);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("orders".into(), first), ("billing".into(), second)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+
+        // A human transition label or method substring must not select an unrelated method.
+        assert!(lifecycle_flow(&checked, "Status").is_none());
+        // Even an exact JVM identity is ambiguous when retained by two services.
+        assert!(lifecycle_flow(&checked, shared).is_none());
+        // A service-bound entrypoint flow still resolves only within its owner.
+        let operation = Operation {
+            documentation_language: None,
+            visuals: vec![],
+            dataflow: None,
+            id: shared.into(),
+            title: "Update status".into(),
+            summary: Fragment {
+                id: "s".into(),
+                text: String::new(),
+                dependency_ids: vec![],
+                source_ids: vec![],
+            },
+            assessment: None,
+            explanation: vec![],
+            interface_contracts: vec![],
+            overview_diagram: None,
+            participants: vec![],
+            events: vec![],
+            findings: vec![],
+            boundaries: vec![],
+        };
+        let owned = root_flow_events(&checked, &operation, Some("orders")).unwrap();
+        assert_eq!(owned.events[0]["text"], "orders");
+    }
+
+    #[test]
+    fn lifecycle_simple_method_name_must_be_unique_across_services() {
+        let mut services = BTreeMap::new();
+        for (service, owner) in [
+            ("orders", "orders.TaskService"),
+            ("billing", "billing.TaskService"),
+        ] {
+            let symbol = format!("method:class:{owner}#changeTaskStatus(Ljava/lang/Long;)V");
+            let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+                "schema":"codeclew-documentation-service-evidence/1.0","service":service,"revision":"r",
+                "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+                "boundaries":[],"entrypoints":[],"observations":{},"sources":{},"contracts":{}
+            })).unwrap();
+            let observation = flow_observation(&symbol, service, json!([{"kind":"RETURN"}]));
+            evidence
+                .observations
+                .insert(observation.id.clone(), observation);
+            services.insert(service.to_owned(), evidence);
+        }
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services,
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        assert!(lifecycle_flow(&checked, "changeTaskStatus").is_none());
+    }
+
+    #[test]
+    fn method_source_resolves_via_symbol_source_ids() {
+        let symbol = "method:class:svc.TaskService#handle(Ljava/lang/Long;)V";
+        let source_text = "public void handle(Long id) {\n  svc.doSomething(id);\n}";
+        let sym_obs = Observation {
+            id: "svc:symbol:handle".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"scope":":main","documentation":{"events":[]}}),
+            digest: "d".into(),
+            source_ids: vec!["svc:source:handle".into()],
+        };
+        let source = Source {
+            id: "svc:source:handle".into(),
+            service: "svc".into(),
+            revision: "rev".into(),
+            file: "TaskService.java".into(),
+            start_line: 1,
+            end_line: 3,
+            text: source_text.into(),
+            text_digest: "d".into(),
+            evidence_digest: "d".into(),
+            authority: "TRANSFORMED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"rev",
+            "serviceDigest":"d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},
+            "entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        evidence.observations.insert(sym_obs.id.clone(), sym_obs);
+        evidence.sources.insert(source.id.clone(), source);
+        let mut foreign: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0","service":"other","revision":"other-rev",
+            "serviceDigest":"other-d","extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},"entrypoints":[],"observations":{},"sources":{}
+        })).unwrap();
+        let foreign_obs = Observation {
+            id: "other:symbol:handle".into(),
+            kind: "SYMBOL".into(),
+            service: "other".into(),
+            symbol: symbol.into(),
+            normalized: json!({"scope":":main","documentation":{"events":[]}}),
+            digest: "other-d".into(),
+            source_ids: vec!["other:source:handle".into()],
+        };
+        let foreign_source = Source {
+            id: "other:source:handle".into(),
+            service: "other".into(),
+            revision: "other-rev".into(),
+            file: "Other.java".into(),
+            start_line: 1,
+            end_line: 1,
+            text: "FOREIGN SOURCE".into(),
+            text_digest: "other-d".into(),
+            evidence_digest: "other-d".into(),
+            authority: "TEST".into(),
+            occurrence: None,
+            url: None,
+        };
+        foreign
+            .observations
+            .insert(foreign_obs.id.clone(), foreign_obs);
+        foreign
+            .sources
+            .insert(foreign_source.id.clone(), foreign_source);
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence), ("other".into(), foreign)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        assert_eq!(
+            method_source(&checked, resolved).as_deref(),
+            Some(source_text)
+        );
     }
 }

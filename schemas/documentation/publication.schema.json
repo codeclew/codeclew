@@ -10,6 +10,10 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "released": {
+      "type": "boolean",
+      "description": "True only when the user explicitly released this render. Omitted in legacy manifests and interpreted as false."
+    },
     "parent": {
       "anyOf": [
         {
@@ -23,11 +27,15 @@
     },
     "ordinal": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 0
     },
     "inputDigest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "documentationLanguage": {
+      "type": "string",
+      "enum": ["en", "ru"]
     },
     "targetRevisions": {
       "type": "object",
@@ -142,6 +150,25 @@
       "maxProperties": 8192
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "released": {
+            "const": true
+          }
+        },
+        "required": ["released"]
+      },
+      "then": {
+        "properties": {
+          "ordinal": {
+            "minimum": 1
+          }
+        }
+      }
+    }
+  ],
   "required": [
     "schema",
     "id",

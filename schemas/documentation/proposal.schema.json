@@ -230,6 +230,22 @@
             "$ref": "#/$defs/contract"
           }
         },
+        "participants": {
+          "type": "array",
+          "maxItems": 22,
+          "items": {
+            "$ref": "#/$defs/participant"
+          },
+          "description": "Optional additional actors for a sequence. Existing caller and selected service participants are supplied by the host."
+        },
+        "explanation": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/claim"
+          },
+          "description": "Optional evidence-bound prose paragraphs for a sequence operation."
+        },
         "assessment": {
           "oneOf": [
             {
@@ -317,6 +333,35 @@
         "title",
         "summary",
         "steps"
+      ]
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "service": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 100,
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        }
+      },
+      "required": [
+        "id",
+        "label"
       ]
     },
     "dataflowNode": {

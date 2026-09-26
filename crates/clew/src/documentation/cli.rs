@@ -139,7 +139,7 @@ pub enum Command {
     Context(ContextArgs),
     /// Review affected claims with bounded before/after evidence.
     Changes(ChangeArgs),
-    /// Render saved evidence offline; use --refresh to acquire current source evidence.
+    /// Render saved evidence offline; --publish explicitly releases a snapshot.
     Render {
         #[arg(long)]
         root: PathBuf,
@@ -156,6 +156,9 @@ pub enum Command {
         /// Select saved evidence; defaults to latest saved check, never runs analyzers.
         #[arg(long)]
         snapshot: Option<String>,
+        /// Add this render to released documentation history.
+        #[arg(long)]
+        publish: bool,
     },
 }
 #[derive(Debug, Args)]
@@ -460,6 +463,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             require_complete,
             refresh,
             snapshot,
+            publish,
         } => {
             let mut narratives = Vec::new();
             let mut failures = BTreeMap::new();
@@ -475,7 +479,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                 }
             }
             let repo = Repository::open(&root)?;
-            super::render::publish_language(
+            super::render::publish_language_with_mode(
                 &repo,
                 narratives,
                 require_complete,
@@ -483,6 +487,7 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
                 snapshot.as_deref(),
                 refresh,
                 language.as_deref(),
+                publish,
             )
         }
     }

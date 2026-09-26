@@ -623,7 +623,7 @@ fn author_payload(
         ]);
         let properties = &mut schema["$defs"]["operation"]["properties"];
         properties["entrypoint"] = serde_json::json!({"const":work.subject});
-        for name in ["steps", "contracts"] {
+        for name in ["steps", "contracts", "participants", "explanation"] {
             properties[name] = serde_json::json!({"type":"array","maxItems":0});
         }
         for name in ["assessment", "dataflow"] {
@@ -635,7 +635,7 @@ fn author_payload(
             }
         }
         let instruction = format!(
-            "{} This job writes one process overview: use entrypoint {}. Put the evidence-backed trigger, ordered behavior, decisions, error branches, outcomes and limits in summary.text using readable paragraphs with concrete behavior. steps must be []; contracts must be omitted or []. assessment and dataflow must be omitted or null. Do not add a separate sequence operation to this proposal. Cite supplied references in summary.evidence. Put missing activation, provider or runtime proof in summary.uncertainty or proposal.uncertainties, or request a registered expansion. gaps is empty/omitted when an overview is supplied; only when no overview can be supported, use operations=[] and gaps keyed by the same scenario subject. Never invent gap label keys.",
+            "{} This job writes one process overview: use entrypoint {}. Put the evidence-backed trigger, ordered behavior, decisions, error branches, outcomes and limits in summary.text using readable paragraphs with concrete behavior. steps must be []; contracts, participants and explanation must be omitted or []. assessment and dataflow must be omitted or null. Do not add a separate sequence operation to this proposal. Cite supplied references in summary.evidence. Put missing activation, provider or runtime proof in summary.uncertainty or proposal.uncertainties, or request a registered expansion. gaps is empty/omitted when an overview is supplied; only when no overview can be supported, use operations=[] and gaps keyed by the same scenario subject. Never invent gap label keys.",
             payload["instruction"].as_str().unwrap_or(""),
             work.subject,
         );
@@ -1428,6 +1428,41 @@ mod input_cap_tests {
     }
 
     #[test]
+    fn generic_author_schema_admits_bounded_participants_and_explanations() {
+        let mut work = overview_work();
+        work.subject = "service:orders".into();
+        work.request.entrypoint = Some("orders-reserve".into());
+        let request = author_payload(&work, &[], &Value::Null, &Value::Null).unwrap();
+        let output = &request["outputSchema"];
+        assert_local_schema_references(output, output);
+        let operation = &output["$defs"]["operation"]["properties"];
+        assert_eq!(operation["participants"]["maxItems"], 22);
+        assert_eq!(
+            operation["participants"]["items"]["$ref"],
+            "#/$defs/participant"
+        );
+        assert_eq!(operation["explanation"]["maxItems"], 64);
+        assert_eq!(operation["explanation"]["items"]["$ref"], "#/$defs/claim");
+        let participant = &output["$defs"]["participant"];
+        assert_eq!(participant["additionalProperties"], false);
+        assert_eq!(participant["required"], json!(["id", "label"]));
+        assert_eq!(participant["properties"]["id"]["maxLength"], 100);
+        assert_eq!(participant["properties"]["label"]["maxLength"], 512);
+
+        let authored: super::super::proposals::ProposedOperation = serde_json::from_value(json!({
+            "entrypoint":"orders-reserve",
+            "title":"Reserve an order",
+            "summary":{"text":"The operation reserves an order.","evidence":["source-1"]},
+            "steps":[],
+            "participants":[{"id":"worker","label":"Worker"}],
+            "explanation":[{"text":"The worker checks availability.","evidence":["source-1"]}]
+        }))
+        .unwrap();
+        assert_eq!(authored.participants[0].id, "worker");
+        assert_eq!(authored.explanation.len(), 1);
+    }
+
+    #[test]
     fn narrow_entity_author_guidance_keeps_summary_only_schema_and_recorded_evidence_gate() {
         let mut work = overview_work();
         work.subject = "service:orders".into();
@@ -1516,7 +1551,7 @@ mod input_cap_tests {
             assert_eq!(schema["properties"]["operations"]["maxItems"], 1);
             let properties = &output["$defs"]["operation"]["properties"];
             assert_eq!(properties["entrypoint"]["const"], "scenario:dispatch");
-            for name in ["steps", "contracts"] {
+            for name in ["steps", "contracts", "participants", "explanation"] {
                 assert_eq!(properties[name]["maxItems"], 0);
             }
             for name in ["assessment", "dataflow"] {
@@ -1554,6 +1589,12 @@ mod input_cap_tests {
                     .as_str()
                     .unwrap()
                     .contains("Do not add a separate sequence operation")
+            );
+            assert!(
+                request["instruction"]
+                    .as_str()
+                    .unwrap()
+                    .contains("participants and explanation must be omitted or []")
             );
         }
         let mut generic_body = generic.clone();

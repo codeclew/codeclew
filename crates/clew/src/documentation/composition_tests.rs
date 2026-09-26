@@ -6,7 +6,7 @@ use crate::documentation::{
     store::{Repository, RepositoryInputs},
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn service() -> Service {
     serde_json::from_value(json!({
@@ -128,6 +128,7 @@ fn inputs() -> RepositoryInputs {
             ("parent".into(), process("parent", vec!["child"])),
             ("child".into(), process("child", vec![])),
         ]),
+        process_states: BTreeMap::new(),
         entities: BTreeMap::new(),
         notes: BTreeMap::new(),
         evidence_expectations: BTreeMap::new(),
@@ -137,6 +138,14 @@ fn inputs() -> RepositoryInputs {
             targets: BTreeMap::new(),
         },
     }
+}
+
+fn process_state(title: &str) -> crate::documentation::process_states::ProcessStates {
+    serde_yaml_ng::from_str(&format!(
+        "schema: {}\nid: child\ntitle: {title}\ninitial: NEW\nfinal: [DONE]\nstates:\n  NEW: waiting\n  DONE: finished\ntransitions: []\n",
+        crate::documentation::process_states::SCHEMA
+    ))
+    .unwrap()
 }
 
 fn bindings_bundle(index: &str, child_operation: &model::Operation) -> bindings::Bindings {
@@ -337,4 +346,73 @@ fn captured_baseline_projects_child_versions_and_attach_is_pure() {
     repo.atomic("manual/a.md", b"A").unwrap();
     repo.atomic("manual/b.md", b"B").unwrap();
     ensure_current(&repo, &composition_a).unwrap();
+}
+
+#[test]
+fn recomposition_refreshes_state_declarations_from_the_captured_inputs() {
+    let temporary = tempfile::tempdir().unwrap();
+    Repository::init(temporary.path(), "Architecture").unwrap();
+    let repo = Repository::open(temporary.path()).unwrap();
+    repo.service_add(service(), Some(&repo.input_digest().unwrap()))
+        .unwrap();
+    let scenario = process("child", vec![]);
+    repo.atomic(
+        "scenarios/child.yaml",
+        &crate::canonical::bytes(&scenario).unwrap(),
+    )
+    .unwrap();
+    let original_states = process_state("Original child lifecycle");
+    repo.atomic(
+        "scenarios/child-states.yaml",
+        serde_yaml_ng::to_string(&original_states)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+
+    let original_inputs = repo.inputs().unwrap();
+    let mut original_check = checked(&original_inputs);
+    original_check.source_inputs = Some(check::SourceInputs {
+        schema: check::SOURCE_INPUTS_SCHEMA.into(),
+        input_digest: digest(&original_inputs).unwrap(),
+        inputs: original_inputs.clone(),
+        selected_services: BTreeSet::from(["orders".into()]),
+        retained_services: BTreeSet::new(),
+    });
+    let original_handle = original_check.save_snapshot(&repo).unwrap();
+
+    let changed_states = process_state("Updated child lifecycle");
+    repo.atomic(
+        "scenarios/child-states.yaml",
+        serde_yaml_ng::to_string(&changed_states)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    let (recomposed, _) =
+        crate::documentation::composition::recompose(&repo, &original_handle).unwrap();
+
+    let retained_original = Check::load_snapshot(&repo, &original_handle).unwrap();
+    assert_eq!(
+        crate::documentation::process_states::captured(&retained_original, "child")
+            .unwrap()
+            .title,
+        "Original child lifecycle"
+    );
+    assert_eq!(
+        recomposed
+            .source_inputs
+            .as_ref()
+            .unwrap()
+            .inputs
+            .process_states["child"]
+            .title,
+        "Original child lifecycle"
+    );
+    assert_eq!(
+        crate::documentation::process_states::captured(&recomposed, "child")
+            .unwrap()
+            .title,
+        "Updated child lifecycle"
+    );
 }

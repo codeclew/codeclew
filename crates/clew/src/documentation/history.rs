@@ -21,6 +21,10 @@ use std::{
 pub struct Publication {
     pub schema: String,
     pub id: String,
+    /// True only when the user explicitly released this immutable render.
+    /// Older manifests omit the field and are treated as working snapshots.
+    #[serde(default)]
+    pub released: bool,
     pub parent: Option<String>,
     pub ordinal: u64,
     pub input_digest: String,
@@ -87,7 +91,7 @@ fn load(repo: &Repository, id: &str) -> Result<Publication, ClewError> {
     )?;
     if p.schema != "codeclew-documentation-publication/1.0"
         || p.id != id
-        || p.ordinal == 0
+        || (p.released && p.ordinal == 0)
         || p.parent.as_ref().is_some_and(|p| !valid(p) || p == id)
         || p.documentation_language
             .as_deref()
@@ -133,19 +137,29 @@ fn records(repo: &Repository) -> Result<Vec<Publication>, ClewError> {
         return Ok(vec![]);
     }
     let mut rows = Vec::new();
+    let mut scanned = 0usize;
     for entry in fs::read_dir(root).map_err(io_error)? {
         let entry = entry.map_err(io_error)?;
         let id = entry.file_name().to_string_lossy().into_owned();
         if !valid(&id) {
             continue;
         }
-        if rows.len() >= 4096 {
+        if scanned >= 4096 {
             return Err(invalid(
-                "history enumeration exceeds 4096 snapshots; narrow retained history through the external retention policy",
+                "publication enumeration exceeds 4096 bundles; narrow retained history through the external retention policy",
             ));
         }
+        scanned += 1;
         if repo.path(&path(&id)?)?.exists() {
-            rows.push(load(repo, &id)?);
+            let publication = load(repo, &id)?;
+            if publication.released {
+                if rows.len() >= 4096 {
+                    return Err(invalid(
+                        "history enumeration exceeds 4096 released snapshots; narrow retained history through the external retention policy",
+                    ));
+                }
+                rows.push(publication);
+            }
         }
     }
     rows.sort_by(|a, b| b.ordinal.cmp(&a.ordinal).then(a.id.cmp(&b.id)));
@@ -184,7 +198,7 @@ pub(super) fn prepare(
     binding: &Bindings,
     files: &mut BTreeMap<String, Vec<u8>>,
     input_digest: &str,
-    previous: Option<&(String, Bindings)>,
+    released: bool,
 ) -> Result<Publication, ClewError> {
     let existing = repo.path(&path(id)?)?;
     let retained = if existing.exists() {
@@ -192,17 +206,21 @@ pub(super) fn prepare(
     } else {
         None
     };
-    let parent = retained
-        .as_ref()
-        .map(|p| p.parent.clone())
-        .unwrap_or_else(|| previous.map(|p| p.0.clone()).filter(|p| p != id));
-    let ordinal = if let Some(p) = &retained {
-        p.ordinal
+    if retained.as_ref().is_some_and(|p| p.released != released) {
+        return Err(invalid(
+            "publication identity conflicts with its existing release mode",
+        ));
+    }
+    let (parent, ordinal) = if !released {
+        (None, 0)
+    } else if let Some(p) = &retained {
+        (p.parent.clone(), p.ordinal)
     } else {
-        parent
-            .as_ref()
-            .and_then(|p| load(repo, p).ok())
-            .map_or(1, |p| p.ordinal.saturating_add(1))
+        let parent = records(repo)?.into_iter().next();
+        match parent {
+            Some(publication) => (Some(publication.id), publication.ordinal.saturating_add(1)),
+            None => (None, 1),
+        }
     };
     for (name, contents) in files
         .iter_mut()
@@ -213,19 +231,21 @@ pub(super) fn prepare(
         if nested {
             html = html.replace("href=\"../../../index.html\"", "href=\"../overview.html\"");
         }
-        html = html.replacen(
-            "</nav>",
-            &format!(
-                "</nav>{}",
-                nav(
-                    id,
-                    parent.as_deref(),
-                    nested,
-                    binding.documentation_language.as_deref().unwrap_or("en")
-                )
-            ),
-            1,
-        );
+        if released {
+            html = html.replacen(
+                "</nav>",
+                &format!(
+                    "</nav>{}",
+                    nav(
+                        id,
+                        parent.as_deref(),
+                        nested,
+                        binding.documentation_language.as_deref().unwrap_or("en")
+                    )
+                ),
+                1,
+            );
+        }
         *contents = html.into_bytes();
     }
     let declarations = json!({"schema":"codeclew-documentation-publication-inputs/1.0","manifest":repo.manifest,"services":repo.services()?,"interactions":repo.interactions()?,"scenarios":repo.scenarios()?,"entities":super::entities::records(repo)?,"notes":super::notes::snapshot(repo)?,"coordinator":super::updates::state(repo)?});
@@ -253,6 +273,7 @@ pub(super) fn prepare(
     Ok(Publication {
         schema: "codeclew-documentation-publication/1.0".into(),
         id: id.into(),
+        released,
         parent,
         ordinal,
         input_digest: input_digest.into(),
@@ -283,24 +304,32 @@ pub(super) fn index(repo: &Repository, current: &str) -> Result<(), ClewError> {
         .unwrap_or("en");
     let label = |en, ru| super::reader::text(language, en, ru);
     let snapshot = label("Snapshot", "Снимок");
-    let current_label = label("Current publication", "Текущая публикация");
+    let latest_release_label = label("Latest release", "Последний выпуск");
     let targets = label("Observed targets and tags", "Сохранённые версии и метки");
+    let latest_release = rows.first().map(|p| p.id.as_str());
     let cards = rows.iter().map(|p| {
         let publication_language = match p.documentation_language.as_deref() {
             Some("en") => label("English", "Английский"),
             Some("ru") => label("Russian", "Русский"),
             _ => label("Original version (language unspecified)", "Исходная версия (язык не указан)"),
         };
-        format!("<li><a href=\"generated/{}/overview.html\">{snapshot} {} · {}</a> · {}{}<details><summary>{targets}</summary><pre>{}</pre></details></li>", p.id, p.ordinal, &p.id[..12], publication_language, if p.id == current { format!(" · {current_label}") } else { String::new() }, render::escape(&json!({"targets":p.target_revisions,"tags":p.observed_tags}).to_string()))
+        format!("<li><a href=\"generated/{}/overview.html\">{snapshot} {} · {}</a> · {}{}<details><summary>{targets}</summary><pre>{}</pre></details></li>", p.id, p.ordinal, &p.id[..12], publication_language, if Some(p.id.as_str()) == latest_release { format!(" · {latest_release_label}") } else { String::new() }, render::escape(&json!({"targets":p.target_revisions,"tags":p.observed_tags}).to_string()))
     }).collect::<String>();
-    let pages = publication.files.keys().cloned().collect::<Vec<_>>();
-    let nav = super::reader::navigation_language(
-        &format!("generated/{current}/"),
-        "index.html",
-        None,
-        &pages,
-        language,
-    );
+    let navigation_publication = if publication.released {
+        Some(&publication)
+    } else {
+        rows.first()
+    };
+    let (prefix, overview, pages) = navigation_publication
+        .map(|p| {
+            (
+                format!("generated/{}/", p.id),
+                "index.html".to_owned(),
+                p.files.keys().cloned().collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_else(|| (String::new(), "index.html".to_owned(), Vec::new()));
+    let nav = super::reader::navigation_language(&prefix, &overview, None, &pages, language);
     let title = label("Documentation history", "История документации");
     let explanation = label(
         "Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.",
@@ -323,9 +352,12 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         } => {
             let repo = Repository::open(&root)?;
             let rows = records(&repo)?;
-            let current = bindings::baseline(&repo)?.map(|b| b.0);
+            let baseline = bindings::baseline(&repo)?.map(|b| b.0);
+            let current =
+                baseline.filter(|id| rows.iter().any(|publication| &publication.id == id));
+            let latest_release = rows.first().map(|publication| publication.id.as_str());
             let binding = digest(&rows)?;
-            super::cli::page(&binding,rows.iter().map(|p|json!({"id":p.id,"ordinal":p.ordinal,"parent":p.parent,"current":current.as_ref()==Some(&p.id),"targets":p.target_revisions,"tags":p.observed_tags})).collect(),cursor.as_deref(),limit as usize,json!({"schema":"codeclew-docs-history-list/1.0"}))
+            super::cli::page(&binding,rows.iter().map(|p|json!({"id":p.id,"released":p.released,"ordinal":p.ordinal,"parent":p.parent,"current":current.as_ref()==Some(&p.id),"latestReleased":Some(p.id.as_str())==latest_release,"targets":p.target_revisions,"tags":p.observed_tags})).collect(),cursor.as_deref(),limit as usize,json!({"schema":"codeclew-docs-history-list/1.0"}))
         }
         Command::Show {
             root,
@@ -344,7 +376,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let missing = integrity(&repo, &p)?;
             let packages = missing_packages(&repo, &p)?;
             let rows=match kind.as_str(){
-            "summary"=>vec![json!({"id":p.id,"ordinal":p.ordinal,"parent":p.parent,"inputDigest":p.input_digest,"targetRevisions":p.target_revisions,"observedTags":p.observed_tags})],
+            "summary"=>vec![json!({"id":p.id,"released":p.released,"ordinal":p.ordinal,"parent":p.parent,"inputDigest":p.input_digest,"targetRevisions":p.target_revisions,"observedTags":p.observed_tags})],
             "sections"=>p.sections.iter().map(|(id,state)|json!({"id":id,"state":state})).collect(),
             "explanations"=>p.explanation_versions.iter().map(|(id,version)|json!({"id":id,"version":version})).collect(),
             "files"=>p.files.iter().map(|(id,hash)|json!({"id":id,"digest":hash})).collect(),
@@ -421,16 +453,60 @@ mod language_tests {
     fn history_localizes_chrome_and_preserves_legacy_language_absence() {
         let id = "a".repeat(64);
         let legacy = json!({"schema":"codeclew-documentation-publication/1.0","id":id,"parent":null,"ordinal":1,"inputDigest":"digest","targetRevisions":{},"sections":{},"explanationVersions":{},"observedTags":{},"evidencePackages":[],"files":{}});
-        let mut publication: Publication = serde_json::from_value(legacy.clone()).unwrap();
-        assert!(publication.documentation_language.is_none());
-        assert_eq!(serde_json::to_value(&publication).unwrap(), legacy);
+        let legacy_publication: Publication = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!legacy_publication.released);
+        assert!(legacy_publication.documentation_language.is_none());
+        let legacy_serialized = serde_json::to_value(&legacy_publication).unwrap();
+        assert_eq!(legacy_serialized["released"], false);
+        assert!(legacy_serialized.get("documentationLanguage").is_none());
+
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../schemas/documentation/publication.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(schema["properties"]["released"]["type"], "boolean");
+        assert_eq!(
+            schema["properties"]["documentationLanguage"]["enum"],
+            json!(["en", "ru"])
+        );
+        assert_eq!(schema["properties"]["ordinal"]["minimum"], 0);
+        assert_eq!(
+            schema["allOf"][0]["if"]["properties"]["released"]["const"],
+            true
+        );
+        assert_eq!(
+            schema["allOf"][0]["then"]["properties"]["ordinal"]["minimum"],
+            1
+        );
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|name| { name != "released" && name != "documentationLanguage" })
+        );
+
         let root = tempfile::tempdir().unwrap();
         Repository::init(root.path(), "Docs").unwrap();
         let repo = Repository::open(root.path()).unwrap();
-        repo.atomic(&path(&id).unwrap(), &bytes(&publication).unwrap())
+        repo.atomic(&path(&id).unwrap(), &bytes(&legacy_publication).unwrap())
             .unwrap();
+        assert!(!load(&repo, &id).unwrap().released);
+
+        let mut language_unspecified = legacy_publication.clone();
+        language_unspecified.id = "c".repeat(64);
+        language_unspecified.released = true;
+        language_unspecified.ordinal = 1;
+        repo.atomic(
+            &path(&language_unspecified.id).unwrap(),
+            &bytes(&language_unspecified).unwrap(),
+        )
+        .unwrap();
+
+        let mut publication = legacy_publication;
         publication.id = "b".repeat(64);
-        publication.parent = Some(id.clone());
+        publication.released = true;
+        publication.parent = Some(language_unspecified.id.clone());
         publication.ordinal = 2;
         publication.documentation_language = Some("ru".into());
         repo.atomic(
@@ -446,12 +522,15 @@ mod language_tests {
         assert!(html.contains("Русский"));
         assert_eq!(
             serde_json::to_value(load(&repo, &id).unwrap()).unwrap(),
-            legacy
+            legacy_serialized
         );
         assert!(
-            nav(&publication.id, Some(&id), true, "ru")
-                .contains(&format!("../../{id}/overview.html"))
+            nav(&publication.id, Some(&language_unspecified.id), true, "ru")
+                .contains(&format!("../../{}/overview.html", language_unspecified.id))
         );
-        assert!(nav(&publication.id, Some(&id), true, "ru").contains("Предыдущий снимок"));
+        assert!(
+            nav(&publication.id, Some(&language_unspecified.id), true, "ru")
+                .contains("Предыдущий снимок")
+        );
     }
 }

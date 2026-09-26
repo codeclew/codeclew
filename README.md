@@ -130,9 +130,12 @@ for the data flow and extension boundaries.
 native offline reader brings together a service overview, purpose and
 responsibilities, domain information, incoming and outgoing interactions,
 internal processes, source evidence and publication history. The agent authors
-explanations from recorded evidence; Codeclew validates their bindings, publishes
-immutable versions and tracks which explanations need rechecking when their
-inputs change. Declared relationships retain their declared authority.
+explanations from recorded evidence; Codeclew validates their bindings and
+updates working pages through the stable `docs/index.html` entry point to the
+current internal bundle while tracking which explanations need rechecking when
+their inputs change. Only `docs render --publish` adds an entry to released
+history. Retained content bundles continue to support evidence and
+optimistic-baseline checks.
 
 ### Internal flows and decisions
 
@@ -156,6 +159,24 @@ records open from the relevant explanation. Missing content, partial discovery
 and unresolved library or runtime behavior remain visible. An empty inventory
 is not evidence that the service has no internal processes or outgoing calls.
 
+### Process flows and lifecycle states
+
+Process roots are addressable handles in Work. A lifecycle view can use an
+indented tree deepened from retained transformed source, or a PlantUML activity
+diagram built from compiler FLOW events. The source-syntax path uses bounded
+heuristics for supported constructs; unsupported or ambiguous syntax stays
+conservative and visible as a limitation. It does not claim compiler resolution
+or runtime behavior. Lifecycle state diagrams come from explicitly authored
+`scenarios/<id>-states.yaml` declarations. Every supplied evidence reference
+must resolve uniquely. Without explicit references, an exact full symbol or a
+unique method name may resolve the operation. This checks identity, not whether
+the declared transition is semantically correct or occurs at runtime.
+
+PlantUML is optional. Install `plantuml` on `PATH`, or set `PLANTUML_JAR` with
+Java available to produce SVG. The sealed Codeclew runtime does not bundle or
+guarantee PlantUML. The flow tree and stored `.puml` source remain readable when
+no renderer is installed; SVG generation is opportunistic.
+
 ### Start from saved evidence
 
 Initialize a documentation root, register services using the generated examples,
@@ -174,7 +195,11 @@ these visuals. The narrow `section-author-v1` contract remains summary-only.
 
 Use `docs check` when source acquisition or freshness checking is needed.
 Ordinary context, Work and rendering consume compatible saved evidence; adding
-an explanation or diagram does not require another indexing pass. Section Work
+an explanation or diagram does not require another indexing pass. Editing a
+process-state sidecar changes captured documentation inputs; run
+`docs recompose --snapshot ORIGINAL_CAPTURE` to refresh that declaration snapshot
+offline, then render the returned snapshot. Recomposition preserves the original
+source capture and does not reindex. Section Work
 starts with a bounded orientation packet, and additional evidence is read on
 demand instead of requiring the author to page through the whole dependency
 inventory. To render an existing snapshot explicitly:
@@ -189,6 +214,12 @@ one from intact current-format service captures without the original checkout
 or compiler. Recovery does not reverify source freshness. See
 [saved-capture recovery](docs/operations/field-documentation.md#recover-saved-captures-after-a-failed-check)
 for the required declarations and capture manifests.
+
+The default render, proposal publication and successful Work jobs update working
+documentation and the stable `docs/index.html` entry point. Add `--publish` to
+`docs render` only when the render should also add an entry to released history.
+Internal immutable bundles remain retained for evidence and optimistic-baseline
+checks; this release does not add automatic cleanup of those bundles.
 
 Publications share identical retained influence maps while keeping the evidence
 needed by older accepted versions. An HTML reader upgrade alone does not require
@@ -247,6 +278,10 @@ Version 0.11.1 speeds up retained snapshot reads, adds phase and heartbeat logs
 on stderr, and fixes disconnected proposal overviews. See the
 [v0.11.1 fix notes](docs/releases/v0.11.1.md) and
 [debugging instructions](docs/operations/docs-snapshot-store.md#watching-a-documentation-command).
+Version 0.11.2 adds retained process-flow trees and evidence-bound declarative
+state diagrams, snapshot-only recomposition of state declarations, and explicit
+working-render versus release-history behavior. See the
+[v0.11.2 release notes](docs/releases/v0.11.2.md).
 
 ## Source-build requirements
 
