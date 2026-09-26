@@ -218,14 +218,6 @@ fn first_code_byte(source: &str, needle: u8) -> Option<usize> {
         .find_map(|(i, byte)| (code[i] && *byte == needle).then_some(i))
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        text.to_string()
-    } else {
-        format!("{}...", text.chars().take(max_chars).collect::<String>())
-    }
-}
-
 fn starts_control_header(header: &str) -> bool {
     [
         "if", "else", "while", "for", "try", "catch", "finally", "switch",
@@ -283,6 +275,37 @@ fn is_control_statement(statement: &str) -> bool {
                 || rest.starts_with('{')
         })
     })
+}
+
+fn has_keyword_prefix(statement: &str, keyword: &str) -> bool {
+    statement.strip_prefix(keyword).is_some_and(|rest| {
+        rest.is_empty()
+            || rest.chars().next().is_some_and(char::is_whitespace)
+            || rest.starts_with('(')
+            || rest.starts_with('{')
+            || rest.starts_with(':')
+    })
+}
+
+/// The one unbraced branch accepted for M1 is the common early-return guard.
+/// It is lowered to an explicit IF/RETURN/END sequence, never treated as a
+/// fall-through statement.
+fn inline_if_return(statement: &str) -> Option<(String, String)> {
+    let statement = statement.trim().trim_end_matches(';').trim();
+    let rest = statement.strip_prefix("if")?;
+    if !rest.trim_start().starts_with('(') {
+        return None;
+    }
+    let open = first_code_byte(statement, b'(')?;
+    let (code, _) = lexical_masks(statement);
+    let close = matching_delimiter(statement, &code, open, b'(', b')')?;
+    let condition = statement[open + 1..close].trim();
+    let body = statement[close + 1..].trim();
+    let value = body.strip_prefix("return")?;
+    if !value.is_empty() && !value.chars().next().is_some_and(|ch| ch.is_whitespace()) {
+        return None;
+    }
+    Some((condition.to_string(), body.to_string()))
 }
 
 fn compact_whitespace(text: &str) -> String {
@@ -388,7 +411,10 @@ fn split_statements(body: &str) -> Option<Vec<String>> {
         return None;
     }
     if out.iter().any(|statement| {
-        !statement.starts_with('}') && is_control_statement(statement) && !statement.ends_with('{')
+        !statement.starts_with('}')
+            && is_control_statement(statement)
+            && !statement.ends_with('{')
+            && inline_if_return(statement).is_none()
     }) {
         return None;
     }
@@ -480,6 +506,15 @@ fn tree_signature(head: &str, symbol: &str) -> String {
     if s.contains('(') { s } else { format!("{s}()") }
 }
 
+fn assignment_name(lhs: &str) -> &str {
+    let parts: Vec<&str> = lhs.split_whitespace().collect();
+    if parts.len() >= 2 && !lhs.contains('.') {
+        parts[parts.len() - 1]
+    } else {
+        lhs
+    }
+}
+
 /// Shorten a call/assignment statement to a readable single-line label.
 fn shorten_statement(s: &str) -> String {
     let s = s.trim().trim_end_matches(';').trim();
@@ -494,13 +529,7 @@ fn shorten_statement(s: &str) -> String {
         let (lhs, rhs) = s.split_at(eq);
         let rhs = &rhs[1..];
         let lhs = lhs.trim();
-        let parts: Vec<&str> = lhs.split_whitespace().collect();
-        let name = if parts.len() >= 2 && parts[0].chars().next().is_some_and(|c| c.is_uppercase())
-        {
-            parts[parts.len() - 1]
-        } else {
-            lhs
-        };
+        let name = assignment_name(lhs);
         return format!("{} = {}", name, call_label(rhs.trim()));
     }
     call_label(s)
@@ -511,7 +540,11 @@ fn call_label(s: &str) -> String {
     let s = s.trim();
     if let Some(open) = first_code_byte(s, b'(') {
         let callee = s[..open].trim();
-        format!("{callee}(...)")
+        let (code, _) = lexical_masks(s);
+        let suffix = matching_delimiter(s, &code, open, b'(', b')')
+            .map(|close| &s[close + 1..])
+            .unwrap_or("");
+        format!("{callee}(...){}", suffix.trim_end())
     } else {
         s.to_string()
     }
@@ -526,10 +559,11 @@ fn keep_args(s: &str) -> String {
         match matching_delimiter(s, &code, open, b'(', b')') {
             Some(close) => {
                 let inner = &s[open + 1..close];
+                let suffix = &s[close + 1..];
                 if inner.len() <= 60 {
-                    format!("{callee}({inner})")
+                    format!("{callee}({inner}){suffix}")
                 } else {
-                    format!("{callee}(...)")
+                    format!("{callee}(...){suffix}")
                 }
             }
             None => format!("{callee}(...)"),
@@ -575,9 +609,8 @@ fn assignment_eq(s: &str) -> Option<usize> {
     None
 }
 
-/// Shorten a statement for the source tree: like `shorten_statement` but keeps
-/// a call's arguments when short, so data-flow (`setUpdateDate(changeDate)`)
-/// is preserved. Assignments keep their value expression's callee.
+/// Preserve the complete method-local expression for the source tree. PlantUML
+/// labels may be shortened separately, but the tree remains exact evidence.
 fn tree_statement(s: &str) -> String {
     let s = s.trim().trim_end_matches(';').trim();
     if let Some(rest) = s.strip_prefix("return") {
@@ -585,7 +618,7 @@ fn tree_statement(s: &str) -> String {
         return if rest.is_empty() {
             "return".to_string()
         } else {
-            format!("return {}", keep_args(rest))
+            format!("return {rest}")
         };
     }
     if let Some(rest) = s.strip_prefix("throw") {
@@ -593,22 +626,32 @@ fn tree_statement(s: &str) -> String {
         return if rest.is_empty() {
             "throw".to_string()
         } else {
-            format!("throw {}", keep_args(rest))
+            format!("throw {rest}")
         };
     }
     if let Some(eq) = assignment_eq(s) {
         let lhs = s[..eq].trim();
         let rhs = s[eq + 1..].trim();
-        let parts: Vec<&str> = lhs.split_whitespace().collect();
-        let name = if parts.len() >= 2 && parts[0].chars().next().is_some_and(|c| c.is_uppercase())
-        {
-            parts[parts.len() - 1]
-        } else {
-            lhs
-        };
-        return format!("{} = {}", name, call_label(rhs));
+        let name = assignment_name(lhs);
+        return format!("{} = {rhs}", name);
     }
-    keep_args(s)
+    s.to_string()
+}
+
+fn source_expression(s: &str) -> String {
+    s.trim().trim_end_matches(';').trim().to_string()
+}
+
+fn display_statement(s: &str) -> String {
+    truncate_display_chars(&shorten_statement(s), 120, 117)
+}
+
+fn truncate_display_chars(s: &str, max_chars: usize, keep_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        format!("{}...", s.chars().take(keep_chars).collect::<String>())
+    } else {
+        s.to_string()
+    }
 }
 
 /// Category prefix for a source-tree statement: assignments and write-verb
@@ -633,304 +676,144 @@ fn statement_kind(stmt: &str) -> String {
     String::new()
 }
 
-/// Render a method body as an indented pseudocode tree with `[W]/[R]/[D]`
-/// categories and readable arguments/assignments (data-flow). Returns `None`
-/// when the body cannot be isolated.
-///
-/// Control-flow constructs (`if`/`else`/`while`/`for`) nest by depth.
-/// `try`/`catch`/`finally`/`switch`/`case`/`default`/`break`/`do` lines are
-/// skipped without expanding their blocks in this prototype pass.
-pub fn tree(source: &str, symbol: &str) -> Option<String> {
+/// Parse a source method into the shared method-local vocabulary. Unsupported
+/// or malformed source becomes one named evidence gap, never a partial tree
+/// that silently closes or skips its control blocks.
+pub(crate) fn projection(source: &str, symbol: &str) -> Option<super::process_flow::Projection> {
+    use super::process_flow::{Projection, ProjectionStep};
+
     if source.len() > MAX_SOURCE_BYTES {
-        return None;
+        let mut projection = Projection::source(symbol, method_name(symbol), Vec::new());
+        projection.noncausal = Some("SOURCE_SIZE_BUDGET_EXHAUSTED".into());
+        return Some(projection);
     }
     let no_comments = strip_comments(source);
     let (open, close) = method_body(&no_comments, symbol)?;
     let head = no_comments[..open].trim();
+    let entry = tree_signature(head, symbol);
     let body = &no_comments[open + 1..close];
-    let statements = split_statements(body)?;
+    let Some(statements) = split_statements(body) else {
+        let mut projection = Projection::source(symbol, entry, Vec::new());
+        projection.noncausal = Some("SOURCE_STATEMENT_OR_CONTROL_UNSUPPORTED".into());
+        return Some(projection);
+    };
     if statements.is_empty() {
         return None;
     }
-    let mut out = String::new();
-    out.push_str(&format!("Entry: {}\n", tree_signature(head, symbol)));
-    // Stack of open blocks. `true` = renderable control flow (if/loop) and
-    // contributes to depth; `false` = a skipped block (try/catch/finally/
-    // switch/do) whose braces balance without moving depth.
-    let mut stack: Vec<bool> = Vec::new();
-    let indent = |d: usize| "  ".repeat(d);
+
+    let mut steps = Vec::new();
+    let mut unsupported = None;
     for raw in &statements {
         let line = raw.trim();
         if line.is_empty() {
             continue;
         }
+        if let Some((condition, branch)) = inline_if_return(line) {
+            let return_value = branch.strip_prefix("return").unwrap_or("").trim();
+            steps.push(ProjectionStep::If(condition));
+            steps.push(ProjectionStep::MethodReturn(source_expression(
+                return_value,
+            )));
+            steps.push(ProjectionStep::End);
+            continue;
+        }
+        if line.starts_with("} else if (") || line.starts_with("} elseif (") {
+            unsupported = Some("SOURCE_ELSE_IF_UNSUPPORTED".to_string());
+            break;
+        }
+        if line.starts_with("} else") || line == "else {" {
+            steps.push(ProjectionStep::Else);
+            continue;
+        }
         if line.starts_with('}') {
             let rest = line.trim_start_matches('}').trim();
-            if rest.starts_with("else if (") || rest.starts_with("elseif (") {
-                stack.pop();
-                let d = stack.iter().filter(|&&r| r).count();
-                out.push_str(&format!(
-                    "{}[D] else if ({}) then\n",
-                    indent(d),
-                    condition(line)
+            if !rest.is_empty() {
+                unsupported = Some(format!(
+                    "SOURCE_CONTROL_UNSUPPORTED:{}",
+                    rest.split_whitespace().next().unwrap_or("continuation")
                 ));
-                stack.push(true);
-            } else if rest.starts_with("else") {
-                stack.pop();
-                let d = stack.iter().filter(|&&r| r).count();
-                out.push_str(&format!("{}else\n", indent(d)));
-                stack.push(true);
-            } else if rest.starts_with("catch (") || rest.starts_with("finally") {
-                stack.pop();
-                stack.push(false);
-            } else {
-                stack.pop();
+                break;
             }
+            steps.push(ProjectionStep::End);
             continue;
         }
-        if line.starts_with("else if (") || line.starts_with("elseif (") {
-            stack.pop();
-            let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!(
-                "{}[D] else if ({}) then\n",
-                indent(d),
-                condition(line)
-            ));
-            stack.push(true);
+        if has_keyword_prefix(line, "if") && line.ends_with('{') {
+            steps.push(ProjectionStep::If(condition(line)));
             continue;
         }
-        if line.starts_with("else") {
-            stack.pop();
-            let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}else\n", indent(d)));
-            stack.push(true);
-            continue;
+        if has_keyword_prefix(line, "if") {
+            unsupported = Some("SOURCE_UNBRACED_CONTROL_UNSUPPORTED".to_string());
+            break;
         }
-        if line.starts_with("if (") {
-            let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}[D] if ({}) then\n", indent(d), condition(line)));
-            stack.push(true);
-            continue;
+        if line == "{" {
+            unsupported = Some("SOURCE_UNEXPECTED_BLOCK_OPEN".to_string());
+            break;
         }
-        if line.starts_with("while (") || line.starts_with("for (") {
-            let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}[D] loop ({})\n", indent(d), condition(line)));
-            stack.push(true);
-            continue;
-        }
-        if line.starts_with("try") || line.starts_with("switch (") || line.starts_with("do") {
-            stack.push(false);
-            continue;
-        }
-        if line.starts_with("catch (")
-            || line.starts_with("finally")
-            || line.starts_with("case ")
-            || line.starts_with("default")
-            || line.starts_with("break")
-            || line == "{"
+        if [
+            "while",
+            "for",
+            "do",
+            "try",
+            "catch",
+            "finally",
+            "switch",
+            "synchronized",
+        ]
+        .iter()
+        .any(|keyword| has_keyword_prefix(line, keyword))
         {
+            unsupported = Some(format!(
+                "SOURCE_CONTROL_UNSUPPORTED:{}",
+                line.split_whitespace().next().unwrap_or("control")
+            ));
+            break;
+        }
+        if ["break", "continue", "throw", "yield"]
+            .iter()
+            .any(|keyword| has_keyword_prefix(line, keyword))
+        {
+            unsupported = Some(format!(
+                "SOURCE_TRANSFER_UNSUPPORTED:{}",
+                line.split_whitespace().next().unwrap_or("transfer")
+            ));
+            break;
+        }
+        if let Some(value) = line.strip_prefix("return")
+            && has_keyword_prefix(line, "return")
+        {
+            steps.push(ProjectionStep::MethodReturn(source_expression(value)));
             continue;
         }
-        let stmt = tree_statement(line);
-        if !stmt.is_empty() {
-            let d = stack.iter().filter(|&&r| r).count();
-            out.push_str(&format!("{}{}{}\n", indent(d), statement_kind(&stmt), stmt));
+
+        let tree_label = tree_statement(line);
+        let diagram_label = display_statement(line);
+        if !tree_label.is_empty() && !diagram_label.is_empty() {
+            steps.push(ProjectionStep::Action {
+                diagram: diagram_label,
+                tree: tree_label,
+                category: match statement_kind(line).as_str() {
+                    "[W] " => Some("W"),
+                    "[R] " => Some("R"),
+                    _ => None,
+                },
+            });
         }
     }
-    if out.trim().is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+
+    let mut projection = Projection::source(symbol, entry, steps);
+    projection.noncausal = unsupported;
+    Some(projection)
 }
 
-/// Render a method body (lines inside the braces) as PlantUML activity steps.
-fn render_body(body: &str, out: &mut String) -> bool {
-    let cleaned = strip_comments(body);
-    let Some(lines) = split_statements(&cleaned) else {
-        return false;
-    };
-    let mut stack: Vec<&str> = Vec::new(); // "if" | "loop" | "switch" | "try" | "catch"
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i].trim().to_string();
-        let next_nonempty = |from: usize| -> Option<String> {
-            lines[from..]
-                .iter()
-                .map(|l| l.trim())
-                .find(|l| !l.is_empty())
-                .map(|l| l.to_string())
-        };
-        if line.is_empty() {
-            i += 1;
-            continue;
-        }
-        // Closing brace. A `} else`, `} else if`, `} catch`, `} finally` or
-        // `} while` (do-while) continues the enclosing block instead of
-        // closing it; otherwise the top block is closed.
-        if line.starts_with("}") {
-            let rest = line.trim_start_matches('}').trim();
-            if rest.starts_with("else if (") || rest.starts_with("elseif (") {
-                out.push_str(&format!(
-                    "else if ({}) then (yes)\n",
-                    super::plantuml::escape(&condition(rest))
-                ));
-                i += 1;
-                continue;
-            }
-            if rest.starts_with("else") {
-                out.push_str("else (no)\n");
-                i += 1;
-                continue;
-            }
-            if rest.starts_with("catch (") {
-                stack.pop(); // close try/finally
-                out.push_str(&format!(
-                    "note right\n  {}\nend note\n",
-                    super::plantuml::escape(&catch_header(rest))
-                ));
-                stack.push("catch");
-                i += 1;
-                continue;
-            }
-            if rest.starts_with("finally") {
-                stack.pop();
-                out.push_str("note right\n  finally\nend note\n");
-                stack.push("catch");
-                i += 1;
-                continue;
-            }
-            if rest.starts_with("while (") {
-                stack.pop(); // close the `do`
-                out.push_str(&format!(
-                    "repeat while ({}) is (yes)\n",
-                    super::plantuml::escape(&condition(rest))
-                ));
-                i += 1;
-                continue;
-            }
-            // Standalone close: allow an `else`/`catch` continuation on the
-            // following line before committing to closing the block.
-            if rest.is_empty() {
-                let next = next_nonempty(i + 1);
-                let cont = next.as_deref().is_some_and(|n| {
-                    n.starts_with("else")
-                        || n.starts_with("catch")
-                        || n.starts_with("finally")
-                        || n.starts_with("while")
-                });
-                if cont {
-                    i += 1;
-                    continue;
-                }
-            }
-            match stack.pop() {
-                Some("loop") => out.push_str("endwhile\n"),
-                Some("if") => out.push_str("endif\n"),
-                _ => {} // switch/try/catch/finally have no activity close
-            }
-            i += 1;
-            continue;
-        }
-        if line.starts_with("else if (") || line.starts_with("elseif (") {
-            out.push_str(&format!(
-                "else if ({}) then (yes)\n",
-                super::plantuml::escape(&condition(&line))
-            ));
-            i += 1;
-            continue;
-        }
-        if line.starts_with("else") {
-            out.push_str("else (no)\n");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("if (") {
-            out.push_str(&format!(
-                "if ({}) then (yes)\n",
-                super::plantuml::escape(&condition(&line))
-            ));
-            stack.push("if");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("while (") || line.starts_with("for (") {
-            let cond = super::plantuml::escape(&condition(&line));
-            out.push_str(&format!("while ({}) is (yes)\n", cond));
-            stack.push("loop");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("do") {
-            out.push_str("repeat\n");
-            stack.push("loop");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("try") {
-            stack.push("try");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("catch (") {
-            out.push_str(&format!(
-                "note right\n  {}\nend note\n",
-                super::plantuml::escape(&catch_header(&line))
-            ));
-            stack.push("catch");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("finally") {
-            out.push_str("note right\n  finally\nend note\n");
-            stack.push("catch");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("switch (") {
-            out.push_str(&format!("switch ({})\n", condition(&line)));
-            stack.push("switch");
-            i += 1;
-            continue;
-        }
-        if line.starts_with("case ")
-            || line.starts_with("default")
-            || line.starts_with("break")
-            || line == "{"
-            || line == ";"
-        {
-            i += 1;
-            continue;
-        }
-        // A real statement: call / assignment / return / throw / declaration.
-        let stmt = shorten_statement(&line);
-        if !stmt.is_empty() {
-            out.push_str(&format!(":{};\n", super::plantuml::escape(&stmt)));
-        }
-        i += 1;
-    }
-    while let Some(b) = stack.pop() {
-        match b {
-            "loop" => out.push_str("endwhile\n"),
-            "if" => out.push_str("endif\n"),
-            _ => {}
-        }
-    }
-    true
-}
-
-/// The `catch (Type name) {` header, up to (and including) the closing `)`.
-fn catch_header(line: &str) -> String {
-    let mut close = first_code_byte(line, b'(')
-        .and_then(|open| {
-            let (code, _) = lexical_masks(line);
-            matching_delimiter(line, &code, open, b'(', b')').map(|i| i + 1)
-        })
-        .unwrap_or(line.len());
-    while line.as_bytes().get(close) == Some(&b'{') {
-        close += 1;
-    }
-    line[..close.min(line.len())].trim().to_string()
+/// Render the source-derived tree from the same validated projection used for
+/// the PlantUML view.
+pub fn tree(source: &str, symbol: &str) -> Option<String> {
+    let projection = projection(source, symbol)?;
+    super::process_flow::render_validated(
+        super::process_flow::validate_projection(projection),
+        "Method flow",
+    )
+    .map(|rendered| rendered.tree)
 }
 
 /// Extract the parenthesised condition from `keyword (cond) ...`, matching the
@@ -943,68 +826,30 @@ fn condition(line: &str) -> String {
     let Some(close) = matching_delimiter(line, &code, open, b'(', b')') else {
         return String::new();
     };
-    truncate_chars(line[open + 1..close].trim(), 45)
+    line[open + 1..close].trim().to_string()
 }
 
 /// Parse a method source into a full PlantUML activity document, or `None`
 /// when the body cannot be isolated.
 pub fn document(source: &str, symbol: &str, title: &str) -> Option<String> {
-    if source.len() > MAX_SOURCE_BYTES {
-        return None;
-    }
-    let no_comments = strip_comments(source);
-    let (open, close) = method_body(&no_comments, symbol)?;
-    let head = no_comments[..open].trim();
-    let body = &no_comments[open + 1..close];
-    let mut steps = String::new();
-    if !render_body(body, &mut steps) {
-        return None;
-    }
-    if steps.trim().is_empty() {
-        return None;
-    }
-    Some(format!(
-        "@startuml\n!theme plain\n!pragma layout smetana\ntitle {}\nstart\n:Entry: {};\n{}stop\n@enduml\n",
-        super::plantuml::escape(title),
-        super::plantuml::escape(&signature(head, symbol)),
-        steps
-    ))
+    let projection = projection(source, symbol)?;
+    super::process_flow::render_validated(
+        super::process_flow::validate_projection(projection),
+        title,
+    )
+    .map(|rendered| rendered.puml)
 }
 
 /// Convenience guard so the FLOW-based renderer can detect whether source
 /// deepening produced anything usable without building the whole document.
 pub fn usable(source: &str, symbol: &str) -> bool {
-    if source.len() > MAX_SOURCE_BYTES {
-        return false;
-    }
-    let no_comments = strip_comments(source);
-    method_body(&no_comments, symbol)
-        .and_then(|(o, c)| split_statements(&no_comments[o + 1..c]))
-        .is_some_and(|statements| !statements.is_empty())
+    projection(source, symbol)
+        .is_some_and(|projection| projection.noncausal.is_none() && !projection.steps.is_empty())
 }
 
-/// A lightweight view of the rendered steps, used by the render seam to decide
-/// between source deepening and the FLOW renderer.
+/// Compatibility view over the same validated method-local projection.
 pub fn steps(source: &str, symbol: &str) -> Option<Value> {
-    if source.len() > MAX_SOURCE_BYTES {
-        return None;
-    }
-    let no_comments = strip_comments(source);
-    let (open, close) = method_body(&no_comments, symbol)?;
-    let mut out = String::new();
-    if !render_body(&no_comments[open + 1..close], &mut out) {
-        return None;
-    }
-    if out.trim().is_empty() {
-        None
-    } else {
-        Some(Value::String(format!(
-            "{}: {}\n{}",
-            method_name(symbol),
-            signature(&no_comments[..open], symbol),
-            out
-        )))
-    }
+    tree(source, symbol).map(Value::String)
 }
 
 #[cfg(test)]
@@ -1033,36 +878,18 @@ public ChangeTaskStatusResponse changeTaskStatus(Long taskId, ChangeTaskStatusRe
 "#;
 
     #[test]
-    fn deepens_method_source_into_readable_steps() {
+    fn unsupported_exception_source_becomes_a_noncausal_gap() {
         let doc = document(
             CHANGE_TASK_STATUS,
             "method:class:svc.TaskService#changeTaskStatus(JLru/x;)Lru/y;",
             "t",
         )
         .unwrap();
-        assert!(
-            doc.contains(":Entry: changeTaskStatus（taskId, request）;\n"),
-            "{doc}"
-        );
-        assert!(doc.contains(":taskInstance = null;"), "{doc}");
-        assert!(
-            doc.contains("if (anyTask.isPresent（）) then (yes)"),
-            "{doc}"
-        );
-        assert!(doc.contains("else (no)"), "{doc}");
-        assert!(
-            doc.contains(":taskHandlingService.changeAnyTaskStatus（...）;"),
-            "{doc}"
-        );
-        assert!(
-            doc.contains(":taskInstance = taskHandlingService.changeTaskStatus（...）;"),
-            "{doc}"
-        );
-        assert!(doc.contains("endif"), "{doc}");
-        assert!(doc.contains("note right"), "{doc}");
-        assert!(doc.contains("catch （Exception e）"), "{doc}");
-        assert!(doc.contains(":return createResponse（...）;"), "{doc}");
-        assert!(doc.ends_with("stop\n@enduml\n"), "{doc}");
+        assert!(doc.contains("SOURCE_CONTROL_UNSUPPORTED:try"), "{doc}");
+        assert!(doc.contains("note as Evidence"), "{doc}");
+        assert!(!doc.contains("taskHandlingService"), "{doc}");
+        assert!(!doc.contains("createResponse"), "{doc}");
+        assert!(!doc.contains("start\n"), "{doc}");
     }
 
     #[test]
@@ -1137,7 +964,7 @@ private void changeStatus() {
         let tree = tree(src, "method:class:svc.TaskService#changeStatus()V").unwrap();
         assert!(tree.starts_with("Entry: changeStatus()\n"), "{tree}");
         assert!(
-            tree.contains("[W] changeDate = DateTimeHolder.getCurrentTime(...)"),
+            tree.contains("[W] changeDate = DateTimeHolder.getCurrentTime()"),
             "{tree}"
         );
         assert!(
@@ -1159,7 +986,7 @@ private void changeStatus() {
     }
 
     #[test]
-    fn tree_keeps_depth_through_skipped_try_catch() {
+    fn tree_does_not_turn_try_catch_body_into_ordered_actions() {
         let src = "\
 void run() {
     if (x) {
@@ -1172,12 +999,10 @@ void run() {
     }
 }";
         let tree = tree(src, "method:class:svc.TaskService#run()V").unwrap();
-        // The try/catch body stays at the enclosing `if` depth: a(), b(), c()
-        // all indented one level.
-        assert!(
-            tree.contains("[D] if (x) then\n  svc.a()\n  svc.b()\n  svc.c()"),
-            "{tree}"
-        );
+        assert!(tree.contains("SOURCE_CONTROL_UNSUPPORTED:try"), "{tree}");
+        assert!(!tree.contains("svc.a"), "{tree}");
+        assert!(!tree.contains("svc.b"), "{tree}");
+        assert!(!tree.contains("svc.c"), "{tree}");
     }
 
     #[test]
@@ -1242,7 +1067,7 @@ void log() {
     }
 
     #[test]
-    fn tree_collapses_builder_chain_into_one_assignment() {
+    fn tree_preserves_builder_chain_expression_as_source_evidence() {
         let src = "\
 void build() {
     TaskStatusHistoryDao dao = TaskStatusHistoryDao.builder()
@@ -1255,11 +1080,11 @@ void build() {
 }";
         let tree = tree(src, "method:class:svc.TaskService#build()V").unwrap();
         assert!(
-            tree.contains("[W] dao = TaskStatusHistoryDao.builder(...)"),
+            tree.contains("[W] dao = TaskStatusHistoryDao.builder() .taskInstance(taskInstance) .changeUser(user) .build()"),
             "{tree}"
         );
-        assert!(!tree.contains(".taskInstance(taskInstance)"), "{tree}");
-        assert!(!tree.contains(".changeUser(user)"), "{tree}");
+        assert!(tree.contains(".taskInstance(taskInstance)"), "{tree}");
+        assert!(tree.contains(".changeUser(user)"), "{tree}");
         assert!(
             tree.contains("[D] if (dao != null) then\n  [W] repo.save(dao)"),
             "{tree}"
@@ -1310,9 +1135,9 @@ void m() {
         let src = "@Trace(value = \"annotation() { not a body }\") class Wrapper { @Marker(value = \"run()\") public void run() { worker.execute(); } }";
         let symbol = "method:class:svc.Wrapper#run()V";
         let doc = document(src, symbol, "t").unwrap();
-        assert!(doc.contains(":Entry: run;\n"), "{doc}");
+        assert!(doc.contains(":Entry: run（）;\n"), "{doc}");
         assert!(doc.contains(":worker.execute（...）;"), "{doc}");
-        assert!(!doc.contains("Wrapper"), "{doc}");
+        assert!(!doc.contains("Entry: Wrapper"), "{doc}");
 
         let ambiguous = "class Wrapper { void run() {} void run(int value) {} }";
         assert!(document(ambiguous, symbol, "t").is_none());
@@ -1359,31 +1184,138 @@ void m() {
     }
 
     #[test]
-    fn unicode_condition_is_truncated_without_splitting_a_character() {
+    fn unicode_condition_stays_exact_in_tree_and_is_truncated_in_diagram() {
         let repeated = "\u{0436}".repeat(80);
         let src = format!("void run() {{ if (name.equals(\"{repeated}\")) {{ act(); }} }}");
         let tree = tree(&src, "method:class:svc.Service#run()V").unwrap();
         let condition_line = tree.lines().find(|line| line.contains("[D] if")).unwrap();
-        assert!(condition_line.ends_with("...) then"), "{tree}");
+        assert!(condition_line.contains(&repeated), "{tree}");
         assert!(tree.contains("act()"), "{tree}");
+        let doc = document(&src, "method:class:svc.Service#run()V", "t").unwrap();
+        assert!(doc.contains("..."), "{doc}");
     }
 
     #[test]
-    fn compact_control_spacing_is_normalized_and_sequential_loop_is_retained() {
+    fn unsupported_loop_makes_the_whole_source_method_noncausal() {
         let src = "void run(){if(ready) { act(); } while(y) { tick(); }}";
         let tree = tree(src, "method:class:svc.Service#run()V").unwrap();
-        assert!(tree.contains("[D] if (ready) then\n  act()"), "{tree}");
-        assert!(tree.contains("[D] loop (y)\n  tick()"), "{tree}");
-        let doc = document(src, "method:class:svc.Service#run()V", "t").unwrap();
-        assert!(doc.contains("if (ready) then (yes)"), "{doc}");
-        assert!(doc.contains("while (y) is (yes)"), "{doc}");
+        assert!(tree.contains("SOURCE_CONTROL_UNSUPPORTED:while"), "{tree}");
+        assert!(!tree.contains("act()"), "{tree}");
+        assert!(!tree.contains("tick()"), "{tree}");
     }
 
     #[test]
-    fn unbraced_control_body_falls_back_instead_of_losing_steps() {
+    fn unsupported_unbraced_nonreturn_control_is_a_visible_gap() {
         let src = "void run() { if (ready) act(); save(); }";
         let symbol = "method:class:svc.Service#run()V";
-        assert!(tree(src, symbol).is_none());
-        assert!(document(src, symbol, "t").is_none());
+        let tree = tree(src, symbol).unwrap();
+        assert!(
+            tree.contains("SOURCE_STATEMENT_OR_CONTROL_UNSUPPORTED"),
+            "{tree}"
+        );
+        assert!(!tree.contains("act()"), "{tree}");
+        assert!(!tree.contains("save()"), "{tree}");
+    }
+
+    #[test]
+    fn projection_keeps_full_boolean_return_and_assignment_expressions() {
+        let predicate = "request != null && request.quantity() > 0";
+        let source =
+            format!("boolean hasPositiveQuantity(Request request) {{ return {predicate}; }}");
+        let predicate_projection =
+            projection(&source, "method:class:svc.Checkout#hasPositiveQuantity()Z").unwrap();
+        assert!(matches!(
+            &predicate_projection.steps[0],
+            super::super::process_flow::ProjectionStep::MethodReturn(value) if value == predicate
+        ));
+        let predicate_tree =
+            tree(&source, "method:class:svc.Checkout#hasPositiveQuantity()Z").unwrap();
+        assert!(
+            predicate_tree.contains(&format!("return {predicate}")),
+            "{predicate_tree}"
+        );
+
+        let expression = "ready() && check()";
+        let assignment =
+            format!("boolean helper() {{ boolean allowed = {expression}; return allowed; }}");
+        let action_projection =
+            projection(&assignment, "method:class:svc.Checkout#helper()Z").unwrap();
+        assert!(matches!(
+            &action_projection.steps[0],
+            super::super::process_flow::ProjectionStep::Action { tree, .. }
+                if tree == &format!("allowed = {expression}")
+        ));
+        let assignment_tree = tree(&assignment, "method:class:svc.Checkout#helper()Z").unwrap();
+        assert!(
+            assignment_tree.contains(&format!("allowed = {expression}")),
+            "{assignment_tree}"
+        );
+    }
+
+    #[test]
+    fn early_return_guard_stops_its_branch_before_save_and_reserve() {
+        let source = r#"
+public Reservation checkout(Reservation request) {
+    if (!hasPositiveQuantity(request)) return invalid();
+    reservations.save(request);
+    return inventory.reserve(request);
+}
+"#;
+        let symbol = "method:class:example.CheckoutController#checkout()V";
+        let projection = projection(source, symbol).unwrap();
+        let validated = super::super::process_flow::validate_projection(projection);
+        let rendered = super::super::process_flow::render_validated(validated, "Checkout").unwrap();
+        let guard = rendered
+            .tree
+            .find("[D] if (!hasPositiveQuantity(request))")
+            .unwrap_or_else(|| panic!("missing guard in source projection:\n{}", rendered.tree));
+        let early_return = rendered.tree.find("  return invalid()").unwrap();
+        let save = rendered
+            .tree
+            .find("[W] reservations.save(request)")
+            .unwrap();
+        let reserve = rendered
+            .tree
+            .find("return inventory.reserve(request)")
+            .unwrap();
+        assert!(
+            guard < early_return && early_return < save && save < reserve,
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            rendered.puml.contains("return invalid"),
+            "{}",
+            rendered.puml
+        );
+        assert!(
+            rendered.puml.contains("reservations.save"),
+            "{}",
+            rendered.puml
+        );
+        assert!(
+            rendered.puml.contains("return inventory.reserve"),
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("stop\n").count(),
+            2,
+            "{}",
+            rendered.puml
+        );
+        assert!(rendered.puml.ends_with("@enduml\n"), "{}", rendered.puml);
+
+        let compact = "void checkout() { if(ready()) return invalid(); reserve(); }";
+        let compact_tree = tree(compact, symbol).unwrap();
+        assert!(
+            compact_tree.contains("[D] if (ready()) then"),
+            "{compact_tree}"
+        );
+        assert!(
+            compact_tree.contains("  return invalid()"),
+            "{compact_tree}"
+        );
+        assert!(compact_tree.contains("reserve()"), "{compact_tree}");
     }
 }

@@ -1478,25 +1478,80 @@ struct AutoFlow {
 /// is authored content or no usable flow.
 fn auto_flow_puml(checked: &Check, flow: ResolvedFlow<'_>, title: &str) -> Option<AutoFlow> {
     let symbol = flow.observation.symbol.as_str();
-    // Prefer source deepening: a retained TRANSFORMED_SOURCE yields readable
-    // step text (assignments, returns, catch). Fall back to the FLOW renderer
-    // when the source is absent or not parseable.
-    if let Some(source) = method_source(checked, flow)
-        && let (Some(puml), Some(tree)) = (
-            super::source_steps::document(&source, symbol, title),
-            super::source_steps::tree(&source, symbol),
-        )
-    {
+    let resolved = flow;
+    let documentation = &resolved.observation.normalized["documentation"];
+    let qualified_flow = super::process_flow::validate_projection(
+        super::process_flow::project_flow(resolved.events, documentation, symbol),
+    );
+
+    // FLOW is a source-order candidate only. Its v1 authority does not prove
+    // that every control transfer was emitted, so causal output requires an
+    // exact retained method body that parses and validates in the same scope.
+    if qualified_flow.source_eligible() {
+        let evidence_gaps = qualified_flow.evidence_gaps.clone();
+        let Some(source) = method_source(checked, resolved) else {
+            return auto_flow_gap(
+                symbol,
+                &qualified_flow.projection.entry,
+                "flow",
+                "FLOW_CONTROL_CAPABILITY_UNVERIFIED",
+                evidence_gaps,
+                title,
+            );
+        };
+        let Some(mut projection) = super::source_steps::projection(&source, symbol) else {
+            return auto_flow_gap(
+                symbol,
+                &qualified_flow.projection.entry,
+                "source",
+                "SOURCE_METHOD_NOT_ISOLATED",
+                evidence_gaps,
+                title,
+            );
+        };
+        projection.source_eligible = true;
+        projection.evidence_gaps.extend(evidence_gaps);
+        // A parser-reported uncertainty or malformed source structure is an
+        // explicit veto. Preserve its named gap; never fall back to causal
+        // arrows that can omit a source transfer.
+        let validated = super::process_flow::validate_projection(projection);
+        let rendered = super::process_flow::render_validated(validated, title)?;
         return Some(AutoFlow {
-            puml,
-            tree,
-            origin: "source",
+            puml: rendered.puml,
+            tree: rendered.tree,
+            origin: rendered.origin,
         });
     }
+
+    let rendered = super::process_flow::render_validated(qualified_flow, title)?;
     Some(AutoFlow {
-        puml: super::process_flow::document(flow.events, symbol, title)?,
-        tree: super::process_flow::tree(flow.events, symbol).unwrap_or_default(),
-        origin: "flow",
+        puml: rendered.puml,
+        tree: rendered.tree,
+        origin: rendered.origin,
+    })
+}
+
+fn auto_flow_gap(
+    symbol: &str,
+    entry: &str,
+    origin: &'static str,
+    reason: &str,
+    evidence_gaps: Vec<String>,
+    title: &str,
+) -> Option<AutoFlow> {
+    let mut projection =
+        super::process_flow::Projection::source(symbol, entry.to_string(), Vec::new());
+    projection.origin = origin;
+    projection.evidence_gaps = evidence_gaps;
+    projection.noncausal = Some(reason.to_string());
+    let rendered = super::process_flow::render_validated(
+        super::process_flow::validate_projection(projection),
+        title,
+    )?;
+    Some(AutoFlow {
+        puml: rendered.puml,
+        tree: rendered.tree,
+        origin: rendered.origin,
     })
 }
 
@@ -3289,14 +3344,63 @@ mod tests {
             kind: "SYMBOL".into(),
             service: service.into(),
             symbol: symbol.into(),
-            normalized: json!({"scope":":main","documentation":{"events":events}}),
+            normalized: json!({
+                "scope":":main",
+                "documentation":{
+                    "authority":"JAVAC_SOURCE_STRUCTURE",
+                    "boundaries":[],
+                    "events":events
+                }
+            }),
             digest: "digest".into(),
             source_ids: vec![],
         }
     }
 
+    fn checked_with_source_flow(
+        symbol: &str,
+        source: &str,
+        events: Value,
+        boundaries: Value,
+    ) -> Check {
+        let mut flow = flow_observation(symbol, "svc", events);
+        flow.normalized["documentation"]["boundaries"] = boundaries;
+        let source_observation = Observation {
+            id: "svc:source:m1".into(),
+            kind: "TRANSFORMED_SOURCE".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"scope":":main","documentation":{"source":source}}),
+            digest: "source-digest".into(),
+            source_ids: vec![],
+        };
+        let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0",
+            "service":"svc","revision":"rev","serviceDigest":"d",
+            "extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},"entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        evidence.observations.insert(flow.id.clone(), flow);
+        evidence
+            .observations
+            .insert(source_observation.id.clone(), source_observation);
+        Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        }
+    }
+
     #[test]
-    fn auto_flow_puml_is_emitted_when_events_empty() {
+    fn auto_flow_without_exact_source_is_gap_not_a_causal_view() {
         let flow = json!([
             {"kind":"CALL","resolution":"COMPILER_EXACT","target":"method:class:ru.tins.CheckoutService#charge()V"},
             {"kind":"RETURN"}
@@ -3322,17 +3426,22 @@ mod tests {
         };
         let doc = auto_flow_puml(&checked, resolved, title).unwrap();
         assert!(doc.puml.contains("title Checkout flow"), "{}", doc.puml);
-        assert!(doc.puml.contains(":CheckoutService#charge"), "{}", doc.puml);
+        assert_eq!(doc.origin, "flow");
         assert!(
-            doc.puml
-                .contains("' evidence: method:class:ru.tins.CheckoutController#checkout"),
+            doc.puml.contains("FLOW_CONTROL_CAPABILITY_UNVERIFIED"),
             "{}",
             doc.puml
         );
+        assert!(
+            !doc.puml.contains(":CheckoutService#charge"),
+            "{}",
+            doc.puml
+        );
+        assert!(!doc.puml.contains("start\n"), "{}", doc.puml);
     }
 
     #[test]
-    fn source_deepening_is_preferred_when_source_retained() {
+    fn source_text_cannot_override_unsupported_flow_boundary() {
         let source = "\
 public void handle(Long taskId) {
     TaskInstance ti = null;
@@ -3377,20 +3486,221 @@ public void handle(Long taskId) {
         };
         let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
         let doc = auto_flow_puml(&checked, resolved, "t").unwrap();
-        // Source deepening wins over the shallow BOUNDARY flow.
-        assert_eq!(doc.origin, "source");
+        assert_eq!(doc.origin, "flow");
         assert!(
-            doc.puml.contains(":Entry: handle（taskId）;"),
+            doc.puml.contains("FLOW_BOUNDARY_UNSPECIFIED"),
             "{}",
             doc.puml
         );
-        assert!(doc.puml.contains(":ti = null;"), "{}", doc.puml);
+        assert!(!doc.puml.contains("svc.create"), "{}", doc.puml);
+        assert!(!doc.puml.contains("ti = null"), "{}", doc.puml);
+        assert!(!doc.tree.contains("svc.create"), "{}", doc.tree);
+    }
+
+    #[test]
+    fn checkout_source_keeps_guard_exit_save_and_reserve_in_one_projection() {
+        let symbol = "method:class:example.CheckoutController#checkout()Ljava/lang/String;";
+        let source = r#"
+public String checkout(ReservationRequest request) {
+    if (!hasPositiveQuantity(request)) return invalid();
+    reservations.save(request);
+    return inventory.reserve(request);
+}
+"#;
+        let events = json!([
+            {"kind":"CALL","target":"method:class:example.CheckoutController#hasPositiveQuantity(Lexample/ReservationRequest;)Z"},
+            {"kind":"IF","condition":"!hasPositiveQuantity(request)"},
+            {"kind":"CALL","target":"method:class:example.CheckoutController#invalid()Ljava/lang/String;"},
+            {"kind":"RETURN"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:org.springframework.data.repository.CrudRepository#save(Ljava/lang/Object;)Ljava/lang/Object;"},
+            {"kind":"CALL","target":"method:class:example.InventoryClient#reserve(Lexample/ReservationRequest;)Ljava/lang/String;"},
+            {"kind":"RETURN"}
+        ]);
+        let checked = checked_with_source_flow(symbol, source, events, json!([]));
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let rendered = auto_flow_puml(&checked, resolved, "Checkout").unwrap();
+        assert_eq!(rendered.origin, "source", "{}", rendered.tree);
+        let guard = rendered
+            .tree
+            .find("[D] if (!hasPositiveQuantity(request))")
+            .unwrap();
+        let early_return = rendered.tree.find("  return invalid()").unwrap();
+        let save = rendered
+            .tree
+            .find("[W] reservations.save(request)")
+            .unwrap();
+        let reserve = rendered
+            .tree
+            .find("return inventory.reserve(request)")
+            .unwrap();
         assert!(
-            doc.puml.contains("if (ti == null) then (yes)"),
+            guard < early_return && early_return < save && save < reserve,
             "{}",
-            doc.puml
+            rendered.tree
         );
-        assert!(!doc.puml.contains("BOUNDARY"), "{}", doc.puml);
+        assert!(
+            rendered.puml.contains("reservations.save"),
+            "{}",
+            rendered.puml
+        );
+        assert!(
+            rendered.puml.contains("inventory.reserve"),
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("stop\n").count(),
+            2,
+            "{}",
+            rendered.puml
+        );
+    }
+
+    #[test]
+    fn source_may_expose_one_opaque_short_circuit_return_with_gap_evidence() {
+        let symbol = "method:class:example.CheckoutController#hasPositiveQuantity()Z";
+        let predicate = "request != null && request.quantity() > 0";
+        let source =
+            format!("boolean hasPositiveQuantity(Request request) {{ return {predicate}; }}");
+        let events = json!([
+            {"kind":"BOUNDARY","code":"SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"},
+            {"kind":"RETURN"}
+        ]);
+        let checked = checked_with_source_flow(
+            symbol,
+            &source,
+            events,
+            json!(["SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"]),
+        );
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let rendered = auto_flow_puml(&checked, resolved, "Predicate").unwrap();
+        assert_eq!(rendered.origin, "source");
+        assert!(
+            rendered.tree.contains(&format!("return {predicate}")),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            rendered
+                .tree
+                .contains("SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            rendered.puml.contains("request.quantity"),
+            "{}",
+            rendered.puml
+        );
+        assert!(rendered.puml.contains("&gt; 0"), "{}", rendered.puml);
+        assert!(
+            !rendered.tree.contains("request.quantity(...)"),
+            "{}",
+            rendered.tree
+        );
+    }
+
+    #[test]
+    fn lambda_boundary_blocks_source_actions_inside_callback_body() {
+        let symbol = "method:class:example.CheckoutController#prepareSaveCallback()V";
+        let source = r#"
+void prepareSaveCallback() {
+    callbacks.register(() -> repository.save(callbackSentinel));
+}
+"#;
+        let events = json!([{"kind":"BOUNDARY","code":"LAMBDA_EXECUTION_NOT_EXPANDED"}]);
+        let checked = checked_with_source_flow(
+            symbol,
+            source,
+            events,
+            json!(["LAMBDA_EXECUTION_NOT_EXPANDED"]),
+        );
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let rendered = auto_flow_puml(&checked, resolved, "Callback boundary").unwrap();
+        assert_eq!(rendered.origin, "flow");
+        assert!(
+            rendered.tree.contains("LAMBDA_EXECUTION_NOT_EXPANDED"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            !rendered.tree.contains("callbackSentinel"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            !rendered.tree.contains("repository.save"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            !rendered.puml.contains("callbacks.register"),
+            "{}",
+            rendered.puml
+        );
+    }
+
+    #[test]
+    fn unsupported_retained_source_vetoes_a_balanced_flow_outline() {
+        let symbol = "method:class:svc.Checkout#checkout()V";
+        let source = r#"
+public void checkout() {
+    outer: {
+        if (x) break outer;
+        reserve();
+    }
+    done();
+}
+"#;
+        let flow = json!([
+            {"kind":"IF","condition":"x"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:svc.Checkout#reserve()V"},
+            {"kind":"CALL","target":"method:class:svc.Checkout#done()V"},
+            {"kind":"RETURN"}
+        ]);
+        let checked = checked_with_source_flow(symbol, source, flow.clone(), json!([]));
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let with_source = auto_flow_puml(&checked, resolved, "Labeled block").unwrap();
+        assert_eq!(with_source.origin, "source");
+        assert!(
+            with_source
+                .tree
+                .contains("SOURCE_STATEMENT_OR_CONTROL_UNSUPPORTED"),
+            "{}",
+            with_source.tree
+        );
+        assert!(
+            !with_source.tree.contains("reserve()"),
+            "{}",
+            with_source.tree
+        );
+        assert!(
+            !with_source.puml.contains("start\n"),
+            "{}",
+            with_source.puml
+        );
+
+        let mut without_source = checked_with_source_flow(symbol, source, flow.clone(), json!([]));
+        without_source
+            .services
+            .get_mut("svc")
+            .unwrap()
+            .observations
+            .remove("svc:source:m1");
+        let resolved = resolve_flow(&without_source, Some("svc"), &[symbol]).unwrap();
+        let no_source = auto_flow_puml(&without_source, resolved, "Labeled block").unwrap();
+        assert_eq!(no_source.origin, "flow");
+        assert!(
+            no_source
+                .tree
+                .contains("FLOW_CONTROL_CAPABILITY_UNVERIFIED"),
+            "{}",
+            no_source.tree
+        );
+        assert!(!no_source.tree.contains("reserve()"), "{}", no_source.tree);
+        assert!(!no_source.puml.contains("start\n"), "{}", no_source.puml);
     }
 
     #[test]
