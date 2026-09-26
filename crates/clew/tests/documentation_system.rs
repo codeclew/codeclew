@@ -2427,6 +2427,147 @@ fn docsys_t04_machine_repair_and_separate_fallback_stay_bounded() {
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_t04_process_overview_repairs_missing_content_field_with_existing_budget() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    save_process(&f, &process_definition("reserve", &[]));
+    let (work, _) = process_work(&f, "reserve");
+    let config = execution_config(&f, json!({"mode":"process-schema-repair"}), json!({}), None);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "author");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert_eq!(report["status"], "ACCEPTED");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_process_overview_authority_and_evidence_failures_are_not_retried() {
+    use serde_json::json;
+    for (mode, expected_reason) in [
+        (
+            "process-forged-authority",
+            "author action contains authority",
+        ),
+        (
+            "process-forged-parent-authority",
+            "author proposal violates its closed schema",
+        ),
+        (
+            "process-undelivered-evidence",
+            "was not delivered in this role packet",
+        ),
+        (
+            "process-missing-evidence",
+            "author proposal violates its closed schema",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.service("orders");
+        save_process(&f, &process_definition("reserve", &[]));
+        let (work, _) = process_work(&f, "reserve");
+        let config = execution_config(&f, json!({"mode":mode}), json!({}), None);
+
+        let result = work_run(&f, &work, &config);
+        assert_ne!(result["status"], "ACCEPTED", "{mode}: {result}");
+        let report = run_report(&f, &result);
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), 1, "{mode}: {report}");
+        assert_eq!(attempts[0]["role"], "author", "{mode}: {report}");
+        assert!(report["proposal"].is_null(), "{mode}: {report}");
+        assert!(report["review"].is_null(), "{mode}: {report}");
+        assert!(
+            report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(expected_reason),
+            "{mode}: {report}"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_reviewer_issue_evidence_must_be_in_its_packet() {
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    let f = Fixture::new();
+    f.service("orders");
+    save_process(&f, &process_definition("reserve", &[]));
+    let (work, frozen) = process_work(&f, "reserve");
+    let mut delivered = BTreeSet::new();
+    let mut cursor = None;
+    loop {
+        let selection = cursor
+            .as_ref()
+            .map(|cursor| json!({"cursor":cursor}))
+            .unwrap_or_else(|| json!({}));
+        let page = work_read(&f, &work, selection);
+        delivered.extend(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["reference"].as_str().map(str::to_owned)),
+        );
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let undelivered_reference = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(reference, handle)| {
+            !delivered.contains(*reference)
+                && matches!(
+                    handle["kind"].as_str(),
+                    Some("DEPENDENCY" | "ENTRYPOINT" | "PROCESS_ROOT")
+                )
+        })
+        .map(|(reference, _)| reference.clone())
+        .expect("Work should retain a non-source handle outside this process packet");
+
+    let config = execution_config(
+        &f,
+        json!({"mode":"process-valid"}),
+        json!({
+            "mode":"review-undelivered-handle",
+            "issueEvidenceReference":undelivered_reference
+        }),
+        None,
+    );
+    let result = work_run(&f, &work, &config);
+    assert_ne!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "reviewer");
+    assert!(report["review"].is_null(), "{report}");
+    assert!(
+        report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("issue evidence reference")
+            && report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not delivered in this role packet"),
+        "{report}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_t04_self_approval_prompt_injection_and_review_replay_are_rejected() {
     use serde_json::json;
     for mode in ["self-approve", "injection", "replay"] {
@@ -5512,7 +5653,9 @@ fn docsys_initial_and_expanded_author_and_reviewer_receive_complete_large_source
     let (expanded_source_ref, expanded_source_text) =
         source_packet_target(&expanded_work, &initial_source_id);
     assert_eq!(expanded_source_text, retained_source_text);
-    let expanded_options = source_options("section-expand", expanded_source_ref, true);
+    let issue_source_reference = expanded_source_ref.clone();
+    let mut expanded_options = source_options("section-expand", expanded_source_ref, true);
+    expanded_options["issueEvidenceReference"] = json!(issue_source_reference);
     let mut expanded_config =
         execution_config(&f, expanded_options.clone(), expanded_options, None);
     expanded_config["authorOutputContract"] = json!("section-summary/1.0");
@@ -5533,6 +5676,10 @@ fn docsys_initial_and_expanded_author_and_reviewer_receive_complete_large_source
     assert_eq!(
         report["contextBudget"]["reviewerAdmission"]["status"],
         "FIT"
+    );
+    assert_eq!(
+        report["review"]["issues"][0]["evidence"][0],
+        issue_source_reference
     );
     assert_eq!(fs::read(note_path).unwrap(), note_before);
 }

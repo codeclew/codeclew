@@ -767,28 +767,38 @@ fn reviewer_payload_with_parts(
     Ok(payload)
 }
 
+struct AuthorPrompt<'a> {
+    pages: &'a [Value],
+    source_parts: &'a [Value],
+    feedback: &'a Value,
+    previous_proposal: &'a Value,
+    previous_section: &'a Value,
+}
+
 fn selected_author_payload(
     repo: &Repository,
     work: &super::work::Work,
-    pages: &[Value],
-    source_parts: &[Value],
-    feedback: &Value,
-    previous_proposal: &Value,
-    previous_section: &Value,
-    contract: Option<&str>,
+    config: &Config,
+    prompt: &AuthorPrompt<'_>,
 ) -> Result<Value, ClewError> {
-    if contract.is_some() {
+    if config.author_output_contract.is_some() {
         let state = super::work::read_state(repo, &work.id)?;
         super::section_author::payload_with_parts(
             work,
-            pages,
-            source_parts,
-            feedback,
-            previous_section,
+            prompt.pages,
+            prompt.source_parts,
+            prompt.feedback,
+            prompt.previous_section,
             &state,
         )
     } else {
-        author_payload_with_parts(work, pages, source_parts, feedback, previous_proposal)
+        author_payload_with_parts(
+            work,
+            prompt.pages,
+            prompt.source_parts,
+            prompt.feedback,
+            prompt.previous_proposal,
+        )
     }
 }
 
@@ -799,17 +809,19 @@ fn preflight_initial_context(
     config: &Config,
     pages: &[Value],
     source_parts: &[Value],
-    contract: Option<&str>,
 ) -> Result<(), ClewError> {
+    let null = Value::Null;
     let payload = selected_author_payload(
         repo,
         work,
-        pages,
-        source_parts,
-        &Value::Null,
-        &Value::Null,
-        &Value::Null,
-        contract,
+        config,
+        &AuthorPrompt {
+            pages,
+            source_parts,
+            feedback: &null,
+            previous_proposal: &null,
+            previous_section: &null,
+        },
     )?;
     // UUID::simple has 32 ASCII hex bytes. The placeholder changes identity,
     // but not the exact canonical request size checked again before dispatch.
@@ -836,11 +848,9 @@ fn preflight_initial_context(
     let reviewer_admission = reviewer_preflight(
         work,
         report,
-        &config.author,
-        &config.reviewer,
+        config,
         pages,
         source_parts,
-        contract,
         &super::work::read_state(repo, &work.id)?,
     );
     context["reviewerAdmission"] = reviewer_admission;
@@ -857,14 +867,14 @@ fn preflight_initial_context(
 fn reviewer_preflight(
     work: &super::work::Work,
     report: &RunReport,
-    author: &Role,
-    reviewer: &Role,
+    config: &Config,
     pages: &[Value],
     source_parts: &[Value],
-    contract: Option<&str>,
     state: &super::work::ReadState,
 ) -> Value {
     const FIXED_CUSHION_BYTES: usize = 65_536;
+    let author = &config.author;
+    let reviewer = &config.reviewer;
     let proposal = super::proposals::Artifact {
         schema: "codeclew-documentation-proposal-result/1.0".into(),
         id: "0".repeat(64),
@@ -890,7 +900,7 @@ fn reviewer_preflight(
         source_parts,
         &proposal,
         &evidence_digest,
-        contract.is_some(),
+        config.author_output_contract.is_some(),
         state,
     );
     let (fixed_bytes, allowance, candidate_bytes, status, detail) =
@@ -1308,21 +1318,24 @@ fn check_source_part_lower_bound(
     Ok(())
 }
 
+struct ExpansionContext<'a> {
+    pages: &'a mut Vec<Value>,
+    source_parts: &'a mut Vec<Value>,
+    remaining: &'a mut u32,
+    config: &'a Config,
+    report: &'a mut RunReport,
+}
+
 fn add_expansion(
     repo: &Repository,
     work: &super::work::Work,
     result: &Value,
-    pages: &mut Vec<Value>,
-    source_parts: &mut Vec<Value>,
-    remaining: &mut u32,
-    config: &Config,
-    report: &mut RunReport,
-    contract: Option<&str>,
+    context: &mut ExpansionContext<'_>,
 ) -> Result<(), ClewError> {
-    if *remaining == 0 {
+    if *context.remaining == 0 {
         return Err(invalid("EXPANSION_BUDGET_EXHAUSTED"));
     }
-    *remaining -= 1;
+    *context.remaining -= 1;
     let selection: super::work::Selection = serde_json::from_value(result["selection"].clone())
         .map_err(|_| invalid("invalid registered expansion selection"))?;
     if selection.untracked_reads {
@@ -1348,15 +1361,30 @@ fn add_expansion(
         {
             return Err(invalid("NEEDS_EVIDENCE: expansion cursor made no progress"));
         }
-        read_omitted_source_parts(repo, work, &page, source_parts, config, report)?;
+        read_omitted_source_parts(
+            repo,
+            work,
+            &page,
+            context.source_parts,
+            context.config,
+            context.report,
+        )?;
         let page_digest = digest(&page)?;
-        if !pages
+        if !context
+            .pages
             .iter()
             .any(|existing| digest(existing).ok().as_deref() == Some(page_digest.as_str()))
         {
-            pages.push(page);
+            context.pages.push(page);
         }
-        preflight_initial_context(repo, report, work, config, pages, source_parts, contract)?;
+        preflight_initial_context(
+            repo,
+            context.report,
+            work,
+            context.config,
+            context.pages,
+            context.source_parts,
+        )?;
         cursor = next_cursor;
         if cursor.is_none() {
             break;
@@ -1364,6 +1392,76 @@ fn add_expansion(
     }
     Ok(())
 }
+
+fn repairable_process_overview_missing_steps(
+    value: &Value,
+    subject: &str,
+    error: &serde_json::Error,
+) -> bool {
+    if error.classify() != serde_json::error::Category::Data {
+        return false;
+    }
+    let message = error.to_string();
+    let Some(missing_field) = message
+        .strip_prefix("missing field `")
+        .and_then(|message| message.split('`').next())
+    else {
+        return false;
+    };
+    if missing_field != "steps" {
+        return false;
+    }
+
+    // This clone is an eligibility probe only. It must parse under the whole
+    // closed Proposal schema after supplying just the missing process-step
+    // arrays; the original value remains the exact retry history.
+    let mut probe = value.clone();
+    let Some(object) = probe.as_object_mut() else {
+        return false;
+    };
+    if object.get("schema").and_then(Value::as_str) != Some("codeclew-documentation-proposal/1.0") {
+        return false;
+    }
+    let Some(operations) = object.get_mut("operations").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if operations.len() != 1 {
+        return false;
+    }
+    let mut inserted_steps = false;
+    for operation in operations {
+        let Some(operation) = operation.as_object_mut() else {
+            return false;
+        };
+        if operation.get("entrypoint").and_then(Value::as_str) != Some(subject) {
+            return false;
+        }
+        if !operation.contains_key("steps") {
+            operation.insert("steps".into(), serde_json::json!([]));
+            inserted_steps = true;
+        }
+    }
+    if !inserted_steps {
+        return false;
+    }
+    let Ok(decoded) = serde_json::from_value::<super::proposals::Proposal>(probe) else {
+        return false;
+    };
+    decoded.schema == "codeclew-documentation-proposal/1.0"
+        && decoded.operations.len() == 1
+        && decoded.operations[0].entrypoint == subject
+}
+
+fn process_overview_shape_feedback(missing_field: &str) -> Value {
+    serde_json::json!({
+        "kind":"AUTHOR_PROPOSAL_SHAPE",
+        "missingField":missing_field,
+        "message":format!(
+            "The process overview proposal is missing required content field `{missing_field}`. Add it using the supplied output schema; preserve the exact schema, process entrypoint, and delivered evidence references."
+        ),
+    })
+}
+
 fn execute_run(
     repo: &Repository,
     work: &super::work::Work,
@@ -1385,7 +1483,13 @@ fn execute_run(
     let mut cursor: Option<String> = None;
     let mut seen_cursors = std::collections::BTreeSet::new();
     let contract = c.author_output_contract.as_deref();
-    preflight_initial_context(repo, report, work, c, &pages, &source_parts, contract)?;
+    let process_overview = contract.is_none()
+        && super::processes::overview(
+            &work.checked,
+            &work.subject,
+            work.request.entrypoint.as_deref().unwrap_or(""),
+        );
+    preflight_initial_context(repo, report, work, c, &pages, &source_parts)?;
     loop {
         if let Some(current) = cursor.as_ref()
             && !seen_cursors.insert(current.clone())
@@ -1411,7 +1515,7 @@ fn execute_run(
             ));
         }
         pages.push(page);
-        preflight_initial_context(repo, report, work, c, &pages, &source_parts, contract)?;
+        preflight_initial_context(repo, report, work, c, &pages, &source_parts)?;
         cursor = next_cursor;
         if cursor.is_none() {
             break;
@@ -1456,12 +1560,14 @@ fn execute_run(
         let payload = selected_author_payload(
             repo,
             work,
-            &pages,
-            &source_parts,
-            &feedback,
-            &previous,
-            &previous_section,
-            contract,
+            c,
+            &AuthorPrompt {
+                pages: &pages,
+                source_parts: &source_parts,
+                feedback: &feedback,
+                previous_proposal: &previous,
+                previous_section: &previous_section,
+            },
         )?;
         let author_binding = if contract.is_some() {
             let mut binding = payload["outputContract"].clone();
@@ -1482,12 +1588,13 @@ fn execute_run(
                     repo,
                     work,
                     &result,
-                    &mut pages,
-                    &mut source_parts,
-                    &mut expansions,
-                    c,
-                    report,
-                    contract,
+                    &mut ExpansionContext {
+                        pages: &mut pages,
+                        source_parts: &mut source_parts,
+                        remaining: &mut expansions,
+                        config: c,
+                        report,
+                    },
                 )?;
                 continue;
             }
@@ -1518,137 +1625,173 @@ fn execute_run(
                 ));
             }
             previous_section = result["section"].clone();
-            super::section_author::adapt_with_parts(
+            Some(super::section_author::adapt_with_parts(
                 work,
                 &pages,
                 &source_parts,
                 &result,
                 &super::work::read_state(repo, &work.id)?,
-            )?
+            )?)
         } else {
             previous = result["proposal"].clone();
-            let proposal_input: super::proposals::Proposal =
-                serde_json::from_value(previous.clone())
-                    .map_err(|_| invalid("author proposal violates its closed schema"))?;
-            validate_proposal_packet_evidence(repo, work, &pages, &source_parts, &previous)?;
-            proposal_input
-        };
-        let submitted = super::proposals::submit(repo, &work.id, input)?;
-        let proposal_id = submitted["proposal"]
-            .as_str()
-            .ok_or_else(|| invalid("proposal submission has no identity"))?;
-        let proposal = super::proposals::load(repo, proposal_id)?;
-        report.proposal = Some(proposal_id.into());
-        if contract.is_some() {
-            if let Some(attempt) = report
-                .attempts
-                .iter_mut()
-                .find(|attempt| attempt.invocation == invocation)
-            {
-                attempt.adapted_proposal = Some(proposal_id.into());
-            }
-            save_report(repo, report)?;
-        }
-        report.status = "CHECKED".into();
-        save_report(repo, report)?;
-        if !proposal.status.starts_with("READY_") {
-            if proposal.diagnostics.iter().any(|d| {
-                matches!(
-                    d["code"].as_str(),
-                    Some(
-                        "MISSING_WORK_EVIDENCE"
-                            | "REQUIRED_CONTEXT_NOT_READ"
-                            | "INCOMPLETE_INFLUENCE"
-                    )
-                )
-            }) {
-                return Err(invalid(
-                    "NEEDS_EVIDENCE: machine obligations cannot be repaired by a stronger model",
-                ));
-            }
-            feedback = serde_json::json!({"kind":"MACHINE_DIAGNOSTICS","diagnostics":proposal.diagnostics});
-        } else {
-            loop {
-                let read_state = super::work::read_state(repo, &work.id)?;
-                let read_digest = digest(&read_state)?;
-                let evidence_digest =
-                    digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
-                let payload = reviewer_payload_with_parts(
-                    work,
-                    &pages,
-                    &source_parts,
-                    &proposal,
-                    &evidence_digest,
-                    contract.is_some(),
-                    &read_state,
-                )?;
-                let (result, invocation, driver_digest) =
-                    call(repo, c, report, "reviewer", &c.reviewer, payload, None)?;
-                if result["action"] == "expand" {
-                    if contract.is_some() {
-                        super::section_author::validate_expand(&result)?;
-                    }
-                    add_expansion(
+            match serde_json::from_value(previous.clone()) {
+                Ok(proposal_input) => {
+                    validate_proposal_packet_evidence(
                         repo,
                         work,
-                        &result,
-                        &mut pages,
-                        &mut source_parts,
-                        &mut expansions,
-                        c,
-                        report,
-                        contract,
+                        &pages,
+                        &source_parts,
+                        &previous,
                     )?;
-                    continue;
+                    Some(proposal_input)
                 }
-                if result["action"] != "review"
-                    || result.as_object().is_none_or(|m| {
-                        m.keys().any(|k| !matches!(k.as_str(), "action" | "review"))
-                    })
+                Err(error) if process_overview => {
+                    if repairable_process_overview_missing_steps(&previous, &work.subject, &error) {
+                        validate_proposal_packet_evidence(
+                            repo,
+                            work,
+                            &pages,
+                            &source_parts,
+                            &previous,
+                        )?;
+                        feedback = process_overview_shape_feedback("steps");
+                        None
+                    } else {
+                        return Err(invalid("author proposal violates its closed schema"));
+                    }
+                }
+                Err(_) => return Err(invalid("author proposal violates its closed schema")),
+            }
+        };
+        if let Some(input) = input {
+            let submitted = super::proposals::submit(repo, &work.id, input)?;
+            let proposal_id = submitted["proposal"]
+                .as_str()
+                .ok_or_else(|| invalid("proposal submission has no identity"))?;
+            let proposal = super::proposals::load(repo, proposal_id)?;
+            report.proposal = Some(proposal_id.into());
+            if contract.is_some() {
+                if let Some(attempt) = report
+                    .attempts
+                    .iter_mut()
+                    .find(|attempt| attempt.invocation == invocation)
                 {
-                    return Err(invalid("reviewer result has an invalid action"));
+                    attempt.adapted_proposal = Some(proposal_id.into());
                 }
-                let review: super::review::MeaningReview =
-                    serde_json::from_value(result["review"].clone())
-                        .map_err(|_| invalid("review violates its closed schema"))?;
-                super::review::validate(work, &proposal, &review, &evidence_digest)?;
-                report.review = Some(result["review"].clone());
-                report.status = "REVIEWED".into();
                 save_report(repo, report)?;
-                if review.verdict == "NEEDS_EVIDENCE" {
+            }
+            report.status = "CHECKED".into();
+            save_report(repo, report)?;
+            if !proposal.status.starts_with("READY_") {
+                if proposal.diagnostics.iter().any(|d| {
+                    matches!(
+                        d["code"].as_str(),
+                        Some(
+                            "MISSING_WORK_EVIDENCE"
+                                | "REQUIRED_CONTEXT_NOT_READ"
+                                | "INCOMPLETE_INFLUENCE"
+                        )
+                    )
+                }) {
                     return Err(invalid(
-                        "NEEDS_EVIDENCE: reviewer requires unavailable evidence; inspect its recorded issues",
+                        "NEEDS_EVIDENCE: machine obligations cannot be repaired by a stronger model",
                     ));
                 }
-                if review.verdict == "APPROVE" {
-                    super::proposals::current(repo, work)?;
-                    let versions = super::review::versions(
+                feedback = serde_json::json!({"kind":"MACHINE_DIAGNOSTICS","diagnostics":proposal.diagnostics});
+            } else {
+                loop {
+                    let read_state = super::work::read_state(repo, &work.id)?;
+                    let read_digest = digest(&read_state)?;
+                    let evidence_digest =
+                        digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
+                    let payload = reviewer_payload_with_parts(
                         work,
+                        &pages,
+                        &source_parts,
                         &proposal,
-                        &review,
-                        &invocation,
-                        &driver_digest,
                         &evidence_digest,
-                        &read_digest,
+                        contract.is_some(),
+                        &read_state,
                     )?;
-                    let publication = super::render::publish_reviewed(
-                        repo,
-                        proposal
-                            .narrative
-                            .clone()
-                            .ok_or_else(|| invalid("missing checked narrative"))?,
-                        versions,
-                        work.snapshot.as_deref(),
+                    let (result, invocation, driver_digest) =
+                        call(repo, c, report, "reviewer", &c.reviewer, payload, None)?;
+                    if result["action"] == "expand" {
+                        if contract.is_some() {
+                            super::section_author::validate_expand(&result)?;
+                        }
+                        add_expansion(
+                            repo,
+                            work,
+                            &result,
+                            &mut ExpansionContext {
+                                pages: &mut pages,
+                                source_parts: &mut source_parts,
+                                remaining: &mut expansions,
+                                config: c,
+                                report,
+                            },
+                        )?;
+                        continue;
+                    }
+                    if result["action"] != "review"
+                        || result.as_object().is_none_or(|m| {
+                            m.keys().any(|k| !matches!(k.as_str(), "action" | "review"))
+                        })
+                    {
+                        return Err(invalid("reviewer result has an invalid action"));
+                    }
+                    let review: super::review::MeaningReview =
+                        serde_json::from_value(result["review"].clone())
+                            .map_err(|_| invalid("review violates its closed schema"))?;
+                    let reviewer_delivered = super::section_author::reviewer_delivered_handles(
+                        work,
+                        &pages,
+                        &source_parts,
+                        &read_state,
                     )?;
-                    report.publication = Some(
-                        serde_json::json!({"bundle":publication["bundle"],"status":publication["status"]}),
-                    );
-                    report.status = "ACCEPTED".into();
+                    super::section_author::validate_reviewer_issue_evidence(
+                        &review,
+                        &reviewer_delivered,
+                    )?;
+                    super::review::validate(work, &proposal, &review, &evidence_digest)?;
+                    report.review = Some(result["review"].clone());
+                    report.status = "REVIEWED".into();
                     save_report(repo, report)?;
-                    return Ok(());
+                    if review.verdict == "NEEDS_EVIDENCE" {
+                        return Err(invalid(
+                            "NEEDS_EVIDENCE: reviewer requires unavailable evidence; inspect its recorded issues",
+                        ));
+                    }
+                    if review.verdict == "APPROVE" {
+                        super::proposals::current(repo, work)?;
+                        let versions = super::review::versions(
+                            work,
+                            &proposal,
+                            &review,
+                            &invocation,
+                            &driver_digest,
+                            &evidence_digest,
+                            &read_digest,
+                        )?;
+                        let publication = super::render::publish_reviewed(
+                            repo,
+                            proposal
+                                .narrative
+                                .clone()
+                                .ok_or_else(|| invalid("missing checked narrative"))?,
+                            versions,
+                            work.snapshot.as_deref(),
+                        )?;
+                        report.publication = Some(
+                            serde_json::json!({"bundle":publication["bundle"],"status":publication["status"]}),
+                        );
+                        report.status = "ACCEPTED".into();
+                        save_report(repo, report)?;
+                        return Ok(());
+                    }
+                    feedback = serde_json::json!({"kind":"MEANING_REVIEW_ISSUES","issues":review.issues,"limitations":review.limitations});
+                    break;
                 }
-                feedback = serde_json::json!({"kind":"MEANING_REVIEW_ISSUES","issues":review.issues,"limitations":review.limitations});
-                break;
             }
         }
         if !fallback && repairs > 0 {

@@ -130,6 +130,12 @@ if job["role"] == "reviewer":
         else "Required target resolution is absent from the captured source provider.",
         "evidence": [],
     }]
+    if options.get("issueEvidenceReference") is not None:
+        issues = [{
+            "severity": "LIMITATION", "claim": next(iter(payload["claims"])),
+            "reason": "The fixture records a bounded review limitation.",
+            "evidence": [options["issueEvidenceReference"]],
+        }]
     result = {"action": "review", "review": {
         "schema": "codeclew-documentation-review/1.0", "work": job["work"],
         "proposal": "0" * 64 if mode == "replay" else payload["proposal"],
@@ -215,6 +221,53 @@ else:
         result = {"action": "review", "review": {"verdict": "APPROVE"}}
     elif mode == "expand" and not any(page.get("total") == 0 for page in payload["evidence"]["pages"]):
         result = {"action": "expand", "selection": {"query": {"kind": "SYMBOL", "symbolContains": "nonexistent"}}}
+    elif mode.startswith("process-") and job["role"] == "author":
+        rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
+        flow = next(item for item in rows if item["kind"] == "DEPENDENCY"
+                    and item["record"]["kind"] == "FLOW")
+        subject = payload["evidence"]["subject"]
+
+        def process_proposal(include_steps=True, include_evidence=True, evidence_ref=None):
+            summary = {"text": "The saved process handles a requested quantity."}
+            if include_evidence:
+                summary["evidence"] = [evidence_ref or flow["reference"]]
+            proposal = {"schema": "codeclew-documentation-proposal/1.0", "operations": [{
+                "entrypoint": subject,
+                "title": "Reserve quantity",
+                "summary": summary,
+            }]}
+            if include_steps:
+                proposal["operations"][0]["steps"] = []
+            return proposal
+
+        if mode == "process-schema-repair":
+            malformed = process_proposal(include_steps=False)
+            if payload["feedback"] is None:
+                result = {"action": "proposal", "proposal": malformed}
+            else:
+                assert payload["feedback"]["kind"] == "AUTHOR_PROPOSAL_SHAPE"
+                assert payload["feedback"]["missingField"] == "steps"
+                assert "steps" in payload["feedback"]["message"]
+                assert payload["previousProposal"] == malformed
+                result = {"action": "proposal", "proposal": process_proposal()}
+        elif mode == "process-forged-authority":
+            result = {
+                "action": "proposal",
+                "proposal": process_proposal(include_steps=False),
+                "approved": True,
+            }
+        elif mode == "process-forged-parent-authority":
+            proposal = process_proposal(include_steps=False)
+            proposal["verification"] = "APPROVED"
+            result = {"action": "proposal", "proposal": proposal}
+        elif mode == "process-undelivered-evidence":
+            result = {"action": "proposal", "proposal": process_proposal(evidence_ref="not-delivered")}
+        elif mode == "process-missing-evidence":
+            result = {"action": "proposal", "proposal": process_proposal(include_evidence=False)}
+        elif mode == "process-valid":
+            result = {"action": "proposal", "proposal": process_proposal()}
+        else:
+            raise AssertionError(f"unknown process fixture mode: {mode}")
     elif "proposal" in options:
         result = {"action": "proposal", "proposal": options["proposal"]}
     else:

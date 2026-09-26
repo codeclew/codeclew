@@ -136,6 +136,49 @@ fn evidence_handles(
     Ok(handles)
 }
 
+pub(super) fn reviewer_delivered_handles(
+    work: &Work,
+    pages: &[Value],
+    source_parts: &[Value],
+    state: &ReadState,
+) -> Result<BTreeSet<String>, super::ClewError> {
+    let mut handles = BTreeSet::new();
+    for item in pages
+        .iter()
+        .flat_map(|page| page["items"].as_array().into_iter().flatten())
+    {
+        let Some(reference) = item["reference"].as_str() else {
+            continue;
+        };
+        if !work.handles.contains_key(reference) {
+            return Err(invalid(
+                "REVIEW_CONTRACT_INCOMPATIBLE: delivered Work reference is unknown",
+            ));
+        }
+        handles.insert(reference.to_owned());
+    }
+    handles.extend(super::work_parts::delivered_source_references(
+        work,
+        state,
+        source_parts,
+    )?);
+    Ok(handles)
+}
+
+pub(super) fn validate_reviewer_issue_evidence(
+    review: &super::review::MeaningReview,
+    delivered: &BTreeSet<String>,
+) -> Result<(), super::ClewError> {
+    for reference in review.issues.iter().flat_map(|issue| &issue.evidence) {
+        if !delivered.contains(reference) {
+            return Err(invalid(format!(
+                "REVIEW_CONTRACT_INVALID: issue evidence reference {reference} was not delivered in this role packet"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(super) fn payload(
     work: &Work,
@@ -252,18 +295,7 @@ pub(super) fn reviewer_output_schema_with_parts(
                 .map(|operation| operation.id.clone())
         })
         .collect();
-    let mut evidence_ids: BTreeSet<String> = pages
-        .iter()
-        .flat_map(|page| page["items"].as_array().into_iter().flatten())
-        .filter_map(|item| item["reference"].as_str())
-        .filter(|reference| work.handles.contains_key(*reference))
-        .map(str::to_owned)
-        .collect();
-    evidence_ids.extend(super::work_parts::delivered_source_references(
-        work,
-        state,
-        source_parts,
-    )?);
+    let evidence_ids = reviewer_delivered_handles(work, pages, source_parts, state)?;
     let evidence_ids: Vec<String> = evidence_ids.into_iter().collect();
     properties["work"] = json!({"const":work.id});
     properties["proposal"] = json!({"const":proposal.id});
