@@ -17,6 +17,11 @@ use std::{
     path::PathBuf,
 };
 
+pub use super::work_parts::{SourcePartReceipt, SourcePartRequest, read_part};
+pub(super) use super::work_parts::{
+    completed_source_references, initial_context_complete_with_parts,
+};
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Prepare {
@@ -59,9 +64,19 @@ pub enum Command {
     },
     Read(ReadArgs),
     Expand(ReadArgs),
+    ReadPart(ReadPartArgs),
 }
 #[derive(Debug, Args)]
 pub struct ReadArgs {
+    #[arg(long)]
+    pub root: PathBuf,
+    #[arg(long)]
+    pub work: String,
+    #[arg(long)]
+    pub input: PathBuf,
+}
+#[derive(Debug, Args)]
+pub struct ReadPartArgs {
     #[arg(long)]
     pub root: PathBuf,
     #[arg(long)]
@@ -267,6 +282,8 @@ pub struct ReadState {
     pub work: String,
     pub receipts: BTreeMap<String, ReadReceipt>,
     pub untracked_reads: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_part_receipts: BTreeMap<String, SourcePartReceipt>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -278,7 +295,7 @@ pub struct ReadReceipt {
     pub omitted: Vec<Value>,
     pub next_cursor: Option<String>,
 }
-fn directory(id: &str) -> Result<String, ClewError> {
+pub(super) fn directory(id: &str) -> Result<String, ClewError> {
     if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid("invalid work identity"));
     }
@@ -352,6 +369,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             super::agent_jobs::cancel(&Repository::open(&root)?, &work)
         }
         Command::Read(args) | Command::Expand(args) => read(
+            &Repository::open(&args.root)?,
+            &args.work,
+            store::read(&args.input, store::MAX_RECORD)?,
+        ),
+        Command::ReadPart(args) => read_part(
             &Repository::open(&args.root)?,
             &args.work,
             store::read(&args.input, store::MAX_RECORD)?,

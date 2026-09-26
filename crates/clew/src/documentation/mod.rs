@@ -43,6 +43,7 @@ mod syntax;
 pub mod updates;
 pub mod visuals;
 pub mod work;
+mod work_parts;
 
 use crate::error::{ClewError, ErrorCode};
 use serde::Serialize;
