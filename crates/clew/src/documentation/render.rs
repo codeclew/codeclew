@@ -2357,15 +2357,52 @@ pub(super) fn publish_reviewed(
             "one publication proposal must have one documentation language",
         ));
     }
-    publish_internal(
+    publish_reviewed_with_receipt(
+        repo,
+        narrative,
+        versions,
+        snapshot,
+        language.as_deref(),
+        None,
+    )
+}
+
+/// Publish one reviewed subject with an optional same-lock receipt hook.
+/// `requested_language` remains explicit even for proposals containing only gaps.
+/// The hook runs under this repository's write lock and must write only to this
+/// same repository using the supplied guard; it must not acquire the lock again.
+pub(super) fn publish_reviewed_with_receipt(
+    repo: &Repository,
+    narrative: Narrative,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
+    snapshot: Option<&str>,
+    requested_language: Option<&str>,
+    before_switch: Option<
+        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
+    >,
+) -> Result<Value, ClewError> {
+    if versions.values().any(|version| {
+        version.external_request.documentation_language.as_deref() != requested_language
+    }) {
+        return Err(invalid(
+            "review language does not match requested publication language",
+        ));
+    }
+    let receipt_request = PublicationReceiptRequest {
+        requested_language: requested_language.map(str::to_owned),
+        affected_subjects: BTreeSet::from([narrative.subject.clone()]),
+    };
+    publish_internal_with_receipt(
         repo,
         vec![narrative],
         false,
         BTreeMap::new(),
         versions,
         EvidenceMode::Saved(snapshot),
-        language.as_deref(),
+        requested_language,
         false,
+        Some(receipt_request),
+        before_switch,
     )
 }
 
@@ -2427,6 +2464,25 @@ enum EvidenceMode<'a> {
     Refresh,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PublicationReceipt {
+    pub schema: String,
+    pub bundle_id: String,
+    pub root_index_hash: String,
+    pub bindings_hash: String,
+    pub publication_hash: String,
+    pub effective_gaps: BTreeMap<String, BTreeMap<String, String>>,
+    pub requested_language: Option<String>,
+    /// UI language used when the request and retained binding omit one.
+    pub effective_language: String,
+}
+
+struct PublicationReceiptRequest {
+    requested_language: Option<String>,
+    affected_subjects: BTreeSet<String>,
+}
+
 // Keep the explicit phase inputs aligned with the existing publish wrapper.
 #[allow(clippy::too_many_arguments)]
 fn publish_internal(
@@ -2439,6 +2495,35 @@ fn publish_internal(
     language: Option<&str>,
     released: bool,
 ) -> Result<Value, ClewError> {
+    publish_internal_with_receipt(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        versions,
+        evidence_mode,
+        language,
+        released,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_internal_with_receipt(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
+    evidence_mode: EvidenceMode<'_>,
+    language: Option<&str>,
+    released: bool,
+    receipt_request: Option<PublicationReceiptRequest>,
+    before_switch: Option<
+        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
+    >,
+) -> Result<Value, ClewError> {
     super::progress::run("PUBLISH_DOCUMENTATION", || {
         publish_internal_phases(
             repo,
@@ -2449,6 +2534,8 @@ fn publish_internal(
             evidence_mode,
             language,
             released,
+            receipt_request,
+            before_switch,
         )
     })
 }
@@ -2464,6 +2551,10 @@ fn publish_internal_phases(
     evidence_mode: EvidenceMode<'_>,
     language: Option<&str>,
     released: bool,
+    receipt_request: Option<PublicationReceiptRequest>,
+    before_switch: Option<
+        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
+    >,
 ) -> Result<Value, ClewError> {
     super::language::validate(language)?;
     let previous = bindings::baseline(repo)?;
@@ -3411,6 +3502,8 @@ fn publish_internal_phases(
         previous.as_ref(),
         previous_bytes.as_deref(),
         released,
+        receipt_request.as_ref(),
+        before_switch,
     )?;
     Ok(
         json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
@@ -3439,6 +3532,8 @@ pub(super) fn commit_bundle(
         previous,
         previous_bytes,
         false,
+        None,
+        None,
     )
 }
 
@@ -3453,6 +3548,10 @@ fn commit_bundle_with_mode(
     previous: Option<&(String, Bindings)>,
     previous_bytes: Option<&[u8]>,
     released: bool,
+    receipt_request: Option<&PublicationReceiptRequest>,
+    mut before_switch: Option<
+        &mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>,
+    >,
 ) -> Result<(), ClewError> {
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
@@ -3489,6 +3588,33 @@ fn commit_bundle_with_mode(
         .map(|(name, data)| (name.clone(), canonical::hash_bytes(data)))
         .collect();
     files.insert("publication.json".into(), bytes(&publication)?);
+    let receipt = receipt_request
+        .map(|request| -> Result<PublicationReceipt, ClewError> {
+            let effective_gaps = request
+                .affected_subjects
+                .iter()
+                .map(|subject| {
+                    binding
+                        .narratives
+                        .get(subject)
+                        .map(|narrative| (subject.clone(), narrative.gaps.clone()))
+                        .ok_or_else(|| {
+                            invalid("reviewed publication subject is absent from final binding")
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            Ok(PublicationReceipt {
+                schema: "codeclew-documentation-publication-receipt/1.0".into(),
+                bundle_id: bundle.to_owned(),
+                root_index_hash: canonical::hash_bytes(live_overview.as_bytes()),
+                bindings_hash: canonical::hash_bytes(&files["bindings.json"]),
+                publication_hash: canonical::hash_bytes(&files["publication.json"]),
+                effective_gaps,
+                requested_language: request.requested_language.clone(),
+                effective_language: ui_language.clone(),
+            })
+        })
+        .transpose()?;
     if files
         .values()
         .any(|data| data.len() > check::PORTABLE_CACHE_MAX_BYTES as usize)
@@ -3498,7 +3624,7 @@ fn commit_bundle_with_mode(
             "documentation output exceeds its portable record budget; narrow source roots",
         ));
     }
-    let _lock = repo.lock()?;
+    let lock = repo.lock()?;
     if repo.input_digest()? != input_digest {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
@@ -3558,6 +3684,14 @@ fn commit_bundle_with_mode(
     // Keep history navigation available after a working render while the
     // index itself contains only explicit releases.
     super::history::index(repo, bundle)?;
+    if let Some(callback) = before_switch.as_deref_mut() {
+        let receipt = receipt
+            .as_ref()
+            .ok_or_else(|| invalid("pre-switch callback requires a publication receipt"))?;
+        // The supplied guard belongs to `repo`; callback writers must stay on
+        // this same repository and use the held guard without relocking.
+        callback(&lock, receipt)?;
+    }
     repo.atomic("docs/index.html", live_overview.as_bytes())?;
     super::reader::connect_starters_language(
         repo,
@@ -4643,5 +4777,207 @@ public void checkout() {
             selected.flow().unwrap().observation.normalized["scope"],
             ":main"
         );
+    }
+}
+
+#[cfg(test)]
+mod publication_receipt_tests {
+    use super::*;
+
+    const SUBJECT: &str = "scenario:receipt-test";
+    type TestHook<'a> =
+        &'a mut dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError>;
+
+    fn repository() -> (tempfile::TempDir, Repository) {
+        let directory = tempfile::tempdir().unwrap();
+        Repository::init(directory.path(), "Publication receipt test").unwrap();
+        let repo = Repository::open(directory.path()).unwrap();
+        (directory, repo)
+    }
+
+    fn binding(repo: &Repository, language: Option<&str>, gap: &str) -> Bindings {
+        Bindings {
+            documentation_language: language.map(str::to_owned),
+            influence_scopes: BTreeMap::new(),
+            schema: "codeclew-documentation-bindings/1.4".into(),
+            input_digest: repo.input_digest().unwrap(),
+            renderer: RENDERER.into(),
+            extractor: "test-extractor".into(),
+            revisions: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            catalogues: BTreeMap::new(),
+            fragments: BTreeMap::new(),
+            observations: BTreeMap::new(),
+            narratives: BTreeMap::from([(
+                SUBJECT.into(),
+                Narrative {
+                    schema: "codeclew-documentation-narrative/1.3".into(),
+                    subject: SUBJECT.into(),
+                    context_digest: "sha256:test-context".into(),
+                    operations: Vec::new(),
+                    gaps: BTreeMap::from([("operation".into(), gap.into())]),
+                },
+            )]),
+            output_hashes: BTreeMap::new(),
+            retained_sources: BTreeMap::new(),
+            section_states: BTreeMap::new(),
+            target_revisions: BTreeMap::new(),
+            update_failures: BTreeMap::new(),
+            accepted_versions: BTreeMap::new(),
+        }
+    }
+
+    fn commit(
+        repo: &Repository,
+        bundle: &str,
+        binding: Bindings,
+        previous: Option<&(String, Bindings)>,
+        previous_bytes: Option<&[u8]>,
+        receipt_request: Option<&PublicationReceiptRequest>,
+        before_switch: Option<TestHook<'_>>,
+    ) -> Result<(), ClewError> {
+        let overview = format!(
+            "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"></head><body><main>test</main></body></html>\n"
+        );
+        let files = BTreeMap::from([(
+            "overview.html".into(),
+            b"<!doctype html><html lang=\"en\"><head></head><body><main>test</main></body></html>\n"
+                .to_vec(),
+        )]);
+        let input_digest = repo.input_digest()?;
+        commit_bundle_with_mode(
+            repo,
+            bundle,
+            binding,
+            files,
+            &overview,
+            &input_digest,
+            previous,
+            previous_bytes,
+            false,
+            receipt_request,
+            before_switch,
+        )
+    }
+
+    fn receipt_request(language: Option<&str>) -> PublicationReceiptRequest {
+        PublicationReceiptRequest {
+            requested_language: language.map(str::to_owned),
+            affected_subjects: BTreeSet::from([SUBJECT.into()]),
+        }
+    }
+
+    #[test]
+    fn pre_switch_receipt_uses_final_bundle_bytes_and_same_write_guard() {
+        let (_directory, repo) = repository();
+        let bundle = "a".repeat(64);
+        let receipt_request = receipt_request(Some("ru"));
+        let receipt = {
+            let mut received = None;
+            {
+                let callback_repo = &repo;
+                let mut callback = |guard: &store::WriteLock, receipt: &PublicationReceipt| {
+                    let _: &store::WriteLock = guard;
+                    assert!(
+                        callback_repo.lock().is_err(),
+                        "the callback must execute under the repository write lock"
+                    );
+                    received = Some(receipt.clone());
+                    Ok(())
+                };
+                commit(
+                    &repo,
+                    &bundle,
+                    binding(&repo, Some("ru"), "Missing reviewed detail"),
+                    None,
+                    None,
+                    Some(&receipt_request),
+                    Some(&mut callback),
+                )
+                .unwrap();
+            }
+            received.expect("pre-switch callback should receive the receipt")
+        };
+        assert_eq!(
+            receipt.schema,
+            "codeclew-documentation-publication-receipt/1.0"
+        );
+        assert_eq!(receipt.bundle_id, bundle);
+        assert_eq!(receipt.requested_language.as_deref(), Some("ru"));
+        assert_eq!(receipt.effective_language, "ru");
+        assert_eq!(
+            receipt.effective_gaps,
+            BTreeMap::from([(
+                SUBJECT.into(),
+                BTreeMap::from([("operation".into(), "Missing reviewed detail".into())]),
+            )])
+        );
+
+        let index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+        let bundle_root = format!("docs/generated/{bundle}");
+        let bindings_bytes =
+            fs::read(repo.path(&format!("{bundle_root}/bindings.json")).unwrap()).unwrap();
+        let publication_bytes = fs::read(
+            repo.path(&format!("{bundle_root}/publication.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt.root_index_hash, canonical::hash_bytes(&index));
+        assert_eq!(
+            receipt.bindings_hash,
+            canonical::hash_bytes(&bindings_bytes)
+        );
+        assert_eq!(
+            receipt.publication_hash,
+            canonical::hash_bytes(&publication_bytes)
+        );
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(serialized["effectiveLanguage"], "ru");
+        assert_eq!(
+            serialized["effectiveGaps"][SUBJECT]["operation"],
+            "Missing reviewed detail"
+        );
+    }
+
+    #[test]
+    fn pre_switch_callback_failure_keeps_the_previous_reader_pointer() {
+        let (_directory, repo) = repository();
+        let first_bundle = "b".repeat(64);
+        commit(
+            &repo,
+            &first_bundle,
+            binding(&repo, Some("en"), "Initial gap"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let old_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+        let previous = bindings::baseline(&repo).unwrap().unwrap();
+        assert_eq!(previous.0, first_bundle);
+
+        let second_bundle = "c".repeat(64);
+        let request = receipt_request(Some("ru"));
+        let mut callback = |_guard: &store::WriteLock, _receipt: &PublicationReceipt| {
+            Err(invalid("injected pre-switch failure"))
+        };
+        assert!(
+            commit(
+                &repo,
+                &second_bundle,
+                binding(&repo, Some("ru"), "Updated gap"),
+                Some(&previous),
+                Some(&old_index),
+                Some(&request),
+                Some(&mut callback),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+            old_index
+        );
+        assert_eq!(bindings::baseline(&repo).unwrap().unwrap().0, first_bundle);
     }
 }

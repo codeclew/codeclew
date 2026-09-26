@@ -270,9 +270,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
-/// Validate the selected evidence contract and admitted external inputs.
-/// Snapshot work stays historical; its publication does not claim current sources.
-pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
+/// Validate saved evidence and admitted external inputs without checking whether
+/// the retained narrative still matches the work's preparation baseline.
+pub(super) fn current_evidence_inputs(repo: &Repository, work: &Work) -> Result<(), ClewError> {
     let snapshot = work.snapshot.as_deref().ok_or_else(|| ClewError::new(
         ErrorCode::StaleRequiresReslice,
         "DOCS_REINDEX_REQUIRED: Work requires a saved snapshot; prepare new Work from current-format evidence",
@@ -304,6 +304,13 @@ pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
             "work inputs changed; prepare new work and review the changed evidence",
         ));
     }
+    Ok(())
+}
+
+/// Validate the selected evidence contract and admitted external inputs.
+/// Snapshot work stays historical; its publication does not claim current sources.
+pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
+    current_evidence_inputs(repo, work)?;
     let retained =
         bindings::baseline(repo)?.and_then(|(_, b)| b.narratives.get(&work.subject).cloned());
     let generated_after_preparation = work.retained.is_none()
