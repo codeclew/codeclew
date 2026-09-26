@@ -691,11 +691,12 @@ fn materialize(
     {
         return Err(invalid("invalid proposal schema or content budget"));
     }
-    let received = state
+    let mut received: BTreeSet<_> = state
         .receipts
         .values()
         .flat_map(|r| r.supplied.iter().cloned())
         .collect();
+    received.extend(work::completed_source_references(work, state)?);
     let mut builder = Builder {
         work,
         received,
@@ -1082,8 +1083,8 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
             vec![json!({"code":"INVALID_PROPOSAL","nextAction":error.message})],
         ),
     };
-    if !work::initial_context_complete(&state) {
-        diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial work page; resolve oversized required items by preparing an adequate evidence budget."}));
+    if !work::initial_context_complete_with_parts(&work, &state)? {
+        diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial Work page. For an oversized required SOURCE, use docs work read-part with its SOURCE reference and continue until nextCursor is null; automatic authoring still requires the complete context to fit in its actual request."}));
     }
     for obligation in work.obligations.iter().filter(|o| {
         matches!(

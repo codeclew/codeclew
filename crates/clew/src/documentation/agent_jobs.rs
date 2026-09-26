@@ -942,10 +942,13 @@ fn execute_run(
                 ..Default::default()
             },
         )?;
-        if page["omitted"].as_array().is_some_and(|a| !a.is_empty()) {
-            return Err(invalid(
-                "NEEDS_EVIDENCE: a required initial record exceeds the work budget",
-            ));
+        if let Some(omitted) = page["omitted"].as_array().filter(|rows| !rows.is_empty()) {
+            let oversized_source = omitted.iter().any(|row| row["kind"] == "SOURCE");
+            return Err(invalid(if oversized_source {
+                "NEEDS_EVIDENCE: INITIAL_SOURCE_EXCEEDS_WORK_BYTE_BUDGET: a required initial SOURCE exceeds Work maxBytes. Manual docs work read-part can deliver it for recorded proposal evidence, but does not make the source fit the automatic author request."
+            } else {
+                "NEEDS_EVIDENCE: a required initial record exceeds the work budget"
+            }));
         }
         pages.push(page);
         preflight_initial_context(repo, report, work, &c.author, &pages, contract)?;
@@ -1265,6 +1268,9 @@ pub fn run(
         );
         if !error.message.contains("INPUT_CAP_EXCEEDED")
             && !error.message.contains("AUTHOR_CONTRACT_")
+            && !error
+                .message
+                .contains("INITIAL_SOURCE_EXCEEDS_WORK_BYTE_BUDGET")
         {
             let failure = BTreeMap::from([(
                 work.subject.clone(),
