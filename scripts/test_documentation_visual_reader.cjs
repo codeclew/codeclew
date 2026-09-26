@@ -26,6 +26,9 @@ function processFixture(svgAvailable=false,lifecycleName='changeTaskStatus'){
  data.lifecycleOperations=[{name:lifecycleName,tree:'Entry: updateStatus()\n  return result',origin:'source',diagramStem:'scenario-checkout-lifecycle-8a41c7d0301b2f9c',svgAvailable}];
  return data;
 }
+function processOutline(svgAvailable=false){
+ return {status:'STATIC_SOURCE_OUTLINE',authority:'STATIC_SOURCE_STRUCTURE_NOT_REVIEWED',causal:true,origin:'source',diagramStem:'scenario-checkout-process-outline-91ab42',pumlAvailable:true,svgAvailable,sourceIds:['checkout-root'],root:{service:'orders',scope:':main',symbol:'method:class:example.CheckoutController#checkout()Ljava/lang/String;',observation:'orders:symbol:checkout',observationDigest:'flow-digest',sourceIds:['checkout-root'],sourceRecordDigests:{'checkout-root':'source-record-digest'},candidates:[]},tree:'Entry: method:class:example.CheckoutController#checkout()Ljava/lang/String;\n[D] if (!hasPositiveQuantity(request)) then\n  return invalid()\n[W] reservations.save(request)\nreturn inventory.reserve(request)'};
+}
 function load(data=fixture()){
  const elements=new Map(),listeners={};
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:false,innerHTML:'',textContent:'',isConnected:true,classList:{add(){},remove(){}},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
@@ -136,6 +139,43 @@ test('process SVG previews render only for returned assets and authored details 
  assert.match(r.e('scenario-nav').innerHTML,/data-entry="approve-request"/);
  r.run("showEntry('approve-request')");
  assert.match(r.e('scenario-content').innerHTML,/Accepted process operation details/);
+});
+
+test('ordinary saved process exposes its exact-root outline without a state schema and opens retained source',()=>{
+ const data=processFixture(false);delete data.stateDiagram;delete data.stateDiagramSvg;delete data.activityTransitions;delete data.activityTransitionsSvg;delete data.lifecycleOperations;
+ data.processOutline=processOutline(false);data.processOutlineSources={'checkout-root':source('public String checkout(Request request) { return inventory.reserve(request); }')};
+ const r=load(data);r.run("showEntry('process-overview')");let html=r.e('scenario-content').innerHTML;
+ assert.doesNotMatch(html,/Declared process-state schema|Activity on transitions/);
+ assert.match(html,/Static source outline/);assert.match(html,/hasPositiveQuantity/);assert.match(html,/return inventory\.reserve/);
+ assert.match(html,/PlantUML SVG preview is unavailable/);assert.match(html,/scenario-checkout-process-outline-91ab42\.puml/);
+ assert.match(html,/Exact selected root and retained source bindings/);assert.match(html,/checkout-root/);
+ r.click({sources:'checkout-root',sourceOperation:'process-outline'});
+ assert.match(r.e('source-code').innerHTML,/public String checkout/);
+ assert.doesNotMatch(r.e('source-code').innerHTML,/CURRENT SOURCE/);
+ const svgData=processFixture(false);delete svgData.stateDiagram;delete svgData.stateDiagramSvg;delete svgData.activityTransitions;delete svgData.activityTransitionsSvg;delete svgData.lifecycleOperations;
+ svgData.processOutline=processOutline(true);svgData.processOutlineSources={'checkout-root':source('SVG ROOT SOURCE')};
+ const svg=load(svgData);svg.run("showEntry('process-overview')");
+ assert.match(svg.e('scenario-content').innerHTML,/src="\.\.\/diagrams\/scenario-checkout-process-outline-91ab42\.svg"/);
+ assert.doesNotMatch(svg.e('scenario-content').innerHTML,/PlantUML SVG preview is unavailable/);
+});
+
+test('ambiguous exact process root is visible as a gap instead of a guessed outline',()=>{
+ const data=processFixture(false);delete data.stateDiagram;delete data.activityTransitions;delete data.lifecycleOperations;
+ data.processOutline={status:'GAP',gap:'PROCESS_ROOT_SELECTOR_AMBIGUOUS',root:{service:'orders',scope:null,candidates:[{scope:':main',observation:'orders:symbol:main'},{scope:':test',observation:'orders:symbol:test'}]}};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/No qualified local source outline is available/);assert.match(html,/PROCESS_ROOT_SELECTOR_AMBIGUOUS/);
+ assert.match(html,/:main/);assert.match(html,/:test/);assert.doesNotMatch(html,/scenario-checkout-process-outline-.*\.puml/);
+});
+
+test('authored overview visuals precede a separate unreviewed local outline',()=>{
+ const data=processFixture(false),overview=data.operations.find(operation=>operation.id==='process-overview');
+ overview.visuals=[fixture().operations[0].visuals[0]];data.operationStates['process-overview']={freshness:'CURRENT',verification:'VERIFIED'};
+ data.processOutline=processOutline(false);data.processOutlineSources={'checkout-root':source('EXACT CHECKOUT SOURCE')};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ const authored=html.indexOf('Authored process overview visuals'),generated=html.indexOf('Static source outline');
+ assert.ok(authored>=0&&generated>authored,html);
+ assert.match(html,/Dispatch work/);assert.match(html,/Meaning review: <b>VERIFIED/);
+ assert.match(html,/not an authored or reviewed explanation/);
 });
 
 test('missing accepted source map cannot fall back to unrelated current evidence',()=>{
