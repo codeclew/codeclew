@@ -282,6 +282,14 @@ else:
             result = {"action": "proposal", "proposal": process_proposal()}
         else:
             raise AssertionError(f"unknown process fixture mode: {mode}")
+    elif job["role"] == "author" and options.get("expandMissingProposalEvidence"):
+        evidence_items = payload["outputSchema"]["$defs"]["claim"]["properties"]["evidence"]["items"]
+        allowed = set(evidence_items.get("enum", [])) if isinstance(evidence_items, dict) else set()
+        missing = sorted(set(options["proposalEvidenceReferences"]) - allowed)
+        if missing:
+            result = {"action": "expand", "selection": {"references": missing[:8]}}
+        else:
+            result = {"action": "proposal", "proposal": options["proposal"]}
     elif "proposal" in options:
         result = {"action": "proposal", "proposal": options["proposal"]}
     else:

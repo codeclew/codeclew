@@ -5606,6 +5606,23 @@ fn read_view_evidence(
     frozen: &serde_json::Value,
     proposal: &serde_json::Value,
 ) {
+    let refs = view_proposal_evidence_references(frozen, proposal);
+    for chunk in refs.into_iter().collect::<Vec<_>>().chunks(8) {
+        let mut page = work_read(f, work, serde_json::json!({"references":chunk}));
+        while let Some(cursor) = page["nextCursor"].as_str() {
+            page = work_read(
+                f,
+                work,
+                serde_json::json!({"references":chunk,"cursor":cursor}),
+            );
+        }
+    }
+}
+
+fn view_proposal_evidence_references(
+    frozen: &serde_json::Value,
+    proposal: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
     use std::collections::BTreeSet;
     fn visit(v: &serde_json::Value, refs: &mut BTreeSet<String>) {
         match v {
@@ -5648,16 +5665,51 @@ fn read_view_evidence(
             })
             .map(|(r, _)| r.clone()),
     );
-    for chunk in refs.into_iter().collect::<Vec<_>>().chunks(8) {
-        let mut page = work_read(f, work, serde_json::json!({"references":chunk}));
-        while let Some(cursor) = page["nextCursor"].as_str() {
-            page = work_read(
-                f,
-                work,
-                serde_json::json!({"references":chunk,"cursor":cursor}),
-            );
-        }
-    }
+    refs
+}
+
+#[cfg(target_os = "macos")]
+fn bounded_proposal_expansion_config(
+    f: &Fixture,
+    frozen: &serde_json::Value,
+    proposal: &serde_json::Value,
+    mut author_options: serde_json::Value,
+) -> serde_json::Value {
+    let references = view_proposal_evidence_references(frozen, proposal);
+    assert!(!references.is_empty());
+    let expansion_budget = u32::try_from(references.len().div_ceil(8)).unwrap();
+    assert!(
+        (1..=16).contains(&expansion_budget),
+        "fixed proposal evidence must fit the finite expansion budget"
+    );
+    author_options["proposal"] = proposal.clone();
+    author_options["expandMissingProposalEvidence"] = serde_json::json!(true);
+    author_options["proposalEvidenceReferences"] = serde_json::json!(references);
+    let mut config = execution_config(f, author_options, serde_json::json!({}), None);
+    config["expansions"] = serde_json::json!(expansion_budget);
+    config["authorCalls"] = serde_json::json!(2 + expansion_budget);
+    config["reviewerCalls"] = serde_json::json!(2 + 2 * expansion_budget);
+    config
+}
+
+#[cfg(target_os = "macos")]
+fn assert_author_expanded(f: &Fixture, result: &serde_json::Value) {
+    let report = run_report(f, result);
+    assert!(
+        report["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|attempt| attempt["role"] == "author")
+            .any(|attempt| {
+                let raw = read(f.docs.join(format!(
+                    ".codeclew/job-results/{}.json",
+                    attempt["invocation"].as_str().unwrap()
+                )));
+                raw["result"]["action"] == "expand"
+            }),
+        "the prebuilt proposal must request registered evidence expansion: {report}"
+    );
 }
 #[test]
 fn docsys_t11_mapper_change_invalidates_views_process_and_contract_with_independent_reuse() {
@@ -5850,11 +5902,9 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
         .0;
     let child_proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:child","title":"Child overview","summary":{"text":"The child explains normalized quantity handling.","evidence":[handle]},"steps":[]}]});
     read_view_evidence(&f, &child_work, &child_frozen, &child_proposal);
-    let child = work_run(
-        &f,
-        &child_work,
-        &execution_config(&f, json!({"proposal":child_proposal}), json!({}), None),
-    );
+    let child_config =
+        bounded_proposal_expansion_config(&f, &child_frozen, &child_proposal, json!({}));
+    let child = work_run(&f, &child_work, &child_config);
     assert_eq!(child["status"], "ACCEPTED", "{child}");
     let original = fs::read(f.docs.join("scenarios/quantity-view.yaml")).unwrap();
     let (work, frozen) = view_work(&f, "quantity-view");
@@ -5875,17 +5925,19 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
         .unwrap()
         .push(json!(component));
     read_view_evidence(&f, &work, &frozen, &proposal);
-    let result = work_run(
+    let config = bounded_proposal_expansion_config(
         &f,
-        &work,
-        &execution_config(
-            &f,
-            json!({"proposal":proposal,"mode":"denials","readPaths":[],"writePaths":[f.docs.join("scenarios/quantity-view.yaml"),f.docs.join("notes/history.md"),f.docs.join("catalog/notes/policy.json")]}),
-            json!({}),
-            None,
-        ),
+        &frozen,
+        &proposal,
+        json!({
+            "mode":"denials",
+            "readPaths":[],
+            "writePaths":[f.docs.join("scenarios/quantity-view.yaml"),f.docs.join("notes/history.md"),f.docs.join("catalog/notes/policy.json")],
+        }),
     );
+    let result = work_run(&f, &work, &config);
     assert_eq!(result["status"], "ACCEPTED", "{result}");
+    assert_author_expanded(&f, &result);
     assert_eq!(
         fs::read(f.docs.join("scenarios/quantity-view.yaml")).unwrap(),
         original
@@ -6012,11 +6064,9 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
     // an explicit recorded read of the selected service fact.
     work_read(&f, &service_work, json!({"references":[flow_for("other")]}));
     let section = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow_for("other")]},"steps":[]}]});
-    let accepted = work_run(
-        &f,
-        &service_work,
-        &execution_config(&f, json!({"proposal":section}), json!({}), None),
-    );
+    read_view_evidence(&f, &service_work, &sw, &section);
+    let section_config = bounded_proposal_expansion_config(&f, &sw, &section, json!({}));
+    let accepted = work_run(&f, &service_work, &section_config);
     assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
     definition["view"]["human"]["annotations"]["scope"] =
         json!("A concurrent human clarification.");
