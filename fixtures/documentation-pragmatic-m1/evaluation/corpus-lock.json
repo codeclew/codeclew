@@ -4,7 +4,7 @@
   "baseCodeclewCommit": "0c413af7e8cd947cdd823491aed1afce63d5c689",
   "digestAlgorithm": "sha256",
   "aggregateDigestInput": "UTF-8 lines: <sha256>  <relative-path>\\n, lexical path order; corpus-lock.json excluded",
-  "aggregateDigest": "2e25a782d5bf19af8c9c0640b7a84a59a3a5c9d44d6dda2f6b586e7685fa076f",
+  "aggregateDigest": "04336dfd8665827d411407c56b5ea1cd0513ed66748be0f43b1541d73c1d437a",
   "files": [
     {
       "path": "README.md",
@@ -20,7 +20,7 @@
     },
     {
       "path": "architecture/scenarios/checkout.yaml",
-      "sha256": "b0822356f64a17170741e809dca635cd52af4723b0431384c297bbf1829752da"
+      "sha256": "b5a23a4896f5d9078974a202d98d144d8ea91c707a4fa296d0219d893dd5ce61"
     },
     {
       "path": "authoring/checkout-brief.md",

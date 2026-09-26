@@ -3,6 +3,7 @@ process:
   scope: Checkout request handling
   participants: [orders]
   trigger: Invocation of the configured source operation
+  outcomes: [A checkout request receives an outcome]
 id: checkout
 title: Checkout request
 summary: Explain the selected checkout operation from source evidence.
