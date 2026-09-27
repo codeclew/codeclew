@@ -13,7 +13,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub(super) fn present(pages: &[Value], source_parts: &[Value]) -> Value {
     let (mut pages, presentation) = project_pages(pages);
     let callables = callable_inventory(&pages, source_parts);
-    let baseline = evidence_context(&pages, source_parts, &callables, presentation.as_ref());
+    let callable_read_actions = callable_read_actions(&pages, source_parts, &callables);
+    let baseline = evidence_context(
+        &pages,
+        source_parts,
+        &callables,
+        &callable_read_actions,
+        presentation.as_ref(),
+    );
     let raw_pages = pages.clone();
     let mut summary = ProjectionSummary::default();
     alias_source_texts(&mut pages, &mut summary);
@@ -27,6 +34,7 @@ pub(super) fn present(pages: &[Value], source_parts: &[Value]) -> Value {
         &pages,
         source_parts,
         &callables,
+        &callable_read_actions,
         Some(&projected_presentation),
     );
     if compact_json_len(&projected) < compact_json_len(&baseline) {
@@ -40,6 +48,7 @@ fn evidence_context(
     pages: &[Value],
     source_parts: &[Value],
     callables: &[Value],
+    callable_read_actions: &[Value],
     presentation: Option<&Value>,
 ) -> Value {
     let mut context = Map::new();
@@ -50,6 +59,9 @@ fn evidence_context(
         "callablesMeaning".into(),
         json!("Each entry is a captured SYMBOL declaration; declarationKind distinguishes callable and non-callable declarations when available."),
     );
+    if !callable_read_actions.is_empty() {
+        context.insert("callableReadActions".into(), json!(callable_read_actions));
+    }
     if let Some(presentation) = presentation {
         context.insert("presentation".into(), presentation.clone());
     }
@@ -673,6 +685,299 @@ fn page_items(pages: &[Value]) -> impl Iterator<Item = &Value> {
         .flat_map(|page| page["items"].as_array().into_iter().flatten())
 }
 
+fn callable_read_actions(
+    pages: &[Value],
+    source_parts: &[Value],
+    callables: &[Value],
+) -> Vec<Value> {
+    let mut rows_by_reference = HashMap::<String, Vec<&Value>>::new();
+    let mut source_rows_by_reference = HashMap::<String, Vec<&Value>>::new();
+    for item in page_items(pages) {
+        if let Some(reference) = item["reference"].as_str() {
+            rows_by_reference
+                .entry(reference.to_owned())
+                .or_default()
+                .push(item);
+            if item["kind"] == "SOURCE" {
+                source_rows_by_reference
+                    .entry(reference.to_owned())
+                    .or_default()
+                    .push(item);
+            }
+        }
+    }
+    let mut source_parts_by_reference = HashMap::<String, Vec<&Value>>::new();
+    for part in source_parts {
+        if let Some(reference) = part["reference"].as_str() {
+            source_parts_by_reference
+                .entry(reference.to_owned())
+                .or_default()
+                .push(part);
+        }
+    }
+
+    page_items(pages)
+        .filter(|item| {
+            item["kind"] == "CALLABLE_SUMMARY"
+                && item["record"]["authority"] == "NAVIGATION_ONLY"
+                && item["record"]["provenance"]["kind"] == "SYMBOL"
+        })
+        .filter_map(|navigation| {
+            let full_reference = navigation["record"]["fullRecordReference"]
+                .as_str()
+                .filter(|reference| !reference.is_empty())?;
+            let (declaration_status, declaration_reason) = declaration_delivery(
+                navigation,
+                rows_by_reference.get(full_reference).map(Vec::as_slice),
+            );
+            let source_delivery = source_delivery(
+                &navigation["record"]["sourceReferences"],
+                &navigation["record"]["service"],
+                &source_rows_by_reference,
+                &source_parts_by_reference,
+            );
+            let source_references = string_set(&navigation["record"]["sourceReferences"]);
+            let delivered_source_references = string_set(&source_delivery["deliveredReferences"]);
+            let ambiguous_source_references =
+                string_set(&source_delivery["ambiguousReferences"]);
+            let source_only_reads = source_references
+                .difference(&delivered_source_references)
+                .filter(|reference| !ambiguous_source_references.contains(*reference))
+                .map(|reference| {
+                    json!({
+                        "label":"Read associated source only (within existing Work limits)",
+                        "selection":{"references":[reference]}
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let mut action = json!({
+                "fullRecordReference":full_reference,
+                "authority":"NAVIGATION_ONLY",
+                "declarationDelivery":{
+                    "status":declaration_status,
+                    "reason":declaration_reason
+                },
+                "sourceDelivery":source_delivery,
+                "sourceOnlyReads":source_only_reads
+            });
+            if declaration_status == "DELIVERED"
+                && callables
+                    .iter()
+                    .filter(|entry| entry["dependencyReference"].as_str() == Some(full_reference))
+                    .count()
+                    == 1
+            {
+                action["callableEntryReference"] = json!(full_reference);
+            } else {
+                action["primaryRead"] = json!({
+                    "label":"Read declaration; service reads also include associated flow/source (within Work limits)",
+                    "selection":{"references":[full_reference]}
+                });
+            }
+            Some(action)
+        })
+        .collect()
+}
+
+fn declaration_delivery(
+    navigation: &Value,
+    rows: Option<&[&Value]>,
+) -> (&'static str, &'static str) {
+    let Some(rows) = rows else {
+        return ("NOT_DELIVERED", "NO_ROW_FOR_REGISTERED_HANDLE");
+    };
+    let [row] = rows else {
+        return ("AMBIGUOUS_OR_MISMATCHED", "CONFLICTING_ROWS_FOR_HANDLE");
+    };
+    if row["kind"] != "DEPENDENCY" || row["record"]["kind"] != "SYMBOL" {
+        return ("AMBIGUOUS_OR_MISMATCHED", "HANDLE_ROW_IS_NOT_A_SYMBOL");
+    }
+    if !navigation_matches_declaration(navigation, row) {
+        return ("AMBIGUOUS_OR_MISMATCHED", "IDENTITY_OR_PROVENANCE_MISMATCH");
+    }
+    ("DELIVERED", "MATCHING_SYMBOL_ROW_PRESENT")
+}
+
+fn navigation_matches_declaration(navigation: &Value, declaration: &Value) -> bool {
+    let navigation_record = &navigation["record"];
+    let record = &declaration["record"];
+    let normalized = &record["normalized"];
+    let provenance = &navigation_record["provenance"];
+
+    let identity = normalized["symbolIdentity"]
+        .as_str()
+        .filter(|identity| !identity.is_empty())
+        .or_else(|| {
+            normalized["compilerCallableId"]
+                .as_str()
+                .filter(|identity| !identity.is_empty())
+        })
+        .or_else(|| record["symbol"].as_str());
+    if navigation_record["identity"]
+        .as_str()
+        .is_some_and(|expected| identity.is_none_or(|actual| expected != actual))
+    {
+        return false;
+    }
+
+    [
+        (&navigation_record["symbol"], &record["symbol"]),
+        (&navigation_record["service"], &record["service"]),
+        (&navigation_record["scope"], &normalized["scope"]),
+        (&navigation_record["name"], &normalized["name"]),
+        (&navigation_record["owner"], &normalized["ownerIdentity"]),
+        (&navigation["id"], &record["id"]),
+        (&navigation["id"], &declaration["id"]),
+        (&provenance["dependencyId"], &record["id"]),
+        (&provenance["dependencyId"], &declaration["id"]),
+        (&provenance["observationDigest"], &record["digest"]),
+        (&provenance["kind"], &record["kind"]),
+    ]
+    .into_iter()
+    .all(|(expected, actual)| values_consistent(expected, actual))
+}
+
+fn values_consistent(expected: &Value, actual: &Value) -> bool {
+    expected.is_null() || expected == actual
+}
+
+fn source_delivery(
+    navigation_references: &Value,
+    navigation_service: &Value,
+    source_rows_by_reference: &HashMap<String, Vec<&Value>>,
+    source_parts_by_reference: &HashMap<String, Vec<&Value>>,
+) -> Value {
+    let references = string_set(navigation_references);
+    let mut delivered = Vec::new();
+    let mut partial = Vec::new();
+    let mut unread = Vec::new();
+    let mut ambiguous = Vec::new();
+    for reference in &references {
+        let source_rows = source_rows_by_reference.get(reference).map(Vec::as_slice);
+        let source_parts = source_parts_by_reference.get(reference).map(Vec::as_slice);
+        let source_row = match source_rows {
+            Some([row])
+                if row["record"]["text"].is_string()
+                    && source_record_matches_navigation(row, navigation_service) =>
+            {
+                Some(*row)
+            }
+            Some(_) => {
+                ambiguous.push(reference.clone());
+                continue;
+            }
+            None => None,
+        };
+        if !source_parts_match(source_parts.unwrap_or(&[]), source_row, navigation_service) {
+            ambiguous.push(reference.clone());
+        } else if source_row.is_some() {
+            delivered.push(reference.clone());
+        } else if source_parts.is_some_and(|parts| !parts.is_empty()) {
+            partial.push(reference.clone());
+        } else {
+            unread.push(reference.clone());
+        }
+    }
+    let status = if references.is_empty() {
+        "NONE_RECORDED"
+    } else if !ambiguous.is_empty() {
+        "AMBIGUOUS_OR_MISMATCHED"
+    } else if delivered.len() == references.len() {
+        "DELIVERED"
+    } else if !delivered.is_empty() || !partial.is_empty() {
+        "PARTIAL"
+    } else {
+        "NOT_DELIVERED"
+    };
+    json!({
+        "status":status,
+        "deliveredReferences":delivered,
+        "partialReferences":partial,
+        "unreadReferences":unread,
+        "ambiguousReferences":ambiguous
+    })
+}
+
+fn source_record_matches_navigation(source: &Value, navigation_service: &Value) -> bool {
+    values_consistent(navigation_service, &source["record"]["service"])
+        && available_values_consistent(&source["id"], &source["record"]["id"])
+        && source["id"].is_string()
+        && source["record"]["id"].is_string()
+}
+
+fn source_parts_match(
+    parts: &[&Value],
+    source_row: Option<&Value>,
+    navigation_service: &Value,
+) -> bool {
+    let mut identity_values = HashMap::<&'static str, &Value>::new();
+    for part in parts {
+        if !values_consistent(navigation_service, &part["source"]["service"])
+            || !available_values_consistent(&part["sourceId"], &part["source"]["id"])
+            || source_row.is_some_and(|source| {
+                !available_values_consistent(&source["id"], &part["sourceId"])
+                    || !available_values_consistent(&source["record"]["id"], &part["source"]["id"])
+                    || !available_values_consistent(
+                        &source["record"]["service"],
+                        &part["source"]["service"],
+                    )
+                    || !available_values_consistent(
+                        &source["record"]["revision"],
+                        &part["source"]["revision"],
+                    )
+                    || !available_values_consistent(
+                        &source["record"]["file"],
+                        &part["source"]["file"],
+                    )
+                    || !available_values_consistent(
+                        &source["record"]["textDigest"],
+                        &part["source"]["textDigest"],
+                    )
+                    || !available_values_consistent(
+                        &source["record"]["evidenceDigest"],
+                        &part["source"]["evidenceDigest"],
+                    )
+                    || !available_values_consistent(
+                        &source["record"]["authority"],
+                        &part["source"]["authority"],
+                    )
+            })
+        {
+            return false;
+        }
+        for (field, value) in [
+            ("sourceId", &part["sourceId"]),
+            ("snapshot", &part["snapshot"]),
+            ("recordDigest", &part["recordDigest"]),
+            ("totalTextBytes", &part["totalTextBytes"]),
+            ("source.id", &part["source"]["id"]),
+            ("source.service", &part["source"]["service"]),
+            ("source.revision", &part["source"]["revision"]),
+            ("source.file", &part["source"]["file"]),
+            ("source.textDigest", &part["source"]["textDigest"]),
+            ("source.evidenceDigest", &part["source"]["evidenceDigest"]),
+            ("source.authority", &part["source"]["authority"]),
+        ] {
+            if value.is_null() {
+                continue;
+            }
+            if identity_values
+                .get(field)
+                .is_some_and(|previous| *previous != value)
+            {
+                return false;
+            }
+            identity_values.entry(field).or_insert(value);
+        }
+    }
+    true
+}
+
+fn available_values_consistent(left: &Value, right: &Value) -> bool {
+    left.is_null() || right.is_null() || left == right
+}
+
 fn callable_entry(
     item: &Value,
     source_rows_by_reference: &HashMap<String, Vec<&Value>>,
@@ -887,6 +1192,54 @@ mod tests {
                 "normalized":normalized
             }
         })
+    }
+
+    fn callable_summary(full_reference: &str, source_references: &[&str]) -> Value {
+        json!({
+            "kind":"CALLABLE_SUMMARY",
+            "id":"dep-1",
+            "referenceRoles":[],
+            "record":{
+                "identity":"method:class:payments.Writer#flush()V",
+                "symbol":"ledger.Writer.flush",
+                "service":"payments",
+                "scope":"writer",
+                "name":"flush",
+                "owner":"ledger.Writer",
+                "fullRecordReference":full_reference,
+                "sourceReferences":source_references,
+                "authority":"NAVIGATION_ONLY",
+                "provenance":{
+                    "dependencyId":"dep-1",
+                    "observationDigest":"dependency-digest",
+                    "kind":"SYMBOL"
+                },
+                "bodyAvailability":{
+                    "capturedDeclarationTokensAvailable":true,
+                    "relatedSourceReferences":source_references,
+                    "relatedSourceRecords":"NAVIGATION_ONLY"
+                }
+            }
+        })
+    }
+
+    fn matching_symbol_row(reference: &str, source_references: &[&str]) -> Value {
+        symbol_row(
+            reference,
+            source_references,
+            json!({
+                "symbolIdentity":"method:class:payments.Writer#flush()V",
+                "scope":"writer",
+                "name":"flush",
+                "ownerIdentity":"ledger.Writer",
+                "declarationKind":"METHOD",
+                "sourceTokens":["private","void","flush"],
+                "documentation":{"events":[
+                    {"kind":"CALL","resolution":"COMPILER_EXACT","target":"method:class:payments.Writer#target()V"},
+                    {"kind":"BOUNDARY","code":"SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"}
+                ]}
+            }),
+        )
     }
 
     fn symbol_row_with_source(
@@ -1190,7 +1543,13 @@ mod tests {
 
     fn merge_audited_evidence(original: &Value, projected: &Value) -> Value {
         let mut evidence = original.as_object().cloned().unwrap_or_default();
-        for key in ["pages", "sourceParts", "callables", "callablesMeaning"] {
+        for key in [
+            "pages",
+            "sourceParts",
+            "callables",
+            "callablesMeaning",
+            "callableReadActions",
+        ] {
             if let Some(value) = projected.get(key) {
                 evidence.insert(key.to_owned(), value.clone());
             }
@@ -2007,15 +2366,266 @@ mod tests {
     }
 
     #[test]
-    fn callable_navigation_summaries_do_not_enter_delivered_symbol_inventory() {
-        let navigation = json!({
-            "kind":"CALLABLE_SUMMARY",
-            "id":"dep-1",
-            "record":{"fullRecordReference":"dependency-handle","symbol":"ledger.Writer.flush"}
-        });
-        let context = present(&[page("receipt", vec![navigation])], &[]);
+    fn callable_navigation_card_tracks_source_and_declaration_separately() {
+        use super::super::work::Selection;
 
-        assert_eq!(context["callables"], json!([]));
+        let navigation = callable_summary("dependency-handle", &["source-fragment"]);
+        let navigation_pages = vec![page("navigation", vec![navigation.clone()])];
+        let original_navigation_pages = navigation_pages.clone();
+        let navigation_context = present(&navigation_pages, &[]);
+        let navigation_card = &navigation_context["callableReadActions"][0];
+        assert_eq!(navigation_context["callables"], json!([]));
+        assert_eq!(navigation_card["authority"], "NAVIGATION_ONLY");
+        assert_eq!(
+            navigation_card["declarationDelivery"]["status"],
+            "NOT_DELIVERED"
+        );
+        assert_eq!(navigation_card["sourceDelivery"]["status"], "NOT_DELIVERED");
+        let full_read = &navigation_card["primaryRead"]["selection"];
+        assert_eq!(full_read, &json!({"references":["dependency-handle"]}));
+        let parsed_full_read: Selection = serde_json::from_value(full_read.clone()).unwrap();
+        assert_eq!(parsed_full_read.references, ["dependency-handle"]);
+        let source_read = &navigation_card["sourceOnlyReads"][0]["selection"];
+        let parsed_source_read: Selection = serde_json::from_value(source_read.clone()).unwrap();
+        assert_eq!(parsed_source_read.references, ["source-fragment"]);
+        assert_eq!(navigation_pages, original_navigation_pages);
+
+        let source = json!({
+            "kind":"SOURCE",
+            "id":"source-fragment-id",
+            "reference":"source-fragment",
+            "record":{
+                "id":"source-fragment-id",
+                "service":"payments",
+                "revision":"rev-7",
+                "file":"Writer.java",
+                "text":"private void flush() { SECRET_BODY_TEXT }"
+            }
+        });
+        let source_pages = vec![page("source", vec![navigation.clone(), source.clone()])];
+        let original_source_pages = source_pages.clone();
+        let source_context = present(&source_pages, &[]);
+        let source_card = &source_context["callableReadActions"][0];
+        assert_eq!(
+            source_card["declarationDelivery"]["status"],
+            "NOT_DELIVERED"
+        );
+        assert_eq!(source_card["sourceDelivery"]["status"], "DELIVERED");
+        assert_eq!(
+            source_card["primaryRead"]["selection"],
+            json!({"references":["dependency-handle"]})
+        );
+        assert_eq!(source_pages, original_source_pages);
+
+        let declaration = matching_symbol_row("dependency-handle", &["source-fragment"]);
+        let full_pages = vec![page("full", vec![navigation, source, declaration])];
+        let original_full_pages = full_pages.clone();
+        let full_context = present(&full_pages, &[]);
+        let full_card = &full_context["callableReadActions"][0];
+        assert_eq!(full_card["declarationDelivery"]["status"], "DELIVERED");
+        assert!(full_card.get("primaryRead").is_none());
+        assert_eq!(full_card["callableEntryReference"], "dependency-handle");
+        assert_eq!(
+            full_context["callables"][0]["immediateTargetHints"],
+            json!([{"eventKind":"CALL","targetIdentity":"method:class:payments.Writer#target()V"}])
+        );
+        assert_eq!(
+            full_context["pages"][0]["items"][2]["record"]["normalized"]["documentation"]["events"]
+                [1]["code"],
+            "SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"
+        );
+        let compact_card = serde_json::to_string(full_card).unwrap();
+        for forbidden in [
+            "SECRET_BODY_TEXT",
+            "sourceTokens",
+            "immediateTargetHints",
+            "SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW",
+        ] {
+            assert!(!compact_card.contains(forbidden));
+        }
+        assert_eq!(full_pages, original_full_pages);
+        assert_eq!(
+            full_context["callablesMeaning"],
+            "Each entry is a captured SYMBOL declaration; declarationKind distinguishes callable and non-callable declarations when available."
+        );
+    }
+
+    #[test]
+    fn callable_navigation_card_keeps_partial_and_mismatched_evidence_unconfirmed() {
+        let navigation = callable_summary("dependency-handle", &["source-fragment"]);
+        let part = json!({
+            "reference":"source-fragment",
+            "sourceId":"source-fragment-id",
+            "snapshot":"snapshot-1",
+            "recordDigest":"record-digest",
+            "startByte":0,
+            "endByte":20,
+            "totalTextBytes":100,
+            "source":{"id":"source-fragment-id","service":"payments","revision":"rev-7","file":"Writer.java","textDigest":"source-text-digest","evidenceDigest":"source-evidence-digest","authority":"COMPILER"},
+            "text":"private void flush"
+        });
+        let mut second_part = part.clone();
+        second_part["startByte"] = json!(20);
+        second_part["endByte"] = json!(40);
+        second_part["text"] = json!("() { body }");
+        let partial_context = present(
+            &[page("partial", vec![navigation.clone()])],
+            &[part.clone(), second_part.clone()],
+        );
+        let partial_card = &partial_context["callableReadActions"][0];
+        assert_eq!(
+            partial_card["declarationDelivery"]["status"],
+            "NOT_DELIVERED"
+        );
+        assert_eq!(partial_card["sourceDelivery"]["status"], "PARTIAL");
+        assert_eq!(
+            partial_card["sourceDelivery"]["partialReferences"],
+            json!(["source-fragment"])
+        );
+
+        let mut conflicting_part = part.clone();
+        conflicting_part["sourceId"] = json!("other-source-id");
+        conflicting_part["source"]["id"] = json!("other-source-id");
+        let conflicting_parts_context = present(
+            &[page("partial-conflict", vec![navigation.clone()])],
+            &[part.clone(), conflicting_part],
+        );
+        assert_eq!(
+            conflicting_parts_context["callableReadActions"][0]["sourceDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+
+        let source = json!({
+            "kind":"SOURCE",
+            "id":"source-fragment-id",
+            "reference":"source-fragment",
+            "record":{
+                "id":"source-fragment-id",
+                "service":"payments",
+                "revision":"rev-7",
+                "file":"Writer.java",
+                "textDigest":"source-text-digest",
+                "evidenceDigest":"source-evidence-digest",
+                "authority":"COMPILER",
+                "text":"private void flush() { body }"
+            }
+        });
+        let matching_source_and_part = present(
+            &[page(
+                "source-and-part",
+                vec![navigation.clone(), source.clone()],
+            )],
+            &[part.clone()],
+        );
+        assert_eq!(
+            matching_source_and_part["callableReadActions"][0]["sourceDelivery"]["status"],
+            "DELIVERED"
+        );
+        let mut source_identity_conflict = part.clone();
+        source_identity_conflict["sourceId"] = json!("other-source-id");
+        source_identity_conflict["source"]["id"] = json!("other-source-id");
+        let source_part_conflict = present(
+            &[page(
+                "source-part-conflict",
+                vec![navigation.clone(), source.clone()],
+            )],
+            &[source_identity_conflict],
+        );
+        assert_eq!(
+            source_part_conflict["callableReadActions"][0]["sourceDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+        let mut source_provenance_conflict = part.clone();
+        source_provenance_conflict["source"]["textDigest"] = json!("different-text-digest");
+        let source_digest_conflict = present(
+            &[page(
+                "source-digest-conflict",
+                vec![navigation.clone(), source.clone()],
+            )],
+            &[source_provenance_conflict],
+        );
+        assert_eq!(
+            source_digest_conflict["callableReadActions"][0]["sourceDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+        let mut wrong_service = source;
+        wrong_service["record"]["service"] = json!("other-service");
+        let source_service_conflict = present(
+            &[page(
+                "source-service-conflict",
+                vec![navigation.clone(), wrong_service],
+            )],
+            &[],
+        );
+        assert_eq!(
+            source_service_conflict["callableReadActions"][0]["sourceDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+
+        let matching_declaration = matching_symbol_row("dependency-handle", &["source-fragment"]);
+        let matching_context = present(
+            &[page(
+                "matching",
+                vec![navigation.clone(), matching_declaration.clone()],
+            )],
+            &[],
+        );
+        assert_eq!(
+            matching_context["callableReadActions"][0]["declarationDelivery"]["status"],
+            "DELIVERED"
+        );
+
+        let mut mismatched_declaration = matching_declaration.clone();
+        mismatched_declaration["record"]["digest"] = json!("different-digest");
+        let mismatch_context = present(
+            &[page(
+                "digest-mismatch",
+                vec![navigation.clone(), mismatched_declaration],
+            )],
+            &[],
+        );
+        assert_eq!(
+            mismatch_context["callableReadActions"][0]["declarationDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+
+        let mut missing_provenance = matching_declaration.clone();
+        missing_provenance["record"]
+            .as_object_mut()
+            .unwrap()
+            .remove("digest");
+        let missing_context = present(
+            &[page(
+                "missing-digest",
+                vec![navigation.clone(), missing_provenance],
+            )],
+            &[],
+        );
+        assert_eq!(
+            missing_context["callableReadActions"][0]["declarationDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+
+        let first = matching_declaration;
+        let mut second = first.clone();
+        second["record"]["digest"] = json!("other-digest");
+        let conflicting_rows = present(
+            &[page(
+                "same-handle-conflict",
+                vec![navigation.clone(), first, second],
+            )],
+            &[],
+        );
+        assert_eq!(
+            conflicting_rows["callableReadActions"][0]["declarationDelivery"]["status"],
+            "AMBIGUOUS_OR_MISMATCHED"
+        );
+
+        let mut non_symbol_navigation = navigation;
+        non_symbol_navigation["record"]["provenance"]["kind"] = json!("FLOW");
+        let non_symbol_context =
+            present(&[page("flow-navigation", vec![non_symbol_navigation])], &[]);
+        assert!(non_symbol_context.get("callableReadActions").is_none());
     }
 
     #[test]
