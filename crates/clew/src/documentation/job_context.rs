@@ -7,6 +7,8 @@ use super::{analysis, model::Source, process_context};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+type SourceOccurrences = HashMap<(String, String), Vec<(usize, usize, Source)>>;
+
 /// Build the shared evidence envelope used by documentation author and review
 /// jobs. Exact duplicate page rows are removed from this presentation only;
 /// the page receipts and the inputs passed to this function remain unchanged.
@@ -341,7 +343,7 @@ fn alias_symbol_tokens_and_events(
                         all_covered = false;
                         break;
                     };
-                    if process_context::covered_text(&source.2, &flow_source.2).is_none() {
+                    if process_context::covered_text(source.2, flow_source.2).is_none() {
                         all_covered = false;
                         break;
                     }
@@ -393,7 +395,7 @@ fn optional_scope(normalized: &Value) -> Option<Option<String>> {
 
 fn unique_bound_source<'r, 's>(
     row: &'r Value,
-    sources: &'s HashMap<(String, String), Vec<(usize, usize, Source)>>,
+    sources: &'s SourceOccurrences,
 ) -> Option<(usize, usize, &'s Source, &'r str)> {
     let ids = row["record"]["sourceIds"].as_array()?;
     let references = row["sourceReferences"].as_array()?;
@@ -654,13 +656,13 @@ fn project_pages(pages: &[Value]) -> (Vec<Value>, Option<Value>) {
 fn callable_inventory(pages: &[Value], source_parts: &[Value]) -> Vec<Value> {
     let mut source_rows_by_reference = HashMap::<String, Vec<&Value>>::new();
     for item in page_items(pages) {
-        if item["kind"] == "SOURCE" {
-            if let Some(reference) = item["reference"].as_str() {
-                source_rows_by_reference
-                    .entry(reference.to_owned())
-                    .or_default()
-                    .push(item);
-            }
+        if item["kind"] == "SOURCE"
+            && let Some(reference) = item["reference"].as_str()
+        {
+            source_rows_by_reference
+                .entry(reference.to_owned())
+                .or_default()
+                .push(item);
         }
     }
     let mut source_parts_by_reference = HashMap::<String, Vec<&Value>>::new();
@@ -1253,17 +1255,30 @@ mod tests {
         row
     }
 
-    fn flow_row(
-        reference: &str,
-        flow_id: &str,
-        service: &str,
-        symbol: &str,
-        scope: Option<&str>,
+    struct FlowRowInput<'a> {
+        reference: &'a str,
+        flow_id: &'a str,
+        service: &'a str,
+        symbol: &'a str,
+        scope: Option<&'a str>,
         ordinal: u64,
         event: Value,
-        source_reference: &str,
-        source_id: &str,
-    ) -> Value {
+        source_reference: &'a str,
+        source_id: &'a str,
+    }
+
+    fn flow_row(input: FlowRowInput<'_>) -> Value {
+        let FlowRowInput {
+            reference,
+            flow_id,
+            service,
+            symbol,
+            scope,
+            ordinal,
+            event,
+            source_reference,
+            source_id,
+        } = input;
         let mut normalized = event.as_object().cloned().unwrap_or_default();
         normalized.insert("ordinal".into(), json!(ordinal));
         if let Some(scope) = scope {
@@ -1294,28 +1309,28 @@ mod tests {
         flow_ordinal: u64,
     ) -> Vec<Value> {
         let source_text = format!("class Worker {{\n{}\n}}", "  void work() {}\n".repeat(120));
-        let symbol_source = source_row(
-            "symbol-source-ref",
-            "symbol-source-id",
-            "payments",
-            "rev-1",
-            "EXACT_SNAPSHOT_TEXT",
-            &source_text,
-            1,
-            0,
-            "shared-blob",
-        );
-        let flow_source = source_row(
-            "flow-source-ref",
-            "flow-source-id",
-            "payments",
-            "rev-1",
-            "EXACT_SNAPSHOT_TEXT",
-            &source_text,
-            1,
-            0,
-            "shared-blob",
-        );
+        let symbol_source = source_row(SourceRowInput {
+            reference: "symbol-source-ref",
+            id: "symbol-source-id",
+            service: "payments",
+            revision: "rev-1",
+            authority: "EXACT_SNAPSHOT_TEXT",
+            text: &source_text,
+            start_line: 1,
+            occurrence_start: 0,
+            blob: "shared-blob",
+        });
+        let flow_source = source_row(SourceRowInput {
+            reference: "flow-source-ref",
+            id: "flow-source-id",
+            service: "payments",
+            revision: "rev-1",
+            authority: "EXACT_SNAPSHOT_TEXT",
+            text: &source_text,
+            start_line: 1,
+            occurrence_start: 0,
+            blob: "shared-blob",
+        });
         let symbol = symbol_row_with_source(
             "symbol-ref",
             "symbol-source-ref",
@@ -1327,32 +1342,45 @@ mod tests {
         );
         let mut rows = vec![symbol_source, flow_source, symbol];
         if let Some(flow_event) = flow_event {
-            rows.push(flow_row(
-                "flow-ref-0",
-                "flow-id-0",
-                "payments",
-                "ledger.Writer.flush",
-                flow_scope,
-                flow_ordinal,
-                flow_event,
-                "flow-source-ref",
-                "flow-source-id",
-            ));
+            rows.push(flow_row(FlowRowInput {
+                reference: "flow-ref-0",
+                flow_id: "flow-id-0",
+                service: "payments",
+                symbol: "ledger.Writer.flush",
+                scope: flow_scope,
+                ordinal: flow_ordinal,
+                event: flow_event,
+                source_reference: "flow-source-ref",
+                source_id: "flow-source-id",
+            }));
         }
         rows
     }
 
-    fn source_row(
-        reference: &str,
-        id: &str,
-        service: &str,
-        revision: &str,
-        authority: &str,
-        text: &str,
+    struct SourceRowInput<'a> {
+        reference: &'a str,
+        id: &'a str,
+        service: &'a str,
+        revision: &'a str,
+        authority: &'a str,
+        text: &'a str,
         start_line: u64,
         occurrence_start: usize,
-        blob: &str,
-    ) -> Value {
+        blob: &'a str,
+    }
+
+    fn source_row(input: SourceRowInput<'_>) -> Value {
+        let SourceRowInput {
+            reference,
+            id,
+            service,
+            revision,
+            authority,
+            text,
+            start_line,
+            occurrence_start,
+            blob,
+        } = input;
         let end_line = start_line + text.lines().count() as u64 - 1;
         json!({
             "kind":"SOURCE",
@@ -1683,28 +1711,28 @@ mod tests {
     fn covered_source_text_uses_exact_utf8_slice_and_preserves_each_identity() {
         let fragment_text = "αβ".repeat(1024);
         let body_text = format!("head\n{fragment_text}\ntail");
-        let body = source_row(
-            "source-body",
-            "source-body-id",
-            "svc",
-            "rev-1",
-            "COMPILER",
-            &body_text,
-            10,
-            100,
-            "blob-1",
-        );
-        let fragment = source_row(
-            "source-fragment",
-            "source-fragment-id",
-            "svc",
-            "rev-1",
-            "COMPILER",
-            &fragment_text,
-            11,
-            105,
-            "blob-1",
-        );
+        let body = source_row(SourceRowInput {
+            reference: "source-body",
+            id: "source-body-id",
+            service: "svc",
+            revision: "rev-1",
+            authority: "COMPILER",
+            text: &body_text,
+            start_line: 10,
+            occurrence_start: 100,
+            blob: "blob-1",
+        });
+        let fragment = source_row(SourceRowInput {
+            reference: "source-fragment",
+            id: "source-fragment-id",
+            service: "svc",
+            revision: "rev-1",
+            authority: "COMPILER",
+            text: &fragment_text,
+            start_line: 11,
+            occurrence_start: 105,
+            blob: "blob-1",
+        });
         let original_pages = vec![page("receipt-a", vec![body.clone(), fragment.clone()])];
         let original_parts = vec![json!({"reference":"part-ref","text":"caller input"})];
         let context = present(&original_pages, &original_parts);
@@ -1764,9 +1792,17 @@ mod tests {
         let body_text = format!("head\n{fragment_text}\ntail");
         let body_start = 100;
         let fragment_offset = body_text.find(&fragment_text).unwrap();
-        let body = source_row(
-            "body", "body-id", "svc", "rev-1", "COMPILER", &body_text, 10, body_start, "blob-1",
-        );
+        let body = source_row(SourceRowInput {
+            reference: "body",
+            id: "body-id",
+            service: "svc",
+            revision: "rev-1",
+            authority: "COMPILER",
+            text: &body_text,
+            start_line: 10,
+            occurrence_start: body_start,
+            blob: "blob-1",
+        });
         let make_fragment = |reference: &str,
                              id: &str,
                              service: &str,
@@ -1775,17 +1811,17 @@ mod tests {
                              start_line: u64,
                              offset: usize,
                              blob: &str| {
-            source_row(
+            source_row(SourceRowInput {
                 reference,
                 id,
                 service,
                 revision,
                 authority,
-                &fragment_text,
+                text: &fragment_text,
                 start_line,
-                body_start + offset,
+                occurrence_start: body_start + offset,
                 blob,
-            )
+            })
         };
         let rows = vec![
             body,
@@ -1882,20 +1918,28 @@ mod tests {
     fn malformed_or_incomplete_source_metadata_is_left_unchanged() {
         let fragment_text = "very long source fragment ".repeat(100);
         let body_text = format!("body\n{fragment_text}\nend");
-        let body = source_row(
-            "body", "body-id", "svc", "rev", "COMPILER", &body_text, 1, 0, "blob",
-        );
-        let mut fragment = source_row(
-            "fragment",
-            "fragment-id",
-            "svc",
-            "rev",
-            "COMPILER",
-            &fragment_text,
-            2,
-            5,
-            "blob",
-        );
+        let body = source_row(SourceRowInput {
+            reference: "body",
+            id: "body-id",
+            service: "svc",
+            revision: "rev",
+            authority: "COMPILER",
+            text: &body_text,
+            start_line: 1,
+            occurrence_start: 0,
+            blob: "blob",
+        });
+        let mut fragment = source_row(SourceRowInput {
+            reference: "fragment",
+            id: "fragment-id",
+            service: "svc",
+            revision: "rev",
+            authority: "COMPILER",
+            text: &fragment_text,
+            start_line: 2,
+            occurrence_start: 5,
+            blob: "blob",
+        });
         fragment["record"]
             .as_object_mut()
             .unwrap()
@@ -1915,17 +1959,17 @@ mod tests {
             "public class Worker {{\n{}\n}}",
             "  int count = 1; count++;\n".repeat(80)
         );
-        let source = source_row(
-            "token-source-ref",
-            "token-source-id",
-            "payments",
-            "rev-1",
-            "EXACT_SNAPSHOT_TEXT",
-            &text,
-            1,
-            0,
-            "token-blob",
-        );
+        let source = source_row(SourceRowInput {
+            reference: "token-source-ref",
+            id: "token-source-id",
+            service: "payments",
+            revision: "rev-1",
+            authority: "EXACT_SNAPSHOT_TEXT",
+            text: &text,
+            start_line: 1,
+            occurrence_start: 0,
+            blob: "token-blob",
+        });
         let tokens = analysis::java_tokens(&text)
             .into_iter()
             .map(Value::String)
@@ -2009,17 +2053,17 @@ mod tests {
         assert!(incomplete_symbol["record"]["normalized"]["sourceTokensDisplayAlias"].is_null());
         assert!(incomplete_symbol["record"]["normalized"]["sourceTokens"].is_array());
 
-        let source = source_row(
-            "source-ref",
-            "source-id",
-            "payments",
-            "rev-1",
-            "EXACT_SNAPSHOT_TEXT",
-            &text,
-            1,
-            0,
-            "token-mismatch-blob",
-        );
+        let source = source_row(SourceRowInput {
+            reference: "source-ref",
+            id: "source-id",
+            service: "payments",
+            revision: "rev-1",
+            authority: "EXACT_SNAPSHOT_TEXT",
+            text: &text,
+            start_line: 1,
+            occurrence_start: 0,
+            blob: "token-mismatch-blob",
+        });
         let mut mismatched_tokens = tokens;
         mismatched_tokens.pop();
         let mismatched_symbol = symbol_row_with_source(
@@ -2515,7 +2559,7 @@ mod tests {
                 "source-and-part",
                 vec![navigation.clone(), source.clone()],
             )],
-            &[part.clone()],
+            std::slice::from_ref(&part),
         );
         assert_eq!(
             matching_source_and_part["callableReadActions"][0]["sourceDelivery"]["status"],

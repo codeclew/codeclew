@@ -1058,10 +1058,10 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
         // Unselected Work may mix summary, note, dataflow, and sequence roots.
         // Add conditional format guidance only when an admitted sequence root exists.
         super::proposals::expected(work).iter().any(|root| {
-            !(work.subject.starts_with("service:") && super::sections::contains(root))
-                && !super::notes::is_root(root)
-                && !super::processes::overview(&work.checked, &work.subject, root)
-                && !super::dataflow::is_root(&work.checked, &work.subject, root)
+            !(super::notes::is_root(root)
+                || super::processes::overview(&work.checked, &work.subject, root)
+                || super::dataflow::is_root(&work.checked, &work.subject, root)
+                || work.subject.starts_with("service:") && super::sections::contains(root))
         })
     };
     let sections: Vec<Value> = if work.subject.starts_with("service:") {
@@ -1525,24 +1525,28 @@ fn reviewer_payload_with_parts(
     Ok(payload)
 }
 
-fn reviewer_payload_with_expansion_remaining(
-    work: &super::work::Work,
-    pages: &[Value],
-    source_parts: &[Value],
-    proposal: &super::proposals::Artifact,
-    evidence_digest: &str,
+struct ReviewerPayloadInput<'a> {
+    work: &'a super::work::Work,
+    pages: &'a [Value],
+    source_parts: &'a [Value],
+    proposal: &'a super::proposals::Artifact,
+    evidence_digest: &'a str,
     section_contract: bool,
-    state: &super::work::ReadState,
+    state: &'a super::work::ReadState,
+}
+
+fn reviewer_payload_with_expansion_remaining(
+    input: ReviewerPayloadInput<'_>,
     expansions_remaining: Option<u32>,
 ) -> Result<Value, ClewError> {
     let mut payload = reviewer_payload_with_parts(
-        work,
-        pages,
-        source_parts,
-        proposal,
-        evidence_digest,
-        section_contract,
-        state,
+        input.work,
+        input.pages,
+        input.source_parts,
+        input.proposal,
+        input.evidence_digest,
+        input.section_contract,
+        input.state,
     )?;
     bind_expansion_remaining(&mut payload, expansions_remaining, "reviewAction", "review")?;
     Ok(payload)
@@ -1700,13 +1704,15 @@ fn reviewer_preflight(
     };
     let evidence_digest = format!("sha256:{}", "0".repeat(64));
     let fixed_payload = reviewer_payload_with_expansion_remaining(
-        work,
-        pages,
-        source_parts,
-        &proposal,
-        &evidence_digest,
-        config.author_output_contract.is_some(),
-        state,
+        ReviewerPayloadInput {
+            work,
+            pages,
+            source_parts,
+            proposal: &proposal,
+            evidence_digest: &evidence_digest,
+            section_contract: config.author_output_contract.is_some(),
+            state,
+        },
         Some(expansions_remaining),
     );
     let (fixed_bytes, allowance, candidate_bytes, status, detail) =
@@ -3243,13 +3249,15 @@ fn reviewed_publication(
         ));
     }
     let payload = reviewer_payload_with_expansion_remaining(
-        work,
-        &checkpoint.pages,
-        &checkpoint.source_parts,
-        &proposal,
-        &evidence_digest,
-        config.author_output_contract.is_some(),
-        &read_state,
+        ReviewerPayloadInput {
+            work,
+            pages: &checkpoint.pages,
+            source_parts: &checkpoint.source_parts,
+            proposal: &proposal,
+            evidence_digest: &evidence_digest,
+            section_contract: config.author_output_contract.is_some(),
+            state: &read_state,
+        },
         Some(checkpoint.expansions_remaining),
     )
     .map_err(|error| recovery_refusal("RECOVERY_PUBLICATION_INPUT_MISMATCH", error))?;
@@ -3885,13 +3893,15 @@ fn execute_run(
             let evidence_digest =
                 digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
             let mut payload = reviewer_payload_with_expansion_remaining(
-                work,
-                &pages,
-                &source_parts,
-                &proposal,
-                &evidence_digest,
-                contract.is_some(),
-                &read_state,
+                ReviewerPayloadInput {
+                    work,
+                    pages: &pages,
+                    source_parts: &source_parts,
+                    proposal: &proposal,
+                    evidence_digest: &evidence_digest,
+                    section_contract: contract.is_some(),
+                    state: &read_state,
+                },
                 Some(checkpoint.expansions_remaining),
             )?;
             if let Some(feedback) = &checkpoint.expansion_feedback {
@@ -4776,20 +4786,21 @@ mod input_cap_tests {
         let mut pages = Vec::new();
         let mut source_parts = Vec::new();
         let query = json!({"action":"expand","selection":{"query":{"kind":"SYMBOL","symbolContains":"method"}}});
-        let mut context = ExpansionContext {
-            pages: &mut pages,
-            source_parts: &mut source_parts,
-            remaining: &mut remaining,
-            config: &config,
-            report: &mut report,
+        let first_cursor = {
+            let mut context = ExpansionContext {
+                pages: &mut pages,
+                source_parts: &mut source_parts,
+                remaining: &mut remaining,
+                config: &config,
+                report: &mut report,
+            };
+            assert!(matches!(
+                add_expansion(&repo, &work, &query, &mut context).unwrap(),
+                ExpansionOutcome::Added
+            ));
+            assert_eq!(context.pages.len(), 1);
+            context.pages[0]["nextCursor"].as_str().unwrap().to_owned()
         };
-        assert!(matches!(
-            add_expansion(&repo, &work, &query, &mut context).unwrap(),
-            ExpansionOutcome::Added
-        ));
-        assert_eq!(context.pages.len(), 1);
-        let first_cursor = context.pages[0]["nextCursor"].as_str().unwrap().to_owned();
-        drop(context);
         let receipts = super::super::work::read_state(&repo, &work.id).unwrap();
         let first_receipt = receipts
             .receipts
@@ -5943,13 +5954,15 @@ mod input_cap_tests {
             meaning_review: "UNASSESSED".into(),
         };
         let zero_reviewer = reviewer_payload_with_expansion_remaining(
-            &narrow,
-            &[],
-            &[],
-            &proposal,
-            "sha256:evidence",
-            true,
-            &state,
+            ReviewerPayloadInput {
+                work: &narrow,
+                pages: &[],
+                source_parts: &[],
+                proposal: &proposal,
+                evidence_digest: "sha256:evidence",
+                section_contract: true,
+                state: &state,
+            },
             Some(0),
         )
         .unwrap();

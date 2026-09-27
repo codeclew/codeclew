@@ -156,10 +156,10 @@ fn entrypoint_trigger_metadata(
             }
         }
     }
-    if terms.is_empty() {
-        if let Some(value) = trigger.as_str().filter(|value| !value.trim().is_empty()) {
-            terms.insert(value.to_owned(), ());
-        }
+    if terms.is_empty()
+        && let Some(value) = trigger.as_str().filter(|value| !value.trim().is_empty())
+    {
+        terms.insert(value.to_owned(), ());
     }
     let mut display: Vec<String> = groups
         .into_iter()
@@ -178,10 +178,10 @@ fn entrypoint_trigger_metadata(
             )
         })
         .collect();
-    if display.is_empty() {
-        if let Some(value) = trigger.as_str().filter(|value| !value.trim().is_empty()) {
-            display.push(value.to_owned());
-        }
+    if display.is_empty()
+        && let Some(value) = trigger.as_str().filter(|value| !value.trim().is_empty())
+    {
+        display.push(value.to_owned());
     }
     (terms.into_keys().collect(), display)
 }
@@ -447,10 +447,10 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
             api_rows.entry(key).or_insert(row);
         }
         for ((row_service, entry_id), row) in api_rows.iter_mut() {
-            if row_service == service_id {
-                if let Some(terms) = linked_contracts.get(entry_id) {
-                    search_terms(row, terms.clone());
-                }
+            if row_service == service_id
+                && let Some(terms) = linked_contracts.get(entry_id)
+            {
+                search_terms(row, terms.clone());
             }
         }
 
