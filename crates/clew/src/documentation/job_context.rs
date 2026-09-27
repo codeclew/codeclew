@@ -3,7 +3,7 @@
 //! This module projects only the page rows and source parts passed to it. It
 //! does not load Work state or resolve navigation handles.
 
-use super::{model::Source, process_context};
+use super::{analysis, model::Source, process_context};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -14,8 +14,10 @@ pub(super) fn present(pages: &[Value], source_parts: &[Value]) -> Value {
     let (mut pages, presentation) = project_pages(pages);
     let callables = callable_inventory(&pages, source_parts);
     let baseline = evidence_context(&pages, source_parts, &callables, presentation.as_ref());
+    let raw_pages = pages.clone();
     let mut summary = ProjectionSummary::default();
     alias_source_texts(&mut pages, &mut summary);
+    alias_symbol_tokens_and_events(&raw_pages, &mut pages, &mut summary);
     if summary.is_empty() {
         return baseline;
     }
@@ -57,17 +59,23 @@ fn evidence_context(
 #[derive(Default)]
 struct ProjectionSummary {
     source_text_alias_count: usize,
+    source_token_alias_count: usize,
+    documentation_event_alias_count: usize,
     source_aliases_by_page: BTreeMap<usize, PageProjectionCounts>,
 }
 
 #[derive(Default)]
 struct PageProjectionCounts {
     source_text_aliases: usize,
+    source_token_aliases: usize,
+    documentation_event_aliases: usize,
 }
 
 impl ProjectionSummary {
     fn is_empty(&self) -> bool {
         self.source_text_alias_count == 0
+            && self.source_token_alias_count == 0
+            && self.documentation_event_alias_count == 0
     }
 
     fn page_counts(&mut self, page_index: usize) -> &mut PageProjectionCounts {
@@ -96,6 +104,21 @@ struct SourceCandidate {
     item_index: usize,
     reference: String,
     source: Source,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FlowKey {
+    service: String,
+    symbol: String,
+    scope: Option<String>,
+    ordinal: u64,
+}
+
+struct FlowCandidate<'a> {
+    page_index: usize,
+    item_index: usize,
+    reference: String,
+    item: &'a Value,
 }
 
 fn alias_source_texts(pages: &mut [Value], summary: &mut ProjectionSummary) {
@@ -184,6 +207,211 @@ fn alias_source_texts(pages: &mut [Value], summary: &mut ProjectionSummary) {
     }
 }
 
+fn alias_symbol_tokens_and_events(
+    raw_pages: &[Value],
+    pages: &mut [Value],
+    summary: &mut ProjectionSummary,
+) {
+    let mut sources = HashMap::<(String, String), Vec<(usize, usize, Source)>>::new();
+    let mut flows = BTreeMap::<FlowKey, Vec<FlowCandidate<'_>>>::new();
+    for (page_index, page) in raw_pages.iter().enumerate() {
+        for (item_index, item) in page_items(std::slice::from_ref(page)).enumerate() {
+            if let Some(source) = valid_source_row(item)
+                && let (Some(id), Some(reference)) =
+                    (item["id"].as_str(), item["reference"].as_str())
+            {
+                sources
+                    .entry((id.to_owned(), reference.to_owned()))
+                    .or_default()
+                    .push((page_index, item_index, source));
+            }
+            if item["kind"] != "DEPENDENCY" || item["record"]["kind"] != "FLOW" {
+                continue;
+            }
+            let (Some(service), Some(symbol), Some(ordinal), Some(reference)) = (
+                item["record"]["service"].as_str(),
+                item["record"]["symbol"].as_str(),
+                item["record"]["normalized"]["ordinal"].as_u64(),
+                item["reference"].as_str(),
+            ) else {
+                continue;
+            };
+            let Some(scope) = optional_scope(&item["record"]["normalized"]) else {
+                continue;
+            };
+            let key = FlowKey {
+                service: service.to_owned(),
+                symbol: symbol.to_owned(),
+                scope,
+                ordinal,
+            };
+            flows.entry(key).or_default().push(FlowCandidate {
+                page_index,
+                item_index,
+                reference: reference.to_owned(),
+                item,
+            });
+        }
+    }
+
+    for (page_index, raw_page) in raw_pages.iter().enumerate() {
+        let Some(items) = raw_page["items"].as_array() else {
+            continue;
+        };
+        for (item_index, raw_item) in items.iter().enumerate() {
+            if raw_item["kind"] != "DEPENDENCY" || raw_item["record"]["kind"] != "SYMBOL" {
+                continue;
+            }
+            let Some(source) = unique_bound_source(raw_item, &sources) else {
+                continue;
+            };
+            let location = json!({
+                "pageIndex":source.0,
+                "itemIndex":source.1,
+                "reference":source.3
+            });
+            let item = &mut pages[page_index]["items"][item_index];
+            let original_size = compact_json_len(item);
+            let mut projected_item = item.clone();
+            let normalized = &mut projected_item["record"]["normalized"];
+            let mut changed_tokens = false;
+            if let Some(tokens) = raw_item["record"]["normalized"]["sourceTokens"].as_array()
+                && !tokens.is_empty()
+                && analysis::java_tokens(&source.2.text)
+                    .into_iter()
+                    .map(Value::String)
+                    .collect::<Vec<_>>()
+                    == *tokens
+                && let Some(normalized) = normalized.as_object_mut()
+            {
+                normalized.remove("sourceTokens");
+                normalized.insert(
+                    "sourceTokensDisplayAlias".into(),
+                    json!({"target":location}),
+                );
+                changed_tokens = true;
+            }
+
+            let mut changed_events = false;
+            let raw_events = raw_item["record"]["normalized"]["documentation"]["events"].as_array();
+            if let Some(events) = raw_events
+                && !events.is_empty()
+                && events.iter().all(|event| {
+                    event.is_object()
+                        && event.get("scope").is_none()
+                        && event.get("ordinal").is_none()
+                })
+                && let Some(scope) = optional_scope(&raw_item["record"]["normalized"])
+                && let (Some(service), Some(symbol)) = (
+                    raw_item["record"]["service"].as_str(),
+                    raw_item["record"]["symbol"].as_str(),
+                )
+            {
+                let mut targets = Vec::with_capacity(events.len());
+                let mut all_covered = true;
+                for (ordinal, event) in events.iter().enumerate() {
+                    let key = FlowKey {
+                        service: service.to_owned(),
+                        symbol: symbol.to_owned(),
+                        scope: scope.clone(),
+                        ordinal: ordinal as u64,
+                    };
+                    let Some([flow]) = flows.get(&key).map(Vec::as_slice) else {
+                        all_covered = false;
+                        break;
+                    };
+                    let normalized_flow = &flow.item["record"]["normalized"];
+                    if flow_payload(normalized_flow).as_ref() != Some(event) {
+                        all_covered = false;
+                        break;
+                    }
+                    let Some(flow_source) = unique_bound_source(flow.item, &sources) else {
+                        all_covered = false;
+                        break;
+                    };
+                    if process_context::covered_text(&source.2, &flow_source.2).is_none() {
+                        all_covered = false;
+                        break;
+                    }
+                    targets.push(json!({
+                        "ordinal":ordinal,
+                        "target":{
+                            "pageIndex":flow.page_index,
+                            "itemIndex":flow.item_index,
+                            "reference":flow.reference
+                        }
+                    }));
+                }
+                if all_covered
+                    && let Some(documentation) = normalized["documentation"].as_object_mut()
+                {
+                    documentation.remove("events");
+                    documentation.insert(
+                        "eventsDisplayAlias".into(),
+                        json!({"orderedFlowTargets":targets}),
+                    );
+                    changed_events = true;
+                }
+            }
+
+            if (changed_tokens || changed_events)
+                && compact_json_len(&projected_item) < original_size
+            {
+                *item = projected_item;
+                if changed_tokens {
+                    summary.source_token_alias_count += 1;
+                    summary.page_counts(page_index).source_token_aliases += 1;
+                }
+                if changed_events {
+                    summary.documentation_event_alias_count += 1;
+                    summary.page_counts(page_index).documentation_event_aliases += 1;
+                }
+            }
+        }
+    }
+}
+
+fn optional_scope(normalized: &Value) -> Option<Option<String>> {
+    match normalized.get("scope") {
+        None => Some(None),
+        Some(Value::String(scope)) if !scope.is_empty() => Some(Some(scope.clone())),
+        _ => None,
+    }
+}
+
+fn unique_bound_source<'r, 's>(
+    row: &'r Value,
+    sources: &'s HashMap<(String, String), Vec<(usize, usize, Source)>>,
+) -> Option<(usize, usize, &'s Source, &'r str)> {
+    let ids = row["record"]["sourceIds"].as_array()?;
+    let references = row["sourceReferences"].as_array()?;
+    if ids.len() != 1 || references.len() != 1 {
+        return None;
+    }
+    let id = ids[0].as_str()?;
+    let reference = references[0].as_str()?;
+    if id.is_empty() || reference.is_empty() {
+        return None;
+    }
+    let candidates = sources.get(&(id.to_owned(), reference.to_owned()))?;
+    let [(page_index, item_index, source)] = candidates.as_slice() else {
+        return None;
+    };
+    if source.service != row["record"]["service"].as_str()? {
+        return None;
+    }
+    Some((*page_index, *item_index, source, reference))
+}
+
+fn flow_payload(normalized: &Value) -> Option<Value> {
+    let mut payload = normalized.as_object()?.clone();
+    payload.remove("ordinal")?;
+    if payload.contains_key("scope") {
+        payload.remove("scope");
+    }
+    Some(Value::Object(payload))
+}
+
 fn valid_source_row(item: &Value) -> Option<Source> {
     if item["kind"] != "SOURCE"
         || item["id"].as_str().is_none_or(str::is_empty)
@@ -244,6 +472,18 @@ fn mark_projected_pages(pages: &mut [Value], summary: &ProjectionSummary) {
                 json!(counts.source_text_aliases),
             );
         }
+        if counts.source_token_aliases > 0 {
+            projection.insert(
+                "sourceTokenAliasCount".into(),
+                json!(counts.source_token_aliases),
+            );
+        }
+        if counts.documentation_event_aliases > 0 {
+            projection.insert(
+                "documentationEventAliasCount".into(),
+                json!(counts.documentation_event_aliases),
+            );
+        }
         projection.insert(
             "authority".into(),
             json!("DISPLAY_PROJECTION_ONLY_ORIGINAL_PAGE_RECEIPT_UNCHANGED"),
@@ -255,15 +495,46 @@ fn merge_presentation(base: Option<Value>, summary: &ProjectionSummary) -> Value
     let mut presentation = base
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
-    presentation.insert(
-        "representationProjection".into(),
-        json!({
-            "kind":"DISPLAY_ONLY_REPRESENTATION_PROJECTION",
-            "sourceTextAliasCount":summary.source_text_alias_count,
-            "authority":"DISPLAY_PROJECTION_ONLY_ORIGINAL_PAGE_RECEIPTS_UNCHANGED",
-            "sourceTextAliasInstruction":"For SOURCE rows with displayTextAlias, reconstruct record.text by slicing the delivered target SOURCE record.text at the stated UTF-8 byte offsets. The original SOURCE identity and citation reference remain on the alias row."
-        }),
+    let mut projection = Map::new();
+    projection.insert(
+        "kind".into(),
+        json!("DISPLAY_ONLY_REPRESENTATION_PROJECTION"),
     );
+    projection.insert(
+        "authority".into(),
+        json!("DISPLAY_PROJECTION_ONLY_ORIGINAL_PAGE_RECEIPTS_UNCHANGED"),
+    );
+    if summary.source_text_alias_count > 0 {
+        projection.insert(
+            "sourceTextAliasCount".into(),
+            json!(summary.source_text_alias_count),
+        );
+        projection.insert(
+            "sourceTextAliasInstruction".into(),
+            json!("For SOURCE rows with displayTextAlias, reconstruct record.text by slicing the delivered target SOURCE record.text at the stated UTF-8 byte offsets. The original SOURCE identity and citation reference remain on the alias row."),
+        );
+    }
+    if summary.source_token_alias_count > 0 {
+        projection.insert(
+            "sourceTokenAliasCount".into(),
+            json!(summary.source_token_alias_count),
+        );
+        projection.insert(
+            "sourceTokenAliasInstruction".into(),
+            json!("For SYMBOL rows with sourceTokensDisplayAlias, the original token list was generated from the identified delivered SOURCE text by Codeclew's Java tokenizer; read that SOURCE directly for explanation, and regenerate the list only when exact representation reconstruction is required. The alias is display-only; SYMBOL identity, digest and citation reference remain unchanged."),
+        );
+    }
+    if summary.documentation_event_alias_count > 0 {
+        projection.insert(
+            "documentationEventAliasCount".into(),
+            json!(summary.documentation_event_alias_count),
+        );
+        projection.insert(
+            "documentationEventAliasInstruction".into(),
+            json!("For SYMBOL rows with documentation.eventsDisplayAlias, restore events in orderedFlowTargets order by copying each target standalone FLOW normalized payload and removing its capture-added ordinal and scope. Each FLOW row and its citation remain delivered; the alias does not add source authority."),
+        );
+    }
+    presentation.insert("representationProjection".into(), Value::Object(projection));
     Value::Object(presentation)
 }
 
@@ -618,6 +889,106 @@ mod tests {
         })
     }
 
+    fn symbol_row_with_source(
+        reference: &str,
+        source_reference: &str,
+        source_id: &str,
+        normalized: Value,
+    ) -> Value {
+        let mut row = symbol_row(reference, &[source_reference], normalized);
+        row["record"]["sourceIds"] = json!([source_id]);
+        row
+    }
+
+    fn flow_row(
+        reference: &str,
+        flow_id: &str,
+        service: &str,
+        symbol: &str,
+        scope: Option<&str>,
+        ordinal: u64,
+        event: Value,
+        source_reference: &str,
+        source_id: &str,
+    ) -> Value {
+        let mut normalized = event.as_object().cloned().unwrap_or_default();
+        normalized.insert("ordinal".into(), json!(ordinal));
+        if let Some(scope) = scope {
+            normalized.insert("scope".into(), json!(scope));
+        }
+        json!({
+            "kind":"DEPENDENCY",
+            "id":flow_id,
+            "reference":reference,
+            "referenceRoles":["evidence"],
+            "sourceReferences":[source_reference],
+            "record":{
+                "id":flow_id,
+                "kind":"FLOW",
+                "service":service,
+                "symbol":symbol,
+                "digest":format!("digest-{flow_id}"),
+                "sourceIds":[source_id],
+                "normalized":normalized
+            }
+        })
+    }
+
+    fn event_fixture(
+        event: Value,
+        flow_event: Option<Value>,
+        flow_scope: Option<&str>,
+        flow_ordinal: u64,
+    ) -> Vec<Value> {
+        let source_text = format!("class Worker {{\n{}\n}}", "  void work() {}\n".repeat(120));
+        let symbol_source = source_row(
+            "symbol-source-ref",
+            "symbol-source-id",
+            "payments",
+            "rev-1",
+            "EXACT_SNAPSHOT_TEXT",
+            &source_text,
+            1,
+            0,
+            "shared-blob",
+        );
+        let flow_source = source_row(
+            "flow-source-ref",
+            "flow-source-id",
+            "payments",
+            "rev-1",
+            "EXACT_SNAPSHOT_TEXT",
+            &source_text,
+            1,
+            0,
+            "shared-blob",
+        );
+        let symbol = symbol_row_with_source(
+            "symbol-ref",
+            "symbol-source-ref",
+            "symbol-source-id",
+            json!({
+                "scope":"method-scope",
+                "documentation":{"events":[event]}
+            }),
+        );
+        let mut rows = vec![symbol_source, flow_source, symbol];
+        if let Some(flow_event) = flow_event {
+            rows.push(flow_row(
+                "flow-ref-0",
+                "flow-id-0",
+                "payments",
+                "ledger.Writer.flush",
+                flow_scope,
+                flow_ordinal,
+                flow_event,
+                "flow-source-ref",
+                "flow-source-id",
+            ));
+        }
+        rows
+    }
+
     fn source_row(
         reference: &str,
         id: &str,
@@ -674,6 +1045,96 @@ mod tests {
         let start = alias["startByte"].as_u64()? as usize;
         let end = alias["endByte"].as_u64()? as usize;
         String::from_utf8(text.as_bytes().get(start..end)?.to_vec()).ok()
+    }
+
+    fn source_text_for_location(
+        pages: &[Value],
+        location: &Value,
+        seen: &mut BTreeSet<(usize, usize)>,
+    ) -> Option<String> {
+        let page_index = location["pageIndex"].as_u64()? as usize;
+        let item_index = location["itemIndex"].as_u64()? as usize;
+        let reference = location["reference"].as_str()?;
+        if !seen.insert((page_index, item_index)) {
+            return None;
+        }
+        let row = pages
+            .get(page_index)?
+            .get("items")?
+            .as_array()?
+            .get(item_index)?;
+        if row["kind"] != "SOURCE" || row["reference"] != reference {
+            return None;
+        }
+        if let Some(text) = row["record"]["text"].as_str() {
+            return Some(text.to_owned());
+        }
+        let alias = &row["record"]["displayTextAlias"];
+        let text = source_text_for_location(pages, &alias["target"], seen)?;
+        let start = alias["startByte"].as_u64()? as usize;
+        let end = alias["endByte"].as_u64()? as usize;
+        String::from_utf8(text.as_bytes().get(start..end)?.to_vec()).ok()
+    }
+
+    fn reconstruct_display_item(pages: &[Value], row: &Value) -> Option<Value> {
+        let mut restored = row.clone();
+        if restored["kind"] == "SOURCE"
+            && let Some(alias) = restored["record"].get("displayTextAlias")
+        {
+            let text = source_text_for_location(pages, &alias["target"], &mut BTreeSet::new())?;
+            let start = alias["startByte"].as_u64()? as usize;
+            let end = alias["endByte"].as_u64()? as usize;
+            let exact = String::from_utf8(text.as_bytes().get(start..end)?.to_vec()).ok()?;
+            let record = restored["record"].as_object_mut()?;
+            record.remove("displayTextAlias");
+            record.insert("text".into(), json!(exact));
+        }
+        if restored["kind"] == "DEPENDENCY" && restored["record"]["kind"] == "SYMBOL" {
+            let normalized = restored["record"]["normalized"].as_object_mut()?;
+            if let Some(alias) = normalized.get("sourceTokensDisplayAlias").cloned() {
+                let text = source_text_for_location(pages, &alias["target"], &mut BTreeSet::new())?;
+                let tokens = analysis::java_tokens(&text)
+                    .into_iter()
+                    .map(Value::String)
+                    .collect::<Vec<_>>();
+                normalized.remove("sourceTokensDisplayAlias");
+                normalized.insert("sourceTokens".into(), json!(tokens));
+            }
+            if let Some(alias) = normalized
+                .get("documentation")
+                .and_then(|documentation| documentation.get("eventsDisplayAlias"))
+                .cloned()
+            {
+                let mut events = Vec::new();
+                let mut targets = alias["orderedFlowTargets"].as_array()?.clone();
+                targets.sort_by_key(|target| target["ordinal"].as_u64().unwrap_or(u64::MAX));
+                for target in targets {
+                    let location = &target["target"];
+                    let page_index = location["pageIndex"].as_u64()? as usize;
+                    let item_index = location["itemIndex"].as_u64()? as usize;
+                    let reference = location["reference"].as_str()?;
+                    let flow = pages
+                        .get(page_index)?
+                        .get("items")?
+                        .as_array()?
+                        .get(item_index)?;
+                    if flow["kind"] != "DEPENDENCY"
+                        || flow["record"]["kind"] != "FLOW"
+                        || flow["reference"] != reference
+                    {
+                        return None;
+                    }
+                    let mut event = flow["record"]["normalized"].as_object()?.clone();
+                    event.remove("ordinal")?;
+                    event.remove("scope");
+                    events.push(Value::Object(event));
+                }
+                let documentation = normalized.get_mut("documentation")?.as_object_mut()?;
+                documentation.remove("eventsDisplayAlias");
+                documentation.insert("events".into(), json!(events));
+            }
+        }
+        Some(restored)
     }
 
     fn evidence_reference_set(evidence: &Value) -> BTreeSet<String> {
@@ -753,6 +1214,31 @@ mod tests {
                 item["kind"] == "SOURCE" && item["record"].get("displayTextAlias").is_some()
             })
             .count()
+    }
+
+    fn symbol_alias_counts(pages: &[Value]) -> (usize, usize) {
+        let mut tokens = 0;
+        let mut events = 0;
+        for row in pages
+            .iter()
+            .flat_map(|page| page["items"].as_array().into_iter().flatten())
+        {
+            if row["kind"] == "DEPENDENCY" && row["record"]["kind"] == "SYMBOL" {
+                if row["record"]["normalized"]
+                    .get("sourceTokensDisplayAlias")
+                    .is_some()
+                {
+                    tokens += 1;
+                }
+                if row["record"]["normalized"]["documentation"]
+                    .get("eventsDisplayAlias")
+                    .is_some()
+                {
+                    events += 1;
+                }
+            }
+        }
+        (tokens, events)
     }
 
     #[test]
@@ -1065,6 +1551,278 @@ mod tests {
     }
 
     #[test]
+    fn exact_source_tokens_are_represented_by_a_reconstructible_source_link() {
+        let text = format!(
+            "public class Worker {{\n{}\n}}",
+            "  int count = 1; count++;\n".repeat(80)
+        );
+        let source = source_row(
+            "token-source-ref",
+            "token-source-id",
+            "payments",
+            "rev-1",
+            "EXACT_SNAPSHOT_TEXT",
+            &text,
+            1,
+            0,
+            "token-blob",
+        );
+        let tokens = analysis::java_tokens(&text)
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        let symbol = symbol_row_with_source(
+            "symbol-ref",
+            "token-source-ref",
+            "token-source-id",
+            json!({
+                "scope":"method-scope",
+                "sourceTokens":tokens,
+                "documentation":{"events":[],"boundaries":["ORDER_LEXICAL_ONLY"]}
+            }),
+        );
+        let raw_pages = vec![page("receipt", vec![source, symbol])];
+        let raw_parts = Vec::new();
+        let original = raw_pages.clone();
+
+        let context = present(&raw_pages, &raw_parts);
+        let projected_pages = context["pages"].as_array().unwrap();
+        let projected_symbol = projected_pages[0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["record"]["kind"] == "SYMBOL")
+            .unwrap();
+        assert!(projected_symbol["record"]["normalized"]["sourceTokens"].is_null());
+        assert!(
+            projected_symbol["record"]["normalized"]["sourceTokensDisplayAlias"]["target"]["reference"]
+                == "token-source-ref"
+        );
+        assert_eq!(symbol_alias_counts(projected_pages).0, 1);
+        for (raw, shown) in raw_pages[0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(projected_pages[0]["items"].as_array().unwrap())
+        {
+            assert!(
+                reconstruct_display_item(projected_pages, shown).as_ref() == Some(raw),
+                "token projection restores the whole original row"
+            );
+        }
+        assert!(
+            raw_pages == original,
+            "presentation does not mutate caller pages"
+        );
+        assert!(
+            present(&raw_pages, &raw_parts) == context,
+            "presentation is repeatable"
+        );
+    }
+
+    #[test]
+    fn source_parts_and_mismatched_tokens_do_not_justify_token_aliases() {
+        let text = "public void work() { return; }\n".repeat(80);
+        let text = text.trim_end().to_owned();
+        let source_parts = vec![json!({
+            "reference":"source-ref",
+            "sourceId":"source-id",
+            "source":{"revision":"rev-1","file":"Worker.java"},
+            "startByte":0,
+            "endByte":text.len(),
+            "fragmentDigest":"fragment-digest"
+        })];
+        let tokens = analysis::java_tokens(&text)
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        let exact_symbol = symbol_row_with_source(
+            "symbol-ref",
+            "source-ref",
+            "source-id",
+            json!({"sourceTokens":tokens.clone()}),
+        );
+        let incomplete = present(
+            &[page("parts-only", vec![exact_symbol.clone()])],
+            &source_parts,
+        );
+        let incomplete_symbol = &incomplete["pages"][0]["items"][0];
+        assert!(incomplete_symbol["record"]["normalized"]["sourceTokensDisplayAlias"].is_null());
+        assert!(incomplete_symbol["record"]["normalized"]["sourceTokens"].is_array());
+
+        let source = source_row(
+            "source-ref",
+            "source-id",
+            "payments",
+            "rev-1",
+            "EXACT_SNAPSHOT_TEXT",
+            &text,
+            1,
+            0,
+            "token-mismatch-blob",
+        );
+        let mut mismatched_tokens = tokens;
+        mismatched_tokens.pop();
+        let mismatched_symbol = symbol_row_with_source(
+            "symbol-ref",
+            "source-ref",
+            "source-id",
+            json!({"sourceTokens":mismatched_tokens}),
+        );
+        let mismatched = present(&[page("mismatch", vec![source, mismatched_symbol])], &[]);
+        let mismatched_symbol = mismatched["pages"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["record"]["kind"] == "SYMBOL")
+            .unwrap();
+        assert!(mismatched_symbol["record"]["normalized"]["sourceTokensDisplayAlias"].is_null());
+        assert!(mismatched_symbol["record"]["normalized"]["sourceTokens"].is_array());
+    }
+
+    #[test]
+    fn covered_flow_events_alias_exactly_and_leave_flow_rows_and_citations_intact() {
+        let event = json!({
+            "kind":"CALL",
+            "resolution":"COMPILER_EXACT",
+            "target":"method:ledger.Writer.write()V",
+            "condition":"ready ".repeat(140)
+        });
+        let rows = event_fixture(event.clone(), Some(event.clone()), Some("method-scope"), 0);
+        let raw_pages = vec![page("receipt", rows.clone())];
+        let context = present(&raw_pages, &[]);
+        let projected_pages = context["pages"].as_array().unwrap();
+        let projected_symbol = projected_pages[0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["record"]["kind"] == "SYMBOL")
+            .unwrap();
+        assert!(projected_symbol["record"]["normalized"]["documentation"]["events"].is_null());
+        assert_eq!(symbol_alias_counts(projected_pages).1, 1);
+        for (raw, shown) in rows
+            .iter()
+            .zip(projected_pages[0]["items"].as_array().unwrap())
+        {
+            assert!(
+                reconstruct_display_item(projected_pages, shown).as_ref() == Some(raw),
+                "event projection restores the whole original row"
+            );
+        }
+        let original_flow = rows
+            .iter()
+            .find(|row| row["record"]["kind"] == "FLOW")
+            .unwrap();
+        let projected_flow = projected_pages[0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["record"]["kind"] == "FLOW")
+            .unwrap();
+        assert!(
+            projected_flow == original_flow,
+            "standalone FLOW remains unchanged"
+        );
+        assert!(
+            citation_role_rows(&[page("receipt", rows)]) == citation_role_rows(projected_pages),
+            "citation identities and roles remain unchanged"
+        );
+    }
+
+    #[test]
+    fn incomplete_or_ambiguous_flow_coverage_keeps_nested_events() {
+        let event = json!({
+            "kind":"CALL",
+            "resolution":"COMPILER_EXACT",
+            "target":"method:ledger.Writer.write()V",
+            "condition":"ready ".repeat(140)
+        });
+        let mut variants = vec![event_fixture(event.clone(), None, None, 0)];
+        variants.push(event_fixture(
+            event.clone(),
+            Some(event.clone()),
+            Some("different-scope"),
+            0,
+        ));
+        variants.push(event_fixture(
+            event.clone(),
+            Some(event.clone()),
+            Some("method-scope"),
+            1,
+        ));
+        let mut wrong_payload = event.clone();
+        wrong_payload["condition"] = json!("different");
+        variants.push(event_fixture(
+            event.clone(),
+            Some(wrong_payload),
+            Some("method-scope"),
+            0,
+        ));
+        let mut ambiguous =
+            event_fixture(event.clone(), Some(event.clone()), Some("method-scope"), 0);
+        let mut duplicate_flow = ambiguous.last().unwrap().clone();
+        duplicate_flow["id"] = json!("flow-id-duplicate");
+        duplicate_flow["reference"] = json!("flow-ref-duplicate");
+        duplicate_flow["record"]["id"] = json!("flow-id-duplicate");
+        ambiguous.push(duplicate_flow);
+        variants.push(ambiguous);
+        let mut wrong_occurrence =
+            event_fixture(event.clone(), Some(event.clone()), Some("method-scope"), 0);
+        wrong_occurrence[1]["record"]["occurrence"]["blob"] = json!("different-blob");
+        variants.push(wrong_occurrence);
+        let mut wrong_line =
+            event_fixture(event.clone(), Some(event.clone()), Some("method-scope"), 0);
+        wrong_line[1]["record"]["startLine"] = json!(2);
+        wrong_line[1]["record"]["endLine"] = json!(2);
+        variants.push(wrong_line);
+        let mut nested_ordinal = event.clone();
+        nested_ordinal["ordinal"] = json!(0);
+        variants.push(event_fixture(
+            nested_ordinal,
+            Some(event.clone()),
+            Some("method-scope"),
+            0,
+        ));
+        let mut nested_scope = event.clone();
+        nested_scope["scope"] = json!("original-event-scope");
+        variants.push(event_fixture(
+            nested_scope,
+            Some(event.clone()),
+            Some("method-scope"),
+            0,
+        ));
+
+        for (index, rows) in variants.into_iter().enumerate() {
+            let context = present(&[page("receipt", rows.clone())], &[]);
+            let symbol = context["pages"][0]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["record"]["kind"] == "SYMBOL")
+                .unwrap();
+            assert!(
+                symbol["record"]["normalized"]["documentation"]["eventsDisplayAlias"].is_null(),
+                "unsafe event coverage variant {index} remains inline"
+            );
+            assert!(
+                symbol["record"]["normalized"]["documentation"]["events"].as_array()
+                    == Some(&vec![if index == 7 {
+                        let mut value = event.clone();
+                        value["ordinal"] = json!(0);
+                        value
+                    } else if index == 8 {
+                        let mut value = event.clone();
+                        value["scope"] = json!("original-event-scope");
+                        value
+                    } else {
+                        event.clone()
+                    }]),
+                "unsafe coverage keeps its full original event payload"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires CODECLEW_JOB_AUDIT_INPUT pointing to a private documentation job packet"]
     fn audit_job_packet_from_env() {
         use std::path::{Path, PathBuf};
@@ -1094,56 +1852,83 @@ mod tests {
             .len();
 
         let projected_context = present(&original_pages, &original_parts);
+        assert!(
+            present(&original_pages, &original_parts) == projected_context,
+            "presentation must be deterministic for the same immutable input"
+        );
         let projected_pages = projected_context["pages"]
             .as_array()
             .expect("presentation returns pages");
         let mut reconstructed_aliases = 0usize;
+        let mut reconstructed_rows = 0usize;
+        let (token_aliases, event_aliases) = symbol_alias_counts(projected_pages);
         for (page_index, page) in projected_pages.iter().enumerate() {
             for row in page["items"].as_array().into_iter().flatten() {
-                if row["kind"] != "SOURCE" || row["record"].get("displayTextAlias").is_none() {
-                    continue;
-                }
-                let original_text = original_pages[page_index]["items"]
+                let original = original_pages[page_index]["items"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .find(|original| {
-                        original["kind"] == "SOURCE"
+                        original["kind"] == row["kind"]
                             && original["id"] == row["id"]
                             && original["reference"] == row["reference"]
+                            && original["record"]["digest"] == row["record"]["digest"]
                             && original["record"]["textDigest"] == row["record"]["textDigest"]
                     })
-                    .and_then(|original| original["record"]["text"].as_str())
-                    .expect("aliased source had original text");
-                assert_eq!(
-                    reconstruct_source_alias(projected_pages, row).as_deref(),
-                    Some(original_text)
-                );
-                assert_eq!(
-                    crate::canonical::hash_bytes(original_text.as_bytes()),
-                    row["record"]["textDigest"].as_str().unwrap()
-                );
-                reconstructed_aliases += 1;
+                    .expect("projected row identity exists in original packet");
+                let restored = reconstruct_display_item(projected_pages, row)
+                    .expect("display projection is reconstructible");
+                assert!(restored == *original, "projected row restores exactly");
+                if row["kind"] == "SOURCE" && row["record"].get("displayTextAlias").is_some() {
+                    let original_text = original["record"]["text"]
+                        .as_str()
+                        .expect("original source has exact text");
+                    assert!(
+                        crate::canonical::hash_bytes(original_text.as_bytes())
+                            == row["record"]["textDigest"].as_str().unwrap_or_default(),
+                        "source alias retains the original digest"
+                    );
+                    reconstructed_aliases += 1;
+                }
+                reconstructed_rows += 1;
             }
         }
+        let original_row_count = original_pages
+            .iter()
+            .map(|page| page["items"].as_array().map_or(0, Vec::len))
+            .sum::<usize>();
+        assert!(
+            reconstructed_rows == original_row_count,
+            "all page rows restored"
+        );
+        assert!(
+            source_alias_count(projected_pages) == reconstructed_aliases,
+            "all source aliases were reconstructed"
+        );
         let updated_evidence = merge_audited_evidence(&original_evidence, &projected_context);
         let retained_references = evidence_reference_set(&updated_evidence);
-        assert_eq!(
-            evidence_reference_set(&original_evidence),
-            retained_references
+        assert!(
+            evidence_reference_set(&original_evidence) == retained_references,
+            "projected evidence preserves its full reference set"
         );
-        assert_eq!(source_alias_count(projected_pages), reconstructed_aliases);
-        assert_eq!(
-            citation_role_rows(&original_pages),
-            citation_role_rows(projected_pages)
+        assert!(
+            citation_role_rows(&original_pages) == citation_role_rows(projected_pages),
+            "projected evidence preserves citation-role rows"
         );
         for (before, after) in original_pages.iter().zip(projected_pages) {
-            assert_eq!(before["pageId"], after["pageId"]);
-            assert_eq!(before["receiptDigest"], after["receiptDigest"]);
+            assert!(
+                before["pageId"] == after["pageId"],
+                "page identity is unchanged"
+            );
+            assert!(
+                before["receiptDigest"] == after["receiptDigest"],
+                "page receipt is unchanged"
+            );
         }
-        assert_eq!(
-            crate::canonical::bytes(&(original_pages, original_parts)).unwrap(),
-            input_content_digest
+        assert!(
+            crate::canonical::bytes(&(original_pages.clone(), original_parts.clone())).unwrap()
+                == input_content_digest,
+            "caller evidence remains immutable"
         );
 
         let mut updated_packet = packet.clone();
@@ -1162,18 +1947,26 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("evidence");
-        assert_eq!(original_packet_metadata, updated_packet_metadata);
+        assert!(
+            original_packet_metadata == updated_packet_metadata,
+            "packet metadata outside evidence is unchanged"
+        );
         if let Some(original_callables) = original_evidence.get("callables") {
-            assert_eq!(
-                updated_packet["payload"]["evidence"]["callables"],
-                *original_callables
+            assert!(
+                updated_packet["payload"]["evidence"]["callables"] == *original_callables,
+                "callable inventory remains unchanged"
             );
         }
+        assert!(
+            updated_packet["payload"]["evidence"]["sourceParts"]
+                == original_evidence["sourceParts"],
+            "source parts remain unchanged"
+        );
         let after_size = crate::canonical::bytes(&updated_packet)
             .expect("serialize projected packet canonically")
             .len();
         eprintln!(
-            "documentation packet audit: inputFileBytes={} beforeCanonicalBytes={before_size} afterCanonicalBytes={after_size} sourceAliases={reconstructed_aliases} retainedReferences={} citationRoleRows={}",
+            "documentation packet audit: inputFileBytes={} beforeCanonicalBytes={before_size} afterCanonicalBytes={after_size} sourceAliases={reconstructed_aliases} tokenAliases={token_aliases} eventAliases={event_aliases} restoredRows={reconstructed_rows} retainedReferences={} citationRoleRows={}",
             input_bytes.len(),
             retained_references.len(),
             citation_role_rows(projected_pages).len()
