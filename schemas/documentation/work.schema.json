@@ -240,9 +240,10 @@
         },
         "contextProfile": {
           "type": "string",
-          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, or bounded direct HTTP API contract preparation. Subject compatibility is validated by the host.",
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, bounded direct HTTP API contract preparation, or bounded nonduplicating endpoint context. Subject compatibility is validated by the host.",
           "enum": [
             "declarations-v1",
+            "endpoint-context-v1",
             "http-api-contract-v1",
             "process-v1",
             "section-orientation-v1",
@@ -381,12 +382,13 @@
           "type": "string",
           "enum": [
             "declarations-v1",
+            "endpoint-context-v1",
             "http-api-contract-v1",
             "process-v1",
             "section-orientation-v1",
             "section-entities-orientation-v1"
           ],
-          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, or bounded direct HTTP API contract preparation. Subject compatibility is validated by the host."
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, bounded direct HTTP API contract preparation, or bounded nonduplicating endpoint context. Subject compatibility is validated by the host."
         },
         "subjectReference": {
           "type": "object",

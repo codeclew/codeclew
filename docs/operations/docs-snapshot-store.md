@@ -420,6 +420,23 @@ profile version; existing Work must not be reinterpreted under new rules. Full
 influence and currentness checks remain unchanged, including deferred facts;
 this changes transmission, not snapshot hydration or invalidation scope.
 
+For one captured Java HTTP endpoint, Work also accepts
+`"contextProfile": "endpoint-context-v1"`. The profile supplies the retained
+endpoint route, direct request/response FIELD facts, bounded reachable method
+bodies, and complete retained FLOW or CALL_RELATION facts. Legacy same-owner
+helper and constant discovery is marked `SOURCE_REFERENCE_CANDIDATE`; it is
+lexical evidence and does not establish compiler resolution. Method bodies and
+field token facts share a 48 KiB selection budget. DTO class source is not
+included. The packet groups references to those facts and reports unavailable,
+ambiguous, or truncated paths as gaps.
+
+The endpoint profile does not infer value propagation or execution order from
+call edges. It does not establish wire requiredness, null omission, inherited
+field completeness, generic payload types, or annotation activation. Read and
+expand the referenced Work items before citing them; a navigation reference in
+the packet does not count as a read receipt for its target. The profile is part
+of immutable Work identity, and selecting it never acquires fresh source.
+
 Run attempts expose optional `requestBytes`, the complete canonical dispatched
 job-envelope size. This covers author, expansion follow-ups, repairs and
 reviewer requests. It is not provider token usage or monetary cost. Older

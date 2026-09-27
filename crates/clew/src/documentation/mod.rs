@@ -12,6 +12,7 @@ pub mod cli;
 pub mod composition;
 pub mod contracts;
 pub mod dataflow;
+mod endpoint_context;
 pub mod entities;
 pub mod evidence_package;
 pub mod fact_index;

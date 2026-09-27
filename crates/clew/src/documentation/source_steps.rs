@@ -27,7 +27,7 @@ fn method_name(symbol: &str) -> String {
 
 /// Mark source bytes that are code and bytes that belong to comments.
 /// String, character, and triple-quoted literals are opaque to syntax scans.
-fn lexical_masks(src: &str) -> (Vec<bool>, Vec<bool>) {
+pub(super) fn lexical_masks(src: &str) -> (Vec<bool>, Vec<bool>) {
     let bytes = src.as_bytes();
     let mut code = vec![false; bytes.len()];
     let mut comment = vec![false; bytes.len()];
@@ -96,7 +96,7 @@ fn strip_comments(src: &str) -> String {
 }
 
 /// Find the unique method body named by the retained FLOW symbol.
-fn method_body(src: &str, symbol: &str) -> Option<(usize, usize)> {
+pub(super) fn method_body(src: &str, symbol: &str) -> Option<(usize, usize)> {
     let (code, _) = lexical_masks(src);
     let bytes = src.as_bytes();
     let name = method_name(symbol);

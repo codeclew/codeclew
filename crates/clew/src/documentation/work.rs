@@ -370,6 +370,7 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
         Check::load_snapshot(repo, &stored.evidence_snapshot)
     })?;
     validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
+    validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
     Ok(stored.into_runtime(checked))
 }
 
@@ -484,6 +485,21 @@ fn is_java_http_entrypoint(checked: &Check, subject: &str, request: &Request) ->
                 && declaration.normalized["declarationKind"] == "METHOD"
         })
     })
+}
+
+fn validate_endpoint_context_profile(
+    subject: &str,
+    request: &Request,
+    checked: &Check,
+) -> Result<(), ClewError> {
+    if request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
+        && !is_java_http_entrypoint(checked, subject, request)
+    {
+        return Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v1 requires one captured Java HTTP endpoint",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_http_api_contract_profile(subject: &str, request: &mut Request, checked: &Check) {
@@ -897,6 +913,14 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         Some("process-v1") => Err(invalid(
             "CONTEXT_PROFILE_INCOMPATIBLE: process-v1 requires a saved process overview",
         )),
+        Some(super::endpoint_context::PROFILE)
+            if subject.starts_with("service:") && request.entrypoint.is_some() =>
+        {
+            Ok(())
+        }
+        Some(super::endpoint_context::PROFILE) => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v1 requires a service endpoint request",
+        )),
         Some("declarations-v1")
             if subject
                 .strip_prefix("service:")
@@ -969,6 +993,7 @@ pub fn prepare_with_snapshot(
     normalize_http_api_contract_profile(&subject, &mut request, &checked);
     validate_context_profile(&subject, &request)?;
     validate_http_api_contract_profile(&subject, &request, &checked)?;
+    validate_endpoint_context_profile(&subject, &request, &checked)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -1519,6 +1544,16 @@ fn compact_section_rows(
 
 fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     validate_selection(selection)?;
+    if work.request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
+        && selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+    {
+        let rows = super::endpoint_context::profile_rows(work)?;
+        let mut rows = annotate_rows(work, rows)?;
+        super::endpoint_context::restrict_unselected_source_references(work, &mut rows);
+        return Ok(rows);
+    }
     if work.request.context_profile.as_deref() == Some("declarations-v1")
         && selection.references.is_empty()
         && selection.symbols.is_empty()
@@ -3355,6 +3390,161 @@ mod api_contract_tests {
         work
     }
 
+    fn endpoint_context_fixture() -> Work {
+        let mut work = api_fixture(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        work.request.context_profile = Some(super::super::endpoint_context::PROFILE.into());
+        let endpoint_source = "class Controller { Response handle(Request request) { return service.process(request); } }";
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap();
+        source.text = endpoint_source.into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = source.text.lines().count().max(1) as u64;
+
+        let service_source = concat!(
+            "class Service {\n",
+            "  Response process(Request request) {\n",
+            "    String ignored = \"fakeHelper()\"; // commentHelper()\n",
+            "    try {\n",
+            "      this.notifyEvent(request, Response.class);\n",
+            "      overloaded(DEFAULT_CODE);\n",
+            "      return createResponse(DEFAULT_CODE);\n",
+            "    } catch (Exception failure) { return null; }\n",
+            "  }\n",
+            "  void notifyEvent(Request request, Class<?> responseType) {}\n",
+            "  Response createResponse(String code) { return null; }\n",
+            "  void fakeHelper() {}\n",
+            "  void overloaded(String value) {}\n",
+            "  void overloaded(int value) {}\n",
+            "  static final String DEFAULT_CODE = \"default\";\n",
+            "}\n"
+        );
+        add_source(&mut work, "service-source", "orders", service_source.into());
+
+        let service_method =
+            "method:class:orders.Service#process(Lorders/Request;)Lorders/Response;";
+        let method_facts = [
+            (
+                service_method,
+                "process",
+                "(Lorders/Request;)Lorders/Response;",
+            ),
+            (
+                "method:class:orders.Service#notifyEvent(Lorders/Request;Ljava/lang/Class;)V",
+                "notifyEvent",
+                "(Lorders/Request;Ljava/lang/Class;)V",
+            ),
+            (
+                "method:class:orders.Service#createResponse(Ljava/lang/String;)Lorders/Response;",
+                "createResponse",
+                "(Ljava/lang/String;)Lorders/Response;",
+            ),
+            (
+                "method:class:orders.Service#fakeHelper()V",
+                "fakeHelper",
+                "()V",
+            ),
+            (
+                "method:class:orders.Service#overloaded(Ljava/lang/String;)V",
+                "overloaded",
+                "(Ljava/lang/String;)V",
+            ),
+            (
+                "method:class:orders.Service#overloaded(I)V",
+                "overloaded",
+                "(I)V",
+            ),
+        ];
+        for (index, (identity, name, descriptor)) in method_facts.iter().enumerate() {
+            add_observation(
+                &mut work,
+                &format!("service-method-{index}"),
+                "orders",
+                "SYMBOL",
+                identity,
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"METHOD",
+                    "symbolIdentity":identity,
+                    "ownerIdentity":"class:orders.Service",
+                    "name":name,
+                    "scope":SCOPE,
+                    "jvmDescriptor":descriptor,
+                }),
+                vec!["service-source".into()],
+            );
+        }
+        let endpoint_identity = work.checked.services["orders"].entrypoints[0]
+            .symbol
+            .clone();
+        add_observation(
+            &mut work,
+            "flow-endpoint-service",
+            "orders",
+            "FLOW",
+            &endpoint_identity,
+            json!({"kind":"CALL","target":service_method,"scope":SCOPE}),
+            vec!["endpoint-source".into()],
+        );
+
+        for (id, owner, name, descriptor, tokens, source_id) in [
+            (
+                "request-name-field",
+                "class:orders.Request",
+                "name",
+                "Ljava/lang/String;",
+                json!(["String", "name"]),
+                "source-dto-2",
+            ),
+            (
+                "response-status-field",
+                "class:orders.Response",
+                "status",
+                "I",
+                json!(["int", "status"]),
+                "source-dto-3",
+            ),
+            (
+                "default-code-field",
+                "class:orders.Service",
+                "DEFAULT_CODE",
+                "Ljava/lang/String;",
+                json!(["static", "final", "String", "DEFAULT_CODE", "=", "default"]),
+                "service-source",
+            ),
+        ] {
+            add_observation(
+                &mut work,
+                id,
+                "orders",
+                "SYMBOL",
+                &format!("field:{owner}#{name}:{descriptor}"),
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"FIELD",
+                    "symbolIdentity":format!("field:{owner}#{name}:{descriptor}"),
+                    "ownerIdentity":owner,
+                    "name":name,
+                    "scope":SCOPE,
+                    "typeDescriptor":descriptor,
+                    "annotations":[{"name":"Column","values":{"nullable":false}}],
+                    "sourceTokens":tokens,
+                }),
+                vec![source_id.into()],
+            );
+        }
+        work
+    }
+
     fn seal_work_identity(work: &mut Work) {
         let mut stored = StoredWork::from_runtime(work, "snapshot-test".into());
         stored.id = digest(&stored).unwrap()[7..].into();
@@ -3687,6 +3877,194 @@ mod api_contract_tests {
         assert!(
             !direct_dependency_symbols(&rows(&unrelated, &Selection::default()).unwrap())
                 .contains("class:orders.Request")
+        );
+    }
+
+    #[test]
+    fn endpoint_context_selects_legacy_helpers_constants_and_direct_fields_once() {
+        let work = endpoint_context_fixture();
+        let rows = rows(&work, &Selection::default()).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let graph = &packet["record"]["callGraph"];
+        let candidates = graph["sourceReferenceCandidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .all(|edge| edge["authority"] == "SOURCE_REFERENCE_CANDIDATE")
+        );
+        assert!(candidates.iter().all(|edge| {
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["id"] == edge["fromNode"] && node["bodyReference"].is_string())
+        }));
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 4);
+        assert!(
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|node| { node["symbolIdentity"].is_string() && node["scope"] == SCOPE })
+        );
+        assert!(
+            graph["providerEdgeFactReferences"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(
+            rows.iter()
+                .any(|row| { row["kind"] == "ENTRYPOINT" && row["id"] == "entry-http" })
+        );
+
+        let dependencies: Vec<_> = rows
+            .iter()
+            .filter(|row| row["kind"] == "DEPENDENCY")
+            .collect();
+        for field_id in [
+            "request-name-field",
+            "response-status-field",
+            "default-code-field",
+        ] {
+            assert_eq!(
+                dependencies
+                    .iter()
+                    .filter(|row| row["id"] == field_id)
+                    .count(),
+                1
+            );
+            let field = dependencies
+                .iter()
+                .find(|row| row["id"] == field_id)
+                .unwrap();
+            assert!(field["record"]["normalized"]["typeDescriptor"].is_string());
+            assert!(field["record"]["normalized"]["annotations"].is_array());
+            assert!(field["record"]["normalized"]["sourceTokens"].is_array());
+        }
+        let source_ids: BTreeSet<_> = rows
+            .iter()
+            .filter(|row| row["kind"] == "SOURCE")
+            .filter_map(|row| row["id"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            source_ids,
+            BTreeSet::from(["endpoint-source".into(), "service-source".into()])
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["kind"] == "SOURCE")
+                .filter(|row| row["id"] == "service-source")
+                .count(),
+            1
+        );
+        assert!(!rows.iter().any(|row| {
+            row["kind"] == "SOURCE"
+                && matches!(row["id"].as_str(), Some("source-dto-2" | "source-dto-3"))
+        }));
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "STRUCTURAL_DATAFLOW_NOT_AVAILABLE")
+        );
+        assert!(
+            !packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "SOURCE_NESTED_EXECUTABLE_CONTEXT_AMBIGUOUS")
+        );
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "SOURCE_REFERENCE_AMBIGUOUS_OVERLOAD")
+        );
+
+        assert!(bytes(packet).unwrap().len() <= 48 * 1024);
+    }
+
+    #[test]
+    fn endpoint_context_exact_call_relation_is_a_fact_reference_and_not_a_receipt_alias() {
+        let mut work = endpoint_context_fixture();
+        let (source_digest, evidence_digest) = {
+            let source = &work.checked.services["orders"].sources["service-source"];
+            (source.text_digest.clone(), source.evidence_digest.clone())
+        };
+        let caller = "method:class:orders.Service#process(Lorders/Request;)Lorders/Response;";
+        let target =
+            "method:class:orders.Service#createResponse(Ljava/lang/String;)Lorders/Response;";
+        add_observation(
+            &mut work,
+            "relation-create-response",
+            "orders",
+            "CALL_RELATION",
+            caller,
+            json!({
+                "scope":SCOPE,
+                "sourceIdentity":caller,
+                "targetIdentity":target,
+                "relationKind":"CALLS",
+                "resolution":"COMPILER_EXACT",
+                "callSite":{
+                    "sourceId":"service-source",
+                    "sourceStatus":"SOURCE_RETAINED",
+                    "sourceDigest":source_digest,
+                    "evidenceDigest":evidence_digest
+                }
+            }),
+            vec!["service-source".into()],
+        );
+        let exact_reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| {
+                handle.kind == "DEPENDENCY" && handle.id == "relation-create-response"
+            })
+            .map(|(reference, _)| reference.clone())
+            .unwrap();
+        let packet_rows = rows(&work, &Selection::default()).unwrap();
+        let packet = packet_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["providerEdgeFactReferences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reference| reference == &exact_reference)
+        );
+        assert!(
+            packet_rows.iter().any(|row| {
+                row["kind"] == "DEPENDENCY" && row["id"] == "relation-create-response"
+            })
+        );
+
+        work.request.max_items = 2;
+        seal_work_identity(&mut work);
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Endpoint context receipt boundary").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let page = read_loaded(&repo, &work, Selection::default()).unwrap();
+        assert!(!page["items"].as_array().unwrap().iter().any(|item| {
+            item["kind"] == "DEPENDENCY" && item["id"] == "relation-create-response"
+        }));
+        let state = read_state(&repo, &work.id).unwrap();
+        let receipt = state.receipts.values().next().unwrap();
+        assert!(
+            !receipt
+                .supplied
+                .iter()
+                .any(|reference| reference == &exact_reference)
         );
     }
 
