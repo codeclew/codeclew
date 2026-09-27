@@ -237,6 +237,9 @@ pub struct Work {
 
 const SECTION_ORIENTATION_PROFILE: &str = "section-orientation-v1";
 const SECTION_ENTITIES_ORIENTATION_PROFILE: &str = "section-entities-orientation-v1";
+const HTTP_API_CONTRACT_PROFILE: &str = "http-api-contract-v1";
+const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
+const MAX_DIRECT_API_TYPES: usize = 8;
 const WORK_SCHEMA: &str = "codeclew-documentation-work/1.0";
 const WORK_MANIFEST_SCHEMA: &str = "codeclew-documentation-work-manifest/1.0";
 
@@ -366,6 +369,7 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     let checked = super::progress::run("LOAD_RETAINED_SNAPSHOT", || {
         Check::load_snapshot(repo, &stored.evidence_snapshot)
     })?;
+    validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
     Ok(stored.into_runtime(checked))
 }
 
@@ -447,6 +451,406 @@ fn normalize_section_profile(subject: &str, request: &mut Request) {
     }
 }
 
+fn is_java_http_entrypoint(checked: &Check, subject: &str, request: &Request) -> bool {
+    let (Some(service), Some(entrypoint_id)) = (
+        subject.strip_prefix("service:"),
+        request.entrypoint.as_deref(),
+    ) else {
+        return false;
+    };
+    let Some(evidence) = checked.services.get(service) else {
+        return false;
+    };
+    if evidence.extractor != EXTRACTOR {
+        return false;
+    }
+    let mut entries = evidence
+        .entrypoints
+        .iter()
+        .filter(|entry| entry.id == entrypoint_id && entry.kind == "HTTP_ENDPOINT");
+    let Some(entry) = entries.next() else {
+        return false;
+    };
+    if entries.next().is_some() {
+        return false;
+    }
+    entry.dependency_ids.iter().any(|id| {
+        checked.dependencies.get(id).is_some_and(|declaration| {
+            declaration.service == service
+                && declaration.kind == "SYMBOL"
+                && declaration.symbol == entry.symbol
+                && declaration.normalized["symbolIdentity"] == entry.symbol
+                && declaration.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                && declaration.normalized["declarationKind"] == "METHOD"
+        })
+    })
+}
+
+fn normalize_http_api_contract_profile(subject: &str, request: &mut Request, checked: &Check) {
+    if request.context_profile.is_none() && is_java_http_entrypoint(checked, subject, request) {
+        request.context_profile = Some(HTTP_API_CONTRACT_PROFILE.into());
+    }
+}
+
+fn validate_http_api_contract_profile(
+    subject: &str,
+    request: &Request,
+    checked: &Check,
+) -> Result<(), ClewError> {
+    if request.context_profile.as_deref() == Some(HTTP_API_CONTRACT_PROFILE)
+        && !is_java_http_entrypoint(checked, subject, request)
+    {
+        return Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: http-api-contract-v1 requires one captured Java HTTP endpoint",
+        ));
+    }
+    Ok(())
+}
+
+fn descriptor_object_types(descriptor: &str) -> Result<BTreeSet<String>, ()> {
+    fn type_at(input: &[u8], cursor: &mut usize, allow_void: bool) -> Result<Option<String>, ()> {
+        let mut dimensions = 0usize;
+        while input.get(*cursor) == Some(&b'[') {
+            dimensions += 1;
+            if dimensions > 255 {
+                return Err(());
+            }
+            *cursor += 1;
+        }
+        match input.get(*cursor).copied() {
+            Some(b'V') if allow_void && dimensions == 0 => {
+                *cursor += 1;
+                Ok(None)
+            }
+            Some(b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z') => {
+                *cursor += 1;
+                Ok(None)
+            }
+            Some(b'L') => {
+                *cursor += 1;
+                let start = *cursor;
+                let end = input[start..]
+                    .iter()
+                    .position(|byte| *byte == b';')
+                    .map(|offset| start + offset)
+                    .ok_or(())?;
+                let binary_name = std::str::from_utf8(&input[start..end]).map_err(|_| ())?;
+                if binary_name.is_empty()
+                    || binary_name.starts_with('/')
+                    || binary_name.ends_with('/')
+                    || binary_name.split('/').any(str::is_empty)
+                    || binary_name
+                        .bytes()
+                        .any(|byte| matches!(byte, b'.' | b';' | b'['))
+                {
+                    return Err(());
+                }
+                *cursor = end + 1;
+                Ok(Some(format!("class:{}", binary_name.replace('/', "."))))
+            }
+            _ => Err(()),
+        }
+    }
+
+    let input = descriptor.as_bytes();
+    if input.first() != Some(&b'(') {
+        return Err(());
+    }
+    let mut cursor = 1usize;
+    let mut types = BTreeSet::new();
+    let mut parameter_slots = 0usize;
+    while input.get(cursor) != Some(&b')') {
+        let start = cursor;
+        let identity = type_at(input, &mut cursor, false)?;
+        if cursor <= start {
+            return Err(());
+        }
+        parameter_slots += if input[start..cursor].first() == Some(&b'[') {
+            1
+        } else if matches!(input[start], b'J' | b'D') {
+            2
+        } else {
+            1
+        };
+        if parameter_slots > 255 {
+            return Err(());
+        }
+        types.extend(identity);
+    }
+    cursor += 1;
+    let return_identity = type_at(input, &mut cursor, true)?;
+    if cursor != input.len() {
+        return Err(());
+    }
+    types.extend(return_identity);
+    Ok(types)
+}
+
+fn http_api_contract_preparation(work: &Work) -> Result<(Vec<Value>, Value), ClewError> {
+    let (service, entrypoint_id) = work
+        .subject
+        .strip_prefix("service:")
+        .and_then(|service| {
+            work.request
+                .entrypoint
+                .as_deref()
+                .map(|entrypoint| (service, entrypoint))
+        })
+        .unwrap_or_default();
+    let mut selected_rows = Vec::new();
+    let mut limitations = vec![json!({
+        "code":"DIRECT_DECLARED_TYPES_ONLY",
+        "detail":"Only direct declared parameter and return object types are selected. This does not establish inherited fields, validation activation, wire requiredness, serialization, generic payloads, or complete contracts."
+    })];
+    let mut direct_type_count = 0usize;
+    let mut selected_declaration_count = 0usize;
+
+    let entry = work.checked.services.get(service).and_then(|evidence| {
+        let mut matches = evidence
+            .entrypoints
+            .iter()
+            .filter(|entry| entry.id == entrypoint_id && entry.kind == "HTTP_ENDPOINT");
+        let entry = matches.next()?;
+        matches.next().is_none().then_some(entry)
+    });
+    let Some(entry) = entry else {
+        limitations.push(json!({"code":"HTTP_ENDPOINT_UNAVAILABLE"}));
+        return Ok((
+            selected_rows,
+            http_api_contract_obligation(
+                service,
+                entrypoint_id,
+                direct_type_count,
+                selected_declaration_count,
+                limitations,
+            ),
+        ));
+    };
+
+    let declarations: Vec<_> = entry
+        .dependency_ids
+        .iter()
+        .filter_map(|id| work.checked.dependencies.get(id))
+        .filter(|declaration| {
+            declaration.service == service
+                && declaration.kind == "SYMBOL"
+                && declaration.symbol == entry.symbol
+                && declaration.normalized["symbolIdentity"] == entry.symbol
+                && declaration.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                && declaration.normalized["declarationKind"] == "METHOD"
+        })
+        .collect();
+    let declaration = match declarations.as_slice() {
+        [declaration] if work.influence.contains_key(&declaration.id) => *declaration,
+        [] => {
+            limitations.push(json!({"code":"JAVA_ENDPOINT_DECLARATION_MISSING"}));
+            return Ok((
+                selected_rows,
+                http_api_contract_obligation(
+                    service,
+                    entrypoint_id,
+                    direct_type_count,
+                    selected_declaration_count,
+                    limitations,
+                ),
+            ));
+        }
+        [_] => {
+            limitations.push(json!({"code":"JAVA_ENDPOINT_OUTSIDE_WORK_INFLUENCE"}));
+            return Ok((
+                selected_rows,
+                http_api_contract_obligation(
+                    service,
+                    entrypoint_id,
+                    direct_type_count,
+                    selected_declaration_count,
+                    limitations,
+                ),
+            ));
+        }
+        _ => {
+            limitations.push(json!({"code":"JAVA_ENDPOINT_DECLARATION_AMBIGUOUS"}));
+            return Ok((
+                selected_rows,
+                http_api_contract_obligation(
+                    service,
+                    entrypoint_id,
+                    direct_type_count,
+                    selected_declaration_count,
+                    limitations,
+                ),
+            ));
+        }
+    };
+    let Some(scope) = declaration.normalized["scope"]
+        .as_str()
+        .filter(|scope| !scope.is_empty())
+    else {
+        limitations.push(json!({"code":"JAVA_ENDPOINT_COMPILATION_SCOPE_UNAVAILABLE"}));
+        return Ok((
+            selected_rows,
+            http_api_contract_obligation(
+                service,
+                entrypoint_id,
+                direct_type_count,
+                selected_declaration_count,
+                limitations,
+            ),
+        ));
+    };
+    let Some(descriptor) = declaration.normalized["jvmDescriptor"].as_str() else {
+        limitations.push(json!({"code":"JVM_METHOD_DESCRIPTOR_UNAVAILABLE"}));
+        return Ok((
+            selected_rows,
+            http_api_contract_obligation(
+                service,
+                entrypoint_id,
+                direct_type_count,
+                selected_declaration_count,
+                limitations,
+            ),
+        ));
+    };
+    let direct_types = match descriptor_object_types(descriptor) {
+        Ok(types) => types,
+        Err(()) => {
+            limitations.push(json!({"code":"JVM_METHOD_DESCRIPTOR_UNSUPPORTED_OR_MALFORMED"}));
+            return Ok((
+                selected_rows,
+                http_api_contract_obligation(
+                    service,
+                    entrypoint_id,
+                    direct_type_count,
+                    selected_declaration_count,
+                    limitations,
+                ),
+            ));
+        }
+    };
+    direct_type_count = direct_types.len();
+    if direct_types.len() > MAX_DIRECT_API_TYPES {
+        limitations.push(json!({
+            "code":"DIRECT_TYPE_BOUND_DEFERRED",
+            "maxDistinctTypes":MAX_DIRECT_API_TYPES,
+            "observedDistinctTypes":direct_types.len(),
+        }));
+        return Ok((
+            selected_rows,
+            http_api_contract_obligation(
+                service,
+                entrypoint_id,
+                direct_type_count,
+                selected_declaration_count,
+                limitations,
+            ),
+        ));
+    }
+
+    let sources = &work.checked.services[service].sources;
+    let mut seen = BTreeSet::new();
+    for identity in direct_types {
+        let candidates: Vec<_> = work
+            .checked
+            .dependencies
+            .values()
+            .filter(|candidate| {
+                candidate.service == service
+                    && candidate.kind == "SYMBOL"
+                    && candidate.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                    && matches!(
+                        candidate.normalized["declarationKind"].as_str(),
+                        Some("CLASS" | "INTERFACE" | "ENUM" | "RECORD" | "ANNOTATION")
+                    )
+                    && candidate.symbol == identity
+                    && candidate.normalized["symbolIdentity"] == identity
+                    && candidate.normalized["scope"].as_str() == Some(scope)
+                    && work.influence.contains_key(&candidate.id)
+            })
+            .collect();
+        let candidate = match candidates.as_slice() {
+            [candidate] => *candidate,
+            [] => {
+                let unsupported = work.checked.dependencies.values().any(|candidate| {
+                    candidate.service == service
+                        && candidate.kind == "SYMBOL"
+                        && (candidate.symbol == identity
+                            || candidate.normalized["symbolIdentity"] == identity)
+                        && candidate.normalized["scope"].as_str() == Some(scope)
+                        && work.influence.contains_key(&candidate.id)
+                });
+                limitations.push(json!({
+                    "code":if unsupported {"DIRECT_TYPE_METADATA_UNSUPPORTED"} else {"DIRECT_TYPE_DECLARATION_MISSING"},
+                    "symbolIdentity":identity,
+                }));
+                continue;
+            }
+            _ => {
+                limitations.push(json!({
+                    "code":"DIRECT_TYPE_DECLARATION_AMBIGUOUS",
+                    "symbolIdentity":identity,
+                }));
+                continue;
+            }
+        };
+        if seen.insert(("DEPENDENCY", candidate.id.as_str())) {
+            selected_rows.push(json!({"kind":"DEPENDENCY","id":candidate.id,"record":candidate}));
+        }
+        if candidate.source_ids.is_empty() {
+            limitations.push(json!({
+                "code":"DIRECT_TYPE_SOURCE_UNAVAILABLE",
+                "symbolIdentity":identity,
+            }));
+        }
+        for source_id in &candidate.source_ids {
+            match sources
+                .get(source_id)
+                .filter(|source| source.service == service)
+            {
+                Some(source) if seen.insert(("SOURCE", source_id.as_str())) => {
+                    selected_rows.push(json!({"kind":"SOURCE","id":source_id,"record":source}));
+                }
+                Some(_) => {}
+                None => limitations.push(json!({
+                    "code":"DIRECT_TYPE_SOURCE_RECORD_MISSING",
+                    "symbolIdentity":identity,
+                    "sourceId":source_id,
+                })),
+            }
+        }
+    }
+    selected_declaration_count = selected_rows
+        .iter()
+        .filter(|row| row["kind"] == "DEPENDENCY")
+        .count();
+    Ok((
+        selected_rows,
+        http_api_contract_obligation(
+            service,
+            entrypoint_id,
+            direct_type_count,
+            selected_declaration_count,
+            limitations,
+        ),
+    ))
+}
+
+fn http_api_contract_obligation(
+    service: &str,
+    entrypoint: &str,
+    direct_type_count: usize,
+    selected_declaration_count: usize,
+    limitations: Vec<Value>,
+) -> Value {
+    json!({
+        "kind":"HTTP_API_CONTRACT_PREPARATION",
+        "service":service,
+        "entrypoint":entrypoint,
+        "directDescriptorTypeCount":direct_type_count,
+        "selectedDeclarationCount":selected_declaration_count,
+        "limitations":limitations,
+    })
+}
+
 fn validate_context_profile(subject: &str, request: &Request) -> Result<(), ClewError> {
     match request.context_profile.as_deref() {
         None if subject.starts_with("service:")
@@ -504,6 +908,14 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         Some("declarations-v1") => Err(invalid(
             "CONTEXT_PROFILE_INCOMPATIBLE: declarations-v1 requires a service work request for section-entities",
         )),
+        Some(HTTP_API_CONTRACT_PROFILE)
+            if subject.starts_with("service:") && request.entrypoint.is_some() =>
+        {
+            Ok(())
+        }
+        Some(HTTP_API_CONTRACT_PROFILE) => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: http-api-contract-v1 requires a service endpoint request",
+        )),
         Some(profile) => Err(invalid(format!(
             "CONTEXT_PROFILE_UNSUPPORTED: unsupported immutable work context profile: {profile}"
         ))),
@@ -554,6 +966,9 @@ pub fn prepare_with_snapshot(
         }
     };
     let (checked, evidence_snapshot) = Check::retained(repo, snapshot, &selected)?;
+    normalize_http_api_contract_profile(&subject, &mut request, &checked);
+    validate_context_profile(&subject, &request)?;
+    validate_http_api_contract_profile(&subject, &request, &checked)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -715,6 +1130,10 @@ pub fn prepare_with_snapshot(
         obligations,
         review_reasons,
     };
+    if work.request.context_profile.as_deref() == Some(HTTP_API_CONTRACT_PROFILE) {
+        let (_, obligation) = http_api_contract_preparation(&work)?;
+        work.obligations.push(obligation);
+    }
     let mut stored = StoredWork::from_runtime(&work, evidence_snapshot);
     stored.id = digest(&stored)?[7..].into();
     // Validate selection before committing an unusable work object.
@@ -1277,6 +1696,28 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
             cli::context_items(&work.checked, &args, work.retained.as_ref())?
         }
     };
+    if selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+        && work.request.context_profile.as_deref() == Some(HTTP_API_CONTRACT_PROFILE)
+    {
+        let (contract_rows, _) = http_api_contract_preparation(work)?;
+        let mut present: BTreeSet<_> = items
+            .iter()
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap_or_default().to_owned(),
+                    item["id"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        items.extend(contract_rows.into_iter().filter(|item| {
+            present.insert((
+                item["kind"].as_str().unwrap_or_default().to_owned(),
+                item["id"].as_str().unwrap_or_default().to_owned(),
+            ))
+        }));
+    }
     if selection.query.is_none() && selection.references.is_empty() && selection.symbols.is_empty()
     {
         if kind == "scenario" {
@@ -2670,6 +3111,771 @@ mod section_context_tests {
         assert_eq!(
             selected.iter().find(|r| r["kind"] == "SECTION").unwrap()["id"],
             "section-responsibilities"
+        );
+    }
+}
+
+#[cfg(test)]
+mod api_contract_tests {
+    use super::*;
+
+    const SCOPE: &str = ":main";
+    const DESCRIPTOR: &str = "(Lorders/Request;I[Z)Lorders/Response;";
+
+    fn add_source(work: &mut Work, id: &str, service: &str, text: String) {
+        let source = Source {
+            id: id.into(),
+            service: service.into(),
+            revision: "revision-test".into(),
+            file: format!("src/{id}.java"),
+            start_line: 1,
+            end_line: text.lines().count().max(1) as u64,
+            text_digest: crate::canonical::hash_bytes(text.as_bytes()),
+            text,
+            evidence_digest: "evidence-test".into(),
+            authority: "CAPTURED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        if let Some(evidence) = work.checked.services.get_mut(service) {
+            evidence.sources.insert(id.into(), source);
+        }
+        let reference = format!("source-{}", work.handles.len());
+        work.handles.insert(
+            reference,
+            Handle {
+                kind: "SOURCE".into(),
+                id: id.into(),
+            },
+        );
+    }
+
+    fn add_observation(
+        work: &mut Work,
+        id: &str,
+        service: &str,
+        kind: &str,
+        symbol: &str,
+        normalized: Value,
+        source_ids: Vec<String>,
+    ) {
+        let fact_digest = digest(&normalized).unwrap();
+        let observation = Observation {
+            id: id.into(),
+            kind: kind.into(),
+            service: service.into(),
+            symbol: symbol.into(),
+            normalized,
+            digest: fact_digest.clone(),
+            source_ids,
+        };
+        if let Some(evidence) = work.checked.services.get_mut(service) {
+            evidence.observations.insert(id.into(), observation.clone());
+        }
+        work.checked.dependencies.insert(id.into(), observation);
+        work.influence.insert(id.into(), fact_digest);
+        let reference = format!("dependency-{}", work.handles.len());
+        work.handles.insert(
+            reference,
+            Handle {
+                kind: "DEPENDENCY".into(),
+                id: id.into(),
+            },
+        );
+    }
+
+    fn api_fixture(descriptor: &str, types: &[&str], request_source_bytes: usize) -> Work {
+        let mut work = Work {
+            schema: WORK_SCHEMA.into(),
+            id: "work".into(),
+            subject: "service:orders".into(),
+            request: Request {
+                schema: "codeclew-documentation-work-request/1.0".into(),
+                audience: "Maintainers".into(),
+                documentation_language: Some("en".into()),
+                entrypoint: Some("entry-http".into()),
+                context_profile: None,
+                max_items: 100,
+                max_bytes: 49152,
+                external_inputs: Vec::new(),
+            },
+            checked: Check {
+                schema: "codeclew-documentation-check/1.0".into(),
+                input_digest: "input".into(),
+                context_digest: "context".into(),
+                services: BTreeMap::new(),
+                unresolved: BTreeMap::new(),
+                interactions: BTreeMap::new(),
+                scenarios: BTreeMap::new(),
+                dependencies: BTreeMap::new(),
+                source_inputs: None,
+                composition: None,
+            },
+            snapshot: Some("snapshot-test".into()),
+            retained: None,
+            external_inputs: BTreeMap::new(),
+            handles: BTreeMap::new(),
+            influence: BTreeMap::new(),
+            obligations: Vec::new(),
+            review_reasons: Vec::new(),
+        };
+        work.checked.services.insert(
+            "orders".into(),
+            ServiceEvidence {
+                schema: "codeclew-documentation-service-evidence/1.0".into(),
+                service: "orders".into(),
+                revision: "revision-test".into(),
+                service_digest: "service-digest".into(),
+                extractor: EXTRACTOR.into(),
+                runtime_mode: "BUILD".into(),
+                coverage: "COMPLETE".into(),
+                boundaries: Vec::new(),
+                entrypoints: Vec::new(),
+                observations: BTreeMap::new(),
+                sources: BTreeMap::new(),
+                contracts: BTreeMap::new(),
+            },
+        );
+
+        let endpoint_source = "@PostMapping(\"/orders\") Response handle(Request request)";
+        add_source(
+            &mut work,
+            "endpoint-source",
+            "orders",
+            endpoint_source.into(),
+        );
+        let endpoint_symbol = format!("method:class:orders.Controller#handle{descriptor}");
+        add_observation(
+            &mut work,
+            "endpoint-declaration",
+            "orders",
+            "SYMBOL",
+            &endpoint_symbol,
+            json!({
+                "schema":JAVA_COMPILER_FACT_SCHEMA,
+                "declarationKind":"METHOD",
+                "symbolIdentity":endpoint_symbol,
+                "ownerIdentity":"class:orders.Controller",
+                "name":"handle",
+                "resolution":"COMPILER_EXACT",
+                "scope":SCOPE,
+                "jvmDescriptor":descriptor,
+                "documentation":{"events":[],"parameterTypes":["ignored.Generic<orders.Payload>"]}
+            }),
+            vec!["endpoint-source".into()],
+        );
+        add_observation(
+            &mut work,
+            "endpoint-route",
+            "orders",
+            "ENTRYPOINT",
+            &endpoint_symbol,
+            json!({"kind":"HTTP_ENDPOINT","scope":SCOPE}),
+            vec!["endpoint-source".into()],
+        );
+        work.checked.services.get_mut("orders").unwrap().entrypoints = vec![Entrypoint {
+            id: "entry-http".into(),
+            service: "orders".into(),
+            symbol: endpoint_symbol,
+            kind: "HTTP_ENDPOINT".into(),
+            trigger: json!({"methods":["POST"],"paths":["/orders"]}),
+            source_ids: vec!["endpoint-source".into()],
+            dependency_ids: vec!["endpoint-declaration".into(), "endpoint-route".into()],
+            boundaries: Vec::new(),
+        }];
+
+        for identity in types {
+            let simple_name = identity.rsplit('.').next().unwrap_or(identity);
+            let mut text = if simple_name == "Request" {
+                "class Request extends BaseRequest { String name; }".to_owned()
+            } else {
+                format!("class {} {{}}", simple_name)
+            };
+            if simple_name == "Request" && request_source_bytes > text.len() {
+                text.push_str(&" ".repeat(request_source_bytes - text.len()));
+            }
+            let id = format!("dto-{}", work.checked.dependencies.len());
+            let source_id = format!("source-{id}");
+            add_source(&mut work, &source_id, "orders", text);
+            add_observation(
+                &mut work,
+                &id,
+                "orders",
+                "SYMBOL",
+                identity,
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"CLASS",
+                    "symbolIdentity":identity,
+                    "qualifiedName":identity.strip_prefix("class:").unwrap_or(identity),
+                    "scope":SCOPE,
+                }),
+                vec![source_id],
+            );
+        }
+        add_observation(
+            &mut work,
+            "base-request-type",
+            "orders",
+            "SYMBOL",
+            "class:orders.BaseRequest",
+            json!({
+                "schema":JAVA_COMPILER_FACT_SCHEMA,
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.BaseRequest",
+                "qualifiedName":"orders.BaseRequest",
+                "scope":SCOPE,
+            }),
+            Vec::new(),
+        );
+        add_observation(
+            &mut work,
+            "request-getter-member",
+            "orders",
+            "SYMBOL",
+            "method:class:orders.Request#getName()Ljava/lang/String;",
+            json!({
+                "schema":JAVA_COMPILER_FACT_SCHEMA,
+                "declarationKind":"METHOD",
+                "symbolIdentity":"method:class:orders.Request#getName()Ljava/lang/String;",
+                "ownerIdentity":"class:orders.Request",
+                "scope":SCOPE,
+            }),
+            Vec::new(),
+        );
+        work
+    }
+
+    fn prepared_api_work(descriptor: &str, types: &[&str], request_source_bytes: usize) -> Work {
+        let mut work = api_fixture(descriptor, types, request_source_bytes);
+        normalize_http_api_contract_profile(&work.subject, &mut work.request, &work.checked);
+        validate_http_api_contract_profile(&work.subject, &work.request, &work.checked).unwrap();
+        let (_, obligation) = http_api_contract_preparation(&work).unwrap();
+        work.obligations.push(obligation);
+        work
+    }
+
+    fn seal_work_identity(work: &mut Work) {
+        let mut stored = StoredWork::from_runtime(work, "snapshot-test".into());
+        stored.id = digest(&stored).unwrap()[7..].into();
+        work.id = stored.id;
+    }
+
+    fn direct_dependency_symbols(rows: &[Value]) -> BTreeSet<String> {
+        rows.iter()
+            .filter(|row| row["kind"] == "DEPENDENCY")
+            .filter_map(|row| row["record"]["symbol"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn descriptor_parser_validates_full_signature_and_keeps_direct_object_identities() {
+        assert_eq!(
+            descriptor_object_types("([Lpkg/Outer$Inner;I[[ZJ)Lpkg/Reply$Data;"),
+            Ok(BTreeSet::from([
+                "class:pkg.Outer$Inner".into(),
+                "class:pkg.Reply$Data".into(),
+            ]))
+        );
+        assert_eq!(descriptor_object_types("()V"), Ok(BTreeSet::new()));
+        assert_eq!(descriptor_object_types("([IJD)Z"), Ok(BTreeSet::new()));
+        assert_eq!(
+            descriptor_object_types(&format!("({})V", "I".repeat(255))),
+            Ok(BTreeSet::new())
+        );
+        assert_eq!(
+            descriptor_object_types(&format!("({})V", "I".repeat(256))),
+            Err(())
+        );
+        assert_eq!(
+            descriptor_object_types(&format!("({}I)V", "[".repeat(255))),
+            Ok(BTreeSet::new())
+        );
+        assert_eq!(
+            descriptor_object_types(&format!("({}I)V", "[".repeat(256))),
+            Err(())
+        );
+        for malformed in [
+            "(Lpkg/Request;)Vsuffix",
+            "(Lpkg/Request;)Lpkg/Reply",
+            "(Lpkg/Request;)",
+            "(V)V",
+            "()[V",
+            "()L;",
+            "(I)Lpkg/Reply;;",
+            "(Lpkg//Request;)V",
+        ] {
+            assert_eq!(descriptor_object_types(malformed), Err(()), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn default_http_work_adds_direct_type_declarations_and_sources_without_member_or_inherited_fanout()
+     {
+        let work = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        assert_eq!(
+            work.request.context_profile.as_deref(),
+            Some(HTTP_API_CONTRACT_PROFILE)
+        );
+        let rows = rows(&work, &Selection::default()).unwrap();
+        let symbols = direct_dependency_symbols(&rows);
+        assert!(symbols.contains("class:orders.Request"));
+        assert!(symbols.contains("class:orders.Response"));
+        assert!(!symbols.contains("class:orders.BaseRequest"));
+        assert!(!symbols.contains("method:class:orders.Request#getName()Ljava/lang/String;"));
+        let source_ids: BTreeSet<_> = rows
+            .iter()
+            .filter(|row| row["kind"] == "SOURCE")
+            .filter_map(|row| row["id"].as_str().map(str::to_owned))
+            .collect();
+        assert!(source_ids.contains("source-dto-2"));
+        assert!(source_ids.contains("source-dto-3"));
+        let obligation = rows
+            .iter()
+            .find(|row| {
+                row["kind"] == "OBLIGATION"
+                    && row["record"]["kind"] == "HTTP_API_CONTRACT_PREPARATION"
+            })
+            .unwrap();
+        assert_eq!(obligation["record"]["directDescriptorTypeCount"], 2);
+        assert_eq!(obligation["record"]["selectedDeclarationCount"], 2);
+        assert!(
+            obligation["record"]["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|limitation| limitation["code"] == "DIRECT_DECLARED_TYPES_ONLY")
+        );
+        assert!(
+            obligation["record"]["limitations"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("inherited fields")
+        );
+    }
+
+    #[test]
+    fn exact_type_matching_reports_missing_ambiguous_and_out_of_scope_candidates() {
+        let mut wrong_scope = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        wrong_scope
+            .checked
+            .dependencies
+            .get_mut("dto-2")
+            .unwrap()
+            .normalized["scope"] = json!(":test");
+        let (rows, obligation) = http_api_contract_preparation(&wrong_scope).unwrap();
+        assert!(!direct_dependency_symbols(&rows).contains("class:orders.Request"));
+        assert!(
+            obligation["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "DIRECT_TYPE_DECLARATION_MISSING")
+        );
+
+        let mut inconsistent_type = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        inconsistent_type
+            .checked
+            .dependencies
+            .get_mut("dto-2")
+            .unwrap()
+            .symbol = "class:orders.Different".into();
+        let (rows, obligation) = http_api_contract_preparation(&inconsistent_type).unwrap();
+        assert!(!direct_dependency_symbols(&rows).contains("class:orders.Request"));
+        assert!(
+            obligation["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "DIRECT_TYPE_METADATA_UNSUPPORTED")
+        );
+
+        let mut no_endpoint_scope = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        no_endpoint_scope
+            .checked
+            .dependencies
+            .get_mut("endpoint-declaration")
+            .unwrap()
+            .normalized["scope"] = Value::Null;
+        let (rows, obligation) = http_api_contract_preparation(&no_endpoint_scope).unwrap();
+        assert!(rows.is_empty());
+        assert!(
+            obligation["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "JAVA_ENDPOINT_COMPILATION_SCOPE_UNAVAILABLE")
+        );
+
+        let mut outside_influence = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        outside_influence.influence.remove("dto-2");
+        let (rows, _) = http_api_contract_preparation(&outside_influence).unwrap();
+        assert!(!direct_dependency_symbols(&rows).contains("class:orders.Request"));
+
+        let mut other_service = prepared_api_work(DESCRIPTOR, &["class:orders.Request"], 64);
+        add_observation(
+            &mut other_service,
+            "inventory-response",
+            "inventory",
+            "SYMBOL",
+            "class:orders.Response",
+            json!({
+                "schema":JAVA_COMPILER_FACT_SCHEMA,
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.Response",
+                "scope":SCOPE,
+            }),
+            Vec::new(),
+        );
+        let (rows, _) = http_api_contract_preparation(&other_service).unwrap();
+        assert!(!direct_dependency_symbols(&rows).contains("class:orders.Response"));
+
+        let missing = prepared_api_work(DESCRIPTOR, &["class:orders.Request"], 64);
+        let (rows, obligation) = http_api_contract_preparation(&missing).unwrap();
+        assert!(direct_dependency_symbols(&rows).contains("class:orders.Request"));
+        assert!(
+            obligation["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "DIRECT_TYPE_DECLARATION_MISSING"
+                    && item["symbolIdentity"] == "class:orders.Response")
+        );
+        assert_eq!(obligation["directDescriptorTypeCount"], 2);
+        assert_eq!(obligation["selectedDeclarationCount"], 1);
+
+        let mut ambiguous = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        let mut duplicate = ambiguous.checked.dependencies["dto-2"].clone();
+        duplicate.id = "duplicate-request".into();
+        duplicate.digest = digest(&duplicate.normalized).unwrap();
+        ambiguous
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(duplicate.id.clone(), duplicate.clone());
+        ambiguous
+            .checked
+            .dependencies
+            .insert(duplicate.id.clone(), duplicate.clone());
+        ambiguous
+            .influence
+            .insert(duplicate.id.clone(), duplicate.digest.clone());
+        let (rows, obligation) = http_api_contract_preparation(&ambiguous).unwrap();
+        assert!(!direct_dependency_symbols(&rows).contains("class:orders.Request"));
+        assert!(direct_dependency_symbols(&rows).contains("class:orders.Response"));
+        assert!(
+            obligation["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "DIRECT_TYPE_DECLARATION_AMBIGUOUS")
+        );
+    }
+
+    #[test]
+    fn type_bound_defers_all_and_generic_erasure_does_not_seed_payload_types() {
+        let identities: Vec<_> = (0..9)
+            .map(|index| format!("class:orders.Type{index}"))
+            .collect();
+        let refs: Vec<_> = identities.iter().map(String::as_str).collect();
+        let descriptor = format!(
+            "({})V",
+            (0..9)
+                .map(|index| format!("Lorders/Type{index};"))
+                .collect::<String>()
+        );
+        let over_bound = prepared_api_work(&descriptor, &refs, 32);
+        let (rows, obligation) = http_api_contract_preparation(&over_bound).unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(obligation["directDescriptorTypeCount"], 9);
+        assert_eq!(obligation["selectedDeclarationCount"], 0);
+        assert!(
+            obligation["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "DIRECT_TYPE_BOUND_DEFERRED")
+        );
+
+        let eight_refs: Vec<_> = identities[..8].iter().map(String::as_str).collect();
+        let eight_descriptor = format!(
+            "({})V",
+            (0..8)
+                .map(|index| format!("Lorders/Type{index};"))
+                .collect::<String>()
+        );
+        let at_bound = prepared_api_work(&eight_descriptor, &eight_refs, 32);
+        let (rows, obligation) = http_api_contract_preparation(&at_bound).unwrap();
+        assert_eq!(direct_dependency_symbols(&rows).len(), 8);
+        assert_eq!(obligation["selectedDeclarationCount"], 8);
+
+        let erased = prepared_api_work(
+            "(Lframework/ResponseEntity;)Lframework/ResponseEntity;",
+            &["class:framework.ResponseEntity", "class:orders.Payload"],
+            32,
+        );
+        let (rows, obligation) = http_api_contract_preparation(&erased).unwrap();
+        assert_eq!(
+            direct_dependency_symbols(&rows),
+            BTreeSet::from(["class:framework.ResponseEntity".into()])
+        );
+        assert_eq!(obligation["directDescriptorTypeCount"], 1);
+    }
+
+    #[test]
+    fn syntax_only_inconsistent_identity_and_non_http_roots_keep_legacy_membership() {
+        let mut syntax = api_fixture(DESCRIPTOR, &["class:orders.Request"], 32);
+        syntax.checked.services.get_mut("orders").unwrap().extractor =
+            super::super::model::SOURCE_EXTRACTOR.into();
+        normalize_http_api_contract_profile(&syntax.subject, &mut syntax.request, &syntax.checked);
+        assert!(syntax.request.context_profile.is_none());
+
+        let mut inconsistent = api_fixture(DESCRIPTOR, &["class:orders.Request"], 32);
+        inconsistent
+            .checked
+            .dependencies
+            .get_mut("endpoint-declaration")
+            .unwrap()
+            .normalized["symbolIdentity"] = json!("method:class:orders.Other#handle()V");
+        normalize_http_api_contract_profile(
+            &inconsistent.subject,
+            &mut inconsistent.request,
+            &inconsistent.checked,
+        );
+        assert!(inconsistent.request.context_profile.is_none());
+
+        let mut unrelated = api_fixture(DESCRIPTOR, &["class:orders.Request"], 32);
+        unrelated
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .entrypoints[0]
+            .kind = "KAFKA_LISTENER".into();
+        normalize_http_api_contract_profile(
+            &unrelated.subject,
+            &mut unrelated.request,
+            &unrelated.checked,
+        );
+        assert!(unrelated.request.context_profile.is_none());
+        assert!(
+            !direct_dependency_symbols(&rows(&unrelated, &Selection::default()).unwrap())
+                .contains("class:orders.Request")
+        );
+    }
+
+    #[test]
+    fn new_policy_identity_and_read_receipts_do_not_reinterpret_legacy_work() {
+        let mut legacy = api_fixture(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            32,
+        );
+        seal_work_identity(&mut legacy);
+        let legacy_id = legacy.id.clone();
+        let mut fresh = legacy.clone();
+        normalize_http_api_contract_profile(&fresh.subject, &mut fresh.request, &fresh.checked);
+        let (_, obligation) = http_api_contract_preparation(&fresh).unwrap();
+        fresh.obligations.push(obligation);
+        seal_work_identity(&mut fresh);
+        assert!(legacy.request.context_profile.is_none());
+        assert_eq!(
+            fresh.request.context_profile.as_deref(),
+            Some(HTTP_API_CONTRACT_PROFILE)
+        );
+        assert_ne!(legacy_id, fresh.id);
+
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "API contract receipt isolation").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let legacy_page = read_loaded(&repo, &legacy, Selection::default()).unwrap();
+        let old_state_before = read_state(&repo, &legacy.id).unwrap();
+        let fresh_page = read_loaded(&repo, &fresh, Selection::default()).unwrap();
+        let old_state_after = read_state(&repo, &legacy.id).unwrap();
+        let new_state = read_state(&repo, &fresh.id).unwrap();
+        let legacy_symbols = direct_dependency_symbols(legacy_page["items"].as_array().unwrap());
+        assert!(!legacy_symbols.contains("class:orders.Request"));
+        assert!(!legacy_symbols.contains("class:orders.Response"));
+        assert!(
+            direct_dependency_symbols(fresh_page["items"].as_array().unwrap())
+                .contains("class:orders.Request")
+        );
+        assert_eq!(
+            bytes(&old_state_before.receipts).unwrap(),
+            bytes(&old_state_after.receipts).unwrap()
+        );
+        assert_ne!(
+            old_state_after
+                .receipts
+                .values()
+                .next()
+                .unwrap()
+                .membership_digest,
+            new_state
+                .receipts
+                .values()
+                .next()
+                .unwrap()
+                .membership_digest
+        );
+
+        let endpoint_reference = fresh
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.kind == "DEPENDENCY" && handle.id == "endpoint-declaration")
+            .map(|(reference, _)| reference.clone())
+            .unwrap();
+        let explicit = rows(
+            &fresh,
+            &Selection {
+                references: vec![endpoint_reference],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(!direct_dependency_symbols(&explicit).contains("class:orders.Request"));
+    }
+
+    #[test]
+    fn oversized_sources_remain_part_readable_while_oversized_declarations_block_completeness() {
+        let mut source_work = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            6000,
+        );
+        source_work.request.max_bytes = 2048;
+        seal_work_identity(&mut source_work);
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "API contract size admission").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let mut selection = Selection::default();
+        let mut source_omitted = false;
+        for _ in 0..32 {
+            let page = read_loaded(&repo, &source_work, selection.clone()).unwrap();
+            source_omitted |= page["omitted"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["kind"] == "SOURCE" && item["id"] == "source-dto-2")
+            });
+            let Some(cursor) = page["nextCursor"].as_str() else {
+                break;
+            };
+            selection.cursor = Some(cursor.into());
+        }
+        assert!(source_omitted);
+
+        let source_reference = source_work
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.kind == "SOURCE" && handle.id == "source-dto-2")
+            .map(|(reference, _)| reference.clone())
+            .unwrap();
+        let mut cursor = None;
+        let mut received = String::new();
+        loop {
+            let part = super::super::work_parts::read_part_loaded(
+                &repo,
+                &source_work,
+                SourcePartRequest {
+                    schema: super::super::work_parts::REQUEST_SCHEMA.into(),
+                    reference: source_reference.clone(),
+                    cursor,
+                },
+            )
+            .unwrap();
+            received.push_str(part["text"].as_str().unwrap());
+            cursor = part["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            received,
+            source_work.checked.services["orders"].sources["source-dto-2"].text
+        );
+        let source_state = read_state(&repo, &source_work.id).unwrap();
+        assert!(initial_context_complete_with_parts(&source_work, &source_state).unwrap());
+
+        let mut declaration_work = prepared_api_work(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            32,
+        );
+        declaration_work.request.max_bytes = 2048;
+        let dependency = declaration_work
+            .checked
+            .dependencies
+            .get_mut("dto-2")
+            .unwrap();
+        dependency.normalized["capturedPayload"] = json!("x".repeat(5000));
+        dependency.digest = digest(&dependency.normalized).unwrap();
+        let updated = dependency.clone();
+        declaration_work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert("dto-2".into(), updated.clone());
+        declaration_work
+            .influence
+            .insert("dto-2".into(), updated.digest.clone());
+        let full_rows = rows(&declaration_work, &Selection::default()).unwrap();
+        assert_eq!(
+            full_rows
+                .iter()
+                .find(|row| row["kind"] == "DEPENDENCY" && row["id"] == "dto-2")
+                .unwrap()["record"]["normalized"]["capturedPayload"]
+                .as_str()
+                .unwrap()
+                .len(),
+            5000
+        );
+        seal_work_identity(&mut declaration_work);
+        let mut selection = Selection::default();
+        let mut declaration_omitted = false;
+        for _ in 0..32 {
+            let page = read_loaded(&repo, &declaration_work, selection.clone()).unwrap();
+            declaration_omitted |= page["omitted"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["kind"] == "DEPENDENCY" && item["id"] == "dto-2")
+            });
+            let Some(cursor) = page["nextCursor"].as_str() else {
+                break;
+            };
+            selection.cursor = Some(cursor.into());
+        }
+        assert!(declaration_omitted);
+        let declaration_state = read_state(&repo, &declaration_work.id).unwrap();
+        assert!(
+            !initial_context_complete_with_parts(&declaration_work, &declaration_state).unwrap()
         );
     }
 }
