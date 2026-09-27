@@ -55,6 +55,26 @@ if mode == "denials":
         sys.exit(95)
 
 payload = job["payload"]
+expansion_budget = job["expansionBudget"]
+assert expansion_budget["scope"] == "SHARED_ACROSS_ROLES"
+assert isinstance(expansion_budget["remaining"], int) and expansion_budget["remaining"] >= 0
+assert expansion_budget["meaning"] == (
+    "Each registered expansion action consumes one unit, whether it reads a navigation page "
+    "or a full result set. The count is shared across author, repair, fallback, and reviewer calls."
+)
+expansions_remaining = expansion_budget["remaining"]
+
+
+def assert_expansion_schema(schema, response_action):
+    expected = {f"#/$defs/{response_action}"}
+    if expansions_remaining > 0:
+        expected.add("#/$defs/expandAction")
+    assert {item["$ref"] for item in schema["oneOf"]} == expected
+    assert ("expandAction" in schema["$defs"]) == (expansions_remaining > 0)
+    if expansions_remaining == 0:
+        assert "expandAction" not in json.dumps(schema, ensure_ascii=False)
+
+
 if "requireEvidenceText" in options:
     assert options["requireEvidenceText"] in json.dumps(payload["evidence"])
 if options.get("requireFullSourceParts"):
@@ -135,12 +155,15 @@ if job["role"] == "reviewer":
             assert field["minItems"] == field["maxItems"] == len(expected)
             assert field["uniqueItems"] is True
             assert set(field["items"]["enum"]) == expected if expected else field["items"] is False
-        assert {item["$ref"] for item in schema["oneOf"]} == {"#/$defs/reviewAction", "#/$defs/expandAction"}
-        assert schema["$defs"]["expandAction"]["properties"]["action"]["const"] == "expand"
+        assert_expansion_schema(schema, "reviewAction")
+        if expansions_remaining > 0:
+            assert schema["$defs"]["expandAction"]["properties"]["action"]["const"] == "expand"
         delivered = {item["reference"] for page in payload["evidence"]["pages"] for item in page["items"] if "reference" in item}
         delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))
         issue_evidence = props["issues"]["items"]["properties"]["evidence"]["items"]
         assert set(issue_evidence["enum"]) == delivered if delivered else issue_evidence is False
+    else:
+        assert_expansion_schema(payload["outputSchema"], "reviewAction")
     result = None
     if mode == "symbol-lookup-reviewer":
         feedback = payload.get("expansionFeedback")
@@ -202,6 +225,8 @@ if job["role"] == "reviewer":
         if mode == "object-coverage":
             result["review"]["assessedClaims"] = [{"claim": claim, "supported": True} for claim in payload["claims"]]
 else:
+    if not mode.startswith("section-"):
+        assert_expansion_schema(payload["outputSchema"], "proposalAction")
     if mode.startswith("section-"):
         contract = payload["outputContract"]
         assert contract["schema"] == "section-summary/1.0"
@@ -215,6 +240,7 @@ else:
         section = next(item for item in rows
                        if item["kind"] == "SECTION" and item["id"] == "section-entities")
         assert contract["targetReference"] == section["reference"]
+        assert_expansion_schema(contract["outputSchema"], "sectionAction")
         delivered = {item["reference"] for item in rows
                      if "evidence" in item.get("referenceRoles", [])}
         delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))

@@ -930,8 +930,9 @@ fn job_envelope(
     driver: &Role,
     invocation: &str,
     payload: Value,
+    expansions_remaining: Option<u32>,
 ) -> Value {
-    serde_json::json!({
+    let mut request = serde_json::json!({
         "schema":"codeclew-documentation-agent-job/1.0",
         "invocation":invocation,
         "role":role_name,
@@ -939,7 +940,60 @@ fn job_envelope(
         "work":report.work,
         "cap":driver.cap,
         "payload":payload
-    })
+    });
+    if let Some(remaining) = expansions_remaining {
+        request["expansionBudget"] = serde_json::json!({
+            "scope":"SHARED_ACROSS_ROLES",
+            "remaining":remaining,
+            "meaning":"Each registered expansion action consumes one unit, whether it reads a navigation page or a full result set. The count is shared across author, repair, fallback, and reviewer calls."
+        });
+    }
+    request
+}
+
+fn bind_expansion_remaining(
+    payload: &mut Value,
+    expansions_remaining: Option<u32>,
+    response_action: &str,
+    response_name: &str,
+) -> Result<(), ClewError> {
+    let Some(remaining) = expansions_remaining else {
+        return Ok(());
+    };
+    let is_bound_contract = payload.get("outputContract").is_some();
+    if remaining == 0 {
+        let schema_digest = {
+            let schema = if is_bound_contract {
+                &mut payload["outputContract"]["outputSchema"]
+            } else {
+                &mut payload["outputSchema"]
+            };
+            schema["oneOf"] = serde_json::json!([{
+                "$ref":format!("#/$defs/{response_action}")
+            }]);
+            let definitions = schema["$defs"].as_object_mut().unwrap();
+            definitions.remove("expandAction");
+            definitions.remove("selection");
+            schema["description"] = serde_json::json!(format!(
+                "Return the complete {response_name} response. No registered expansion action remains."
+            ));
+            digest(schema)?
+        };
+        if is_bound_contract {
+            payload["outputContract"]["outputSchemaDigest"] = serde_json::json!(schema_digest);
+        }
+    }
+
+    let budget_instruction = if remaining == 0 {
+        "The checkpoint has zero shared expansion actions remaining. Registered expansion is unavailable for this call; return only the response allowed by the output schema.".to_owned()
+    } else {
+        format!(
+            "The checkpoint has {remaining} shared registered expansion action(s) remaining. One registered action consumes one unit, whether it requests a navigation page or a full read; the count is shared across author, repair, fallback, and reviewer calls."
+        )
+    };
+    let instruction = payload["instruction"].as_str().unwrap_or_default();
+    payload["instruction"] = serde_json::json!(format!("{instruction} {budget_instruction}"));
+    Ok(())
 }
 
 fn ensure_input_cap(driver: &Role, request: &Value) -> Result<usize, ClewError> {
@@ -977,6 +1031,27 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
             &work.subject,
             work.request.entrypoint.as_deref().unwrap_or(""),
         );
+    let dataflow_root = !summary_only
+        && selected
+            .is_some_and(|root| super::dataflow::is_root(&work.checked, &work.subject, root));
+    let note_root = !summary_only && selected.is_some_and(super::notes::is_root);
+    let detailed_operation_scope = if summary_only {
+        false
+    } else if let Some(root) = selected {
+        !service_section_scope
+            && !process_overview
+            && !super::dataflow::is_root(&work.checked, &work.subject, root)
+            && !super::notes::is_root(root)
+    } else {
+        // Unselected Work may mix summary, note, dataflow, and sequence roots.
+        // Add conditional format guidance only when an admitted sequence root exists.
+        super::proposals::expected(work).iter().any(|root| {
+            !(work.subject.starts_with("service:") && super::sections::contains(root))
+                && !super::notes::is_root(root)
+                && !super::processes::overview(&work.checked, &work.subject, root)
+                && !super::dataflow::is_root(&work.checked, &work.subject, root)
+        })
+    };
     let sections: Vec<Value> = if work.subject.starts_with("service:") {
         super::sections::REQUIRED
             .iter()
@@ -1077,13 +1152,24 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
             guidance["format"] = serde_json::json!(
                 "Keep this selected section or process overview at the summary root: use an evidence-bound summary and precise uncertainties, with optional supported typed visuals when useful. Do not add steps, contracts, participants or explanation. A visual is optional and is never required by itself."
             );
+        } else if detailed_operation_scope {
+            let scope = if selected.is_some() {
+                "For this detailed endpoint or operation, "
+            } else {
+                "Apply these requirements only to detailed sequence operations in this packet; summary sections, note assessments, process overviews and dataflow views keep their admitted shape. For each detailed operation, "
+            };
+            guidance["format"] = serde_json::json!(format!(
+                "{scope}lead with the supported business outcome. Put material source-supported input and response fields in contract rows, and use structured steps for supported preparation, guards, early exits, ordered actions, outcomes and exceptions. Steps render as readable pseudocode derived from documented step narratives, not executable code or an observed runtime trace. Keep substantive decisions in steps or a typed decision table, not only in a note or prose. When evidence supports more than two material alternatives, require a decision table: preserve supported first-match or exclusivity semantics and no-op/default outcomes, group guards with shared outcomes, and use FIRST, UNIQUE or UNKNOWN only as the evidence supports. Keep action failures separate from selection in afterSelection; keep the table local with parent:null when its causal selection node is unproven."
+            ));
         }
-        guidance["threads"] = serde_json::json!(
-            "A computational thread is a supported causal scenario rooted in an entrypoint, not an OS thread or an arbitrary dependency graph. Lead with the observable business outcome and any meaningful no-op. Explain trigger, guard, ordered actions, effects, outgoing sites, outcomes and unresolved frontier. Preserve exclusive and first-match branching; do not present else-if alternatives as independent sibling executions. A reusable fragment without a proven parent remains local detail. Distinguish construction, selection, queue insertion, invocation and completion; collection iteration does not imply FIFO or completed external effects. Stop an asynchronous path at submission unless continuation and correlation are supported. Keep prose and diagram ordering consistent."
-        );
-        guidance["visuals"] = serde_json::json!(
-            "Choose a primary visual only when it answers a reader question. Use execution-flow for supported order/branches and dependency-map for structural relationships. Keep simple binary guards inline by default; prefer one linked decision table for more than two material alternatives when useful, with explicit no-op rules. Explain decision input origins, missing/default values and FIRST/UNIQUE/UNKNOWN in ordinary language; put action exceptions after selection. Link a table only to a proven parent node in the same operation; otherwise state local scope and the missing connection. Cite delivered evidence for visual claims and retain explicit limits. Typed tables document source interpretation, not executable DMN or runtime proof. Visuals share their operation's freshness and meaning review."
-        );
+        if !dataflow_root && !note_root {
+            guidance["threads"] = serde_json::json!(
+                "For detailed sequence operations, a computational thread is a supported causal scenario rooted in an entrypoint, not an OS thread or an arbitrary dependency graph. Lead with the observable business outcome and any meaningful no-op. Explain trigger, guard, ordered actions, effects, outgoing sites, outcomes and unresolved frontier. Preserve exclusive and first-match branching; do not present else-if alternatives as independent sibling executions. A reusable fragment without a proven parent remains local detail. Distinguish construction, selection, queue insertion, invocation and completion; collection iteration does not imply FIFO or completed external effects. Stop an asynchronous path at submission unless continuation and correlation are supported. Keep prose and diagram ordering consistent."
+            );
+            guidance["visuals"] = serde_json::json!(
+                "For detailed operations that admit typed visuals, choose a primary visual only when it answers a reader question. Use execution-flow for supported order/branches and dependency-map for structural relationships. Keep simple binary guards inline by default. Explain decision input origins, missing/default values and hit policy in ordinary language. Link a decision table only to a proven node in the same operation; otherwise keep it local with parent:null. Do not restate table rows in long prose. Cite delivered evidence for visual claims and retain explicit limits. Typed tables document source interpretation, not executable DMN or runtime proof. Visuals share their operation's freshness and meaning review."
+            );
+        }
     }
     guidance
 }
@@ -1192,6 +1278,26 @@ fn author_payload_with_parts(
         &operation_references,
         &gap_references,
         work,
+    )?;
+    Ok(payload)
+}
+
+fn author_payload_with_expansion_remaining(
+    work: &super::work::Work,
+    pages: &[Value],
+    source_parts: &[Value],
+    state: &super::work::ReadState,
+    feedback: &Value,
+    previous: &Value,
+    expansions_remaining: Option<u32>,
+) -> Result<Value, ClewError> {
+    let mut payload =
+        author_payload_with_parts(work, pages, source_parts, state, feedback, previous)?;
+    bind_expansion_remaining(
+        &mut payload,
+        expansions_remaining,
+        "proposalAction",
+        "proposal",
     )?;
     Ok(payload)
 }
@@ -1396,7 +1502,7 @@ fn reviewer_payload_with_parts(
     } else {
         " Assess every material, applicable readerGuidance question, including a selected section's readerQuestion, against the proposed content in the form allowed by readerGuidance.format when present and delivered evidence. If the packet supports material behavior that the proposal omits, return verdict REJECT and add a blocking ERROR issue with claim=null and relevant delivered Work handles as evidence. A precise, evidence-scoped unknown is valid when it still gives a useful bounded answer. Request registered expansion when missing evidence blocks a useful answer and a registered read could resolve it. Use NEEDS_EVIDENCE with the exact limitation only when missing evidence prevents a useful bounded answer. Do not demand irrelevant categories, every internal method or DTO field, or every visual format; do not invent values or make negative claims from absence."
     };
-    let content_root_guidance = " Assess proposal content against readerGuidance.format when present; it describes the selected content root, while outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response. For a summary root, do not require steps, contracts, participants or explanation; supported typed visuals are optional only when readerGuidance.format allows them, never a completeness requirement.";
+    let content_root_guidance = " Assess proposal content against readerGuidance.format when present; it governs the selected root or, for conditional guidance, only the operation roots it names, while outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response. When format guidance names detailed-operation requirements, treat its evidence-supported requirements as review criteria: flag supported format omissions, and do not demand unseen helper implementations or runtime proof. For a summary root, do not require steps, contracts, participants or explanation; supported typed visuals are optional only when readerGuidance.format allows them, never a completeness requirement.";
     payload["instruction"] = serde_json::json!(format!(
         "{} Follow {} exactly: assessedClaims and assessedOperations contain ID strings, while issue evidence contains delivered Work handles, not source IDs. Preserve the complete bound identity strings.{}{}",
         payload["instruction"].as_str().unwrap_or_default(),
@@ -1404,6 +1510,29 @@ fn reviewer_payload_with_parts(
         scoped_review_guidance,
         content_root_guidance
     ));
+    Ok(payload)
+}
+
+fn reviewer_payload_with_expansion_remaining(
+    work: &super::work::Work,
+    pages: &[Value],
+    source_parts: &[Value],
+    proposal: &super::proposals::Artifact,
+    evidence_digest: &str,
+    section_contract: bool,
+    state: &super::work::ReadState,
+    expansions_remaining: Option<u32>,
+) -> Result<Value, ClewError> {
+    let mut payload = reviewer_payload_with_parts(
+        work,
+        pages,
+        source_parts,
+        proposal,
+        evidence_digest,
+        section_contract,
+        state,
+    )?;
+    bind_expansion_remaining(&mut payload, expansions_remaining, "reviewAction", "review")?;
     Ok(payload)
 }
 
@@ -1420,8 +1549,9 @@ fn selected_author_payload(
     work: &super::work::Work,
     config: &Config,
     prompt: &AuthorPrompt<'_>,
+    expansions_remaining: Option<u32>,
 ) -> Result<Value, ClewError> {
-    if config.author_output_contract.is_some() {
+    let mut payload = if config.author_output_contract.is_some() {
         let state = super::work::read_state(repo, &work.id)?;
         super::section_author::payload_with_parts(
             work,
@@ -1430,18 +1560,28 @@ fn selected_author_payload(
             prompt.feedback,
             prompt.previous_section,
             &state,
-        )
+        )?
     } else {
         let state = super::work::read_state(repo, &work.id)?;
-        author_payload_with_parts(
+        author_payload_with_expansion_remaining(
             work,
             prompt.pages,
             prompt.source_parts,
             &state,
             prompt.feedback,
             prompt.previous_proposal,
-        )
+            expansions_remaining,
+        )?
+    };
+    if config.author_output_contract.is_some() {
+        bind_expansion_remaining(
+            &mut payload,
+            expansions_remaining,
+            "sectionAction",
+            "section summary",
+        )?;
     }
+    Ok(payload)
 }
 
 fn preflight_initial_context(
@@ -1451,6 +1591,7 @@ fn preflight_initial_context(
     config: &Config,
     pages: &[Value],
     source_parts: &[Value],
+    expansions_remaining: u32,
 ) -> Result<(), ClewError> {
     let null = Value::Null;
     let payload = selected_author_payload(
@@ -1464,10 +1605,18 @@ fn preflight_initial_context(
             previous_proposal: &null,
             previous_section: &null,
         },
+        Some(expansions_remaining),
     )?;
     // UUID::simple has 32 ASCII hex bytes. The placeholder changes identity,
     // but not the exact canonical request size checked again before dispatch.
-    let request = job_envelope(report, "author", &config.author, &"0".repeat(32), payload);
+    let request = job_envelope(
+        report,
+        "author",
+        &config.author,
+        &"0".repeat(32),
+        payload,
+        Some(expansions_remaining),
+    );
     let request_bytes = bytes(&request)?.len();
     let result = ensure_input_cap(&config.author, &request);
     let complete = pages
@@ -1494,6 +1643,7 @@ fn preflight_initial_context(
         pages,
         source_parts,
         &super::work::read_state(repo, &work.id)?,
+        expansions_remaining,
     );
     context["reviewerAdmission"] = reviewer_admission;
     report.context_budget = Some(context);
@@ -1513,6 +1663,7 @@ fn reviewer_preflight(
     pages: &[Value],
     source_parts: &[Value],
     state: &super::work::ReadState,
+    expansions_remaining: u32,
 ) -> Value {
     const FIXED_CUSHION_BYTES: usize = 65_536;
     let author = &config.author;
@@ -1536,7 +1687,7 @@ fn reviewer_preflight(
         meaning_review: "UNASSESSED".into(),
     };
     let evidence_digest = format!("sha256:{}", "0".repeat(64));
-    let fixed_payload = reviewer_payload_with_parts(
+    let fixed_payload = reviewer_payload_with_expansion_remaining(
         work,
         pages,
         source_parts,
@@ -1544,10 +1695,18 @@ fn reviewer_preflight(
         &evidence_digest,
         config.author_output_contract.is_some(),
         state,
+        Some(expansions_remaining),
     );
     let (fixed_bytes, allowance, candidate_bytes, status, detail) =
         match fixed_payload.and_then(|payload| {
-            let envelope = job_envelope(report, "reviewer", reviewer, &"0".repeat(32), payload);
+            let envelope = job_envelope(
+                report,
+                "reviewer",
+                reviewer,
+                &"0".repeat(32),
+                payload,
+                Some(expansions_remaining),
+            );
             let fixed = bytes(&envelope)?.len();
             let allowance = author
                 .cap
@@ -1656,7 +1815,14 @@ fn call(
                 "RECOVERY_CALL_BINDING_MISMATCH: pending invocation does not match this run config or Work snapshot",
             ));
         }
-        let request = job_envelope(report, role_name, driver, &identity.invocation, payload);
+        let request = job_envelope(
+            report,
+            role_name,
+            driver,
+            &identity.invocation,
+            payload,
+            Some(checkpoint.expansions_remaining),
+        );
         ensure_input_cap(driver, &request)?;
         let candidate = recovery::InputRecord::new(
             recovery::CallBinding {
@@ -1703,7 +1869,14 @@ fn call(
     } else {
         let invocation = uuid::Uuid::new_v4().simple().to_string();
         let reservation = next_reserved(repo, &c.budget, &report.run, role_name)?;
-        let request = job_envelope(report, role_name, driver, &invocation, payload);
+        let request = job_envelope(
+            report,
+            role_name,
+            driver,
+            &invocation,
+            payload,
+            Some(checkpoint.expansions_remaining),
+        );
         let request_bytes = ensure_input_cap(driver, &request)?;
         let snapshot = checkpoint.snapshot.clone();
         let input = recovery::InputRecord::new(
@@ -2598,6 +2771,7 @@ fn add_expansion(
             context.config,
             context.pages,
             context.source_parts,
+            *context.remaining,
         )?;
         if navigation_page {
             break;
@@ -3003,7 +3177,7 @@ fn reviewed_publication(
             "RECOVERY_PUBLICATION_EVIDENCE_MISMATCH: reviewer evidence dispatch differs from its checkpoint",
         ));
     }
-    let payload = reviewer_payload_with_parts(
+    let payload = reviewer_payload_with_expansion_remaining(
         work,
         &checkpoint.pages,
         &checkpoint.source_parts,
@@ -3011,6 +3185,7 @@ fn reviewed_publication(
         &evidence_digest,
         config.author_output_contract.is_some(),
         &read_state,
+        Some(checkpoint.expansions_remaining),
     )
     .map_err(|error| recovery_refusal("RECOVERY_PUBLICATION_INPUT_MISMATCH", error))?;
     let request = job_envelope(
@@ -3019,6 +3194,7 @@ fn reviewed_publication(
         &config.reviewer,
         &identity.invocation,
         payload,
+        Some(checkpoint.expansions_remaining),
     );
     ensure_input_cap(&config.reviewer, &request)
         .map_err(|error| recovery_refusal("RECOVERY_PUBLICATION_INPUT_MISMATCH", error))?;
@@ -3525,7 +3701,15 @@ fn execute_run(
     if pages.is_empty() {
         let mut cursor: Option<String> = None;
         let mut seen_cursors = std::collections::BTreeSet::new();
-        preflight_initial_context(repo, report, work, config, &pages, &source_parts)?;
+        preflight_initial_context(
+            repo,
+            report,
+            work,
+            config,
+            &pages,
+            &source_parts,
+            config.expansions,
+        )?;
         loop {
             if let Some(current) = cursor.as_ref()
                 && !seen_cursors.insert(current.clone())
@@ -3551,7 +3735,15 @@ fn execute_run(
                 ));
             }
             pages.push(page);
-            preflight_initial_context(repo, report, work, config, &pages, &source_parts)?;
+            preflight_initial_context(
+                repo,
+                report,
+                work,
+                config,
+                &pages,
+                &source_parts,
+                config.expansions,
+            )?;
             cursor = next_cursor;
             if cursor.is_none() {
                 break;
@@ -3627,7 +3819,7 @@ fn execute_run(
             }
             let evidence_digest =
                 digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
-            let mut payload = reviewer_payload_with_parts(
+            let mut payload = reviewer_payload_with_expansion_remaining(
                 work,
                 &pages,
                 &source_parts,
@@ -3635,6 +3827,7 @@ fn execute_run(
                 &evidence_digest,
                 contract.is_some(),
                 &read_state,
+                Some(checkpoint.expansions_remaining),
             )?;
             if let Some(feedback) = &checkpoint.expansion_feedback {
                 payload["expansionFeedback"] = feedback.clone();
@@ -3789,6 +3982,7 @@ fn execute_run(
                 previous_proposal: &previous,
                 previous_section: &previous_section,
             },
+            Some(checkpoint.expansions_remaining),
         )?;
         if let Some(feedback) = &checkpoint.expansion_feedback {
             payload["expansionFeedback"] = feedback.clone();
@@ -5386,6 +5580,12 @@ mod input_cap_tests {
                 .unwrap()
                 .contains("Do not emit diagrams, tables")
         );
+        assert!(
+            !guidance["format"]
+                .as_str()
+                .unwrap()
+                .contains("detailed endpoint")
+        );
         let schema = &request["outputContract"]["outputSchema"];
         assert_shared_selection_schema(schema);
         let properties = &schema["$defs"]["sectionAction"]["properties"]["section"]["properties"];
@@ -5433,6 +5633,129 @@ mod input_cap_tests {
         assert_eq!(
             review["sequenceGuidance"]["mandatoryFlowCoverage"],
             json!([])
+        );
+    }
+
+    #[test]
+    fn checkpoint_expansion_remaining_closes_zero_schemas_and_rebinds_contracts() {
+        let work = sequence_work();
+        let state = super::super::work::ReadState {
+            work: work.id.clone(),
+            ..Default::default()
+        };
+        let zero_author = author_payload_with_expansion_remaining(
+            &work,
+            &[],
+            &[],
+            &state,
+            &Value::Null,
+            &Value::Null,
+            Some(0),
+        )
+        .unwrap();
+        let author_schema = &zero_author["outputSchema"];
+        assert_local_schema_references(author_schema, author_schema);
+        assert_eq!(
+            author_schema["oneOf"],
+            json!([{"$ref":"#/$defs/proposalAction"}])
+        );
+        assert!(author_schema["$defs"].get("expandAction").is_none());
+        assert!(
+            zero_author["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("Registered expansion is unavailable for this call")
+        );
+
+        let mut narrow = work.clone();
+        narrow.request.entrypoint = Some("section-entities".into());
+        narrow.handles.insert(
+            "section-ref".into(),
+            super::super::work::Handle {
+                kind: "SECTION".into(),
+                id: "section-entities".into(),
+            },
+        );
+        let mut narrow_author = super::super::section_author::payload_with_parts(
+            &narrow,
+            &[],
+            &[],
+            &Value::Null,
+            &Value::Null,
+            &state,
+        )
+        .unwrap();
+        bind_expansion_remaining(
+            &mut narrow_author,
+            Some(0),
+            "sectionAction",
+            "section summary",
+        )
+        .unwrap();
+        let section_schema = &narrow_author["outputContract"]["outputSchema"];
+        assert_local_schema_references(section_schema, section_schema);
+        assert_eq!(
+            section_schema["oneOf"],
+            json!([{"$ref":"#/$defs/sectionAction"}])
+        );
+        assert!(section_schema["$defs"].get("expandAction").is_none());
+        assert_eq!(
+            narrow_author["outputContract"]["outputSchemaDigest"],
+            digest(section_schema).unwrap()
+        );
+
+        let proposal = super::super::proposals::Artifact {
+            schema: "codeclew-documentation-proposal-result/1.0".into(),
+            id: "proposal-id".into(),
+            work: narrow.id.clone(),
+            input: super::super::proposals::Proposal {
+                schema: "codeclew-documentation-proposal/1.0".into(),
+                operations: Vec::new(),
+                gaps: Default::default(),
+                uncertainties: Vec::new(),
+            },
+            narrative: None,
+            status: "READY_FOR_REVIEW".into(),
+            diagnostics: Vec::new(),
+            claims: Default::default(),
+            read_digest: String::new(),
+            influence: Default::default(),
+            meaning_review: "UNASSESSED".into(),
+        };
+        let zero_reviewer = reviewer_payload_with_expansion_remaining(
+            &narrow,
+            &[],
+            &[],
+            &proposal,
+            "sha256:evidence",
+            true,
+            &state,
+            Some(0),
+        )
+        .unwrap();
+        let review_schema = &zero_reviewer["outputContract"]["outputSchema"];
+        assert_local_schema_references(review_schema, review_schema);
+        assert_eq!(
+            review_schema["oneOf"],
+            json!([{"$ref":"#/$defs/reviewAction"}])
+        );
+        assert!(review_schema["$defs"].get("expandAction").is_none());
+        assert_eq!(
+            zero_reviewer["outputContract"]["outputSchemaDigest"],
+            digest(review_schema).unwrap()
+        );
+        assert!(
+            zero_reviewer["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("Registered expansion is unavailable for this call")
+        );
+
+        let public = reviewer_payload(&narrow, &[], &proposal, "sha256:evidence", true).unwrap();
+        assert!(
+            public["outputContract"]["outputSchema"]["$defs"]
+                .get("expandAction")
+                .is_some()
         );
     }
 
@@ -6059,6 +6382,7 @@ mod input_cap_tests {
         assert!(
             overview_format.contains("Do not add steps, contracts, participants or explanation")
         );
+        assert!(!overview_format.contains("structured steps for supported preparation"));
         assert_eq!(
             request["readerGuidance"]["processQuestions"]
                 .as_array()
@@ -6077,6 +6401,18 @@ mod input_cap_tests {
         );
         assert!(overview_review_guidance.contains("supported typed visuals are optional"));
         assert_eq!(request["languageContract"]["documentationLanguage"], "ru");
+        assert!(
+            request["languageContract"]["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("natural Russian")
+        );
+        assert!(
+            request["languageContract"]["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("Do not translate raw source evidence")
+        );
         assert!(request.get("outputContract").is_none());
         let output = &request["outputSchema"];
         assert_shared_selection_schema(output);
@@ -6167,6 +6503,18 @@ mod input_cap_tests {
                 .unwrap()
                 .contains("optional supported typed visuals")
         );
+        assert!(
+            ordinary_author["readerGuidance"]["format"]
+                .as_str()
+                .unwrap()
+                .contains("Do not add steps, contracts, participants or explanation")
+        );
+        assert!(
+            !ordinary_author["readerGuidance"]["format"]
+                .as_str()
+                .unwrap()
+                .contains("structured steps for supported preparation")
+        );
         let generic_review_guidance = ordinary_reviewer["instruction"].as_str().unwrap();
         for required in [
             "material, applicable readerGuidance question",
@@ -6214,16 +6562,16 @@ mod input_cap_tests {
         // A selected callable gets the same reader questions in authoring and
         // review, independent of whether the subject is a service or a saved
         // process root.
-        let mut endpoint_work = work.clone();
-        endpoint_work.subject = "service:orders".into();
-        endpoint_work.request.entrypoint = Some("orders-reserve".into());
+        let mut endpoint_work = sequence_work();
+        endpoint_work.request.documentation_language = Some("ru".into());
+        endpoint_work.request.entrypoint = Some("entry-main".into());
         let endpoint_author =
-            author_payload(&endpoint_work, &pages, &Value::Null, &Value::Null).unwrap();
+            author_payload(&endpoint_work, &[], &Value::Null, &Value::Null).unwrap();
         let mut endpoint_proposal = proposal.clone();
         endpoint_proposal.narrative.as_mut().unwrap().subject = endpoint_work.subject.clone();
         let endpoint_reviewer = reviewer_payload(
             &endpoint_work,
-            &pages,
+            &[],
             &endpoint_proposal,
             "evidence-digest",
             false,
@@ -6236,6 +6584,55 @@ mod input_cap_tests {
         assert_eq!(
             endpoint_reviewer["readerGuidance"]["readerQuestions"][0]["id"],
             "guards-and-outcomes"
+        );
+        let endpoint_format = endpoint_reviewer["readerGuidance"]["format"]
+            .as_str()
+            .unwrap();
+        for required in [
+            "supported business outcome",
+            "input and response fields in contract rows",
+            "structured steps for supported preparation",
+            "readable pseudocode derived from documented step narratives",
+            "not executable code or an observed runtime trace",
+            "more than two material alternatives",
+            "preserve supported first-match or exclusivity semantics",
+            "no-op/default outcomes",
+            "group guards with shared outcomes",
+            "FIRST, UNIQUE or UNKNOWN",
+            "afterSelection",
+            "parent:null when its causal selection node is unproven",
+        ] {
+            assert!(
+                endpoint_format.contains(required),
+                "format lacks {required:?}"
+            );
+        }
+        let endpoint_review_instruction = endpoint_reviewer["instruction"].as_str().unwrap();
+        for required in [
+            "treat its evidence-supported requirements as review criteria",
+            "flag supported format omissions",
+            "do not demand unseen helper implementations or runtime proof",
+        ] {
+            assert!(
+                endpoint_review_instruction.contains(required),
+                "review instruction lacks {required:?}"
+            );
+        }
+        assert_eq!(
+            endpoint_reviewer["languageContract"],
+            endpoint_author["languageContract"]
+        );
+        assert!(
+            endpoint_reviewer["languageContract"]["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("natural Russian")
+        );
+        assert!(
+            endpoint_reviewer["readerGuidance"]["visuals"]
+                .as_str()
+                .unwrap()
+                .contains("Do not restate table rows in long prose")
         );
 
         let mut rich_process_work = work.clone();
@@ -6264,6 +6661,69 @@ mod input_cap_tests {
                 .get("processQuestions")
                 .is_none()
         );
+        let mixed_root_format = rich_process_reviewer["readerGuidance"]["format"]
+            .as_str()
+            .unwrap();
+        assert!(mixed_root_format.contains("only to detailed sequence operations in this packet"));
+        assert!(
+            mixed_root_format.contains(
+                "summary sections, note assessments, process overviews and dataflow views"
+            )
+        );
+
+        let mut mixed_service_work = sequence_work();
+        mixed_service_work.request.entrypoint = None;
+        let mixed_service_author =
+            author_payload(&mixed_service_work, &[], &Value::Null, &Value::Null).unwrap();
+        let mixed_service_format = mixed_service_author["readerGuidance"]["format"]
+            .as_str()
+            .unwrap();
+        assert!(
+            mixed_service_format.contains("only to detailed sequence operations in this packet")
+        );
+        assert!(mixed_service_format.contains("summary sections, note assessments"));
+
+        let mut dataflow_work = overview_work();
+        dataflow_work.checked.dependencies.insert(
+            "view:dispatch".into(),
+            super::super::model::Observation {
+                id: "view:dispatch".into(),
+                kind: "VIEW_DEFINITION".into(),
+                service: String::new(),
+                symbol: "view:dispatch".into(),
+                normalized: json!({}),
+                digest: "view-digest".into(),
+                source_ids: Vec::new(),
+            },
+        );
+        dataflow_work.request.entrypoint = Some(super::super::dataflow::ROOT.into());
+        let dataflow_author =
+            author_payload(&dataflow_work, &[], &Value::Null, &Value::Null).unwrap();
+        let mut dataflow_proposal = proposal.clone();
+        dataflow_proposal.narrative.as_mut().unwrap().subject = dataflow_work.subject.clone();
+        let dataflow_reviewer = reviewer_payload(
+            &dataflow_work,
+            &[],
+            &dataflow_proposal,
+            "evidence-digest",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            dataflow_reviewer["readerGuidance"],
+            dataflow_author["readerGuidance"]
+        );
+        assert!(dataflow_author["readerGuidance"].get("format").is_none());
+        assert!(dataflow_author["readerGuidance"].get("threads").is_none());
+        assert!(dataflow_author["readerGuidance"].get("visuals").is_none());
+
+        let mut note_work = work.clone();
+        note_work.subject = "service:orders".into();
+        note_work.request.entrypoint = Some("assessment-note-1".into());
+        let note_guidance = super::reader_guidance(&note_work, false);
+        assert!(note_guidance.get("format").is_none());
+        assert!(note_guidance.get("threads").is_none());
+        assert!(note_guidance.get("visuals").is_none());
 
         let unknown_pages = vec![json!({"items":[{"reference":"unknown-handle"}]})];
         let error = reviewer_payload(&work, &unknown_pages, &proposal, "evidence-digest", false)
@@ -6314,19 +6774,32 @@ mod input_cap_tests {
         // The cap is itself in the envelope; converge its decimal width before
         // testing equality at the actual serialized boundary.
         for _ in 0..4 {
-            let request =
-                job_envelope(&report, "author", &driver, &"0".repeat(32), payload.clone());
+            let request = job_envelope(
+                &report,
+                "author",
+                &driver,
+                &"0".repeat(32),
+                payload.clone(),
+                Some(3),
+            );
             driver.cap.maximum.input_tokens =
                 bytes(&request).unwrap().len() as u64 + driver.cap.overhead_input_tokens;
         }
-        let placeholder =
-            job_envelope(&report, "author", &driver, &"0".repeat(32), payload.clone());
+        let placeholder = job_envelope(
+            &report,
+            "author",
+            &driver,
+            &"0".repeat(32),
+            payload.clone(),
+            Some(3),
+        );
         let actual = job_envelope(
             &report,
             "author",
             &driver,
             &uuid::Uuid::new_v4().simple().to_string(),
             payload,
+            Some(3),
         );
         assert_eq!(
             bytes(&placeholder).unwrap().len(),
@@ -6337,6 +6810,23 @@ mod input_cap_tests {
             bytes(&actual).unwrap().len() as u64 + 7
         );
         ensure_input_cap(&driver, &actual).unwrap();
+        assert_eq!(actual["expansionBudget"]["remaining"], 3);
+        assert_eq!(actual["expansionBudget"]["scope"], "SHARED_ACROSS_ROLES");
+        assert!(
+            actual["expansionBudget"]["meaning"]
+                .as_str()
+                .unwrap()
+                .contains("navigation page or a full result set")
+        );
+        let public = job_envelope(
+            &report,
+            "author",
+            &driver,
+            &"0".repeat(32),
+            json!({"instruction":"public or dry request"}),
+            None,
+        );
+        assert!(public.get("expansionBudget").is_none());
         driver.cap.maximum.input_tokens -= 1;
         assert!(ensure_input_cap(&driver, &actual).is_err());
         driver.cap.overhead_input_tokens = u64::MAX;
@@ -6433,6 +6923,7 @@ mod input_cap_tests {
             &driver,
             &invocation,
             json!({"instruction":"fixture author request"}),
+            Some(checkpoint.expansions_remaining),
         );
         let input = recovery::InputRecord::new(
             recovery::CallBinding {

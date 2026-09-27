@@ -3782,17 +3782,33 @@ fn docsys_t04_machine_repair_and_separate_fallback_stay_bounded() {
     let g = Fixture::new();
     g.service("orders");
     let (work, _, _) = proposal_fixture(&g);
-    let config = execution_config(
+    let mut config = execution_config(
         &g,
         json!({}),
         json!({"mode":"require-fallback"}),
         Some(json!({})),
     );
+    config["expansions"] = json!(1);
+    config["authorCalls"] = json!(3);
+    config["reviewerCalls"] = json!(5);
     let result = work_run(&g, &work, &config);
     assert_eq!(result["status"], "ACCEPTED", "{result}");
     let report = run_report(&g, &result);
-    assert_eq!(report["attempts"].as_array().unwrap().len(), 6);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 6);
     assert_eq!(report["attempts"][4]["role"], "fallback");
+    let remaining = attempts
+        .iter()
+        .map(|attempt| {
+            read(g.docs.join(format!(
+                ".codeclew/job-inputs/{}.json",
+                attempt["invocation"].as_str().unwrap()
+            )))["request"]["expansionBudget"]["remaining"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, vec![1, 1, 1, 1, 1, 1]);
 }
 
 #[test]
@@ -7477,6 +7493,18 @@ fn docsys_section_contract_expansion_and_review_preserve_authority_and_evidence(
     let attempts = report["attempts"].as_array().unwrap();
     assert_eq!(attempts.len(), 3, "{report}");
     assert_eq!(attempts[2]["role"], "reviewer");
+    let remaining = attempts
+        .iter()
+        .map(|attempt| {
+            read(f.docs.join(format!(
+                ".codeclew/job-inputs/{}.json",
+                attempt["invocation"].as_str().unwrap()
+            )))["request"]["expansionBudget"]["remaining"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, vec![1, 0, 0]);
     assert_ne!(
         attempts[0]["authorContract"]["deliveredDigest"],
         attempts[1]["authorContract"]["deliveredDigest"]
