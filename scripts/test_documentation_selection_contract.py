@@ -12,6 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "schemas/documentation/section-author.schema.json"
+WORK_SCHEMA_PATH = ROOT / "schemas/documentation/work.schema.json"
 VALIDATOR_PATH = Path(__file__).with_name("validate_nessy_acceptance.py")
 SPEC = importlib.util.spec_from_file_location("codeclew_mini_schema", VALIDATOR_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -21,13 +22,19 @@ SPEC.loader.exec_module(mini_schema)
 
 SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 SELECTION_SCHEMA = SCHEMA["$defs"]["selection"]
+WORK_SCHEMA = json.loads(WORK_SCHEMA_PATH.read_text(encoding="utf-8"))
+WORK_SELECTION_SCHEMA = WORK_SCHEMA["$defs"]["selection"]
 
 
-def selection_errors(value: dict[str, object]) -> list[str]:
+def selection_errors(
+    value: dict[str, object],
+    schema: dict[str, object] = SELECTION_SCHEMA,
+    definitions: dict[str, object] = SCHEMA["$defs"],
+) -> list[str]:
     errors: list[str] = []
-    validator = mini_schema.MiniSchema(SELECTION_SCHEMA, errors)
+    validator = mini_schema.MiniSchema(schema, errors)
     try:
-        validator.validate(value, SELECTION_SCHEMA, "$", SCHEMA["$defs"])
+        validator.validate(value, schema, "$", definitions)
         validator.finish()
     except mini_schema.SchemaFailure as exc:
         errors.append(str(exc))
@@ -44,11 +51,14 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             {"symbols": ["helper"]},
             {"references": [], "symbols": ["helper"], "query": None},
             {"query": {"kind": "SYMBOL", "symbolContains": "helper"}},
+            {"query": {"kind": "SYMBOL", "projection": "RAW"}},
+            {"query": {"kind": "SYMBOL", "projection": "NAVIGATION"}},
             {"references": [], "symbols": [], "query": {"kind": "SYMBOL"}},
             {"cursor": "cursor-1"},
             {"references": ["d1"], "cursor": "cursor-1"},
             {"symbols": ["helper"], "cursor": "cursor-1"},
             {"query": {"kind": "SYMBOL"}, "cursor": "cursor-1"},
+            {"query": {"kind": "SYMBOL", "projection": "NAVIGATION"}, "cursor": "cursor-1"},
         ]
         for selection in valid:
             with self.subTest(selection=selection):
@@ -62,6 +72,8 @@ class DocumentationSelectionContractTest(unittest.TestCase):
             },
             {"references": ["d1"], "symbols": ["helper"]},
             {"symbols": ["helper"], "query": {"kind": "SYMBOL"}},
+            {"query": {"kind": "HTTP", "projection": "NAVIGATION"}},
+            {"query": {"kind": "SYMBOL", "projection": "SUMMARY"}},
             {
                 "references": ["d1"],
                 "symbols": ["helper"],
@@ -71,6 +83,30 @@ class DocumentationSelectionContractTest(unittest.TestCase):
         for selection in mixed:
             with self.subTest(selection=selection):
                 self.assertNotEqual(selection_errors(selection), [])
+
+    def test_public_work_projection_is_optional_raw_by_default_and_symbol_only_for_navigation(self) -> None:
+        for selection in [
+            {"query": {"kind": "SYMBOL"}},
+            {"query": {"kind": "SYMBOL", "projection": "RAW"}},
+            {"query": {"kind": "SYMBOL", "projection": "NAVIGATION"}},
+        ]:
+            with self.subTest(selection=selection):
+                self.assertEqual(
+                    selection_errors(
+                        selection,
+                        WORK_SELECTION_SCHEMA,
+                        WORK_SCHEMA["$defs"],
+                    ),
+                    [],
+                )
+        self.assertNotEqual(
+            selection_errors(
+                {"query": {"kind": "HTTP", "projection": "NAVIGATION"}},
+                WORK_SELECTION_SCHEMA,
+                WORK_SCHEMA["$defs"],
+            ),
+            [],
+        )
 
     def test_existing_bounds_and_registered_only_contract_remain(self) -> None:
         self.assertEqual(selection_errors({"references": [f"d{i}" for i in range(8)]}), [])

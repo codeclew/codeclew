@@ -1019,6 +1019,7 @@ fn source_part_ledger_bound_rejection_is_atomic() {
         "ledger-padding".into(),
         work::ReadReceipt {
             selection: work::Selection::default(),
+            requested_selection: None,
             result_digest: String::new(),
             supplied: Vec::new(),
             membership_digest: "sha256:ledger-padding".into(),

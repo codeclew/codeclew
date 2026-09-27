@@ -149,7 +149,7 @@ impl Request {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Selection {
     #[serde(default)]
@@ -163,12 +163,28 @@ pub struct Selection {
     #[serde(default)]
     pub untracked_reads: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
     pub kind: String,
     #[serde(default)]
     pub symbol_contains: String,
+    #[serde(default, skip_serializing_if = "QueryProjection::is_raw")]
+    pub projection: QueryProjection,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum QueryProjection {
+    #[default]
+    Raw,
+    Navigation,
+}
+
+impl QueryProjection {
+    fn is_raw(&self) -> bool {
+        *self == Self::Raw
+    }
 }
 
 pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError> {
@@ -185,6 +201,11 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
         return Err(invalid(
             "choose up to eight references, eight symbols, or one bounded query",
         ));
+    }
+    if selection.query.as_ref().is_some_and(|query| {
+        query.projection == QueryProjection::Navigation && query.kind != "SYMBOL"
+    }) {
+        return Err(invalid("NAVIGATION query projection requires kind SYMBOL"));
     }
     Ok(())
 }
@@ -309,6 +330,8 @@ pub struct ReadState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadReceipt {
     pub selection: Selection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_selection: Option<Selection>,
     pub result_digest: String,
     pub supplied: Vec<String>,
     pub membership_digest: String,
@@ -1171,15 +1194,24 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
                 "query kind is required; use * for every dependency kind",
             ));
         }
-        work.checked
-            .dependencies
-            .values()
-            .filter(|d| {
-                (query.kind == "*" || d.kind == query.kind)
-                    && d.symbol.contains(&query.symbol_contains)
-            })
-            .map(|d| json!({"kind":"DEPENDENCY","id":d.id,"record":d}))
-            .collect()
+        let matches = work.checked.dependencies.values().filter(|dependency| {
+            (query.kind == "*" || dependency.kind == query.kind)
+                && dependency.symbol.contains(&query.symbol_contains)
+        });
+        match query.projection {
+                QueryProjection::Raw => matches
+                    .map(|dependency| {
+                        json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency})
+                    })
+                    .collect(),
+                QueryProjection::Navigation => {
+                    let reverse = reverse_handles(work);
+                    matches
+                        .filter(|dependency| work.influence.contains_key(&dependency.id))
+                        .map(|dependency| callable_navigation_row(dependency, &reverse))
+                        .collect()
+                }
+            }
     } else {
         let mut args = ContextArgs {
             root: PathBuf::new(),
@@ -1283,6 +1315,53 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     } else {
         Ok(projected)
     }
+}
+
+fn callable_navigation_row(
+    dependency: &Observation,
+    reverse: &BTreeMap<(&str, &str), &str>,
+) -> Value {
+    let source_references: Vec<_> = dependency
+        .source_ids
+        .iter()
+        .filter_map(|id| reverse.get(&("SOURCE", id.as_str())).copied())
+        .collect();
+    let exact_identity = dependency.normalized["symbolIdentity"]
+        .as_str()
+        .or_else(|| dependency.normalized["compilerCallableId"].as_str())
+        .unwrap_or(&dependency.symbol);
+    let source_tokens_present = dependency.normalized["sourceTokens"]
+        .as_array()
+        .is_some_and(|tokens| !tokens.is_empty());
+    let mut row = json!({
+        "kind":"CALLABLE_SUMMARY",
+        "id":dependency.id,
+        "referenceRoles":[],
+        "record":{
+            "identity":exact_identity,
+            "symbol":dependency.symbol,
+            "service":dependency.service,
+            "scope":dependency.normalized["scope"],
+            "name":dependency.normalized["name"],
+            "owner":dependency.normalized["ownerIdentity"],
+            "fullRecordReference":reverse.get(&("DEPENDENCY", dependency.id.as_str())).copied(),
+            "sourceReferences":source_references,
+            "authority":"NAVIGATION_ONLY",
+            "provenance":{"dependencyId":dependency.id,"observationDigest":dependency.digest,"kind":dependency.kind},
+            "bodyAvailability":{
+                "capturedDeclarationTokensAvailable":source_tokens_present,
+                "relatedSourceReferences":source_references,
+                "relatedSourceRecords":"NAVIGATION_ONLY"
+            },
+        }
+    });
+    if !dependency.normalized["declarationKind"].is_null() {
+        row["record"]["declarationKind"] = dependency.normalized["declarationKind"].clone();
+    }
+    if !dependency.normalized["syntaxKind"].is_null() {
+        row["record"]["syntaxKind"] = dependency.normalized["syntaxKind"].clone();
+    }
+    row
 }
 
 fn process_root_row(work: &Work, id: &str) -> Value {
@@ -1543,6 +1622,15 @@ pub(super) fn read_loaded(
     work: &Work,
     selection: Selection,
 ) -> Result<Value, ClewError> {
+    read_loaded_with_requested(repo, work, selection, None)
+}
+
+pub(super) fn read_loaded_with_requested(
+    repo: &Repository,
+    work: &Work,
+    selection: Selection,
+    requested_selection: Option<Selection>,
+) -> Result<Value, ClewError> {
     let id = work.id.as_str();
     let items = super::progress::run("BUILD_CONTEXT_ROWS", || rows(work, &selection))?;
     let membership: Vec<_> = items.iter().map(|i| json!([i["kind"], i["id"]])).collect();
@@ -1631,6 +1719,7 @@ pub(super) fn read_loaded(
     let result_digest = digest(&output)?;
     let receipt = ReadReceipt {
         selection: selection.clone(),
+        requested_selection: requested_selection.filter(|requested| requested != &selection),
         result_digest: result_digest.clone(),
         supplied,
         membership_digest,
@@ -1951,6 +2040,7 @@ mod section_context_tests {
             json!({"symbols":["Handler1"]}),
             json!({"references":[],"symbols":["Handler1"],"query":null}),
             json!({"query":{"kind":"SYMBOL","symbolContains":"Handler1"}}),
+            json!({"query":{"kind":"SYMBOL","projection":"NAVIGATION"}}),
             json!({"references":[],"symbols":[],"query":{"kind":"SYMBOL"}}),
             json!({"cursor":"next-page"}),
             json!({"references":["d1"],"cursor":"next-page"}),
@@ -1976,6 +2066,145 @@ mod section_context_tests {
             assert!(validate_selection(&selection).is_err(), "accepted {value}");
             assert!(rows(&work, &selection).is_err(), "rows accepted {value}");
         }
+        let invalid_projection: Selection = serde_json::from_value(json!({
+            "query":{"kind":"HTTP","projection":"NAVIGATION"}
+        }))
+        .unwrap();
+        assert!(validate_selection(&invalid_projection).is_err());
+    }
+
+    #[test]
+    fn symbol_navigation_bounds_giant_declarations_and_binds_its_own_cursor() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Architecture").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut work = fixture(3, false);
+        work.id = "a".repeat(64);
+        work.request.max_items = 1;
+        work.request.max_bytes = 4096;
+        let declaration = work
+            .checked
+            .dependencies
+            .get_mut("orders:symbol:00000")
+            .unwrap();
+        declaration.symbol = "method:class:orders.HugeService#run()V".into();
+        declaration.normalized = json!({
+            "symbolIdentity":"method:class:orders.HugeService#run()V",
+            "compilerCallableId":"orders.HugeService.run",
+            "scope":":main",
+            "name":"run",
+            "ownerIdentity":"class:orders.HugeService",
+            "declarationKind":"METHOD",
+            "syntaxKind":"METHOD_DECLARATION",
+            "sourceTokens":["public","void","run","(",")"],
+            "classBodyTokens":"x".repeat(80_000),
+            "documentation":{"events":[{"kind":"CALL","resolution":"COMPILER_EXACT","target":"method:class:orders.Other#target()V"}]}
+        });
+        declaration.digest = digest(&declaration.normalized).unwrap();
+        work.influence
+            .insert(declaration.id.clone(), declaration.digest.clone());
+
+        let raw = Selection {
+            query: Some(Query {
+                kind: "SYMBOL".into(),
+                symbol_contains: String::new(),
+                projection: QueryProjection::Raw,
+            }),
+            ..Selection::default()
+        };
+        assert_eq!(
+            serde_json::to_value(raw.query.as_ref().unwrap()).unwrap(),
+            json!({"kind":"SYMBOL","symbolContains":""})
+        );
+        let raw_page = read_loaded(&repo, &work, raw.clone()).unwrap();
+        assert_eq!(raw_page["items"], json!([]));
+        assert_eq!(
+            raw_page["omitted"][0]["reason"],
+            "ITEM_EXCEEDS_WORK_BYTE_BUDGET"
+        );
+        let raw_cursor = raw_page["nextCursor"].as_str().unwrap().to_owned();
+
+        let navigation = Selection {
+            query: Some(Query {
+                kind: "SYMBOL".into(),
+                symbol_contains: String::new(),
+                projection: QueryProjection::Navigation,
+            }),
+            ..Selection::default()
+        };
+        let navigation_page = read_loaded(&repo, &work, navigation.clone()).unwrap();
+        assert_eq!(navigation_page["items"].as_array().unwrap().len(), 1);
+        assert!(navigation_page["omitted"].as_array().unwrap().is_empty());
+        assert!(navigation_page["items"][0].get("reference").is_none());
+        assert_eq!(
+            navigation_page["items"][0]["record"]["fullRecordReference"],
+            "d0"
+        );
+        assert_eq!(
+            navigation_page["items"][0]["record"]["sourceReferences"],
+            json!(["s1"])
+        );
+        assert_eq!(
+            navigation_page["items"][0]["record"]["identity"],
+            "method:class:orders.HugeService#run()V"
+        );
+        assert_eq!(
+            navigation_page["items"][0]["record"]["bodyAvailability"]["capturedDeclarationTokensAvailable"],
+            true
+        );
+        assert_eq!(
+            navigation_page["items"][0]["record"]["authority"],
+            "NAVIGATION_ONLY"
+        );
+        assert_eq!(
+            navigation_page["items"][0]["record"]["declarationKind"],
+            "METHOD"
+        );
+        assert_eq!(
+            navigation_page["items"][0]["record"]["syntaxKind"],
+            "METHOD_DECLARATION"
+        );
+        assert_eq!(
+            read_state(&repo, &work.id)
+                .unwrap()
+                .receipts
+                .values()
+                .last()
+                .unwrap()
+                .supplied,
+            Vec::<String>::new()
+        );
+
+        let mut empty_tokens_work = work.clone();
+        empty_tokens_work.id = "c".repeat(64);
+        let empty_tokens_declaration = empty_tokens_work
+            .checked
+            .dependencies
+            .get_mut("orders:symbol:00000")
+            .unwrap();
+        empty_tokens_declaration.normalized["sourceTokens"] = json!([]);
+        empty_tokens_declaration.digest = digest(&empty_tokens_declaration.normalized).unwrap();
+        empty_tokens_work.influence.insert(
+            empty_tokens_declaration.id.clone(),
+            empty_tokens_declaration.digest.clone(),
+        );
+        let empty_token_page = read_loaded(&repo, &empty_tokens_work, navigation.clone()).unwrap();
+        assert_eq!(
+            empty_token_page["items"][0]["record"]["bodyAvailability"]["capturedDeclarationTokensAvailable"],
+            false
+        );
+
+        let navigation_cursor = navigation_page["nextCursor"].as_str().unwrap().to_owned();
+        let mut continue_navigation = navigation.clone();
+        continue_navigation.cursor = Some(navigation_cursor.clone());
+        let next = read_loaded(&repo, &work, continue_navigation).unwrap();
+        assert_eq!(next["items"][0]["id"], "orders:symbol:00001");
+        let mut mix_raw_cursor = navigation.clone();
+        mix_raw_cursor.cursor = Some(raw_cursor);
+        assert!(read_loaded(&repo, &work, mix_raw_cursor).is_err());
+        let mut mix_navigation_cursor = raw;
+        mix_navigation_cursor.cursor = Some(navigation_cursor);
+        assert!(read_loaded(&repo, &work, mix_navigation_cursor).is_err());
     }
 
     #[test]
@@ -2011,6 +2240,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "SYMBOL".into(),
                     symbol_contains: "helper".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },
@@ -2026,6 +2256,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "SOURCE".into(),
                     symbol_contains: "helper".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },
@@ -2039,6 +2270,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "SYMBOL".into(),
                     symbol_contains: "missing".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },
@@ -2052,6 +2284,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "*".into(),
                     symbol_contains: "helper".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },
@@ -2267,6 +2500,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "DOMAIN_ENTITY".into(),
                     symbol_contains: "Order".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },
@@ -2331,6 +2565,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "DOMAIN_ENTITY".into(),
                     symbol_contains: "Order".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },
@@ -2415,6 +2650,7 @@ mod section_context_tests {
                 query: Some(Query {
                     kind: "SYMBOL".into(),
                     symbol_contains: "Handler19999".into(),
+                    projection: QueryProjection::Raw,
                 }),
                 ..Selection::default()
             },

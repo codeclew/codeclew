@@ -73,10 +73,10 @@ pub(super) fn selection_guidance(work: &super::work::Work) -> Value {
         "availableKinds": available_kinds,
         "queryKind": "Matches an Observation.kind dependency-record kind, not a page-row kind such as SOURCE or DEPENDENCY. Use * for all dependency kinds.",
         "symbolContains": "Searches captured symbols and method names with a case-sensitive substring. For example, {\"kind\":\"SYMBOL\",\"symbolContains\":\"helper\"} finds SYMBOL records whose captured symbol contains helper.",
-        "symbolLookup": "A symbols selection must use an exact compiler identity or qualified declaration name. If expansionFeedback reports NOT_FOUND or AMBIGUOUS, it describes only that lookup, not proof code is absent. Use a bounded SYMBOL query to discover captured declarations, then select only exact identities shown in returned records; do not guess a package, owner, or signature.",
-        "exampleSelection": {"query":{"kind":"SYMBOL","symbolContains":"helper"}},
+        "symbolLookup": "A SYMBOL query is one bounded declaration-discovery page. Continue with its returned cursor and the same query to discover more declarations. These navigation rows are not citable provider facts; request an exact symbol identity or fullRecordReference for a full record, subject to the existing Work page limits. SYMBOL records include captured declarations that may be callable or non-callable; use declarationKind and syntaxKind when present. A symbols selection must use an exact compiler identity or qualified declaration name. If expansionFeedback reports NOT_FOUND or AMBIGUOUS, it describes only that lookup, not proof code is absent; do not guess a package, owner, or signature.",
+        "exampleSelection": {"query":{"kind":"SYMBOL","symbolContains":"helper","projection":"NAVIGATION"}},
         "resultAuthority": "Queries search captured dependency records; returned rows remain limited to dependencies registered in this Work's influence set.",
-        "navigation": "sourceReferences and dependencyReferences are navigation handles. Expand a handle in a separate recorded read before citing its contents, unless those contents are already delivered and allowed by this packet."
+        "navigation": "sourceReferences and dependencyReferences are navigation handles. Expand a handle in a separate recorded read before citing its contents, unless those contents are already delivered and allowed by this packet. Exact symbol, dependency-reference, and SOURCE selections request full evidence subject to existing Work limits; oversized SOURCE records use recorded SOURCE_PART content."
     })
 }
 
@@ -512,6 +512,8 @@ pub struct Attempt {
     pub author_contract: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapted_proposal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expansion_selection: Option<Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1737,6 +1739,7 @@ fn call(
             captured_stderr_bytes: 0,
             author_contract: author_contract.clone(),
             adapted_proposal: None,
+            expansion_selection: None,
         });
         let attempt_index = report.attempts.len() - 1;
         checkpoint.pending_call = Some(PendingCall {
@@ -1977,7 +1980,23 @@ pub(super) fn evidence_with_parts(
     pages: &[Value],
     source_parts: &[Value],
 ) -> Value {
-    serde_json::json!({"work":work.id,"subject":work.subject,"audience":work.request.audience,"documentationLanguage":work.request.documentation_language(),"authority":"IMMUTABLE_WORK_CAPTURE","obligations":work.obligations,"pages":pages,"sourceParts":source_parts})
+    let mut evidence = serde_json::json!({
+        "work":work.id,
+        "subject":work.subject,
+        "audience":work.request.audience,
+        "documentationLanguage":work.request.documentation_language(),
+        "authority":"IMMUTABLE_WORK_CAPTURE",
+        "obligations":work.obligations
+    });
+    if let (Some(evidence), Some(presentation)) = (
+        evidence.as_object_mut(),
+        super::job_context::present(pages, source_parts)
+            .as_object()
+            .cloned(),
+    ) {
+        evidence.extend(presentation);
+    }
+    evidence
 }
 
 fn packet_evidence_references(
@@ -2466,6 +2485,16 @@ fn symbol_lookup_feedback(
     }))
 }
 
+fn effective_expansion_selection(requested: &super::work::Selection) -> super::work::Selection {
+    let mut effective = requested.clone();
+    if let Some(query) = effective.query.as_mut()
+        && query.kind == "SYMBOL"
+    {
+        query.projection = super::work::QueryProjection::Navigation;
+    }
+    effective
+}
+
 fn add_expansion(
     repo: &Repository,
     work: &super::work::Work,
@@ -2487,14 +2516,31 @@ fn add_expansion(
             "expansion action contains authority or unregistered result fields",
         ));
     }
-    let selection: super::work::Selection = serde_json::from_value(result["selection"].clone())
-        .map_err(|_| invalid("invalid registered expansion selection"))?;
-    if selection.untracked_reads {
+    let requested_selection: super::work::Selection =
+        serde_json::from_value(result["selection"].clone())
+            .map_err(|_| invalid("invalid registered expansion selection"))?;
+    if requested_selection.untracked_reads {
         return Err(invalid(
             "NEEDS_EVIDENCE: an isolated role cannot register an outside read after the fact",
         ));
     }
+    let selection = effective_expansion_selection(&requested_selection);
+    let mut binding_selection = selection.clone();
+    binding_selection.cursor = None;
+    binding_selection.untracked_reads = false;
+    let selection_audit = serde_json::json!({
+        "requested":requested_selection,
+        "effective":selection,
+        "effectiveSelectionDigest":digest(&(work.id.as_str(), &binding_selection))?
+    });
+    if let Some(attempt) = context.report.attempts.last_mut() {
+        attempt.expansion_selection = Some(selection_audit);
+        save_report(repo, context.report)?;
+    }
     let mut cursor = selection.cursor.clone();
+    let navigation_page = selection.query.as_ref().is_some_and(|query| {
+        query.kind == "SYMBOL" && query.projection == super::work::QueryProjection::Navigation
+    });
     let mut seen_cursors = std::collections::BTreeSet::new();
     loop {
         if let Some(current) = cursor.as_ref()
@@ -2504,7 +2550,14 @@ fn add_expansion(
         }
         let mut page_selection = selection.clone();
         page_selection.cursor = cursor.clone();
-        let page = match super::work::read_loaded(repo, work, page_selection.clone()) {
+        let mut requested_page_selection = requested_selection.clone();
+        requested_page_selection.cursor = cursor.clone();
+        let page = match super::work::read_loaded_with_requested(
+            repo,
+            work,
+            page_selection.clone(),
+            Some(requested_page_selection),
+        ) {
             Ok(page) => page,
             Err(error) => {
                 if page_selection.cursor.is_none()
@@ -2546,6 +2599,9 @@ fn add_expansion(
             context.pages,
             context.source_parts,
         )?;
+        if navigation_page {
+            break;
+        }
         cursor = next_cursor;
         if cursor.is_none() {
             break;
@@ -4291,6 +4347,190 @@ mod input_cap_tests {
         assert!(symbol_lookup_feedback(&result, &selection, &mismatched).is_none());
     }
 
+    #[test]
+    fn symbol_expansion_normalizes_to_navigation_and_reads_one_page_per_action() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Symbol navigation").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut work = overview_work();
+        work.id = "d".repeat(64);
+        work.request.max_items = 1;
+        work.request.max_bytes = 4096;
+        for index in 0..3 {
+            let id = format!("orders:method:{index}");
+            let normalized = json!({
+                "symbolIdentity":format!("method:class:orders.Worker#method{index}()V"),
+                "scope":":main","name":format!("method{index}"),"ownerIdentity":"class:orders.Worker",
+                "sourceTokens":["void",format!("method{index}")],"documentation":{"events":[]}
+            });
+            let observation = super::super::model::Observation {
+                id: id.clone(),
+                kind: "SYMBOL".into(),
+                service: "orders".into(),
+                symbol: normalized["symbolIdentity"].as_str().unwrap().into(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: Vec::new(),
+            };
+            work.influence
+                .insert(id.clone(), observation.digest.clone());
+            work.checked.dependencies.insert(id.clone(), observation);
+            work.handles.insert(
+                format!("method-ref-{index}"),
+                super::super::work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id,
+                },
+            );
+        }
+        let driver = Role {
+            adapter: "test-only".into(),
+            model: "fixture".into(),
+            usage_authority: "MAXIMUM_ONLY".into(),
+            command: Vec::new(),
+            runtime_reads: Vec::new(),
+            environment: Vec::new(),
+            network: false,
+            cap: Cap {
+                maximum: Amount {
+                    input_tokens: 100_000,
+                    output_tokens: 10_000,
+                    cost_units: 100,
+                },
+                overhead_input_tokens: 0,
+                timeout_ms: 1_000,
+                output_bytes: 16_384,
+            },
+        };
+        let mut reviewer = driver.clone();
+        reviewer.cap.maximum.input_tokens = 1_000_000;
+        let config = Config {
+            schema: "codeclew-documentation-execution/1.0".into(),
+            author: driver.clone(),
+            reviewer,
+            author_output_contract: None,
+            fallback: None,
+            author_calls: 1,
+            reviewer_calls: 1,
+            fallback_calls: 0,
+            repair_attempts: 0,
+            expansions: 2,
+            budget: Budget {
+                account: "navigation-test".into(),
+                cost_unit: "test".into(),
+                ceiling: Amount {
+                    input_tokens: 200_000,
+                    output_tokens: 20_000,
+                    cost_units: 200,
+                },
+                stop_loss: Amount {
+                    input_tokens: 100_000,
+                    output_tokens: 10_000,
+                    cost_units: 100,
+                },
+            },
+        };
+        let run = "b".repeat(32);
+        let mut report = RunReport {
+            schema: "codeclew-documentation-work-run/1.0".into(),
+            run,
+            work: work.id.clone(),
+            status: "RUNNING".into(),
+            config_digest: None,
+            attempts: vec![Attempt {
+                invocation: "c".repeat(32),
+                model: "fixture".into(),
+                usage_authority: "MAXIMUM_ONLY".into(),
+                role: "author".into(),
+                input_digest: "sha256:input".into(),
+                request_bytes: None,
+                reservation: "reservation".into(),
+                status: "COMPLETED".into(),
+                admission: Value::Null,
+                failure: None,
+                usage: None,
+                result_digest: Some("sha256:model-result".into()),
+                captured_stdout_bytes: 0,
+                captured_stderr_bytes: 0,
+                author_contract: None,
+                adapted_proposal: None,
+                expansion_selection: None,
+            }],
+            proposal: None,
+            review: None,
+            publication: None,
+            gap: None,
+            accounting: None,
+            context_budget: None,
+            checkpoint: None,
+        };
+        let mut remaining = 2;
+        let mut pages = Vec::new();
+        let mut source_parts = Vec::new();
+        let query = json!({"action":"expand","selection":{"query":{"kind":"SYMBOL","symbolContains":"method"}}});
+        let mut context = ExpansionContext {
+            pages: &mut pages,
+            source_parts: &mut source_parts,
+            remaining: &mut remaining,
+            config: &config,
+            report: &mut report,
+        };
+        assert!(matches!(
+            add_expansion(&repo, &work, &query, &mut context).unwrap(),
+            ExpansionOutcome::Added
+        ));
+        assert_eq!(context.pages.len(), 1);
+        let first_cursor = context.pages[0]["nextCursor"].as_str().unwrap().to_owned();
+        drop(context);
+        let receipts = super::super::work::read_state(&repo, &work.id).unwrap();
+        let first_receipt = receipts
+            .receipts
+            .values()
+            .find(|receipt| receipt.selection.cursor.is_none())
+            .unwrap();
+        assert_eq!(
+            first_receipt.selection.query.as_ref().unwrap().projection,
+            super::super::work::QueryProjection::Navigation
+        );
+        assert_eq!(
+            first_receipt
+                .requested_selection
+                .as_ref()
+                .unwrap()
+                .query
+                .as_ref()
+                .unwrap()
+                .projection,
+            super::super::work::QueryProjection::Raw
+        );
+        let attempt = serde_json::to_value(&report.attempts[0]).unwrap();
+        assert_eq!(
+            attempt["expansionSelection"]["effective"]["query"]["projection"],
+            "NAVIGATION"
+        );
+        assert_eq!(
+            attempt["expansionSelection"]["requested"]["query"]["kind"],
+            "SYMBOL"
+        );
+
+        let continuation = json!({"action":"expand","selection":{"query":{"kind":"SYMBOL","symbolContains":"method"},"cursor":first_cursor}});
+        let mut context = ExpansionContext {
+            pages: &mut pages,
+            source_parts: &mut source_parts,
+            remaining: &mut remaining,
+            config: &config,
+            report: &mut report,
+        };
+        assert!(matches!(
+            add_expansion(&repo, &work, &continuation, &mut context).unwrap(),
+            ExpansionOutcome::Added
+        ));
+        assert_eq!(context.pages.len(), 2);
+        assert_eq!(context.pages[1]["items"][0]["id"], "orders:method:1");
+        assert!(context.pages[1]["nextCursor"].is_string());
+        assert_eq!(*context.remaining, 0);
+    }
+
     fn overview_work() -> super::super::work::Work {
         let mut checked = super::super::check::assemble(
             "input".into(),
@@ -4445,6 +4685,7 @@ mod input_cap_tests {
     ) -> super::super::work::ReadState {
         let receipt = super::super::work::ReadReceipt {
             selection: super::super::work::Selection::default(),
+            requested_selection: None,
             result_digest: "sha256:page".into(),
             supplied: references
                 .iter()
@@ -4938,7 +5179,7 @@ mod input_cap_tests {
         );
         assert_eq!(
             guidance["exampleSelection"],
-            json!({"query":{"kind":"SYMBOL","symbolContains":"helper"}})
+            json!({"query":{"kind":"SYMBOL","symbolContains":"helper","projection":"NAVIGATION"}})
         );
         for output_schema in [
             &generic_author["outputSchema"],
@@ -4948,6 +5189,168 @@ mod input_cap_tests {
         ] {
             assert_shared_selection_schema(output_schema);
         }
+    }
+
+    #[test]
+    fn shared_role_evidence_projects_pages_and_callables_for_generic_and_narrow_jobs() {
+        let mut work = overview_work();
+        let dependency_id = "orders:method:helper";
+        let source_id = "orders:source:helper";
+        let dependency_digest = "callable-digest";
+        work.checked.dependencies.insert(
+            dependency_id.into(),
+            super::super::model::Observation {
+                id: dependency_id.into(),
+                kind: "SYMBOL".into(),
+                service: "orders".into(),
+                symbol: "OrdersService.helperMethod".into(),
+                normalized: json!({
+                    "symbolIdentity":"OrdersService.helperMethod",
+                    "ownerIdentity":"OrdersService",
+                    "name":"helperMethod",
+                    "scope":":main",
+                    "sourceTokens":["private","void","helperMethod"]
+                }),
+                digest: dependency_digest.into(),
+                source_ids: vec![source_id.into()],
+            },
+        );
+        work.influence
+            .insert(dependency_id.into(), dependency_digest.into());
+        work.handles.insert(
+            "dependency-handle".into(),
+            super::super::work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: dependency_id.into(),
+            },
+        );
+        work.handles.insert(
+            "source-handle".into(),
+            super::super::work::Handle {
+                kind: "SOURCE".into(),
+                id: source_id.into(),
+            },
+        );
+        let callable = json!({
+            "kind":"DEPENDENCY",
+            "id":dependency_id,
+            "reference":"dependency-handle",
+            "sourceReferences":["source-handle"],
+            "record":{
+                "id":dependency_id,
+                "kind":"SYMBOL",
+                "service":"orders",
+                "symbol":"OrdersService.helperMethod",
+                "digest":dependency_digest,
+                "normalized":{
+                    "symbolIdentity":"OrdersService.helperMethod",
+                    "declarationKind":"METHOD",
+                    "syntaxKind":"METHOD_DECLARATION",
+                    "ownerIdentity":"OrdersService",
+                    "name":"helperMethod",
+                    "scope":":main",
+                    "sourceTokens":["private","void","helperMethod"]
+                }
+            }
+        });
+        let source = json!({
+            "kind":"SOURCE",
+            "id":source_id,
+            "reference":"source-handle",
+            "record":{
+                "revision":"source-rev-3",
+                "file":"OrdersService.java",
+                "startLine":20,
+                "endLine":24,
+                "text":"PRIVATE_SOURCE_SENTINEL",
+                "textDigest":"source-text-digest",
+                "authority":"COMPILER_CAPTURE"
+            }
+        });
+        let pages = vec![
+            json!({"schema":"codeclew-documentation-work-page/1.0","pageId":"receipt-a","receiptDigest":"receipt-a","items":[callable.clone(),source]}),
+            json!({"schema":"codeclew-documentation-work-page/1.0","pageId":"receipt-b","receiptDigest":"receipt-b","items":[callable]}),
+        ];
+        let proposal = serde_json::from_value::<super::super::proposals::Artifact>(json!({
+            "schema":"codeclew-documentation-proposal-artifact/1.0",
+            "id":"proposal-id",
+            "work":work.id,
+            "input":{"schema":"codeclew-documentation-proposal/1.0","operations":[]},
+            "narrative":{"schema":"codeclew-narrative/1.3","subject":work.subject,"contextDigest":"context","operations":[]},
+            "status":"READY",
+            "diagnostics":[],
+            "claims":{},
+            "readDigest":"read",
+            "influence":{},
+            "meaningReview":"UNASSESSED"
+        }))
+        .unwrap();
+
+        let generic_author = author_payload(&work, &pages, &Value::Null, &Value::Null).unwrap();
+        let generic_reviewer =
+            reviewer_payload(&work, &pages, &proposal, "evidence", false).unwrap();
+
+        work.subject = "service:orders".into();
+        work.request.entrypoint = Some("section-entities".into());
+        work.handles.insert(
+            "section-handle".into(),
+            super::super::work::Handle {
+                kind: "SECTION".into(),
+                id: "section-entities".into(),
+            },
+        );
+        let narrow_author = super::super::section_author::payload(
+            &work,
+            &pages,
+            &Value::Null,
+            &Value::Null,
+            &super::super::work::ReadState::default(),
+        )
+        .unwrap();
+        let narrow_reviewer = reviewer_payload(&work, &pages, &proposal, "evidence", true).unwrap();
+
+        for payload in [
+            &generic_author,
+            &generic_reviewer,
+            &narrow_author,
+            &narrow_reviewer,
+        ] {
+            let evidence = &payload["evidence"];
+            assert_eq!(evidence["presentation"]["omittedDuplicateCount"], 1);
+            assert_eq!(evidence["pages"][0]["items"].as_array().unwrap().len(), 2);
+            assert_eq!(evidence["pages"][1]["items"].as_array().unwrap().len(), 0);
+            assert_eq!(evidence["pages"][1]["pageId"], "receipt-b");
+            assert_eq!(
+                evidence["pages"][1]["displayProjection"]["omittedDuplicateCount"],
+                1
+            );
+            assert!(evidence["pages"][1].get("schema").is_none());
+            assert_eq!(
+                evidence["pages"][1]["displayProjection"]["sourceSchema"],
+                "codeclew-documentation-work-page/1.0"
+            );
+            assert_eq!(evidence["callables"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                evidence["callables"][0]["dependencyReference"],
+                "dependency-handle"
+            );
+            assert_eq!(
+                evidence["callables"][0]["symbolIdentity"],
+                "OrdersService.helperMethod"
+            );
+            assert_eq!(evidence["callables"][0]["declarationKind"], "METHOD");
+            assert_eq!(evidence["callables"][0]["syntaxKind"], "METHOD_DECLARATION");
+            assert_eq!(
+                evidence["callables"][0]["relatedSourceRecords"][0]["revision"],
+                "source-rev-3"
+            );
+            let serialized_inventory = serde_json::to_string(&evidence["callables"]).unwrap();
+            assert!(!serialized_inventory.contains("PRIVATE_SOURCE_SENTINEL"));
+            assert!(!serialized_inventory.contains("sourceTokens"));
+        }
+        assert_eq!(pages[1]["items"].as_array().unwrap().len(), 1);
+        assert_eq!(pages[1]["schema"], "codeclew-documentation-work-page/1.0");
+        assert!(pages[1].get("displayProjection").is_none());
     }
 
     #[test]
@@ -6067,6 +6470,7 @@ mod input_cap_tests {
             captured_stderr_bytes: 0,
             author_contract: None,
             adapted_proposal: None,
+            expansion_selection: None,
         });
         checkpoint.pending_call = Some(PendingCall {
             identity: input.identity.clone(),

@@ -4169,21 +4169,21 @@ fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
     f.service("orders");
     let (work, _, _) = proposal_fixture(&f);
     let mut config = execution_config(&f, json!({"mode":"symbol-lookup-author"}), json!({}), None);
-    config["authorCalls"] = json!(4);
-    config["reviewerCalls"] = json!(6);
-    config["expansions"] = json!(2);
+    config["authorCalls"] = json!(5);
+    config["reviewerCalls"] = json!(8);
+    config["expansions"] = json!(3);
 
     let result = work_run(&f, &work, &config);
     assert_eq!(result["status"], "ACCEPTED", "{result}");
     let report = run_report(&f, &result);
     let attempts = report["attempts"].as_array().unwrap();
-    assert_eq!(attempts.len(), 4, "{report}");
+    assert_eq!(attempts.len(), 5, "{report}");
     assert_eq!(
         attempts
             .iter()
             .filter(|attempt| attempt["role"] == "author")
             .count(),
-        3
+        4
     );
     assert_eq!(
         attempts
@@ -4234,8 +4234,8 @@ fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
     );
     assert!(correction_input["request"]["payload"]["previousProposal"].is_null());
 
-    let author_after_correction = input(2);
-    let author_pages = author_after_correction["request"]["payload"]["evidence"]["pages"]
+    let navigation_input = input(2);
+    let navigation_pages = navigation_input["request"]["payload"]["evidence"]["pages"]
         .as_array()
         .unwrap();
     let initial_pages = input(0)["request"]["payload"]["evidence"]["pages"]
@@ -4243,22 +4243,65 @@ fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
         .unwrap()
         .len();
     assert!(
-        author_pages.len() > initial_pages,
+        navigation_pages.len() > initial_pages,
         "SYMBOL query should add a delivered page"
     );
-    assert!(author_pages.iter().any(|page| {
-        page["items"]
+    let navigation_summary = navigation_pages
+        .iter()
+        .flat_map(|page| page["items"].as_array().unwrap())
+        .find(|item| item["kind"] == "CALLABLE_SUMMARY")
+        .unwrap();
+    assert!(navigation_summary.get("reference").is_none());
+    assert_eq!(navigation_summary["record"]["authority"], "NAVIGATION_ONLY");
+    let full_reference = navigation_summary["record"]["fullRecordReference"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !input(0)["request"]["payload"]["evidence"]["pages"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "SYMBOL")
-    }));
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference)
+    );
     assert!(
-        author_after_correction["request"]["payload"]
+        navigation_input["request"]["payload"]
             .get("expansionFeedback")
             .is_none()
     );
-    let reviewer_input = input(3);
+    let full_read_input = input(3);
+    assert!(
+        full_read_input["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference
+                && item["kind"] == "DEPENDENCY"
+                && item["record"]["kind"] == "SYMBOL")
+    );
+    let full_read_result = read(f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[2]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(
+        full_read_result["result"]["selection"]["references"],
+        json!([full_reference])
+    );
+    assert_eq!(
+        attempts[2]["expansionSelection"]["effective"]["references"],
+        json!([full_reference])
+    );
+    assert_eq!(
+        attempts[1]["expansionSelection"]["effective"]["query"]["projection"],
+        "NAVIGATION"
+    );
+    assert_eq!(
+        attempts[1]["expansionSelection"]["requested"]["query"]["kind"],
+        "SYMBOL"
+    );
+
+    let reviewer_input = input(4);
     assert!(
         reviewer_input["request"]["payload"]
             .get("expansionFeedback")
@@ -4283,7 +4326,7 @@ fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
             && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
     });
     let checkpoint = &miss_checkpoint["checkpoint"];
-    assert_eq!(checkpoint["expansionsRemaining"], 1);
+    assert_eq!(checkpoint["expansionsRemaining"], 2);
     assert_eq!(checkpoint["repairsRemaining"], 1);
     assert_eq!(
         checkpoint["pages"],
@@ -4292,10 +4335,23 @@ fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
 
     let ledger = read(f.docs.join(format!(".codeclew/work/{work}/reads.json")));
     let receipts = ledger["receipts"].as_object().unwrap();
-    assert!(receipts.values().any(|receipt| {
-        receipt["selection"]["query"]["kind"] == "SYMBOL"
-            && receipt["selection"]["query"]["symbolContains"] == ""
-    }));
+    let navigation_receipt = receipts
+        .values()
+        .find(|receipt| {
+            receipt["selection"]["query"]["kind"] == "SYMBOL"
+                && receipt["selection"]["query"]["symbolContains"] == ""
+                && receipt["selection"]["query"]["projection"] == "NAVIGATION"
+        })
+        .unwrap();
+    assert_eq!(
+        navigation_receipt["requestedSelection"]["query"]["kind"],
+        "SYMBOL"
+    );
+    assert!(
+        navigation_receipt["requestedSelection"]["query"]
+            .get("projection")
+            .is_none()
+    );
     assert!(!receipts.values().any(|receipt| {
         receipt["selection"]["symbols"] == raw_author["result"]["selection"]["symbols"]
     }));
@@ -4348,15 +4404,15 @@ fn docsys_t04_reviewer_symbol_lookup_miss_expands_before_review() {
         json!({"mode":"symbol-lookup-reviewer"}),
         None,
     );
-    config["authorCalls"] = json!(4);
-    config["reviewerCalls"] = json!(6);
-    config["expansions"] = json!(2);
+    config["authorCalls"] = json!(5);
+    config["reviewerCalls"] = json!(8);
+    config["expansions"] = json!(3);
 
     let result = work_run(&f, &work, &config);
     assert_eq!(result["status"], "ACCEPTED", "{result}");
     let report = run_report(&f, &result);
     let attempts = report["attempts"].as_array().unwrap();
-    assert_eq!(attempts.len(), 4, "{report}");
+    assert_eq!(attempts.len(), 5, "{report}");
     assert_eq!(attempts[0]["role"], "author");
     assert!(
         attempts[1..]
@@ -4376,21 +4432,47 @@ fn docsys_t04_reviewer_symbol_lookup_miss_expands_before_review() {
         feedback["requestedSelector"],
         "fixture.missingReviewerSymbol"
     );
+    let navigation_input = reviewer_input(3);
     assert!(
-        reviewer_input(3)["request"]["payload"]
+        navigation_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    let navigation_summary = navigation_input["request"]["payload"]["evidence"]["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|page| page["items"].as_array().unwrap())
+        .find(|item| item["kind"] == "CALLABLE_SUMMARY")
+        .unwrap();
+    assert!(navigation_summary.get("reference").is_none());
+    assert_eq!(navigation_summary["record"]["authority"], "NAVIGATION_ONLY");
+    let full_reference = navigation_summary["record"]["fullRecordReference"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !reviewer_input(1)["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference)
+    );
+    let full_input = reviewer_input(4);
+    assert!(
+        full_input["request"]["payload"]
             .get("expansionFeedback")
             .is_none()
     );
     assert!(
-        reviewer_input(3)["request"]["payload"]["evidence"]["pages"]
+        full_input["request"]["payload"]["evidence"]["pages"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|page| page["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "SYMBOL"))
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference
+                && item["kind"] == "DEPENDENCY"
+                && item["record"]["kind"] == "SYMBOL")
     );
 }
 

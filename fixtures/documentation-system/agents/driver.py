@@ -92,6 +92,31 @@ if "requireEvidenceKinds" in options:
 if "requireContextProfile" in options:
     assert all(page.get("contextProfile") == options["requireContextProfile"]
                for page in payload["evidence"]["pages"])
+
+
+def pinned_navigation_reference():
+    pages = payload["evidence"]["pages"]
+    navigation_page_index = next((index for index, page in enumerate(pages)
+                                  if any(item["kind"] == "CALLABLE_SUMMARY"
+                                         for item in page["items"])), None)
+    if navigation_page_index is None:
+        return None
+    page = pages[navigation_page_index]
+    previously_delivered = {item["reference"] for prior in pages[:navigation_page_index]
+                            for item in prior["items"] if "reference" in item}
+    navigation_reference = next((item["record"].get("fullRecordReference")
+                                 for item in page["items"]
+                                 if item["kind"] == "CALLABLE_SUMMARY"
+                                 and item["record"].get("fullRecordReference")
+                                 and item["record"]["fullRecordReference"] not in previously_delivered), None)
+    if navigation_reference is None:
+        return None
+    currently_delivered = {item["reference"] for current in pages
+                           for item in current["items"] if "reference" in item}
+    currently_delivered.update(part["reference"] for part in payload["evidence"].get("sourceParts", []))
+    return None if navigation_reference in currently_delivered else navigation_reference
+
+
 if job["role"] == "reviewer":
     if "outputContract" in payload:
         contract = payload["outputContract"]
@@ -119,12 +144,9 @@ if job["role"] == "reviewer":
     result = None
     if mode == "symbol-lookup-reviewer":
         feedback = payload.get("expansionFeedback")
-        symbol_query_delivered = any(
-            page["items"]
-            and all(item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL"
-                    for item in page["items"])
-            for page in payload["evidence"]["pages"]
-        )
+        rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
+        summaries = [item for item in rows if item["kind"] == "CALLABLE_SUMMARY"]
+        full_record_reference = pinned_navigation_reference()
         if feedback is not None:
             assert feedback["kind"] == "SYMBOL_LOOKUP"
             assert feedback["status"] == "NOT_FOUND"
@@ -132,8 +154,10 @@ if job["role"] == "reviewer":
             result = {"action": "expand", "selection": {
                 "query": {"kind": "SYMBOL", "symbolContains": ""},
             }}
-        elif not symbol_query_delivered:
+        elif not summaries:
             result = {"action": "expand", "selection": {"symbols": ["fixture.missingReviewerSymbol"]}}
+        elif full_record_reference is not None:
+            result = {"action": "expand", "selection": {"references": [full_record_reference]}}
     elif mode == "reviewer-expand":
         target = options["expansionReference"]
         delivered = {item["reference"] for page in payload["evidence"]["pages"]
@@ -255,12 +279,8 @@ else:
     elif job["role"] == "author" and mode.startswith("symbol-lookup-"):
         rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
         feedback = payload.get("expansionFeedback")
-        symbol_query_delivered = any(
-            page["items"]
-            and all(item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL"
-                    for item in page["items"])
-            for page in payload["evidence"]["pages"]
-        )
+        summaries = [item for item in rows if item["kind"] == "CALLABLE_SUMMARY"]
+        full_record_reference = pinned_navigation_reference()
         known_symbol = next(item["record"]["symbol"] for item in rows
                             if item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL")
         missing_symbol = "fixture.missingSymbol"
@@ -306,7 +326,9 @@ else:
                 result = {"action": "expand", "selection": {
                     "query": {"kind": "SYMBOL", "symbolContains": ""},
                 }}
-        elif symbol_query_delivered:
+        elif summaries and full_record_reference is not None:
+            result = {"action": "expand", "selection": {"references": [full_record_reference]}}
+        elif summaries:
             result = basic_proposal()
         else:
             selection = {"symbols": mixed_symbols}

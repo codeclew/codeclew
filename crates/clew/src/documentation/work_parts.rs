@@ -1223,6 +1223,7 @@ mod tests {
             "ordinary".into(),
             ReadReceipt {
                 selection: Selection::default(),
+                requested_selection: None,
                 result_digest: "sha256:result".into(),
                 supplied: Vec::new(),
                 membership_digest: "sha256:membership".into(),
@@ -1278,6 +1279,7 @@ mod tests {
         });
         let initial_page = ReadReceipt {
             selection: Selection::default(),
+            requested_selection: None,
             result_digest: "sha256:page-result".into(),
             supplied: Vec::new(),
             membership_digest: "sha256:page-membership".into(),
