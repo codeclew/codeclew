@@ -3,7 +3,7 @@ use super::{
     bytes, digest, invalid, io_error,
     store::{self, Repository, WriteLock},
 };
-use crate::error::ClewError;
+use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -73,6 +73,7 @@ pub(super) fn selection_guidance(work: &super::work::Work) -> Value {
         "availableKinds": available_kinds,
         "queryKind": "Matches an Observation.kind dependency-record kind, not a page-row kind such as SOURCE or DEPENDENCY. Use * for all dependency kinds.",
         "symbolContains": "Searches captured symbols and method names with a case-sensitive substring. For example, {\"kind\":\"SYMBOL\",\"symbolContains\":\"helper\"} finds SYMBOL records whose captured symbol contains helper.",
+        "symbolLookup": "A symbols selection must use an exact compiler identity or qualified declaration name. If expansionFeedback reports NOT_FOUND or AMBIGUOUS, it describes only that lookup, not proof code is absent. Use a bounded SYMBOL query to discover captured declarations, then select only exact identities shown in returned records; do not guess a package, owner, or signature.",
         "exampleSelection": {"query":{"kind":"SYMBOL","symbolContains":"helper"}},
         "resultAuthority": "Queries search captured dependency records; returned rows remain limited to dependencies registered in this Work's influence set.",
         "navigation": "sourceReferences and dependencyReferences are navigation handles. Expand a handle in a separate recorded read before citing its contents, unless those contents are already delivered and allowed by this packet."
@@ -555,6 +556,8 @@ struct RunCheckpoint {
     pages: Vec<Value>,
     source_parts: Vec<Value>,
     feedback: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expansion_feedback: Option<Value>,
     previous: Value,
     previous_section: Value,
     repairs_remaining: u32,
@@ -633,6 +636,7 @@ impl RunCheckpoint {
             pages: Vec::new(),
             source_parts: Vec::new(),
             feedback: Value::Null,
+            expansion_feedback: None,
             previous: Value::Null,
             previous_section: Value::Null,
             repairs_remaining: 0,
@@ -2412,16 +2416,77 @@ struct ExpansionContext<'a> {
     report: &'a mut RunReport,
 }
 
+enum ExpansionOutcome {
+    Added,
+    SymbolLookupFeedback(Value),
+}
+
+fn symbol_lookup_feedback(
+    result: &Value,
+    selection: &super::work::Selection,
+    error: &ClewError,
+) -> Option<Value> {
+    let result = result.as_object()?;
+    if result
+        .keys()
+        .any(|key| !matches!(key.as_str(), "action" | "selection"))
+        || selection.cursor.is_some()
+        || !selection.references.is_empty()
+        || selection.query.is_some()
+        || selection.untracked_reads
+        || selection.symbols.is_empty()
+        || selection.symbols.len() > 8
+        || selection
+            .symbols
+            .iter()
+            .any(|symbol| symbol.trim().is_empty())
+    {
+        return None;
+    }
+    let status = match &error.code {
+        ErrorCode::SymbolNotFound => "NOT_FOUND",
+        ErrorCode::AmbiguousSymbol => "AMBIGUOUS",
+        _ => return None,
+    };
+    let selector = error.relevant_anchors_or_symbols.first()?;
+    if !selection.symbols.contains(selector) {
+        return None;
+    }
+    let message = if status == "NOT_FOUND" {
+        "No captured declaration matches this selector in the selected Work. This lookup result is not proof that code is absent. Use a bounded SYMBOL query, then select only exact identities shown in returned records; do not guess a package, owner, or signature."
+    } else {
+        "This selector matches multiple captured declarations in the selected Work. Use a bounded SYMBOL query, then select only an exact identity shown in returned records; do not guess a package, owner, or signature."
+    };
+    Some(serde_json::json!({
+        "kind":"SYMBOL_LOOKUP",
+        "status":status,
+        "requestedSelector":selector,
+        "navigationOnly":true,
+        "message":message
+    }))
+}
+
 fn add_expansion(
     repo: &Repository,
     work: &super::work::Work,
     result: &Value,
     context: &mut ExpansionContext<'_>,
-) -> Result<(), ClewError> {
+) -> Result<ExpansionOutcome, ClewError> {
     if *context.remaining == 0 {
         return Err(invalid("EXPANSION_BUDGET_EXHAUSTED"));
     }
     *context.remaining -= 1;
+    if result["action"] != "expand"
+        || result.as_object().is_none_or(|object| {
+            object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "action" | "selection"))
+        })
+    {
+        return Err(invalid(
+            "expansion action contains authority or unregistered result fields",
+        ));
+    }
     let selection: super::work::Selection = serde_json::from_value(result["selection"].clone())
         .map_err(|_| invalid("invalid registered expansion selection"))?;
     if selection.untracked_reads {
@@ -2439,7 +2504,17 @@ fn add_expansion(
         }
         let mut page_selection = selection.clone();
         page_selection.cursor = cursor.clone();
-        let page = super::work::read_loaded(repo, work, page_selection)?;
+        let page = match super::work::read_loaded(repo, work, page_selection.clone()) {
+            Ok(page) => page,
+            Err(error) => {
+                if page_selection.cursor.is_none()
+                    && let Some(feedback) = symbol_lookup_feedback(result, &selection, &error)
+                {
+                    return Ok(ExpansionOutcome::SymbolLookupFeedback(feedback));
+                }
+                return Err(error);
+            }
+        };
         let next_cursor = page["nextCursor"].as_str().map(str::to_owned);
         if next_cursor
             .as_deref()
@@ -2476,7 +2551,7 @@ fn add_expansion(
             break;
         }
     }
-    Ok(())
+    Ok(ExpansionOutcome::Added)
 }
 
 fn repairable_process_overview_missing_steps(
@@ -3496,7 +3571,7 @@ fn execute_run(
             }
             let evidence_digest =
                 digest(&(&work.id, &proposal.id, &read_digest, &pages, &source_parts))?;
-            let payload = reviewer_payload_with_parts(
+            let mut payload = reviewer_payload_with_parts(
                 work,
                 &pages,
                 &source_parts,
@@ -3505,6 +3580,9 @@ fn execute_run(
                 contract.is_some(),
                 &read_state,
             )?;
+            if let Some(feedback) = &checkpoint.expansion_feedback {
+                payload["expansionFeedback"] = feedback.clone();
+            }
             checkpoint.proposal_read_digest = Some(read_digest.clone());
             checkpoint.proposal_evidence_digest = Some(evidence_digest.clone());
             if checkpoint.pending_call.is_none() {
@@ -3524,7 +3602,7 @@ fn execute_run(
                 if contract.is_some() {
                     super::section_author::validate_expand(&result)?;
                 }
-                add_expansion(
+                checkpoint.expansion_feedback = match add_expansion(
                     repo,
                     work,
                     &result,
@@ -3535,7 +3613,10 @@ fn execute_run(
                         config,
                         report,
                     },
-                )?;
+                )? {
+                    ExpansionOutcome::Added => None,
+                    ExpansionOutcome::SymbolLookupFeedback(feedback) => Some(feedback),
+                };
                 persist_phase(
                     repo,
                     report,
@@ -3553,6 +3634,7 @@ fn execute_run(
                 )?;
                 continue;
             }
+            checkpoint.expansion_feedback = None;
             if result["action"] != "review"
                 || result
                     .as_object()
@@ -3640,7 +3722,7 @@ fn execute_run(
         } else {
             ("author", &config.author)
         };
-        let payload = selected_author_payload(
+        let mut payload = selected_author_payload(
             repo,
             work,
             config,
@@ -3652,6 +3734,9 @@ fn execute_run(
                 previous_section: &previous_section,
             },
         )?;
+        if let Some(feedback) = &checkpoint.expansion_feedback {
+            payload["expansionFeedback"] = feedback.clone();
+        }
         let author_binding = if contract.is_some() {
             let mut binding = payload["outputContract"].clone();
             if let Some(object) = binding.as_object_mut() {
@@ -3676,7 +3761,7 @@ fn execute_run(
                 if contract.is_some() {
                     super::section_author::validate_expand(&result)?;
                 }
-                add_expansion(
+                checkpoint.expansion_feedback = match add_expansion(
                     repo,
                     work,
                     &result,
@@ -3687,7 +3772,10 @@ fn execute_run(
                         config,
                         report,
                     },
-                )?;
+                )? {
+                    ExpansionOutcome::Added => None,
+                    ExpansionOutcome::SymbolLookupFeedback(feedback) => Some(feedback),
+                };
                 persist_phase(
                     repo,
                     report,
@@ -3705,8 +3793,12 @@ fn execute_run(
                 )?;
                 continue;
             }
-            Some("proposal") if contract.is_none() => {}
-            Some("section") if contract.is_some() => {}
+            Some("proposal") if contract.is_none() => {
+                checkpoint.expansion_feedback = None;
+            }
+            Some("section") if contract.is_some() => {
+                checkpoint.expansion_feedback = None;
+            }
             _ => {
                 return Err(invalid(
                     "AUTHOR_SELF_APPROVAL_OR_INVALID_ACTION: author may submit only the admitted content or registered expansion",
@@ -4142,6 +4234,62 @@ fn finalize_failed_run(
 mod input_cap_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn symbol_lookup_feedback_only_covers_fresh_closed_symbol_selections() {
+        let result = json!({"action":"expand","selection":{"symbols":["missing"]}});
+        let selection: super::super::work::Selection =
+            serde_json::from_value(result["selection"].clone()).unwrap();
+        let missing = ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "no captured declaration matches the selector",
+        )
+        .with_relevant("missing");
+        let feedback = symbol_lookup_feedback(&result, &selection, &missing).unwrap();
+        assert_eq!(feedback["status"], "NOT_FOUND");
+        assert_eq!(feedback["requestedSelector"], "missing");
+        assert_eq!(feedback["navigationOnly"], true);
+
+        let ambiguous = ClewError::new(ErrorCode::AmbiguousSymbol, "selector is ambiguous")
+            .with_relevant("missing");
+        assert_eq!(
+            symbol_lookup_feedback(&result, &selection, &ambiguous).unwrap()["status"],
+            "AMBIGUOUS"
+        );
+        let unrelated =
+            ClewError::new(ErrorCode::InvalidInput, "not a lookup result").with_relevant("missing");
+        assert!(symbol_lookup_feedback(&result, &selection, &unrelated).is_none());
+
+        let selection_with =
+            |value| serde_json::from_value::<super::super::work::Selection>(value).unwrap();
+        for (outer, inner) in [
+            (
+                json!({"action":"expand","selection":{"symbols":["missing"]},"approved":true}),
+                json!({"symbols":["missing"]}),
+            ),
+            (
+                json!({"action":"expand","selection":{"references":["ref"],"symbols":["missing"]}}),
+                json!({"references":["ref"],"symbols":["missing"]}),
+            ),
+            (
+                json!({"action":"expand","selection":{"symbols":["missing"],"query":{"kind":"SYMBOL","symbolContains":"x"}}}),
+                json!({"symbols":["missing"],"query":{"kind":"SYMBOL","symbolContains":"x"}}),
+            ),
+            (
+                json!({"action":"expand","selection":{"symbols":["missing"],"cursor":"next"}}),
+                json!({"symbols":["missing"],"cursor":"next"}),
+            ),
+            (
+                json!({"action":"expand","selection":{"symbols":["missing"],"untrackedReads":true}}),
+                json!({"symbols":["missing"],"untrackedReads":true}),
+            ),
+        ] {
+            assert!(symbol_lookup_feedback(&outer, &selection_with(inner), &missing).is_none());
+        }
+        let mismatched =
+            ClewError::new(ErrorCode::SymbolNotFound, "wrong selector").with_relevant("other");
+        assert!(symbol_lookup_feedback(&result, &selection, &mismatched).is_none());
+    }
 
     fn overview_work() -> super::super::work::Work {
         let mut checked = super::super::check::assemble(

@@ -4,7 +4,7 @@ use super::{
     model::*,
     store::{self, Repository},
 };
-use crate::error::ClewError;
+use crate::error::{ClewError, ErrorCode};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -877,9 +877,18 @@ pub(super) fn context_items(
                 })
                 .collect();
             if matches.len() != 1 {
-                return Err(invalid(
-                    "symbol must select one exact compiler identity or qualified declaration name",
-                ));
+                let (code, message) = if matches.is_empty() {
+                    (
+                        ErrorCode::SymbolNotFound,
+                        "no captured declaration matches the requested exact compiler identity or qualified declaration name",
+                    )
+                } else {
+                    (
+                        ErrorCode::AmbiguousSymbol,
+                        "the selector matches multiple captured declarations; use one exact compiler identity or qualified declaration name",
+                    )
+                };
+                return Err(ClewError::new(code, message).with_relevant(symbol.clone()));
             }
             selected.insert(matches[0].id.clone());
             selected.extend(
@@ -1164,6 +1173,118 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn symbol_context(observations: &[(&str, &str)]) -> check::Check {
+        let observations: BTreeMap<_, _> = observations
+            .iter()
+            .map(|(id, symbol)| {
+                (
+                    (*id).to_owned(),
+                    Observation {
+                        id: (*id).into(),
+                        kind: "SYMBOL".into(),
+                        service: "orders".into(),
+                        symbol: (*symbol).into(),
+                        normalized: json!({
+                            "ownerIdentity":"class:pkg/orders/OrderService",
+                            "name":"helper"
+                        }),
+                        digest: "synthetic-digest".into(),
+                        source_ids: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        let service = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "orders".into(),
+            revision: "synthetic-revision".into(),
+            service_digest: "synthetic-service-digest".into(),
+            extractor: "synthetic".into(),
+            runtime_mode: "TEST".into(),
+            coverage: "COMPLETE".into(),
+            boundaries: Vec::new(),
+            entrypoints: Vec::new(),
+            observations,
+            sources: BTreeMap::new(),
+            contracts: BTreeMap::new(),
+        };
+        check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "synthetic-input".into(),
+            context_digest: "synthetic-context".into(),
+            services: BTreeMap::from([("orders".into(), service)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        }
+    }
+
+    fn symbol_context_args(symbol: &str) -> ContextArgs {
+        ContextArgs {
+            root: PathBuf::new(),
+            service: Some("orders".into()),
+            scenario: None,
+            entrypoint: None,
+            symbols: vec![symbol.into()],
+            source_ids: Vec::new(),
+            dependency_ids: Vec::new(),
+            format: ContextFormat::Raw,
+            refresh: false,
+            snapshot: None,
+            cursor: None,
+            limit: 20,
+        }
+    }
+
+    #[test]
+    fn public_symbol_lookup_remains_strict_and_reports_typed_exact_selectors() {
+        let selector = "pkg.orders.OrderService.helper";
+        let missing_selector = "pkg.orders.OrderService.missing";
+        let missing = context_items(
+            &symbol_context(&[("symbol-a", "method:pkg/orders/OrderService#other()")]),
+            &symbol_context_args(missing_selector),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::SymbolNotFound);
+        assert_eq!(
+            missing.relevant_anchors_or_symbols.as_ref(),
+            [missing_selector]
+        );
+
+        let ambiguous = context_items(
+            &symbol_context(&[
+                (
+                    "symbol-a",
+                    "method:pkg/orders/OrderService#helper(java.lang.String)",
+                ),
+                ("symbol-b", "method:pkg/orders/OrderService#helper(int)"),
+            ]),
+            &symbol_context_args(selector),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(ambiguous.code, ErrorCode::AmbiguousSymbol);
+        assert_eq!(ambiguous.relevant_anchors_or_symbols.as_ref(), [selector]);
+
+        let exact = "method:pkg/orders/OrderService#helper(java.lang.String)";
+        assert!(
+            context_items(
+                &symbol_context(&[
+                    ("symbol-a", exact),
+                    ("symbol-b", "method:pkg/orders/OrderService#helper(int)"),
+                ]),
+                &symbol_context_args(exact),
+                None,
+            )
+            .is_ok()
+        );
+    }
+
     #[test]
     fn cursor_binds_input_and_does_not_drop_items_at_page_boundaries() {
         let items = (0..5).map(|id| json!({"id":id})).collect::<Vec<_>>();

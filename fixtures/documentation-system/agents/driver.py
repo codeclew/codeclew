@@ -117,7 +117,24 @@ if job["role"] == "reviewer":
         issue_evidence = props["issues"]["items"]["properties"]["evidence"]["items"]
         assert set(issue_evidence["enum"]) == delivered if delivered else issue_evidence is False
     result = None
-    if mode == "reviewer-expand":
+    if mode == "symbol-lookup-reviewer":
+        feedback = payload.get("expansionFeedback")
+        symbol_query_delivered = any(
+            page["items"]
+            and all(item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL"
+                    for item in page["items"])
+            for page in payload["evidence"]["pages"]
+        )
+        if feedback is not None:
+            assert feedback["kind"] == "SYMBOL_LOOKUP"
+            assert feedback["status"] == "NOT_FOUND"
+            assert feedback["requestedSelector"] == "fixture.missingReviewerSymbol"
+            result = {"action": "expand", "selection": {
+                "query": {"kind": "SYMBOL", "symbolContains": ""},
+            }}
+        elif not symbol_query_delivered:
+            result = {"action": "expand", "selection": {"symbols": ["fixture.missingReviewerSymbol"]}}
+    elif mode == "reviewer-expand":
         target = options["expansionReference"]
         delivered = {item["reference"] for page in payload["evidence"]["pages"]
                      for item in page["items"] if "reference" in item}
@@ -235,6 +252,71 @@ else:
         result = {"action": "review", "review": {"verdict": "APPROVE"}}
     elif mode == "expand" and not any(page.get("total") == 0 for page in payload["evidence"]["pages"]):
         result = {"action": "expand", "selection": {"query": {"kind": "SYMBOL", "symbolContains": "nonexistent"}}}
+    elif job["role"] == "author" and mode.startswith("symbol-lookup-"):
+        rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
+        feedback = payload.get("expansionFeedback")
+        symbol_query_delivered = any(
+            page["items"]
+            and all(item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL"
+                    for item in page["items"])
+            for page in payload["evidence"]["pages"]
+        )
+        known_symbol = next(item["record"]["symbol"] for item in rows
+                            if item["kind"] == "DEPENDENCY" and item["record"]["kind"] == "SYMBOL")
+        missing_symbol = "fixture.missingSymbol"
+        mixed_symbols = [known_symbol, missing_symbol]
+
+        def basic_proposal():
+            entry = next(item for item in rows if item["kind"] == "ENTRYPOINT")
+            returned = next(item for item in rows if item["kind"] == "DEPENDENCY"
+                            and item["record"]["kind"] == "FLOW"
+                            and item["record"]["normalized"]["kind"] == "RETURN")
+            return {"action": "proposal", "proposal": {
+                "schema": "codeclew-documentation-proposal/1.0",
+                "operations": [{
+                    "entrypoint": entry["reference"],
+                    "title": "Reserve quantity",
+                    "summary": {"text": "The operation returns the requested quantity.",
+                                "evidence": [entry["reference"]]},
+                    "steps": [{"kind": "note", "meaning": {
+                        "text": "The return path yields the resulting quantity.",
+                        "evidence": [returned["reference"]],
+                    }}],
+                }],
+            }}
+
+        if mode == "symbol-lookup-foreign-authority":
+            result = {
+                "action": "expand",
+                "selection": {"symbols": [missing_symbol]},
+                "approved": True,
+            }
+        elif feedback is not None and mode == "symbol-lookup-accept-after-miss":
+            assert feedback["kind"] == "SYMBOL_LOOKUP"
+            assert feedback["status"] == "NOT_FOUND"
+            assert feedback["requestedSelector"] == missing_symbol
+            result = basic_proposal()
+        elif feedback is not None:
+            assert feedback["kind"] == "SYMBOL_LOOKUP"
+            assert feedback["status"] == "NOT_FOUND"
+            assert feedback["requestedSelector"] == missing_symbol
+            if mode == "symbol-lookup-repeat":
+                result = {"action": "expand", "selection": {"symbols": mixed_symbols}}
+            else:
+                result = {"action": "expand", "selection": {
+                    "query": {"kind": "SYMBOL", "symbolContains": ""},
+                }}
+        elif symbol_query_delivered:
+            result = basic_proposal()
+        else:
+            selection = {"symbols": mixed_symbols}
+            if mode == "symbol-lookup-mixed":
+                selection["query"] = {"kind": "SYMBOL", "symbolContains": ""}
+            elif mode == "symbol-lookup-untracked":
+                selection["untrackedReads"] = True
+            elif mode == "symbol-lookup-unknown-reference":
+                selection = {"references": ["not-a-registered-reference"]}
+            result = {"action": "expand", "selection": selection}
     elif mode.startswith("process-") and job["role"] == "author":
         rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
         flow = next(item for item in rows if item["kind"] == "DEPENDENCY"

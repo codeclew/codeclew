@@ -4163,6 +4163,392 @@ fn docsys_t04_expansion_uses_recorded_coordinator_reads() {
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(&f, json!({"mode":"symbol-lookup-author"}), json!({}), None);
+    config["authorCalls"] = json!(4);
+    config["reviewerCalls"] = json!(6);
+    config["expansions"] = json!(2);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 4, "{report}");
+    assert_eq!(
+        attempts
+            .iter()
+            .filter(|attempt| attempt["role"] == "author")
+            .count(),
+        3
+    );
+    assert_eq!(
+        attempts
+            .iter()
+            .filter(|attempt| attempt["role"] == "reviewer")
+            .count(),
+        1
+    );
+
+    let input = |index: usize| {
+        read(f.docs.join(format!(
+            ".codeclew/job-inputs/{}.json",
+            attempts[index]["invocation"].as_str().unwrap()
+        )))
+    };
+    let first_invocation = attempts[0]["invocation"].as_str().unwrap();
+    let raw_author = read(
+        f.docs
+            .join(format!(".codeclew/job-results/{first_invocation}.json")),
+    );
+    assert_eq!(raw_author["result"]["action"], "expand");
+    assert_eq!(
+        raw_author["result"]["selection"]["symbols"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        raw_author["result"]["selection"]["symbols"][1],
+        "fixture.missingSymbol"
+    );
+
+    let correction_input = input(1);
+    let correction_feedback = &correction_input["request"]["payload"]["expansionFeedback"];
+    assert_eq!(correction_feedback["kind"], "SYMBOL_LOOKUP");
+    assert_eq!(correction_feedback["status"], "NOT_FOUND");
+    assert_eq!(
+        correction_feedback["requestedSelector"],
+        "fixture.missingSymbol"
+    );
+    assert_eq!(correction_feedback["navigationOnly"], true);
+    assert!(
+        correction_feedback["message"]
+            .as_str()
+            .unwrap()
+            .contains("not proof")
+    );
+    assert!(correction_input["request"]["payload"]["previousProposal"].is_null());
+
+    let author_after_correction = input(2);
+    let author_pages = author_after_correction["request"]["payload"]["evidence"]["pages"]
+        .as_array()
+        .unwrap();
+    let initial_pages = input(0)["request"]["payload"]["evidence"]["pages"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(
+        author_pages.len() > initial_pages,
+        "SYMBOL query should add a delivered page"
+    );
+    assert!(author_pages.iter().any(|page| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "SYMBOL")
+    }));
+    assert!(
+        author_after_correction["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    let reviewer_input = input(3);
+    assert!(
+        reviewer_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    assert!(
+        reviewer_input["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|page| page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "SYMBOL"))
+    );
+
+    let run = report["run"].as_str().unwrap();
+    let miss_checkpoint = find_checkpoint_record(&f, run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["pendingCall"].is_null()
+            && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
+    });
+    let checkpoint = &miss_checkpoint["checkpoint"];
+    assert_eq!(checkpoint["expansionsRemaining"], 1);
+    assert_eq!(checkpoint["repairsRemaining"], 1);
+    assert_eq!(
+        checkpoint["pages"],
+        input(0)["request"]["payload"]["evidence"]["pages"]
+    );
+
+    let ledger = read(f.docs.join(format!(".codeclew/work/{work}/reads.json")));
+    let receipts = ledger["receipts"].as_object().unwrap();
+    assert!(receipts.values().any(|receipt| {
+        receipt["selection"]["query"]["kind"] == "SYMBOL"
+            && receipt["selection"]["query"]["symbolContains"] == ""
+    }));
+    assert!(!receipts.values().any(|receipt| {
+        receipt["selection"]["symbols"] == raw_author["result"]["selection"]["symbols"]
+    }));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_feedback_is_cleared_when_author_submits_content() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(
+        &f,
+        json!({"mode":"symbol-lookup-accept-after-miss"}),
+        json!({}),
+        None,
+    );
+    config["authorCalls"] = json!(3);
+    config["reviewerCalls"] = json!(4);
+    config["expansions"] = json!(1);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    let reviewer_input = read(f.docs.join(format!(
+        ".codeclew/job-inputs/{}.json",
+        attempts[2]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert!(
+        reviewer_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_reviewer_symbol_lookup_miss_expands_before_review() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(
+        &f,
+        json!({}),
+        json!({"mode":"symbol-lookup-reviewer"}),
+        None,
+    );
+    config["authorCalls"] = json!(4);
+    config["reviewerCalls"] = json!(6);
+    config["expansions"] = json!(2);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 4, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert!(
+        attempts[1..]
+            .iter()
+            .all(|attempt| attempt["role"] == "reviewer")
+    );
+    let reviewer_input = |index: usize| {
+        read(f.docs.join(format!(
+            ".codeclew/job-inputs/{}.json",
+            attempts[index]["invocation"].as_str().unwrap()
+        )))
+    };
+    let feedback_input = reviewer_input(2);
+    let feedback = &feedback_input["request"]["payload"]["expansionFeedback"];
+    assert_eq!(feedback["kind"], "SYMBOL_LOOKUP");
+    assert_eq!(
+        feedback["requestedSelector"],
+        "fixture.missingReviewerSymbol"
+    );
+    assert!(
+        reviewer_input(3)["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    assert!(
+        reviewer_input(3)["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|page| page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "SYMBOL"))
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_feedback_checkpoint_resumes_with_remaining_budget() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(&f, json!({"mode":"symbol-lookup-repeat"}), json!({}), None);
+    config["authorCalls"] = json!(4);
+    config["reviewerCalls"] = json!(6);
+    config["expansions"] = json!(2);
+
+    let index_before = reader_pointer_bytes(&f);
+    let first_result = work_run(&f, &work, &config);
+    assert_eq!(first_result["status"], "EXHAUSTED", "{first_result}");
+    let run = first_result["run"].as_str().unwrap().to_owned();
+    let initial_report = run_report(&f, &first_result);
+    assert_eq!(initial_report["attempts"].as_array().unwrap().len(), 3);
+    assert!(
+        initial_report["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|attempt| attempt["role"] == "author")
+    );
+    assert!(
+        first_result["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("EXPANSION_BUDGET_EXHAUSTED")
+    );
+
+    let after_first_miss = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["pendingCall"].is_null()
+            && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
+            && checkpoint["expansionsRemaining"] == 1
+    });
+    assert_eq!(after_first_miss["checkpoint"]["repairsRemaining"], 1);
+    let first_attempt = initial_report["attempts"][0].clone();
+    let first_invocation = first_attempt["invocation"].as_str().unwrap().to_owned();
+    let first_result_path = f
+        .docs
+        .join(format!(".codeclew/job-results/{first_invocation}.json"));
+    let first_raw = fs::read(&first_result_path).unwrap();
+
+    let mut resumed_report = initial_report;
+    resumed_report["status"] = json!("PREPARED");
+    resumed_report["attempts"] = json!([first_attempt.clone()]);
+    resumed_report["proposal"] = serde_json::Value::Null;
+    resumed_report["review"] = serde_json::Value::Null;
+    resumed_report["publication"] = serde_json::Value::Null;
+    resumed_report["gap"] = serde_json::Value::Null;
+    resumed_report["accounting"] = serde_json::Value::Null;
+    resumed_report["checkpoint"] = checkpoint_reference(&run, &after_first_miss);
+    fs::write(
+        f.docs.join(format!(".codeclew/jobs/{run}.json")),
+        serde_json::to_vec(&resumed_report).unwrap(),
+    )
+    .unwrap();
+
+    let first_reservation = first_attempt["reservation"].as_str().unwrap();
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let mut account = read(&account_path);
+    for (id, reservation) in account["reservations"].as_object_mut().unwrap() {
+        if reservation["run"] != run {
+            continue;
+        }
+        if id == first_reservation {
+            assert_ne!(reservation["status"], "RESERVED");
+        } else {
+            reservation["status"] = json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+        }
+    }
+    fs::write(account_path, serde_json::to_vec(&account).unwrap()).unwrap();
+    restore_reader_pointer(&f, index_before.as_deref());
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["status"], "EXHAUSTED", "{resumed}");
+    let resumed_report = run_report(&f, &resumed);
+    let resumed_attempts = resumed_report["attempts"].as_array().unwrap();
+    assert_eq!(resumed_attempts.len(), 3, "{resumed_report}");
+    assert_eq!(resumed_attempts[0]["invocation"], first_invocation);
+    assert_ne!(resumed_attempts[1]["invocation"], first_invocation);
+    assert!(
+        resumed_attempts
+            .iter()
+            .all(|attempt| attempt["role"] == "author")
+    );
+    assert_eq!(fs::read(first_result_path).unwrap(), first_raw);
+    let last_checkpoint = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
+            && checkpoint["expansionsRemaining"] == 0
+    });
+    assert_eq!(last_checkpoint["checkpoint"]["repairsRemaining"], 1);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_other_invalid_expansions_remain_fail_closed() {
+    use serde_json::json;
+    for mode in [
+        "symbol-lookup-foreign-authority",
+        "symbol-lookup-mixed",
+        "symbol-lookup-untracked",
+        "symbol-lookup-unknown-reference",
+    ] {
+        let f = Fixture::new();
+        f.service("orders");
+        let (work, _, _) = proposal_fixture(&f);
+        let mut config = execution_config(&f, json!({"mode":mode}), json!({}), None);
+        config["authorCalls"] = json!(3);
+        config["reviewerCalls"] = json!(4);
+        config["expansions"] = json!(1);
+
+        let result = work_run(&f, &work, &config);
+        let expected_status = if mode == "symbol-lookup-untracked" {
+            "NEEDS_EVIDENCE"
+        } else {
+            "GENERATION_GAP"
+        };
+        assert_eq!(result["status"], expected_status, "{mode}: {result}");
+        let report = run_report(&f, &result);
+        assert_eq!(
+            report["attempts"].as_array().unwrap().len(),
+            1,
+            "{mode}: {report}"
+        );
+        assert_eq!(report["attempts"][0]["role"], "author");
+        let input = read(f.docs.join(format!(
+            ".codeclew/job-inputs/{}.json",
+            report["attempts"][0]["invocation"].as_str().unwrap()
+        )));
+        assert!(
+            input["request"]["payload"]
+                .get("expansionFeedback")
+                .is_none()
+        );
+        let raw = read(f.docs.join(format!(
+            ".codeclew/job-results/{}.json",
+            report["attempts"][0]["invocation"].as_str().unwrap()
+        )));
+        assert_eq!(raw["result"]["action"], "expand");
+        assert_ne!(
+            result["gap"]["reason"], "EXPANSION_BUDGET_EXHAUSTED",
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_t04_failed_outputs_and_time_caps_keep_unknown_usage_reserved() {
     use serde_json::json;
     for (mode, reason) in [
