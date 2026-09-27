@@ -215,6 +215,7 @@ pub(super) fn payload_with_parts(
         "evidence":super::agent_jobs::evidence_with_parts(work,pages,source_parts),
         "readerGuidance":super::agent_jobs::reader_guidance(work, true),
         "selectionGuidance":super::agent_jobs::selection_guidance(work),
+        "sequenceGuidance":{"applies":false,"reason":"The section-summary root has no sequence obligations.","mandatoryFlowCoverage":[]},
         "languageContract":super::agent_jobs::language_contract(work),
         "outputContract":{
             "schema":CONTRACT,

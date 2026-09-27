@@ -86,6 +86,80 @@ fn validate_summary_text(text: &str) -> Result<(), ClewError> {
     Ok(())
 }
 
+pub(super) fn sequence_event_kinds(flow_kind: &str) -> &'static [&'static str] {
+    match flow_kind {
+        "IF" | "TRY" => &["alt"],
+        "DEFERRED" => &["opt"],
+        "LOOP" => &["loop"],
+        "FINALLY" | "BREAK" | "CONTINUE" => &["note"],
+        "RETURN" | "THROW" => &["return", "note"],
+        _ => &[],
+    }
+}
+
+pub(super) fn sequence_skipped(checked: &Check, subject: &str, operation_id: &str) -> bool {
+    let service_summary = subject.starts_with("service:")
+        && (super::sections::contains(operation_id) || super::notes::is_root(operation_id));
+    super::dataflow::is_root(checked, subject, operation_id)
+        || service_summary
+        || super::processes::overview(checked, subject, operation_id)
+}
+
+/// The source-backed structural branches the renderer requires for one
+/// selected operation. Keep service symbol matching and scenario first-edge
+/// selection here so job guidance and validation use the same scope.
+pub(super) fn required_sequence_flows<'a>(
+    checked: &'a Check,
+    subject: &str,
+    operation_id: &str,
+) -> Result<Vec<&'a Observation>, ClewError> {
+    let (kind, id) = subject
+        .split_once(':')
+        .ok_or_else(|| invalid("subject must be service:<id> or scenario:<id>"))?;
+    if sequence_skipped(checked, subject, operation_id) {
+        return Ok(Vec::new());
+    }
+    let is_required_flow = |flow_kind: &str| !sequence_event_kinds(flow_kind).is_empty();
+    match kind {
+        "service" => {
+            let evidence = checked
+                .services
+                .get(id)
+                .ok_or_else(|| invalid("service evidence is unresolved"))?;
+            let entry = evidence
+                .entrypoints
+                .iter()
+                .find(|entry| entry.id == operation_id)
+                .ok_or_else(|| invalid("operation entrypoint disappeared"))?;
+            Ok(evidence
+                .observations
+                .values()
+                .filter(|observation| {
+                    observation.kind == "FLOW"
+                        && observation.symbol == entry.symbol
+                        && observation.normalized["kind"]
+                            .as_str()
+                            .is_some_and(is_required_flow)
+                })
+                .collect())
+        }
+        "scenario" => {
+            let scenario = checked
+                .scenarios
+                .get(id)
+                .ok_or_else(|| invalid("unknown scenario"))?;
+            Ok(scenario
+                .steps
+                .iter()
+                .filter(|step| is_required_flow(&step.kind))
+                .filter_map(|step| step.dependency_ids.first())
+                .filter_map(|dependency_id| checked.dependencies.get(dependency_id))
+                .collect())
+        }
+        _ => Err(invalid("unsupported narrative subject")),
+    }
+}
+
 pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
     if n.schema != "codeclew-documentation-narrative/1.3" {
         return Err(invalid(
@@ -378,67 +452,13 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 "entrypoint implementation is unavailable; record an explicit gap instead of inventing its behavior",
             ));
         }
-        let mandatory: Vec<&Observation> = if kind == "service" {
-            let evidence = &checked.services[id];
-            let entry = evidence
-                .entrypoints
-                .iter()
-                .find(|entry| entry.id == o.id)
-                .ok_or_else(|| invalid("operation entrypoint disappeared"))?;
-            evidence
-                .observations
-                .values()
-                .filter(|d| {
-                    d.kind == "FLOW"
-                        && d.symbol == entry.symbol
-                        && matches!(
-                            d.normalized["kind"].as_str(),
-                            Some(
-                                "IF" | "LOOP"
-                                    | "RETURN"
-                                    | "THROW"
-                                    | "DEFERRED"
-                                    | "TRY"
-                                    | "FINALLY"
-                                    | "BREAK"
-                                    | "CONTINUE"
-                            )
-                        )
-                })
-                .collect()
-        } else {
-            checked.scenarios[id]
-                .steps
-                .iter()
-                .filter(|s| {
-                    matches!(
-                        s.kind.as_str(),
-                        "IF" | "LOOP"
-                            | "RETURN"
-                            | "THROW"
-                            | "DEFERRED"
-                            | "TRY"
-                            | "FINALLY"
-                            | "BREAK"
-                            | "CONTINUE"
-                    )
-                })
-                .filter_map(|s| s.dependency_ids.first())
-                .filter_map(|id| checked.dependencies.get(id))
-                .collect()
-        };
+        let mandatory = required_sequence_flows(checked, &n.subject, &o.id)?;
         for dependency in mandatory {
-            let expected_kind = dependency.normalized["kind"].as_str().unwrap_or("");
+            let expected_kinds =
+                sequence_event_kinds(dependency.normalized["kind"].as_str().unwrap_or(""));
             if !o.events.iter().any(|event| {
                 event.dependency_ids.contains(&dependency.id)
-                    && match expected_kind {
-                        "IF" | "TRY" => event.kind == "alt",
-                        "DEFERRED" => event.kind == "opt",
-                        "FINALLY" | "BREAK" | "CONTINUE" => event.kind == "note",
-                        "LOOP" => event.kind == "loop",
-                        "RETURN" | "THROW" => matches!(event.kind.as_str(), "return" | "note"),
-                        _ => false,
-                    }
+                    && expected_kinds.contains(&event.kind.as_str())
             }) {
                 return Err(invalid(format!(
                     "sequence omits a source-backed condition or return: {}",
@@ -3859,6 +3879,29 @@ mod process_catalog_tests {
             "../scenarios/worker.html#process-overview"
         );
         assert_eq!(data["savedProcesses"][0]["status"], "AWAITING_AUTHORING");
+    }
+}
+
+#[cfg(test)]
+mod sequence_contract_tests {
+    use super::sequence_event_kinds;
+
+    #[test]
+    fn renderer_flow_to_sequence_mapping_covers_all_nine_structural_kinds() {
+        for (flow, events) in [
+            ("IF", &["alt"][..]),
+            ("TRY", &["alt"][..]),
+            ("DEFERRED", &["opt"][..]),
+            ("LOOP", &["loop"][..]),
+            ("FINALLY", &["note"][..]),
+            ("BREAK", &["note"][..]),
+            ("CONTINUE", &["note"][..]),
+            ("RETURN", &["return", "note"][..]),
+            ("THROW", &["return", "note"][..]),
+        ] {
+            assert_eq!(sequence_event_kinds(flow), events, "{flow}");
+        }
+        assert!(sequence_event_kinds("CALL").is_empty());
     }
 }
 
