@@ -316,6 +316,18 @@ Object.assign(RU_MESSAGES,{
  'The accepted text and diagrams belong to another language or have no recorded language. They are hidden here until a matching version is accepted.':'Принятые текст и диаграммы относятся к другому языку или их язык не указан. Здесь они скрыты до принятия версии на выбранном языке.',
  'Model approved':'Одобрено моделью','Model approved with limitations':'Одобрено моделью с оговорками',
  'Model review approves an interpretation; evidence links do not prove every statement in the prose.':'Модельное одобрение — это оценка интерпретации; ссылки на источники не доказывают каждое утверждение в тексте.',
+ 'Readable behavior':'Описание поведения',
+ 'Projection of documented step narratives; not executable code or an observed runtime trace.':'Отображение шагов из документации; это не исполняемый код и не фактическая трасса выполнения.',
+ 'Sequence diagram':'Диаграмма последовательности',
+ 'If':'Если',
+ 'Otherwise':'Иначе',
+ 'Loop':'Цикл',
+ 'When':'При условии',
+ 'Return':'Вернуть',
+ 'Message':'Сообщение',
+ 'Note':'Пояснение',
+ 'Declared interaction':'Объявленное взаимодействие',
+ 'Step evidence':'Подтверждение шага',
  'English version':'Английская версия','Russian version':'Русская версия','Original version':'Исходная версия',
  'CURRENT':'Актуально','STALE':'Устарело','UNVERIFIED':'Не проверено','UNASSESSED':'Смысл не проверен','VERIFIED':'Проверено','VERIFIED_WITH_LIMITATIONS':'Проверено с ограничениями',
  'SECTION':'РАЗДЕЛ','NOTE':'ЗАМЕТКА','PROCESS':'ПРОЦЕСС','FLOW':'ПРОЦЕСС','MAP':'СВЯЗИ','RULES':'ПРАВИЛА','VIEW':'СХЕМА','CODE':'КОД',
@@ -499,6 +511,46 @@ function diagram(o){
  svg+=chromeHtml`<a href="#${esc(o.id)}" data-event="${esc(e.id)}" aria-label="${esc(e.text)}: inspect source"><title>${esc(e.text)}</title>${inside}</a>`;
  }return svg+chromeHtml`</svg>`;
 }
+function pseudocodeEvent(o,event){
+ const participant=id=>o.participants.find(p=>p.id===id)?.label||id;
+ const route=event.from&&event.to?`${participant(event.from)} → ${participant(event.to)}: `:'';
+ const text=event.text||'';
+ switch(event.kind){
+  case 'alt':return {keyword:t('If'),text:text?text+':':''};
+  case 'else':return {keyword:t('Otherwise'),text:text&&text.toLowerCase()!=='otherwise'?text+':':''};
+  case 'loop':return {keyword:t('Loop'),text:text?text+':':''};
+  case 'opt':return {keyword:t('When'),text:text?text+':':''};
+  case 'return':return {keyword:t('Return'),text:route+text};
+  case 'message':return {keyword:t('Message'),text:route+text};
+  case 'declared':return {keyword:t('Declared interaction'),text:(event.from&&event.to?`(${participant(event.from)} → ${participant(event.to)}) `:'')+text};
+  case 'note':return {keyword:t('Note'),text};
+  default:return {keyword:'',text};
+ }
+}
+function stepEvidence(owner,event){
+ return event.sourceIds?.length?chromeHtml`<button class="source-link" data-sources="${esc(event.sourceIds.join(' '))}" data-source-operation="${esc(owner.id)}">${esc(t('Step evidence'))} ↗</button>`:'';
+}
+function behaviorPseudocode(o){
+ const events=o.events||[];
+ if(!events.some(event=>event.kind!=='end'))return '';
+ const rows=[],stack=[];let depth=0;
+ for(const event of events){
+  if(event.kind==='end'){
+   const frame=stack.pop();if(frame)depth=frame.depth;
+   continue;
+  }
+  if(event.kind==='else'){
+   const frame=stack[stack.length-1];if(frame?.kind==='alt')depth=frame.depth;
+   rows.push({event,line:pseudocodeEvent(o,event),depth});
+   if(frame?.kind==='alt')depth=frame.depth+1;
+   continue;
+  }
+  rows.push({event,line:pseudocodeEvent(o,event),depth});
+  if(['alt','loop','opt'].includes(event.kind)){stack.push({kind:event.kind,depth});depth++;}
+ }
+ if(!rows.length)return '';
+ return chromeHtml`<section class="diagram-card behavior-pseudocode" aria-label="${esc(t('Readable behavior'))}"><div class="section-label"><b>${esc(t('Readable behavior'))}</b><span>${esc(t('Projection of documented step narratives; not executable code or an observed runtime trace.'))}</span></div><div class="behavior-pseudocode-lines" role="list">${rows.map(({event,line,depth})=>chromeHtml`<div class="behavior-pseudocode-line" role="listitem" style="--indent:${depth*20}px;--indent-mobile:${depth*13}px"><code class="pseudocode-keyword">${esc(line.keyword)}</code><span class="pseudocode-text">${esc(line.text)}</span>${stepEvidence(o,event)}</div>`).join('')}</div></section>`;
+}
 function explanation(o,detail=false){
  const paragraphs=new Map();
  for(const p of (o.explanation||[]).filter(p=>!!p.detail===detail)){
@@ -532,9 +584,13 @@ function overviewDiagram(o){
 }
 function sequence(e,o){if(!o)return chromeHtml`<p class="empty-note">${esc(D.gaps[e.id]||t('Behavior documentation has not been authored for this entrypoint.'))}</p>`;
  const state=D.stateDiagram?chromeHtml`<div class="diagram-card"><div class="section-label"><b>${esc(t('State diagram'))}</b><span>${esc(t('Declared process-state schema'))} · ${esc(t('Static source bindings do not show runtime execution.'))}</span></div>${plantumlPreview(D.stateDiagram,D.stateDiagramSvg,'State diagram')}<div class="diagram-footer"><span>${esc(t('States and transitions come from the captured process-state schema.'))} scenarios/${esc(D.subject.split(':').pop())}-states.yaml</span><a download href="../diagrams/${esc(D.stateDiagram)}.puml">PlantUML ↓</a></div></div>`:'';
- const flow=chromeHtml`<div class="diagram-card"><div class="section-label"><b>Scenario overview</b><span>Select a node or connection to inspect its source</span></div><div class="overview-scroll">${overviewDiagram(o)}</div><div class="diagram-footer"><span>Source-based interpretation; declared links do not prove runtime delivery.</span><a download href="../diagrams/${esc(D.subject.replace(':','-'))}-${esc(o.id)}.mmd">Mermaid ↓</a></div></div>`;
+ const pseudocode=behaviorPseudocode(o);
+ const sequenceFlow=chromeHtml`<div class="diagram-card"><div class="section-label"><b>Scenario overview</b><span>Select a node or connection to inspect its source</span></div><div class="overview-scroll">${overviewDiagram(o)}</div><div class="diagram-footer"><span>Source-based interpretation; declared links do not prove runtime delivery.</span><a download href="../diagrams/${esc(D.subject.replace(':','-'))}-${esc(o.id)}.mmd">Mermaid ↓</a></div></div>`;
  const accessible=o.overviewDiagram?chromeHtml`<details class="steps-accessible"><summary>Diagram as text</summary><ul>${o.overviewDiagram.nodes.map(n=>chromeHtml`<li><button data-overview-node="${esc(n.id)}">${esc(n.text)}</button></li>`).join('')}</ul><ul>${o.overviewDiagram.edges.map(e=>chromeHtml`<li>${esc(o.overviewDiagram.nodes.find(n=>n.id===e.from).text)} → ${esc(o.overviewDiagram.nodes.find(n=>n.id===e.to).text)}${e.text?' · '+esc(e.text):''}</li>`).join('')}</ul></details>`:'';
- return chromeHtml`${(o.visuals||[]).map(v=>visualCard(o,v)).join('')}${state}${flow}${accessible}${explanation(o)}${o.boundaries.length?chromeHtml`<details class="technical-evidence"><summary>Scope and evidence boundaries</summary><ul>${o.boundaries.map(b=>chromeHtml`<li>${esc(b)}</li>`).join('')}</ul></details>`:''}<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o,true)}</details><details class="technical-evidence"><summary>Declared service links</summary>${interactionOverview(o)||chromeHtml`<p>No cross-service connections selected.</p>`}</details>`;}
+ const flow=pseudocode?chromeHtml`<details class="sequence-details"><summary>${esc(t(o.overviewDiagram?'Scenario overview':'Sequence diagram'))}</summary>${sequenceFlow}${accessible}</details>`:chromeHtml`${sequenceFlow}${accessible}`;
+ const narrativeDetails=pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o)}${explanation(o,true)}</details>`:explanation(o);
+ const implementationDetails=!pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o,true)}</details>`:'';
+ return chromeHtml`${(o.visuals||[]).map(v=>visualCard(o,v)).join('')}${pseudocode}${state}${flow}${narrativeDetails}${o.boundaries.length?chromeHtml`<details class="technical-evidence"><summary>Scope and evidence boundaries</summary><ul>${o.boundaries.map(b=>chromeHtml`<li>${esc(b)}</li>`).join('')}</ul></details>`:''}${implementationDetails}<details class="technical-evidence"><summary>Declared service links</summary>${interactionOverview(o)||chromeHtml`<p>No cross-service connections selected.</p>`}</details>`;}
 function interfaceContracts(e){
  const cards=operation(e)?.interfaceContracts||[];
  if(!cards.length)return '';

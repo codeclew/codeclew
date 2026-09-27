@@ -15,6 +15,46 @@ function fixture(){
  const op={id:'section-responsibilities',title:'Responsibilities',summary:fragment('Documented responsibilities'),participants:[],events:[],explanation:[],findings:[],boundaries:[],interfaceContracts:[],visuals:[flow,decision]};
  return {subject:'service:sample',title:'Sample',subtitle:'Example',catalogue:[],contracts:[],operations:[op],sections:[{id:'section-overview',title:'Overview',gap:'Awaiting overview'},{id:op.id,title:op.title,content:op}],notes:[],sources:{'same-source':source('CURRENT SOURCE')},operationSources:{[op.id]:{'same-source':source('ACCEPTED SOURCE')}},operationStates:{[op.id]:{freshness:'STALE',verification:'UNASSESSED'}},sectionState:{freshness:'CURRENT',verification:'VERIFIED'},sourceAuthorities:{},revisions:{sample:'abc'},boundaries:[],interactions:[],gaps:{},coverage:{},boundaryInventory:{publicBoundaries:[],gaps:[]}};
 }
+function behaviorFixture(){
+ const data=fixture(),events=[
+  {id:'for-each',kind:'loop',text:'For each supplied reservation',sourceIds:['loop-source']},
+  {id:'positive',kind:'alt',text:'the quantity is positive',sourceIds:['guard-source']},
+  {id:'save',kind:'message',text:'Apply <script>alert(1)</script>',from:'service',to:'store',sourceIds:['save-source']},
+  {id:'already-closed',kind:'alt',text:'the reservation is already closed',sourceIds:['rejected&guard']},
+  {id:'conflict',kind:'return',text:'the conflict response',from:'service',to:'caller',sourceIds:['return-source']},
+  {id:'inner-else',kind:'else',text:'Otherwise',sourceIds:['rejected&guard']},
+  {id:'continue',kind:'note',text:'Keep the existing value',sourceIds:['continue-source']},
+  {id:'inner-end',kind:'end',text:'',sourceIds:['rejected&guard']},
+  {id:'optional-audit',kind:'opt',text:'an audit note is supplied',sourceIds:['optional-source']},
+  {id:'audit-note',kind:'note',text:'Attach the audit note',sourceIds:['audit-source']},
+  {id:'optional-end',kind:'end',text:'',sourceIds:['optional-source']},
+  {id:'outer-else',kind:'else',text:'Otherwise',sourceIds:['guard-source']},
+  {id:'skip',kind:'note',text:'Leave the input unchanged',sourceIds:['skip-source']},
+ {id:'outer-end',kind:'end',text:'',sourceIds:['guard-source']},
+  {id:'loop-end',kind:'end',text:'',sourceIds:['loop-source']},
+  {id:'result',kind:'return',text:'the accepted result',from:'service',to:'caller',sourceIds:['result-source']}
+ ];
+ const deepGroups=Array.from({length:9},(_,index)=>({id:`deep-loop-${index}`,kind:'loop',text:`nested group ${index+1}`,sourceIds:['loop-source']}));
+ events.splice(events.length-1,0,...deepGroups,{id:'deep-optional',kind:'opt',text:'a provider result is available',sourceIds:['optional-source']},{id:'deep-declared',kind:'declared',text:'Provider submission remains a declaration',from:'service',to:'store',interaction:'declared:provider',sourceIds:['declared-source']},{id:'deep-optional-end',kind:'end',text:'',sourceIds:['optional-source']},...deepGroups.map((_,index)=>({id:`deep-end-${index}`,kind:'end',text:'',sourceIds:['loop-source']})));
+ const operation={id:'reserve-fixture',title:'Reserve request',summary:{...fragment('Processes a reservation request.'),sourceIds:['summary-source']},participants:[{id:'caller',label:'Caller',service:null},{id:'service',label:'Reservation service',service:'sample'},{id:'store',label:'Reservation store',service:'sample'}],events,explanation:[{id:'same-step',text:'Apply <script>alert(1)</script>',sourceIds:['save-source'],detail:false},{id:'extra-commentary',text:'Additional authored explanation',sourceIds:['save-source'],detail:true}],findings:[],boundaries:['Runtime execution was not observed.'],interfaceContracts:[],visuals:[],overviewDiagram:null};
+ const sourceIds=[...new Set([...operation.summary.sourceIds,...events.flatMap(event=>event.sourceIds)])];
+ data.subject='scenario:renderer-fixture';data.title='Renderer fixture';data.subtitle='Synthetic reader fixture. No native field documentation was generated.';data.catalogue=[{id:operation.id,symbol:'PUT /reserve',kind:'HTTP_ENDPOINT',trigger:{methods:['PUT'],paths:['/reserve']},sourceIds:[]}];data.operations=[operation];data.sections=[];data.sources=Object.fromEntries(sourceIds.map(id=>[id,source(`Fixture source for ${id}`)]));data.operationSources={[operation.id]:data.sources};data.operationStates={[operation.id]:{freshness:'UNVERIFIED',verification:'UNASSESSED'}};
+ return data;
+}
+function renderBehaviorFixture(data){
+ const template=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/template.html'),'utf8');
+ const style=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/style.css'),'utf8');
+ const analysis=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/analysis.js'),'utf8');
+ const payload=JSON.stringify(data).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+ const html=template.replace('/*__STYLE__*/',()=>style).replace('/*__SCRIPT__*/',()=>script).replace('/*__ANALYSIS_SCRIPT__*/',()=>analysis).replace('__DOCUMENT_DATA__',()=>payload);
+ if(!html.includes(script)||!html.includes(style)||!html.includes(analysis)||html.includes('__DOCUMENT_DATA__'))throw new Error('renderer fixture did not embed the exact shipped reader assets');
+ return html;
+}
+if(process.env.CODECLEW_READER_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_READER_FIXTURE_OUT);
+ fs.mkdirSync(path.dirname(output),{recursive:true});
+ fs.writeFileSync(output,renderBehaviorFixture(behaviorFixture()));
+}
 function processFixture(svgAvailable=false,lifecycleName='changeTaskStatus'){
  const data=fixture();data.subject='scenario:checkout';data.catalogue=[];
  const operation={id:'approve-request',title:'Approve request',summary:fragment('Accepted process operation details'),participants:[],events:[],explanation:[],findings:[],boundaries:[],interfaceContracts:[],visuals:[],dataflow:null,assessment:null,overviewDiagram:null,documentationLanguage:null};
@@ -40,12 +80,47 @@ function load(data=fixture()){
 test('default service overview exposes the first native graph and all visual navigation',()=>{
  const r=load(),html=r.e('scenario-content').innerHTML;
  assert.match(html,/<svg class="artifact-svg"/);
+ assert.doesNotMatch(html,/behavior-pseudocode/);
  assert.match(html,/After validation/);
  assert.match(html,/Meaning review: <b>UNASSESSED/);
  assert.match(html,/Source freshness: <b>STALE/);
  assert.match(r.e('scenario-nav').innerHTML,/Dispatch work/);
  assert.match(r.e('scenario-nav').innerHTML,/Select handler/);
  assert.equal(r.run('inventoryEntries().length'),0);
+});
+test('documented events render as localized, evidence-linked pseudocode while the sequence stays available',()=>{
+ const data=behaviorFixture(),en=load(data),html=en.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="diagram-card behavior-pseudocode"/g)||[]).length,1);
+ assert.match(html,/If<\/code><span class="pseudocode-text">the quantity is positive:/);
+ assert.match(html,/Loop<\/code><span class="pseudocode-text">For each supplied reservation:/);
+ assert.match(html,/Reservation service → Reservation store: Apply &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+ assert.doesNotMatch(html,/<script>alert\(1\)<\/script>/);
+ assert.match(html,/Otherwise/);
+ assert.match(html,/When<\/code><span class="pseudocode-text">an audit note is supplied:/);
+ assert.match(html,/Return<\/code><span class="pseudocode-text">Reservation service → Caller: the accepted result/);
+ assert.match(html,/style="--indent:40px;--indent-mobile:26px"/);
+ assert.match(html,/style="--indent:200px;--indent-mobile:130px"><code class="pseudocode-keyword">Declared interaction<\/code><span class="pseudocode-text">\(Reservation service → Reservation store\) Provider submission remains a declaration/);
+ assert.match(html,/<div class="behavior-pseudocode-line" role="listitem" style="--indent:0px;--indent-mobile:0px"><code class="pseudocode-keyword">Return<\/code><span class="pseudocode-text">Reservation service → Caller: the accepted result/);
+ assert.match(html,/data-sources="rejected&amp;guard" data-source-operation="reserve-fixture"/);
+ assert.match(html,/<details class="sequence-details"><summary>Sequence diagram<\/summary>/);
+ assert.match(html,/class="sequence-svg"/);
+ assert.doesNotMatch(html,/<details class="sequence-details" open/);
+ assert.match(html,/<details class="implementation-detail"><summary>Implementation details and source commentary<\/summary>/);
+ assert.doesNotMatch(html,/<details class="implementation-detail" open/);
+ assert.match(html,/Additional authored explanation/);
+ const sourceIndex=html.indexOf('the quantity is positive'),returnIndex=html.indexOf('the conflict response'),otherwiseIndex=html.indexOf('the accepted result');
+ assert.ok(sourceIndex<returnIndex&&returnIndex<otherwiseIndex);
+ en.click({sources:'rejected&guard',sourceOperation:'reserve-fixture'});
+ assert.match(en.e('source-code').innerHTML,/Fixture source for rejected&amp;guard/);
+
+ const ru=load({...data,language:'ru'}),ruHtml=ru.e('scenario-content').innerHTML;
+ assert.match(ruHtml,/Описание поведения/);
+ assert.match(ruHtml,/>Если<\/code>/);
+ assert.match(ruHtml,/>Цикл<\/code>/);
+ assert.match(ruHtml,/>Иначе<\/code>/);
+ assert.match(ruHtml,/>При условии<\/code>/);
+ assert.match(ruHtml,/Подтверждение шага/);
+ assert.match(ruHtml,/<summary>Диаграмма последовательности<\/summary>/);
 });
 test('meaning review labels identify model approval in English and Russian',()=>{
  const data=fixture();
