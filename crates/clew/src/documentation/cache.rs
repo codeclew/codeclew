@@ -213,7 +213,7 @@ pub const SOURCES_OBJECT_SCHEMA: &str = "codeclew-documentation-sources/1.0";
 pub const OBSERVATIONS_OBJECT_SCHEMA: &str = "codeclew-documentation-observations/1.0";
 pub const CONTRACTS_OBJECT_SCHEMA: &str = "codeclew-documentation-contracts/1.0";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureManifest {
     pub schema: String,
@@ -239,7 +239,7 @@ pub struct CaptureManifest {
 pub const REUSABLE: &str = "REUSABLE";
 pub const NON_CACHEABLE: &str = "NON_CACHEABLE";
 
-fn validate_capture(manifest: &CaptureManifest) -> Result<(), ClewError> {
+pub(super) fn validate_capture(manifest: &CaptureManifest) -> Result<(), ClewError> {
     let valid_cacheability = match manifest.cacheability.as_str() {
         REUSABLE => manifest.reason.is_none(),
         NON_CACHEABLE => manifest

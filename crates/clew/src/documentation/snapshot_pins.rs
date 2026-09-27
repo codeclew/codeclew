@@ -46,6 +46,12 @@ pub enum Command {
         /// Basename of a current-format manifest in .codeclew/cache; repeat per service.
         #[arg(long = "capture", required = true)]
         captures: Vec<String>,
+        /// Read selected captures from a stopped immutable portable export.
+        #[arg(long, requires = "source_snapshot")]
+        from_export: Option<PathBuf>,
+        /// Immutable snapshot handle from the same export.
+        #[arg(long, requires = "from_export")]
+        source_snapshot: Option<String>,
     },
     Pin {
         #[arg(long)]
@@ -75,7 +81,20 @@ pub enum Command {
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
-        Command::Recover { root, captures } => super::capture_recovery::run(&root, &captures),
+        Command::Recover {
+            root,
+            captures,
+            from_export,
+            source_snapshot,
+        } => match (from_export, source_snapshot) {
+            (None, None) => super::capture_recovery::run(&root, &captures),
+            (Some(export), Some(snapshot)) => {
+                super::capture_export::run(&root, &export, &snapshot, &captures)
+            }
+            _ => Err(invalid(
+                "--from-export and --source-snapshot must be supplied together",
+            )),
+        },
         Command::Pin {
             root,
             name,

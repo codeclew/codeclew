@@ -5,6 +5,7 @@ pub mod agent_jobs;
 pub mod analysis;
 pub mod bindings;
 pub mod cache;
+mod capture_export;
 mod capture_recovery;
 pub mod check;
 pub mod cli;

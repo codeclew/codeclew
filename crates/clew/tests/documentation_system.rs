@@ -1,6 +1,8 @@
 #![cfg(unix)]
 #[path = "support/documentation_call_recovery.rs"]
 mod call_recovery;
+#[path = "support/documentation_capture_export.rs"]
+mod capture_export;
 #[path = "support/documentation_publication_recovery.rs"]
 mod publication_recovery;
 #[path = "support/documentation_qualification.rs"]

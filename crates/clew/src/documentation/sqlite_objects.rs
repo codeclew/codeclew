@@ -23,6 +23,103 @@ pub(crate) struct SqliteObjects {
     store_id: String,
 }
 
+/// Read-only connection for a stopped/exported object database. Immutable URI
+/// mode is safe only after the caller has checked that no nonempty WAL or
+/// rollback journal can contain newer committed rows.
+#[derive(Debug)]
+pub(crate) struct ImmutableSqliteObjects {
+    connection: Mutex<Connection>,
+}
+
+impl ImmutableSqliteObjects {
+    pub(crate) fn open(path: &Path, store_id: &str) -> Result<Self, ClewError> {
+        validate_store_id(store_id)?;
+        let uri = immutable_uri(path);
+        let connection = open_raw_connection(
+            uri.as_str(),
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        verify_metadata(&connection, store_id)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
+    pub(crate) fn read(
+        &self,
+        digest: &str,
+        expected_size: u64,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>, ClewError> {
+        validate_digest(digest)?;
+        if expected_size > limit {
+            return Err(ClewError::new(
+                ErrorCode::ResourceLimit,
+                "SQLite object exceeds the caller's read budget",
+            ));
+        }
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| corrupt("immutable SQLite object reader lock failed"))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| sql_error("beginning immutable SQLite object read", error))?;
+        let row = transaction
+            .query_row(
+                "SELECT byte_len, length(payload) FROM objects WHERE digest = ?1",
+                params![digest],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| sql_error("reading immutable SQLite object metadata", error))?;
+        let Some((stored_size, actual_size)) = row else {
+            transaction
+                .commit()
+                .map_err(|error| sql_error("committing missing immutable object read", error))?;
+            return Ok(None);
+        };
+        verify_stored_lengths(digest, stored_size, actual_size)?;
+        let stored_size =
+            u64::try_from(stored_size).map_err(|_| corrupt("SQLite object has a negative size"))?;
+        if stored_size != expected_size || stored_size > limit {
+            return Err(corrupt(format!(
+                "SQLite object size mismatch for {digest}: stored={stored_size}, expected={expected_size}"
+            )));
+        }
+        let payload: Vec<u8> = transaction
+            .query_row(
+                "SELECT payload FROM objects WHERE digest = ?1",
+                params![digest],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql_error("reading immutable SQLite object payload", error))?;
+        verify_row(digest, &payload, stored_size as i64)?;
+        transaction
+            .commit()
+            .map_err(|error| sql_error("committing immutable SQLite object read", error))?;
+        Ok(Some(payload))
+    }
+}
+
+fn immutable_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut uri = String::from("file:");
+    for byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'/' | b'-' | b'_' | b'.' | b'~') {
+            uri.push(*byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
+}
+
 impl SqliteObjects {
     pub(crate) fn create(path: &Path, store_id: &str) -> Result<Self, ClewError> {
         validate_store_id(store_id)?;
@@ -233,7 +330,7 @@ impl SqliteObjects {
     }
 }
 
-fn open_raw_connection(path: &Path, flags: OpenFlags) -> Result<Connection, ClewError> {
+fn open_raw_connection(path: impl AsRef<Path>, flags: OpenFlags) -> Result<Connection, ClewError> {
     let connection = Connection::open_with_flags(path, flags)
         .map_err(|error| sql_error("opening SQLite object database", error))?;
     connection
