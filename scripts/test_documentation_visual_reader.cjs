@@ -419,14 +419,30 @@ test('shared catalogue localizes chrome and retains neutral filtering keys and a
  const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
  for(const language of ['en','ru']){
   const nodes=Object.fromEntries(['catalog-data','catalog-query','catalog-kind','catalog-results','catalog-status','catalog-prev','catalog-next'].map(key=>[key,element()]));
-  nodes['catalog-data'].textContent=JSON.stringify([{kind:'Service',id:'orderAPI',title:'Authored title',href:'services/orderAPI.html'},{kind:'Process',id:'p',title:'ProcessTitle',href:'scenarios/p.html'}]);
+  nodes['catalog-data'].textContent=JSON.stringify([
+   {kind:'Service',id:'orderAPI',title:'Authored title',href:'services/orderAPI.html',context:'Orders service',summary:'Inventory import hit',searchText:['order-manager'],coverage:'authored'},
+   {kind:'Process',id:'p',title:'ProcessTitle',href:'scenarios/p.html',context:'Checkout process',summary:'Exports orders',searchText:['checkout-steps'],coverage:'inventory'},
+   {kind:'Entity',id:'order',title:'Order',href:'services/orderAPI.html#section-entities',context:'Orders service',summary:['OrderRecord'],searchText:['order-record'],coverage:'unavailable'}
+  ]);
+  const location={search:'?q=order-manager%20hit&kind=Service&campaign=qa',pathname:'/catalog.html',hash:''};
+  const history={state:{marker:'keep'},lastUrl:null,replaceState(state,_title,url){assert.equal(state.marker,'keep');this.lastUrl=url;const parsed=new URL(url,'https://codex.test');location.search=parsed.search;location.hash=parsed.hash;}};
   const document={documentElement:{lang:language},querySelector(){return null;},querySelectorAll(){return [];},getElementById(key){return nodes[key];},createElement:element};
-  vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{search:'',pathname:'/catalog.html'}});
-  assert.equal(nodes['catalog-results'].children.length,2);
+  vm.runInNewContext(reader,{document,URL,URLSearchParams,location,history});
+  assert.equal(nodes['catalog-results'].children.length,1);
+  assert.equal(nodes['catalog-query'].value,'order-manager hit');
+  assert.equal(nodes['catalog-kind'].value,'Service');
   assert.equal(nodes['catalog-results'].children[0].children[0].textContent,'Authored title');
-  assert.equal(nodes['catalog-results'].children[0].children[1].textContent,language==='ru'?'Сервис · orderAPI':'Service · orderAPI');
+  assert.equal(nodes['catalog-results'].children[0].children[0].href,'services/orderAPI.html');
+  assert.equal(nodes['catalog-results'].children[0].children[1].textContent,language==='ru'?'Сервис · Orders service · orderAPI · Описание есть':'Service · Orders service · orderAPI · Description present');
+  nodes['catalog-query'].value='inventory hit';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,1);
+  let url=new URL(history.lastUrl,'https://codex.test');assert.equal(url.searchParams.get('q'),'inventory hit');assert.equal(url.searchParams.get('kind'),'Service');assert.equal(url.searchParams.get('campaign'),'qa');
+  nodes['catalog-query'].value='';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,1);
+  nodes['catalog-kind'].value='';nodes['catalog-kind'].listeners.change();assert.equal(nodes['catalog-results'].children.length,3);
+  assert.match(nodes['catalog-results'].children[1].children[1].textContent,language==='ru'?/Без описания/:/No description/);
+  assert.match(nodes['catalog-results'].children[2].children[1].textContent,language==='ru'?/Есть пробелы/:/Evidence or translation gap/);
+  url=new URL(history.lastUrl,'https://codex.test');assert.equal(url.searchParams.get('campaign'),'qa');assert.equal(url.searchParams.has('kind'),false);
   nodes['catalog-kind'].value='Service';nodes['catalog-kind'].listeners.change();assert.equal(nodes['catalog-results'].children.length,1);
   nodes['catalog-query'].value='absent';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,0);
-  assert.match(nodes['catalog-status'].textContent,language==='ru'?/Документы не найдены/:/No matching/);
+  assert.match(nodes['catalog-status'].textContent,language==='ru'?/Совпадений нет/:/No matching results/);
  }
 });
