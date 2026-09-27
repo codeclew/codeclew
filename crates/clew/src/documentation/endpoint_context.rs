@@ -14,7 +14,7 @@ use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-pub const PROFILE: &str = "endpoint-context-v1";
+pub const PROFILE: &str = "endpoint-context-v2";
 
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const MAX_CALLABLES: usize = 12;
@@ -128,12 +128,12 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 .as_deref()
                 .map(|entrypoint| (service, entrypoint))
         })
-        .ok_or_else(|| invalid("endpoint-context-v1 requires a service HTTP endpoint"))?;
+        .ok_or_else(|| invalid("endpoint-context-v2 requires a service HTTP endpoint"))?;
     let evidence = work
         .checked
         .services
         .get(service)
-        .ok_or_else(|| invalid("endpoint-context-v1 service evidence is unavailable"))?;
+        .ok_or_else(|| invalid("endpoint-context-v2 service evidence is unavailable"))?;
     let entry = unique_entrypoint(evidence, entrypoint_id);
     let mut gaps = Gaps::default();
     let mut dependencies = BTreeMap::<String, &Observation>::new();
@@ -266,7 +266,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             );
             continue;
         }
-
         let body_source = method_body_source(evidence, &callable);
         let body_source_id = match body_source {
             Ok((source_id, source)) => {
@@ -665,7 +664,17 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     }
 
     let mut owner_ids: Vec<_> = owner_field_candidates.into_iter().collect();
-    owner_ids.sort();
+    owner_ids.sort_by(|left, right| {
+        let priority = |id: &str| {
+            evidence
+                .observations
+                .get(id)
+                .is_some_and(is_static_final_field)
+        };
+        priority(right)
+            .cmp(&priority(left))
+            .then_with(|| left.cmp(right))
+    });
     if owner_ids.len() > MAX_REFERENCED_FIELDS {
         let omitted = owner_ids.len() - MAX_REFERENCED_FIELDS;
         owner_ids.truncate(MAX_REFERENCED_FIELDS);
@@ -860,11 +869,19 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
             "coverage":evidence.coverage,"boundaries":evidence.boundaries,
             "callAuthority":if evidence.extractor==super::model::SOURCE_EXTRACTOR{"SYNTAX_UNRESOLVED"}else{"PROVIDER_EVIDENCE"}}
     }));
+    let mut provider_facts = Vec::new();
     for observation in dependencies.into_values() {
-        rows.push(json!({"kind":"DEPENDENCY","id":observation.id,"record":observation}));
+        if observation.normalized["declarationKind"] == "FIELD" {
+            rows.push(json!({"kind":"DEPENDENCY","id":observation.id,"record":observation}));
+        } else {
+            provider_facts.push(observation);
+        }
     }
     for source in sources.into_values() {
         rows.push(json!({"kind":"SOURCE","id":source.id,"record":source}));
+    }
+    for observation in provider_facts {
+        rows.push(json!({"kind":"DEPENDENCY","id":observation.id,"record":observation}));
     }
     for (index, record) in work.review_reasons.iter().enumerate() {
         rows.push(json!({"kind":"REVIEW_REASON","id":format!("review-{index}"),"record":record}));
@@ -982,6 +999,14 @@ fn callable_from_observation(observation: &Observation) -> Callable<'_> {
             .to_owned(),
         observation,
     }
+}
+
+fn is_static_final_field(observation: &Observation) -> bool {
+    let Some(modifiers) = observation.normalized["modifiers"].as_array() else {
+        return false;
+    };
+    modifiers.iter().any(|modifier| modifier == "STATIC")
+        && modifiers.iter().any(|modifier| modifier == "FINAL")
 }
 
 fn declaration_indexes<'a>(

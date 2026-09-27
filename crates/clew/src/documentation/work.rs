@@ -496,7 +496,7 @@ fn validate_endpoint_context_profile(
         && !is_java_http_entrypoint(checked, subject, request)
     {
         return Err(invalid(
-            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v1 requires one captured Java HTTP endpoint",
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v2 requires one captured Java HTTP endpoint",
         ));
     }
     Ok(())
@@ -918,8 +918,11 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         {
             Ok(())
         }
+        Some("endpoint-context-v1") => Err(invalid(
+            "CONTEXT_PROFILE_UNSUPPORTED: endpoint-context-v1 has an obsolete selector; prepare a fresh Work with endpoint-context-v2 from its retained snapshot",
+        )),
         Some(super::endpoint_context::PROFILE) => Err(invalid(
-            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v1 requires a service endpoint request",
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v2 requires a service endpoint request",
         )),
         Some("declarations-v1")
             if subject
@@ -3536,6 +3539,7 @@ mod api_contract_tests {
                     "name":name,
                     "scope":SCOPE,
                     "typeDescriptor":descriptor,
+                    "modifiers":if id == "default-code-field" { json!(["STATIC","FINAL"]) } else { json!([]) },
                     "annotations":[{"name":"Column","values":{"nullable":false}}],
                     "sourceTokens":tokens,
                 }),
@@ -3927,6 +3931,25 @@ mod api_contract_tests {
             .iter()
             .filter(|row| row["kind"] == "DEPENDENCY")
             .collect();
+        let first_field = rows
+            .iter()
+            .position(|row| {
+                row["kind"] == "DEPENDENCY"
+                    && row["record"]["normalized"]["declarationKind"] == "FIELD"
+            })
+            .unwrap();
+        let first_source = rows.iter().position(|row| row["kind"] == "SOURCE").unwrap();
+        let first_graph_fact = rows
+            .iter()
+            .position(|row| {
+                row["kind"] == "DEPENDENCY"
+                    && matches!(
+                        row["record"]["kind"].as_str(),
+                        Some("FLOW" | "CALL_RELATION")
+                    )
+            })
+            .unwrap();
+        assert!(first_field < first_source && first_source < first_graph_fact);
         for field_id in [
             "request-name-field",
             "response-status-field",
@@ -3990,6 +4013,86 @@ mod api_contract_tests {
         );
 
         assert!(bytes(packet).unwrap().len() <= 48 * 1024);
+    }
+
+    #[test]
+    fn endpoint_context_prefers_captured_static_final_fields_at_owner_field_limit() {
+        let mut work = endpoint_context_fixture();
+        let names: Vec<_> = (0..9).map(|index| format!("injected{index:02}")).collect();
+        let references = names
+            .iter()
+            .map(|name| format!("      this.{name} = null;\n"))
+            .collect::<String>();
+        let declarations = names
+            .iter()
+            .map(|name| format!("  private String {name};\n"))
+            .collect::<String>();
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("service-source")
+            .unwrap();
+        source.text = source
+            .text
+            .replace("    try {\n", &format!("    try {{\n{references}"));
+        let class_end = source.text.rfind('}').unwrap();
+        source.text.insert_str(class_end, &declarations);
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+
+        for name in &names {
+            let id = format!("owner-di-field-{name}");
+            let symbol = format!("field:class:orders.Service#{name}:Ljava/lang/String;");
+            add_observation(
+                &mut work,
+                &id,
+                "orders",
+                "SYMBOL",
+                &symbol,
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"FIELD",
+                    "symbolIdentity":symbol,
+                    "ownerIdentity":"class:orders.Service",
+                    "name":name,
+                    "scope":SCOPE,
+                    "typeDescriptor":"Ljava/lang/String;",
+                    "modifiers":["PRIVATE"],
+                    "annotations":[{"name":"Inject","values":{}}],
+                    "sourceTokens":["private","String",name]
+                }),
+                vec!["service-source".into()],
+            );
+        }
+
+        let rows = rows(&work, &Selection::default()).unwrap();
+        let selected: BTreeSet<_> = rows
+            .iter()
+            .filter(|row| {
+                row["kind"] == "DEPENDENCY"
+                    && row["record"]["normalized"]["declarationKind"] == "FIELD"
+                    && row["record"]["normalized"]["ownerIdentity"] == "class:orders.Service"
+            })
+            .filter_map(|row| row["id"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(selected.len(), 8);
+        assert!(selected.contains("default-code-field"));
+        assert!(selected.contains("owner-di-field-injected00"));
+        assert!(selected.contains("owner-di-field-injected06"));
+        assert!(!selected.contains("owner-di-field-injected07"));
+        assert!(!selected.contains("owner-di-field-injected08"));
+    }
+
+    #[test]
+    fn endpoint_context_v1_saved_work_is_rejected_before_reading() {
+        let mut work = endpoint_context_fixture();
+        work.request.context_profile = Some("endpoint-context-v1".into());
+        let error = validate_context_profile(&work.subject, &work.request).unwrap_err();
+        assert!(error.message.contains("CONTEXT_PROFILE_UNSUPPORTED"));
+        assert!(error.message.contains("prepare a fresh Work"));
+        assert!(error.message.contains("endpoint-context-v2"));
     }
 
     #[test]

@@ -420,15 +420,24 @@ profile version; existing Work must not be reinterpreted under new rules. Full
 influence and currentness checks remain unchanged, including deferred facts;
 this changes transmission, not snapshot hydration or invalidation scope.
 
-For one captured Java HTTP endpoint, Work also accepts
-`"contextProfile": "endpoint-context-v1"`. The profile supplies the retained
+For one captured Java HTTP endpoint, Work accepts
+`"contextProfile": "endpoint-context-v2"`. The profile supplies the retained
 endpoint route, direct request/response FIELD facts, bounded reachable method
-bodies, and complete retained FLOW or CALL_RELATION facts. Legacy same-owner
-helper and constant discovery is marked `SOURCE_REFERENCE_CANDIDATE`; it is
-lexical evidence and does not establish compiler resolution. Method bodies and
-field token facts share a 48 KiB selection budget. DTO class source is not
-included. The packet groups references to those facts and reports unavailable,
-ambiguous, or truncated paths as gaps.
+sources, and complete retained FLOW or CALL_RELATION facts. Its 12-candidate
+limit can be consumed by a method whose body cannot be parsed; such a candidate
+is reported as a gap and may leave later helpers beyond the selection limit.
+Legacy same-owner helper and constant discovery is marked
+`SOURCE_REFERENCE_CANDIDATE`; it is lexical evidence and does not establish
+compiler resolution. Method bodies and field token facts share a 48 KiB
+selection budget. DTO class source is not included. The initial page places
+FIELD facts and selected SOURCE rows before FLOW and CALL_RELATION facts. The
+packet groups references to those facts and reports unavailable, ambiguous, or
+truncated paths as gaps. Captured `STATIC` + `FINAL` fields are preferred when
+the referenced-owner-field limit applies.
+
+The endpoint selector changed in v2, so saved `endpoint-context-v1` Work fails
+closed and must be prepared again from its retained snapshot; source acquisition
+is not repeated.
 
 The endpoint profile does not infer value propagation or execution order from
 call edges. It does not establish wire requiredness, null omission, inherited
