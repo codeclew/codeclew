@@ -4043,7 +4043,7 @@ mod api_contract_tests {
         source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
 
         for name in &names {
-            let id = format!("owner-di-field-{name}");
+            let id = format!("aaa-owner-di-field-{name}");
             let symbol = format!("field:class:orders.Service#{name}:Ljava/lang/String;");
             add_observation(
                 &mut work,
@@ -4079,10 +4079,10 @@ mod api_contract_tests {
             .collect();
         assert_eq!(selected.len(), 8);
         assert!(selected.contains("default-code-field"));
-        assert!(selected.contains("owner-di-field-injected00"));
-        assert!(selected.contains("owner-di-field-injected06"));
-        assert!(!selected.contains("owner-di-field-injected07"));
-        assert!(!selected.contains("owner-di-field-injected08"));
+        assert!(selected.contains("aaa-owner-di-field-injected00"));
+        assert!(selected.contains("aaa-owner-di-field-injected06"));
+        assert!(!selected.contains("aaa-owner-di-field-injected07"));
+        assert!(!selected.contains("aaa-owner-di-field-injected08"));
     }
 
     #[test]
