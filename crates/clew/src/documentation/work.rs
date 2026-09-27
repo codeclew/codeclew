@@ -65,6 +65,26 @@ pub enum Command {
     Read(ReadArgs),
     Expand(ReadArgs),
     ReadPart(ReadPartArgs),
+    Packet {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        /// Write full selected-row bindings separately; this does not record Work reads.
+        #[arg(long)]
+        audit_output: Option<PathBuf>,
+    },
+    /// Render a validated operation answer into a reusable local draft.
+    Explain {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
 }
 #[derive(Debug, Args)]
 pub struct ReadArgs {
@@ -370,6 +390,7 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
         Check::load_snapshot(repo, &stored.evidence_snapshot)
     })?;
     validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
+    validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
     Ok(stored.into_runtime(checked))
 }
 
@@ -425,7 +446,99 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &args.work,
             store::read(&args.input, store::MAX_RECORD)?,
         ),
+        Command::Packet {
+            root,
+            work: id,
+            audit_output,
+        } => {
+            let loaded = load(&Repository::open(&root)?, &id)?;
+            let (packet, audit) = super::operation_packet::build(&loaded)?;
+            if let Some(path) = audit_output {
+                write_atomic_file(&path, &bytes(&audit)?)?;
+            }
+            Ok(packet)
+        }
+        Command::Explain {
+            root,
+            work: id,
+            input,
+            output_dir,
+        } => {
+            let loaded = load(&Repository::open(&root)?, &id)?;
+            let (packet, audit) = super::operation_packet::build(&loaded)?;
+            let answer: Value = store::read(&input, store::MAX_RECORD)?;
+            let rendered = super::operation_answer::validate_and_render(&packet, answer)?;
+            write_explanation_outputs(
+                &output_dir,
+                &loaded.id,
+                &packet,
+                &audit,
+                &rendered.answer,
+                &rendered.markdown,
+                &rendered.html,
+            )
+        }
     }
+}
+
+fn write_explanation_outputs(
+    output_dir: &std::path::Path,
+    work: &str,
+    packet: &Value,
+    audit: &Value,
+    answer: &Value,
+    markdown: &str,
+    html: &str,
+) -> Result<Value, ClewError> {
+    fs::create_dir_all(output_dir).map_err(io_error)?;
+    let output_dir = fs::canonicalize(output_dir).map_err(io_error)?;
+    let files = [
+        ("answer.json", bytes(answer)?),
+        ("operation.md", markdown.as_bytes().to_vec()),
+        ("index.html", html.as_bytes().to_vec()),
+        ("reader-packet.json", bytes(packet)?),
+        ("reader-packet-audit.json", bytes(audit)?),
+    ];
+    let mut paths = BTreeMap::new();
+    for (name, contents) in files {
+        let path = output_dir.join(name);
+        write_atomic_file(&path, &contents)?;
+        paths.insert(name, path.to_string_lossy().into_owned());
+    }
+    Ok(json!({
+        "schema":"codeclew-documentation-operation-answer-draft/1.0",
+        "work":work,
+        "status":"DRAFT",
+        "reviewStatus":"UNREVIEWED",
+        "publication":"NOT_PUBLISHED",
+        "packetDigest":packet["packetDigest"],
+        "outputDirectory":output_dir.to_string_lossy(),
+        "files":paths
+    }))
+}
+
+fn write_atomic_file(path: &std::path::Path, contents: &[u8]) -> Result<(), ClewError> {
+    use std::{fs::OpenOptions, io::Write};
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("output file has no parent directory"))?;
+    let temporary = parent.join(format!(".codeclew-answer-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(io_error)?;
+        file.write_all(contents).map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        fs::rename(&temporary, path).map_err(io_error)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<Value, ClewError> {
@@ -484,6 +597,21 @@ fn is_java_http_entrypoint(checked: &Check, subject: &str, request: &Request) ->
                 && declaration.normalized["declarationKind"] == "METHOD"
         })
     })
+}
+
+fn validate_endpoint_context_profile(
+    subject: &str,
+    request: &Request,
+    checked: &Check,
+) -> Result<(), ClewError> {
+    if request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
+        && !is_java_http_entrypoint(checked, subject, request)
+    {
+        return Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v3 requires one captured Java HTTP endpoint",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_http_api_contract_profile(subject: &str, request: &mut Request, checked: &Check) {
@@ -897,6 +1025,20 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         Some("process-v1") => Err(invalid(
             "CONTEXT_PROFILE_INCOMPATIBLE: process-v1 requires a saved process overview",
         )),
+        Some(super::endpoint_context::PROFILE)
+            if subject.starts_with("service:") && request.entrypoint.is_some() =>
+        {
+            Ok(())
+        }
+        Some("endpoint-context-v1") => Err(invalid(
+            "CONTEXT_PROFILE_UNSUPPORTED: endpoint-context-v1 has an obsolete selector; prepare fresh Work with endpoint-context-v3 from its retained snapshot",
+        )),
+        Some("endpoint-context-v2") => Err(invalid(
+            "CONTEXT_PROFILE_UNSUPPORTED: endpoint-context-v2 has an obsolete selector; prepare fresh Work with endpoint-context-v3 from its retained snapshot",
+        )),
+        Some(super::endpoint_context::PROFILE) => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v3 requires a service endpoint request",
+        )),
         Some("declarations-v1")
             if subject
                 .strip_prefix("service:")
@@ -969,6 +1111,7 @@ pub fn prepare_with_snapshot(
     normalize_http_api_contract_profile(&subject, &mut request, &checked);
     validate_context_profile(&subject, &request)?;
     validate_http_api_contract_profile(&subject, &request, &checked)?;
+    validate_endpoint_context_profile(&subject, &request, &checked)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -1519,6 +1662,16 @@ fn compact_section_rows(
 
 fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     validate_selection(selection)?;
+    if work.request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
+        && selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+    {
+        let rows = super::endpoint_context::profile_rows(work)?;
+        let mut rows = annotate_rows(work, rows)?;
+        super::endpoint_context::restrict_unselected_source_references(work, &mut rows);
+        return Ok(rows);
+    }
     if work.request.context_profile.as_deref() == Some("declarations-v1")
         && selection.references.is_empty()
         && selection.symbols.is_empty()
@@ -3116,7 +3269,7 @@ mod section_context_tests {
 }
 
 #[cfg(test)]
-mod api_contract_tests {
+pub(super) mod api_contract_tests {
     use super::*;
 
     const SCOPE: &str = ":main";
@@ -3352,6 +3505,162 @@ mod api_contract_tests {
         validate_http_api_contract_profile(&work.subject, &work.request, &work.checked).unwrap();
         let (_, obligation) = http_api_contract_preparation(&work).unwrap();
         work.obligations.push(obligation);
+        work
+    }
+
+    pub(in crate::documentation) fn endpoint_context_fixture() -> Work {
+        let mut work = api_fixture(
+            DESCRIPTOR,
+            &["class:orders.Request", "class:orders.Response"],
+            64,
+        );
+        work.request.context_profile = Some(super::super::endpoint_context::PROFILE.into());
+        let endpoint_source = "class Controller { Response handle(Request request) { return service.process(request); } }";
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap();
+        source.text = endpoint_source.into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = source.text.lines().count().max(1) as u64;
+
+        let service_source = concat!(
+            "class Service {\n",
+            "  Response process(Request request) {\n",
+            "    String ignored = \"fakeHelper()\"; // commentHelper()\n",
+            "    try {\n",
+            "      this.notifyEvent(request, Response.class);\n",
+            "      overloaded(DEFAULT_CODE);\n",
+            "      return createResponse(DEFAULT_CODE);\n",
+            "    } catch (Exception failure) { return null; }\n",
+            "  }\n",
+            "  void notifyEvent(Request request, Class<?> responseType) {}\n",
+            "  Response createResponse(String code) { return null; }\n",
+            "  void fakeHelper() {}\n",
+            "  void overloaded(String value) {}\n",
+            "  void overloaded(int value) {}\n",
+            "  static final String DEFAULT_CODE = \"default\";\n",
+            "}\n"
+        );
+        add_source(&mut work, "service-source", "orders", service_source.into());
+
+        let service_method =
+            "method:class:orders.Service#process(Lorders/Request;)Lorders/Response;";
+        let method_facts = [
+            (
+                service_method,
+                "process",
+                "(Lorders/Request;)Lorders/Response;",
+            ),
+            (
+                "method:class:orders.Service#notifyEvent(Lorders/Request;Ljava/lang/Class;)V",
+                "notifyEvent",
+                "(Lorders/Request;Ljava/lang/Class;)V",
+            ),
+            (
+                "method:class:orders.Service#createResponse(Ljava/lang/String;)Lorders/Response;",
+                "createResponse",
+                "(Ljava/lang/String;)Lorders/Response;",
+            ),
+            (
+                "method:class:orders.Service#fakeHelper()V",
+                "fakeHelper",
+                "()V",
+            ),
+            (
+                "method:class:orders.Service#overloaded(Ljava/lang/String;)V",
+                "overloaded",
+                "(Ljava/lang/String;)V",
+            ),
+            (
+                "method:class:orders.Service#overloaded(I)V",
+                "overloaded",
+                "(I)V",
+            ),
+        ];
+        for (index, (identity, name, descriptor)) in method_facts.iter().enumerate() {
+            add_observation(
+                &mut work,
+                &format!("service-method-{index}"),
+                "orders",
+                "SYMBOL",
+                identity,
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"METHOD",
+                    "symbolIdentity":identity,
+                    "ownerIdentity":"class:orders.Service",
+                    "name":name,
+                    "scope":SCOPE,
+                    "jvmDescriptor":descriptor,
+                }),
+                vec!["service-source".into()],
+            );
+        }
+        let endpoint_identity = work.checked.services["orders"].entrypoints[0]
+            .symbol
+            .clone();
+        add_observation(
+            &mut work,
+            "flow-endpoint-service",
+            "orders",
+            "FLOW",
+            &endpoint_identity,
+            json!({"kind":"CALL","target":service_method,"scope":SCOPE}),
+            vec!["endpoint-source".into()],
+        );
+
+        for (id, owner, name, descriptor, tokens, source_id) in [
+            (
+                "request-name-field",
+                "class:orders.Request",
+                "name",
+                "Ljava/lang/String;",
+                json!(["String", "name"]),
+                "source-dto-2",
+            ),
+            (
+                "response-status-field",
+                "class:orders.Response",
+                "status",
+                "I",
+                json!(["int", "status"]),
+                "source-dto-3",
+            ),
+            (
+                "default-code-field",
+                "class:orders.Service",
+                "DEFAULT_CODE",
+                "Ljava/lang/String;",
+                json!(["static", "final", "String", "DEFAULT_CODE", "=", "default"]),
+                "service-source",
+            ),
+        ] {
+            add_observation(
+                &mut work,
+                id,
+                "orders",
+                "SYMBOL",
+                &format!("field:{owner}#{name}:{descriptor}"),
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"FIELD",
+                    "symbolIdentity":format!("field:{owner}#{name}:{descriptor}"),
+                    "ownerIdentity":owner,
+                    "name":name,
+                    "scope":SCOPE,
+                    "typeDescriptor":descriptor,
+                    "modifiers":if id == "default-code-field" { json!(["STATIC","FINAL"]) } else { json!([]) },
+                    "annotations":[{"name":"Column","values":{"nullable":false}}],
+                    "sourceTokens":tokens,
+                }),
+                vec![source_id.into()],
+            );
+        }
         work
     }
 
@@ -3687,6 +3996,307 @@ mod api_contract_tests {
         assert!(
             !direct_dependency_symbols(&rows(&unrelated, &Selection::default()).unwrap())
                 .contains("class:orders.Request")
+        );
+    }
+
+    #[test]
+    fn endpoint_context_selects_legacy_helpers_constants_and_direct_fields_once() {
+        let work = endpoint_context_fixture();
+        let rows = rows(&work, &Selection::default()).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let graph = &packet["record"]["callGraph"];
+        let candidates = graph["sourceReferenceCandidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .all(|edge| edge["authority"] == "SOURCE_REFERENCE_CANDIDATE")
+        );
+        assert!(candidates.iter().all(|edge| {
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["id"] == edge["fromNode"] && node["bodyReference"].is_string())
+        }));
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 4);
+        assert!(
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|node| { node["symbolIdentity"].is_string() && node["scope"] == SCOPE })
+        );
+        assert!(
+            graph["providerEdgeFactReferences"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(
+            rows.iter()
+                .any(|row| { row["kind"] == "ENTRYPOINT" && row["id"] == "entry-http" })
+        );
+
+        let dependencies: Vec<_> = rows
+            .iter()
+            .filter(|row| row["kind"] == "DEPENDENCY")
+            .collect();
+        let first_field = rows
+            .iter()
+            .position(|row| {
+                row["kind"] == "DEPENDENCY"
+                    && row["record"]["normalized"]["declarationKind"] == "FIELD"
+            })
+            .unwrap();
+        let first_source = rows.iter().position(|row| row["kind"] == "SOURCE").unwrap();
+        let first_graph_fact = rows
+            .iter()
+            .position(|row| {
+                row["kind"] == "DEPENDENCY"
+                    && matches!(
+                        row["record"]["kind"].as_str(),
+                        Some("FLOW" | "CALL_RELATION")
+                    )
+            })
+            .unwrap();
+        assert!(first_field < first_source && first_source < first_graph_fact);
+        for field_id in [
+            "request-name-field",
+            "response-status-field",
+            "default-code-field",
+        ] {
+            assert_eq!(
+                dependencies
+                    .iter()
+                    .filter(|row| row["id"] == field_id)
+                    .count(),
+                1
+            );
+            let field = dependencies
+                .iter()
+                .find(|row| row["id"] == field_id)
+                .unwrap();
+            assert!(field["record"]["normalized"]["typeDescriptor"].is_string());
+            assert!(field["record"]["normalized"]["annotations"].is_array());
+            assert!(field["record"]["normalized"]["sourceTokens"].is_array());
+        }
+        let source_ids: BTreeSet<_> = rows
+            .iter()
+            .filter(|row| row["kind"] == "SOURCE")
+            .filter_map(|row| row["id"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            source_ids,
+            BTreeSet::from(["endpoint-source".into(), "service-source".into()])
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["kind"] == "SOURCE")
+                .filter(|row| row["id"] == "service-source")
+                .count(),
+            1
+        );
+        assert!(!rows.iter().any(|row| {
+            row["kind"] == "SOURCE"
+                && matches!(row["id"].as_str(), Some("source-dto-2" | "source-dto-3"))
+        }));
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "STRUCTURAL_DATAFLOW_NOT_AVAILABLE")
+        );
+        assert!(
+            !packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "SOURCE_NESTED_EXECUTABLE_CONTEXT_AMBIGUOUS")
+        );
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "SOURCE_REFERENCE_AMBIGUOUS_OVERLOAD")
+        );
+
+        assert!(bytes(packet).unwrap().len() <= 48 * 1024);
+    }
+
+    #[test]
+    fn endpoint_context_prefers_captured_static_final_fields_at_owner_field_limit() {
+        let mut work = endpoint_context_fixture();
+        let names: Vec<_> = (0..9).map(|index| format!("injected{index:02}")).collect();
+        let references = names
+            .iter()
+            .map(|name| format!("      this.{name} = null;\n"))
+            .collect::<String>();
+        let declarations = names
+            .iter()
+            .map(|name| format!("  private String {name};\n"))
+            .collect::<String>();
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("service-source")
+            .unwrap();
+        source.text = source
+            .text
+            .replace("    try {\n", &format!("    try {{\n{references}"));
+        let class_end = source.text.rfind('}').unwrap();
+        source.text.insert_str(class_end, &declarations);
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+
+        for name in &names {
+            let id = format!("aaa-owner-di-field-{name}");
+            let symbol = format!("field:class:orders.Service#{name}:Ljava/lang/String;");
+            add_observation(
+                &mut work,
+                &id,
+                "orders",
+                "SYMBOL",
+                &symbol,
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"FIELD",
+                    "symbolIdentity":symbol,
+                    "ownerIdentity":"class:orders.Service",
+                    "name":name,
+                    "scope":SCOPE,
+                    "typeDescriptor":"Ljava/lang/String;",
+                    "modifiers":["PRIVATE"],
+                    "annotations":[{"name":"Inject","values":{}}],
+                    "sourceTokens":["private","String",name]
+                }),
+                vec!["service-source".into()],
+            );
+        }
+
+        let rows = rows(&work, &Selection::default()).unwrap();
+        let selected: BTreeSet<_> = rows
+            .iter()
+            .filter(|row| {
+                row["kind"] == "DEPENDENCY"
+                    && row["record"]["normalized"]["declarationKind"] == "FIELD"
+                    && row["record"]["normalized"]["ownerIdentity"] == "class:orders.Service"
+            })
+            .filter_map(|row| row["id"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(selected.len(), 8);
+        assert!(selected.contains("default-code-field"));
+        assert!(selected.contains("aaa-owner-di-field-injected00"));
+        assert!(selected.contains("aaa-owner-di-field-injected06"));
+        assert!(!selected.contains("aaa-owner-di-field-injected07"));
+        assert!(!selected.contains("aaa-owner-di-field-injected08"));
+    }
+
+    #[test]
+    fn endpoint_context_v1_saved_work_is_rejected_before_reading() {
+        let mut work = endpoint_context_fixture();
+        work.request.context_profile = Some("endpoint-context-v1".into());
+        let error = validate_context_profile(&work.subject, &work.request).unwrap_err();
+        assert!(error.message.contains("CONTEXT_PROFILE_UNSUPPORTED"));
+        assert!(error.message.contains("prepare fresh Work"));
+        assert!(error.message.contains("endpoint-context-v3"));
+    }
+
+    #[test]
+    fn endpoint_context_v2_saved_work_is_rejected_but_other_profiles_remain_readable() {
+        let mut work = endpoint_context_fixture();
+        work.request.context_profile = Some("endpoint-context-v2".into());
+        let error = validate_context_profile(&work.subject, &work.request).unwrap_err();
+        assert!(error.message.contains("CONTEXT_PROFILE_UNSUPPORTED"));
+        assert!(error.message.contains("prepare fresh Work"));
+        assert!(error.message.contains("endpoint-context-v3"));
+
+        work.request.context_profile = Some("declarations-v1".into());
+        work.request.entrypoint = Some("section-entities".into());
+        assert!(validate_context_profile(&work.subject, &work.request).is_ok());
+    }
+
+    #[test]
+    fn endpoint_context_exact_call_relation_is_a_fact_reference_and_not_a_receipt_alias() {
+        let mut work = endpoint_context_fixture();
+        let (source_digest, evidence_digest) = {
+            let source = &work.checked.services["orders"].sources["service-source"];
+            (source.text_digest.clone(), source.evidence_digest.clone())
+        };
+        let caller = "method:class:orders.Service#process(Lorders/Request;)Lorders/Response;";
+        let target =
+            "method:class:orders.Service#createResponse(Ljava/lang/String;)Lorders/Response;";
+        add_observation(
+            &mut work,
+            "relation-create-response",
+            "orders",
+            "CALL_RELATION",
+            caller,
+            json!({
+                "scope":SCOPE,
+                "sourceIdentity":caller,
+                "targetIdentity":target,
+                "relationKind":"CALLS",
+                "resolution":"COMPILER_EXACT",
+                "callSite":{
+                    "sourceId":"service-source",
+                    "sourceStatus":"SOURCE_RETAINED",
+                    "sourceDigest":source_digest,
+                    "evidenceDigest":evidence_digest
+                }
+            }),
+            vec!["service-source".into()],
+        );
+        let exact_reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| {
+                handle.kind == "DEPENDENCY" && handle.id == "relation-create-response"
+            })
+            .map(|(reference, _)| reference.clone())
+            .unwrap();
+        let packet_rows = rows(&work, &Selection::default()).unwrap();
+        let packet = packet_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["providerEdgeFactReferences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reference| reference == &exact_reference)
+        );
+        assert!(
+            packet_rows.iter().any(|row| {
+                row["kind"] == "DEPENDENCY" && row["id"] == "relation-create-response"
+            })
+        );
+
+        work.request.max_items = 2;
+        seal_work_identity(&mut work);
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Endpoint context receipt boundary").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let page = read_loaded(&repo, &work, Selection::default()).unwrap();
+        assert!(!page["items"].as_array().unwrap().iter().any(|item| {
+            item["kind"] == "DEPENDENCY" && item["id"] == "relation-create-response"
+        }));
+        let state = read_state(&repo, &work.id).unwrap();
+        let receipt = state.receipts.values().next().unwrap();
+        assert!(
+            !receipt
+                .supplied
+                .iter()
+                .any(|reference| reference == &exact_reference)
         );
     }
 

@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/reader-packet.schema.json",
+  "title": "Compact documentation reader packet and verification audit",
+  "oneOf": [
+    { "$ref": "#/$defs/packet" },
+    { "$ref": "#/$defs/audit" }
+  ],
+  "$defs": {
+    "label": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+    },
+    "evidence": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/label" }
+    },
+    "citationMap": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]{0,31}$": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": { "type": ["string", "null"] },
+        "trigger": { "type": ["object", "null"] },
+        "boundaries": { "type": "array" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["symbol", "trigger", "boundaries", "evidence"]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "typeDescriptor": {},
+        "modifiers": { "type": "array" },
+        "annotations": { "type": "array" },
+        "sourceTokens": { "type": "array" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["name", "typeDescriptor", "modifiers", "annotations", "sourceTokens", "evidence"]
+    },
+    "typeGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity": { "type": "string" },
+        "directions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["INPUT", "OUTPUT"] }
+        },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/field" } },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["identity", "directions", "fields", "evidence"]
+    },
+    "callNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "identity": { "type": "string" },
+        "scope": { "type": "string" },
+        "source": { "type": ["string", "null"] },
+        "bodyId": { "type": ["string", "null"] },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["id", "identity", "scope", "source", "bodyId", "evidence"]
+    },
+    "callEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string" },
+        "toNode": { "type": ["string", "null"] },
+        "targetIdentity": { "type": ["string", "null"] },
+        "kind": { "type": "string" },
+        "scope": { "type": ["string", "null"] },
+        "authority": {
+          "enum": [
+            "RETAINED_FLOW_TARGET",
+            "COMPILER_EXACT_CALL_RELATION",
+            "UNVERIFIED_PROVIDER_RELATION",
+            "SOURCE_REFERENCE_CANDIDATE"
+          ]
+        },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["from", "toNode", "targetIdentity", "kind", "scope", "authority", "evidence"],
+      "anyOf": [
+        { "properties": { "toNode": { "type": "string" } } },
+        { "properties": { "targetIdentity": { "type": "string" } } }
+      ]
+    },
+    "callMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authority": { "const": "RETAINED_TARGET_RELATIONS" },
+        "order": { "const": "NOT_EXECUTION_ORDER" },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/callNode" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/callEdge" } }
+      },
+      "required": ["authority", "order", "nodes", "edges"]
+    },
+    "methodSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reference": { "$ref": "#/$defs/label" },
+        "sourceAuthority": { "type": "string" },
+        "text": { "type": "string" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["reference", "sourceAuthority", "text", "evidence"]
+    },
+    "methodBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "nodes": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "source": { "$ref": "#/$defs/label" },
+        "startByte": { "type": "integer", "minimum": 0 },
+        "endByte": { "type": "integer", "minimum": 0 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["id", "nodes", "source", "startByte", "endByte", "evidence"]
+    },
+    "constant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ownerIdentity": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "scope": { "type": ["string", "null"] },
+        "typeDescriptor": {},
+        "modifiers": { "type": "array" },
+        "annotations": { "type": "array" },
+        "sourceTokens": { "type": "array" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["ownerIdentity", "name", "scope", "typeDescriptor", "modifiers", "annotations", "sourceTokens", "evidence"]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "coverage": { "type": ["string", "object", "array"] },
+        "runtimeMode": { "type": "string" },
+        "boundaries": { "type": "array" },
+        "callAuthority": { "type": "string" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["coverage", "runtimeMode", "boundaries", "callAuthority", "evidence"]
+    },
+    "limitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "count": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["code", "count"]
+    },
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "codeclew-documentation-reader-packet/1.0" },
+        "profile": { "const": "endpoint-context-v3" },
+        "authority": { "const": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED" },
+        "audience": { "type": "string", "minLength": 1 },
+        "documentationLanguage": { "enum": ["en", "ru"] },
+        "notice": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "endpoint": { "$ref": "#/$defs/endpoint" },
+        "types": { "type": "array", "items": { "$ref": "#/$defs/typeGroup" } },
+        "callMap": { "$ref": "#/$defs/callMap" },
+        "methodSources": { "type": "array", "items": { "$ref": "#/$defs/methodSource" } },
+        "methodBodies": { "type": "array", "items": { "$ref": "#/$defs/methodBody" } },
+        "constants": { "type": "array", "items": { "$ref": "#/$defs/constant" } },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "limitations": { "type": "array", "items": { "$ref": "#/$defs/limitation" } },
+        "interpretationLimits": { "type": "array", "items": { "type": "string" } },
+        "runtimeAndSerialization": { "const": "UNKNOWN_FROM_THIS_PACKET" },
+        "citations": { "$ref": "#/$defs/citationMap" },
+        "packetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "required": [
+        "schema", "profile", "authority", "audience", "documentationLanguage", "notice", "title", "summary",
+        "endpoint", "types", "callMap", "methodSources", "methodBodies", "constants", "coverage", "limitations",
+        "interpretationLimits", "runtimeAndSerialization", "citations", "packetDigest"
+      ]
+    },
+    "auditRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": { "$ref": "#/$defs/label" },
+        "kind": { "type": "string" },
+        "id": { "type": "string" },
+        "workReference": { "type": ["string", "null"] },
+        "recordDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "deliveredToAuthor": { "const": false },
+        "row": { "type": "object" }
+      },
+      "required": ["label", "kind", "id", "workReference", "recordDigest", "deliveredToAuthor", "row"]
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "codeclew-documentation-reader-packet-audit/1.0" },
+        "purpose": { "const": "VERIFICATION_ONLY_NOT_DELIVERED_TO_AUTHOR" },
+        "workId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "snapshot": { "type": ["string", "null"] },
+        "profile": { "const": "endpoint-context-v3" },
+        "contextDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "inputDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "packetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "selectedRowsDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "bindingDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "auditDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "records": { "type": "array", "items": { "$ref": "#/$defs/auditRecord" } }
+      },
+      "required": [
+        "schema", "purpose", "workId", "snapshot", "profile", "contextDigest", "inputDigest", "packetDigest",
+        "selectedRowsDigest", "bindingDigest", "auditDigest", "records"
+      ]
+    }
+  }
+}

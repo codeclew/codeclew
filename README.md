@@ -282,6 +282,10 @@ Version 0.11.2 adds retained process-flow trees and evidence-bound declarative
 state diagrams, snapshot-only recomposition of state declarations, and explicit
 working-render versus release-history behavior. See the
 [v0.11.2 release notes](docs/releases/v0.11.2.md).
+Version 0.12.1 adds an experimental endpoint-context-v3 reader packet and an
+offline draft renderer for one external structured answer; it does not replace
+the ordinary authoring or publication flow. See the
+[v0.12.1 public-pilot notes](docs/releases/v0.12.1.md).
 
 ## Source-build requirements
 

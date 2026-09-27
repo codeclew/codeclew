@@ -420,6 +420,56 @@ profile version; existing Work must not be reinterpreted under new rules. Full
 influence and currentness checks remain unchanged, including deferred facts;
 this changes transmission, not snapshot hydration or invalidation scope.
 
+For one captured Java HTTP endpoint, Work accepts
+`"contextProfile": "endpoint-context-v3"`. The profile supplies the retained
+endpoint route, direct request/response FIELD facts, bounded reachable method
+sources, and complete retained FLOW or CALL_RELATION facts. A descendant call
+target enters the 12-method budget only after its retained source is available
+and its method body parses. Missing or unparseable bodies remain explicit gaps
+and do not consume that descendant budget.
+Legacy same-owner helper and constant discovery is marked
+`SOURCE_REFERENCE_CANDIDATE`; it is lexical evidence and does not establish
+compiler resolution. Method bodies and field token facts share a 48 KiB
+selection budget. DTO class source is not included. The initial page places
+FIELD facts and selected SOURCE rows before FLOW and CALL_RELATION facts. The
+packet groups references to those facts and reports unavailable, ambiguous, or
+truncated paths as gaps. Captured `STATIC` + `FINAL` fields are preferred when
+the referenced-owner-field limit applies.
+
+An explicit `this::method` is a lexical `METHOD_REFERENCE` candidate; it records
+a callable reference and does not establish invocation at that source position.
+
+`clew docs work packet --root docs --work WORK_ID` projects the saved rows into a
+compact author packet. Each retained source is included once, and method nodes
+point into that source; the packet keeps scopes, coverage, candidate authority,
+and every recorded limitation code. It states that runtime and serialization
+effects remain unknown. This projection does not create a Work read receipt or
+an accepted narrative. Add `--audit-output packet-audit.json` to write a
+separate verification file with full selected rows, Work handles and digests;
+those audit-only rows are not described as delivered to the author.
+
+To render a structured answer conforming to
+`codeclew-operation-answer/1.0`, run
+`clew docs work explain --root docs --work WORK_ID --input answer.json --output-dir .codeclew/drafts/WORK_ID`.
+The command rebuilds the packet from that saved Work, checks the packet digest
+and evidence labels, then atomically replaces each of `answer.json`,
+`operation.md`, `index.html` and the packet/audit reference files individually.
+The output directory is not replaced as one transaction. If a command fails
+between file replacements, rerun it with the same saved Work and answer to
+finish the draft; this performs no index capture. The result remains a local
+`DRAFT` / `UNREVIEWED`; it does not publish or create a release version.
+
+The endpoint selector changed in v3, so saved `endpoint-context-v1` and
+`endpoint-context-v2` Work fail closed and must be prepared again from their
+retained snapshot; source acquisition is not repeated.
+
+The endpoint profile does not infer value propagation or execution order from
+call edges. It does not establish wire requiredness, null omission, inherited
+field completeness, generic payload types, or annotation activation. Read and
+expand the referenced Work items before citing them; a navigation reference in
+the packet does not count as a read receipt for its target. The profile is part
+of immutable Work identity, and selecting it never acquires fresh source.
+
 Run attempts expose optional `requestBytes`, the complete canonical dispatched
 job-envelope size. This covers author, expansion follow-ups, repairs and
 reviewer requests. It is not provider token usage or monetary cost. Older
