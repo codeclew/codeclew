@@ -240,11 +240,12 @@
         },
         "contextProfile": {
           "type": "string",
-          "description": "Compact section orientation (the default for a scoped service section), bounded entity declarations, or source-sharing context for a saved process overview. Subject compatibility is validated by the host.",
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, or source-sharing context for a saved process overview. Subject compatibility is validated by the host.",
           "enum": [
             "declarations-v1",
             "process-v1",
-            "section-orientation-v1"
+            "section-orientation-v1",
+            "section-entities-orientation-v1"
           ]
         },
         "maxItems": {
@@ -282,6 +283,7 @@
     },
     "selection": {
       "type": "object",
+      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, not a page-row kind such as SOURCE or DEPENDENCY. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. For example, {\"kind\":\"SYMBOL\",\"symbolContains\":\"helper\"} searches captured names for helper. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -307,11 +309,13 @@
                 "kind": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 100
+                  "maxLength": 100,
+                  "description": "Matches a dependency record's Observation.kind, not the page-row kind. Use * for every dependency kind."
                 },
                 "symbolContains": {
                   "type": "string",
-                  "maxLength": 512
+                  "maxLength": 512,
+                  "description": "Case-sensitive substring of captured symbol or method names; empty matches every name within the selected kind."
                 }
               },
               "required": [
@@ -358,9 +362,10 @@
           "enum": [
             "declarations-v1",
             "process-v1",
-            "section-orientation-v1"
+            "section-orientation-v1",
+            "section-entities-orientation-v1"
           ],
-          "description": "Compact section orientation (the default for a scoped service section), bounded entity declarations, or source-sharing context for a saved process overview. Subject compatibility is validated by the host."
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, or source-sharing context for a saved process overview. Subject compatibility is validated by the host."
         },
         "subjectReference": {
           "type": "object",

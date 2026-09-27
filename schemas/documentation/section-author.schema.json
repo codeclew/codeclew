@@ -97,7 +97,7 @@
     },
     "selection": {
       "type": "object",
-      "description": "Leave the selection empty for the default context. Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. Keep the same selection when continuing a page with its cursor.",
+      "description": "Leave the selection empty for the default context. Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. Keep the same selection when continuing a page with its cursor. Query kind matches a dependency record's Observation.kind, not a page-row kind such as SOURCE or DEPENDENCY. Use SYMBOL to search captured symbol and method names; symbolContains is a case-sensitive substring. Use * to match every dependency kind. For example, {\"kind\":\"SYMBOL\",\"symbolContains\":\"helper\"} finds SYMBOL records whose captured name contains helper. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing them unless those contents are already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -124,11 +124,13 @@
             "kind": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 100
+              "maxLength": 100,
+              "description": "Matches a dependency record's Observation.kind, not the page-row kind. Use * for every dependency kind; availableKinds is supplied in selectionGuidance."
             },
             "symbolContains": {
               "type": "string",
-              "maxLength": 512
+              "maxLength": 512,
+              "description": "Case-sensitive substring of captured symbol or method names; empty matches every name within the selected kind."
             }
           },
           "required": [

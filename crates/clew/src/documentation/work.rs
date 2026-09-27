@@ -215,6 +215,7 @@ pub struct Work {
 }
 
 const SECTION_ORIENTATION_PROFILE: &str = "section-orientation-v1";
+const SECTION_ENTITIES_ORIENTATION_PROFILE: &str = "section-entities-orientation-v1";
 const WORK_SCHEMA: &str = "codeclew-documentation-work/1.0";
 const WORK_MANIFEST_SCHEMA: &str = "codeclew-documentation-work-manifest/1.0";
 
@@ -412,24 +413,53 @@ fn normalize_section_profile(subject: &str, request: &mut Request) {
             .as_deref()
             .is_some_and(super::sections::contains)
     {
-        request.context_profile = Some(SECTION_ORIENTATION_PROFILE.into());
+        request.context_profile = Some(
+            if request.entrypoint.as_deref() == Some("section-entities") {
+                SECTION_ENTITIES_ORIENTATION_PROFILE
+            } else {
+                SECTION_ORIENTATION_PROFILE
+            }
+            .into(),
+        );
     }
 }
 
 fn validate_context_profile(subject: &str, request: &Request) -> Result<(), ClewError> {
     match request.context_profile.as_deref() {
+        None if subject.starts_with("service:")
+            && request.entrypoint.as_deref() == Some("section-entities") =>
+        {
+            Err(invalid(
+                "CONTEXT_PROFILE_INCOMPATIBLE: legacy section-entities Work must be prepared again from its retained snapshot; reindexing is not required",
+            ))
+        }
         None => Ok(()),
         Some(SECTION_ORIENTATION_PROFILE)
+            if request.entrypoint.as_deref() == Some("section-entities") =>
+        {
+            Err(invalid(
+                "CONTEXT_PROFILE_INCOMPATIBLE: section-entities projection changed; prepare a fresh Work from its retained snapshot, without reindexing",
+            ))
+        }
+        Some(SECTION_ORIENTATION_PROFILE)
             if subject.starts_with("service:")
-                && request
-                    .entrypoint
-                    .as_deref()
-                    .is_some_and(super::sections::contains) =>
+                && request.entrypoint.as_deref().is_some_and(|section| {
+                    super::sections::contains(section) && section != "section-entities"
+                }) =>
         {
             Ok(())
         }
         Some(SECTION_ORIENTATION_PROFILE) => Err(invalid(
-            "CONTEXT_PROFILE_INCOMPATIBLE: section-orientation-v1 requires one service section",
+            "CONTEXT_PROFILE_INCOMPATIBLE: section-orientation-v1 requires a non-entity service section",
+        )),
+        Some(SECTION_ENTITIES_ORIENTATION_PROFILE)
+            if subject.starts_with("service:")
+                && request.entrypoint.as_deref() == Some("section-entities") =>
+        {
+            Ok(())
+        }
+        Some(SECTION_ENTITIES_ORIENTATION_PROFILE) => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: section-entities-orientation-v1 requires a service section-entities request",
         )),
         Some("process-v1")
             if subject.starts_with("scenario:")
@@ -858,7 +888,37 @@ fn compact_section_rows(
     rows.push(
         json!({"kind":"BOUNDARY_INVENTORY","id":format!("inventory:{service}"),"record":inventory}),
     );
+    let entity_orientation = section == "section-entities"
+        && work.request.context_profile.as_deref() == Some(SECTION_ENTITIES_ORIENTATION_PROFILE);
+    let entity_related_to_service = |dependency: &Observation| {
+        dependency.kind == "DOMAIN_ENTITY"
+            && dependency.normalized["entity"]["relations"]
+                .as_array()
+                .is_some_and(|relations| {
+                    relations
+                        .iter()
+                        .any(|relation| relation["service"] == service)
+                })
+    };
     let mut seeds = Vec::new();
+    if entity_orientation {
+        seeds.extend(
+            work.checked
+                .dependencies
+                .values()
+                .filter(|dependency| {
+                    dependency.kind == "ENTITY_SCOPE" && dependency.service == service
+                })
+                .map(|dependency| (&dependency.id, "selected-service-entity-scope")),
+        );
+        seeds.extend(
+            work.checked
+                .dependencies
+                .values()
+                .filter(|dependency| entity_related_to_service(dependency))
+                .map(|dependency| (&dependency.id, "service-related-domain-entity")),
+        );
+    }
     if let Some(operation) = work.retained.as_ref().and_then(|n| {
         n.operations
             .iter()
@@ -906,7 +966,12 @@ fn compact_section_rows(
         }
     }
     let in_scope = |d: &&Observation| {
-        (d.service == service || d.kind == "DOMAIN_ENTITY") && work.influence.contains_key(&d.id)
+        let selected = if entity_orientation {
+            d.service == service || (d.kind == "DOMAIN_ENTITY" && entity_related_to_service(d))
+        } else {
+            d.service == service || d.kind == "DOMAIN_ENTITY"
+        };
+        selected && work.influence.contains_key(&d.id)
     };
     let mut counts = BTreeMap::<&str, usize>::new();
     for dependency in work.checked.dependencies.values().filter(in_scope) {
@@ -914,9 +979,12 @@ fn compact_section_rows(
     }
     let total: usize = counts.values().sum();
     let mut supplied = BTreeSet::new();
+    let mut navigation_only = BTreeSet::new();
+    let mut preview_items = 0usize;
     let mut preview_bytes = 0usize;
+    let entity_reverse = entity_orientation.then(|| reverse_handles(work));
     for (id, reason) in seeds {
-        if supplied.len() == PREVIEW_ITEMS || supplied.contains(id) {
+        if preview_items == PREVIEW_ITEMS || supplied.contains(id) || navigation_only.contains(id) {
             continue;
         }
         let Some(dependency) = work.checked.dependencies.get(id).filter(in_scope) else {
@@ -924,22 +992,86 @@ fn compact_section_rows(
         };
         let record =
             json!({"kind":"DEPENDENCY","id":id,"record":dependency,"selectionReason":reason});
-        let size = bytes(&record)?.len();
+        let size = if let Some(reverse) = &entity_reverse {
+            bytes(&annotate_rows_with_reverse(work, vec![record.clone()], reverse)?[0])?.len()
+        } else {
+            bytes(&record)?.len()
+        };
         if size > PREVIEW_BYTES.saturating_sub(preview_bytes) {
+            if entity_orientation
+                && matches!(dependency.kind.as_str(), "ENTITY_SCOPE" | "DOMAIN_ENTITY")
+            {
+                let navigation = json!({
+                    "kind":"ENTITY_NAVIGATION",
+                    "id":format!("entity-navigation:{id}"),
+                    "selectionReason":reason,
+                    "record":{
+                        "kind":dependency.kind,
+                        "dependencyKind":dependency.kind,
+                        "symbol":dependency.symbol,
+                        "limitation":"The full declaration is deferred by the bounded initial preview; expand dependencyReferences before relying on its contents.",
+                        "normalized":{"dependencyIds":[id]}
+                    }
+                });
+                let navigation_size = if let Some(reverse) = &entity_reverse {
+                    bytes(&annotate_rows_with_reverse(work, vec![navigation.clone()], reverse)?[0])?
+                        .len()
+                } else {
+                    bytes(&navigation)?.len()
+                };
+                if navigation_size <= PREVIEW_BYTES.saturating_sub(preview_bytes) {
+                    preview_bytes += navigation_size;
+                    preview_items += 1;
+                    navigation_only.insert(id.clone());
+                    rows.push(navigation);
+                }
+            }
             continue;
         }
         preview_bytes += size;
+        preview_items += 1;
         supplied.insert(id.clone());
         rows.push(record);
     }
-    rows.push(json!({"kind":"EVIDENCE_DISCOVERY","id":format!("evidence-index:{service}"),"record":{
+    let selection_text = if entity_orientation {
+        "Scoped ENTITY_SCOPE and service-related DOMAIN_ENTITY records, then retained selected-section dependencies and discovered entrypoint declarations. No arbitrary symbol sampling."
+    } else {
+        "Retained selected-section dependencies, then discovered entrypoint declarations. No arbitrary symbol sampling."
+    };
+    let mut discovery = json!({
         "section":section,"availableDependencyCount":total,"countsByKind":counts,
         "suppliedDependencyCount":supplied.len(),"deferredDependencyCount":total.saturating_sub(supplied.len()),
         "previewLimits":{"maxItems":PREVIEW_ITEMS,"maxBytes":PREVIEW_BYTES},
-        "selection":"Retained selected-section dependencies, then discovered entrypoint declarations. No arbitrary symbol sampling.",
+        "selection":selection_text,
         "nextRead":"Use sourceReferences/dependencyReferences with work expand, or a query with kind and symbolContains. Deferred facts are not absent or unsupported; read them before citing them.",
         "influenceCoverage":"Full captured Work influence is unchanged by this context preview."
-    }}));
+    });
+    if entity_orientation {
+        discovery["navigationOnlyCount"] = json!(navigation_only.len());
+        let entity_scope_references: Vec<_> = work
+            .checked
+            .dependencies
+            .values()
+            .filter(|dependency| dependency.kind == "ENTITY_SCOPE" && dependency.service == service)
+            .filter(|scope| work.influence.contains_key(&scope.id))
+            .filter_map(|scope| {
+                work.handles
+                    .iter()
+                    .find(|(_, handle)| handle.kind == "DEPENDENCY" && handle.id == scope.id)
+                    .map(|(reference, _)| reference.clone())
+            })
+            .collect();
+        discovery["entityNavigation"] = json!({
+            "scopeReferences":entity_scope_references,
+            "deferredEntityQuery":{"query":{"kind":"DOMAIN_ENTITY","symbolContains":""}},
+            "limitations":[
+                "DOMAIN_ENTITY records preserve declared provenance but do not establish lifecycle, ownership, activation or runtime behavior.",
+                "Underlying source and dependency references are navigation; expand and record their contents before citing them.",
+                "A declaration larger than the Work page byte cap remains subject to the existing item budget and is reported as omitted by the page reader."
+            ]
+        });
+    }
+    rows.push(json!({"kind":"EVIDENCE_DISCOVERY","id":format!("evidence-index:{service}"),"record":discovery}));
     Ok(rows)
 }
 
@@ -1167,7 +1299,23 @@ fn process_root_row(work: &Work, id: &str) -> Value {
     }})
 }
 
-fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewError> {
+fn reverse_handles(work: &Work) -> BTreeMap<(&str, &str), &str> {
+    work.handles
+        .iter()
+        .map(|(key, handle)| ((handle.kind.as_str(), handle.id.as_str()), key.as_str()))
+        .collect()
+}
+
+fn annotate_rows(work: &Work, items: Vec<Value>) -> Result<Vec<Value>, ClewError> {
+    let reverse = reverse_handles(work);
+    annotate_rows_with_reverse(work, items, &reverse)
+}
+
+fn annotate_rows_with_reverse<'a>(
+    work: &Work,
+    mut items: Vec<Value>,
+    reverse: &BTreeMap<(&'a str, &'a str), &'a str>,
+) -> Result<Vec<Value>, ClewError> {
     // Dynamic view/process facts outside this work subject are not supplied
     // or admitted as implicit influence of a service-only explanation.
     items.retain(|item| {
@@ -1176,11 +1324,6 @@ fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewE
                 .as_str()
                 .is_some_and(|id| work.influence.contains_key(id))
     });
-    let reverse: BTreeMap<_, _> = work
-        .handles
-        .iter()
-        .map(|(key, h)| ((h.kind.as_str(), h.id.as_str()), key.as_str()))
-        .collect();
     for item in &mut items {
         if item["kind"] == "SECTION" {
             let accepted = item["record"]["content"]["documentationLanguage"].as_str();
@@ -1229,6 +1372,26 @@ fn annotate_rows(work: &Work, mut items: Vec<Value>) -> Result<Vec<Value>, ClewE
                     "dependencyReferences"
                 }] = json!(references);
             }
+        }
+        let entity_orientation_record = work.request.context_profile.as_deref()
+            == Some(SECTION_ENTITIES_ORIENTATION_PROFILE)
+            && matches!(
+                item["record"]["kind"].as_str(),
+                Some("DOMAIN_ENTITY" | "ENTITY_SCOPE")
+            );
+        if entity_orientation_record
+            && let Some(ids) = item["record"]["normalized"]["dependencyIds"].as_array()
+        {
+            let mut references = item["dependencyReferences"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            references.extend(ids.iter().filter_map(|id| {
+                reverse
+                    .get(&("DEPENDENCY", id.as_str()?))
+                    .map(|reference| json!(reference))
+            }));
+            item["dependencyReferences"] = json!(references);
         }
     }
     Ok(items)
@@ -1604,6 +1767,123 @@ mod section_context_tests {
         }
     }
 
+    fn entity_fixture(description_bytes: usize) -> Work {
+        let mut work = fixture(1, false);
+        work.request.entrypoint = Some("section-entities".into());
+        work.request.context_profile = None;
+        let source = super::super::model::Source {
+            id: "retained-source".into(),
+            service: "orders".into(),
+            revision: "revision-test".into(),
+            file: "src/order.rs".into(),
+            start_line: 1,
+            end_line: 2,
+            text: "fn helper() {}".into(),
+            text_digest: "text-digest".into(),
+            evidence_digest: "evidence-digest".into(),
+            authority: "CAPTURED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        work.checked.services.insert(
+            "orders".into(),
+            super::super::model::ServiceEvidence {
+                schema: "codeclew-documentation-service-evidence/1.0".into(),
+                service: "orders".into(),
+                revision: "revision-test".into(),
+                service_digest: "service-digest".into(),
+                extractor: "test".into(),
+                runtime_mode: "TEST".into(),
+                coverage: "COMPLETE".into(),
+                boundaries: Vec::new(),
+                entrypoints: Vec::new(),
+                observations: BTreeMap::new(),
+                sources: BTreeMap::from([(source.id.clone(), source)]),
+                contracts: BTreeMap::new(),
+            },
+        );
+
+        let relation = json!({
+            "service":"orders","kind":"created","origin":"human",
+            "rationale":"The service declaration assigns creation responsibility.",
+            "confidence":"declared","representations":["OrderRecord"],
+            "dependencyIds":["orders:symbol:00000"]
+        });
+        let entity = json!({
+            "schema":"codeclew-documentation-entity/1.0","id":"order","title":"Order",
+            "description":"x".repeat(description_bytes),"relations":[relation],
+            "relatedEntities":[],"limitations":["Runtime ownership is unverified."]
+        });
+        for (id, entity_json) in [
+            ("entity:order", entity),
+            (
+                "entity:billing",
+                json!({
+                    "schema":"codeclew-documentation-entity/1.0","id":"billing","title":"Billing",
+                    "description":"Unrelated declaration.",
+                    "relations":[{"service":"billing","kind":"read","origin":"agent-proposal",
+                        "rationale":"Belongs to another service.","confidence":"uncertain","representations":[],"dependencyIds":[]}],
+                    "relatedEntities":[],"limitations":[]
+                }),
+            ),
+        ] {
+            let normalized = json!({
+                "entity":entity_json,
+                "dependencyIds":if id == "entity:order" { json!( ["orders:symbol:00000"] ) } else { json!([]) },
+                "missingDependencies":[],"authority":"DECLARED_DOMAIN_ENTITY",
+                "ownership":"Human declarations and agent proposals are separate; no runtime ownership proof"
+            });
+            let observation = Observation {
+                id: id.into(),
+                kind: "DOMAIN_ENTITY".into(),
+                service: String::new(),
+                symbol: normalized["entity"]["title"].as_str().unwrap().into(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: vec!["retained-source".into()],
+            };
+            work.influence.insert(id.into(), observation.digest.clone());
+            work.checked.dependencies.insert(id.into(), observation);
+            let handle = if id == "entity:order" {
+                "d-entity"
+            } else {
+                "d-unrelated"
+            };
+            work.handles.insert(
+                handle.into(),
+                Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.into(),
+                },
+            );
+        }
+        let scope_normalized = json!({
+            "dependencyIds":["entity:order"],
+            "authority":"DECLARED_DOMAIN_ENTITY_SCOPE"
+        });
+        let scope = Observation {
+            id: "entity-scope:orders".into(),
+            kind: "ENTITY_SCOPE".into(),
+            service: "orders".into(),
+            symbol: "orders".into(),
+            digest: digest(&scope_normalized).unwrap(),
+            normalized: scope_normalized,
+            source_ids: Vec::new(),
+        };
+        work.influence
+            .insert(scope.id.clone(), scope.digest.clone());
+        work.checked.dependencies.insert(scope.id.clone(), scope);
+        work.handles.insert(
+            "d-scope".into(),
+            Handle {
+                kind: "DEPENDENCY".into(),
+                id: "entity-scope:orders".into(),
+            },
+        );
+        normalize_section_profile(&work.subject, &mut work.request);
+        work
+    }
+
     #[test]
     fn documentation_language_changes_work_identity_without_changing_evidence() {
         let mut work = fixture(1, true);
@@ -1699,6 +1979,95 @@ mod section_context_tests {
     }
 
     #[test]
+    fn dependency_query_matches_captured_method_symbols_and_wildcards_kinds() {
+        let mut work = fixture(2, false);
+        let method_id = "orders:symbol:00001";
+        let method = work.checked.dependencies.get_mut(method_id).unwrap();
+        method.symbol = "OrderService.helperMethod".into();
+        method.normalized = json!({"name":"OrderService","methods":[{"name":"helperMethod"}]});
+        method.digest = digest(&method.normalized).unwrap();
+        work.influence
+            .insert(method_id.into(), method.digest.clone());
+
+        let http_id = "orders:http:helper";
+        let http_record = Observation {
+            id: http_id.into(),
+            kind: "HTTP".into(),
+            service: "orders".into(),
+            symbol: "helper endpoint".into(),
+            digest: digest(&json!({"path":"/helper"})).unwrap(),
+            normalized: json!({"path":"/helper"}),
+            source_ids: vec!["retained-source".into()],
+        };
+        work.influence
+            .insert(http_id.into(), http_record.digest.clone());
+        work.checked
+            .dependencies
+            .insert(http_id.into(), http_record);
+
+        let matching = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "SYMBOL".into(),
+                    symbol_contains: "helper".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["id"], method_id);
+        assert_eq!(matching[0]["record"]["symbol"], "OrderService.helperMethod");
+
+        let page_row_kind_confusion = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "SOURCE".into(),
+                    symbol_contains: "helper".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(page_row_kind_confusion.is_empty());
+
+        let no_match = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "SYMBOL".into(),
+                    symbol_contains: "missing".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(no_match.is_empty());
+
+        let wildcard = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "*".into(),
+                    symbol_contains: "helper".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(wildcard.len(), 2);
+        assert_eq!(
+            wildcard
+                .iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([method_id, http_id])
+        );
+    }
+
+    #[test]
     fn section_projection_version_separates_old_and_new_immutable_work_ledgers() {
         let mut work = fixture(1, false);
         let old = StoredWork::from_runtime(&work, "capture".into());
@@ -1722,6 +2091,253 @@ mod section_context_tests {
         work.request.entrypoint = None;
         assert!(validate_context_profile(&work.subject, &work.request).is_err());
         assert!(validate_context_profile("scenario:process", &current.request).is_err());
+
+        let mut legacy_entity = entity_fixture(0);
+        legacy_entity.request.context_profile = Some(SECTION_ORIENTATION_PROFILE.into());
+        let old_entity_id =
+            digest(&StoredWork::from_runtime(&legacy_entity, "capture".into())).unwrap();
+        let error =
+            validate_context_profile(&legacy_entity.subject, &legacy_entity.request).unwrap_err();
+        assert!(error.message.contains("retained snapshot"));
+
+        legacy_entity.request.context_profile = None;
+        assert!(validate_context_profile(&legacy_entity.subject, &legacy_entity.request).is_err());
+        normalize_section_profile(&legacy_entity.subject, &mut legacy_entity.request);
+        assert_eq!(
+            legacy_entity.request.context_profile.as_deref(),
+            Some(SECTION_ENTITIES_ORIENTATION_PROFILE)
+        );
+        validate_context_profile(&legacy_entity.subject, &legacy_entity.request).unwrap();
+        assert_ne!(
+            old_entity_id,
+            digest(&StoredWork::from_runtime(&legacy_entity, "capture".into())).unwrap()
+        );
+    }
+
+    #[test]
+    fn entity_projection_keeps_scope_provenance_and_expandable_proof_handles() {
+        let work = entity_fixture(32);
+        let initial = rows(&work, &Selection::default()).unwrap();
+        let supplied: Vec<_> = initial
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row["kind"].as_str(),
+                    Some("DEPENDENCY" | "ENTITY_NAVIGATION")
+                )
+            })
+            .collect();
+        assert!(supplied.len() <= 8);
+        assert!(bytes(&initial).unwrap().len() < 8192);
+        assert!(
+            initial
+                .iter()
+                .any(|row| { row["kind"] == "DEPENDENCY" && row["id"] == "entity-scope:orders" })
+        );
+        assert!(
+            initial
+                .iter()
+                .any(|row| row["kind"] == "DEPENDENCY" && row["id"] == "entity:order")
+        );
+        assert!(!initial.iter().any(|row| row["id"] == "entity:billing"));
+
+        let scope = initial
+            .iter()
+            .find(|row| row["id"] == "entity-scope:orders")
+            .unwrap();
+        assert_eq!(scope["reference"], "d-scope");
+        assert_eq!(scope["dependencyReferences"], json!(["d-entity"]));
+        let entity = initial
+            .iter()
+            .find(|row| row["id"] == "entity:order")
+            .unwrap();
+        assert_eq!(
+            entity["record"]["normalized"]["entity"]["relations"][0]["origin"],
+            "human"
+        );
+        assert_eq!(
+            entity["record"]["normalized"]["entity"]["relations"][0]["confidence"],
+            "declared"
+        );
+        assert!(
+            entity["record"]["normalized"]["ownership"]
+                .as_str()
+                .unwrap()
+                .contains("no runtime ownership proof")
+        );
+        assert_eq!(entity["reference"], "d-entity");
+        assert_eq!(entity["dependencyReferences"], json!(["d0"]));
+        assert_eq!(entity["sourceReferences"], json!(["s1"]));
+
+        let discovery = initial
+            .iter()
+            .find(|row| row["kind"] == "EVIDENCE_DISCOVERY")
+            .unwrap();
+        assert_eq!(
+            discovery["record"]["entityNavigation"]["scopeReferences"],
+            json!(["d-scope"])
+        );
+        assert!(
+            !discovery["record"]["entityNavigation"]["limitations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let expanded_scope = rows(
+            &work,
+            &Selection {
+                references: vec!["d-scope".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        let expanded_scope = expanded_scope
+            .iter()
+            .find(|row| row["id"] == "entity-scope:orders")
+            .unwrap();
+        assert_eq!(expanded_scope["dependencyReferences"], json!(["d-entity"]));
+
+        let expanded_entity = rows(
+            &work,
+            &Selection {
+                references: vec!["d-entity".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        let expanded_entity = expanded_entity
+            .iter()
+            .find(|row| row["id"] == "entity:order")
+            .unwrap();
+        assert_eq!(expanded_entity["dependencyReferences"], json!(["d0"]));
+        assert_eq!(expanded_entity["sourceReferences"], json!(["s1"]));
+        let expanded_proof = rows(
+            &work,
+            &Selection {
+                references: vec!["d0".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            expanded_proof
+                .iter()
+                .any(|row| row["id"] == "orders:symbol:00000")
+        );
+        let expanded_source = rows(
+            &work,
+            &Selection {
+                references: vec!["s1".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert!(expanded_source.iter().any(|row| row["kind"] == "SOURCE"));
+    }
+
+    #[test]
+    fn oversized_entity_is_navigation_only_but_registered_query_expands_full_record() {
+        let work = entity_fixture(8192);
+        let initial = rows(&work, &Selection::default()).unwrap();
+        let navigation = initial
+            .iter()
+            .find(|row| row["kind"] == "ENTITY_NAVIGATION")
+            .unwrap();
+        assert!(navigation.get("reference").is_none());
+        assert_eq!(navigation["dependencyReferences"], json!(["d-entity"]));
+        assert!(navigation["record"]["normalized"]["entity"].is_null());
+        assert!(bytes(&initial).unwrap().len() < 8192);
+        assert!(
+            initial
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row["kind"].as_str(),
+                        Some("DEPENDENCY" | "ENTITY_NAVIGATION")
+                    )
+                })
+                .count()
+                <= 8
+        );
+
+        let expanded = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "DOMAIN_ENTITY".into(),
+                    symbol_contains: "Order".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(
+            expanded[0]["record"]["normalized"]["entity"]["description"]
+                .as_str()
+                .unwrap()
+                .len(),
+            8192
+        );
+        assert!(bytes(&expanded[0]).unwrap().len() > 8192);
+        assert!(bytes(&expanded).unwrap().len() < work.request.max_bytes);
+    }
+
+    #[test]
+    fn other_section_profile_keeps_entity_reference_and_cursor_projection_unchanged() {
+        let mut work = entity_fixture(32);
+        work.request.entrypoint = Some("section-responsibilities".into());
+        work.request.context_profile = Some(SECTION_ORIENTATION_PROFILE.into());
+        work.handles.insert(
+            "section-entities-ref".into(),
+            Handle {
+                kind: "SECTION".into(),
+                id: "section-entities".into(),
+            },
+        );
+        let no_cursor = rows(
+            &work,
+            &Selection {
+                references: vec!["section-entities-ref".into()],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        let with_cursor = rows(
+            &work,
+            &Selection {
+                references: vec!["section-entities-ref".into()],
+                cursor: Some("cursor-1".into()),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(no_cursor, with_cursor);
+        assert!(
+            no_cursor
+                .iter()
+                .all(|row| row["kind"] != "ENTITY_NAVIGATION")
+        );
+        let discovery = no_cursor
+            .iter()
+            .find(|row| row["kind"] == "EVIDENCE_DISCOVERY")
+            .unwrap();
+        assert!(discovery["record"].get("entityNavigation").is_none());
+
+        let entity_query = rows(
+            &work,
+            &Selection {
+                query: Some(Query {
+                    kind: "DOMAIN_ENTITY".into(),
+                    symbol_contains: "Order".into(),
+                }),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(entity_query.len(), 1);
+        assert!(entity_query[0].get("dependencyReferences").is_none());
     }
 
     #[test]
