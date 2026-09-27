@@ -429,6 +429,59 @@ fn author_saved_result_reconciles_without_redispatching_author() {
 }
 
 #[test]
+fn author_uncertainty_adaptation_replays_saved_result_without_redispatch() {
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(
+        &f,
+        json!({"mode":"ordinary-uncertainty-adapt"}),
+        json!({}),
+        None,
+    );
+    let seed = seed_call_checkpoint(
+        &f,
+        &work,
+        &config,
+        "AUTHOR",
+        "author",
+        "RESULT_SAVED",
+        false,
+    );
+    let expected_receipt = seed.original_attempts[0]["uncertaintyAdaptation"].clone();
+    assert!(expected_receipt.is_object());
+
+    let mut checkpointed_report = read(&seed.report_path);
+    let attempt = checkpointed_report["attempts"][0].as_object_mut().unwrap();
+    attempt.remove("uncertaintyAdaptation");
+    attempt.remove("adaptedProposal");
+    fs::write(
+        &seed.report_path,
+        serde_json::to_vec(&checkpointed_report).unwrap(),
+    )
+    .unwrap();
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["run"], seed.run);
+    assert_eq!(resumed["status"], "ACCEPTED", "{resumed}");
+    let report = run_report(&f, &resumed);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[0]["invocation"], seed.invocation);
+    assert_eq!(attempts[0]["status"], "COMPLETED");
+    assert_eq!(attempts[0]["uncertaintyAdaptation"], expected_receipt);
+    assert_eq!(
+        attempts[0]["adaptedProposal"],
+        seed.original_attempts[0]["adaptedProposal"]
+    );
+    assert_eq!(attempts[1]["role"], "reviewer");
+    assert_attempt_result_matches_saved(&seed, &attempts[0]);
+    assert_original_files_retained(&f, ".codeclew/job-inputs", &seed.input_snapshot);
+    assert_original_files_retained(&f, ".codeclew/job-results", &seed.result_snapshot);
+}
+
+#[test]
 fn reviewer_saved_result_reconciles_without_redispatching_reviewer() {
     let f = Fixture::new();
     f.service("orders");

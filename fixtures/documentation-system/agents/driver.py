@@ -200,6 +200,14 @@ if job["role"] == "reviewer":
             and "Fallback" not in payload["content"]["operations"][0]["summary"]["text"]
         ):
             verdict = "REJECT"
+        if mode == "ordinary-uncertainty-reject-once":
+            operation = payload["content"]["operations"][0]
+            assert "The operation's deployment is unknown." in operation["boundaries"]
+            verdict = (
+                "REJECT"
+                if not operation["summary"]["text"].startswith("The corrected")
+                else "APPROVE"
+            )
         if mode == "needs-evidence":
             verdict = "NEEDS_EVIDENCE"
         issues = [] if verdict == "APPROVE" else [{
@@ -412,7 +420,7 @@ else:
             result = {"action": "proposal", "proposal": process_proposal()}
         else:
             raise AssertionError(f"unknown process fixture mode: {mode}")
-    elif job["role"] == "author" and mode.startswith("ordinary-shape-"):
+    elif job["role"] == "author" and mode.startswith(("ordinary-shape-", "ordinary-uncertainty-adapt")):
         rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
         entry = next(item for item in rows if item["kind"] == "ENTRYPOINT")
         message_flow = next(item for item in rows if item["kind"] == "DEPENDENCY"
@@ -422,13 +430,15 @@ else:
                         and item["record"]["kind"] == "FLOW"
                         and item["record"]["normalized"]["kind"] == "RETURN")
 
-        def ordinary_proposal(corrected=False, invalid_evidence=False, forged=False):
+        def ordinary_proposal(corrected=False, invalid_evidence=False, forged=False,
+                              valid_endpoints=False, correction_marker=False):
             summary_evidence = "not-delivered" if invalid_evidence else entry["reference"]
             operation = {
                 "entrypoint": entry["reference"],
                 "title": "Reserve quantity",
                 "summary": {
-                    "text": "The operation returns the requested quantity.",
+                    "text": "The corrected operation returns the requested quantity."
+                    if correction_marker else "The operation returns the requested quantity.",
                     "evidence": [summary_evidence],
                 },
                 "steps": [
@@ -448,13 +458,13 @@ else:
                     },
                 ],
             }
-            if not corrected:
-                operation["uncertainties"] = ["The operation's deployment is unknown."]
-            else:
+            if corrected or valid_endpoints:
                 operation["steps"][0]["from"] = "orders"
                 operation["steps"][0]["to"] = "caller"
                 operation["steps"][1]["from"] = "orders"
                 operation["steps"][1]["to"] = "caller"
+            if not corrected:
+                operation["uncertainties"] = ["The operation's deployment is unknown."]
             if forged:
                 # This unknown authority field follows the misplaced shape
                 # error in the serialized proposal and must still fail closed.
@@ -486,6 +496,17 @@ else:
                 assert payload["previousProposal"] == malformed
                 proposal = ordinary_proposal(corrected=(mode == "ordinary-shape-repair"))
                 result = {"action": "proposal", "proposal": proposal}
+        elif mode.startswith("ordinary-uncertainty-adapt"):
+            if payload["feedback"] is None:
+                proposal = ordinary_proposal(valid_endpoints=True)
+            else:
+                assert payload["feedback"]["kind"] == "MEANING_REVIEW_ISSUES"
+                assert payload["previousProposal"]["uncertainties"] == [
+                    "The operation's deployment is unknown."
+                ]
+                assert "uncertainties" not in payload["previousProposal"]["operations"][0]
+                proposal = ordinary_proposal(corrected=True, correction_marker=True)
+            result = {"action": "proposal", "proposal": proposal}
         elif mode == "ordinary-shape-invalid-evidence":
             result = {"action": "proposal", "proposal": ordinary_proposal(invalid_evidence=True)}
         elif mode == "ordinary-shape-forged-field":

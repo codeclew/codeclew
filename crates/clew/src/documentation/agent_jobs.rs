@@ -513,7 +513,19 @@ pub struct Attempt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapted_proposal: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncertainty_adaptation: Option<UncertaintyAdaptationReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expansion_selection: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UncertaintyAdaptationReceipt {
+    pub original_result_digest: String,
+    pub original_proposal_digest: String,
+    pub adapted_value_digest: String,
+    pub from: String,
+    pub to: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1912,6 +1924,7 @@ fn call(
             captured_stderr_bytes: 0,
             author_contract: author_contract.clone(),
             adapted_proposal: None,
+            uncertainty_adaptation: None,
             expansion_selection: None,
         });
         let attempt_index = report.attempts.len() - 1;
@@ -2891,6 +2904,58 @@ fn repairable_ordinary_operation_uncertainties(
     }
     let decoded = serde_json::from_value::<super::proposals::Proposal>(probe).ok()?;
     (decoded.schema == "codeclew-documentation-proposal/1.0").then_some(misplaced)
+}
+
+fn adapt_ordinary_sequence_uncertainties(
+    work: &super::work::Work,
+    state: &super::work::ReadState,
+    value: &Value,
+) -> Option<(Value, super::proposals::Proposal)> {
+    let mut candidate = value.clone();
+    let object = candidate.as_object_mut()?;
+    if object.get("schema").and_then(Value::as_str) != Some("codeclew-documentation-proposal/1.0")
+        || object.contains_key("uncertainties")
+    {
+        return None;
+    }
+
+    let uncertainties = {
+        let operations = object.get_mut("operations")?.as_array_mut()?;
+        if operations.len() != 1 {
+            return None;
+        }
+        let operation = operations[0].as_object_mut()?;
+        let uncertainties = operation.get("uncertainties")?.as_array()?;
+        if uncertainties.len() > 64
+            || uncertainties.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_none_or(|text| text.trim().is_empty() || text.len() > 2048)
+            })
+        {
+            return None;
+        }
+        operation.remove("uncertainties")?
+    };
+    object.insert("uncertainties".into(), uncertainties);
+
+    let proposal = serde_json::from_value::<super::proposals::Proposal>(candidate.clone()).ok()?;
+    if proposal.schema != "codeclew-documentation-proposal/1.0" || proposal.operations.len() != 1 {
+        return None;
+    }
+    let (narrative, _, diagnostics) = super::proposals::materialize(work, &proposal, state).ok()?;
+    if !diagnostics.is_empty() || narrative.operations.len() != 1 {
+        return None;
+    }
+    let root = &narrative.operations[0].id;
+    if super::sections::contains(root)
+        || super::notes::is_root(root)
+        || super::processes::overview(&work.checked, &work.subject, root)
+        || super::dataflow::is_root(&work.checked, &work.subject, root)
+    {
+        return None;
+    }
+    Some((candidate, proposal))
 }
 
 fn missing_required_step_paths(value: &Value) -> Vec<String> {
@@ -4066,6 +4131,7 @@ fn execute_run(
             ));
         }
         report.status = "AUTHORED".into();
+        let mut ordinary_uncertainties_adapted = false;
         let input = if let Some(contract) = contract {
             if contract != super::section_author::CONTRACT {
                 return Err(invalid(
@@ -4109,21 +4175,68 @@ fn execute_run(
                     }
                 }
                 Err(error) if !process_overview => {
-                    let Some(misplaced_operations) =
-                        repairable_ordinary_operation_uncertainties(&previous, &error)
-                    else {
-                        return Err(invalid("author proposal violates its closed schema"));
-                    };
-                    validate_proposal_packet_evidence(
-                        repo,
-                        work,
-                        &pages,
-                        &source_parts,
-                        &previous,
-                    )?;
-                    feedback =
-                        ordinary_proposal_shape_feedback(&previous, &error, &misplaced_operations);
-                    None
+                    let state = super::work::read_state(repo, &work.id)?;
+                    if let Some((candidate, proposal_input)) =
+                        adapt_ordinary_sequence_uncertainties(work, &state, &previous)
+                    {
+                        validate_proposal_packet_evidence(
+                            repo,
+                            work,
+                            &pages,
+                            &source_parts,
+                            &candidate,
+                        )?;
+                        let original_result_digest = report
+                            .attempts
+                            .iter()
+                            .find(|attempt| attempt.invocation == invocation)
+                            .and_then(|attempt| attempt.result_digest.clone())
+                            .ok_or_else(|| {
+                                invalid(
+                                    "RECOVERY_REPORT_MISMATCH: adapted author result has no saved digest",
+                                )
+                            })?;
+                        let receipt = UncertaintyAdaptationReceipt {
+                            original_result_digest,
+                            original_proposal_digest: digest(&previous)?,
+                            adapted_value_digest: digest(&candidate)?,
+                            from: "operations[0].uncertainties".into(),
+                            to: "uncertainties".into(),
+                        };
+                        let attempt = report
+                            .attempts
+                            .iter_mut()
+                            .find(|attempt| attempt.invocation == invocation)
+                            .ok_or_else(|| {
+                                invalid(
+                                    "RECOVERY_REPORT_MISMATCH: adapted author result has no attempt",
+                                )
+                            })?;
+                        attempt.uncertainty_adaptation = Some(receipt);
+                        save_report(repo, report)?;
+                        previous = candidate;
+                        ordinary_uncertainties_adapted = true;
+                        Some(proposal_input)
+                    } else {
+                        let Some(misplaced_operations) =
+                            repairable_ordinary_operation_uncertainties(&previous, &error)
+                        else {
+                            return Err(invalid("author proposal violates its closed schema"));
+                        };
+                        validate_proposal_packet_evidence(
+                            repo,
+                            work,
+                            &pages,
+                            &source_parts,
+                            &previous,
+                        )?;
+                        feedback = ordinary_proposal_shape_feedback(
+                            &previous,
+                            &error,
+                            &misplaced_operations,
+                        );
+                        None
+                    }
                 }
                 Err(_) => return Err(invalid("author proposal violates its closed schema")),
             }
@@ -4135,7 +4248,7 @@ fn execute_run(
                 .ok_or_else(|| invalid("proposal submission has no identity"))?;
             let proposal = super::proposals::load(repo, proposal_id)?;
             report.proposal = Some(proposal_id.into());
-            if contract.is_some()
+            if (contract.is_some() || ordinary_uncertainties_adapted)
                 && let Some(attempt) = report
                     .attempts
                     .iter_mut()
@@ -4648,6 +4761,7 @@ mod input_cap_tests {
                 captured_stderr_bytes: 0,
                 author_contract: None,
                 adapted_proposal: None,
+                uncertainty_adaptation: None,
                 expansion_selection: None,
             }],
             proposal: None,
@@ -4926,6 +5040,100 @@ mod input_cap_tests {
                 }]
             }]
         })).unwrap()
+    }
+
+    #[test]
+    fn ordinary_uncertainty_adaptation_keeps_its_shape_and_root_bounds() {
+        let work = sequence_work();
+        let state = read_state(&work, &["entry-ref", "flow-ref"]);
+        let proposal_value = || {
+            let mut value =
+                serde_json::to_value(proposal_input("entry-ref", "note", "entry-ref", "flow-ref"))
+                    .unwrap();
+            value.as_object_mut().unwrap().remove("uncertainties");
+            value["operations"][0]["uncertainties"] = json!(["  bounded value  "]);
+            value
+        };
+
+        let original = proposal_value();
+        let (adapted, _) = adapt_ordinary_sequence_uncertainties(&work, &state, &original).unwrap();
+        assert_eq!(adapted["uncertainties"], json!(["  bounded value  "]));
+        assert!(adapted["operations"][0].get("uncertainties").is_none());
+        let mut expected = original.clone();
+        let uncertainties = expected["operations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("uncertainties")
+            .unwrap();
+        expected
+            .as_object_mut()
+            .unwrap()
+            .insert("uncertainties".into(), uncertainties);
+        assert_eq!(adapted, expected);
+
+        let mut empty = proposal_value();
+        empty["operations"][0]["uncertainties"] = json!([]);
+        let (adapted_empty, _) =
+            adapt_ordinary_sequence_uncertainties(&work, &state, &empty).unwrap();
+        assert_eq!(adapted_empty["uncertainties"], json!([]));
+
+        for root_uncertainties in [Value::Null, json!([]), json!(["already at root"])] {
+            let mut existing_root = proposal_value();
+            existing_root["uncertainties"] = root_uncertainties;
+            assert!(adapt_ordinary_sequence_uncertainties(&work, &state, &existing_root).is_none());
+        }
+
+        let mut multiple_operations = proposal_value();
+        let second = multiple_operations["operations"][0].clone();
+        multiple_operations["operations"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        assert!(
+            adapt_ordinary_sequence_uncertainties(&work, &state, &multiple_operations).is_none()
+        );
+
+        for malformed in [
+            json!([""]),
+            json!(["  \n  "]),
+            json!("not-an-array"),
+            json!([1]),
+            json!(["x".repeat(2049)]),
+            json!(vec!["bounded"; 65]),
+        ] {
+            let mut invalid = proposal_value();
+            invalid["operations"][0]["uncertainties"] = malformed;
+            assert!(adapt_ordinary_sequence_uncertainties(&work, &state, &invalid).is_none());
+        }
+
+        let mut unknown = proposal_value();
+        unknown["operations"][0]["verification"] = json!("APPROVED");
+        assert!(adapt_ordinary_sequence_uncertainties(&work, &state, &unknown).is_none());
+
+        let mut section_work = sequence_work();
+        section_work.request.entrypoint = Some("section-entities".into());
+        section_work.handles.insert(
+            "section-ref".into(),
+            super::super::work::Handle {
+                kind: "SECTION".into(),
+                id: "section-entities".into(),
+            },
+        );
+        let section_state = read_state(&section_work, &["entry-ref"]);
+        let section = json!({
+            "schema":"codeclew-documentation-proposal/1.0",
+            "operations":[{
+                "entrypoint":"section-ref",
+                "title":"Entities",
+                "summary":{"text":"Describes domain entities.","evidence":["entry-ref"]},
+                "steps":[],
+                "uncertainties":["bounded value"]
+            }]
+        });
+        assert!(
+            adapt_ordinary_sequence_uncertainties(&section_work, &section_state, &section)
+                .is_none()
+        );
     }
 
     fn collect_source_parts(
@@ -6998,6 +7206,7 @@ mod input_cap_tests {
             captured_stderr_bytes: 0,
             author_contract: None,
             adapted_proposal: None,
+            uncertainty_adaptation: None,
             expansion_selection: None,
         });
         checkpoint.pending_call = Some(PendingCall {

@@ -3999,6 +3999,117 @@ fn docsys_t04_ordinary_author_shape_repair_preserves_raw_result_through_publicat
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_operation_uncertainty_moves_before_author_retry() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(
+        &f,
+        json!({"mode":"ordinary-uncertainty-adapt"}),
+        json!({}),
+        None,
+    );
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "reviewer");
+    assert_eq!(attempts[0]["adaptedProposal"], report["proposal"]);
+
+    let result_path = f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[0]["invocation"].as_str().unwrap()
+    ));
+    let saved_result_bytes = fs::read(result_path).unwrap();
+    let saved_result: serde_json::Value = serde_json::from_slice(&saved_result_bytes).unwrap();
+    let original = saved_result["result"]["proposal"].clone();
+    assert_eq!(
+        original["operations"][0]["uncertainties"],
+        json!(["The operation's deployment is unknown."])
+    );
+    assert!(original.get("uncertainties").is_none());
+    assert_eq!(attempts[0]["resultDigest"], saved_result["resultDigest"]);
+
+    let mut adapted = original.clone();
+    let operation = adapted["operations"][0].as_object_mut().unwrap();
+    let uncertainties = operation.remove("uncertainties").unwrap();
+    adapted
+        .as_object_mut()
+        .unwrap()
+        .insert("uncertainties".into(), uncertainties);
+    let receipt = &attempts[0]["uncertaintyAdaptation"];
+    assert_eq!(receipt["from"], "operations[0].uncertainties");
+    assert_eq!(receipt["to"], "uncertainties");
+    assert_eq!(receipt["originalResultDigest"], attempts[0]["resultDigest"]);
+    assert_eq!(
+        receipt["originalProposalDigest"],
+        clew::canonical::hash(&original).unwrap()
+    );
+    assert_eq!(
+        receipt["adaptedValueDigest"],
+        clew::canonical::hash(&adapted).unwrap()
+    );
+
+    let stored = read(f.docs.join(format!(
+        ".codeclew/proposals/{}.json",
+        report["proposal"].as_str().unwrap()
+    )));
+    assert_eq!(
+        stored["artifact"]["input"]["uncertainties"],
+        json!(["The operation's deployment is unknown."])
+    );
+    assert!(
+        stored["artifact"]["input"]["operations"][0]
+            .get("uncertainties")
+            .is_none()
+    );
+    let typed_adapted: clew::documentation::proposals::Proposal =
+        serde_json::from_value(adapted).unwrap();
+    assert_eq!(
+        stored["artifact"]["input"],
+        serde_json::to_value(typed_adapted).unwrap()
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_uncertainty_adaptation_keeps_semantic_repair_budget() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(
+        &f,
+        json!({"mode":"ordinary-uncertainty-adapt"}),
+        json!({"mode":"ordinary-uncertainty-reject-once"}),
+        None,
+    );
+    config["repairAttempts"] = json!(1);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 4, "{report}");
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|attempt| attempt["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["author", "reviewer", "author", "reviewer"]
+    );
+    assert!(attempts[0]["uncertaintyAdaptation"].is_object());
+    assert!(attempts[0]["adaptedProposal"].is_string());
+    assert!(attempts[2]["uncertaintyAdaptation"].is_null());
+    assert!(attempts[2]["adaptedProposal"].is_null());
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_t04_ordinary_shape_authority_evidence_and_retry_budget_fail_closed() {
     use serde_json::json;
     for (mode, calls, expected_reason) in [
