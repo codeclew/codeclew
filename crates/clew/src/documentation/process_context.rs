@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PROFILE: &str = "process-v1";
 
 /// Offsets refer to UTF-8 bytes in another retained text, never to source-file offsets.
-fn covered_text(container: &Source, part: &Source) -> Option<(usize, usize)> {
+pub(super) fn covered_text(container: &Source, part: &Source) -> Option<(usize, usize)> {
     let same_occurrence = match (&container.occurrence, &part.occurrence) {
         (Some(a), Some(b)) => a.snapshot == b.snapshot && a.blob == b.blob,
         (None, None) => container.evidence_digest == part.evidence_digest,
@@ -23,6 +23,41 @@ fn covered_text(container: &Source, part: &Source) -> Option<(usize, usize)> {
         || part.text.is_empty()
     {
         return None;
+    }
+    let expected_range = match (&container.occurrence, &part.occurrence) {
+        (Some(container_occurrence), Some(part_occurrence)) => {
+            let start = part_occurrence
+                .start_byte
+                .checked_sub(container_occurrence.start_byte)?;
+            let end = part_occurrence
+                .end_byte
+                .checked_sub(container_occurrence.start_byte)?;
+            if container_occurrence
+                .end_byte
+                .checked_sub(container_occurrence.start_byte)
+                != Some(container.text.len())
+                || part_occurrence
+                    .end_byte
+                    .checked_sub(part_occurrence.start_byte)
+                    != Some(part.text.len())
+                || end.checked_sub(start) != Some(part.text.len())
+            {
+                return None;
+            }
+            Some((start, end))
+        }
+        _ => None,
+    };
+    if let Some((start, end)) = expected_range {
+        if container.text.get(start..end) != Some(part.text.as_str()) {
+            return None;
+        }
+        let line = container.start_line
+            + container.text[..start]
+                .bytes()
+                .filter(|b| *b == b'\n')
+                .count() as u64;
+        return (line == part.start_line).then_some((start, end));
     }
     container
         .text
@@ -189,6 +224,45 @@ mod tests {
         part.occurrence.as_mut().unwrap().blob = "blob-a".into();
         part.occurrence.as_mut().unwrap().snapshot = "generation-b".into();
         assert_eq!(covered_text(&body, &part), None);
+    }
+
+    #[test]
+    fn explicit_occurrence_offsets_select_the_matching_repeated_same_line_slice() {
+        let mut body = source("body", "ab xx ab", 4, 4);
+        body.occurrence = Some(super::super::model::SourceOccurrence {
+            snapshot: "generation-a".into(),
+            blob: "blob-a".into(),
+            start_byte: 100,
+            end_byte: 108,
+        });
+        let mut part = source("part", "ab", 4, 4);
+        part.occurrence = Some(super::super::model::SourceOccurrence {
+            snapshot: "generation-a".into(),
+            blob: "blob-a".into(),
+            start_byte: 106,
+            end_byte: 108,
+        });
+        assert_eq!(covered_text(&body, &part), Some((6, 8)));
+
+        part.occurrence.as_mut().unwrap().start_byte = 104;
+        part.occurrence.as_mut().unwrap().end_byte = 106;
+        assert_eq!(covered_text(&body, &part), None);
+
+        let mut overlapping = source("overlapping", "aaaa", 7, 7);
+        overlapping.occurrence = Some(super::super::model::SourceOccurrence {
+            snapshot: "generation-a".into(),
+            blob: "blob-a".into(),
+            start_byte: 200,
+            end_byte: 204,
+        });
+        let mut middle = source("middle", "aa", 7, 7);
+        middle.occurrence = Some(super::super::model::SourceOccurrence {
+            snapshot: "generation-a".into(),
+            blob: "blob-a".into(),
+            start_byte: 201,
+            end_byte: 203,
+        });
+        assert_eq!(covered_text(&overlapping, &middle), Some((1, 3)));
     }
     #[test]
     fn partial_symbol_and_text_alias_never_authorize_undelivered_handles() {
