@@ -452,10 +452,12 @@ To render a structured answer conforming to
 `codeclew-operation-answer/1.0`, run
 `clew docs work explain --root docs --work WORK_ID --input answer.json --output-dir .codeclew/drafts/WORK_ID`.
 The command rebuilds the packet from that saved Work, checks the packet digest
-and evidence labels, then atomically updates `answer.json`, `operation.md`,
-`index.html` and packet/audit reference files in the output directory. The
-result remains a local `DRAFT` / `UNREVIEWED`; it does not publish or create a
-release version.
+and evidence labels, then atomically replaces each of `answer.json`,
+`operation.md`, `index.html` and the packet/audit reference files individually.
+The output directory is not replaced as one transaction. If a command fails
+between file replacements, rerun it with the same saved Work and answer to
+finish the draft; this performs no index capture. The result remains a local
+`DRAFT` / `UNREVIEWED`; it does not publish or create a release version.
 
 The endpoint selector changed in v3, so saved `endpoint-context-v1` and
 `endpoint-context-v2` Work fail closed and must be prepared again from their
