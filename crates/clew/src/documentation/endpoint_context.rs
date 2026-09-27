@@ -487,6 +487,47 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     ),
                 }
             }
+            for name in discoveries.method_references {
+                let same_owner = indexes
+                    .methods_by_owner_name
+                    .get(&(callable.owner.clone(), name.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let candidates: Vec<_> = same_owner
+                    .iter()
+                    .filter(|candidate| {
+                        exact_scope(&candidate.normalized["scope"]) == Some(callable.scope.as_str())
+                    })
+                    .collect();
+                match candidates.as_slice() {
+                    [candidate] => add_edge(
+                        &mut edges,
+                        &mut graph_edge_count,
+                        Edge {
+                            from: callable.identity.clone(),
+                            target: Some(candidate.symbol.clone()),
+                            scope: callable.scope.clone(),
+                            kind: "METHOD_REFERENCE".into(),
+                            authority: "SOURCE_REFERENCE_CANDIDATE".into(),
+                            fact_id: None,
+                            source_id: Some(source_id.to_owned()),
+                        },
+                        &mut gaps,
+                    ),
+                    [] if !same_owner.is_empty() => gaps.add(
+                        "SOURCE_REFERENCE_SCOPE_UNAVAILABLE",
+                        json!({"from":callable.identity,"name":name,"scope":callable.scope}),
+                    ),
+                    [] => gaps.add(
+                        "SOURCE_METHOD_REFERENCE_DECLARATION_UNAVAILABLE",
+                        json!({"from":callable.identity,"owner":callable.owner,"name":name,"scope":callable.scope}),
+                    ),
+                    _ => gaps.add(
+                        "SOURCE_REFERENCE_AMBIGUOUS_OVERLOAD",
+                        json!({"from":callable.identity,"name":name,"scope":callable.scope,"candidateCount":candidates.len()}),
+                    ),
+                }
+            }
             for reference in discoveries.fields {
                 let same_owner = indexes
                     .fields_by_owner_name
@@ -1276,6 +1317,7 @@ fn add_edge(edges: &mut Vec<Edge>, count: &mut usize, edge: Edge, gaps: &mut Gap
         candidate.from == edge.from
             && candidate.target == edge.target
             && candidate.scope == edge.scope
+            && candidate.kind == edge.kind
             && candidate.authority == edge.authority
             && candidate.fact_id == edge.fact_id
             && candidate.source_id == edge.source_id
@@ -1395,6 +1437,7 @@ fn descriptor_object_roles(descriptor: &str) -> Result<(BTreeSet<String>, BTreeS
 #[derive(Default)]
 struct Discoveries {
     calls: BTreeSet<String>,
+    method_references: BTreeSet<String>,
     fields: BTreeSet<FieldUse>,
     nested_executable_context: bool,
 }
@@ -1423,11 +1466,13 @@ fn lexical_discoveries(
     if has_nested_executable_context(&tokens, body_range) {
         return Discoveries {
             calls: BTreeSet::new(),
+            method_references: BTreeSet::new(),
             fields: BTreeSet::new(),
             nested_executable_context: true,
         };
     }
     let mut calls = BTreeSet::new();
+    let mut method_references = BTreeSet::new();
     let mut referenced_fields = BTreeMap::<String, (bool, bool)>::new();
     let parameter_range = method_parameter_range(&tokens, body_range.0, method_name);
     let shadowed: BTreeSet<_> = tokens
@@ -1452,6 +1497,15 @@ fn lexical_discoveries(
         let owner_qualified =
             previous_dot && index > 1 && is_owner_qualifier(owner, &tokens[index - 2].text);
         let following_call = tokens.get(index + 1).is_some_and(|next| next.text == "(");
+        let current_this_method_reference = index >= 3
+            && tokens[index - 1].text == ":"
+            && tokens[index - 2].text == ":"
+            && tokens[index - 3].text == "this"
+            && (index < 4 || tokens[index - 4].text != ".");
+        if current_this_method_reference {
+            method_references.insert(token.text.clone());
+            continue;
+        }
         if following_call && (!previous_dot || explicit_receiver) {
             if !matches!(
                 token.text.as_str(),
@@ -1474,6 +1528,7 @@ fn lexical_discoveries(
     }
     Discoveries {
         calls,
+        method_references,
         fields: referenced_fields
             .into_iter()
             .map(|(name, (explicit_receiver, shadowed))| FieldUse {
@@ -1831,6 +1886,39 @@ mod tests {
         }
     }
 
+    fn method_reference_work() -> Work {
+        let mut work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
+        let service = work.checked.services.get_mut(SERVICE).unwrap();
+        let source = service.sources.get_mut(SOURCE_ID).unwrap();
+        source.text = source.text.replace(
+            "this.getValue();",
+            "Supplier<String> getter = this::getValue;",
+        );
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        let source_digest = source.text_digest.clone();
+        for relation in service
+            .observations
+            .values_mut()
+            .filter(|observation| observation.kind == "CALL_RELATION")
+        {
+            relation.normalized["callSite"]["sourceDigest"] = json!(source_digest.clone());
+        }
+        let relation_id = service
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "CALL_RELATION"
+                    && observation.normalized["targetIdentity"] == GETTER
+            })
+            .map(|observation| observation.id.clone())
+            .unwrap();
+        service.observations.remove(&relation_id);
+        work.influence.remove(&relation_id);
+        work.handles
+            .retain(|_, handle| handle.kind != "DEPENDENCY" || handle.id != relation_id);
+        work
+    }
+
     #[test]
     fn bodyless_targets_do_not_starve_a_retained_getter_body() {
         let work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
@@ -1860,5 +1948,122 @@ mod tests {
             gap["code"] == "METHOD_BODY_PARSE_UNAVAILABLE" && gap["count"] == MAX_CALLABLES - 1
         }));
         assert!(!gaps.iter().any(|gap| gap["code"] == "CALLABLE_BODY_LIMIT"));
+    }
+
+    #[test]
+    fn current_this_method_reference_selects_a_unique_same_scope_method_as_a_candidate() {
+        let work = method_reference_work();
+        let rows = profile_rows(&work).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let graph = &packet["record"]["callGraph"];
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert!(nodes.iter().any(|node| node["symbolIdentity"] == GETTER));
+        assert_eq!(graph["order"], "NOT_EXECUTION_ORDER");
+        let candidates = graph["sourceReferenceCandidates"].as_array().unwrap();
+        assert!(candidates.iter().any(|candidate| {
+            candidate["kind"] == "METHOD_REFERENCE"
+                && candidate["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && candidate["toNode"].is_string()
+        }));
+    }
+
+    #[test]
+    fn this_method_reference_ambiguity_and_other_scope_are_gaps() {
+        let base = method_reference_work();
+        let mut ambiguous = base.clone();
+        let overloaded_identity = "method:class:orders.Service#getValue(I)Ljava/lang/String;";
+        let mut overloaded = observation(
+            "getter-overload",
+            overloaded_identity,
+            method_declaration(overloaded_identity, "getValue"),
+            vec![SOURCE_ID.into()],
+        );
+        overloaded.normalized["jvmDescriptor"] = json!("(I)Ljava/lang/String;");
+        ambiguous
+            .checked
+            .services
+            .get_mut(SERVICE)
+            .unwrap()
+            .observations
+            .insert(overloaded.id.clone(), overloaded.clone());
+        ambiguous
+            .influence
+            .insert(overloaded.id.clone(), "test".into());
+        ambiguous.handles.insert(
+            format!("dependency:{}", overloaded.id),
+            Handle {
+                kind: "DEPENDENCY".into(),
+                id: overloaded.id,
+            },
+        );
+        let ambiguous_rows = profile_rows(&ambiguous).unwrap();
+        let ambiguous_packet = ambiguous_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let ambiguous_graph = &ambiguous_packet["record"]["callGraph"];
+        assert!(
+            ambiguous_graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|node| node["symbolIdentity"] != GETTER)
+        );
+        assert!(
+            ambiguous_packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| {
+                    gap["code"] == "SOURCE_REFERENCE_AMBIGUOUS_OVERLOAD" && gap["count"] == 1
+                })
+        );
+
+        let mut other_scope = base;
+        other_scope
+            .checked
+            .services
+            .get_mut(SERVICE)
+            .unwrap()
+            .observations
+            .get_mut("getter-declaration")
+            .unwrap()
+            .normalized["scope"] = json!("compile:other");
+        let other_scope_rows = profile_rows(&other_scope).unwrap();
+        let other_scope_packet = other_scope_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let other_scope_graph = &other_scope_packet["record"]["callGraph"];
+        assert!(
+            other_scope_graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|node| node["symbolIdentity"] != GETTER)
+        );
+        assert!(
+            other_scope_packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| {
+                    gap["code"] == "SOURCE_REFERENCE_SCOPE_UNAVAILABLE" && gap["count"] == 1
+                })
+        );
+    }
+
+    #[test]
+    fn outer_this_and_masked_text_are_not_current_this_method_references() {
+        let source = "class Service { void handle() { Outer.this::getOuter; this::getCurrent; String text = \"this::getString\"; /* this::getComment */ } }";
+        let body = source_steps::method_body(source, ROOT).unwrap();
+        let discoveries = lexical_discoveries(source, body, OWNER, "handle");
+        assert_eq!(
+            discoveries.method_references,
+            BTreeSet::from(["getCurrent".into()])
+        );
     }
 }

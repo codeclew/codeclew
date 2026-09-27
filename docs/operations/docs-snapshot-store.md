@@ -436,6 +436,9 @@ packet groups references to those facts and reports unavailable, ambiguous, or
 truncated paths as gaps. Captured `STATIC` + `FINAL` fields are preferred when
 the referenced-owner-field limit applies.
 
+An explicit `this::method` is a lexical `METHOD_REFERENCE` candidate; it records
+a callable reference and does not establish invocation at that source position.
+
 `clew docs work packet --root docs --work WORK_ID` projects the saved rows into a
 compact author packet. Each retained source is included once, and method nodes
 point into that source; the packet keeps scopes, coverage, candidate authority,

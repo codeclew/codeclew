@@ -108,7 +108,7 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
             cite(&mut citations, label, "captured DTO field declaration");
             fields.push(json!({
                 "name":normalized["name"],
-                "typeDescriptor":normalized["typeDescriptor"],
+                "typeDescriptor":retained_declared_type_descriptor(normalized),
                 "modifiers":array_or_empty(&normalized["modifiers"]),
                 "annotations":array_or_empty(&normalized["annotations"]),
                 "sourceTokens":array_or_empty(&normalized["sourceTokens"]),
@@ -351,7 +351,7 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
                 "ownerIdentity":normalized["ownerIdentity"],
                 "name":normalized["name"],
                 "scope":normalized["scope"],
-                "typeDescriptor":normalized["typeDescriptor"],
+                "typeDescriptor":retained_declared_type_descriptor(normalized),
                 "modifiers":modifiers,
                 "annotations":array_or_empty(&normalized["annotations"]),
                 "sourceTokens":array_or_empty(&normalized["sourceTokens"]),
@@ -477,6 +477,23 @@ fn array_or_empty(value: &Value) -> Value {
         .map_or_else(|| json!([]), |values| json!(values))
 }
 
+/// Compiler FIELD facts use `jvmDescriptor`; older synthetic/source-syntax
+/// records may instead retain `typeDescriptor`. Preserve the captured value
+/// verbatim and leave it unknown when neither form is present.
+fn retained_declared_type_descriptor(normalized: &Value) -> Value {
+    if normalized["jvmDescriptor"]
+        .as_str()
+        .is_some_and(|descriptor| !descriptor.is_empty())
+    {
+        return normalized["jvmDescriptor"].clone();
+    }
+    normalized
+        .get("typeDescriptor")
+        .filter(|descriptor| !descriptor.is_null())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 fn has_modifier(modifiers: &Value, expected: &str) -> bool {
     modifiers
         .as_array()
@@ -493,6 +510,16 @@ fn cite(citations: &mut BTreeMap<String, String>, label: &str, role: &str) {
 mod tests {
     use super::*;
     use crate::canonical;
+
+    fn packet_field<'a>(packet: &'a Value, name: &str) -> &'a Value {
+        packet["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| group["fields"].as_array().unwrap())
+            .find(|field| field["name"] == name)
+            .unwrap()
+    }
 
     fn collect_evidence(value: &Value, out: &mut BTreeSet<String>) {
         match value {
@@ -685,6 +712,87 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|note| note.as_str().unwrap().contains("Method names"))
+        );
+    }
+
+    #[test]
+    fn declared_field_descriptors_prefer_compiler_fact_and_preserve_fallback_or_absence() {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        {
+            let endpoint = work.checked.services.get_mut("orders").unwrap();
+
+            // Match the compiler FIELD shape: the declared type is captured
+            // under jvmDescriptor, with no typeDescriptor alias.
+            let request_name = endpoint.observations.get_mut("request-name-field").unwrap();
+            request_name
+                .normalized
+                .as_object_mut()
+                .unwrap()
+                .remove("typeDescriptor");
+            request_name.normalized["jvmDescriptor"] = json!("Ljava/lang/String;");
+
+            // Constants use the same compiler FIELD representation.
+            let constant = endpoint.observations.get_mut("default-code-field").unwrap();
+            constant
+                .normalized
+                .as_object_mut()
+                .unwrap()
+                .remove("typeDescriptor");
+            constant.normalized["jvmDescriptor"] = json!("Ljava/lang/String;");
+
+            // Retain a legacy source-syntax type on another DTO field.
+            let response_status = endpoint
+                .observations
+                .get_mut("response-status-field")
+                .unwrap();
+            response_status.normalized["typeDescriptor"] = json!("int");
+            response_status
+                .normalized
+                .as_object_mut()
+                .unwrap()
+                .remove("jvmDescriptor");
+        }
+
+        let (packet, _) = build(&work).unwrap();
+        assert_eq!(
+            packet_field(&packet, "name")["typeDescriptor"],
+            "Ljava/lang/String;"
+        );
+        assert_eq!(packet_field(&packet, "status")["typeDescriptor"], "int");
+        let constant = packet["constants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|constant| constant["name"] == "DEFAULT_CODE")
+            .unwrap();
+        assert_eq!(constant["typeDescriptor"], "Ljava/lang/String;");
+        assert_eq!(
+            retained_declared_type_descriptor(&json!({
+                "jvmDescriptor":"Ljava/lang/Long;",
+                "typeDescriptor":"Long"
+            })),
+            "Ljava/lang/Long;"
+        );
+
+        // Source tokens alone are not a declared type descriptor.
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .get_mut("response-status-field")
+            .unwrap()
+            .normalized
+            .as_object_mut()
+            .unwrap()
+            .remove("typeDescriptor");
+        let (packet_without_descriptor, _) = build(&work).unwrap();
+        assert!(packet_field(&packet_without_descriptor, "status")["typeDescriptor"].is_null());
+        assert!(
+            retained_declared_type_descriptor(&json!({
+                "sourceTokens":["int", "status"]
+            }))
+            .is_null()
         );
     }
 }
