@@ -14,9 +14,10 @@ use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-pub const PROFILE: &str = "endpoint-context-v2";
+pub const PROFILE: &str = "endpoint-context-v3";
 
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
+// Includes the endpoint root; descendants must have a parseable retained body.
 const MAX_CALLABLES: usize = 12;
 const MAX_SOURCE_BYTES: usize = 48 * 1024;
 const MAX_DTO_FIELDS: usize = 64;
@@ -128,12 +129,12 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 .as_deref()
                 .map(|entrypoint| (service, entrypoint))
         })
-        .ok_or_else(|| invalid("endpoint-context-v2 requires a service HTTP endpoint"))?;
+        .ok_or_else(|| invalid("endpoint-context-v3 requires a service HTTP endpoint"))?;
     let evidence = work
         .checked
         .services
         .get(service)
-        .ok_or_else(|| invalid("endpoint-context-v2 service evidence is unavailable"))?;
+        .ok_or_else(|| invalid("endpoint-context-v3 service evidence is unavailable"))?;
     let entry = unique_entrypoint(evidence, entrypoint_id);
     let mut gaps = Gaps::default();
     let mut dependencies = BTreeMap::<String, &Observation>::new();
@@ -241,9 +242,9 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         }
     }
 
-    let mut queue = VecDeque::<(Callable<'_>, usize)>::new();
+    let mut queue = VecDeque::<(Callable<'_>, usize, Option<String>)>::new();
     if let Some(root) = root_callable.clone() {
-        queue.push_back((root, 0));
+        queue.push_back((root, 0, None));
     }
     let mut visited = BTreeSet::<MethodKey>::new();
     let mut scheduled = BTreeSet::<MethodKey>::new();
@@ -254,7 +255,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     let mut owner_field_candidates = BTreeSet::<String>::new();
     let mut graph_edge_count = 0usize;
 
-    while let Some((callable, depth)) = queue.pop_front() {
+    while let Some((callable, depth, reserved_body_source_id)) = queue.pop_front() {
         let key = (callable.identity.clone(), callable.scope.clone());
         if !visited.insert(key.clone()) {
             continue;
@@ -266,30 +267,39 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             );
             continue;
         }
-        let body_source = method_body_source(evidence, &callable);
-        let body_source_id = match body_source {
-            Ok((source_id, source)) => {
-                if counted_source_ids.contains(&source_id) {
-                    Some(source_id)
-                } else if unique_source_bytes.saturating_add(source.text.len()) > MAX_SOURCE_BYTES {
-                    gaps.add(
-                        "UNIQUE_SOURCE_BYTE_LIMIT",
-                        json!({"symbol":callable.identity,"bytes":source.text.len(),"limit":MAX_SOURCE_BYTES}),
-                    );
+        let body_source_id = if let Some(source_id) = reserved_body_source_id {
+            Some(source_id)
+        } else {
+            match method_body_source(evidence, &callable) {
+                Ok((source_id, source)) => {
+                    if counted_source_ids.contains(&source_id) {
+                        Some(source_id)
+                    } else if unique_source_bytes.saturating_add(source.text.len())
+                        > MAX_SOURCE_BYTES
+                    {
+                        gaps.add(
+                            "UNIQUE_SOURCE_BYTE_LIMIT",
+                            json!({"symbol":callable.identity,"bytes":source.text.len(),"limit":MAX_SOURCE_BYTES}),
+                        );
+                        None
+                    } else {
+                        body_source_bytes += source.text.len();
+                        unique_source_bytes += source.text.len();
+                        counted_source_ids.insert(source_id.clone());
+                        sources.insert(source_id.clone(), source);
+                        Some(source_id)
+                    }
+                }
+                Err(code) => {
+                    gaps.add(code, json!({"symbol":callable.identity}));
                     None
-                } else {
-                    body_source_bytes += source.text.len();
-                    unique_source_bytes += source.text.len();
-                    counted_source_ids.insert(source_id.clone());
-                    sources.insert(source_id.clone(), source);
-                    Some(source_id)
                 }
             }
-            Err(code) => {
-                gaps.add(code, json!({"symbol":callable.identity}));
-                None
-            }
         };
+        let body_range = body_source_id
+            .as_deref()
+            .and_then(|source_id| sources.get(source_id))
+            .and_then(|source| source_steps::method_body(&source.text, &callable.identity));
         let node_id = format!("m{}", nodes.len());
         nodes.push(json!({
             "id":node_id,
@@ -420,8 +430,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
 
         if let Some(source_id) = body_source_id.as_deref()
             && let Some(source) = sources.get(source_id)
-            && let Some((body_start, body_end)) =
-                source_steps::method_body(&source.text, &callable.identity)
+            && let Some((body_start, body_end)) = body_range
         {
             let discoveries = lexical_discoveries(
                 &source.text,
@@ -516,14 +525,14 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     ),
                 }
             }
-        } else if body_source_id.is_some() {
+        } else if body_source_id.is_some() && body_range.is_none() {
             gaps.add(
                 "METHOD_BODY_PARSE_UNAVAILABLE",
                 json!({"symbol":callable.identity}),
             );
         }
 
-        for target in targets_for_caller(&edges, &callable.identity, &callable.scope) {
+        for target in ordered_targets_for_caller(&edges, &callable.identity, &callable.scope) {
             let target_key = (target.clone(), callable.scope.clone());
             if visited.contains(&target_key) || scheduled.contains(&target_key) {
                 continue;
@@ -542,14 +551,49 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                             "CALL_GRAPH_DEPTH_LIMIT",
                             json!({"from":callable.identity,"target":target,"limit":MAX_DEPTH}),
                         );
-                    } else if scheduled.len() >= MAX_CALLABLES {
-                        gaps.add(
-                            "CALLABLE_BODY_LIMIT",
-                            json!({"from":callable.identity,"target":target,"limit":MAX_CALLABLES}),
-                        );
                     } else {
+                        let target_callable = callable_from_observation(candidate);
+                        let (source_id, source) = match method_body_source(evidence, &target_callable)
+                        {
+                            Ok(body) => body,
+                            Err(code) => {
+                                gaps.add(code, json!({"symbol":target_callable.identity}));
+                                continue;
+                            }
+                        };
+                        if source_steps::method_body(&source.text, &target_callable.identity)
+                            .is_none()
+                        {
+                            gaps.add(
+                                "METHOD_BODY_PARSE_UNAVAILABLE",
+                                json!({"symbol":target_callable.identity}),
+                            );
+                            continue;
+                        }
+                        if scheduled.len() >= MAX_CALLABLES {
+                            gaps.add(
+                                "CALLABLE_BODY_LIMIT",
+                                json!({"from":callable.identity,"target":target,"limit":MAX_CALLABLES}),
+                            );
+                            continue;
+                        }
+                        if !counted_source_ids.contains(&source_id)
+                            && unique_source_bytes.saturating_add(source.text.len())
+                                > MAX_SOURCE_BYTES
+                        {
+                            gaps.add(
+                                "UNIQUE_SOURCE_BYTE_LIMIT",
+                                json!({"symbol":target_callable.identity,"bytes":source.text.len(),"limit":MAX_SOURCE_BYTES}),
+                            );
+                            continue;
+                        }
+                        if counted_source_ids.insert(source_id.clone()) {
+                            body_source_bytes += source.text.len();
+                            unique_source_bytes += source.text.len();
+                            sources.insert(source_id.clone(), source);
+                        }
                         scheduled.insert(target_key);
-                        queue.push_back((callable_from_observation(candidate), depth + 1));
+                        queue.push_back((target_callable, depth + 1, Some(source_id)));
                     }
                 }
                 [] => {
@@ -1189,12 +1233,35 @@ fn owning_body_source_reference(
     })
 }
 
-fn targets_for_caller(edges: &[Edge], caller: &str, scope: &str) -> BTreeSet<String> {
-    edges
+fn ordered_targets_for_caller(edges: &[Edge], caller: &str, scope: &str) -> Vec<String> {
+    let mut priorities = BTreeMap::<String, u8>::new();
+    for edge in edges
         .iter()
         .filter(|edge| edge.from == caller && edge.scope == scope)
-        .filter_map(|edge| edge.target.clone())
-        .collect()
+    {
+        let Some(target) = edge.target.as_ref() else {
+            continue;
+        };
+        let priority = match edge.authority.as_str() {
+            "COMPILER_EXACT_CALL_RELATION" => 0,
+            "RETAINED_FLOW_TARGET" => 1,
+            "SOURCE_REFERENCE_CANDIDATE" => 2,
+            _ => 3,
+        };
+        priorities
+            .entry(target.clone())
+            .and_modify(|current| *current = (*current).min(priority))
+            .or_insert(priority);
+    }
+    let mut targets: Vec<_> = priorities.into_iter().collect();
+    targets.sort_by(
+        |(left_target, left_priority), (right_target, right_priority)| {
+            left_priority
+                .cmp(right_priority)
+                .then_with(|| left_target.cmp(right_target))
+        },
+    );
+    targets.into_iter().map(|(target, _)| target).collect()
 }
 
 fn add_edge(edges: &mut Vec<Edge>, count: &mut usize, edge: Edge, gaps: &mut Gaps) {
@@ -1537,4 +1604,261 @@ fn is_owner_qualifier(owner: &str, value: &str) -> bool {
         .rsplit(['.', '$'])
         .next()
         .is_some_and(|name| !name.is_empty() && name == value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::documentation::{
+        check::Check,
+        model::{Entrypoint, Observation, ServiceEvidence, Source},
+        work::{Handle, Request},
+    };
+
+    const SERVICE: &str = "orders";
+    const OWNER: &str = "class:orders.Service";
+    const SCOPE: &str = "compile:orders:main";
+    const ROOT: &str = "method:class:orders.Service#handle()V";
+    const GETTER: &str = "method:class:orders.Service#getValue()Ljava/lang/String;";
+    const SOURCE_ID: &str = "service-source";
+
+    fn observation(
+        id: impl Into<String>,
+        symbol: impl Into<String>,
+        normalized: Value,
+        source_ids: Vec<String>,
+    ) -> Observation {
+        let id = id.into();
+        Observation {
+            id,
+            kind: "SYMBOL".into(),
+            service: SERVICE.into(),
+            symbol: symbol.into(),
+            normalized,
+            digest: "observation-digest".into(),
+            source_ids,
+        }
+    }
+
+    fn method_declaration(identity: &str, name: &str) -> Value {
+        json!({
+            "schema":JAVA_COMPILER_FACT_SCHEMA,
+            "declarationKind":"METHOD",
+            "symbolIdentity":identity,
+            "ownerIdentity":OWNER,
+            "name":name,
+            "scope":SCOPE,
+            "jvmDescriptor":"()Ljava/lang/String;"
+        })
+    }
+
+    fn bodyless_candidates_do_not_spend_body_slots_before_a_real_getter() -> Work {
+        let source_text = "class Service { void handle() { this.getValue(); } String getValue() { return value; } }";
+        let source_digest = crate::canonical::hash_bytes(source_text.as_bytes());
+        let source = Source {
+            id: SOURCE_ID.into(),
+            service: SERVICE.into(),
+            revision: "revision-1".into(),
+            file: "Service.java".into(),
+            start_line: 1,
+            end_line: 1,
+            text: source_text.into(),
+            text_digest: source_digest.clone(),
+            evidence_digest: "source-evidence-digest".into(),
+            authority: "RETAINED_SNAPSHOT".into(),
+            occurrence: None,
+            url: None,
+        };
+
+        let mut observations = BTreeMap::<String, Observation>::new();
+        let root = observation(
+            "root-declaration",
+            ROOT,
+            json!({
+                "schema":JAVA_COMPILER_FACT_SCHEMA,
+                "declarationKind":"METHOD",
+                "symbolIdentity":ROOT,
+                "ownerIdentity":OWNER,
+                "name":"handle",
+                "scope":SCOPE,
+                "jvmDescriptor":"()V"
+            }),
+            vec![SOURCE_ID.into()],
+        );
+        observations.insert(root.id.clone(), root);
+
+        let mut targets = Vec::new();
+        for index in 0..MAX_CALLABLES - 1 {
+            let name = format!("getStatus{index:02}");
+            let identity = format!("method:class:orders.Service#{name}()Ljava/lang/String;");
+            let id = format!("synthetic-{index:02}");
+            let declaration = observation(
+                id.clone(),
+                identity.clone(),
+                method_declaration(&identity, &name),
+                vec![SOURCE_ID.into()],
+            );
+            observations.insert(id, declaration);
+            targets.push(identity);
+        }
+        let getter = observation(
+            "getter-declaration",
+            GETTER,
+            method_declaration(GETTER, "getValue"),
+            vec![SOURCE_ID.into()],
+        );
+        observations.insert(getter.id.clone(), getter);
+        targets.push(GETTER.into());
+
+        for (index, target) in targets.iter().enumerate() {
+            let id = format!("relation-{index:02}");
+            observations.insert(
+                id.clone(),
+                Observation {
+                    id: id.clone(),
+                    kind: "CALL_RELATION".into(),
+                    service: SERVICE.into(),
+                    symbol: ROOT.into(),
+                    normalized: json!({
+                        "scope":SCOPE,
+                        "sourceIdentity":ROOT,
+                        "targetIdentity":target,
+                        "relationKind":"CALLS",
+                        "resolution":"COMPILER_EXACT",
+                        "callSite":{
+                            "sourceId":SOURCE_ID,
+                            "sourceStatus":"SOURCE_RETAINED",
+                            "sourceDigest":source_digest,
+                            "evidenceDigest":"source-evidence-digest"
+                        }
+                    }),
+                    digest: "relation-digest".into(),
+                    source_ids: vec![SOURCE_ID.into()],
+                },
+            );
+        }
+
+        let entrypoint = Entrypoint {
+            id: "entry-http".into(),
+            service: SERVICE.into(),
+            symbol: ROOT.into(),
+            kind: "HTTP_ENDPOINT".into(),
+            trigger: json!({"method":"GET","path":"/value"}),
+            source_ids: vec![SOURCE_ID.into()],
+            dependency_ids: vec!["root-declaration".into()],
+            boundaries: Vec::new(),
+        };
+        let evidence = ServiceEvidence {
+            schema: "codeclew-service-evidence/1.0".into(),
+            service: SERVICE.into(),
+            revision: "revision-1".into(),
+            service_digest: "service-digest".into(),
+            extractor: "java-compiler".into(),
+            runtime_mode: "test".into(),
+            coverage: "COMPLETE".into(),
+            boundaries: Vec::new(),
+            entrypoints: vec![entrypoint],
+            observations,
+            sources: BTreeMap::from([(SOURCE_ID.into(), source)]),
+            contracts: BTreeMap::new(),
+        };
+        let all_observation_ids: Vec<_> = evidence.observations.keys().cloned().collect();
+        let handles = evidence
+            .observations
+            .keys()
+            .map(|id| {
+                (
+                    format!("dependency:{id}"),
+                    Handle {
+                        kind: "DEPENDENCY".into(),
+                        id: id.clone(),
+                    },
+                )
+            })
+            .chain([
+                (
+                    "entrypoint:entry-http".into(),
+                    Handle {
+                        kind: "ENTRYPOINT".into(),
+                        id: "entry-http".into(),
+                    },
+                ),
+                (
+                    format!("source:{SOURCE_ID}"),
+                    Handle {
+                        kind: "SOURCE".into(),
+                        id: SOURCE_ID.into(),
+                    },
+                ),
+            ])
+            .collect();
+        Work {
+            schema: "codeclew-documentation-work/1.0".into(),
+            id: "test-work".into(),
+            subject: format!("service:{SERVICE}"),
+            request: Request {
+                schema: "codeclew-documentation-request/1.0".into(),
+                audience: "maintainer".into(),
+                documentation_language: Some("en".into()),
+                entrypoint: Some("entry-http".into()),
+                context_profile: Some(PROFILE.into()),
+                max_items: 100,
+                max_bytes: 128 * 1024,
+                external_inputs: Vec::new(),
+            },
+            checked: Check {
+                schema: "codeclew-documentation-check/1.0".into(),
+                input_digest: "input-digest".into(),
+                context_digest: "context-digest".into(),
+                services: BTreeMap::from([(SERVICE.into(), evidence)]),
+                unresolved: BTreeMap::new(),
+                interactions: BTreeMap::new(),
+                scenarios: BTreeMap::new(),
+                dependencies: BTreeMap::new(),
+                source_inputs: None,
+                composition: None,
+            },
+            snapshot: None,
+            retained: None,
+            external_inputs: BTreeMap::new(),
+            handles,
+            influence: all_observation_ids
+                .into_iter()
+                .map(|id| (id, "test-influence".into()))
+                .collect(),
+            obligations: Vec::new(),
+            review_reasons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn bodyless_targets_do_not_starve_a_retained_getter_body() {
+        let work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
+        let rows = profile_rows(&work).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let graph = &packet["record"]["callGraph"];
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().any(|node| node["symbolIdentity"] == ROOT));
+        assert!(
+            nodes.iter().any(|node| {
+                node["symbolIdentity"] == GETTER && node["bodyReference"].is_string()
+            })
+        );
+        assert_eq!(
+            graph["providerEdgeFactReferences"]
+                .as_array()
+                .unwrap()
+                .len(),
+            MAX_CALLABLES
+        );
+        let gaps = packet["record"]["gaps"].as_array().unwrap();
+        assert!(gaps.iter().any(|gap| {
+            gap["code"] == "METHOD_BODY_PARSE_UNAVAILABLE" && gap["count"] == MAX_CALLABLES - 1
+        }));
+        assert!(!gaps.iter().any(|gap| gap["code"] == "CALLABLE_BODY_LIMIT"));
+    }
 }

@@ -65,6 +65,26 @@ pub enum Command {
     Read(ReadArgs),
     Expand(ReadArgs),
     ReadPart(ReadPartArgs),
+    Packet {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        /// Write full selected-row bindings separately; this does not record Work reads.
+        #[arg(long)]
+        audit_output: Option<PathBuf>,
+    },
+    /// Render a validated operation answer into a reusable local draft.
+    Explain {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
 }
 #[derive(Debug, Args)]
 pub struct ReadArgs {
@@ -426,7 +446,99 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &args.work,
             store::read(&args.input, store::MAX_RECORD)?,
         ),
+        Command::Packet {
+            root,
+            work: id,
+            audit_output,
+        } => {
+            let loaded = load(&Repository::open(&root)?, &id)?;
+            let (packet, audit) = super::operation_packet::build(&loaded)?;
+            if let Some(path) = audit_output {
+                write_atomic_file(&path, &bytes(&audit)?)?;
+            }
+            Ok(packet)
+        }
+        Command::Explain {
+            root,
+            work: id,
+            input,
+            output_dir,
+        } => {
+            let loaded = load(&Repository::open(&root)?, &id)?;
+            let (packet, audit) = super::operation_packet::build(&loaded)?;
+            let answer: Value = store::read(&input, store::MAX_RECORD)?;
+            let rendered = super::operation_answer::validate_and_render(&packet, answer)?;
+            write_explanation_outputs(
+                &output_dir,
+                &loaded.id,
+                &packet,
+                &audit,
+                &rendered.answer,
+                &rendered.markdown,
+                &rendered.html,
+            )
+        }
     }
+}
+
+fn write_explanation_outputs(
+    output_dir: &std::path::Path,
+    work: &str,
+    packet: &Value,
+    audit: &Value,
+    answer: &Value,
+    markdown: &str,
+    html: &str,
+) -> Result<Value, ClewError> {
+    fs::create_dir_all(output_dir).map_err(io_error)?;
+    let output_dir = fs::canonicalize(output_dir).map_err(io_error)?;
+    let files = [
+        ("answer.json", bytes(answer)?),
+        ("operation.md", markdown.as_bytes().to_vec()),
+        ("index.html", html.as_bytes().to_vec()),
+        ("reader-packet.json", bytes(packet)?),
+        ("reader-packet-audit.json", bytes(audit)?),
+    ];
+    let mut paths = BTreeMap::new();
+    for (name, contents) in files {
+        let path = output_dir.join(name);
+        write_atomic_file(&path, &contents)?;
+        paths.insert(name, path.to_string_lossy().into_owned());
+    }
+    Ok(json!({
+        "schema":"codeclew-documentation-operation-answer-draft/1.0",
+        "work":work,
+        "status":"DRAFT",
+        "reviewStatus":"UNREVIEWED",
+        "publication":"NOT_PUBLISHED",
+        "packetDigest":packet["packetDigest"],
+        "outputDirectory":output_dir.to_string_lossy(),
+        "files":paths
+    }))
+}
+
+fn write_atomic_file(path: &std::path::Path, contents: &[u8]) -> Result<(), ClewError> {
+    use std::{fs::OpenOptions, io::Write};
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("output file has no parent directory"))?;
+    let temporary = parent.join(format!(".codeclew-answer-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(io_error)?;
+        file.write_all(contents).map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        fs::rename(&temporary, path).map_err(io_error)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<Value, ClewError> {
@@ -496,7 +608,7 @@ fn validate_endpoint_context_profile(
         && !is_java_http_entrypoint(checked, subject, request)
     {
         return Err(invalid(
-            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v2 requires one captured Java HTTP endpoint",
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v3 requires one captured Java HTTP endpoint",
         ));
     }
     Ok(())
@@ -919,10 +1031,13 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
             Ok(())
         }
         Some("endpoint-context-v1") => Err(invalid(
-            "CONTEXT_PROFILE_UNSUPPORTED: endpoint-context-v1 has an obsolete selector; prepare a fresh Work with endpoint-context-v2 from its retained snapshot",
+            "CONTEXT_PROFILE_UNSUPPORTED: endpoint-context-v1 has an obsolete selector; prepare fresh Work with endpoint-context-v3 from its retained snapshot",
+        )),
+        Some("endpoint-context-v2") => Err(invalid(
+            "CONTEXT_PROFILE_UNSUPPORTED: endpoint-context-v2 has an obsolete selector; prepare fresh Work with endpoint-context-v3 from its retained snapshot",
         )),
         Some(super::endpoint_context::PROFILE) => Err(invalid(
-            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v2 requires a service endpoint request",
+            "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v3 requires a service endpoint request",
         )),
         Some("declarations-v1")
             if subject
@@ -3154,7 +3269,7 @@ mod section_context_tests {
 }
 
 #[cfg(test)]
-mod api_contract_tests {
+pub(super) mod api_contract_tests {
     use super::*;
 
     const SCOPE: &str = ":main";
@@ -3393,7 +3508,7 @@ mod api_contract_tests {
         work
     }
 
-    fn endpoint_context_fixture() -> Work {
+    pub(in crate::documentation) fn endpoint_context_fixture() -> Work {
         let mut work = api_fixture(
             DESCRIPTOR,
             &["class:orders.Request", "class:orders.Response"],
@@ -4091,8 +4206,22 @@ mod api_contract_tests {
         work.request.context_profile = Some("endpoint-context-v1".into());
         let error = validate_context_profile(&work.subject, &work.request).unwrap_err();
         assert!(error.message.contains("CONTEXT_PROFILE_UNSUPPORTED"));
-        assert!(error.message.contains("prepare a fresh Work"));
-        assert!(error.message.contains("endpoint-context-v2"));
+        assert!(error.message.contains("prepare fresh Work"));
+        assert!(error.message.contains("endpoint-context-v3"));
+    }
+
+    #[test]
+    fn endpoint_context_v2_saved_work_is_rejected_but_other_profiles_remain_readable() {
+        let mut work = endpoint_context_fixture();
+        work.request.context_profile = Some("endpoint-context-v2".into());
+        let error = validate_context_profile(&work.subject, &work.request).unwrap_err();
+        assert!(error.message.contains("CONTEXT_PROFILE_UNSUPPORTED"));
+        assert!(error.message.contains("prepare fresh Work"));
+        assert!(error.message.contains("endpoint-context-v3"));
+
+        work.request.context_profile = Some("declarations-v1".into());
+        work.request.entrypoint = Some("section-entities".into());
+        assert!(validate_context_profile(&work.subject, &work.request).is_ok());
     }
 
     #[test]
