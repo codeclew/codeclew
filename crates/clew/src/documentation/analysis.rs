@@ -934,6 +934,74 @@ pub(crate) fn project_scoped(
             );
             continue;
         }
+        // Compiler call relations have independent authority and source
+        // coordinates. Retain them as dependencies instead of folding them
+        // into FLOW, whose source-order events have different limits and
+        // explicit control-flow boundaries.
+        if fact["kind"] == "RELATION"
+            && matches!(fact["relationKind"].as_str(), Some("CALLS" | "CONSTRUCTS"))
+        {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            let identity = scoped_identity(&scope, &format!("call-site:{}", digest(fact)?));
+            let id = dependency_id(&service.id, "call-relation", &identity)?;
+            let source = add_source(
+                &mut evidence,
+                service,
+                sources,
+                &scope,
+                fact,
+                binding,
+                &identity,
+            )?;
+            let mut normalized = strip_coordinates(fact);
+            normalized["scope"] = json!(scope);
+            let mut call_site = json!({
+                "file":fact["file"],
+                "startLine":fact["startLine"],
+                "endLine":fact["endLine"],
+                "byteStart":fact["byteStart"],
+                "byteEnd":fact["byteEnd"],
+                "sourceStatus":"SOURCE_UNAVAILABLE"
+            });
+            if fact["sourceIdentity"].as_str().is_none_or(str::is_empty) {
+                call_site["ownerStatus"] = json!("SOURCE_OWNER_UNAVAILABLE");
+                if !evidence
+                    .boundaries
+                    .iter()
+                    .any(|boundary| boundary == "CALL_RELATION_OWNER_UNAVAILABLE")
+                {
+                    evidence
+                        .boundaries
+                        .push("CALL_RELATION_OWNER_UNAVAILABLE".into());
+                }
+            } else {
+                call_site["ownerStatus"] = json!("SOURCE_OWNER_RETAINED");
+            }
+            let source_ids: Vec<_> = source.into_iter().collect();
+            if let Some(source_id) = source_ids.first()
+                && let Some(source) = evidence.sources.get(source_id)
+            {
+                call_site["sourceId"] = json!(source_id);
+                call_site["sourceDigest"] = json!(source.text_digest);
+                call_site["evidenceDigest"] = json!(source.evidence_digest);
+                call_site["sourceStatus"] = json!("SOURCE_RETAINED");
+            }
+            normalized["callSite"] = call_site;
+            let symbol = fact["sourceIdentity"].as_str().unwrap_or_default();
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "CALL_RELATION".into(),
+                    service: service.id.clone(),
+                    symbol: symbol.into(),
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids,
+                },
+            );
+            continue;
+        }
         if fact["kind"] != "DECLARATION" {
             continue;
         }
@@ -1396,6 +1464,26 @@ mod tests {
         )
     }
 
+    fn call_relation_fact(
+        scope: &Value,
+        source: &str,
+        target: Value,
+        file: &str,
+        line: u64,
+        resolution: &str,
+    ) -> (Value, String) {
+        (
+            json!({
+                "kind":"RELATION","relationKind":"CALLS",
+                "sourceIdentity":source,"targetIdentity":target,
+                "resolution":resolution,"file":file,
+                "startLine":line,"endLine":line,
+                "byteStart":100,"byteEnd":110,"scope":scope,
+            }),
+            "call-binding-digest".into(),
+        )
+    }
+
     fn compile_sources(
         scopes: Vec<(&str, BTreeMap<String, String>, bool)>,
         contracts: BTreeMap<String, String>,
@@ -1542,6 +1630,250 @@ mod tests {
             &known(scopes),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn scoped_call_relation_keeps_try_call_source_and_exception_flow_boundary() {
+        let service = projection_service();
+        let file = "src/main/java/example/Service.java";
+        let text = "package example;\nclass Service {\n  void endpoint() { try { helper(); } catch (RuntimeException ex) {} }\n  void helper() {}\n}\n";
+        let table = BTreeMap::from([(file.into(), text.into())]);
+        let sources = compile_sources(vec![(":a/main", table, true)], BTreeMap::new());
+        let scope = json!({"compilation":":a/main"});
+        let endpoint = "method:example.Service#endpoint()V";
+        let helper = "method:example.Service#helper()V";
+        let facts = vec![
+            (
+                json!({
+                    "kind":"DECLARATION","symbolIdentity":endpoint,
+                    "ownerIdentity":"class:example.Service","name":"endpoint",
+                    "file":file,"startLine":3,"endLine":3,"scope":scope,
+                    "documentation":{
+                        "events":[{"kind":"BOUNDARY","file":file,"startLine":3,"endLine":3}],
+                        "boundaries":["EXCEPTION_FLOW_REQUIRES_SOURCE_REVIEW"]
+                    }
+                }),
+                "declaration-binding".into(),
+            ),
+            call_relation_fact(&scope, endpoint, json!(helper), file, 3, "COMPILER_EXACT"),
+        ];
+
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main"]);
+        let relation = evidence
+            .observations
+            .values()
+            .find(|observation| observation.kind == "CALL_RELATION")
+            .expect("javac call relation is retained independently of FLOW");
+        assert_eq!(relation.service, service.id);
+        assert_eq!(relation.symbol, endpoint);
+        assert_eq!(relation.normalized["relationKind"], "CALLS");
+        assert_eq!(relation.normalized["sourceIdentity"], endpoint);
+        assert_eq!(relation.normalized["targetIdentity"], helper);
+        assert_eq!(relation.normalized["resolution"], "COMPILER_EXACT");
+        assert_eq!(relation.normalized["scope"], ":a/main");
+        assert_eq!(relation.source_ids.len(), 1);
+        let source = &evidence.sources[&relation.source_ids[0]];
+        assert!(source.text.contains("helper();"));
+        assert_eq!(
+            relation.normalized["callSite"]["sourceDigest"],
+            source.text_digest
+        );
+        assert_eq!(
+            relation.normalized["callSite"]["evidenceDigest"],
+            source.evidence_digest
+        );
+        assert_eq!(
+            relation.normalized["callSite"]["sourceStatus"],
+            "SOURCE_RETAINED"
+        );
+        assert!(
+            evidence
+                .boundaries
+                .iter()
+                .any(|boundary| { boundary == "EXCEPTION_FLOW_REQUIRES_SOURCE_REVIEW" })
+        );
+        assert!(evidence.observations.values().any(|observation| {
+            observation.kind == "FLOW" && observation.normalized["kind"] == "BOUNDARY"
+        }));
+    }
+
+    #[test]
+    fn scoped_call_relation_preserves_unknown_target_and_missing_source_gap() {
+        let service = projection_service();
+        let sources = compile_sources(vec![(":a/main", BTreeMap::new(), false)], BTreeMap::new());
+        let unknown_target = call_relation_fact(
+            &json!({"compilation":":a/main"}),
+            "method:example.Service#endpoint()V",
+            Value::Null,
+            "src/main/java/example/Missing.java",
+            19,
+            "UNKNOWN",
+        );
+        let mut ownerless = call_relation_fact(
+            &json!({"compilation":":a/main"}),
+            "method:example.Service#endpoint()V",
+            json!("method:example.Service#helper()V"),
+            "src/main/java/example/Missing.java",
+            20,
+            "COMPILER_EXACT",
+        );
+        ownerless.0["sourceIdentity"] = Value::Null;
+        let facts = vec![unknown_target, ownerless];
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main"]);
+        let relation = evidence
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "CALL_RELATION"
+                    && observation.normalized["resolution"] == "UNKNOWN"
+            })
+            .expect("the unresolved relation fact itself remains inspectable");
+        assert_eq!(relation.normalized["targetIdentity"], Value::Null);
+        assert_eq!(relation.normalized["resolution"], "UNKNOWN");
+        assert_eq!(
+            relation.normalized["callSite"]["sourceStatus"],
+            "SOURCE_UNAVAILABLE"
+        );
+        assert!(relation.source_ids.is_empty());
+        assert!(evidence.sources.is_empty());
+        let ownerless = evidence
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "CALL_RELATION"
+                    && observation.normalized["callSite"]["ownerStatus"]
+                        == "SOURCE_OWNER_UNAVAILABLE"
+            })
+            .expect("ownerless relation has an explicit ownership gap");
+        assert_eq!(ownerless.symbol, "");
+        assert!(
+            evidence
+                .boundaries
+                .iter()
+                .any(|boundary| boundary == "CALL_RELATION_OWNER_UNAVAILABLE")
+        );
+    }
+
+    #[test]
+    fn javac_try_invocation_projects_as_citable_call_relation_while_flow_stays_bounded() {
+        use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
+        use crate::java_project_model::{JavaBuildSystem, JavaOperationalModel, JavaProjectModel};
+        use std::process::Command;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let file = "src/main/java/example/Service.java";
+        let source = "package example;\nclass Service {\n  void endpoint() { try { helper(); } catch (RuntimeException ex) {} }\n  void helper() {}\n}\n";
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, source).unwrap();
+        let version = Command::new("javac").arg("-version").output().unwrap();
+        let version_text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&version.stdout),
+            String::from_utf8_lossy(&version.stderr)
+        );
+        let compiler_version = version_text
+            .lines()
+            .find(|line| line.starts_with("javac "))
+            .unwrap()
+            .to_owned();
+        let mut authority = JavaProjectModel {
+            schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+            model_digest: String::new(),
+            build_system: JavaBuildSystem::Maven,
+            compilation: ":/main".into(),
+            source_files: vec![file.into()],
+            classpath: Vec::new(),
+            release: 17,
+            compiler_version,
+            compiler_options: Vec::new(),
+            annotation_processors: Vec::new(),
+            annotation_processor_paths: Vec::new(),
+            boundaries: Vec::new(),
+        };
+        authority.model_digest = crate::canonical::hash(&authority).unwrap();
+        let operational = JavaOperationalModel {
+            authority,
+            source_paths: vec![path],
+            classpath_paths: Vec::new(),
+            annotation_processor_paths: Vec::new(),
+            java_executable: "java".into(),
+        };
+        let content_digests =
+            BTreeMap::from([(file.into(), crate::canonical::hash_bytes(source.as_bytes()))]);
+        let index =
+            build_java_compiler_index(root, &operational, &content_digests, false, None, &[], None)
+                .unwrap();
+        let endpoint = index
+            .facts
+            .iter()
+            .find_map(|fact| match fact {
+                JavaCompilerFact::Declaration {
+                    name: Some(name),
+                    symbol_identity,
+                    ..
+                } if name == "endpoint" => Some(symbol_identity.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let relation = index
+            .facts
+            .iter()
+            .find_map(|fact| match fact {
+                JavaCompilerFact::Relation {
+                    relation_kind,
+                    source_identity,
+                    target_identity,
+                    start_line: Some(3),
+                    ..
+                } if relation_kind == "CALLS" && source_identity == &endpoint => {
+                    Some(target_identity.clone())
+                }
+                _ => None,
+            })
+            .expect("the general javac scanner sees helper() inside try");
+        let scope = json!({"compilation":":/main"});
+        let facts = index
+            .facts
+            .iter()
+            .map(|fact| {
+                let mut value = serde_json::to_value(fact).unwrap();
+                value["scope"] = scope.clone();
+                (value, digest(fact).unwrap())
+            })
+            .collect();
+        let table = BTreeMap::from([(file.into(), source.into())]);
+        let sources = compile_sources(vec![(":/main", table, true)], BTreeMap::new());
+        let service = projection_service();
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":/main"]);
+        let call = evidence
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "CALL_RELATION"
+                    && observation.normalized["sourceIdentity"] == endpoint
+                    && observation.normalized["targetIdentity"] == relation
+            })
+            .expect("javac call relation survives scoped projection");
+        assert_eq!(call.normalized["relationKind"], "CALLS");
+        assert_eq!(call.normalized["resolution"], "COMPILER_EXACT");
+        assert!(
+            evidence.sources[&call.source_ids[0]]
+                .text
+                .contains("helper();")
+        );
+        assert!(
+            evidence
+                .boundaries
+                .iter()
+                .any(|boundary| { boundary == "EXCEPTION_FLOW_REQUIRES_SOURCE_REVIEW" })
+        );
+        assert!(evidence.observations.values().any(|observation| {
+            observation.kind == "FLOW"
+                && observation.symbol == endpoint
+                && observation.normalized["kind"] == "BOUNDARY"
+        }));
     }
 
     #[test]

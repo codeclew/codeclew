@@ -914,32 +914,339 @@ pub(super) fn context_items(
         }
         if args.entrypoint.is_some() {
             let symbols: BTreeSet<_> = entries.iter().map(|e| e.symbol.as_str()).collect();
+            let root_scopes: BTreeSet<_> = selected
+                .iter()
+                .filter_map(|id| checked.dependencies.get(id))
+                .filter(|observation| observation.kind == "SYMBOL")
+                .map(|observation| {
+                    (
+                        observation.symbol.clone(),
+                        observation.normalized["scope"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
+                    )
+                })
+                .collect();
+            let mut observations_by_symbol_scope = BTreeMap::<(String, String), Vec<String>>::new();
+            let mut declarations_by_symbol_scope = BTreeMap::<(String, String), Vec<String>>::new();
+            let mut declaration_scopes = BTreeMap::<String, BTreeSet<String>>::new();
+            let mut relations_by_owner_scope = BTreeMap::<(String, String), Vec<String>>::new();
+            for observation in e.observations.values() {
+                let scope = observation.normalized["scope"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                let symbol_scope = (observation.symbol.clone(), scope.clone());
+                observations_by_symbol_scope
+                    .entry(symbol_scope.clone())
+                    .or_default()
+                    .push(observation.id.clone());
+                if observation.kind == "SYMBOL" {
+                    declarations_by_symbol_scope
+                        .entry(symbol_scope)
+                        .or_default()
+                        .push(observation.id.clone());
+                    declaration_scopes
+                        .entry(observation.symbol.clone())
+                        .or_default()
+                        .insert(scope.clone());
+                }
+                if observation.kind == "CALL_RELATION"
+                    && let Some(owner) = observation.normalized["sourceIdentity"]
+                        .as_str()
+                        .filter(|owner| !owner.is_empty())
+                {
+                    relations_by_owner_scope
+                        .entry((owner.to_owned(), scope))
+                        .or_default()
+                        .push(observation.id.clone());
+                }
+            }
+            let ambiguous_symbols: BTreeSet<_> = e
+                .boundaries
+                .iter()
+                .filter_map(|boundary| boundary.strip_prefix("SCOPE_AMBIGUOUS:"))
+                .collect();
             selected.extend(
                 e.observations
                     .values()
                     .filter(|o| {
-                        symbols.contains(o.symbol.as_str()) || o.kind.starts_with("CONTRACT")
+                        o.kind.starts_with("CONTRACT")
+                            || symbols.contains(o.symbol.as_str())
+                                && (root_scopes.is_empty()
+                                    || root_scopes.contains(&(
+                                        o.symbol.clone(),
+                                        o.normalized["scope"].as_str().unwrap_or("").to_owned(),
+                                    )))
                     })
                     .map(|o| o.id.clone()),
             );
-            // Follow bounded local bodies so an agent can see the callee evidence too.
+            // Follow bounded source-local bodies. Compiler relations stay
+            // separate from FLOW and can add calls hidden behind FLOW
+            // boundaries, such as invocations inside try statements.
+            let mut call_frontier_counts = BTreeMap::<String, usize>::new();
+            let mut call_frontier_examples = Vec::new();
+            let mut reported_call_gaps = BTreeSet::new();
+            let mut traversed_call_relations = BTreeSet::new();
+            let mut report_call_gap = |observation: &Observation, reason: &str| {
+                if reported_call_gaps.insert((observation.id.clone(), reason.to_owned())) {
+                    *call_frontier_counts.entry(reason.to_owned()).or_default() += 1;
+                    if call_frontier_examples.len() < 8 {
+                        call_frontier_examples.push(json!({
+                            "relationId":observation.id,
+                            "sourceIdentity":observation.normalized["sourceIdentity"],
+                            "targetIdentity":observation.normalized["targetIdentity"],
+                            "scope":observation.normalized["scope"],
+                            "sourceIds":observation.source_ids,
+                            "reason":reason
+                        }));
+                    }
+                }
+            };
             for _ in 0..4 {
-                let targets: BTreeSet<String> = selected
+                let declarations: BTreeSet<_> = selected
                     .iter()
                     .filter_map(|id| checked.dependencies.get(id))
-                    .filter_map(|o| o.normalized["target"].as_str().map(str::to_owned))
+                    .filter(|observation| observation.kind == "SYMBOL")
+                    .map(|observation| {
+                        (
+                            observation.symbol.clone(),
+                            observation.normalized["scope"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_owned(),
+                        )
+                    })
                     .collect();
-                selected.extend(
-                    e.observations
-                        .values()
-                        .filter(|o| targets.contains(&o.symbol))
-                        .map(|o| o.id.clone()),
-                );
+                for owner_scope in &declarations {
+                    if let Some(relations) = relations_by_owner_scope.get(owner_scope) {
+                        selected.extend(relations.iter().cloned());
+                    }
+                }
+                let mut targets = BTreeSet::<(String, String)>::new();
+                let mut relation_targets = BTreeMap::<(String, String), Vec<String>>::new();
+                for observation in selected
+                    .iter()
+                    .filter_map(|id| checked.dependencies.get(id))
+                {
+                    if observation.kind == "CALL_RELATION" {
+                        traversed_call_relations.insert(observation.id.clone());
+                        let owner = observation.normalized["sourceIdentity"].as_str();
+                        let scope = observation.normalized["scope"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned();
+                        if owner.is_none_or(str::is_empty)
+                            || !declarations
+                                .contains(&(owner.unwrap_or_default().to_owned(), scope.clone()))
+                        {
+                            report_call_gap(observation, "CALL_RELATION_OWNER_UNAVAILABLE");
+                            continue;
+                        }
+                        if !matches!(
+                            observation.normalized["relationKind"].as_str(),
+                            Some("CALLS" | "CONSTRUCTS")
+                        ) || observation.normalized["resolution"] != "COMPILER_EXACT"
+                        {
+                            report_call_gap(observation, "CALL_RELATION_RESOLUTION_UNVERIFIED");
+                            continue;
+                        }
+                        let call_site = &observation.normalized["callSite"];
+                        let call_source_bound = match observation.source_ids.as_slice() {
+                            [source_id] if call_site["sourceId"].as_str() == Some(source_id) => {
+                                e.sources.get(source_id).is_some_and(|source| {
+                                    source.service == e.service
+                                        && call_site["sourceDigest"] == source.text_digest
+                                        && call_site["evidenceDigest"] == source.evidence_digest
+                                })
+                            }
+                            _ => false,
+                        };
+                        if call_site["sourceStatus"] != "SOURCE_RETAINED" || !call_source_bound {
+                            report_call_gap(observation, "CALL_SITE_SOURCE_UNAVAILABLE");
+                            continue;
+                        }
+                        let Some(target) = observation.normalized["targetIdentity"]
+                            .as_str()
+                            .filter(|target| !target.is_empty())
+                        else {
+                            report_call_gap(observation, "CALL_TARGET_IDENTITY_UNAVAILABLE");
+                            continue;
+                        };
+                        let key = (target.to_owned(), scope);
+                        targets.insert(key.clone());
+                        relation_targets
+                            .entry(key)
+                            .or_default()
+                            .push(observation.id.clone());
+                    } else if observation.kind == "FLOW"
+                        && matches!(
+                            observation.normalized["kind"].as_str(),
+                            Some("CALL" | "CONSTRUCT")
+                        )
+                        && let Some(target) = observation.normalized["target"]
+                            .as_str()
+                            .filter(|target| !target.is_empty())
+                    {
+                        targets.insert((
+                            target.to_owned(),
+                            observation.normalized["scope"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_owned(),
+                        ));
+                    }
+                }
+                for (target, scope) in targets {
+                    // A method body is expanded only when its declaration is
+                    // captured under the caller's compilation scope. A
+                    // similarly named declaration in another scope is not a
+                    // substitute for the compiler target's source.
+                    let target_scope = (target.clone(), scope.clone());
+                    let candidate_ids = declarations_by_symbol_scope
+                        .get(&target_scope)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    let reason = if ambiguous_symbols.contains(target.as_str()) {
+                        Some("CALL_TARGET_SCOPE_AMBIGUOUS")
+                    } else {
+                        match candidate_ids {
+                            [_] => None,
+                            [] if declaration_scopes.contains_key(&target) => {
+                                Some("CALL_TARGET_EXISTS_ONLY_IN_OTHER_SCOPE")
+                            }
+                            [] => Some("CALL_TARGET_BODY_NOT_CAPTURED"),
+                            _ => Some("CALL_TARGET_SOURCE_AMBIGUOUS"),
+                        }
+                    };
+                    if let Some(reason) = reason {
+                        if let Some(relation_ids) = relation_targets.get(&target_scope) {
+                            for relation_id in relation_ids {
+                                if let Some(relation) = checked.dependencies.get(relation_id) {
+                                    report_call_gap(relation, reason);
+                                }
+                            }
+                        }
+                    } else if let Some(observation_ids) =
+                        observations_by_symbol_scope.get(&target_scope)
+                    {
+                        selected.extend(observation_ids.iter().cloned());
+                    }
+                }
                 if selected.len() > 4096 {
                     return Err(invalid(
                         "entrypoint context exceeds bounded dependency scope",
                     ));
                 }
+            }
+            // Preserve the call frontier of declarations reached on the
+            // fourth expansion round. The relation and its source remain
+            // retrievable, while a fifth body is deferred with an explicit
+            // depth boundary.
+            let frontier_declarations: BTreeSet<_> = selected
+                .iter()
+                .filter_map(|id| checked.dependencies.get(id))
+                .filter(|observation| observation.kind == "SYMBOL")
+                .map(|observation| {
+                    (
+                        observation.symbol.clone(),
+                        observation.normalized["scope"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
+                    )
+                })
+                .collect();
+            for owner_scope in frontier_declarations {
+                let Some(relation_ids) = relations_by_owner_scope.get(&owner_scope) else {
+                    continue;
+                };
+                for relation_id in relation_ids {
+                    if !traversed_call_relations.insert(relation_id.clone()) {
+                        continue;
+                    }
+                    selected.insert(relation_id.clone());
+                    let Some(relation) = checked.dependencies.get(relation_id) else {
+                        continue;
+                    };
+                    let target = relation.normalized["targetIdentity"]
+                        .as_str()
+                        .filter(|target| !target.is_empty());
+                    let source = &relation.normalized["callSite"];
+                    let source_bound = match relation.source_ids.as_slice() {
+                        [source_id] if source["sourceId"].as_str() == Some(source_id) => {
+                            e.sources.get(source_id).is_some_and(|source| {
+                                source.service == e.service
+                                    && relation.normalized["callSite"]["sourceDigest"]
+                                        == source.text_digest
+                                    && relation.normalized["callSite"]["evidenceDigest"]
+                                        == source.evidence_digest
+                            })
+                        }
+                        _ => false,
+                    };
+                    let gap = if relation.normalized["sourceIdentity"].as_str()
+                        != Some(owner_scope.0.as_str())
+                    {
+                        Some("CALL_RELATION_OWNER_UNAVAILABLE")
+                    } else if !matches!(
+                        relation.normalized["relationKind"].as_str(),
+                        Some("CALLS" | "CONSTRUCTS")
+                    ) || relation.normalized["resolution"] != "COMPILER_EXACT"
+                    {
+                        Some("CALL_RELATION_RESOLUTION_UNVERIFIED")
+                    } else if source["sourceStatus"] != "SOURCE_RETAINED" || !source_bound {
+                        Some("CALL_SITE_SOURCE_UNAVAILABLE")
+                    } else if target.is_none() {
+                        Some("CALL_TARGET_IDENTITY_UNAVAILABLE")
+                    } else {
+                        let target = target.unwrap();
+                        let target_scope = (target.to_owned(), owner_scope.1.clone());
+                        let candidates = declarations_by_symbol_scope
+                            .get(&target_scope)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default();
+                        if ambiguous_symbols.contains(target) {
+                            Some("CALL_TARGET_SCOPE_AMBIGUOUS")
+                        } else {
+                            match candidates {
+                                [callee_id] if selected.contains(callee_id) => None,
+                                [_] => Some("CALL_EXPANSION_DEPTH_LIMIT"),
+                                [] if declaration_scopes.contains_key(target) => {
+                                    Some("CALL_TARGET_EXISTS_ONLY_IN_OTHER_SCOPE")
+                                }
+                                [] => Some("CALL_TARGET_BODY_NOT_CAPTURED"),
+                                _ => Some("CALL_TARGET_SOURCE_AMBIGUOUS"),
+                            }
+                        }
+                    };
+                    if let Some(reason) = gap {
+                        report_call_gap(relation, reason);
+                    }
+                    if selected.len() > 4096 {
+                        return Err(invalid(
+                            "entrypoint context exceeds bounded dependency scope",
+                        ));
+                    }
+                }
+            }
+            drop(report_call_gap);
+            if !call_frontier_counts.is_empty() {
+                let reported = call_frontier_examples.len();
+                let total: usize = call_frontier_counts.values().sum();
+                items.push(json!({
+                    "kind":"CALL_FRONTIER_GAPS",
+                    "id":format!("{id}:call-frontier-gaps"),
+                    "record":{
+                        "countsByReason":call_frontier_counts,
+                        "examples":call_frontier_examples,
+                        "exampleLimit":8,
+                        "omittedExampleCount":total.saturating_sub(reported),
+                        "authority":"SOURCE_RELATION_WITH_UNEXPANDED_LOCAL_BODY",
+                        "nextRead":"Expand the listed call relation dependencies and source references before claiming callee behavior."
+                    }
+                }));
             }
         }
     } else if let Some(id) = &args.scenario {
@@ -976,14 +1283,25 @@ pub(super) fn context_items(
         .iter()
         .filter_map(|id| checked.dependencies.get(id))
         .filter(|o| o.kind == "SYMBOL")
-        .map(|o| o.symbol.as_str())
+        .map(|o| {
+            (
+                o.symbol.clone(),
+                o.normalized["scope"].as_str().unwrap_or("").to_owned(),
+            )
+        })
         .collect();
     let flow_ids: Vec<_> = checked
         .dependencies
         .values()
         .filter(|o| {
-            matches!(o.kind.as_str(), "FLOW" | "SEMANTIC_SYMBOL")
-                && selected_symbols.contains(o.symbol.as_str())
+            args.service
+                .as_ref()
+                .is_none_or(|service| &o.service == service)
+                && matches!(o.kind.as_str(), "FLOW" | "SEMANTIC_SYMBOL")
+                && selected_symbols.contains(&(
+                    o.symbol.clone(),
+                    o.normalized["scope"].as_str().unwrap_or("").to_owned(),
+                ))
         })
         .map(|o| o.id.clone())
         .collect();
@@ -1221,6 +1539,285 @@ mod tests {
             source_inputs: None,
             composition: None,
         }
+    }
+
+    fn scoped_call_context(ambiguous_target: bool) -> check::Check {
+        let root = "method:orders.Controller#handle()V";
+        let helper = "method:orders.Controller#helper()V";
+        let mut observations = BTreeMap::new();
+        let mut add =
+            |id: &str, kind: &str, symbol: &str, normalized: Value, source_ids: Vec<String>| {
+                observations.insert(
+                    id.into(),
+                    Observation {
+                        id: id.into(),
+                        kind: kind.into(),
+                        service: "orders".into(),
+                        symbol: symbol.into(),
+                        digest: format!("digest-{id}"),
+                        normalized,
+                        source_ids,
+                    },
+                );
+            };
+        add(
+            "root-main",
+            "SYMBOL",
+            root,
+            json!({"symbolIdentity":root,"scope":":main"}),
+            Vec::new(),
+        );
+        add(
+            "entry-route",
+            "ENTRYPOINT",
+            root,
+            json!({"scope":":main"}),
+            Vec::new(),
+        );
+        add(
+            "call-main",
+            "CALL_RELATION",
+            root,
+            json!({
+                "kind":"RELATION","relationKind":"CALLS","sourceIdentity":root,
+                "targetIdentity":helper,"resolution":"COMPILER_EXACT","scope":":main",
+                "callSite":{
+                    "sourceId":"source-call","sourceDigest":"call-source-digest",
+                    "evidenceDigest":"call-binding-digest","sourceStatus":"SOURCE_RETAINED"
+                }
+            }),
+            vec!["source-call".into()],
+        );
+        add(
+            "helper-main",
+            "SYMBOL",
+            helper,
+            json!({"symbolIdentity":helper,"scope":":main"}),
+            Vec::new(),
+        );
+        add(
+            "helper-main-flow",
+            "FLOW",
+            helper,
+            json!({"kind":"RETURN","scope":":main"}),
+            Vec::new(),
+        );
+        add(
+            "helper-test",
+            "SYMBOL",
+            helper,
+            json!({"symbolIdentity":helper,"scope":":test"}),
+            Vec::new(),
+        );
+        add(
+            "helper-test-flow",
+            "FLOW",
+            helper,
+            json!({"kind":"RETURN","scope":":test"}),
+            Vec::new(),
+        );
+        drop(add);
+
+        let service = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "orders".into(),
+            revision: "synthetic-revision".into(),
+            service_digest: "synthetic-service-digest".into(),
+            extractor: "synthetic".into(),
+            runtime_mode: "TEST".into(),
+            coverage: "COMPLETE".into(),
+            boundaries: ambiguous_target
+                .then(|| format!("SCOPE_AMBIGUOUS:{helper}"))
+                .into_iter()
+                .collect(),
+            entrypoints: vec![Entrypoint {
+                id: "entry".into(),
+                service: "orders".into(),
+                symbol: root.into(),
+                kind: "HTTP_ENDPOINT".into(),
+                trigger: json!({"path":"/handle"}),
+                source_ids: Vec::new(),
+                dependency_ids: vec!["root-main".into(), "entry-route".into()],
+                boundaries: Vec::new(),
+            }],
+            observations: observations.clone(),
+            sources: BTreeMap::from([(
+                "source-call".into(),
+                Source {
+                    id: "source-call".into(),
+                    service: "orders".into(),
+                    revision: "synthetic-revision".into(),
+                    file: "src/Controller.java".into(),
+                    start_line: 10,
+                    end_line: 10,
+                    text_digest: "call-source-digest".into(),
+                    text: "try { helper(); } catch (RuntimeException ex) {}".into(),
+                    evidence_digest: "call-binding-digest".into(),
+                    authority: "CAPTURED_SOURCE".into(),
+                    occurrence: None,
+                    url: None,
+                },
+            )]),
+            contracts: BTreeMap::new(),
+        };
+        check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "synthetic-input".into(),
+            context_digest: "synthetic-context".into(),
+            dependencies: observations,
+            services: BTreeMap::from([("orders".into(), service)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        }
+    }
+
+    fn entrypoint_context_args() -> ContextArgs {
+        ContextArgs {
+            root: PathBuf::new(),
+            service: Some("orders".into()),
+            scenario: None,
+            entrypoint: Some("entry".into()),
+            symbols: Vec::new(),
+            source_ids: Vec::new(),
+            dependency_ids: Vec::new(),
+            format: ContextFormat::Raw,
+            refresh: false,
+            snapshot: None,
+            cursor: None,
+            limit: 20,
+        }
+    }
+
+    #[test]
+    fn bounded_entrypoint_context_expands_call_relations_only_within_unambiguous_source_scope() {
+        let context = context_items(
+            &scoped_call_context(false),
+            &entrypoint_context_args(),
+            None,
+        )
+        .unwrap();
+        assert!(
+            context
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == "call-main" })
+        );
+        assert!(
+            context
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == "helper-main" })
+        );
+        assert!(
+            context
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == "helper-main-flow" })
+        );
+        assert!(
+            context
+                .iter()
+                .any(|item| { item["kind"] == "SOURCE" && item["id"] == "source-call" })
+        );
+        assert!(!context.iter().any(|item| {
+            item["kind"] == "DEPENDENCY"
+                && matches!(
+                    item["id"].as_str(),
+                    Some("helper-test" | "helper-test-flow")
+                )
+        }));
+
+        let ambiguous =
+            context_items(&scoped_call_context(true), &entrypoint_context_args(), None).unwrap();
+        assert!(
+            ambiguous
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == "call-main" })
+        );
+        assert!(!ambiguous.iter().any(|item| {
+            item["kind"] == "DEPENDENCY"
+                && matches!(item["id"].as_str(), Some("helper-main" | "helper-test"))
+        }));
+        assert_eq!(
+            ambiguous
+                .iter()
+                .find(|item| item["kind"] == "CALL_FRONTIER_GAPS")
+                .unwrap()["record"]["countsByReason"]["CALL_TARGET_SCOPE_AMBIGUOUS"],
+            1
+        );
+    }
+
+    #[test]
+    fn bounded_entrypoint_context_retains_depth_limited_call_frontier() {
+        let mut checked = scoped_call_context(false);
+        let mut add_observation = |observation: Observation| {
+            checked
+                .dependencies
+                .insert(observation.id.clone(), observation.clone());
+            checked
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .observations
+                .insert(observation.id.clone(), observation);
+        };
+        for index in 2..=5 {
+            let symbol = format!("method:orders.Controller#helper{index}()V");
+            add_observation(Observation {
+                id: format!("helper{index}-main"),
+                kind: "SYMBOL".into(),
+                service: "orders".into(),
+                symbol: symbol.clone(),
+                digest: format!("digest-helper{index}"),
+                normalized: json!({"symbolIdentity":symbol,"scope":":main"}),
+                source_ids: Vec::new(),
+            });
+        }
+        for index in 1..=4 {
+            let owner = if index == 1 {
+                "method:orders.Controller#helper()V".to_owned()
+            } else {
+                format!("method:orders.Controller#helper{index}()V")
+            };
+            let target = format!("method:orders.Controller#helper{}()V", index + 1);
+            add_observation(Observation {
+                id: format!("call-depth-{index}"),
+                kind: "CALL_RELATION".into(),
+                service: "orders".into(),
+                symbol: owner.clone(),
+                digest: format!("digest-call-depth-{index}"),
+                normalized: json!({
+                    "kind":"RELATION","relationKind":"CALLS","sourceIdentity":owner,
+                    "targetIdentity":target,"resolution":"COMPILER_EXACT","scope":":main",
+                    "callSite":{
+                        "sourceId":"source-call","sourceDigest":"call-source-digest",
+                        "evidenceDigest":"call-binding-digest","sourceStatus":"SOURCE_RETAINED"
+                    }
+                }),
+                source_ids: vec!["source-call".into()],
+            });
+        }
+        drop(add_observation);
+
+        let context = context_items(&checked, &entrypoint_context_args(), None).unwrap();
+        assert!(
+            context
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == "call-depth-4" })
+        );
+        assert!(
+            !context
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == "helper5-main" })
+        );
+        let gaps = context
+            .iter()
+            .find(|item| item["kind"] == "CALL_FRONTIER_GAPS");
+        assert!(gaps.is_some(), "{context:#?}");
+        assert_eq!(
+            gaps.unwrap()["record"]["countsByReason"]["CALL_EXPANSION_DEPTH_LIMIT"],
+            1
+        );
     }
 
     fn symbol_context_args(symbol: &str) -> ContextArgs {
