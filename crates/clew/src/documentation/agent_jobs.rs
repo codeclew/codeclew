@@ -946,6 +946,14 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
     } else {
         work.request.entrypoint.as_deref()
     };
+    let service_section_scope =
+        work.subject.starts_with("service:") && selected.is_some_and(super::sections::contains);
+    let process_overview = !summary_only
+        && super::processes::overview(
+            &work.checked,
+            &work.subject,
+            work.request.entrypoint.as_deref().unwrap_or(""),
+        );
     let sections: Vec<Value> = if work.subject.starts_with("service:") {
         super::sections::REQUIRED
             .iter()
@@ -986,21 +994,15 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
         Vec::new()
     };
     let mut guidance = serde_json::json!({
-        "answerScope":"Answer only the selected scope using delivered evidence. Prefer a short supported answer or a precise unknown over a plausible inventory. Request one bounded registered expansion when it can resolve a material question. These are writing instructions, not additional response fields; keep outputSchema unchanged.",
+        "answerScope":"Answer only the selected scope using delivered evidence. Prefer a short supported answer or a precise unknown over a plausible inventory. Apply each reader question when it is material to the selected scope; answer with delivered support, state a precise scoped unknown, or request a bounded registered expansion when it could resolve the question. Do not inventory irrelevant categories, every internal method or every DTO field. These are writing instructions, not additional response fields; keep outputSchema unchanged.",
         "sections":sections,
         "outputMode":if summary_only { "section-summary" } else { "proposal" },
     });
-    if !summary_only
-        && super::processes::overview(
-            &work.checked,
-            &work.subject,
-            work.request.entrypoint.as_deref().unwrap_or(""),
-        )
-    {
+    if process_overview {
         guidance["processQuestions"] = serde_json::json!([
             {
                 "id":"trigger-inputs",
-                "readerQuestion":"Where evidence makes it material, what trigger starts this process and which supplied inputs affect its path?"
+                "readerQuestion":"Where evidence makes it material, what trigger starts this process, which supplied inputs or response fields affect its path, and what value origins or transformations are supported?"
             },
             {
                 "id":"guards-order-outcomes",
@@ -1008,7 +1010,7 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
             },
             {
                 "id":"effects-failures",
-                "readerQuestion":"Which effects and failure branches can this process reach, and what completion or rollback behavior is actually shown?"
+                "readerQuestion":"Which effects and failure branches can this process reach, and which preparation, submission, invocation, acknowledgement, completion or rollback stages are actually shown?"
             },
             {
                 "id":"outbound-operations",
@@ -1019,12 +1021,40 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
                 "readerQuestion":"For configured destinations, which configuration key supplies them, and is the actual resolved destination evidenced? Keep configured keys distinct from actual addresses."
             }
         ]);
+    } else {
+        guidance["readerQuestions"] = serde_json::json!([
+            {
+                "id":"guards-and-outcomes",
+                "readerQuestion":"For each material branch in this scope, which helper checks, guards and early exits (including no-op paths) select behavior, and what failure or outcome follows?"
+            },
+            {
+                "id":"inputs-and-responses",
+                "readerQuestion":"Where request, message, response or outbound-payload semantics matter, which material supplied or returned fields affect behavior or outcomes (including status and error semantics), where do their values originate, and what mappings, transformations, defaults or discards does evidence support?"
+            },
+            {
+                "id":"reachable-outbound-operations",
+                "readerQuestion":"Which concrete outbound calls, messages or writes can the selected behavior reach, through which evidenced operation and guard, and what failure path is shown?"
+            },
+            {
+                "id":"configured-destination",
+                "readerQuestion":"When an evidenced outbound operation uses configuration, which key supplies its destination, and is the resolved value itself evidenced? Keep the configured key distinct from a resolved destination."
+            },
+            {
+                "id":"execution-stages",
+                "readerQuestion":"Which preparation, submission, queueing, invocation, acknowledgement, completion or rollback stages are evidenced, and where does the supplied evidence stop?"
+            }
+        ]);
     }
     if summary_only {
         guidance["format"] = serde_json::json!(
             "Return only the admitted section title, summary with evidence and optional uncertainties. Do not emit diagrams, tables or a full proposal through this narrow contract."
         );
     } else {
+        if service_section_scope || process_overview {
+            guidance["format"] = serde_json::json!(
+                "Keep this selected section or process overview at the summary root: use an evidence-bound summary and precise uncertainties, with optional supported typed visuals when useful. Do not add steps, contracts, participants or explanation. A visual is optional and is never required by itself."
+            );
+        }
         guidance["threads"] = serde_json::json!(
             "A computational thread is a supported causal scenario rooted in an entrypoint, not an OS thread or an arbitrary dependency graph. Explain trigger, guard, ordered actions, effects, outgoing sites, outcomes and unresolved frontier. A reusable fragment without a proven parent remains local detail. Distinguish construction, selection, queue insertion, invocation and completion; collection iteration does not imply FIFO or completed external effects. Stop an asynchronous path at submission unless continuation and correlation are supported. Keep prose and diagram ordering consistent."
         );
@@ -1216,9 +1246,7 @@ fn reviewer_payload_with_parts(
         &work.subject,
         work.request.entrypoint.as_deref().unwrap_or(""),
     );
-    if process_overview {
-        payload["readerGuidance"] = reader_guidance(work, false);
-    }
+    payload["readerGuidance"] = reader_guidance(work, section_contract);
     let schema_path = if section_contract {
         payload["outputContract"] = super::section_author::reviewer_binding_with_parts(
             work,
@@ -1240,16 +1268,18 @@ fn reviewer_payload_with_parts(
         )?;
         "outputSchema"
     };
-    let process_review_guidance = if process_overview {
-        " For this process overview, assess every material readerGuidance.processQuestions item against the summary and delivered evidence. If the answer omits material behavior that the packet does support, return verdict REJECT and add a blocking ERROR issue with claim=null and relevant delivered Work handles as evidence. A precise, evidence-scoped unknown is a valid answer when it still explains the selected process; this includes unresolved deployment destination, activation, persistence or provider completion. Request registered expansion when missing evidence blocks a useful explanation and a registered read could resolve it. Use NEEDS_EVIDENCE with the exact limitation only when missing evidence prevents a useful selected-process explanation and the limit cannot be honestly bounded. Do not demand irrelevant categories, invent values or turn missing evidence into a negative claim."
+    let scoped_review_guidance = if process_overview {
+        " For this process overview, assess every material readerGuidance.processQuestions item against the summary and delivered evidence. If the answer omits material behavior that the packet does support, return verdict REJECT and add a blocking ERROR issue with claim=null and relevant delivered Work handles as evidence. A precise, evidence-scoped unknown is a valid answer when it still explains the selected process; this includes unresolved deployment destination, activation, persistence or provider completion. Request registered expansion when missing evidence blocks a useful explanation and a registered read could resolve it. Use NEEDS_EVIDENCE with the exact limitation only when missing evidence prevents a useful selected-process explanation and the limit cannot be honestly bounded. Do not demand irrelevant categories, every internal method or DTO field, invent values or turn missing evidence into a negative claim."
     } else {
-        ""
+        " Assess every material, applicable readerGuidance question, including a selected section's readerQuestion, against the proposed content in the form allowed by readerGuidance.format when present and delivered evidence. If the packet supports material behavior that the proposal omits, return verdict REJECT and add a blocking ERROR issue with claim=null and relevant delivered Work handles as evidence. A precise, evidence-scoped unknown is valid when it still gives a useful bounded answer. Request registered expansion when missing evidence blocks a useful answer and a registered read could resolve it. Use NEEDS_EVIDENCE with the exact limitation only when missing evidence prevents a useful bounded answer. Do not demand irrelevant categories, every internal method or DTO field, or every visual format; do not invent values or make negative claims from absence."
     };
+    let content_root_guidance = " Assess proposal content against readerGuidance.format when present; it describes the selected content root, while outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response. For a summary root, do not require steps, contracts, participants or explanation; supported typed visuals are optional only when readerGuidance.format allows them, never a completeness requirement.";
     payload["instruction"] = serde_json::json!(format!(
-        "{} Follow {} exactly: assessedClaims and assessedOperations contain ID strings, while issue evidence contains delivered Work handles, not source IDs. Preserve the complete bound identity strings.{}",
+        "{} Follow {} exactly: assessedClaims and assessedOperations contain ID strings, while issue evidence contains delivered Work handles, not source IDs. Preserve the complete bound identity strings.{}{}",
         payload["instruction"].as_str().unwrap_or_default(),
         schema_path,
-        process_review_guidance
+        scoped_review_guidance,
+        content_root_guidance
     ));
     Ok(payload)
 }
@@ -4049,6 +4079,7 @@ mod input_cap_tests {
             5
         );
         assert_eq!(service["outputSchema"], shared_schema.unwrap());
+        assert!(service["readerGuidance"].get("format").is_none());
         assert!(
             serde_json::to_vec(&service["readerGuidance"])
                 .unwrap()
@@ -4120,8 +4151,15 @@ mod input_cap_tests {
         assert_eq!(guidance["outputMode"], "section-summary");
         assert_eq!(guidance["sections"].as_array().unwrap().len(), 1);
         assert_eq!(guidance["sections"][0]["id"], "section-entities");
+        assert_eq!(guidance["readerQuestions"].as_array().unwrap().len(), 5);
         assert!(guidance.get("threads").is_none());
         assert!(guidance.get("visuals").is_none());
+        assert!(
+            guidance["format"]
+                .as_str()
+                .unwrap()
+                .contains("Do not emit diagrams, tables")
+        );
         let schema = &request["outputContract"]["outputSchema"];
         let properties = &schema["$defs"]["sectionAction"]["properties"]["section"]["properties"];
         assert_eq!(properties.as_object().unwrap().len(), 3);
@@ -4137,6 +4175,26 @@ mod input_cap_tests {
         assert_eq!(
             request["outputContract"]["outputSchemaDigest"],
             digest(schema).unwrap()
+        );
+
+        let proposal: super::super::proposals::Artifact = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-proposal-artifact/1.0", "id":"proposal-id", "work":work.id,
+            "input":{"schema":"codeclew-documentation-proposal/1.0", "operations":[]},
+            "narrative":{"schema":"codeclew-narrative/1.3", "subject":work.subject, "contextDigest":"context",
+                "operations":[{"id":"entity-section","title":"Domain entities", "summary":{"id":"claim-a","text":"Describes the supplied entity evidence.","dependencyIds":[],"sourceIds":[]}, "participants":[], "events":[]}]},
+            "status":"READY", "diagnostics":[], "claims":{"claim-a":{}},
+            "readDigest":"read", "influence":{}, "meaningReview":"UNASSESSED"
+        }))
+        .unwrap();
+        let review = reviewer_payload(&work, &[], &proposal, "evidence-digest", true).unwrap();
+        assert_eq!(review["readerGuidance"], *guidance);
+        assert!(review.get("outputContract").is_some());
+        assert!(review.get("outputSchema").is_none());
+        assert!(
+            review["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response")
         );
     }
 
@@ -4476,6 +4534,12 @@ mod input_cap_tests {
         let request = reviewer_payload(&work, &pages, &proposal, "evidence-digest", false).unwrap();
         let author_request = author_payload(&work, &pages, &Value::Null, &Value::Null).unwrap();
         assert_eq!(request["readerGuidance"], author_request["readerGuidance"]);
+        let overview_format = request["readerGuidance"]["format"].as_str().unwrap();
+        assert_eq!(overview_format, author_request["readerGuidance"]["format"]);
+        assert!(overview_format.contains("optional supported typed visuals"));
+        assert!(
+            overview_format.contains("Do not add steps, contracts, participants or explanation")
+        );
         assert_eq!(
             request["readerGuidance"]["processQuestions"]
                 .as_array()
@@ -4483,6 +4547,16 @@ mod input_cap_tests {
                 .len(),
             5
         );
+        let overview_review_guidance = request["instruction"].as_str().unwrap();
+        assert!(
+            overview_review_guidance
+                .contains("assess every material readerGuidance.processQuestions item")
+        );
+        assert!(
+            overview_review_guidance
+                .contains("A precise, evidence-scoped unknown is a valid answer")
+        );
+        assert!(overview_review_guidance.contains("supported typed visuals are optional"));
         assert_eq!(request["languageContract"]["documentationLanguage"], "ru");
         assert!(request.get("outputContract").is_none());
         let output = &request["outputSchema"];
@@ -4529,13 +4603,20 @@ mod input_cap_tests {
 
         let mut ordinary_work = work.clone();
         ordinary_work.subject = "service:orders".into();
-        ordinary_work.request.entrypoint = Some("section-egress".into());
+        ordinary_work.request.entrypoint = Some("section-overview".into());
         let ordinary_author =
             author_payload(&ordinary_work, &pages, &Value::Null, &Value::Null).unwrap();
         assert!(
             ordinary_author["readerGuidance"]
                 .get("processQuestions")
                 .is_none()
+        );
+        assert_eq!(
+            ordinary_author["readerGuidance"]["readerQuestions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
         );
         let mut ordinary_proposal = proposal.clone();
         ordinary_proposal.narrative.as_mut().unwrap().subject = ordinary_work.subject.clone();
@@ -4547,7 +4628,122 @@ mod input_cap_tests {
             false,
         )
         .unwrap();
-        assert!(ordinary_reviewer.get("readerGuidance").is_none());
+        assert_eq!(
+            ordinary_reviewer["readerGuidance"],
+            ordinary_author["readerGuidance"]
+        );
+        assert_eq!(
+            ordinary_reviewer["readerGuidance"]["sections"][0]["id"],
+            "section-overview"
+        );
+        assert!(ordinary_author["readerGuidance"].get("format").is_some());
+        assert_eq!(
+            ordinary_reviewer["readerGuidance"]["format"],
+            ordinary_author["readerGuidance"]["format"]
+        );
+        assert!(
+            ordinary_author["readerGuidance"]["format"]
+                .as_str()
+                .unwrap()
+                .contains("optional supported typed visuals")
+        );
+        let generic_review_guidance = ordinary_reviewer["instruction"].as_str().unwrap();
+        for required in [
+            "material, applicable readerGuidance question",
+            "blocking ERROR issue with claim=null",
+            "relevant delivered Work handles as evidence",
+            "precise, evidence-scoped unknown is valid",
+            "registered expansion",
+            "NEEDS_EVIDENCE",
+            "Do not demand irrelevant categories",
+            "readerGuidance.format when present",
+            "outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response",
+            "supported typed visuals are optional only when readerGuidance.format allows them",
+        ] {
+            assert!(
+                generic_review_guidance.contains(required),
+                "generic reviewer guidance lacks {required:?}"
+            );
+        }
+
+        let mut whole_service_work = ordinary_work.clone();
+        whole_service_work.request.entrypoint = None;
+        let whole_service_author =
+            author_payload(&whole_service_work, &pages, &Value::Null, &Value::Null).unwrap();
+        let mut whole_service_proposal = ordinary_proposal.clone();
+        whole_service_proposal.narrative.as_mut().unwrap().subject =
+            whole_service_work.subject.clone();
+        let whole_service_reviewer = reviewer_payload(
+            &whole_service_work,
+            &pages,
+            &whole_service_proposal,
+            "evidence-digest",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            whole_service_reviewer["readerGuidance"],
+            whole_service_author["readerGuidance"]
+        );
+        assert!(
+            whole_service_author["readerGuidance"]
+                .get("format")
+                .is_none()
+        );
+
+        // A selected callable gets the same reader questions in authoring and
+        // review, independent of whether the subject is a service or a saved
+        // process root.
+        let mut endpoint_work = work.clone();
+        endpoint_work.subject = "service:orders".into();
+        endpoint_work.request.entrypoint = Some("orders-reserve".into());
+        let endpoint_author =
+            author_payload(&endpoint_work, &pages, &Value::Null, &Value::Null).unwrap();
+        let mut endpoint_proposal = proposal.clone();
+        endpoint_proposal.narrative.as_mut().unwrap().subject = endpoint_work.subject.clone();
+        let endpoint_reviewer = reviewer_payload(
+            &endpoint_work,
+            &pages,
+            &endpoint_proposal,
+            "evidence-digest",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint_reviewer["readerGuidance"],
+            endpoint_author["readerGuidance"]
+        );
+        assert_eq!(
+            endpoint_reviewer["readerGuidance"]["readerQuestions"][0]["id"],
+            "guards-and-outcomes"
+        );
+
+        let mut rich_process_work = work.clone();
+        rich_process_work.request.entrypoint = None;
+        let rich_process_author =
+            author_payload(&rich_process_work, &pages, &Value::Null, &Value::Null).unwrap();
+        let rich_process_reviewer = reviewer_payload(
+            &rich_process_work,
+            &pages,
+            &proposal,
+            "evidence-digest",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            rich_process_reviewer["readerGuidance"],
+            rich_process_author["readerGuidance"]
+        );
+        assert!(
+            rich_process_reviewer["readerGuidance"]
+                .get("readerQuestions")
+                .is_some()
+        );
+        assert!(
+            rich_process_reviewer["readerGuidance"]
+                .get("processQuestions")
+                .is_none()
+        );
 
         let unknown_pages = vec![json!({"items":[{"reference":"unknown-handle"}]})];
         let error = reviewer_payload(&work, &unknown_pages, &proposal, "evidence-digest", false)
