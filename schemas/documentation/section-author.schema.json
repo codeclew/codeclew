@@ -97,6 +97,7 @@
     },
     "selection": {
       "type": "object",
+      "description": "Leave the selection empty for the default context. Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. Keep the same selection when continuing a page with its cursor.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -143,7 +144,40 @@
         "untrackedReads": {
           "const": false
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "references": {"type": "array", "maxItems": 0},
+            "symbols": {"type": "array", "maxItems": 0},
+            "query": {"type": "null"}
+          }
+        },
+        {
+          "required": ["references"],
+          "properties": {
+            "references": {"type": "array", "minItems": 1},
+            "symbols": {"type": "array", "maxItems": 0},
+            "query": {"type": "null"}
+          }
+        },
+        {
+          "required": ["symbols"],
+          "properties": {
+            "references": {"type": "array", "maxItems": 0},
+            "symbols": {"type": "array", "minItems": 1},
+            "query": {"type": "null"}
+          }
+        },
+        {
+          "required": ["query"],
+          "properties": {
+            "references": {"type": "array", "maxItems": 0},
+            "symbols": {"type": "array", "maxItems": 0},
+            "query": {"type": "object"}
+          }
+        }
+      ]
     }
   }
 }

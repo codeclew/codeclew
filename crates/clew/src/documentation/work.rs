@@ -170,6 +170,25 @@ pub struct Query {
     #[serde(default)]
     pub symbol_contains: String,
 }
+
+pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError> {
+    if selection.references.len() > 8
+        || selection.symbols.len() > 8
+        || selection
+            .query
+            .as_ref()
+            .is_some_and(|q| q.kind.len() > 100 || q.symbol_contains.len() > 512)
+        || (!selection.references.is_empty() && !selection.symbols.is_empty())
+        || (selection.query.is_some()
+            && (!selection.references.is_empty() || !selection.symbols.is_empty()))
+    {
+        return Err(invalid(
+            "choose up to eight references, eight symbols, or one bounded query",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Handle {
@@ -925,20 +944,7 @@ fn compact_section_rows(
 }
 
 fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
-    if selection.references.len() > 8
-        || selection.symbols.len() > 8
-        || selection
-            .query
-            .as_ref()
-            .is_some_and(|q| q.kind.len() > 100 || q.symbol_contains.len() > 512)
-        || (!selection.references.is_empty() && !selection.symbols.is_empty())
-        || (selection.query.is_some()
-            && (!selection.references.is_empty() || !selection.symbols.is_empty()))
-    {
-        return Err(invalid(
-            "choose up to eight references, eight symbols, or one bounded query",
-        ));
-    }
+    validate_selection(selection)?;
     if work.request.context_profile.as_deref() == Some("declarations-v1")
         && selection.references.is_empty()
         && selection.symbols.is_empty()
@@ -1652,6 +1658,44 @@ mod section_context_tests {
                 .is_err()
         );
         assert!(russian.with_language_flag(Some("ru".into())).is_ok());
+    }
+
+    #[test]
+    fn selection_modes_allow_empty_and_cursor_selections_but_reject_combinations() {
+        let work = fixture(4, false);
+        let valid = [
+            json!({}),
+            json!({"references":[],"symbols":[],"query":null}),
+            json!({"references":["d1"]}),
+            json!({"references":["d1"],"symbols":[],"query":null}),
+            json!({"symbols":["Handler1"]}),
+            json!({"references":[],"symbols":["Handler1"],"query":null}),
+            json!({"query":{"kind":"SYMBOL","symbolContains":"Handler1"}}),
+            json!({"references":[],"symbols":[],"query":{"kind":"SYMBOL"}}),
+            json!({"cursor":"next-page"}),
+            json!({"references":["d1"],"cursor":"next-page"}),
+            json!({"symbols":["Handler1"],"cursor":"next-page"}),
+            json!({"query":{"kind":"SYMBOL"},"cursor":"next-page"}),
+        ];
+        for value in valid {
+            let selection: Selection = serde_json::from_value(value.clone()).unwrap();
+            validate_selection(&selection)
+                .unwrap_or_else(|error| panic!("valid selection rejected: {value}: {error}"));
+            rows(&work, &selection)
+                .unwrap_or_else(|error| panic!("valid selection failed rows: {value}: {error}"));
+        }
+
+        let mixed = [
+            json!({"references":["d1"],"symbols":["Handler1"]}),
+            json!({"references":["d1"],"query":{"kind":"SYMBOL"}}),
+            json!({"symbols":["Handler1"],"query":{"kind":"SYMBOL"}}),
+            json!({"references":["d1"],"symbols":["Handler1"],"query":{"kind":"SYMBOL"}}),
+        ];
+        for value in mixed {
+            let selection: Selection = serde_json::from_value(value.clone()).unwrap();
+            assert!(validate_selection(&selection).is_err(), "accepted {value}");
+            assert!(rows(&work, &selection).is_err(), "rows accepted {value}");
+        }
     }
 
     #[test]
