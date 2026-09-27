@@ -404,6 +404,30 @@ pub(super) fn gap_reference_allowed(handle: &work::Handle) -> bool {
     )
 }
 
+pub(super) fn selected_service_ids(work: &Work) -> BTreeSet<String> {
+    let allowed: BTreeSet<_> = if let Some(service) = work.subject.strip_prefix("service:") {
+        BTreeSet::from([service.to_owned()])
+    } else {
+        work.checked
+            .scenarios
+            .get(&work.subject[9..])
+            .map(|scenario| {
+                scenario
+                    .steps
+                    .iter()
+                    .map(|step| step.service.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    work.checked
+        .services
+        .keys()
+        .filter(|id| allowed.contains(*id))
+        .cloned()
+        .collect()
+}
+
 impl Builder<'_> {
     fn handle(&self, reference: &str) -> Result<&work::Handle, ClewError> {
         if !self.received.contains(reference) {
@@ -760,27 +784,13 @@ pub(super) fn materialize(
         label: "Caller".into(),
         service: None,
     }];
-    let allowed: BTreeSet<_> = if let Some(service) = work.subject.strip_prefix("service:") {
-        BTreeSet::from([service.to_owned()])
-    } else {
-        work.checked
-            .scenarios
-            .get(&work.subject[9..])
-            .map(|s| s.steps.iter().map(|s| s.service.clone()).collect())
-            .unwrap_or_default()
-    };
-    for service in work
-        .checked
-        .services
-        .keys()
-        .filter(|id| allowed.contains(*id))
-    {
+    for service in selected_service_ids(work) {
         let id = format!("service-{service}");
         actors.insert(service.clone(), id.clone());
         participants.push(Participant {
             id,
             label: service.clone(),
-            service: Some(service.clone()),
+            service: Some(service),
         });
     }
     let operation_id = |builder: &Builder, reference: &str| -> Result<String, ClewError> {

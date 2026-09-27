@@ -282,6 +282,86 @@ else:
             result = {"action": "proposal", "proposal": process_proposal()}
         else:
             raise AssertionError(f"unknown process fixture mode: {mode}")
+    elif job["role"] == "author" and mode.startswith("ordinary-shape-"):
+        rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
+        entry = next(item for item in rows if item["kind"] == "ENTRYPOINT")
+        message_flow = next(item for item in rows if item["kind"] == "DEPENDENCY"
+                            and item["record"]["kind"] == "FLOW"
+                            and item["record"]["normalized"]["kind"] == "CALL")
+        returned = next(item for item in rows if item["kind"] == "DEPENDENCY"
+                        and item["record"]["kind"] == "FLOW"
+                        and item["record"]["normalized"]["kind"] == "RETURN")
+
+        def ordinary_proposal(corrected=False, invalid_evidence=False, forged=False):
+            summary_evidence = "not-delivered" if invalid_evidence else entry["reference"]
+            operation = {
+                "entrypoint": entry["reference"],
+                "title": "Reserve quantity",
+                "summary": {
+                    "text": "The operation returns the requested quantity.",
+                    "evidence": [summary_evidence],
+                },
+                "steps": [
+                    {
+                        "kind": "message",
+                        "meaning": {
+                            "text": "The handler passes the quantity through its service path.",
+                            "evidence": [message_flow["reference"]],
+                        },
+                    },
+                    {
+                        "kind": "return",
+                        "meaning": {
+                            "text": "The return path yields the resulting quantity.",
+                            "evidence": [returned["reference"]],
+                        },
+                    },
+                ],
+            }
+            if not corrected:
+                operation["uncertainties"] = ["The operation's deployment is unknown."]
+            else:
+                operation["steps"][0]["from"] = "orders"
+                operation["steps"][0]["to"] = "caller"
+                operation["steps"][1]["from"] = "orders"
+                operation["steps"][1]["to"] = "caller"
+            if forged:
+                # This unknown authority field follows the misplaced shape
+                # error in the serialized proposal and must still fail closed.
+                operation["verification"] = "APPROVED"
+            proposal = {
+                "schema": "codeclew-documentation-proposal/1.0",
+                "operations": [operation],
+            }
+            if corrected:
+                proposal["uncertainties"] = ["The operation's deployment is unknown."]
+            return proposal
+
+        if mode in ("ordinary-shape-repair", "ordinary-shape-exhaust"):
+            malformed = ordinary_proposal()
+            if payload["feedback"] is None:
+                result = {"action": "proposal", "proposal": malformed}
+            else:
+                feedback = payload["feedback"]
+                assert feedback["kind"] == "AUTHOR_PROPOSAL_SHAPE"
+                assert feedback["paths"] == ["operations[0].uncertainties"]
+                assert feedback["missingStepFields"] == [
+                    "operations[0].steps[0].from",
+                    "operations[0].steps[0].to",
+                    "operations[0].steps[1].from",
+                    "operations[0].steps[1].to",
+                ]
+                assert "uncertainties" in feedback["parserMessage"]
+                assert "from" in feedback["message"] and "to" in feedback["message"]
+                assert payload["previousProposal"] == malformed
+                proposal = ordinary_proposal(corrected=(mode == "ordinary-shape-repair"))
+                result = {"action": "proposal", "proposal": proposal}
+        elif mode == "ordinary-shape-invalid-evidence":
+            result = {"action": "proposal", "proposal": ordinary_proposal(invalid_evidence=True)}
+        elif mode == "ordinary-shape-forged-field":
+            result = {"action": "proposal", "proposal": ordinary_proposal(forged=True)}
+        else:
+            raise AssertionError(f"unknown ordinary shape fixture mode: {mode}")
     elif job["role"] == "author" and options.get("expandMissingProposalEvidence"):
         evidence_items = payload["outputSchema"]["$defs"]["claim"]["properties"]["evidence"]["items"]
         allowed = set(evidence_items.get("enum", [])) if isinstance(evidence_items, dict) else set()

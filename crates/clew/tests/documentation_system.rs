@@ -3818,6 +3818,119 @@ fn docsys_t04_process_overview_repairs_missing_content_field_with_existing_budge
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_author_shape_repair_preserves_raw_result_through_publication() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({"mode":"ordinary-shape-repair"}), json!({}), None);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "author");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    let raw_author = read(f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[0]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(
+        raw_author["result"]["proposal"]["operations"][0]["uncertainties"],
+        json!(["The operation's deployment is unknown."])
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][0]
+            .get("from")
+            .is_none()
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][0]
+            .get("to")
+            .is_none()
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][1]
+            .get("from")
+            .is_none()
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][1]
+            .get("to")
+            .is_none()
+    );
+    assert!(report["review"].is_object(), "{report}");
+    assert!(
+        report["publication"]["bundle"].as_str().is_some(),
+        "{report}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_shape_authority_evidence_and_retry_budget_fail_closed() {
+    use serde_json::json;
+    for (mode, calls, expected_reason) in [
+        ("ordinary-shape-exhaust", 2, "REPAIR_EXHAUSTED"),
+        (
+            "ordinary-shape-invalid-evidence",
+            1,
+            "AUTHOR_CONTRACT_INVALID",
+        ),
+        (
+            "ordinary-shape-forged-field",
+            1,
+            "author proposal violates its closed schema",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.service("orders");
+        let (work, _, _) = proposal_fixture(&f);
+        let config = execution_config(&f, json!({"mode":mode}), json!({}), None);
+        let result = work_run(&f, &work, &config);
+        assert_ne!(result["status"], "ACCEPTED", "{mode}: {result}");
+        let report = run_report(&f, &result);
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), calls, "{mode}: {report}");
+        assert!(attempts.iter().all(|attempt| attempt["role"] == "author"));
+        assert!(report["proposal"].is_null(), "{mode}: {report}");
+        assert!(report["review"].is_null(), "{mode}: {report}");
+        assert!(
+            report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(expected_reason),
+            "{mode}: {report}"
+        );
+    }
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(&f, json!({"mode":"valid"}), json!({}), None);
+    config["repairAttempts"] = json!(0);
+    let result = work_run(&f, &work, &config);
+    assert_ne!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    assert!(
+        report["attempts"].as_array().unwrap().is_empty(),
+        "{report}"
+    );
+    assert!(report["proposal"].is_null(), "{report}");
+    assert!(report["review"].is_null(), "{report}");
+    assert!(
+        report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("finite calls covering initial authoring"),
+        "{report}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_t04_process_overview_authority_and_evidence_failures_are_not_retried() {
     use serde_json::json;
     for (mode, expected_reason) in [

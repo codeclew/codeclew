@@ -97,6 +97,14 @@ pub(super) fn sequence_event_kinds(flow_kind: &str) -> &'static [&'static str] {
     }
 }
 
+pub(super) fn sequence_step_requires_endpoints(step_kind: &str) -> bool {
+    matches!(step_kind, "message" | "return" | "declared")
+}
+
+pub(super) fn sequence_step_requires_interaction(step_kind: &str) -> bool {
+    step_kind == "declared"
+}
+
 pub(super) fn sequence_skipped(checked: &Check, subject: &str, operation_id: &str) -> bool {
     let service_summary = subject.starts_with("service:")
         && (super::sections::contains(operation_id) || super::notes::is_root(operation_id));
@@ -348,7 +356,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             {
                 return Err(invalid("note references an unknown participant"));
             }
-            if matches!(e.kind.as_str(), "message" | "return" | "declared") {
+            if sequence_step_requires_endpoints(&e.kind) {
                 let from = e
                     .from
                     .as_ref()
@@ -367,7 +375,9 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                         "cross-service arrows must reference a declared interaction",
                     ));
                 }
-                if e.kind == "declared" || (e.kind == "return" && e.interaction.is_some()) {
+                if sequence_step_requires_interaction(&e.kind)
+                    || (e.kind == "return" && e.interaction.is_some())
+                {
                     let id = e
                         .interaction
                         .as_ref()
