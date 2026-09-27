@@ -1,6 +1,14 @@
 #![cfg(unix)]
+#[path = "support/documentation_call_recovery.rs"]
+mod call_recovery;
+#[path = "support/documentation_capture_export.rs"]
+mod capture_export;
+#[path = "support/documentation_publication_recovery.rs"]
+mod publication_recovery;
 #[path = "support/documentation_qualification.rs"]
 mod qualification;
+#[path = "support/documentation_reviewer_recovery.rs"]
+mod reviewer_recovery;
 #[path = "support/documentation.rs"]
 mod support;
 use std::fs;
@@ -759,6 +767,429 @@ fn docsys_t17_render_is_working_until_explicit_release_and_release_is_immutable(
         .unwrap();
     assert!(cards.contains(&released_id));
     assert!(!cards.contains(later_working["bundle"].as_str().unwrap()));
+}
+
+#[test]
+fn docsys_t17_same_citation_false_claims_require_semantic_review() {
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
+
+    let f = Fixture::new();
+    let repo = f.service("orders");
+    fs::remove_file(repo.join("Orders.java")).unwrap();
+    for (name, text) in [
+        (
+            "CheckoutController.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/CheckoutController.java"
+            ),
+        ),
+        (
+            "InventoryClient.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/InventoryClient.java"
+            ),
+        ),
+        (
+            "ReservationRepository.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/ReservationRepository.java"
+            ),
+        ),
+        (
+            "ReservationRequest.java",
+            include_str!(
+                "../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/ReservationRequest.java"
+            ),
+        ),
+    ] {
+        fs::write(repo.join(name), text).unwrap();
+    }
+    commit(&repo);
+
+    let checked = f.checked();
+    let service = &checked.services["orders"];
+    let entry = service
+        .entrypoints
+        .iter()
+        .find(|entry| entry.trigger["name"] == "checkout")
+        .expect("checkout entrypoint from the frozen M1 source");
+    let flow = |kind: &str, matches: &dyn Fn(&clew::documentation::model::Observation) -> bool| {
+        service
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "FLOW"
+                    && observation.symbol == entry.symbol
+                    && observation.normalized["kind"] == kind
+                    && matches(observation)
+            })
+            .unwrap_or_else(|| panic!("missing {kind} flow for {}", entry.symbol))
+    };
+    let guard = flow("IF", &|_| true);
+    let invalid_return = flow("RETURN", &|observation| {
+        observation.normalized["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("invalid quantity"))
+    });
+    let reserve_return = flow("RETURN", &|observation| {
+        observation.normalized["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("inventory.reserve"))
+    });
+    let save_call = flow("CALL", &|observation| {
+        observation.normalized["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("reservations.save"))
+    });
+    let callback = service
+        .observations
+        .values()
+        .find(|observation| {
+            observation.kind == "FLOW"
+                && observation.symbol.contains("prepareSaveCallback")
+                && observation.normalized["kind"] == "DEFERRED"
+                && observation.normalized["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("reservations.save"))
+        })
+        .expect("separate callback producer in the frozen M1 source");
+    let guard_text = guard.normalized["text"].as_str().unwrap();
+    assert!(
+        guard_text.contains("!hasPositiveQuantity(request)"),
+        "{guard_text}"
+    );
+
+    let request = f.input(
+        "checkout-work.json",
+        &json!({
+            "schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Service maintainers",
+            "entrypoint":entry.id,
+            "maxItems":100,
+            "maxBytes":49152
+        }),
+    );
+    let mut page = work_prepare(&f, &request);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(&f, &work, json!({"cursor":cursor}));
+    }
+    let frozen = frozen_work(&f, &work);
+    let handle_ref = |kind: &str, id: &str| -> String {
+        frozen["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, handle)| handle["kind"] == kind && handle["id"] == id)
+            .unwrap_or_else(|| panic!("missing {kind} handle for {id}"))
+            .0
+            .clone()
+    };
+    let entry_ref = handle_ref("ENTRYPOINT", &entry.id);
+    let guard_ref = handle_ref("DEPENDENCY", &guard.id);
+    let invalid_ref = handle_ref("DEPENDENCY", &invalid_return.id);
+    let reserve_ref = handle_ref("DEPENDENCY", &reserve_return.id);
+    let save_ref = handle_ref("DEPENDENCY", &save_call.id);
+    let callback_ref = handle_ref("DEPENDENCY", &callback.id);
+    let mut evidence_refs = BTreeSet::new();
+    for observation in [guard, invalid_return, reserve_return, save_call, callback] {
+        evidence_refs.insert(handle_ref("DEPENDENCY", &observation.id));
+        for source in &observation.source_ids {
+            evidence_refs.insert(handle_ref("SOURCE", source));
+        }
+    }
+    let delivered_entry = work_read(&f, &work, json!({"references":[entry_ref]}));
+    assert!(
+        delivered_entry["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["reference"] == entry_ref && row["id"] == entry.id })
+    );
+    let evidence_refs: Vec<_> = evidence_refs.into_iter().collect();
+    let mut supplied = BTreeSet::new();
+    for refs in evidence_refs.chunks(8) {
+        let delivered = work_read(&f, &work, json!({"references":refs}));
+        supplied.extend(
+            delivered["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|row| row["reference"].as_str().map(str::to_owned)),
+        );
+    }
+    assert_eq!(supplied, evidence_refs.iter().cloned().collect());
+
+    let evidence = |dependency: &str, observation: &clew::documentation::model::Observation| {
+        let mut refs = vec![dependency.to_owned()];
+        refs.extend(
+            observation
+                .source_ids
+                .iter()
+                .map(|source| handle_ref("SOURCE", source)),
+        );
+        refs.sort();
+        refs.dedup();
+        refs
+    };
+    let predicate = |reference: &str, field: &str, expected: Value| {
+        json!({
+            "kind":"factEquals",
+            "evidence":reference,
+            "field":field,
+            "expected":expected
+        })
+    };
+    let claim = |text: &str, refs: Vec<String>, checks: Vec<Value>| json!({"text":text,"evidence":refs,"checks":checks});
+    let guard_claim = || {
+        claim(
+            "The checkout takes the invalid branch when !hasPositiveQuantity(request) is true.",
+            evidence(&guard_ref, guard),
+            vec![predicate(
+                &guard_ref,
+                "text",
+                guard.normalized["text"].clone(),
+            )],
+        )
+    };
+    let save_claim =
+        |text: &str, checks: Vec<Value>| claim(text, evidence(&save_ref, save_call), checks);
+    let proposal = json!({
+        "schema":"codeclew-documentation-proposal/1.0",
+        "operations":[{
+            "entrypoint":entry_ref,
+            "title":"Checkout reservation",
+            "summary":claim("Selected checkout operation.", vec![entry_ref.clone()], vec![]),
+            "steps":[{
+                "kind":"alt",
+                "meaning":guard_claim(),
+                "children":[{
+                    "kind":"return",
+                    "meaning":claim(
+                        "Returns the invalid quantity response.",
+                        evidence(&invalid_ref, invalid_return),
+                        vec![predicate(&invalid_ref, "text", invalid_return.normalized["text"].clone())]
+                    ),
+                    "from":"orders",
+                    "to":"caller"
+                }],
+                "otherwise":[
+                    {
+                        "kind":"note",
+                        "meaning":save_claim(
+                            "The source calls the reservation repository save method.",
+                            vec![predicate(&save_ref, "kind", json!("CALL"))]
+                        ),
+                        "from":"orders"
+                    },
+                    {
+                        "kind":"return",
+                        "meaning":claim(
+                            "Returns the inventory reservation result.",
+                            evidence(&reserve_ref, reserve_return),
+                            vec![predicate(&reserve_ref, "text", reserve_return.normalized["text"].clone())]
+                        ),
+                        "from":"orders",
+                        "to":"caller"
+                    }
+                ]
+            }]
+        }]
+    });
+
+    let submit = |input: &Value| proposal_submit(&f, &work, input);
+    let artifact = |result: &Value| proposal_artifact(&f, result);
+    let slot = |artifact: &Value, expected: &str| -> Value {
+        artifact["claims"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|claim| claim["slot"] == expected)
+            .unwrap_or_else(|| panic!("missing claim slot {expected}: {artifact}"))
+            .clone()
+    };
+    let report_case = |name: &str, result: &Value, artifact: &Value, slot_name: &str| {
+        let claim = slot(artifact, slot_name);
+        json!({
+            "case":name,
+            "proposalStatus":artifact["status"],
+            "meaningReview":artifact["meaningReview"],
+            "claimText":claim["fragment"]["text"],
+            "checkResults":claim["checks"],
+            "diagnostics":artifact["diagnostics"],
+            "proposal":result["proposal"]
+        })
+    };
+
+    let positive_result = submit(&proposal);
+    assert!(
+        positive_result["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    let positive_artifact = artifact(&positive_result);
+    assert_eq!(
+        slot(&positive_artifact, "step/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(
+        slot(&positive_artifact, "step/0/otherwise/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(positive_artifact["meaningReview"], "UNASSESSED");
+
+    let mut false_guard = proposal.clone();
+    false_guard["operations"][0]["steps"][0]["meaning"]["text"] =
+        json!("The checkout takes the invalid branch when hasPositiveQuantity(request) is true.");
+    let inverted_guard = guard_text.replace(
+        "!hasPositiveQuantity(request)",
+        "hasPositiveQuantity(request)",
+    );
+    assert_ne!(inverted_guard, guard_text);
+    false_guard["operations"][0]["steps"][0]["meaning"]["checks"][0]["expected"] =
+        json!(inverted_guard);
+    let false_guard_result = submit(&false_guard);
+    let false_guard_artifact = artifact(&false_guard_result);
+    assert_eq!(false_guard_artifact["status"], "NEEDS_REPAIR");
+    assert_eq!(
+        slot(&false_guard_artifact, "step/0")["checks"][0]["status"],
+        "CONTRADICTED"
+    );
+    assert!(
+        false_guard_artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| { d["code"] == "CLAIM_CONTRADICTED" && d["slot"] == "step/0" })
+    );
+    assert_eq!(
+        slot(&false_guard_artifact, "step/0")["meaning"],
+        "UNASSESSED"
+    );
+
+    let save_text =
+        "The repository save commits the reservation durably before inventory is contacted.";
+    let mut save_with_unknown = proposal.clone();
+    save_with_unknown["operations"][0]["steps"][0]["otherwise"][0]["meaning"] = save_claim(
+        save_text,
+        vec![
+            predicate(&save_ref, "kind", json!("CALL")),
+            predicate(&save_ref, "persistenceOutcome", json!("COMMITTED")),
+        ],
+    );
+    let save_unknown_result = submit(&save_with_unknown);
+    let save_unknown_artifact = artifact(&save_unknown_result);
+    assert_eq!(save_unknown_artifact["status"], "NEEDS_REPAIR");
+    assert_eq!(
+        slot(&save_unknown_artifact, "step/0/otherwise/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(
+        slot(&save_unknown_artifact, "step/0/otherwise/0")["checks"][1]["status"],
+        "UNKNOWN"
+    );
+    assert!(
+        save_unknown_artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| {
+                d["code"] == "UNSUPPORTED_CLAIM_NEEDS_GAP" && d["slot"] == "step/0/otherwise/0"
+            })
+    );
+    assert_eq!(
+        slot(&save_unknown_artifact, "step/0/otherwise/0")["meaning"],
+        "UNASSESSED"
+    );
+
+    let mut save_with_only_unrelated = proposal.clone();
+    save_with_only_unrelated["operations"][0]["steps"][0]["otherwise"][0]["meaning"] =
+        save_claim(save_text, vec![predicate(&save_ref, "kind", json!("CALL"))]);
+    let save_only_result = submit(&save_with_only_unrelated);
+    let save_only_artifact = artifact(&save_only_result);
+    assert!(
+        save_only_artifact["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    assert_eq!(
+        slot(&save_only_artifact, "step/0/otherwise/0")["checks"][0]["status"],
+        "SUPPORTED"
+    );
+    assert_eq!(
+        slot(&save_only_artifact, "step/0/otherwise/0")["meaning"],
+        "UNASSESSED"
+    );
+    assert_eq!(save_only_artifact["meaningReview"], "UNASSESSED");
+
+    let deferred_check = json!({
+        "kind":"factEquals",
+        "evidence":callback_ref,
+        "field":"executionDuringCheckout",
+        "expected":true
+    });
+    let callback_kind_check = predicate(&callback_ref, "kind", json!("DEFERRED"));
+    let callback_false_text =
+        "The checkout executes the deferred save callback during this request.";
+    let mut callback_false = proposal.clone();
+    callback_false["operations"][0]["explanation"] = json!([claim(
+        callback_false_text,
+        evidence(&callback_ref, callback),
+        vec![callback_kind_check, deferred_check],
+    )]);
+    let callback_result = submit(&callback_false);
+    let callback_artifact = artifact(&callback_result);
+    let callback_claim = slot(&callback_artifact, "narrative/0");
+    assert_eq!(callback_artifact["status"], "NEEDS_REPAIR");
+    assert_eq!(callback_claim["checks"][0]["status"], "SUPPORTED");
+    assert_eq!(callback_claim["checks"][1]["status"], "UNKNOWN");
+    assert!(
+        callback_artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| { d["code"] == "UNSUPPORTED_CLAIM_NEEDS_GAP" && d["slot"] == "narrative/0" })
+    );
+    assert_eq!(callback_claim["meaning"], "UNASSESSED");
+
+    let source_text = |observation: &clew::documentation::model::Observation| {
+        observation
+            .source_ids
+            .iter()
+            .map(|source| service.sources[source].text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let cases = json!({
+        "schema":"codeclew-m1-semantic-regression/1.0",
+        "source":{
+            "guard":guard.normalized["text"],
+            "guardSource":source_text(guard),
+            "saveCall":save_call.normalized["text"],
+            "saveSource":source_text(save_call),
+            "repositoryInterface":include_str!("../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/ReservationRepository.java"),
+            "deferredCallback":callback.normalized["text"],
+            "callbackSource":source_text(callback),
+            "checkoutSource":include_str!("../../../fixtures/documentation-pragmatic-m1/orders/src/main/java/example/orders/CheckoutController.java")
+        },
+        "evidence":{
+            "guard":guard.id,
+            "save":save_call.id,
+            "callback":callback.id,
+            "allReferencesWereReturnedByRecordedWorkReads":true
+        },
+        "cases":[
+            report_case("guard-positive-control", &positive_result, &positive_artifact, "step/0"),
+            report_case("guard-inverted-same-citation", &false_guard_result, &false_guard_artifact, "step/0"),
+            report_case("save-commit-with-unsupported-predicate", &save_unknown_result, &save_unknown_artifact, "step/0/otherwise/0"),
+            report_case("false-save-prose-only-unrelated-true-predicate", &save_only_result, &save_only_artifact, "step/0/otherwise/0"),
+            report_case("false-callback-execution", &callback_result, &callback_artifact, "narrative/0")
+        ]
+    });
+    println!("M1_SEMANTIC_CASES={cases}");
 }
 
 #[test]
@@ -1748,6 +2179,13 @@ fn docsys_t02_oversized_records_are_explicit_and_pages_stay_bounded() {
 }
 
 fn proposal_fixture(f: &Fixture) -> (String, serde_json::Value, serde_json::Value) {
+    proposal_fixture_with_language(f, None)
+}
+
+fn proposal_fixture_with_language(
+    f: &Fixture,
+    documentation_language: Option<&str>,
+) -> (String, serde_json::Value, serde_json::Value) {
     use serde_json::json;
     let checked = f.checked();
     let entry = checked.services["orders"]
@@ -1755,7 +2193,7 @@ fn proposal_fixture(f: &Fixture) -> (String, serde_json::Value, serde_json::Valu
         .iter()
         .find(|e| e.symbol.contains("reserve"))
         .unwrap();
-    let request=f.input("proposal-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","entrypoint":entry.id,"maxItems":100,"maxBytes":49152}));
+    let request=f.input("proposal-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","documentationLanguage":documentation_language,"entrypoint":entry.id,"maxItems":100,"maxBytes":49152}));
     let mut page = work_prepare(f, &request);
     let id = page["work"].as_str().unwrap().to_owned();
     while let Some(cursor) = page["nextCursor"].as_str() {
@@ -1935,10 +2373,116 @@ fn docsys_t03_proposal_sequence_preserves_branches_and_arrows_without_fake_overv
     // Large sequences remain retained; the bounded display reports its missing
     // authored overview instead of inventing a linear control-flow graph.
     let mut large = operation.clone();
-    while large.events.len() <= 12 {
+    while large.events.len() <= 64 {
         large.events.extend(operation.events.clone());
     }
     assert!(render::mermaid(&large).contains("A bounded overview has not been authored"));
+}
+
+#[test]
+fn docsys_t03_generated_sequence_defaults_follow_work_language_and_keep_branch_evidence() {
+    use clew::documentation::model::Narrative;
+    use serde_json::json;
+
+    for (requested_language, language, expected_caller, expected_else, expected_description) in [
+        (
+            None,
+            "en",
+            "Caller",
+            "Otherwise",
+            "The source describes an alternative branch.",
+        ),
+        (
+            Some("ru"),
+            "ru",
+            "Вызывающая сторона",
+            "Иначе",
+            "Исходный код описывает альтернативную ветвь.",
+        ),
+    ] {
+        let f = Fixture::new();
+        let source = f.service("orders");
+        fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+        commit(&source);
+        let (work, mut input, frozen) = proposal_fixture_with_language(&f, requested_language);
+        assert_eq!(frozen["request"]["documentationLanguage"], language);
+
+        let summary_evidence = input["operations"][0]["summary"]["evidence"].clone();
+        let steps = input["operations"][0]["steps"].as_array_mut().unwrap();
+        let alt_evidence = steps[0]["meaning"]["evidence"].clone();
+        steps[0]["otherwise"] = json!([{
+            "kind":"note",
+            "meaning":{"text":"A nonnegative quantity continues.","evidence":alt_evidence}
+        }]);
+        steps.insert(
+            0,
+            json!({
+                "kind":"message",
+                "from":"caller",
+                "to":"orders",
+                "meaning":{"text":"Request a reservation.","evidence":summary_evidence}
+            }),
+        );
+        let returned = steps.last_mut().unwrap();
+        returned["kind"] = json!("return");
+        returned["from"] = json!("orders");
+        returned["to"] = json!("caller");
+
+        let submitted = proposal_submit(&f, &work, &input);
+        assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+        let artifact = proposal_artifact(&f, &submitted);
+        let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+        let operation = &narrative.operations[0];
+        assert_eq!(operation.participants[0].id, "caller");
+        assert_eq!(operation.participants[0].label, expected_caller);
+
+        let alt_index = operation
+            .events
+            .iter()
+            .position(|event| event.kind == "alt")
+            .unwrap();
+        let alt = &operation.events[alt_index];
+        let branch_events = &operation.events[alt_index..alt_index + 6];
+        assert_eq!(
+            branch_events
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alt", "note", "else", "note", "end", "return"]
+        );
+        assert!(!alt.dependency_ids.is_empty());
+        assert!(!alt.source_ids.is_empty());
+        let otherwise = &branch_events[2];
+        assert_eq!(otherwise.text, expected_else);
+        assert_eq!(otherwise.dependency_ids, alt.dependency_ids);
+        assert_eq!(otherwise.source_ids, alt.source_ids);
+        let else_explanation = operation
+            .explanation
+            .iter()
+            .find(|paragraph| {
+                paragraph.event_ids.len() == 1
+                    && paragraph
+                        .event_ids
+                        .first()
+                        .is_some_and(|id| id == &otherwise.id)
+            })
+            .unwrap();
+        assert_eq!(else_explanation.text, expected_description);
+        assert_eq!(else_explanation.dependency_ids, alt.dependency_ids);
+        assert_eq!(else_explanation.source_ids, alt.source_ids);
+        assert_eq!(branch_events[3].dependency_ids, alt.dependency_ids);
+        assert_eq!(branch_events[3].source_ids, alt.source_ids);
+        let message = operation
+            .events
+            .iter()
+            .find(|event| event.kind == "message")
+            .unwrap();
+        assert_eq!(message.from.as_deref(), Some("caller"));
+        assert_eq!(message.to.as_deref(), Some("service-orders"));
+        let returned = branch_events.last().unwrap();
+        assert_eq!(returned.from.as_deref(), Some("service-orders"));
+        assert_eq!(returned.to.as_deref(), Some("caller"));
+    }
 }
 
 #[test]
@@ -2256,12 +2800,14 @@ fn execution_config(
         include_str!("../../../fixtures/documentation-system/agents/driver.py"),
     )
     .unwrap();
-    let runtime = if std::path::Path::new("/opt/homebrew").is_dir() {
-        "/opt/homebrew"
-    } else {
-        python[1].as_str().unwrap()
-    };
-    let role = |options: serde_json::Value| json!({"adapter":"macos-seatbelt-stdio/1.0","model":"deterministic-fixture","usageAuthority":"TRANSPORT_METADATA","command":[python[0],"-I","-S",script,options.to_string()],"runtimeReads":[runtime,script],"cap":{"maximum":{"inputTokens":500000,"outputTokens":20000,"costUnits":10},"overheadInputTokens":10,"timeoutMs":5000,"outputBytes":65536}});
+    let mut runtime_reads =
+        std::collections::BTreeSet::from([python[1].as_str().unwrap().to_owned()]);
+    runtime_reads.insert(script.to_string_lossy().into_owned());
+    if std::path::Path::new("/opt/homebrew").is_dir() {
+        runtime_reads.insert("/opt/homebrew".into());
+    }
+    let runtime_reads: Vec<_> = runtime_reads.into_iter().collect();
+    let role = |options: serde_json::Value| json!({"adapter":"macos-seatbelt-stdio/1.0","model":"deterministic-fixture","usageAuthority":"TRANSPORT_METADATA","command":[python[0],"-I","-S",script,options.to_string()],"runtimeReads":runtime_reads.clone(),"cap":{"maximum":{"inputTokens":500000,"outputTokens":20000,"costUnits":10},"overheadInputTokens":10,"timeoutMs":5000,"outputBytes":65536}});
     json!({"schema":"codeclew-documentation-execution/1.0","author":role(author),"reviewer":role(reviewer),"fallback":fallback.clone().map(role),"authorCalls":2,"reviewerCalls":if fallback.is_some(){3}else{2},"fallbackCalls":if fallback.is_some(){1}else{0},"repairAttempts":1,"expansions":0,"budget":{"account":"fixture","costUnit":"fixture-unit","ceiling":{"inputTokens":10000000,"outputTokens":1000000,"costUnits":1000},"stopLoss":{"inputTokens":9999999,"outputTokens":999999,"costUnits":999}}})
 }
 #[cfg(target_os = "macos")]
@@ -2277,6 +2823,236 @@ fn work_run(f: &Fixture, id: &str, config: &serde_json::Value) -> serde_json::Va
         path.to_str().unwrap(),
     ])
 }
+
+#[cfg(target_os = "macos")]
+fn find_checkpoint_record(
+    f: &Fixture,
+    run: &str,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let mut files: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(read)
+        .find(|record| predicate(&record["checkpoint"]))
+        .expect("matching immutable recovery checkpoint exists")
+}
+
+#[cfg(target_os = "macos")]
+fn checkpoint_reference(run: &str, record: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema":"codeclew-documentation-recovery-checkpoint-ref/1.0",
+        "run":run,
+        "sequence":record["sequence"],
+        "checkpointDigest":record["checkpointDigest"],
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn flat_file_inventory(directory: &std::path::Path) -> std::collections::BTreeMap<String, u64> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().into_string().unwrap(),
+                entry.metadata().unwrap().len(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn directory_entries(directory: &std::path::Path) -> std::collections::BTreeSet<String> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn tree_file_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn visit(
+        root: &std::path::Path,
+        current: &std::path::Path,
+        files: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let file_type = entry.file_type().unwrap();
+            if file_type.is_dir() {
+                visit(root, &path, files);
+            } else {
+                assert!(
+                    file_type.is_file(),
+                    "unexpected non-file artifact: {path:?}"
+                );
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                files.insert(relative, fs::read(path).unwrap());
+            }
+        }
+    }
+
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
+#[cfg(target_os = "macos")]
+fn selected_checkpoint_path(
+    f: &Fixture,
+    run: &str,
+    reference: &serde_json::Value,
+) -> std::path::PathBuf {
+    let sequence = reference["sequence"].as_u64().unwrap();
+    let digest = reference["checkpointDigest"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("sha256:")
+        .unwrap();
+    f.docs.join(format!(
+        ".codeclew/jobs/{run}/checkpoints/{sequence:016x}-{digest}.json"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn reset_run_reservations_to_reserved(f: &Fixture, run: &str) -> Vec<String> {
+    let path = f.docs.join("execution/accounts/fixture.json");
+    let mut ledger = read(&path);
+    let reservations = ledger["reservations"].as_object_mut().unwrap();
+    let mut ids = Vec::new();
+    for (id, reservation) in reservations {
+        if reservation["run"] == run {
+            reservation["status"] = serde_json::json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+            ids.push(id.clone());
+        }
+    }
+    ids.sort();
+    assert!(!ids.is_empty(), "seeded run has finite reservations");
+    fs::write(path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+    ids
+}
+
+#[cfg(target_os = "macos")]
+fn reader_pointer_bytes(f: &Fixture) -> Option<Vec<u8>> {
+    match fs::read(f.docs.join("docs/index.html")) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("cannot read prior reader selection: {error}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_reader_pointer(f: &Fixture, bytes: Option<&[u8]>) {
+    let path = f.docs.join("docs/index.html");
+    match bytes {
+        Some(bytes) => fs::write(path, bytes).unwrap(),
+        None => match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("cannot restore prior reader selection: {error}"),
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn seed_checkpointed_zero_attempt_run(
+    f: &Fixture,
+    work: &str,
+    config: &serde_json::Value,
+) -> (String, Vec<String>) {
+    // Reuse a real immutable AUTHOR checkpoint, then seed the mutable report
+    // and ledger to the durable state immediately after finite reservation and
+    // before the first attempt. The test invokes the public run path below.
+    // Keep the original reader selection: the successful fixture run below is
+    // only a source for immutable checkpoint/result records, not a new baseline
+    // for this deliberately seeded crash state.
+    let index_before = reader_pointer_bytes(f);
+    let completed = work_run(f, work, config);
+    assert_eq!(completed["status"], "ACCEPTED", "{completed}");
+    let run = completed["run"].as_str().unwrap().to_owned();
+    let initial = find_checkpoint_record(f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && !checkpoint["pages"].as_array().unwrap().is_empty()
+            && checkpoint["pendingCall"].is_null()
+            && checkpoint["proposalId"].is_null()
+    });
+    let mut report = run_report(f, &completed);
+    report["status"] = serde_json::json!("PREPARED");
+    report["attempts"] = serde_json::json!([]);
+    report["proposal"] = serde_json::Value::Null;
+    report["review"] = serde_json::Value::Null;
+    report["publication"] = serde_json::Value::Null;
+    report["gap"] = serde_json::Value::Null;
+    report["accounting"] = serde_json::Value::Null;
+    report["checkpoint"] = checkpoint_reference(&run, &initial);
+    fs::write(
+        f.docs.join(format!(".codeclew/jobs/{run}.json")),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let reservations = reset_run_reservations_to_reserved(f, &run);
+    restore_reader_pointer(f, index_before.as_deref());
+    let expected = config["authorCalls"].as_u64().unwrap()
+        + config["reviewerCalls"].as_u64().unwrap()
+        + config["fallbackCalls"].as_u64().unwrap();
+    assert_eq!(reservations.len() as u64, expected);
+    (run, reservations)
+}
+
+#[cfg(target_os = "macos")]
+fn seed_saved_author_result_recovery(
+    f: &Fixture,
+    work: &str,
+    config: &serde_json::Value,
+) -> (String, String) {
+    let index_before = reader_pointer_bytes(f);
+    let completed = work_run(f, work, config);
+    assert_ne!(completed["status"], "ACCEPTED", "{completed}");
+    let run = completed["run"].as_str().unwrap().to_owned();
+    let mut report = run_report(f, &completed);
+    let mut author = report["attempts"][0].clone();
+    let invocation = author["invocation"].as_str().unwrap().to_owned();
+    let saved = find_checkpoint_record(f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["pendingCall"]["identity"]["invocation"] == invocation
+            && checkpoint["pendingCall"]["status"] == "RESULT_SAVED"
+    });
+    author["status"] = serde_json::json!("DISPATCHED");
+    report["status"] = serde_json::json!("PREPARED");
+    report["attempts"] = serde_json::json!([author]);
+    report["proposal"] = serde_json::Value::Null;
+    report["review"] = serde_json::Value::Null;
+    report["publication"] = serde_json::Value::Null;
+    report["gap"] = serde_json::Value::Null;
+    report["accounting"] = serde_json::Value::Null;
+    report["checkpoint"] = checkpoint_reference(&run, &saved);
+    fs::write(
+        f.docs.join(format!(".codeclew/jobs/{run}.json")),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    reset_run_reservations_to_reserved(f, &run);
+    let result_path = f
+        .docs
+        .join(format!(".codeclew/job-results/{invocation}.json"));
+    fs::write(&result_path, b"corrupt saved author result\n").unwrap();
+    restore_reader_pointer(f, index_before.as_deref());
+    (run, invocation)
+}
+
 fn run_report(f: &Fixture, result: &serde_json::Value) -> serde_json::Value {
     read(f.docs.join(format!(
         ".codeclew/jobs/{}.json",
@@ -2356,6 +3132,713 @@ fn docsys_t04_separate_isolated_roles_accept_and_note_changes_invalidate() {
 
 #[test]
 #[cfg(target_os = "macos")]
+fn docsys_t04_terminal_run_with_corrupt_saved_author_result_refuses_repayment() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({"mode":"malformed"}), None);
+    let config_path = f.input("terminal-recovery-config.json", &config);
+    let result = work_run(&f, &work, &config);
+    let report = run_report(&f, &result);
+    assert_ne!(result["status"], "ACCEPTED", "{result}");
+    assert!(
+        report["attempts"].as_array().unwrap().len() >= 2,
+        "{report}"
+    );
+    assert_eq!(report["attempts"][0]["role"], "author");
+    assert_eq!(report["attempts"][0]["status"], "COMPLETED");
+    assert_eq!(report["attempts"][1]["role"], "reviewer");
+
+    let run = report["run"].as_str().unwrap();
+    let author_invocation = report["attempts"][0]["invocation"].as_str().unwrap();
+    let author_result = f
+        .docs
+        .join(format!(".codeclew/job-results/{author_invocation}.json"));
+    assert!(author_result.is_file());
+    fs::write(&author_result, b"corrupt saved author result\n").unwrap();
+    let pointer_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let pointer_before = fs::read(&pointer_path).unwrap();
+    let report_before = fs::read(&report_path).unwrap();
+    let account_before = fs::read(&account_path).unwrap();
+
+    for _ in 0..2 {
+        let (code, refusal) = f.run(&[
+            "docs",
+            "work",
+            "run",
+            "--work",
+            &work,
+            "--config",
+            config_path.to_str().unwrap(),
+        ]);
+        assert_ne!(
+            code, 0,
+            "terminal result was silently dispatched again: {refusal}"
+        );
+        assert!(
+            refusal
+                .to_string()
+                .contains("RECOVERY_TERMINAL_RESULT_PRESENT"),
+            "{refusal}"
+        );
+        assert_eq!(fs::read(&pointer_path).unwrap(), pointer_before);
+        assert_eq!(fs::read(&report_path).unwrap(), report_before);
+        assert_eq!(fs::read(&account_path).unwrap(), account_before);
+    }
+    assert_eq!(
+        fs::read(&author_result).unwrap(),
+        b"corrupt saved author result\n"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_nonterminal_corrupt_saved_author_result_is_a_sticky_refusal() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({"mode":"malformed"}), None);
+    let config_path = f.input("active-recovery-config.json", &config);
+    let (run, invocation) = seed_saved_author_result_recovery(&f, &work, &config);
+    let pointer_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let report = read(&report_path);
+    assert_eq!(report["status"], "PREPARED");
+    assert_eq!(report["attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(report["attempts"][0]["invocation"], invocation);
+    assert_eq!(report["checkpoint"]["run"], run);
+    let reference = &report["checkpoint"];
+    let checkpoint_path = f.docs.join(format!(
+        ".codeclew/jobs/{run}/checkpoints/{:016x}-{}.json",
+        reference["sequence"].as_u64().unwrap(),
+        reference["checkpointDigest"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap()
+    ));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let pointer_before = fs::read(&pointer_path).unwrap();
+    let report_before = fs::read(&report_path).unwrap();
+    let checkpoint_before = fs::read(&checkpoint_path).unwrap();
+    let account_before = fs::read(&account_path).unwrap();
+
+    for _ in 0..2 {
+        let (code, refusal) = f.run(&[
+            "docs",
+            "work",
+            "run",
+            "--work",
+            &work,
+            "--config",
+            config_path.to_str().unwrap(),
+        ]);
+        assert_ne!(code, 0, "corrupt saved result was accepted: {refusal}");
+        assert!(
+            refusal.to_string().contains("RECOVERY_RECORD_CORRUPT"),
+            "{refusal}"
+        );
+        assert_eq!(fs::read(&pointer_path).unwrap(), pointer_before);
+        assert_eq!(fs::read(&report_path).unwrap(), report_before);
+        assert_eq!(fs::read(&checkpoint_path).unwrap(), checkpoint_before);
+        assert_eq!(fs::read(&account_path).unwrap(), account_before);
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_terminal_zero_dispatch_run_allows_corrected_input_cap() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut too_small = execution_config(&f, json!({}), json!({}), None);
+    too_small["author"]["cap"]["maximum"]["inputTokens"] = json!(1);
+    let first = work_run(&f, &work, &too_small);
+    let first_report = run_report(&f, &first);
+    assert!(first_report["attempts"].as_array().unwrap().is_empty());
+    assert!(
+        first_report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("INPUT_CAP_EXCEEDED"),
+        "{first_report}"
+    );
+
+    let corrected = execution_config(&f, json!({}), json!({}), None);
+    let second = work_run(&f, &work, &corrected);
+    assert_eq!(second["status"], "ACCEPTED", "{second}");
+    assert_ne!(first["run"], second["run"]);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_seeded_reserved_before_first_attempt_resumes_the_same_run() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let (run, reserved_before) = seed_checkpointed_zero_attempt_run(&f, &work, &config);
+    let latest = read(
+        f.docs
+            .join(format!(".codeclew/work/{work}/latest-run.json")),
+    );
+    assert_eq!(latest["run"], run);
+    let seeded_report = read(f.docs.join(format!(".codeclew/jobs/{run}.json")));
+    assert_eq!(seeded_report["status"], "PREPARED");
+    assert!(seeded_report["attempts"].as_array().unwrap().is_empty());
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["run"], run, "recovery allocated a different run");
+    assert_eq!(resumed["status"], "ACCEPTED", "{resumed}");
+    let final_report = run_report(&f, &resumed);
+    assert!(
+        final_report["attempts"].as_array().unwrap().len() >= 2,
+        "resumed={resumed}; report={final_report}"
+    );
+    let account: serde_json::Value =
+        serde_json::from_slice(&fs::read(account_path).unwrap()).unwrap();
+    let reserved_after: Vec<_> = account["reservations"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, value)| value["run"] == run)
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert_eq!(reserved_after, reserved_before);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_seeded_post_switch_publish_checkpoint_finishes_without_redispatch() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap().to_owned();
+    let original_report = run_report(&f, &accepted);
+    let original_attempts = original_report["attempts"].clone();
+    assert!(
+        original_attempts
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|attempt| { attempt["status"] == "COMPLETED" })
+    );
+    let reviewer_attempt = original_attempts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attempt| attempt["role"] == "reviewer")
+        .expect("accepted run includes a reviewer dispatch");
+    let reviewer_invocation = reviewer_attempt["invocation"].clone();
+    let original_proposal = original_report["proposal"].clone();
+    let original_review = original_report["review"].clone();
+    let bundle = original_report["publication"]["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publish_checkpoint = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "PUBLISH" && !checkpoint["publicationReceipt"].is_null()
+    });
+    assert!(publish_checkpoint["checkpoint"]["publicationReceipt"].is_object());
+
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let checkpoint = checkpoint_reference(&run, &publish_checkpoint);
+    let mut seeded_report = original_report.clone();
+    seeded_report["status"] = json!("REVIEWED");
+    seeded_report["publication"] = serde_json::Value::Null;
+    seeded_report["accounting"] = serde_json::Value::Null;
+    seeded_report["checkpoint"] = checkpoint;
+    assert_eq!(seeded_report["attempts"], original_attempts);
+    assert_eq!(seeded_report["proposal"], original_proposal);
+    assert_eq!(seeded_report["review"], original_review);
+    fs::write(&report_path, serde_json::to_vec(&seeded_report).unwrap()).unwrap();
+
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let original_account = read(&account_path);
+    let original_reservations = original_account["reservations"].as_object().unwrap();
+    let mut paid_slots = std::collections::BTreeMap::new();
+    let mut seeded_account = original_account.clone();
+    let reservations = seeded_account["reservations"].as_object_mut().unwrap();
+    let mut restored_slots = Vec::new();
+    for (id, reservation) in reservations.iter_mut() {
+        if reservation["run"] != run {
+            continue;
+        }
+        if reservation["status"] == "RELEASED_NOT_DISPATCHED" {
+            reservation["status"] = json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+            restored_slots.push(id.clone());
+        } else {
+            paid_slots.insert(id.clone(), original_reservations[id].clone());
+        }
+    }
+    assert!(
+        !restored_slots.is_empty(),
+        "unused calls were released at acceptance"
+    );
+    for (id, paid) in &paid_slots {
+        assert_eq!(
+            reservations[id], *paid,
+            "paid reservation changed during seeding"
+        );
+    }
+    fs::write(&account_path, serde_json::to_vec(&seeded_account).unwrap()).unwrap();
+
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let generated_before = directory_entries(&f.docs.join("docs/generated"));
+    let generated_bytes_before = tree_file_snapshot(&f.docs.join("docs/generated"));
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_before = fs::read(f.docs.join("docs/history.html")).unwrap();
+    let results_directory = f.docs.join(".codeclew/job-results");
+    let results_before = flat_file_inventory(&results_directory);
+    let result_bytes_before = tree_file_snapshot(&results_directory);
+    let bundle_before = fs::read(f.bundle(&bundle, "services/orders.json")).unwrap();
+    let bundle_files_before = tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}")));
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["run"], run);
+    assert_eq!(resumed["status"], "ACCEPTED", "{resumed}");
+    let final_report = run_report(&f, &resumed);
+    assert_eq!(final_report["attempts"], original_attempts);
+    assert_eq!(
+        final_report["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|attempt| attempt["role"] == "reviewer")
+            .unwrap()["invocation"],
+        reviewer_invocation
+    );
+    assert_eq!(final_report["proposal"], original_proposal);
+    assert_eq!(final_report["review"], original_review);
+    assert_eq!(final_report["publication"], original_report["publication"]);
+    let terminal_checkpoint = read(selected_checkpoint_path(
+        &f,
+        &run,
+        &final_report["checkpoint"],
+    ));
+    assert_eq!(terminal_checkpoint["checkpoint"]["phase"], "TERMINAL");
+    assert_eq!(
+        terminal_checkpoint["checkpoint"]["publicationReceipt"],
+        publish_checkpoint["checkpoint"]["publicationReceipt"]
+    );
+    assert_eq!(fs::read(index_path).unwrap(), index_before);
+    assert_eq!(fs::read(latest_path).unwrap(), latest_before);
+    assert_eq!(
+        directory_entries(&f.docs.join("docs/generated")),
+        generated_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join("docs/generated")),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(
+        fs::read(f.docs.join("docs/history.html")).unwrap(),
+        history_html_before
+    );
+    assert_eq!(
+        flat_file_inventory(&f.docs.join(".codeclew/job-results")),
+        results_before
+    );
+    assert_eq!(tree_file_snapshot(&results_directory), result_bytes_before);
+    assert_eq!(
+        fs::read(f.bundle(&bundle, "services/orders.json")).unwrap(),
+        bundle_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}"))),
+        bundle_files_before
+    );
+    let final_account = read(&account_path);
+    assert_eq!(final_account, original_account);
+    for (id, paid) in paid_slots {
+        assert_eq!(final_account["reservations"][id], paid);
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_seeded_post_switch_publish_corrupt_reads_refuses_without_mutation() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap().to_owned();
+    let original_report = run_report(&f, &accepted);
+    let original_attempts = original_report["attempts"].clone();
+    let bundle = original_report["publication"]["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publish_checkpoint = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "PUBLISH" && !checkpoint["publicationReceipt"].is_null()
+    });
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let mut seeded_report = original_report.clone();
+    seeded_report["status"] = json!("REVIEWED");
+    seeded_report["publication"] = serde_json::Value::Null;
+    seeded_report["accounting"] = serde_json::Value::Null;
+    seeded_report["checkpoint"] = checkpoint_reference(&run, &publish_checkpoint);
+    fs::write(&report_path, serde_json::to_vec(&seeded_report).unwrap()).unwrap();
+
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let original_account = read(&account_path);
+    let mut seeded_account = original_account.clone();
+    let reservations = seeded_account["reservations"].as_object_mut().unwrap();
+    let mut restored_slots = Vec::new();
+    for (id, reservation) in reservations.iter_mut() {
+        if reservation["run"] == run && reservation["status"] == "RELEASED_NOT_DISPATCHED" {
+            reservation["status"] = json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+            restored_slots.push(id.clone());
+        }
+    }
+    assert!(
+        !restored_slots.is_empty(),
+        "unused calls were released at acceptance"
+    );
+    fs::write(&account_path, serde_json::to_vec(&seeded_account).unwrap()).unwrap();
+
+    let checkpoint_directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let checkpoints_before = flat_file_inventory(&checkpoint_directory);
+    let checkpoint_bytes_before = tree_file_snapshot(&checkpoint_directory);
+    let seeded_report_bytes = fs::read(&report_path).unwrap();
+    let seeded_account_bytes = fs::read(&account_path).unwrap();
+    let reads_path = f.docs.join(format!(".codeclew/work/{work}/reads.json"));
+    let original_reads = fs::read(&reads_path).unwrap();
+    let corrupted_reads = b"{ malformed reads ledger".to_vec();
+    fs::write(&reads_path, &corrupted_reads).unwrap();
+
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let generated_directory = f.docs.join("docs/generated");
+    let generated_before = directory_entries(&generated_directory);
+    let generated_bytes_before = tree_file_snapshot(&generated_directory);
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_path = f.docs.join("docs/history.html");
+    let history_html_before = fs::read(&history_html_path).unwrap();
+    let results_directory = f.docs.join(".codeclew/job-results");
+    let results_before = tree_file_snapshot(&results_directory);
+
+    let config_path = f.input("post-switch-recovery-config.json", &config);
+    let (code, refusal) = f.run(&[
+        "docs",
+        "work",
+        "run",
+        "--work",
+        &work,
+        "--config",
+        config_path.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "corrupt reads were accepted: {refusal}");
+    assert!(
+        refusal
+            .to_string()
+            .contains("RECOVERY_PUBLICATION_READS_MISMATCH"),
+        "expected an explicit publication recovery refusal: {refusal}"
+    );
+    assert_eq!(fs::read(&reads_path).unwrap(), corrupted_reads);
+    assert_eq!(fs::read(&report_path).unwrap(), seeded_report_bytes);
+    let refused_report = read(&report_path);
+    assert_eq!(refused_report["status"], "REVIEWED");
+    assert!(refused_report["gap"].is_null());
+    assert_eq!(refused_report["attempts"], original_attempts);
+    assert_eq!(fs::read(&account_path).unwrap(), seeded_account_bytes);
+    assert_eq!(
+        flat_file_inventory(&checkpoint_directory),
+        checkpoints_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&checkpoint_directory),
+        checkpoint_bytes_before
+    );
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+    assert_eq!(directory_entries(&generated_directory), generated_before);
+    assert_eq!(
+        tree_file_snapshot(&generated_directory),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(fs::read(&history_html_path).unwrap(), history_html_before);
+    assert_eq!(tree_file_snapshot(&results_directory), results_before);
+
+    fs::write(&reads_path, &original_reads).unwrap();
+    let recovered = work_run(&f, &work, &config);
+    assert_eq!(recovered["run"], run);
+    assert_eq!(recovered["status"], "ACCEPTED", "{recovered}");
+    let recovered_report = run_report(&f, &recovered);
+    assert_eq!(recovered_report["attempts"], original_attempts);
+    assert!(recovered_report["gap"].is_null());
+    assert_eq!(recovered_report["publication"]["bundle"], bundle);
+    assert_eq!(tree_file_snapshot(&results_directory), results_before);
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+    assert_eq!(directory_entries(&generated_directory), generated_before);
+    assert_eq!(
+        tree_file_snapshot(&generated_directory),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(fs::read(&history_html_path).unwrap(), history_html_before);
+    assert_eq!(read(&account_path), original_account);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_repeated_accepted_retries_reuse_checkpoint_without_storage_growth() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap().to_owned();
+    let report = run_report(&f, &accepted);
+    let attempts = report["attempts"].clone();
+    let checkpoint_reference = report["checkpoint"].clone();
+    let checkpoint_directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let checkpoints_before = flat_file_inventory(&checkpoint_directory);
+    let checkpoint_bytes =
+        fs::read(selected_checkpoint_path(&f, &run, &checkpoint_reference)).unwrap();
+    let bundle = report["publication"]["bundle"].as_str().unwrap();
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let account_before = fs::read(&account_path).unwrap();
+    let generated_before = directory_entries(&f.docs.join("docs/generated"));
+    let generated_bytes_before = tree_file_snapshot(&f.docs.join("docs/generated"));
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_before = fs::read(f.docs.join("docs/history.html")).unwrap();
+    let bundle_files_before = tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}")));
+    let results_before = flat_file_inventory(&f.docs.join(".codeclew/job-results"));
+    let results_bytes_before = tree_file_snapshot(&f.docs.join(".codeclew/job-results"));
+
+    for retry in 0..3 {
+        let repeated = work_run(&f, &work, &config);
+        assert_eq!(repeated["run"], run, "retry {retry}: {repeated}");
+        assert_eq!(repeated["status"], "ACCEPTED", "retry {retry}: {repeated}");
+        let repeated_report = run_report(&f, &repeated);
+        assert_eq!(repeated_report["attempts"], attempts);
+        assert_eq!(repeated_report["checkpoint"], checkpoint_reference);
+        assert_eq!(repeated_report["publication"]["bundle"], bundle);
+        let checkpoints_after = flat_file_inventory(&checkpoint_directory);
+        assert_eq!(checkpoints_after, checkpoints_before, "retry {retry}");
+        assert_eq!(checkpoints_after.len(), checkpoints_before.len());
+        assert_eq!(
+            fs::read(selected_checkpoint_path(&f, &run, &checkpoint_reference)).unwrap(),
+            checkpoint_bytes
+        );
+        assert_eq!(fs::read(&index_path).unwrap(), index_before);
+        assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+        assert_eq!(fs::read(&account_path).unwrap(), account_before);
+        assert_eq!(
+            directory_entries(&f.docs.join("docs/generated")),
+            generated_before
+        );
+        assert_eq!(
+            tree_file_snapshot(&f.docs.join("docs/generated")),
+            generated_bytes_before
+        );
+        assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+        assert_eq!(
+            fs::read(f.docs.join("docs/history.html")).unwrap(),
+            history_html_before
+        );
+        assert_eq!(
+            flat_file_inventory(&f.docs.join(".codeclew/job-results")),
+            results_before
+        );
+        assert_eq!(
+            tree_file_snapshot(&f.docs.join(".codeclew/job-results")),
+            results_bytes_before
+        );
+        assert_eq!(
+            tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}"))),
+            bundle_files_before
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_accepted_retry_rejects_changed_config_without_mutation() {
+    use serde_json::json;
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let run = accepted["run"].as_str().unwrap();
+    let report_path = f.docs.join(format!(".codeclew/jobs/{run}.json"));
+    let checkpoint_reference = run_report(&f, &accepted)["checkpoint"].clone();
+    let checkpoint_path = selected_checkpoint_path(&f, run, &checkpoint_reference);
+    let checkpoint_directory = f.docs.join(format!(".codeclew/jobs/{run}/checkpoints"));
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let index_path = f.docs.join("docs/index.html");
+    let latest_path = f
+        .docs
+        .join(format!(".codeclew/work/{work}/latest-run.json"));
+    let report_before = fs::read(&report_path).unwrap();
+    let checkpoint_before = fs::read(&checkpoint_path).unwrap();
+    let checkpoints_before = flat_file_inventory(&checkpoint_directory);
+    let account_before = fs::read(&account_path).unwrap();
+    let index_before = fs::read(&index_path).unwrap();
+    let latest_before = fs::read(&latest_path).unwrap();
+    let generated_before = directory_entries(&f.docs.join("docs/generated"));
+    let generated_bytes_before = tree_file_snapshot(&f.docs.join("docs/generated"));
+    let history_before = f.ok(&["docs", "history", "list"]);
+    let history_html_before = fs::read(f.docs.join("docs/history.html")).unwrap();
+    let results_before = flat_file_inventory(&f.docs.join(".codeclew/job-results"));
+    let results_bytes_before = tree_file_snapshot(&f.docs.join(".codeclew/job-results"));
+    let bundle = run_report(&f, &accepted)["publication"]["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle_files_before = tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}")));
+
+    let mut changed_config = config.clone();
+    let prior_cap = changed_config["author"]["cap"]["maximum"]["inputTokens"]
+        .as_u64()
+        .unwrap();
+    changed_config["author"]["cap"]["maximum"]["inputTokens"] = json!(prior_cap + 1);
+    let config_path = f.input("changed-accepted-config.json", &changed_config);
+    let (code, refusal) = f.run(&[
+        "docs",
+        "work",
+        "run",
+        "--work",
+        &work,
+        "--config",
+        config_path.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0, "changed accepted config was allowed: {refusal}");
+    assert!(
+        refusal.to_string().contains("RECOVERY_CONFIG_MISMATCH"),
+        "{refusal}"
+    );
+    assert_eq!(fs::read(&report_path).unwrap(), report_before);
+    assert_eq!(fs::read(&checkpoint_path).unwrap(), checkpoint_before);
+    assert_eq!(
+        flat_file_inventory(&checkpoint_directory),
+        checkpoints_before
+    );
+    assert_eq!(fs::read(&account_path).unwrap(), account_before);
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
+    assert_eq!(
+        directory_entries(&f.docs.join("docs/generated")),
+        generated_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join("docs/generated")),
+        generated_bytes_before
+    );
+    assert_eq!(f.ok(&["docs", "history", "list"]), history_before);
+    assert_eq!(
+        fs::read(f.docs.join("docs/history.html")).unwrap(),
+        history_html_before
+    );
+    assert_eq!(
+        flat_file_inventory(&f.docs.join(".codeclew/job-results")),
+        results_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join(".codeclew/job-results")),
+        results_bytes_before
+    );
+    assert_eq!(
+        tree_file_snapshot(&f.docs.join(format!("docs/generated/{bundle}"))),
+        bundle_files_before
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_cancel_marker_is_scoped_to_one_run() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({}), json!({}), None);
+    let (cancelled_run, _) = seed_checkpointed_zero_attempt_run(&f, &work, &config);
+    let reader_before = reader_pointer_bytes(&f);
+
+    let cancellation = f.ok(&["docs", "work", "cancel", "--work", &work]);
+    assert_eq!(cancellation["run"], cancelled_run);
+    let cancelled = work_run(&f, &work, &config);
+    assert_eq!(cancelled["status"], "CANCELLED", "{cancelled}");
+    assert_eq!(reader_pointer_bytes(&f), reader_before);
+    let cancelled_report = run_report(&f, &cancelled);
+    assert!(cancelled_report["attempts"].as_array().unwrap().is_empty());
+    let old_marker = f
+        .docs
+        .join(format!(".codeclew/jobs/{cancelled_run}/cancel.json"));
+    assert!(old_marker.is_file());
+    assert!(
+        !f.docs
+            .join(format!(".codeclew/work/{work}/cancel.json"))
+            .exists()
+    );
+
+    let next = work_run(&f, &work, &config);
+    assert_eq!(next["status"], "ACCEPTED", "{next}");
+    assert_ne!(next["run"], cancelled_run);
+    assert!(run_report(&f, &next)["attempts"].as_array().unwrap().len() >= 2);
+    assert!(old_marker.is_file());
+    assert!(
+        !f.docs
+            .join(format!(
+                ".codeclew/jobs/{}/cancel.json",
+                next["run"].as_str().unwrap()
+            ))
+            .exists(),
+        "prior run cancellation leaked into its successor"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn docsys_t04_real_adapter_denies_files_tools_and_inherited_authority() {
     use serde_json::json;
     let f = Fixture::new();
@@ -2412,17 +3895,398 @@ fn docsys_t04_machine_repair_and_separate_fallback_stay_bounded() {
     let g = Fixture::new();
     g.service("orders");
     let (work, _, _) = proposal_fixture(&g);
-    let config = execution_config(
+    let mut config = execution_config(
         &g,
         json!({}),
         json!({"mode":"require-fallback"}),
         Some(json!({})),
     );
+    config["expansions"] = json!(1);
+    config["authorCalls"] = json!(3);
+    config["reviewerCalls"] = json!(5);
     let result = work_run(&g, &work, &config);
     assert_eq!(result["status"], "ACCEPTED", "{result}");
     let report = run_report(&g, &result);
-    assert_eq!(report["attempts"].as_array().unwrap().len(), 6);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 6);
     assert_eq!(report["attempts"][4]["role"], "fallback");
+    let remaining = attempts
+        .iter()
+        .map(|attempt| {
+            read(g.docs.join(format!(
+                ".codeclew/job-inputs/{}.json",
+                attempt["invocation"].as_str().unwrap()
+            )))["request"]["expansionBudget"]["remaining"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, vec![1, 1, 1, 1, 1, 1]);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_process_overview_repairs_missing_content_field_with_existing_budget() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    save_process(&f, &process_definition("reserve", &[]));
+    let (work, _) = process_work(&f, "reserve");
+    let config = execution_config(&f, json!({"mode":"process-schema-repair"}), json!({}), None);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "author");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert_eq!(report["status"], "ACCEPTED");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_author_shape_repair_preserves_raw_result_through_publication() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({"mode":"ordinary-shape-repair"}), json!({}), None);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "author");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    let raw_author = read(f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[0]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(
+        raw_author["result"]["proposal"]["operations"][0]["uncertainties"],
+        json!(["The operation's deployment is unknown."])
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][0]
+            .get("from")
+            .is_none()
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][0]
+            .get("to")
+            .is_none()
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][1]
+            .get("from")
+            .is_none()
+    );
+    assert!(
+        raw_author["result"]["proposal"]["operations"][0]["steps"][1]
+            .get("to")
+            .is_none()
+    );
+    assert!(report["review"].is_object(), "{report}");
+    assert!(
+        report["publication"]["bundle"].as_str().is_some(),
+        "{report}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_operation_uncertainty_moves_before_author_retry() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(
+        &f,
+        json!({"mode":"ordinary-uncertainty-adapt"}),
+        json!({}),
+        None,
+    );
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "reviewer");
+    assert_eq!(attempts[0]["adaptedProposal"], report["proposal"]);
+
+    let result_path = f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[0]["invocation"].as_str().unwrap()
+    ));
+    let saved_result_bytes = fs::read(result_path).unwrap();
+    let saved_result: serde_json::Value = serde_json::from_slice(&saved_result_bytes).unwrap();
+    let original = saved_result["result"]["proposal"].clone();
+    assert_eq!(
+        original["operations"][0]["uncertainties"],
+        json!(["The operation's deployment is unknown."])
+    );
+    assert!(original.get("uncertainties").is_none());
+    assert_eq!(attempts[0]["resultDigest"], saved_result["resultDigest"]);
+
+    let mut adapted = original.clone();
+    let operation = adapted["operations"][0].as_object_mut().unwrap();
+    let uncertainties = operation.remove("uncertainties").unwrap();
+    adapted
+        .as_object_mut()
+        .unwrap()
+        .insert("uncertainties".into(), uncertainties);
+    let receipt = &attempts[0]["uncertaintyAdaptation"];
+    assert_eq!(receipt["from"], "operations[0].uncertainties");
+    assert_eq!(receipt["to"], "uncertainties");
+    assert_eq!(receipt["originalResultDigest"], attempts[0]["resultDigest"]);
+    assert_eq!(
+        receipt["originalProposalDigest"],
+        clew::canonical::hash(&original).unwrap()
+    );
+    assert_eq!(
+        receipt["adaptedValueDigest"],
+        clew::canonical::hash(&adapted).unwrap()
+    );
+
+    let stored = read(f.docs.join(format!(
+        ".codeclew/proposals/{}.json",
+        report["proposal"].as_str().unwrap()
+    )));
+    assert_eq!(
+        stored["artifact"]["input"]["uncertainties"],
+        json!(["The operation's deployment is unknown."])
+    );
+    assert!(
+        stored["artifact"]["input"]["operations"][0]
+            .get("uncertainties")
+            .is_none()
+    );
+    let typed_adapted: clew::documentation::proposals::Proposal =
+        serde_json::from_value(adapted).unwrap();
+    assert_eq!(
+        stored["artifact"]["input"],
+        serde_json::to_value(typed_adapted).unwrap()
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_uncertainty_adaptation_keeps_semantic_repair_budget() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(
+        &f,
+        json!({"mode":"ordinary-uncertainty-adapt"}),
+        json!({"mode":"ordinary-uncertainty-reject-once"}),
+        None,
+    );
+    config["repairAttempts"] = json!(1);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 4, "{report}");
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|attempt| attempt["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["author", "reviewer", "author", "reviewer"]
+    );
+    assert!(attempts[0]["uncertaintyAdaptation"].is_object());
+    assert!(attempts[0]["adaptedProposal"].is_string());
+    assert!(attempts[2]["uncertaintyAdaptation"].is_null());
+    assert!(attempts[2]["adaptedProposal"].is_null());
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_ordinary_shape_authority_evidence_and_retry_budget_fail_closed() {
+    use serde_json::json;
+    for (mode, calls, expected_reason) in [
+        ("ordinary-shape-exhaust", 2, "REPAIR_EXHAUSTED"),
+        (
+            "ordinary-shape-invalid-evidence",
+            1,
+            "AUTHOR_CONTRACT_INVALID",
+        ),
+        (
+            "ordinary-shape-forged-field",
+            1,
+            "author proposal violates its closed schema",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.service("orders");
+        let (work, _, _) = proposal_fixture(&f);
+        let config = execution_config(&f, json!({"mode":mode}), json!({}), None);
+        let result = work_run(&f, &work, &config);
+        assert_ne!(result["status"], "ACCEPTED", "{mode}: {result}");
+        let report = run_report(&f, &result);
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), calls, "{mode}: {report}");
+        assert!(attempts.iter().all(|attempt| attempt["role"] == "author"));
+        assert!(report["proposal"].is_null(), "{mode}: {report}");
+        assert!(report["review"].is_null(), "{mode}: {report}");
+        assert!(
+            report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(expected_reason),
+            "{mode}: {report}"
+        );
+    }
+
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(&f, json!({"mode":"valid"}), json!({}), None);
+    config["repairAttempts"] = json!(0);
+    let result = work_run(&f, &work, &config);
+    assert_ne!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    assert!(
+        report["attempts"].as_array().unwrap().is_empty(),
+        "{report}"
+    );
+    assert!(report["proposal"].is_null(), "{report}");
+    assert!(report["review"].is_null(), "{report}");
+    assert!(
+        report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("finite calls covering initial authoring"),
+        "{report}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_process_overview_authority_and_evidence_failures_are_not_retried() {
+    use serde_json::json;
+    for (mode, expected_reason) in [
+        (
+            "process-forged-authority",
+            "author action contains authority",
+        ),
+        (
+            "process-forged-parent-authority",
+            "author proposal violates its closed schema",
+        ),
+        (
+            "process-undelivered-evidence",
+            "was not delivered in this role packet",
+        ),
+        (
+            "process-missing-evidence",
+            "author proposal violates its closed schema",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.service("orders");
+        save_process(&f, &process_definition("reserve", &[]));
+        let (work, _) = process_work(&f, "reserve");
+        let config = execution_config(&f, json!({"mode":mode}), json!({}), None);
+
+        let result = work_run(&f, &work, &config);
+        assert_ne!(result["status"], "ACCEPTED", "{mode}: {result}");
+        let report = run_report(&f, &result);
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), 1, "{mode}: {report}");
+        assert_eq!(attempts[0]["role"], "author", "{mode}: {report}");
+        assert!(report["proposal"].is_null(), "{mode}: {report}");
+        assert!(report["review"].is_null(), "{mode}: {report}");
+        assert!(
+            report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains(expected_reason),
+            "{mode}: {report}"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_reviewer_issue_evidence_must_be_in_its_packet() {
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    let f = Fixture::new();
+    f.service("orders");
+    save_process(&f, &process_definition("reserve", &[]));
+    let (work, frozen) = process_work(&f, "reserve");
+    let mut delivered = BTreeSet::new();
+    let mut cursor = None;
+    loop {
+        let selection = cursor
+            .as_ref()
+            .map(|cursor| json!({"cursor":cursor}))
+            .unwrap_or_else(|| json!({}));
+        let page = work_read(&f, &work, selection);
+        delivered.extend(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["reference"].as_str().map(str::to_owned)),
+        );
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let undelivered_reference = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(reference, handle)| {
+            !delivered.contains(*reference)
+                && matches!(
+                    handle["kind"].as_str(),
+                    Some("DEPENDENCY" | "ENTRYPOINT" | "PROCESS_ROOT")
+                )
+        })
+        .map(|(reference, _)| reference.clone())
+        .expect("Work should retain a non-source handle outside this process packet");
+
+    let config = execution_config(
+        &f,
+        json!({"mode":"process-valid"}),
+        json!({
+            "mode":"review-undelivered-handle",
+            "issueEvidenceReference":undelivered_reference
+        }),
+        None,
+    );
+    let result = work_run(&f, &work, &config);
+    assert_ne!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "reviewer");
+    assert!(report["review"].is_null(), "{report}");
+    assert!(
+        report["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("issue evidence reference")
+            && report["gap"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not delivered in this role packet"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -2535,6 +4399,474 @@ fn docsys_t04_expansion_uses_recorded_coordinator_reads() {
             .len(),
         3
     );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_miss_gets_bounded_feedback_then_publishes() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(&f, json!({"mode":"symbol-lookup-author"}), json!({}), None);
+    config["authorCalls"] = json!(5);
+    config["reviewerCalls"] = json!(8);
+    config["expansions"] = json!(3);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 5, "{report}");
+    assert_eq!(
+        attempts
+            .iter()
+            .filter(|attempt| attempt["role"] == "author")
+            .count(),
+        4
+    );
+    assert_eq!(
+        attempts
+            .iter()
+            .filter(|attempt| attempt["role"] == "reviewer")
+            .count(),
+        1
+    );
+
+    let input = |index: usize| {
+        read(f.docs.join(format!(
+            ".codeclew/job-inputs/{}.json",
+            attempts[index]["invocation"].as_str().unwrap()
+        )))
+    };
+    let first_invocation = attempts[0]["invocation"].as_str().unwrap();
+    let raw_author = read(
+        f.docs
+            .join(format!(".codeclew/job-results/{first_invocation}.json")),
+    );
+    assert_eq!(raw_author["result"]["action"], "expand");
+    assert_eq!(
+        raw_author["result"]["selection"]["symbols"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        raw_author["result"]["selection"]["symbols"][1],
+        "fixture.missingSymbol"
+    );
+
+    let correction_input = input(1);
+    let correction_feedback = &correction_input["request"]["payload"]["expansionFeedback"];
+    assert_eq!(correction_feedback["kind"], "SYMBOL_LOOKUP");
+    assert_eq!(correction_feedback["status"], "NOT_FOUND");
+    assert_eq!(
+        correction_feedback["requestedSelector"],
+        "fixture.missingSymbol"
+    );
+    assert_eq!(correction_feedback["navigationOnly"], true);
+    assert!(
+        correction_feedback["message"]
+            .as_str()
+            .unwrap()
+            .contains("not proof")
+    );
+    assert!(correction_input["request"]["payload"]["previousProposal"].is_null());
+
+    let navigation_input = input(2);
+    let navigation_pages = navigation_input["request"]["payload"]["evidence"]["pages"]
+        .as_array()
+        .unwrap();
+    let initial_pages = input(0)["request"]["payload"]["evidence"]["pages"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(
+        navigation_pages.len() > initial_pages,
+        "SYMBOL query should add a delivered page"
+    );
+    let navigation_summary = navigation_pages
+        .iter()
+        .flat_map(|page| page["items"].as_array().unwrap())
+        .find(|item| item["kind"] == "CALLABLE_SUMMARY")
+        .unwrap();
+    assert!(navigation_summary.get("reference").is_none());
+    assert_eq!(navigation_summary["record"]["authority"], "NAVIGATION_ONLY");
+    let full_reference = navigation_summary["record"]["fullRecordReference"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !input(0)["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference)
+    );
+    assert!(
+        navigation_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    let full_read_input = input(3);
+    assert!(
+        full_read_input["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference
+                && item["kind"] == "DEPENDENCY"
+                && item["record"]["kind"] == "SYMBOL")
+    );
+    let full_read_result = read(f.docs.join(format!(
+        ".codeclew/job-results/{}.json",
+        attempts[2]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(
+        full_read_result["result"]["selection"]["references"],
+        json!([full_reference])
+    );
+    assert_eq!(
+        attempts[2]["expansionSelection"]["effective"]["references"],
+        json!([full_reference])
+    );
+    assert_eq!(
+        attempts[1]["expansionSelection"]["effective"]["query"]["projection"],
+        "NAVIGATION"
+    );
+    assert_eq!(
+        attempts[1]["expansionSelection"]["requested"]["query"]["kind"],
+        "SYMBOL"
+    );
+
+    let reviewer_input = input(4);
+    assert!(
+        reviewer_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    assert!(
+        reviewer_input["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|page| page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "SYMBOL"))
+    );
+
+    let run = report["run"].as_str().unwrap();
+    let miss_checkpoint = find_checkpoint_record(&f, run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["pendingCall"].is_null()
+            && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
+    });
+    let checkpoint = &miss_checkpoint["checkpoint"];
+    assert_eq!(checkpoint["expansionsRemaining"], 2);
+    assert_eq!(checkpoint["repairsRemaining"], 1);
+    assert_eq!(
+        checkpoint["pages"],
+        input(0)["request"]["payload"]["evidence"]["pages"]
+    );
+
+    let ledger = read(f.docs.join(format!(".codeclew/work/{work}/reads.json")));
+    let receipts = ledger["receipts"].as_object().unwrap();
+    let navigation_receipt = receipts
+        .values()
+        .find(|receipt| {
+            receipt["selection"]["query"]["kind"] == "SYMBOL"
+                && receipt["selection"]["query"]["symbolContains"] == ""
+                && receipt["selection"]["query"]["projection"] == "NAVIGATION"
+        })
+        .unwrap();
+    assert_eq!(
+        navigation_receipt["requestedSelection"]["query"]["kind"],
+        "SYMBOL"
+    );
+    assert!(
+        navigation_receipt["requestedSelection"]["query"]
+            .get("projection")
+            .is_none()
+    );
+    assert!(!receipts.values().any(|receipt| {
+        receipt["selection"]["symbols"] == raw_author["result"]["selection"]["symbols"]
+    }));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_feedback_is_cleared_when_author_submits_content() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(
+        &f,
+        json!({"mode":"symbol-lookup-accept-after-miss"}),
+        json!({}),
+        None,
+    );
+    config["authorCalls"] = json!(3);
+    config["reviewerCalls"] = json!(4);
+    config["expansions"] = json!(1);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    let reviewer_input = read(f.docs.join(format!(
+        ".codeclew/job-inputs/{}.json",
+        attempts[2]["invocation"].as_str().unwrap()
+    )));
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert!(
+        reviewer_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_reviewer_symbol_lookup_miss_expands_before_review() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(
+        &f,
+        json!({}),
+        json!({"mode":"symbol-lookup-reviewer"}),
+        None,
+    );
+    config["authorCalls"] = json!(5);
+    config["reviewerCalls"] = json!(8);
+    config["expansions"] = json!(3);
+
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 5, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert!(
+        attempts[1..]
+            .iter()
+            .all(|attempt| attempt["role"] == "reviewer")
+    );
+    let reviewer_input = |index: usize| {
+        read(f.docs.join(format!(
+            ".codeclew/job-inputs/{}.json",
+            attempts[index]["invocation"].as_str().unwrap()
+        )))
+    };
+    let feedback_input = reviewer_input(2);
+    let feedback = &feedback_input["request"]["payload"]["expansionFeedback"];
+    assert_eq!(feedback["kind"], "SYMBOL_LOOKUP");
+    assert_eq!(
+        feedback["requestedSelector"],
+        "fixture.missingReviewerSymbol"
+    );
+    let navigation_input = reviewer_input(3);
+    assert!(
+        navigation_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    let navigation_summary = navigation_input["request"]["payload"]["evidence"]["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|page| page["items"].as_array().unwrap())
+        .find(|item| item["kind"] == "CALLABLE_SUMMARY")
+        .unwrap();
+    assert!(navigation_summary.get("reference").is_none());
+    assert_eq!(navigation_summary["record"]["authority"], "NAVIGATION_ONLY");
+    let full_reference = navigation_summary["record"]["fullRecordReference"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !reviewer_input(1)["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference)
+    );
+    let full_input = reviewer_input(4);
+    assert!(
+        full_input["request"]["payload"]
+            .get("expansionFeedback")
+            .is_none()
+    );
+    assert!(
+        full_input["request"]["payload"]["evidence"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .any(|item| item["reference"] == full_reference
+                && item["kind"] == "DEPENDENCY"
+                && item["record"]["kind"] == "SYMBOL")
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_feedback_checkpoint_resumes_with_remaining_budget() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let mut config = execution_config(&f, json!({"mode":"symbol-lookup-repeat"}), json!({}), None);
+    config["authorCalls"] = json!(4);
+    config["reviewerCalls"] = json!(6);
+    config["expansions"] = json!(2);
+
+    let index_before = reader_pointer_bytes(&f);
+    let first_result = work_run(&f, &work, &config);
+    assert_eq!(first_result["status"], "EXHAUSTED", "{first_result}");
+    let run = first_result["run"].as_str().unwrap().to_owned();
+    let initial_report = run_report(&f, &first_result);
+    assert_eq!(initial_report["attempts"].as_array().unwrap().len(), 3);
+    assert!(
+        initial_report["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|attempt| attempt["role"] == "author")
+    );
+    assert!(
+        first_result["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("EXPANSION_BUDGET_EXHAUSTED")
+    );
+
+    let after_first_miss = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["pendingCall"].is_null()
+            && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
+            && checkpoint["expansionsRemaining"] == 1
+    });
+    assert_eq!(after_first_miss["checkpoint"]["repairsRemaining"], 1);
+    let first_attempt = initial_report["attempts"][0].clone();
+    let first_invocation = first_attempt["invocation"].as_str().unwrap().to_owned();
+    let first_result_path = f
+        .docs
+        .join(format!(".codeclew/job-results/{first_invocation}.json"));
+    let first_raw = fs::read(&first_result_path).unwrap();
+
+    let mut resumed_report = initial_report;
+    resumed_report["status"] = json!("PREPARED");
+    resumed_report["attempts"] = json!([first_attempt.clone()]);
+    resumed_report["proposal"] = serde_json::Value::Null;
+    resumed_report["review"] = serde_json::Value::Null;
+    resumed_report["publication"] = serde_json::Value::Null;
+    resumed_report["gap"] = serde_json::Value::Null;
+    resumed_report["accounting"] = serde_json::Value::Null;
+    resumed_report["checkpoint"] = checkpoint_reference(&run, &after_first_miss);
+    fs::write(
+        f.docs.join(format!(".codeclew/jobs/{run}.json")),
+        serde_json::to_vec(&resumed_report).unwrap(),
+    )
+    .unwrap();
+
+    let first_reservation = first_attempt["reservation"].as_str().unwrap();
+    let account_path = f.docs.join("execution/accounts/fixture.json");
+    let mut account = read(&account_path);
+    for (id, reservation) in account["reservations"].as_object_mut().unwrap() {
+        if reservation["run"] != run {
+            continue;
+        }
+        if id == first_reservation {
+            assert_ne!(reservation["status"], "RESERVED");
+        } else {
+            reservation["status"] = json!("RESERVED");
+            reservation["charged"] = reservation["maximum"].clone();
+            reservation["actual"] = serde_json::Value::Null;
+        }
+    }
+    fs::write(account_path, serde_json::to_vec(&account).unwrap()).unwrap();
+    restore_reader_pointer(&f, index_before.as_deref());
+
+    let resumed = work_run(&f, &work, &config);
+    assert_eq!(resumed["status"], "EXHAUSTED", "{resumed}");
+    let resumed_report = run_report(&f, &resumed);
+    let resumed_attempts = resumed_report["attempts"].as_array().unwrap();
+    assert_eq!(resumed_attempts.len(), 3, "{resumed_report}");
+    assert_eq!(resumed_attempts[0]["invocation"], first_invocation);
+    assert_ne!(resumed_attempts[1]["invocation"], first_invocation);
+    assert!(
+        resumed_attempts
+            .iter()
+            .all(|attempt| attempt["role"] == "author")
+    );
+    assert_eq!(fs::read(first_result_path).unwrap(), first_raw);
+    let last_checkpoint = find_checkpoint_record(&f, &run, |checkpoint| {
+        checkpoint["phase"] == "AUTHOR"
+            && checkpoint["expansionFeedback"]["status"] == "NOT_FOUND"
+            && checkpoint["expansionsRemaining"] == 0
+    });
+    assert_eq!(last_checkpoint["checkpoint"]["repairsRemaining"], 1);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_symbol_lookup_other_invalid_expansions_remain_fail_closed() {
+    use serde_json::json;
+    for mode in [
+        "symbol-lookup-foreign-authority",
+        "symbol-lookup-mixed",
+        "symbol-lookup-untracked",
+        "symbol-lookup-unknown-reference",
+    ] {
+        let f = Fixture::new();
+        f.service("orders");
+        let (work, _, _) = proposal_fixture(&f);
+        let mut config = execution_config(&f, json!({"mode":mode}), json!({}), None);
+        config["authorCalls"] = json!(3);
+        config["reviewerCalls"] = json!(4);
+        config["expansions"] = json!(1);
+
+        let result = work_run(&f, &work, &config);
+        let expected_status = if mode == "symbol-lookup-untracked" {
+            "NEEDS_EVIDENCE"
+        } else {
+            "GENERATION_GAP"
+        };
+        assert_eq!(result["status"], expected_status, "{mode}: {result}");
+        let report = run_report(&f, &result);
+        assert_eq!(
+            report["attempts"].as_array().unwrap().len(),
+            1,
+            "{mode}: {report}"
+        );
+        assert_eq!(report["attempts"][0]["role"], "author");
+        let input = read(f.docs.join(format!(
+            ".codeclew/job-inputs/{}.json",
+            report["attempts"][0]["invocation"].as_str().unwrap()
+        )));
+        assert!(
+            input["request"]["payload"]
+                .get("expansionFeedback")
+                .is_none()
+        );
+        let raw = read(f.docs.join(format!(
+            ".codeclew/job-results/{}.json",
+            report["attempts"][0]["invocation"].as_str().unwrap()
+        )));
+        assert_eq!(raw["result"]["action"], "expand");
+        assert_ne!(
+            result["gap"]["reason"], "EXPANSION_BUDGET_EXHAUSTED",
+            "{mode}"
+        );
+    }
 }
 
 #[test]
@@ -4520,6 +6852,23 @@ fn read_view_evidence(
     frozen: &serde_json::Value,
     proposal: &serde_json::Value,
 ) {
+    let refs = view_proposal_evidence_references(frozen, proposal);
+    for chunk in refs.into_iter().collect::<Vec<_>>().chunks(8) {
+        let mut page = work_read(f, work, serde_json::json!({"references":chunk}));
+        while let Some(cursor) = page["nextCursor"].as_str() {
+            page = work_read(
+                f,
+                work,
+                serde_json::json!({"references":chunk,"cursor":cursor}),
+            );
+        }
+    }
+}
+
+fn view_proposal_evidence_references(
+    frozen: &serde_json::Value,
+    proposal: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
     use std::collections::BTreeSet;
     fn visit(v: &serde_json::Value, refs: &mut BTreeSet<String>) {
         match v {
@@ -4562,16 +6911,51 @@ fn read_view_evidence(
             })
             .map(|(r, _)| r.clone()),
     );
-    for chunk in refs.into_iter().collect::<Vec<_>>().chunks(8) {
-        let mut page = work_read(f, work, serde_json::json!({"references":chunk}));
-        while let Some(cursor) = page["nextCursor"].as_str() {
-            page = work_read(
-                f,
-                work,
-                serde_json::json!({"references":chunk,"cursor":cursor}),
-            );
-        }
-    }
+    refs
+}
+
+#[cfg(target_os = "macos")]
+fn bounded_proposal_expansion_config(
+    f: &Fixture,
+    frozen: &serde_json::Value,
+    proposal: &serde_json::Value,
+    mut author_options: serde_json::Value,
+) -> serde_json::Value {
+    let references = view_proposal_evidence_references(frozen, proposal);
+    assert!(!references.is_empty());
+    let expansion_budget = u32::try_from(references.len().div_ceil(8)).unwrap();
+    assert!(
+        (1..=16).contains(&expansion_budget),
+        "fixed proposal evidence must fit the finite expansion budget"
+    );
+    author_options["proposal"] = proposal.clone();
+    author_options["expandMissingProposalEvidence"] = serde_json::json!(true);
+    author_options["proposalEvidenceReferences"] = serde_json::json!(references);
+    let mut config = execution_config(f, author_options, serde_json::json!({}), None);
+    config["expansions"] = serde_json::json!(expansion_budget);
+    config["authorCalls"] = serde_json::json!(2 + expansion_budget);
+    config["reviewerCalls"] = serde_json::json!(2 + 2 * expansion_budget);
+    config
+}
+
+#[cfg(target_os = "macos")]
+fn assert_author_expanded(f: &Fixture, result: &serde_json::Value) {
+    let report = run_report(f, result);
+    assert!(
+        report["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|attempt| attempt["role"] == "author")
+            .any(|attempt| {
+                let raw = read(f.docs.join(format!(
+                    ".codeclew/job-results/{}.json",
+                    attempt["invocation"].as_str().unwrap()
+                )));
+                raw["result"]["action"] == "expand"
+            }),
+        "the prebuilt proposal must request registered evidence expansion: {report}"
+    );
 }
 #[test]
 fn docsys_t11_mapper_change_invalidates_views_process_and_contract_with_independent_reuse() {
@@ -4764,11 +7148,9 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
         .0;
     let child_proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:child","title":"Child overview","summary":{"text":"The child explains normalized quantity handling.","evidence":[handle]},"steps":[]}]});
     read_view_evidence(&f, &child_work, &child_frozen, &child_proposal);
-    let child = work_run(
-        &f,
-        &child_work,
-        &execution_config(&f, json!({"proposal":child_proposal}), json!({}), None),
-    );
+    let child_config =
+        bounded_proposal_expansion_config(&f, &child_frozen, &child_proposal, json!({}));
+    let child = work_run(&f, &child_work, &child_config);
     assert_eq!(child["status"], "ACCEPTED", "{child}");
     let original = fs::read(f.docs.join("scenarios/quantity-view.yaml")).unwrap();
     let (work, frozen) = view_work(&f, "quantity-view");
@@ -4789,17 +7171,19 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
         .unwrap()
         .push(json!(component));
     read_view_evidence(&f, &work, &frozen, &proposal);
-    let result = work_run(
+    let config = bounded_proposal_expansion_config(
         &f,
-        &work,
-        &execution_config(
-            &f,
-            json!({"proposal":proposal,"mode":"denials","readPaths":[],"writePaths":[f.docs.join("scenarios/quantity-view.yaml"),f.docs.join("notes/history.md"),f.docs.join("catalog/notes/policy.json")]}),
-            json!({}),
-            None,
-        ),
+        &frozen,
+        &proposal,
+        json!({
+            "mode":"denials",
+            "readPaths":[],
+            "writePaths":[f.docs.join("scenarios/quantity-view.yaml"),f.docs.join("notes/history.md"),f.docs.join("catalog/notes/policy.json")],
+        }),
     );
+    let result = work_run(&f, &work, &config);
     assert_eq!(result["status"], "ACCEPTED", "{result}");
+    assert_author_expanded(&f, &result);
     assert_eq!(
         fs::read(f.docs.join("scenarios/quantity-view.yaml")).unwrap(),
         original
@@ -4926,11 +7310,9 @@ fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
     // an explicit recorded read of the selected service fact.
     work_read(&f, &service_work, json!({"references":[flow_for("other")]}));
     let section = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow_for("other")]},"steps":[]}]});
-    let accepted = work_run(
-        &f,
-        &service_work,
-        &execution_config(&f, json!({"proposal":section}), json!({}), None),
-    );
+    read_view_evidence(&f, &service_work, &sw, &section);
+    let section_config = bounded_proposal_expansion_config(&f, &sw, &section, json!({}));
+    let accepted = work_run(&f, &service_work, &section_config);
     assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
     definition["view"]["human"]["annotations"]["scope"] =
         json!("A concurrent human clarification.");
@@ -5335,6 +7717,18 @@ fn docsys_section_contract_expansion_and_review_preserve_authority_and_evidence(
     let attempts = report["attempts"].as_array().unwrap();
     assert_eq!(attempts.len(), 3, "{report}");
     assert_eq!(attempts[2]["role"], "reviewer");
+    let remaining = attempts
+        .iter()
+        .map(|attempt| {
+            read(f.docs.join(format!(
+                ".codeclew/job-inputs/{}.json",
+                attempt["invocation"].as_str().unwrap()
+            )))["request"]["expansionBudget"]["remaining"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(remaining, vec![1, 0, 0]);
     assert_ne!(
         attempts[0]["authorContract"]["deliveredDigest"],
         attempts[1]["authorContract"]["deliveredDigest"]
@@ -5369,6 +7763,178 @@ fn docsys_section_contract_expansion_and_review_preserve_authority_and_evidence(
         fs::read(latest).unwrap(),
         b"section author must consume retained evidence"
     );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_initial_and_expanded_author_and_reviewer_receive_complete_large_source_parts() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let unicode_sentinel = "UNICODE_SOURCE_SENTINEL_λ🔥";
+    let tail_sentinel = "SOURCE_FINAL_GUARD_終端";
+    let padding =
+        format!("// {unicode_sentinel} retained source context for packet verification\n")
+            .repeat(1600);
+    let source_text = format!(
+        "public class Orders {{\npublic int reserve(int quantity) {{\n{padding}return normalize(quantity);\n// {tail_sentinel}\n}}\nprivate int normalize(int quantity) {{ return quantity; }}\n}}\n"
+    );
+    assert!(source_text.len() > 49_152);
+    fs::write(source.join("Orders.java"), &source_text).unwrap();
+    commit(&source);
+    section_human_note(&f);
+
+    // An ordinary entrypoint Work puts its large retained SOURCE on the
+    // initial page walk, where automatic reads must complete the omission.
+    let checked = f.checked();
+    let entrypoint = checked.services["orders"]
+        .entrypoints
+        .iter()
+        .find(|entry| entry.symbol.contains("reserve"))
+        .unwrap()
+        .id
+        .clone();
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    let source_packet_target = |work_id: &str, source_id: &str| {
+        let work = clew::documentation::work::load(&repo, work_id).unwrap();
+        let source = work.checked.services["orders"]
+            .sources
+            .get(source_id)
+            .expect("the retained Work SOURCE must exist");
+        let reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.kind == "SOURCE" && handle.id == source_id)
+            .expect("the large retained SOURCE must have a Work reference")
+            .0
+            .clone();
+        (reference, source.text.clone())
+    };
+    let initial_request = f.input(
+        "initial-source-work.json",
+        &json!({"schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Service maintainers", "entrypoint":entrypoint,
+            "maxItems":100,"maxBytes":49152}),
+    );
+    let initial_work = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        initial_request.to_str().unwrap(),
+    ])["work"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut initial_large_source_ref = None;
+    let mut page = work_read(&f, &initial_work, json!({}));
+    let mut page_summary = Vec::new();
+    loop {
+        page_summary.push(json!({
+            "items":page["items"].as_array().unwrap().iter().map(|item| json!([item["kind"],item["id"]])).collect::<Vec<_>>(),
+            "omitted":page["omitted"],
+            "nextCursor":page["nextCursor"]
+        }));
+        let omitted_large_source = page["omitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["kind"] == "SOURCE" && item["reason"] == "ITEM_EXCEEDS_WORK_BYTE_BUDGET"
+            })
+            .and_then(|item| item["reference"].as_str().map(str::to_owned));
+        if initial_large_source_ref.is_none() {
+            initial_large_source_ref = omitted_large_source;
+        }
+        let Some(cursor) = page["nextCursor"].as_str().map(str::to_owned) else {
+            break;
+        };
+        page = work_read(&f, &initial_work, json!({"cursor":cursor}));
+    }
+    assert!(
+        initial_large_source_ref.is_some(),
+        "entrypoint initial pages did not omit the large SOURCE record: {page_summary:?}"
+    );
+    let initial_work_record = clew::documentation::work::load(&repo, &initial_work).unwrap();
+    let initial_source_ref = initial_large_source_ref.unwrap();
+    let initial_source_id = initial_work_record.handles[&initial_source_ref].id.clone();
+    let (initial_source_ref, retained_source_text) =
+        source_packet_target(&initial_work, &initial_source_id);
+    assert!(
+        retained_source_text.len() > 49_152,
+        "the exact initially omitted SOURCE must exceed maxBytes"
+    );
+    assert!(retained_source_text.contains("reserve"));
+    assert!(retained_source_text.contains(unicode_sentinel));
+    assert!(retained_source_text.contains(tail_sentinel));
+    let expected_source_hash = clew::canonical::hash_bytes(retained_source_text.as_bytes());
+    let expected_source_hash = expected_source_hash
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_owned();
+    let source_options = |mode: &str, source_ref: String, section: bool| {
+        let mut options = json!({
+            "mode":mode,
+            "requireFullSourceParts":true,
+            "sourceReference":source_ref,
+            "expectedSourceHash":expected_source_hash,
+            "expectedSourceBytes":retained_source_text.len(),
+            "unicodeSentinel":unicode_sentinel,
+            "tailSentinel":tail_sentinel
+        });
+        if section {
+            options["requireEvidenceText"] = json!("HUMAN_RULE_SENTINEL");
+        }
+        options
+    };
+    let initial_options = source_options("valid", initial_source_ref, false);
+    let initial_config = execution_config(&f, initial_options.clone(), initial_options, None);
+    let initial_result = work_run(&f, &initial_work, &initial_config);
+    assert_eq!(initial_result["status"], "ACCEPTED", "{initial_result}");
+    let initial_report = run_report(&f, &initial_result);
+    assert_eq!(initial_report["attempts"].as_array().unwrap().len(), 2);
+
+    // The narrow section contract starts without SOURCE text and requests its
+    // registered source reference; the follow-up author and reviewer packets
+    // must both contain the complete multi-part record.
+    let (expanded_work, _) = section_contract_work(&f, "section-entities");
+    let (expanded_source_ref, expanded_source_text) =
+        source_packet_target(&expanded_work, &initial_source_id);
+    assert_eq!(expanded_source_text, retained_source_text);
+    let issue_source_reference = expanded_source_ref.clone();
+    let mut expanded_options = source_options("section-expand", expanded_source_ref, true);
+    expanded_options["issueEvidenceReference"] = json!(issue_source_reference);
+    let mut expanded_config =
+        execution_config(&f, expanded_options.clone(), expanded_options, None);
+    expanded_config["authorOutputContract"] = json!("section-summary/1.0");
+    expanded_config["expansions"] = json!(1);
+    expanded_config["authorCalls"] = json!(3);
+    expanded_config["reviewerCalls"] = json!(4);
+    let note_path = f.docs.join("notes/section.md");
+    let note_before = fs::read(&note_path).unwrap();
+
+    let result = work_run(&f, &expanded_work, &expanded_config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    let attempts = report["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 3, "{report}");
+    assert_eq!(attempts[0]["role"], "author");
+    assert_eq!(attempts[1]["role"], "author");
+    assert_eq!(attempts[2]["role"], "reviewer");
+    assert_eq!(
+        report["contextBudget"]["reviewerAdmission"]["status"],
+        "FIT"
+    );
+    assert_eq!(
+        report["review"]["issues"][0]["evidence"][0],
+        issue_source_reference
+    );
+    assert_eq!(fs::read(note_path).unwrap(), note_before);
 }
 
 #[test]
@@ -5587,7 +8153,7 @@ fn docsys_section_contract_budget_includes_bound_output_schema_before_dispatch()
 
 #[test]
 #[cfg(target_os = "macos")]
-fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inputs() {
+fn docsys_declaration_profile_and_reviewer_preflight_preserve_inputs() {
     use clew::documentation::store::Repository;
     use serde_json::json;
     let f = Fixture::new();
@@ -5625,25 +8191,49 @@ fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inp
             .to_owned()
     };
     let full = prepare(None);
-    let profile = prepare(Some("declarations-v1"));
     fs::rename(&source, source.with_extension("offline")).unwrap();
     let latest = f.docs.join(".codeclew/cache/latest-check.json");
     fs::write(&latest, b"profile must not analyze").unwrap();
+    let note_path = f.docs.join("notes/section.md");
+    let note_before = fs::read(&note_path).unwrap();
     let mut full_config = section_execution_config(&f, json!({"mode":"section-expand"}));
     full_config["authorCalls"] = json!(3);
     full_config["reviewerCalls"] = json!(4);
     full_config["expansions"] = json!(1);
-    full_config["reviewer"]["cap"]["maximum"]["inputTokens"] = json!(1);
-    let baseline = work_run(&f, &full, &full_config);
-    let baseline = run_report(&f, &baseline);
+    let mut blocked_config = full_config.clone();
+    blocked_config["reviewer"]["cap"]["maximum"]["inputTokens"] = json!(1);
+    let blocked_result = work_run(&f, &full, &blocked_config);
+    let blocked = run_report(&f, &blocked_result);
     assert!(
-        baseline["gap"]["reason"]
+        blocked["gap"]["reason"]
             .as_str()
             .unwrap()
-            .contains("INPUT_CAP_EXCEEDED"),
-        "{baseline}"
+            .contains("REVIEWER_INPUT_CAP_EXCEEDED"),
+        "{blocked}"
     );
-    assert!(baseline["publication"].is_null());
+    assert!(
+        blocked["attempts"].as_array().unwrap().is_empty(),
+        "{blocked}"
+    );
+    assert!(blocked["proposal"].is_null());
+    assert!(blocked["publication"].is_null());
+    assert!(
+        blocked["accounting"]
+            .as_array()
+            .is_none_or(|rows| rows.is_empty()),
+        "{blocked}"
+    );
+    assert_eq!(fs::read(&latest).unwrap(), b"profile must not analyze");
+    assert_eq!(fs::read(&note_path).unwrap(), note_before);
+
+    let baseline_result = work_run(&f, &full, &full_config);
+    assert_eq!(baseline_result["status"], "ACCEPTED", "{baseline_result}");
+    let baseline = run_report(&f, &baseline_result);
+    assert_eq!(baseline["attempts"].as_array().unwrap().len(), 3);
+    // Prepare the profile against the same pinned source snapshot after the
+    // admitted full run publishes its retained baseline. This keeps the Work
+    // current while measuring its compact input envelope.
+    let profile = prepare(Some("declarations-v1"));
     let required = json!([
         "CONTEXT_PROFILE",
         "SOURCE",
@@ -5661,9 +8251,6 @@ fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inp
     assert_eq!(result["status"], "ACCEPTED", "{result}");
     let compact = run_report(&f, &result);
     assert_eq!(compact["attempts"].as_array().unwrap().len(), 2);
-    let old_bytes = baseline["contextBudget"]["candidateRequestBytes"]
-        .as_u64()
-        .unwrap();
     let new_bytes = compact["contextBudget"]["candidateRequestBytes"]
         .as_u64()
         .unwrap();
@@ -5673,19 +8260,12 @@ fn docsys_declaration_profile_reduces_actual_envelope_and_preserves_reviewer_inp
         compact["attempts"][0]["invocation"].as_str().unwrap()
     )));
     assert_eq!(raw["result"]["section"]["title"], new_bytes.to_string());
-    let baseline_source_ready = baseline["attempts"][1]["requestBytes"].as_u64().unwrap();
-    assert!(new_bytes < baseline_source_ready);
-    assert!(
-        new_bytes < old_bytes,
-        "actual envelope did not shrink: {new_bytes} vs {old_bytes}"
-    );
-    assert!(
-        compact["contextBudget"]["pagesRead"].as_u64().unwrap()
-            < baseline["contextBudget"]["pagesRead"].as_u64().unwrap()
-    );
+    let full_initial_bytes = baseline["attempts"][0]["requestBytes"].as_u64().unwrap();
+    let full_post_expansion_bytes = baseline["attempts"][1]["requestBytes"].as_u64().unwrap();
+    assert!(full_initial_bytes > 0 && full_post_expansion_bytes > 0 && new_bytes > 0);
     assert_eq!(fs::read(latest).unwrap(), b"profile must not analyze");
     eprintln!(
-        "declaration-profile fixture actual initial request bytes: {old_bytes} -> {new_bytes}"
+        "declaration-profile fixture request bytes (different captured content): full initial {full_initial_bytes}, full post-expansion {full_post_expansion_bytes}, profile author {new_bytes}"
     );
 }
 

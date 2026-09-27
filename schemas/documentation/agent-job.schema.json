@@ -252,6 +252,9 @@
         "cap": {
           "$ref": "#/$defs/cap"
         },
+        "expansionBudget": {
+          "$ref": "#/$defs/expansionBudget"
+        },
         "payload": {
           "type": "object"
         }
@@ -264,6 +267,28 @@
         "work",
         "cap",
         "payload"
+      ]
+    },
+    "expansionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "const": "SHARED_ACROSS_ROLES"
+        },
+        "remaining": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "meaning": {
+          "const": "Each registered expansion action consumes one unit, whether it reads a navigation page or a full result set. The count is shared across author, repair, fallback, and reviewer calls."
+        }
+      },
+      "required": [
+        "scope",
+        "remaining",
+        "meaning"
       ]
     },
     "usage": {

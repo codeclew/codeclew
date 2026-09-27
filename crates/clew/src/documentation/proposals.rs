@@ -270,9 +270,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
-/// Validate the selected evidence contract and admitted external inputs.
-/// Snapshot work stays historical; its publication does not claim current sources.
-pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
+/// Validate saved evidence and admitted external inputs without checking whether
+/// the retained narrative still matches the work's preparation baseline.
+pub(super) fn current_evidence_inputs(repo: &Repository, work: &Work) -> Result<(), ClewError> {
     let snapshot = work.snapshot.as_deref().ok_or_else(|| ClewError::new(
         ErrorCode::StaleRequiresReslice,
         "DOCS_REINDEX_REQUIRED: Work requires a saved snapshot; prepare new Work from current-format evidence",
@@ -304,6 +304,13 @@ pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
             "work inputs changed; prepare new work and review the changed evidence",
         ));
     }
+    Ok(())
+}
+
+/// Validate the selected evidence contract and admitted external inputs.
+/// Snapshot work stays historical; its publication does not claim current sources.
+pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
+    current_evidence_inputs(repo, work)?;
     let retained =
         bindings::baseline(repo)?.and_then(|(_, b)| b.narratives.get(&work.subject).cloned());
     let generated_after_preparation = work.retained.is_none()
@@ -354,11 +361,71 @@ pub(super) fn operation_reference_allowed(work: &Work, handle: &work::Handle) ->
     })
 }
 
+/// Resolve an operation target exactly as proposal materialization does. The
+/// scenario subject is the one target that intentionally has no Work handle.
+pub(super) fn operation_target_id(
+    work: &Work,
+    reference: &str,
+    handle: Option<&work::Handle>,
+) -> Option<String> {
+    if work.subject.starts_with("scenario:") && reference == work.subject {
+        return Some(
+            work.request
+                .entrypoint
+                .clone()
+                .unwrap_or_else(|| work.subject[9..].into()),
+        );
+    }
+    let handle = handle?;
+    if !operation_reference_allowed(work, handle) {
+        return None;
+    }
+    match handle.kind.as_str() {
+        "NOTE" => handle.id.strip_prefix("note:").map(super::notes::root),
+        "ENTRYPOINT" | "SECTION" | "PROCESS_ROOT" => Some(handle.id.clone()),
+        _ => None,
+    }
+}
+
+pub(super) fn gap_target_id(handle: &work::Handle) -> Option<String> {
+    if !gap_reference_allowed(handle) {
+        return None;
+    }
+    if handle.kind == "NOTE" {
+        return handle.id.strip_prefix("note:").map(super::notes::root);
+    }
+    Some(handle.id.clone())
+}
+
 pub(super) fn gap_reference_allowed(handle: &work::Handle) -> bool {
     matches!(
         handle.kind.as_str(),
         "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
     )
+}
+
+pub(super) fn selected_service_ids(work: &Work) -> BTreeSet<String> {
+    let allowed: BTreeSet<_> = if let Some(service) = work.subject.strip_prefix("service:") {
+        BTreeSet::from([service.to_owned()])
+    } else {
+        work.checked
+            .scenarios
+            .get(&work.subject[9..])
+            .map(|scenario| {
+                scenario
+                    .steps
+                    .iter()
+                    .map(|step| step.service.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    work.checked
+        .services
+        .keys()
+        .filter(|id| allowed.contains(*id))
+        .cloned()
+        .collect()
 }
 
 impl Builder<'_> {
@@ -601,10 +668,20 @@ impl Builder<'_> {
                     let mut other = event.clone();
                     other.id = stable(scope, &format!("{slot}/else"))?;
                     other.kind = "else".into();
-                    other.text = "Otherwise".into();
+                    other.text = super::reader::text(
+                        self.work.request.documentation_language(),
+                        "Otherwise",
+                        "Иначе",
+                    )
+                    .into();
                     op.explanation.push(Explanation {
                         id: stable(scope, &format!("paragraph/{slot}/else"))?,
-                        text: "The source describes an alternative branch.".into(),
+                        text: super::reader::text(
+                            self.work.request.documentation_language(),
+                            "The source describes an alternative branch.",
+                            "Исходный код описывает альтернативную ветвь.",
+                        )
+                        .into(),
                         event_ids: vec![other.id.clone()],
                         dependency_ids: other.dependency_ids.clone(),
                         source_ids: other.source_ids.clone(),
@@ -675,7 +752,7 @@ fn validate_specialized_fields(
     Ok(())
 }
 
-fn materialize(
+pub(super) fn materialize(
     work: &Work,
     input: &Proposal,
     state: &work::ReadState,
@@ -691,11 +768,12 @@ fn materialize(
     {
         return Err(invalid("invalid proposal schema or content budget"));
     }
-    let received = state
+    let mut received: BTreeSet<_> = state
         .receipts
         .values()
         .flat_map(|r| r.supplied.iter().cloned())
         .collect();
+    received.extend(work::completed_source_references(work, state)?);
     let mut builder = Builder {
         work,
         received,
@@ -713,60 +791,31 @@ fn materialize(
     let mut actors = BTreeMap::from([("caller".to_owned(), "caller".to_owned())]);
     let mut participants = vec![Participant {
         id: "caller".into(),
-        label: "Caller".into(),
+        label: super::reader::text(
+            work.request.documentation_language(),
+            "Caller",
+            "Вызывающая сторона",
+        )
+        .into(),
         service: None,
     }];
-    let allowed: BTreeSet<_> = if let Some(service) = work.subject.strip_prefix("service:") {
-        BTreeSet::from([service.to_owned()])
-    } else {
-        work.checked
-            .scenarios
-            .get(&work.subject[9..])
-            .map(|s| s.steps.iter().map(|s| s.service.clone()).collect())
-            .unwrap_or_default()
-    };
-    for service in work
-        .checked
-        .services
-        .keys()
-        .filter(|id| allowed.contains(*id))
-    {
+    for service in selected_service_ids(work) {
         let id = format!("service-{service}");
         actors.insert(service.clone(), id.clone());
         participants.push(Participant {
             id,
             label: service.clone(),
-            service: Some(service.clone()),
+            service: Some(service),
         });
     }
     let operation_id = |builder: &Builder, reference: &str| -> Result<String, ClewError> {
         if work.subject.starts_with("scenario:") && reference == work.subject {
-            return Ok(work
-                .request
-                .entrypoint
-                .clone()
-                .unwrap_or_else(|| work.subject[9..].into()));
+            return operation_target_id(work, reference, None)
+                .ok_or_else(|| invalid("operation requires an authorable work reference"));
         }
         let handle = builder.handle(reference)?;
-        if !matches!(
-            handle.kind.as_str(),
-            "ENTRYPOINT" | "SECTION" | "NOTE" | "PROCESS_ROOT"
-        ) {
-            return Err(invalid("operation requires an authorable work reference"));
-        }
-        if !operation_reference_allowed(work, handle) {
-            return Err(invalid("operation is outside the requested entrypoint"));
-        }
-        Ok(if handle.kind == "NOTE" {
-            super::notes::root(
-                handle
-                    .id
-                    .strip_prefix("note:")
-                    .ok_or_else(|| invalid("invalid note work reference"))?,
-            )
-        } else {
-            handle.id.clone()
-        })
+        operation_target_id(work, reference, Some(handle))
+            .ok_or_else(|| invalid("operation is outside the requested entrypoint"))
     };
     for (index, proposed) in input.operations.iter().enumerate() {
         if proposed.title.len() > 512 {
@@ -1015,24 +1064,13 @@ fn materialize(
     }
     for (reference, reason) in &input.gaps {
         let id = if let Some(h) = work.handles.get(reference) {
-            if !gap_reference_allowed(h) {
-                return Err(invalid(
-                    "gap requires an entrypoint reference or its scenario subject",
-                ));
-            }
-            if h.kind == "NOTE" {
-                super::notes::root(
-                    h.id.strip_prefix("note:")
-                        .ok_or_else(|| invalid("invalid note work reference"))?,
-                )
-            } else {
-                h.id.clone()
-            }
+            gap_target_id(h).ok_or_else(|| {
+                invalid("gap requires an entrypoint reference or its scenario subject")
+            })?
         } else if work.subject.starts_with("scenario:") && reference == &work.subject {
-            work.request
-                .entrypoint
-                .clone()
-                .unwrap_or_else(|| work.subject[9..].into())
+            operation_target_id(work, reference, None).ok_or_else(|| {
+                invalid("gap requires an entrypoint reference or its scenario subject")
+            })?
         } else {
             return Err(invalid(
                 "gap requires an entrypoint reference or its scenario subject",
@@ -1061,7 +1099,7 @@ fn materialize(
     }
     Ok((n, builder.claims, builder.diagnostics))
 }
-fn expected(work: &Work) -> BTreeSet<String> {
+pub(super) fn expected(work: &Work) -> BTreeSet<String> {
     if let Some(service) = work.subject.strip_prefix("service:") {
         super::notes::expected(&work.checked, service)
     } else {
@@ -1082,8 +1120,8 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
             vec![json!({"code":"INVALID_PROPOSAL","nextAction":error.message})],
         ),
     };
-    if !work::initial_context_complete(&state) {
-        diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial work page; resolve oversized required items by preparing an adequate evidence budget."}));
+    if !work::initial_context_complete_with_parts(&work, &state)? {
+        diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial Work page. For an oversized required SOURCE, use docs work read-part with its SOURCE reference and continue until nextCursor is null; automatic authoring still requires the complete context to fit in its actual request."}));
     }
     for obligation in work.obligations.iter().filter(|o| {
         matches!(

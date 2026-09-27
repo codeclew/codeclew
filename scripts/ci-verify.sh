@@ -17,6 +17,7 @@ python3 -I -S scripts/test_pilot_release_gate.py
 python3 -I -S scripts/test_language_mutation_pilot.py
 python3 -I -S scripts/test_check_repository_privacy.py
 python3 -I -S scripts/check_english_content.py
+python3 -I -S scripts/test_documentation_selection_contract.py
 python3 -I -S scripts/build_cli_documentation.py --check
 python3 -I -S scripts/test_agent_skill.py
 python3 -I -S scripts/test_pilot.py
@@ -28,7 +29,7 @@ node --test scripts/test_documentation_visual_reader.cjs
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
-cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict -- --test-threads=1
+cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict --test docs_work_source_parts --test documentation_account_recovery -- --test-threads=1
 cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
 cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1

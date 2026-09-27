@@ -206,14 +206,7 @@ impl Fixture {
         self.run_unrooted(&args)
     }
     pub fn run_unrooted(&self, args: &[&str]) -> (i32, Value) {
-        let out = run_managed_exact_path(
-            &self.binary,
-            &self.state,
-            &self.runtime,
-            &self.lease,
-            args,
-            &self.tools,
-        );
+        let out = self.run_unrooted_raw(args);
         let value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
             panic!(
                 "{}\n{}",
@@ -222,6 +215,37 @@ impl Fixture {
             )
         });
         (out.status.code().unwrap(), value)
+    }
+    pub fn run_raw(&self, args: &[&str]) -> std::process::Output {
+        let mut args = args.to_vec();
+        args.extend(["--root", self.docs.to_str().unwrap()]);
+        self.run_unrooted_raw(&args)
+    }
+    pub fn run_unrooted_raw(&self, args: &[&str]) -> std::process::Output {
+        run_managed_exact_path(
+            &self.binary,
+            &self.state,
+            &self.runtime,
+            &self.lease,
+            args,
+            &self.tools,
+        )
+    }
+    pub fn run_raw_with_path(&self, args: &[&str], path: &Path) -> std::process::Output {
+        let mut args = args.to_vec();
+        args.extend(["--root", self.docs.to_str().unwrap()]);
+        run_managed_with_path(
+            &self.binary,
+            &self.state,
+            &self.runtime,
+            &self.lease,
+            &args,
+            Some(path),
+            false,
+        )
+    }
+    pub fn tools_dir(&self) -> &Path {
+        &self.tools
     }
     pub fn ok(&self, args: &[&str]) -> Value {
         let (code, value) = self.run(args);

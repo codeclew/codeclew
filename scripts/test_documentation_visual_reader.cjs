@@ -15,6 +15,65 @@ function fixture(){
  const op={id:'section-responsibilities',title:'Responsibilities',summary:fragment('Documented responsibilities'),participants:[],events:[],explanation:[],findings:[],boundaries:[],interfaceContracts:[],visuals:[flow,decision]};
  return {subject:'service:sample',title:'Sample',subtitle:'Example',catalogue:[],contracts:[],operations:[op],sections:[{id:'section-overview',title:'Overview',gap:'Awaiting overview'},{id:op.id,title:op.title,content:op}],notes:[],sources:{'same-source':source('CURRENT SOURCE')},operationSources:{[op.id]:{'same-source':source('ACCEPTED SOURCE')}},operationStates:{[op.id]:{freshness:'STALE',verification:'UNASSESSED'}},sectionState:{freshness:'CURRENT',verification:'VERIFIED'},sourceAuthorities:{},revisions:{sample:'abc'},boundaries:[],interactions:[],gaps:{},coverage:{},boundaryInventory:{publicBoundaries:[],gaps:[]}};
 }
+function entitySectionFixture(){
+ const data=fixture(),seed=data.operations[0].visuals;
+ const flow={...seed[0],id:'entity-map',title:'Order identity map',purpose:fragment('Explain declared ownership'),scope:fragment('One synthetic domain identity'),nodes:[{id:'declared',meaning:fragment('Order identity declared')},{id:'reviewed',meaning:fragment('Ownership criteria reviewed')},{id:'accepted',meaning:fragment('Ownership claim documented')}],edges:[{id:'review',from:'declared',to:'reviewed',meaning:fragment('The declaration is reviewed')},{id:'document',from:'reviewed',to:'accepted',meaning:fragment('Evidence supports the documented claim')}]};
+ const decision={...seed[1],id:'ownership-rule',title:'Ownership criteria',purpose:fragment('Summarize the declared relation criteria'),scope:fragment('The synthetic sample service only'),limitations:['Other service ownership is outside this synthetic fixture.'],parent:{artifact:'entity-map',node:'reviewed'},policyExplanation:fragment('Apply only the criteria accepted with this section.'),rules:[{condition:fragment('A relation names the sample service'),outcome:fragment('Show the declared ownership claim')}],afterSelection:fragment('This view does not infer ownership for other entities.')};
+ const owner={...data.operations[0],id:'section-entities',title:'Domain entities',summary:fragment('Synthetic accepted entity description'),visuals:[flow,decision]};
+ data.title='Synthetic entity reader fixture';data.subtitle='Synthetic browser fixture. All source record bytes below are synthetic.';
+ data.operations.push(owner);data.sections.push({id:owner.id,title:owner.title,content:owner});
+ data.entities=[{sourceIds:['same-source'],normalized:{entity:{title:'Synthetic Order',description:'Synthetic entity declaration for reader testing.',id:'synthetic-order',relations:[{service:'sample',kind:'owned',origin:'human',confidence:'declared',rationale:'Synthetic relation for reader testing.',representations:['SyntheticOrderRow']}],limitations:['This declaration does not describe a real service.']},missingDependencies:[]}}];
+ data.sources['same-source']=source('// SYNTHETIC CURRENT SOURCE RECORD: current entity declaration bytes.');
+ data.operationSources[owner.id]={'same-source':source('// SYNTHETIC ACCEPTED SOURCE RECORD: section visual evidence bytes.')};
+ data.operationStates[owner.id]={freshness:'STALE',verification:'UNASSESSED'};
+ return data;
+}
+function behaviorFixture(){
+ const data=fixture(),events=[
+  {id:'for-each',kind:'loop',text:'For each supplied reservation',sourceIds:['loop-source']},
+  {id:'positive',kind:'alt',text:'the quantity is positive',sourceIds:['guard-source']},
+  {id:'save',kind:'message',text:'Apply <script>alert(1)</script>',from:'service',to:'store',sourceIds:['save-source']},
+  {id:'already-closed',kind:'alt',text:'the reservation is already closed',sourceIds:['rejected&guard']},
+  {id:'conflict',kind:'return',text:'the conflict response',from:'service',to:'caller',sourceIds:['return-source']},
+  {id:'inner-else',kind:'else',text:'Otherwise',sourceIds:['rejected&guard']},
+  {id:'continue',kind:'note',text:'Keep the existing value',sourceIds:['continue-source']},
+  {id:'inner-end',kind:'end',text:'',sourceIds:['rejected&guard']},
+  {id:'optional-audit',kind:'opt',text:'an audit note is supplied',sourceIds:['optional-source']},
+  {id:'audit-note',kind:'note',text:'Attach the audit note',sourceIds:['audit-source']},
+  {id:'optional-end',kind:'end',text:'',sourceIds:['optional-source']},
+  {id:'outer-else',kind:'else',text:'Otherwise',sourceIds:['guard-source']},
+  {id:'skip',kind:'note',text:'Leave the input unchanged',sourceIds:['skip-source']},
+ {id:'outer-end',kind:'end',text:'',sourceIds:['guard-source']},
+  {id:'loop-end',kind:'end',text:'',sourceIds:['loop-source']},
+  {id:'result',kind:'return',text:'the accepted result',from:'service',to:'caller',sourceIds:['result-source']}
+ ];
+ const deepGroups=Array.from({length:9},(_,index)=>({id:`deep-loop-${index}`,kind:'loop',text:`nested group ${index+1}`,sourceIds:['loop-source']}));
+ events.splice(events.length-1,0,...deepGroups,{id:'deep-optional',kind:'opt',text:'a provider result is available',sourceIds:['optional-source']},{id:'deep-declared',kind:'declared',text:'Provider submission remains a declaration',from:'service',to:'store',interaction:'declared:provider',sourceIds:['declared-source']},{id:'deep-optional-end',kind:'end',text:'',sourceIds:['optional-source']},...deepGroups.map((_,index)=>({id:`deep-end-${index}`,kind:'end',text:'',sourceIds:['loop-source']})));
+ const operation={id:'reserve-fixture',title:'Reserve request',summary:{...fragment('Processes a reservation request.'),sourceIds:['summary-source']},participants:[{id:'caller',label:'Caller',service:null},{id:'service',label:'Reservation service',service:'sample'},{id:'store',label:'Reservation store',service:'sample'}],events,explanation:[{id:'same-step',text:'Apply <script>alert(1)</script>',sourceIds:['save-source'],detail:false},{id:'extra-commentary',text:'Additional authored explanation',sourceIds:['save-source'],detail:true}],findings:[],boundaries:['Runtime execution was not observed.'],interfaceContracts:[],visuals:[],overviewDiagram:null};
+ const sourceIds=[...new Set([...operation.summary.sourceIds,...events.flatMap(event=>event.sourceIds)])];
+ data.subject='scenario:renderer-fixture';data.title='Renderer fixture';data.subtitle='Synthetic reader fixture. No native field documentation was generated.';data.catalogue=[{id:operation.id,symbol:'PUT /reserve',kind:'HTTP_ENDPOINT',trigger:{methods:['PUT'],paths:['/reserve']},sourceIds:[]}];data.operations=[operation];data.sections=[];data.sources=Object.fromEntries(sourceIds.map(id=>[id,source(`Fixture source for ${id}`)]));data.operationSources={[operation.id]:data.sources};data.operationStates={[operation.id]:{freshness:'UNVERIFIED',verification:'UNASSESSED'}};
+ return data;
+}
+function renderReaderFixture(data){
+ const template=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/template.html'),'utf8');
+ const style=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/style.css'),'utf8');
+ const analysis=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/analysis.js'),'utf8');
+ const payload=JSON.stringify(data).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+ const html=template.replace('/*__STYLE__*/',()=>style).replace('/*__SCRIPT__*/',()=>script).replace('/*__ANALYSIS_SCRIPT__*/',()=>analysis).replace('__DOCUMENT_DATA__',()=>payload);
+ if(!html.includes(script)||!html.includes(style)||!html.includes(analysis)||html.includes('__DOCUMENT_DATA__'))throw new Error('renderer fixture did not embed the exact shipped reader assets');
+ return html;
+}
+function renderBehaviorFixture(data){return renderReaderFixture(data);}
+if(process.env.CODECLEW_READER_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_READER_FIXTURE_OUT);
+ fs.mkdirSync(path.dirname(output),{recursive:true});
+ fs.writeFileSync(output,renderBehaviorFixture(behaviorFixture()));
+}
+if(process.env.CODECLEW_ENTITY_SECTION_FIXTURE_OUT){
+ const output=path.resolve(process.env.CODECLEW_ENTITY_SECTION_FIXTURE_OUT);
+ fs.mkdirSync(path.dirname(output),{recursive:true});
+ fs.writeFileSync(output,renderReaderFixture(entitySectionFixture()));
+}
 function processFixture(svgAvailable=false,lifecycleName='changeTaskStatus'){
  const data=fixture();data.subject='scenario:checkout';data.catalogue=[];
  const operation={id:'approve-request',title:'Approve request',summary:fragment('Accepted process operation details'),participants:[],events:[],explanation:[],findings:[],boundaries:[],interfaceContracts:[],visuals:[],dataflow:null,assessment:null,overviewDiagram:null,documentationLanguage:null};
@@ -26,23 +85,80 @@ function processFixture(svgAvailable=false,lifecycleName='changeTaskStatus'){
  data.lifecycleOperations=[{name:lifecycleName,tree:'Entry: updateStatus()\n  return result',origin:'source',diagramStem:'scenario-checkout-lifecycle-8a41c7d0301b2f9c',svgAvailable}];
  return data;
 }
+function processOutline(svgAvailable=false){
+ return {status:'STATIC_SOURCE_OUTLINE',authority:'STATIC_SOURCE_STRUCTURE_NOT_REVIEWED',causal:true,origin:'source',diagramStem:'scenario-checkout-process-outline-91ab42',pumlAvailable:true,svgAvailable,sourceIds:['checkout-root'],root:{service:'orders',scope:':main',symbol:'method:class:example.CheckoutController#checkout()Ljava/lang/String;',observation:'orders:symbol:checkout',observationDigest:'flow-digest',sourceIds:['checkout-root'],sourceRecordDigests:{'checkout-root':'source-record-digest'},candidates:[]},tree:'Entry: method:class:example.CheckoutController#checkout()Ljava/lang/String;\n[D] if (!hasPositiveQuantity(request)) then\n  return invalid()\n[W] reservations.save(request)\nreturn inventory.reserve(request)'};
+}
 function load(data=fixture()){
  const elements=new Map(),listeners={};
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:false,innerHTML:'',textContent:'',isConnected:true,classList:{add(){},remove(){}},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
  const context=vm.createContext({document:{getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{classList:{add(){},remove(){}}},activeElement:null},location:{hash:''},history:{replaceState(){}},window:{addEventListener(){},scrollTo(){}},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
- return {data,e:element,run:code=>vm.runInContext(code,context),click(dataset){listeners.click({target:{closest:()=>({dataset,hasAttribute:()=>false})},preventDefault(){}});}};
+ return {data,e:element,run:code=>vm.runInContext(code,context),click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
 test('default service overview exposes the first native graph and all visual navigation',()=>{
  const r=load(),html=r.e('scenario-content').innerHTML;
  assert.match(html,/<svg class="artifact-svg"/);
+ assert.doesNotMatch(html,/behavior-pseudocode/);
  assert.match(html,/After validation/);
  assert.match(html,/Meaning review: <b>UNASSESSED/);
  assert.match(html,/Source freshness: <b>STALE/);
  assert.match(r.e('scenario-nav').innerHTML,/Dispatch work/);
  assert.match(r.e('scenario-nav').innerHTML,/Select handler/);
  assert.equal(r.run('inventoryEntries().length'),0);
+});
+test('documented events render as localized, evidence-linked pseudocode while the sequence stays available',()=>{
+ const data=behaviorFixture(),en=load(data),html=en.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="diagram-card behavior-pseudocode"/g)||[]).length,1);
+ assert.match(html,/If<\/code><span class="pseudocode-text">the quantity is positive:/);
+ assert.match(html,/Loop<\/code><span class="pseudocode-text">For each supplied reservation:/);
+ assert.match(html,/Reservation service → Reservation store: Apply &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+ assert.doesNotMatch(html,/<script>alert\(1\)<\/script>/);
+ assert.match(html,/Otherwise/);
+ assert.match(html,/When<\/code><span class="pseudocode-text">an audit note is supplied:/);
+ assert.match(html,/Return<\/code><span class="pseudocode-text">Reservation service → Caller: the accepted result/);
+ assert.match(html,/style="--indent:40px;--indent-mobile:26px"/);
+ assert.match(html,/style="--indent:200px;--indent-mobile:130px"><code class="pseudocode-keyword">Declared interaction<\/code><span class="pseudocode-text">\(Reservation service → Reservation store\) Provider submission remains a declaration/);
+ assert.match(html,/<div class="behavior-pseudocode-line" role="listitem" style="--indent:0px;--indent-mobile:0px"><code class="pseudocode-keyword">Return<\/code><span class="pseudocode-text">Reservation service → Caller: the accepted result/);
+ assert.match(html,/data-sources="rejected&amp;guard" data-source-operation="reserve-fixture"/);
+ assert.match(html,/<details class="sequence-details"><summary>Sequence diagram<\/summary>/);
+ assert.match(html,/class="sequence-svg"/);
+ assert.doesNotMatch(html,/<details class="sequence-details" open/);
+ assert.match(html,/<details class="implementation-detail"><summary>Implementation details and source commentary<\/summary>/);
+ assert.doesNotMatch(html,/<details class="implementation-detail" open/);
+ assert.match(html,/Additional authored explanation/);
+ const sourceIndex=html.indexOf('the quantity is positive'),returnIndex=html.indexOf('the conflict response'),otherwiseIndex=html.indexOf('the accepted result');
+ assert.ok(sourceIndex<returnIndex&&returnIndex<otherwiseIndex);
+ en.click({sources:'rejected&guard',sourceOperation:'reserve-fixture'});
+ assert.match(en.e('source-code').innerHTML,/Fixture source for rejected&amp;guard/);
+
+ const ru=load({...data,language:'ru'}),ruHtml=ru.e('scenario-content').innerHTML;
+ assert.match(ruHtml,/Описание поведения/);
+ assert.match(ruHtml,/>Если<\/code>/);
+ assert.match(ruHtml,/>Цикл<\/code>/);
+ assert.match(ruHtml,/>Иначе<\/code>/);
+ assert.match(ruHtml,/>При условии<\/code>/);
+ assert.match(ruHtml,/Подтверждение шага/);
+ assert.match(ruHtml,/<summary>Диаграмма последовательности<\/summary>/);
+});
+test('meaning review labels identify model approval in English and Russian',()=>{
+ const data=fixture();
+ data.sectionState.verification='VERIFIED';
+ data.operationStates['section-responsibilities']={freshness:'CURRENT',verification:'VERIFIED_WITH_LIMITATIONS'};
+ const en=load(data),enBanner=en.e('freshness-status').innerHTML,enPage=en.e('scenario-content').innerHTML;
+ assert.match(enBanner,/<strong>CURRENT<\/strong>/);
+ assert.match(enBanner,/Meaning review: Model approved/);
+ assert.match(enPage,/Meaning review: <b>Model approved with limitations<\/b>/);
+ assert.match(enBanner,/Model review approves an interpretation; evidence links do not prove every statement in the prose\./);
+ assert.equal(en.data.sectionState.verification,'VERIFIED');
+ const ru=load({...data,language:'ru'}),ruBanner=ru.e('freshness-status').innerHTML,ruPage=ru.e('scenario-content').innerHTML;
+ assert.match(ruBanner,/<strong>Актуально<\/strong>/);
+ assert.match(ruBanner,/Проверка смысла: Одобрено моделью/);
+ assert.match(ruPage,/Проверка смысла: <b>Одобрено моделью с оговорками<\/b>/);
+ assert.match(ruBanner,/Модельное одобрение — это оценка интерпретации; ссылки на источники не доказывают каждое утверждение в тексте\./);
+ assert.equal(ru.data.sectionState.verification,'VERIFIED');
+ const unassessedData=fixture();unassessedData.sectionState.verification='UNASSESSED';
+ assert.match(load(unassessedData).e('freshness-status').innerHTML,/Meaning review: UNASSESSED/);
 });
 test('decision and parent node links are reciprocal and preserve owner authority',()=>{
  const r=load(),key=r.run("visualKey('section-responsibilities','rules')");
@@ -138,6 +254,43 @@ test('process SVG previews render only for returned assets and authored details 
  assert.match(r.e('scenario-content').innerHTML,/Accepted process operation details/);
 });
 
+test('ordinary saved process exposes its exact-root outline without a state schema and opens retained source',()=>{
+ const data=processFixture(false);delete data.stateDiagram;delete data.stateDiagramSvg;delete data.activityTransitions;delete data.activityTransitionsSvg;delete data.lifecycleOperations;
+ data.processOutline=processOutline(false);data.processOutlineSources={'checkout-root':source('public String checkout(Request request) { return inventory.reserve(request); }')};
+ const r=load(data);r.run("showEntry('process-overview')");let html=r.e('scenario-content').innerHTML;
+ assert.doesNotMatch(html,/Declared process-state schema|Activity on transitions/);
+ assert.match(html,/Static source outline/);assert.match(html,/hasPositiveQuantity/);assert.match(html,/return inventory\.reserve/);
+ assert.match(html,/PlantUML SVG preview is unavailable/);assert.match(html,/scenario-checkout-process-outline-91ab42\.puml/);
+ assert.match(html,/Exact selected root and retained source bindings/);assert.match(html,/checkout-root/);
+ r.click({sources:'checkout-root',sourceOperation:'process-outline'});
+ assert.match(r.e('source-code').innerHTML,/public String checkout/);
+ assert.doesNotMatch(r.e('source-code').innerHTML,/CURRENT SOURCE/);
+ const svgData=processFixture(false);delete svgData.stateDiagram;delete svgData.stateDiagramSvg;delete svgData.activityTransitions;delete svgData.activityTransitionsSvg;delete svgData.lifecycleOperations;
+ svgData.processOutline=processOutline(true);svgData.processOutlineSources={'checkout-root':source('SVG ROOT SOURCE')};
+ const svg=load(svgData);svg.run("showEntry('process-overview')");
+ assert.match(svg.e('scenario-content').innerHTML,/src="\.\.\/diagrams\/scenario-checkout-process-outline-91ab42\.svg"/);
+ assert.doesNotMatch(svg.e('scenario-content').innerHTML,/PlantUML SVG preview is unavailable/);
+});
+
+test('ambiguous exact process root is visible as a gap instead of a guessed outline',()=>{
+ const data=processFixture(false);delete data.stateDiagram;delete data.activityTransitions;delete data.lifecycleOperations;
+ data.processOutline={status:'GAP',gap:'PROCESS_ROOT_SELECTOR_AMBIGUOUS',root:{service:'orders',scope:null,candidates:[{scope:':main',observation:'orders:symbol:main'},{scope:':test',observation:'orders:symbol:test'}]}};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/No qualified local source outline is available/);assert.match(html,/PROCESS_ROOT_SELECTOR_AMBIGUOUS/);
+ assert.match(html,/:main/);assert.match(html,/:test/);assert.doesNotMatch(html,/scenario-checkout-process-outline-.*\.puml/);
+});
+
+test('authored overview visuals precede a separate unreviewed local outline',()=>{
+ const data=processFixture(false),overview=data.operations.find(operation=>operation.id==='process-overview');
+ overview.visuals=[fixture().operations[0].visuals[0]];data.operationStates['process-overview']={freshness:'CURRENT',verification:'VERIFIED'};
+ data.processOutline=processOutline(false);data.processOutlineSources={'checkout-root':source('EXACT CHECKOUT SOURCE')};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ const authored=html.indexOf('Authored process overview visuals'),generated=html.indexOf('Static source outline');
+ assert.ok(authored>=0&&generated>authored,html);
+ assert.match(html,/Dispatch work/);assert.match(html,/Meaning review: <b>Model approved/);
+ assert.match(html,/not an authored or reviewed explanation/);
+});
+
 test('missing accepted source map cannot fall back to unrelated current evidence',()=>{
  const data=fixture();delete data.operationSources['section-responsibilities'];
  const r=load(data);r.e('source-panel').hidden=true;
@@ -173,6 +326,49 @@ test('missing profile sections and discovered but unauthored entries remain expl
  assert.match(html,/Behavior narrative not yet accepted/);
  assert.match(html,/Entity ownership and creation roles have no explicit domain declarations/);
  assert.doesNotMatch(html,/creates no entities|No outgoing calls|No Kafka|No cron/);
+});
+test('entity section shows only its accepted local visuals while the process gallery still includes all owners',()=>{
+ const r=load(entitySectionFixture());r.run("showEntry('section-entities')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Current entity declarations/);assert.match(html,/Synthetic Order/);
+ assert.match(html,/<h3>Entity views<\/h3>/);assert.match(html,/Order identity map/);assert.match(html,/Ownership criteria/);
+ assert.doesNotMatch(html,/Dispatch work|Select handler/);
+ assert.equal((html.match(/class="visual-artifact"/g)||[]).length,2);
+ assert.ok(html.indexOf('<h3>Synthetic Order</h3>')<html.indexOf('<h3>Entity views</h3>'));
+ assert.match(html,/Source freshness: <b>STALE<\/b> · Meaning review: <b>UNASSESSED/);
+ assert.match(html,/Accepted with Domain entities \(section-entities\)/);assert.match(html,/&quot;freshness&quot;: &quot;STALE&quot;/);assert.match(html,/&quot;verification&quot;: &quot;UNASSESSED&quot;/);
+ r.run("showEntry('process-catalog')");
+ const gallery=r.e('scenario-content').innerHTML;
+ assert.match(gallery,/Processes and diagrams · 4/);assert.match(gallery,/Dispatch work/);assert.match(gallery,/Order identity map/);
+});
+test('entity section heading is translated in Russian while accepted visual content remains authored',()=>{
+ const data=entitySectionFixture();data.language='ru';
+ const r=load(data);r.run("showEntry('section-entities')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/<h3>Схемы сущностей<\/h3>/);assert.match(html,/Order identity map/);
+ assert.match(html,/Актуальность кода: <b>Устарело<\/b>/);assert.match(html,/Проверка смысла: <b>Смысл не проверен<\/b>/);
+ assert.doesNotMatch(html,/<h3>Entity views<\/h3>|Source freshness:|Meaning review:/);
+});
+test('entity declaration current source and section visual accepted source stay distinct for a reused source ID',()=>{
+ const r=load(entitySectionFixture());r.run("showEntry('section-entities')");
+ r.click({sources:'same-source'},true);
+ assert.match(r.e('source-code').innerHTML,/SYNTHETIC CURRENT SOURCE RECORD/);
+ r.click({sources:'same-source',sourceOperation:'section-entities'});
+ assert.match(r.e('source-code').innerHTML,/SYNTHETIC ACCEPTED SOURCE RECORD/);
+ assert.doesNotMatch(r.e('source-code').innerHTML,/SYNTHETIC CURRENT SOURCE RECORD/);
+});
+test('missing entity section owner shows its gap and a translation gap suppresses accepted entity visuals',()=>{
+ const missing=fixture();missing.sections.push({id:'section-entities',title:'Domain entities',gap:'No accepted entity section.'});
+ const missingReader=load(missing);missingReader.run("showEntry('section-entities')");
+ assert.match(missingReader.e('scenario-content').innerHTML,/No accepted entity section/);
+ assert.doesNotMatch(missingReader.e('scenario-content').innerHTML,/Entity views|visual-artifact|Synthetic Order/);
+
+ const translated=entitySectionFixture();translated.language='ru';translated.requestedDocumentationLanguage='ru';
+ translated.translationGaps={'section-entities':{requestedLanguage:'ru',availableLanguage:'en',href:'../history/service.html'}};
+ const original=JSON.stringify(translated),reader=load(translated);reader.run("showEntry('section-entities')");
+ const html=reader.e('scenario-content').innerHTML;
+ assert.match(html,/Перевод ещё не подготовлен/);assert.match(html,/Английская версия/);
+ assert.doesNotMatch(html,/Synthetic Order|Order identity map|Ownership criteria|Схемы сущностей/);
+ assert.equal(reader.run('JSON.stringify(publication)'),original);
 });
 
 test('Russian locale translates reader chrome, policies and source controls while retaining authored text',async()=>{
@@ -285,14 +481,30 @@ test('shared catalogue localizes chrome and retains neutral filtering keys and a
  const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
  for(const language of ['en','ru']){
   const nodes=Object.fromEntries(['catalog-data','catalog-query','catalog-kind','catalog-results','catalog-status','catalog-prev','catalog-next'].map(key=>[key,element()]));
-  nodes['catalog-data'].textContent=JSON.stringify([{kind:'Service',id:'orderAPI',title:'Authored title',href:'services/orderAPI.html'},{kind:'Process',id:'p',title:'ProcessTitle',href:'scenarios/p.html'}]);
+  nodes['catalog-data'].textContent=JSON.stringify([
+   {kind:'Service',id:'orderAPI',title:'Authored title',href:'services/orderAPI.html',context:'Orders service',summary:'Inventory import hit',searchText:['order-manager'],coverage:'authored'},
+   {kind:'Process',id:'p',title:'ProcessTitle',href:'scenarios/p.html',context:'Checkout process',summary:'Exports orders',searchText:['checkout-steps'],coverage:'inventory'},
+   {kind:'Entity',id:'order',title:'Order',href:'services/orderAPI.html#section-entities',context:'Orders service',summary:['OrderRecord'],searchText:['order-record'],coverage:'unavailable'}
+  ]);
+  const location={search:'?q=order-manager%20hit&kind=Service&campaign=qa',pathname:'/catalog.html',hash:''};
+  const history={state:{marker:'keep'},lastUrl:null,replaceState(state,_title,url){assert.equal(state.marker,'keep');this.lastUrl=url;const parsed=new URL(url,'https://codex.test');location.search=parsed.search;location.hash=parsed.hash;}};
   const document={documentElement:{lang:language},querySelector(){return null;},querySelectorAll(){return [];},getElementById(key){return nodes[key];},createElement:element};
-  vm.runInNewContext(reader,{document,URL,URLSearchParams,location:{search:'',pathname:'/catalog.html'}});
-  assert.equal(nodes['catalog-results'].children.length,2);
+  vm.runInNewContext(reader,{document,URL,URLSearchParams,location,history});
+  assert.equal(nodes['catalog-results'].children.length,1);
+  assert.equal(nodes['catalog-query'].value,'order-manager hit');
+  assert.equal(nodes['catalog-kind'].value,'Service');
   assert.equal(nodes['catalog-results'].children[0].children[0].textContent,'Authored title');
-  assert.equal(nodes['catalog-results'].children[0].children[1].textContent,language==='ru'?'Сервис · orderAPI':'Service · orderAPI');
+  assert.equal(nodes['catalog-results'].children[0].children[0].href,'services/orderAPI.html');
+  assert.equal(nodes['catalog-results'].children[0].children[1].textContent,language==='ru'?'Сервис · Orders service · orderAPI · Описание есть':'Service · Orders service · orderAPI · Description present');
+  nodes['catalog-query'].value='inventory hit';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,1);
+  let url=new URL(history.lastUrl,'https://codex.test');assert.equal(url.searchParams.get('q'),'inventory hit');assert.equal(url.searchParams.get('kind'),'Service');assert.equal(url.searchParams.get('campaign'),'qa');
+  nodes['catalog-query'].value='';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,1);
+  nodes['catalog-kind'].value='';nodes['catalog-kind'].listeners.change();assert.equal(nodes['catalog-results'].children.length,3);
+  assert.match(nodes['catalog-results'].children[1].children[1].textContent,language==='ru'?/Без описания/:/No description/);
+  assert.match(nodes['catalog-results'].children[2].children[1].textContent,language==='ru'?/Есть пробелы/:/Evidence or translation gap/);
+  url=new URL(history.lastUrl,'https://codex.test');assert.equal(url.searchParams.get('campaign'),'qa');assert.equal(url.searchParams.has('kind'),false);
   nodes['catalog-kind'].value='Service';nodes['catalog-kind'].listeners.change();assert.equal(nodes['catalog-results'].children.length,1);
   nodes['catalog-query'].value='absent';nodes['catalog-query'].listeners.input();assert.equal(nodes['catalog-results'].children.length,0);
-  assert.match(nodes['catalog-status'].textContent,language==='ru'?/Документы не найдены/:/No matching/);
+  assert.match(nodes['catalog-status'].textContent,language==='ru'?/Совпадений нет/:/No matching results/);
  }
 });

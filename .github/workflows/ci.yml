@@ -30,3 +30,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: chmod +x gradlew fixtures/kotlin-basic/gradlew scripts/*.sh
       - run: ./scripts/ci-verify.sh
+
+  documentation-recovery-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p clew --test documentation_system docsys_t04_ -- --test-threads=1
+      - run: 'cargo test --locked -p clew --test documentation_system _recovery:: -- --test-threads=1'

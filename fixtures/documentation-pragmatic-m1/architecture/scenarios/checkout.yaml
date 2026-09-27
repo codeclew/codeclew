@@ -1,0 +1,18 @@
+schema: codeclew-documentation-process/1.0
+process:
+  scope: Checkout request handling
+  participants: [orders]
+  trigger: Invocation of the configured source operation
+  outcomes: [A checkout request receives an outcome]
+id: checkout
+title: Checkout request
+summary: Explain the selected checkout operation from source evidence.
+root:
+  service: orders
+  selector:
+    language: java
+    owner: example.orders.CheckoutController
+    name: checkout
+    parameterTypes: [example.orders.ReservationRequest]
+maxDepth: 4
+maxNodes: 64

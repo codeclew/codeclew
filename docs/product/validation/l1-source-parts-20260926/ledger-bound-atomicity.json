@@ -1,0 +1,1 @@
+{"conflictingReceiptIdentityRejectedWithoutMutation":true,"ledgerBytesUnchanged":true,"ledgerLimitBytes":16777216,"ledgerUnchangedAfterConflictingRetry":true,"newPartReceiptRecorded":false,"priorLedgerBytes":16777184,"rejection":"work read ledger exceeds its bound","schema":"codeclew-source-part-ledger-limit-evidence/1.0"}

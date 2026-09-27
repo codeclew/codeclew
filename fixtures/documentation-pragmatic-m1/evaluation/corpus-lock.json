@@ -1,0 +1,66 @@
+{
+  "schema": "codeclew-documentation-corpus-lock/1.0",
+  "fixture": "documentation-pragmatic-m1",
+  "baseCodeclewCommit": "0c413af7e8cd947cdd823491aed1afce63d5c689",
+  "digestAlgorithm": "sha256",
+  "aggregateDigestInput": "UTF-8 lines: <sha256>  <relative-path>\\n, lexical path order; corpus-lock.json excluded",
+  "aggregateDigest": "04336dfd8665827d411407c56b5ea1cd0513ed66748be0f43b1541d73c1d437a",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "3bdcbc0e5fe0a6cf0a3407cc8ba46b654bd808e3a6cda10595d36c061580a019"
+    },
+    {
+      "path": "architecture/catalog/services/orders.json",
+      "sha256": "ca66d38130d218d8395711709ef769289a8fe781704dcd6fcb235ac8d8aa47dc"
+    },
+    {
+      "path": "architecture/codeclew-docs.yaml",
+      "sha256": "d3756d0cdf67acd5cd2d65c631de230886159af8e117c20ecbde9b59e6da6930"
+    },
+    {
+      "path": "architecture/scenarios/checkout.yaml",
+      "sha256": "b5a23a4896f5d9078974a202d98d144d8ea91c707a4fa296d0219d893dd5ce61"
+    },
+    {
+      "path": "authoring/checkout-brief.md",
+      "sha256": "baa2a48ec8a42ce94f25b43a3b3a4c9ac93acea42e625949e984819d452d8997"
+    },
+    {
+      "path": "evaluation/reader-obligations.json",
+      "sha256": "bf0d20693c9d266e2b1cd28d6acc8ad5597d6eceffd069fdd5b7158019688380"
+    },
+    {
+      "path": "notes/checkout.md",
+      "sha256": "32062c6e2e059dfc0895f69e73133605d001c2de4d83c88c47babd5726f0a1c6"
+    },
+    {
+      "path": "orders/.gitignore",
+      "sha256": "b53ee26e6ff1da219b0563333a76d2c9ec19eec713d6ee54e11a1edacb0e9f3d"
+    },
+    {
+      "path": "orders/pom.xml",
+      "sha256": "7a6a843df368e50894db4210ac7d930b15e8cb4404d1f4c080236a7de6d0a49a"
+    },
+    {
+      "path": "orders/src/main/java/example/orders/CheckoutController.java",
+      "sha256": "07211e5b368f9ce9ed89c7f4b79f93b839afc1a9d6e199ad645447545566466b"
+    },
+    {
+      "path": "orders/src/main/java/example/orders/InventoryClient.java",
+      "sha256": "58f57d5be8c8d00a08d105522d2b8131b92b96a2c871321c15e03307da6d8c0a"
+    },
+    {
+      "path": "orders/src/main/java/example/orders/ReservationRepository.java",
+      "sha256": "731a4f631afecfeefccb8cd2ce3d9286e158bbecf78cb7ccedced76c26d1cce3"
+    },
+    {
+      "path": "orders/src/main/java/example/orders/ReservationRequest.java",
+      "sha256": "72b2a5179cbfdf078dc8d6acbc2d3e30988bd9b7d0e5060eaf43cf42c8eb7ee9"
+    },
+    {
+      "path": "orders/src/main/resources/openapi.yaml",
+      "sha256": "a8d0f9e8fb18248da5e25012cd8b3befe991911fafa92aabeed169c9ec151598"
+    }
+  ]
+}

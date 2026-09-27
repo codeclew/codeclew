@@ -190,6 +190,54 @@ yet establish bounded per-query IO for large publications.
 
 ## Shared evidence in saved Work
 
+### Read one retained SOURCE in bounded parts
+
+When an initial Work page marks a SOURCE as `ITEM_EXCEEDS_WORK_BYTE_BUDGET`,
+use its exact `reference` with `docs work read-part`. The command reads only the
+immutable snapshot pinned by that Work. It does not follow a newer
+`latest-check.json` or acquire source evidence.
+
+Create a request such as:
+
+```json
+{
+  "schema": "codeclew-documentation-source-part-request/1.0",
+  "reference": "s42"
+}
+```
+
+Then run:
+
+```sh
+clew docs work read-part --root docs --work "$work" --input source-part.json
+```
+
+Each response repeats the SOURCE metadata without its text, gives the raw UTF-8
+byte range and fragment digest, and includes the next cursor. Continue with the
+same schema and reference plus that cursor until `nextCursor` is `null`. Each
+response is bounded by the Work's fixed `maxBytes`, including serialized
+metadata, digests, cursor and the output newline. A SOURCE becomes recorded
+proposal evidence only after its explicit receipts cover the complete text;
+an empty source also needs its one explicit empty-range receipt. This resolves
+only the exact oversized SOURCE omission. Other omitted records and the
+ordinary initial-page chain remain required. Manual parts do not bypass the
+automatic author check that its actual model request contains the complete
+required context. `recordDigest` hashes the canonical complete SOURCE record;
+the stored `textDigest` and `evidenceDigest` remain metadata and are not part
+digests. A final `nextCursor: null` marks the end of that source, but does not
+prove earlier parts were read. Proposal eligibility uses validated gap-free
+receipt coverage. If metadata leaves no room for a UTF-8 byte (or the explicit
+empty response), the command returns `SOURCE_PART_NO_PROGRESS` and writes no
+receipt. Prepare a new Work against the same immutable snapshot with a larger
+`maxBytes` budget (up to 49,152); if the complete retained metadata still cannot
+fit, source-part reads do not support that record.
+
+The Work read ledger stores only receipt and range digests, not copied source
+chunks. A ledger with `sourcePartReceipts` requires a part-aware reader; the
+0.11.2 reader rejects this new field. Work without part reads retains its
+existing serialized ledger shape. The Work loader still hydrates the full
+retained Check; parts do not claim memory use proportional to one response.
+
 ### Recorded source-selection inputs
 
 New checks retain a versioned `sourceInputs` contract. Its captured Service,

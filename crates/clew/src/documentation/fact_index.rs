@@ -120,6 +120,10 @@ fn bucket_of(canonical_key: &str) -> usize {
     (byte as usize) % BUCKETS
 }
 
+pub(super) fn import_bucket(canonical_key: &str) -> usize {
+    bucket_of(canonical_key)
+}
+
 /// A fresh, empty membership root.
 pub fn empty_root() -> FactIndexRoot {
     FactIndexRoot {

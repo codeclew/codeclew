@@ -86,6 +86,88 @@ fn validate_summary_text(text: &str) -> Result<(), ClewError> {
     Ok(())
 }
 
+pub(super) fn sequence_event_kinds(flow_kind: &str) -> &'static [&'static str] {
+    match flow_kind {
+        "IF" | "TRY" => &["alt"],
+        "DEFERRED" => &["opt"],
+        "LOOP" => &["loop"],
+        "FINALLY" | "BREAK" | "CONTINUE" => &["note"],
+        "RETURN" | "THROW" => &["return", "note"],
+        _ => &[],
+    }
+}
+
+pub(super) fn sequence_step_requires_endpoints(step_kind: &str) -> bool {
+    matches!(step_kind, "message" | "return" | "declared")
+}
+
+pub(super) fn sequence_step_requires_interaction(step_kind: &str) -> bool {
+    step_kind == "declared"
+}
+
+pub(super) fn sequence_skipped(checked: &Check, subject: &str, operation_id: &str) -> bool {
+    let service_summary = subject.starts_with("service:")
+        && (super::sections::contains(operation_id) || super::notes::is_root(operation_id));
+    super::dataflow::is_root(checked, subject, operation_id)
+        || service_summary
+        || super::processes::overview(checked, subject, operation_id)
+}
+
+/// The source-backed structural branches the renderer requires for one
+/// selected operation. Keep service symbol matching and scenario first-edge
+/// selection here so job guidance and validation use the same scope.
+pub(super) fn required_sequence_flows<'a>(
+    checked: &'a Check,
+    subject: &str,
+    operation_id: &str,
+) -> Result<Vec<&'a Observation>, ClewError> {
+    let (kind, id) = subject
+        .split_once(':')
+        .ok_or_else(|| invalid("subject must be service:<id> or scenario:<id>"))?;
+    if sequence_skipped(checked, subject, operation_id) {
+        return Ok(Vec::new());
+    }
+    let is_required_flow = |flow_kind: &str| !sequence_event_kinds(flow_kind).is_empty();
+    match kind {
+        "service" => {
+            let evidence = checked
+                .services
+                .get(id)
+                .ok_or_else(|| invalid("service evidence is unresolved"))?;
+            let entry = evidence
+                .entrypoints
+                .iter()
+                .find(|entry| entry.id == operation_id)
+                .ok_or_else(|| invalid("operation entrypoint disappeared"))?;
+            Ok(evidence
+                .observations
+                .values()
+                .filter(|observation| {
+                    observation.kind == "FLOW"
+                        && observation.symbol == entry.symbol
+                        && observation.normalized["kind"]
+                            .as_str()
+                            .is_some_and(is_required_flow)
+                })
+                .collect())
+        }
+        "scenario" => {
+            let scenario = checked
+                .scenarios
+                .get(id)
+                .ok_or_else(|| invalid("unknown scenario"))?;
+            Ok(scenario
+                .steps
+                .iter()
+                .filter(|step| is_required_flow(&step.kind))
+                .filter_map(|step| step.dependency_ids.first())
+                .filter_map(|dependency_id| checked.dependencies.get(dependency_id))
+                .collect())
+        }
+        _ => Err(invalid("unsupported narrative subject")),
+    }
+}
+
 pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
     if n.schema != "codeclew-documentation-narrative/1.3" {
         return Err(invalid(
@@ -274,7 +356,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             {
                 return Err(invalid("note references an unknown participant"));
             }
-            if matches!(e.kind.as_str(), "message" | "return" | "declared") {
+            if sequence_step_requires_endpoints(&e.kind) {
                 let from = e
                     .from
                     .as_ref()
@@ -293,7 +375,9 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                         "cross-service arrows must reference a declared interaction",
                     ));
                 }
-                if e.kind == "declared" || (e.kind == "return" && e.interaction.is_some()) {
+                if sequence_step_requires_interaction(&e.kind)
+                    || (e.kind == "return" && e.interaction.is_some())
+                {
                     let id = e
                         .interaction
                         .as_ref()
@@ -378,67 +462,13 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 "entrypoint implementation is unavailable; record an explicit gap instead of inventing its behavior",
             ));
         }
-        let mandatory: Vec<&Observation> = if kind == "service" {
-            let evidence = &checked.services[id];
-            let entry = evidence
-                .entrypoints
-                .iter()
-                .find(|entry| entry.id == o.id)
-                .ok_or_else(|| invalid("operation entrypoint disappeared"))?;
-            evidence
-                .observations
-                .values()
-                .filter(|d| {
-                    d.kind == "FLOW"
-                        && d.symbol == entry.symbol
-                        && matches!(
-                            d.normalized["kind"].as_str(),
-                            Some(
-                                "IF" | "LOOP"
-                                    | "RETURN"
-                                    | "THROW"
-                                    | "DEFERRED"
-                                    | "TRY"
-                                    | "FINALLY"
-                                    | "BREAK"
-                                    | "CONTINUE"
-                            )
-                        )
-                })
-                .collect()
-        } else {
-            checked.scenarios[id]
-                .steps
-                .iter()
-                .filter(|s| {
-                    matches!(
-                        s.kind.as_str(),
-                        "IF" | "LOOP"
-                            | "RETURN"
-                            | "THROW"
-                            | "DEFERRED"
-                            | "TRY"
-                            | "FINALLY"
-                            | "BREAK"
-                            | "CONTINUE"
-                    )
-                })
-                .filter_map(|s| s.dependency_ids.first())
-                .filter_map(|id| checked.dependencies.get(id))
-                .collect()
-        };
+        let mandatory = required_sequence_flows(checked, &n.subject, &o.id)?;
         for dependency in mandatory {
-            let expected_kind = dependency.normalized["kind"].as_str().unwrap_or("");
+            let expected_kinds =
+                sequence_event_kinds(dependency.normalized["kind"].as_str().unwrap_or(""));
             if !o.events.iter().any(|event| {
                 event.dependency_ids.contains(&dependency.id)
-                    && match expected_kind {
-                        "IF" | "TRY" => event.kind == "alt",
-                        "DEFERRED" => event.kind == "opt",
-                        "FINALLY" | "BREAK" | "CONTINUE" => event.kind == "note",
-                        "LOOP" => event.kind == "loop",
-                        "RETURN" | "THROW" => matches!(event.kind.as_str(), "return" | "note"),
-                        _ => false,
-                    }
+                    && expected_kinds.contains(&event.kind.as_str())
             }) {
                 return Err(invalid(format!(
                     "sequence omits a source-backed condition or return: {}",
@@ -1471,6 +1501,7 @@ struct AutoFlow {
     puml: String,
     tree: String,
     origin: &'static str,
+    causal: bool,
 }
 
 /// If an operation has no authored events, produce an auto PlantUML activity
@@ -1478,25 +1509,96 @@ struct AutoFlow {
 /// is authored content or no usable flow.
 fn auto_flow_puml(checked: &Check, flow: ResolvedFlow<'_>, title: &str) -> Option<AutoFlow> {
     let symbol = flow.observation.symbol.as_str();
-    // Prefer source deepening: a retained TRANSFORMED_SOURCE yields readable
-    // step text (assignments, returns, catch). Fall back to the FLOW renderer
-    // when the source is absent or not parseable.
-    if let Some(source) = method_source(checked, flow)
-        && let (Some(puml), Some(tree)) = (
-            super::source_steps::document(&source, symbol, title),
-            super::source_steps::tree(&source, symbol),
-        )
-    {
+    let resolved = flow;
+    let documentation = &resolved.observation.normalized["documentation"];
+    let qualified_flow = super::process_flow::validate_projection(
+        super::process_flow::project_flow(resolved.events, documentation, symbol),
+    );
+
+    // FLOW is a source-order candidate only. Its v1 authority does not prove
+    // that every control transfer was emitted, so causal output requires an
+    // exact retained method body that parses and validates in the same scope.
+    if qualified_flow.source_eligible() {
+        let evidence_gaps = qualified_flow.evidence_gaps.clone();
+        let Some(source) = method_source(checked, resolved) else {
+            return auto_flow_gap(
+                symbol,
+                &qualified_flow.projection.entry,
+                "flow",
+                "FLOW_CONTROL_CAPABILITY_UNVERIFIED",
+                evidence_gaps,
+                title,
+            );
+        };
+        let Some(mut projection) = super::source_steps::projection(&source, symbol) else {
+            return auto_flow_gap(
+                symbol,
+                &qualified_flow.projection.entry,
+                "source",
+                "SOURCE_METHOD_NOT_ISOLATED",
+                evidence_gaps,
+                title,
+            );
+        };
+        projection.source_eligible = true;
+        projection.evidence_gaps.extend(evidence_gaps);
+        // A parser-reported uncertainty or malformed source structure is an
+        // explicit veto. Preserve its named gap; never fall back to causal
+        // arrows that can omit a source transfer.
+        let validated = super::process_flow::validate_projection(projection);
+        let causal = validated
+            .projection
+            .steps
+            .iter()
+            .any(|step| !matches!(step, super::process_flow::ProjectionStep::Gap(_)));
+        let rendered = super::process_flow::render_validated(validated, title)?;
         return Some(AutoFlow {
-            puml,
-            tree,
-            origin: "source",
+            puml: rendered.puml,
+            tree: rendered.tree,
+            origin: rendered.origin,
+            causal,
         });
     }
+
+    let causal = qualified_flow
+        .projection
+        .steps
+        .iter()
+        .any(|step| !matches!(step, super::process_flow::ProjectionStep::Gap(_)));
+    let rendered = super::process_flow::render_validated(qualified_flow, title)?;
     Some(AutoFlow {
-        puml: super::process_flow::document(flow.events, symbol, title)?,
-        tree: super::process_flow::tree(flow.events, symbol).unwrap_or_default(),
-        origin: "flow",
+        puml: rendered.puml,
+        tree: rendered.tree,
+        origin: rendered.origin,
+        causal,
+    })
+}
+
+fn auto_flow_gap(
+    symbol: &str,
+    entry: &str,
+    origin: &'static str,
+    reason: &str,
+    evidence_gaps: Vec<String>,
+    title: &str,
+) -> Option<AutoFlow> {
+    let mut projection =
+        super::process_flow::Projection::source(symbol, entry.to_string(), Vec::new());
+    projection.origin = origin;
+    projection.evidence_gaps = evidence_gaps;
+    projection.noncausal = Some(reason.to_string());
+    let validated = super::process_flow::validate_projection(projection);
+    let causal = validated
+        .projection
+        .steps
+        .iter()
+        .any(|step| !matches!(step, super::process_flow::ProjectionStep::Gap(_)));
+    let rendered = super::process_flow::render_validated(validated, title)?;
+    Some(AutoFlow {
+        puml: rendered.puml,
+        tree: rendered.tree,
+        origin: rendered.origin,
+        causal,
     })
 }
 
@@ -1723,6 +1825,296 @@ fn root_flow_events_by_id<'a>(
     }
     candidates.push(id);
     resolve_flow(checked, service, &candidates)
+}
+
+struct ProcessRootResolution<'a> {
+    service: Option<String>,
+    selector_scope: Option<String>,
+    observations: Vec<&'a Observation>,
+    gap: Option<&'static str>,
+}
+
+/// Resolve the explicitly saved process root through its exact selector and
+/// selected service. Unlike lifecycle discovery, this path never guesses from
+/// a simple method name or searches other services.
+fn process_root_resolution<'a>(checked: &'a Check, id: &str) -> ProcessRootResolution<'a> {
+    let Some(definition) = checked.dependencies.get(&format!("process:{id}")) else {
+        return ProcessRootResolution {
+            service: None,
+            selector_scope: None,
+            observations: Vec::new(),
+            gap: Some("PROCESS_DEFINITION_UNAVAILABLE"),
+        };
+    };
+    let root = &definition.normalized["definition"]["root"];
+    let Some(service_id) = root["service"].as_str() else {
+        return ProcessRootResolution {
+            service: None,
+            selector_scope: None,
+            observations: Vec::new(),
+            gap: Some("PROCESS_ROOT_SERVICE_MISSING"),
+        };
+    };
+    let Some(service) = checked.services.get(service_id) else {
+        return ProcessRootResolution {
+            service: Some(service_id.to_owned()),
+            selector_scope: None,
+            observations: Vec::new(),
+            gap: Some("PROCESS_ROOT_SERVICE_UNAVAILABLE"),
+        };
+    };
+    let Some(selector_value) = root.get("selector").filter(|value| !value.is_null()) else {
+        return ProcessRootResolution {
+            service: Some(service_id.to_owned()),
+            selector_scope: None,
+            observations: Vec::new(),
+            gap: Some("PROCESS_ROOT_SELECTOR_MISSING"),
+        };
+    };
+    let Ok(selector) = serde_json::from_value::<Selector>(selector_value.clone()) else {
+        return ProcessRootResolution {
+            service: Some(service_id.to_owned()),
+            selector_scope: None,
+            observations: Vec::new(),
+            gap: Some("PROCESS_ROOT_SELECTOR_INVALID"),
+        };
+    };
+    let selector_scope = selector.scope.clone();
+    if selector.language != "java" {
+        return ProcessRootResolution {
+            service: Some(service_id.to_owned()),
+            selector_scope,
+            observations: Vec::new(),
+            gap: Some("PROCESS_ROOT_LANGUAGE_UNSUPPORTED"),
+        };
+    }
+    let observations = super::analysis::resolve(Some(&selector), service);
+    let gap = match observations.as_slice() {
+        [] => Some("PROCESS_ROOT_SELECTOR_UNRESOLVED"),
+        [observation]
+            if observation
+                .normalized
+                .pointer("/documentation/events")
+                .and_then(Value::as_array)
+                .is_some() =>
+        {
+            None
+        }
+        [_] => Some("PROCESS_ROOT_FLOW_UNAVAILABLE"),
+        _ => Some("PROCESS_ROOT_SELECTOR_AMBIGUOUS"),
+    };
+    ProcessRootResolution {
+        service: Some(service_id.to_owned()),
+        selector_scope,
+        observations,
+        gap,
+    }
+}
+
+impl ProcessRootResolution<'_> {
+    fn flow(&self) -> Option<ResolvedFlow<'_>> {
+        if self.gap.is_some() || self.observations.len() != 1 {
+            return None;
+        }
+        let observation = self.observations[0];
+        let events = observation.normalized.pointer("/documentation/events")?;
+        Some(ResolvedFlow {
+            observation,
+            events,
+        })
+    }
+
+    fn metadata(&self, source_record_digests: &BTreeMap<String, String>) -> Value {
+        let selected = (self.observations.len() == 1).then(|| self.observations[0]);
+        let mut source_ids =
+            selected.map_or_else(Vec::new, |observation| observation.source_ids.clone());
+        source_ids.sort();
+        source_ids.dedup();
+        json!({
+            "service": self.service,
+            "scope": selected
+                .and_then(|observation| observation.normalized["scope"].as_str())
+                .or(self.selector_scope.as_deref()),
+            "symbol": selected.map(|observation| &observation.symbol),
+            "observation": selected.map(|observation| &observation.id),
+            "observationDigest": selected.map(|observation| &observation.digest),
+            "sourceIds": source_ids,
+            "sourceRecordDigests": source_record_digests,
+            "candidates": self.observations.iter().map(|observation| json!({
+                "service": observation.service,
+                "scope": observation.normalized["scope"],
+                "symbol": observation.symbol,
+                "observation": observation.id,
+                "observationDigest": observation.digest,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+type ProcessRootSourceRecords = (BTreeMap<String, Source>, BTreeMap<String, String>);
+type ProcessOutlineProjection = (Value, BTreeMap<String, Source>, Option<(String, String)>);
+
+fn process_root_source_records(
+    checked: &Check,
+    root: &ProcessRootResolution<'_>,
+) -> Result<ProcessRootSourceRecords, ClewError> {
+    let mut records = BTreeMap::new();
+    let mut digests = BTreeMap::new();
+    let (Some(service_id), [observation]) = (root.service.as_deref(), root.observations.as_slice())
+    else {
+        return Ok((records, digests));
+    };
+    let Some(service) = checked.services.get(service_id) else {
+        return Ok((records, digests));
+    };
+    let mut ids = observation.source_ids.clone();
+    ids.sort();
+    ids.dedup();
+    for id in ids {
+        if let Some(source) = service.sources.get(&id) {
+            digests.insert(id.clone(), digest(source)?);
+            records.insert(id, source.clone());
+        }
+    }
+    Ok((records, digests))
+}
+
+fn process_outline_diagram_stem(subject: &str, root: &Value) -> Result<String, ClewError> {
+    let identity = digest(&json!({"subject":subject,"root":root}))?;
+    let short_hash = identity.strip_prefix("sha256:").unwrap_or(&identity);
+    Ok(format!(
+        "{}-process-outline-{}",
+        subject.replace(':', "-"),
+        &short_hash[..16]
+    ))
+}
+
+fn process_outline_from_root(
+    checked: &Check,
+    subject: &str,
+    title: &str,
+    root: &ProcessRootResolution<'_>,
+) -> Result<ProcessOutlineProjection, ClewError> {
+    let (sources, source_record_digests) = process_root_source_records(checked, root)?;
+    let root_metadata = root.metadata(&source_record_digests);
+    if let Some(reason) = root.gap {
+        return Ok((
+            process_outline_gap(reason, root_metadata),
+            BTreeMap::new(),
+            None,
+        ));
+    }
+    let Some(flow) = root.flow() else {
+        return Ok((
+            process_outline_gap("PROCESS_ROOT_FLOW_UNAVAILABLE", root_metadata),
+            BTreeMap::new(),
+            None,
+        ));
+    };
+    let source_ids = root_metadata["sourceIds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if source_ids.is_empty() || sources.len() != source_ids.len() {
+        return Ok((
+            process_outline_gap("PROCESS_ROOT_SOURCE_UNAVAILABLE", root_metadata),
+            BTreeMap::new(),
+            None,
+        ));
+    }
+    let Some(generated) = auto_flow_puml(checked, flow, title) else {
+        return Ok((
+            process_outline_gap("PROCESS_FLOW_PROJECTION_UNAVAILABLE", root_metadata),
+            BTreeMap::new(),
+            None,
+        ));
+    };
+    let stem = process_outline_diagram_stem(subject, &root_metadata)?;
+    let causal = generated.causal;
+    let outline = json!({
+        "status":"STATIC_SOURCE_OUTLINE",
+        "authority":"STATIC_SOURCE_STRUCTURE_NOT_REVIEWED",
+        "root":root_metadata,
+        "sourceIds":source_ids,
+        "tree":generated.tree,
+        "origin":generated.origin,
+        "causal":causal,
+        "diagramStem":stem,
+        "pumlAvailable":true,
+        "svgAvailable":false,
+    });
+    Ok((outline, sources, Some((stem, generated.puml))))
+}
+
+fn retained_process_outline_matches(
+    outline: &Value,
+    retained_sources: &Value,
+    root: &ProcessRootResolution<'_>,
+    current_sources: &BTreeMap<String, Source>,
+    source_record_digests: &BTreeMap<String, String>,
+) -> bool {
+    root.gap.is_none()
+        && root.flow().is_some()
+        && outline["status"] == "STATIC_SOURCE_OUTLINE"
+        && outline["root"] == root.metadata(source_record_digests)
+        && retained_sources == &json!(current_sources)
+}
+
+fn copy_retained_process_outline(
+    repo: &Repository,
+    bundle: &str,
+    outline: &Value,
+    files: &mut BTreeMap<String, Vec<u8>>,
+    diagrams: &mut Vec<(String, String)>,
+) -> Result<bool, ClewError> {
+    let Some(stem) = outline["diagramStem"].as_str() else {
+        return Ok(false);
+    };
+    if stem.is_empty()
+        || !stem
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Ok(false);
+    }
+    let puml_path = repo.path(&format!("docs/generated/{bundle}/diagrams/{stem}.puml"))?;
+    let bounded_artifact = |path: &std::path::Path| {
+        let metadata = fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > check::PORTABLE_CACHE_MAX_BYTES {
+            return None;
+        }
+        let bytes = fs::read(path).ok()?;
+        (bytes.len() as u64 <= check::PORTABLE_CACHE_MAX_BYTES).then_some(bytes)
+    };
+    let Some(puml) = bounded_artifact(&puml_path) else {
+        return Ok(false);
+    };
+    let Ok(puml_text) = String::from_utf8(puml.clone()) else {
+        return Ok(false);
+    };
+    files.insert(format!("diagrams/{stem}.puml"), puml);
+    if outline["svgAvailable"] == true {
+        let svg_path = repo.path(&format!("docs/generated/{bundle}/diagrams/{stem}.svg"))?;
+        if let Some(svg) = bounded_artifact(&svg_path)
+            && std::str::from_utf8(&svg).is_ok_and(|text| text.contains("<svg"))
+        {
+            files.insert(format!("diagrams/{stem}.svg"), svg);
+        }
+    }
+    diagrams.push((format!("diagrams/{stem}"), puml_text));
+    Ok(true)
+}
+
+fn process_outline_gap(reason: &str, root: Value) -> Value {
+    let source_ids = root.get("sourceIds").cloned().unwrap_or_else(|| json!([]));
+    json!({
+        "status":"GAP",
+        "gap":reason,
+        "root":root,
+        "sourceIds":source_ids,
+        "pumlAvailable":false,
+        "svgAvailable":false,
+    })
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -1995,15 +2387,50 @@ pub(super) fn publish_reviewed(
             "one publication proposal must have one documentation language",
         ));
     }
-    publish_internal(
+    publish_reviewed_with_receipt(
+        repo,
+        narrative,
+        versions,
+        snapshot,
+        language.as_deref(),
+        None,
+    )
+}
+
+/// Publish one reviewed subject with an optional same-lock receipt hook.
+/// `requested_language` remains explicit even for proposals containing only gaps.
+/// The hook runs under this repository's write lock and must write only to this
+/// same repository using the supplied guard; it must not acquire the lock again.
+pub(super) fn publish_reviewed_with_receipt(
+    repo: &Repository,
+    narrative: Narrative,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
+    snapshot: Option<&str>,
+    requested_language: Option<&str>,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
+) -> Result<Value, ClewError> {
+    if versions.values().any(|version| {
+        version.external_request.documentation_language.as_deref() != requested_language
+    }) {
+        return Err(invalid(
+            "review language does not match requested publication language",
+        ));
+    }
+    let receipt_request = PublicationReceiptRequest {
+        requested_language: requested_language.map(str::to_owned),
+        affected_subjects: BTreeSet::from([narrative.subject.clone()]),
+    };
+    publish_internal_with_receipt(
         repo,
         vec![narrative],
         false,
         BTreeMap::new(),
         versions,
         EvidenceMode::Saved(snapshot),
-        language.as_deref(),
+        requested_language,
         false,
+        Some(receipt_request),
+        before_switch,
     )
 }
 
@@ -2065,6 +2492,28 @@ enum EvidenceMode<'a> {
     Refresh,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PublicationReceipt {
+    pub schema: String,
+    pub bundle_id: String,
+    pub root_index_hash: String,
+    pub bindings_hash: String,
+    pub publication_hash: String,
+    pub effective_gaps: BTreeMap<String, BTreeMap<String, String>>,
+    pub requested_language: Option<String>,
+    /// UI language used when the request and retained binding omit one.
+    pub effective_language: String,
+}
+
+type BeforePublicationSwitch<'a> =
+    &'a mut (dyn FnMut(&store::WriteLock, &PublicationReceipt) -> Result<(), ClewError> + 'a);
+
+struct PublicationReceiptRequest {
+    requested_language: Option<String>,
+    affected_subjects: BTreeSet<String>,
+}
+
 // Keep the explicit phase inputs aligned with the existing publish wrapper.
 #[allow(clippy::too_many_arguments)]
 fn publish_internal(
@@ -2077,6 +2526,33 @@ fn publish_internal(
     language: Option<&str>,
     released: bool,
 ) -> Result<Value, ClewError> {
+    publish_internal_with_receipt(
+        repo,
+        incoming,
+        require_complete,
+        failures,
+        versions,
+        evidence_mode,
+        language,
+        released,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_internal_with_receipt(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    failures: BTreeMap<String, Value>,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
+    evidence_mode: EvidenceMode<'_>,
+    language: Option<&str>,
+    released: bool,
+    receipt_request: Option<PublicationReceiptRequest>,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
+) -> Result<Value, ClewError> {
     super::progress::run("PUBLISH_DOCUMENTATION", || {
         publish_internal_phases(
             repo,
@@ -2087,6 +2563,8 @@ fn publish_internal(
             evidence_mode,
             language,
             released,
+            receipt_request,
+            before_switch,
         )
     })
 }
@@ -2102,6 +2580,8 @@ fn publish_internal_phases(
     evidence_mode: EvidenceMode<'_>,
     language: Option<&str>,
     released: bool,
+    receipt_request: Option<PublicationReceiptRequest>,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<Value, ClewError> {
     super::language::validate(language)?;
     let previous = bindings::baseline(repo)?;
@@ -2644,6 +3124,81 @@ fn publish_internal_phases(
             &lifecycle,
             activity_transitions.as_deref(),
         );
+        if kind == "scenario" && !data["process"].is_null() {
+            let root = process_root_resolution(&checked, id);
+            let (current_root_sources, current_source_digests) =
+                process_root_source_records(&checked, &root)?;
+            let root_metadata = root.metadata(&current_source_digests);
+            let overview_key = format!("{subject}/{}", super::processes::OVERVIEW);
+            let retained_overview = n
+                .operations
+                .iter()
+                .any(|operation| operation.id == super::processes::OVERVIEW)
+                && !accepted.contains(&overview_key);
+            if retained_overview {
+                let retained_outline = old_data
+                    .as_ref()
+                    .map(|old| &old["processOutline"])
+                    .filter(|outline| !outline.is_null());
+                let retained_sources = old_data
+                    .as_ref()
+                    .map(|old| old["processOutlineSources"].clone())
+                    .unwrap_or(Value::Null);
+                if let Some(outline) = retained_outline.filter(|outline| {
+                    retained_process_outline_matches(
+                        outline,
+                        &retained_sources,
+                        &root,
+                        &current_root_sources,
+                        &current_source_digests,
+                    )
+                }) {
+                    let copied = if let Some((bundle, _)) = &previous {
+                        copy_retained_process_outline(
+                            repo,
+                            bundle,
+                            outline,
+                            &mut files,
+                            &mut diagrams,
+                        )?
+                    } else {
+                        false
+                    };
+                    if copied {
+                        data["processOutline"] = outline.clone();
+                        data["processOutlineSources"] = retained_sources;
+                    } else {
+                        data["processOutline"] = process_outline_gap(
+                            "PROCESS_RETAINED_OUTLINE_ARTIFACT_UNAVAILABLE",
+                            root_metadata,
+                        );
+                    }
+                } else {
+                    let reason = root.gap.unwrap_or_else(|| {
+                        if root.flow().is_none() {
+                            "PROCESS_ROOT_FLOW_UNAVAILABLE"
+                        } else {
+                            "PROCESS_EVIDENCE_CHANGED_REVIEW_REQUIRED"
+                        }
+                    });
+                    data["processOutline"] = process_outline_gap(reason, root_metadata);
+                }
+            } else {
+                let (outline, sources, artifact) = process_outline_from_root(
+                    &checked,
+                    subject,
+                    data["process"]["definition"]["title"]
+                        .as_str()
+                        .unwrap_or(title),
+                    &root,
+                )?;
+                data["processOutline"] = outline;
+                data["processOutlineSources"] = json!(sources);
+                if let Some((stem, puml)) = artifact {
+                    insert_diagram(&mut files, &mut diagrams, format!("diagrams/{stem}"), puml);
+                }
+            }
+        }
         for process in data["savedProcesses"].as_array_mut().into_iter().flatten() {
             if let Some(id) = process["id"].as_str().map(str::to_owned) {
                 let key = format!("scenario:{id}/{}", super::processes::OVERVIEW);
@@ -2866,7 +3421,16 @@ fn publish_internal_phases(
     }
     // Pre-render every auto-generated diagram to SVG in one renderer process
     // (avoid spawning a JVM per diagram), then commit the bundle.
-    let svg_availability = batch_render_diagrams(&mut files, &diagrams, plantuml_jar.as_deref());
+    let mut svg_availability =
+        batch_render_diagrams(&mut files, &diagrams, plantuml_jar.as_deref());
+    for (_, _, data) in &pending_pages {
+        if let Some(stem) = data["processOutline"]["diagramStem"].as_str() {
+            let base = format!("diagrams/{stem}");
+            if files.contains_key(&format!("{base}.svg")) {
+                svg_availability.insert(base, true);
+            }
+        }
+    }
     for (folder, id, mut data) in pending_pages {
         data["stateDiagramSvg"] = json!(
             data["stateDiagram"]
@@ -2889,6 +3453,14 @@ fn publish_internal_phases(
         {
             let stem = lifecycle["diagramStem"].as_str().unwrap_or("");
             lifecycle["svgAvailable"] = json!(
+                svg_availability
+                    .get(&format!("diagrams/{stem}"))
+                    .copied()
+                    .unwrap_or(false)
+            );
+        }
+        if let Some(stem) = data["processOutline"]["diagramStem"].as_str() {
+            data["processOutline"]["svgAvailable"] = json!(
                 svg_availability
                     .get(&format!("diagrams/{stem}"))
                     .copied()
@@ -2957,6 +3529,8 @@ fn publish_internal_phases(
         previous.as_ref(),
         previous_bytes.as_deref(),
         released,
+        receipt_request.as_ref(),
+        before_switch,
     )?;
     Ok(
         json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
@@ -2985,6 +3559,8 @@ pub(super) fn commit_bundle(
         previous,
         previous_bytes,
         false,
+        None,
+        None,
     )
 }
 
@@ -2999,6 +3575,8 @@ fn commit_bundle_with_mode(
     previous: Option<&(String, Bindings)>,
     previous_bytes: Option<&[u8]>,
     released: bool,
+    receipt_request: Option<&PublicationReceiptRequest>,
+    before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<(), ClewError> {
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
@@ -3035,6 +3613,33 @@ fn commit_bundle_with_mode(
         .map(|(name, data)| (name.clone(), canonical::hash_bytes(data)))
         .collect();
     files.insert("publication.json".into(), bytes(&publication)?);
+    let receipt = receipt_request
+        .map(|request| -> Result<PublicationReceipt, ClewError> {
+            let effective_gaps = request
+                .affected_subjects
+                .iter()
+                .map(|subject| {
+                    binding
+                        .narratives
+                        .get(subject)
+                        .map(|narrative| (subject.clone(), narrative.gaps.clone()))
+                        .ok_or_else(|| {
+                            invalid("reviewed publication subject is absent from final binding")
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            Ok(PublicationReceipt {
+                schema: "codeclew-documentation-publication-receipt/1.0".into(),
+                bundle_id: bundle.to_owned(),
+                root_index_hash: canonical::hash_bytes(live_overview.as_bytes()),
+                bindings_hash: canonical::hash_bytes(&files["bindings.json"]),
+                publication_hash: canonical::hash_bytes(&files["publication.json"]),
+                effective_gaps,
+                requested_language: request.requested_language.clone(),
+                effective_language: ui_language.clone(),
+            })
+        })
+        .transpose()?;
     if files
         .values()
         .any(|data| data.len() > check::PORTABLE_CACHE_MAX_BYTES as usize)
@@ -3044,7 +3649,7 @@ fn commit_bundle_with_mode(
             "documentation output exceeds its portable record budget; narrow source roots",
         ));
     }
-    let _lock = repo.lock()?;
+    let lock = repo.lock()?;
     if repo.input_digest()? != input_digest {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
@@ -3104,6 +3709,14 @@ fn commit_bundle_with_mode(
     // Keep history navigation available after a working render while the
     // index itself contains only explicit releases.
     super::history::index(repo, bundle)?;
+    if let Some(callback) = before_switch {
+        let receipt = receipt
+            .as_ref()
+            .ok_or_else(|| invalid("pre-switch callback requires a publication receipt"))?;
+        // The supplied guard belongs to `repo`; callback writers must stay on
+        // this same repository and use the held guard without relocking.
+        callback(&lock, receipt)?;
+    }
     repo.atomic("docs/index.html", live_overview.as_bytes())?;
     super::reader::connect_starters_language(
         repo,
@@ -3280,6 +3893,29 @@ mod process_catalog_tests {
 }
 
 #[cfg(test)]
+mod sequence_contract_tests {
+    use super::sequence_event_kinds;
+
+    #[test]
+    fn renderer_flow_to_sequence_mapping_covers_all_nine_structural_kinds() {
+        for (flow, events) in [
+            ("IF", &["alt"][..]),
+            ("TRY", &["alt"][..]),
+            ("DEFERRED", &["opt"][..]),
+            ("LOOP", &["loop"][..]),
+            ("FINALLY", &["note"][..]),
+            ("BREAK", &["note"][..]),
+            ("CONTINUE", &["note"][..]),
+            ("RETURN", &["return", "note"][..]),
+            ("THROW", &["return", "note"][..]),
+        ] {
+            assert_eq!(sequence_event_kinds(flow), events, "{flow}");
+        }
+        assert!(sequence_event_kinds("CALL").is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3289,14 +3925,63 @@ mod tests {
             kind: "SYMBOL".into(),
             service: service.into(),
             symbol: symbol.into(),
-            normalized: json!({"scope":":main","documentation":{"events":events}}),
+            normalized: json!({
+                "scope":":main",
+                "documentation":{
+                    "authority":"JAVAC_SOURCE_STRUCTURE",
+                    "boundaries":[],
+                    "events":events
+                }
+            }),
             digest: "digest".into(),
             source_ids: vec![],
         }
     }
 
+    fn checked_with_source_flow(
+        symbol: &str,
+        source: &str,
+        events: Value,
+        boundaries: Value,
+    ) -> Check {
+        let mut flow = flow_observation(symbol, "svc", events);
+        flow.normalized["documentation"]["boundaries"] = boundaries;
+        let source_observation = Observation {
+            id: "svc:source:m1".into(),
+            kind: "TRANSFORMED_SOURCE".into(),
+            service: "svc".into(),
+            symbol: symbol.into(),
+            normalized: json!({"scope":":main","documentation":{"source":source}}),
+            digest: "source-digest".into(),
+            source_ids: vec![],
+        };
+        let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0",
+            "service":"svc","revision":"rev","serviceDigest":"d",
+            "extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},"entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        evidence.observations.insert(flow.id.clone(), flow);
+        evidence
+            .observations
+            .insert(source_observation.id.clone(), source_observation);
+        Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        }
+    }
+
     #[test]
-    fn auto_flow_puml_is_emitted_when_events_empty() {
+    fn auto_flow_without_exact_source_is_gap_not_a_causal_view() {
         let flow = json!([
             {"kind":"CALL","resolution":"COMPILER_EXACT","target":"method:class:ru.tins.CheckoutService#charge()V"},
             {"kind":"RETURN"}
@@ -3322,17 +4007,22 @@ mod tests {
         };
         let doc = auto_flow_puml(&checked, resolved, title).unwrap();
         assert!(doc.puml.contains("title Checkout flow"), "{}", doc.puml);
-        assert!(doc.puml.contains(":CheckoutService#charge"), "{}", doc.puml);
+        assert_eq!(doc.origin, "flow");
         assert!(
-            doc.puml
-                .contains("' evidence: method:class:ru.tins.CheckoutController#checkout"),
+            doc.puml.contains("FLOW_CONTROL_CAPABILITY_UNVERIFIED"),
             "{}",
             doc.puml
         );
+        assert!(
+            !doc.puml.contains(":CheckoutService#charge"),
+            "{}",
+            doc.puml
+        );
+        assert!(!doc.puml.contains("start\n"), "{}", doc.puml);
     }
 
     #[test]
-    fn source_deepening_is_preferred_when_source_retained() {
+    fn source_text_cannot_override_unsupported_flow_boundary() {
         let source = "\
 public void handle(Long taskId) {
     TaskInstance ti = null;
@@ -3377,20 +4067,221 @@ public void handle(Long taskId) {
         };
         let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
         let doc = auto_flow_puml(&checked, resolved, "t").unwrap();
-        // Source deepening wins over the shallow BOUNDARY flow.
-        assert_eq!(doc.origin, "source");
+        assert_eq!(doc.origin, "flow");
         assert!(
-            doc.puml.contains(":Entry: handle（taskId）;"),
+            doc.puml.contains("FLOW_BOUNDARY_UNSPECIFIED"),
             "{}",
             doc.puml
         );
-        assert!(doc.puml.contains(":ti = null;"), "{}", doc.puml);
+        assert!(!doc.puml.contains("svc.create"), "{}", doc.puml);
+        assert!(!doc.puml.contains("ti = null"), "{}", doc.puml);
+        assert!(!doc.tree.contains("svc.create"), "{}", doc.tree);
+    }
+
+    #[test]
+    fn checkout_source_keeps_guard_exit_save_and_reserve_in_one_projection() {
+        let symbol = "method:class:example.CheckoutController#checkout()Ljava/lang/String;";
+        let source = r#"
+public String checkout(ReservationRequest request) {
+    if (!hasPositiveQuantity(request)) return invalid();
+    reservations.save(request);
+    return inventory.reserve(request);
+}
+"#;
+        let events = json!([
+            {"kind":"CALL","target":"method:class:example.CheckoutController#hasPositiveQuantity(Lexample/ReservationRequest;)Z"},
+            {"kind":"IF","condition":"!hasPositiveQuantity(request)"},
+            {"kind":"CALL","target":"method:class:example.CheckoutController#invalid()Ljava/lang/String;"},
+            {"kind":"RETURN"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:org.springframework.data.repository.CrudRepository#save(Ljava/lang/Object;)Ljava/lang/Object;"},
+            {"kind":"CALL","target":"method:class:example.InventoryClient#reserve(Lexample/ReservationRequest;)Ljava/lang/String;"},
+            {"kind":"RETURN"}
+        ]);
+        let checked = checked_with_source_flow(symbol, source, events, json!([]));
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let rendered = auto_flow_puml(&checked, resolved, "Checkout").unwrap();
+        assert_eq!(rendered.origin, "source", "{}", rendered.tree);
+        let guard = rendered
+            .tree
+            .find("[D] if (!hasPositiveQuantity(request))")
+            .unwrap();
+        let early_return = rendered.tree.find("  return invalid()").unwrap();
+        let save = rendered
+            .tree
+            .find("[W] reservations.save(request)")
+            .unwrap();
+        let reserve = rendered
+            .tree
+            .find("return inventory.reserve(request)")
+            .unwrap();
         assert!(
-            doc.puml.contains("if (ti == null) then (yes)"),
+            guard < early_return && early_return < save && save < reserve,
             "{}",
-            doc.puml
+            rendered.tree
         );
-        assert!(!doc.puml.contains("BOUNDARY"), "{}", doc.puml);
+        assert!(
+            rendered.puml.contains("reservations.save"),
+            "{}",
+            rendered.puml
+        );
+        assert!(
+            rendered.puml.contains("inventory.reserve"),
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("stop\n").count(),
+            2,
+            "{}",
+            rendered.puml
+        );
+    }
+
+    #[test]
+    fn source_may_expose_one_opaque_short_circuit_return_with_gap_evidence() {
+        let symbol = "method:class:example.CheckoutController#hasPositiveQuantity()Z";
+        let predicate = "request != null && request.quantity() > 0";
+        let source =
+            format!("boolean hasPositiveQuantity(Request request) {{ return {predicate}; }}");
+        let events = json!([
+            {"kind":"BOUNDARY","code":"SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"},
+            {"kind":"RETURN"}
+        ]);
+        let checked = checked_with_source_flow(
+            symbol,
+            &source,
+            events,
+            json!(["SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"]),
+        );
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let rendered = auto_flow_puml(&checked, resolved, "Predicate").unwrap();
+        assert_eq!(rendered.origin, "source");
+        assert!(
+            rendered.tree.contains(&format!("return {predicate}")),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            rendered
+                .tree
+                .contains("SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            rendered.puml.contains("request.quantity"),
+            "{}",
+            rendered.puml
+        );
+        assert!(rendered.puml.contains("&gt; 0"), "{}", rendered.puml);
+        assert!(
+            !rendered.tree.contains("request.quantity(...)"),
+            "{}",
+            rendered.tree
+        );
+    }
+
+    #[test]
+    fn lambda_boundary_blocks_source_actions_inside_callback_body() {
+        let symbol = "method:class:example.CheckoutController#prepareSaveCallback()V";
+        let source = r#"
+void prepareSaveCallback() {
+    callbacks.register(() -> repository.save(callbackSentinel));
+}
+"#;
+        let events = json!([{"kind":"BOUNDARY","code":"LAMBDA_EXECUTION_NOT_EXPANDED"}]);
+        let checked = checked_with_source_flow(
+            symbol,
+            source,
+            events,
+            json!(["LAMBDA_EXECUTION_NOT_EXPANDED"]),
+        );
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let rendered = auto_flow_puml(&checked, resolved, "Callback boundary").unwrap();
+        assert_eq!(rendered.origin, "flow");
+        assert!(
+            rendered.tree.contains("LAMBDA_EXECUTION_NOT_EXPANDED"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            !rendered.tree.contains("callbackSentinel"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            !rendered.tree.contains("repository.save"),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            !rendered.puml.contains("callbacks.register"),
+            "{}",
+            rendered.puml
+        );
+    }
+
+    #[test]
+    fn unsupported_retained_source_vetoes_a_balanced_flow_outline() {
+        let symbol = "method:class:svc.Checkout#checkout()V";
+        let source = r#"
+public void checkout() {
+    outer: {
+        if (x) break outer;
+        reserve();
+    }
+    done();
+}
+"#;
+        let flow = json!([
+            {"kind":"IF","condition":"x"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:svc.Checkout#reserve()V"},
+            {"kind":"CALL","target":"method:class:svc.Checkout#done()V"},
+            {"kind":"RETURN"}
+        ]);
+        let checked = checked_with_source_flow(symbol, source, flow.clone(), json!([]));
+        let resolved = resolve_flow(&checked, Some("svc"), &[symbol]).unwrap();
+        let with_source = auto_flow_puml(&checked, resolved, "Labeled block").unwrap();
+        assert_eq!(with_source.origin, "source");
+        assert!(
+            with_source
+                .tree
+                .contains("SOURCE_STATEMENT_OR_CONTROL_UNSUPPORTED"),
+            "{}",
+            with_source.tree
+        );
+        assert!(
+            !with_source.tree.contains("reserve()"),
+            "{}",
+            with_source.tree
+        );
+        assert!(
+            !with_source.puml.contains("start\n"),
+            "{}",
+            with_source.puml
+        );
+
+        let mut without_source = checked_with_source_flow(symbol, source, flow.clone(), json!([]));
+        without_source
+            .services
+            .get_mut("svc")
+            .unwrap()
+            .observations
+            .remove("svc:source:m1");
+        let resolved = resolve_flow(&without_source, Some("svc"), &[symbol]).unwrap();
+        let no_source = auto_flow_puml(&without_source, resolved, "Labeled block").unwrap();
+        assert_eq!(no_source.origin, "flow");
+        assert!(
+            no_source
+                .tree
+                .contains("FLOW_CONTROL_CAPABILITY_UNVERIFIED"),
+            "{}",
+            no_source.tree
+        );
+        assert!(!no_source.tree.contains("reserve()"), "{}", no_source.tree);
+        assert!(!no_source.puml.contains("start\n"), "{}", no_source.puml);
     }
 
     #[test]
@@ -3761,5 +4652,379 @@ public void handle(Long taskId) {
             method_source(&checked, resolved).as_deref(),
             Some(source_text)
         );
+    }
+
+    fn checked_with_process_root(selector_scope: Option<&str>, ambiguous: bool) -> Check {
+        let symbol = "method:class:example.CheckoutController#checkout()Ljava/lang/String;";
+        let source_text = "public String checkout(Request request) {\n    if (!hasPositiveQuantity(request)) return invalid();\n    reservations.save(request);\n    return inventory.reserve(request);\n}";
+        let mut observation = flow_observation(
+            symbol,
+            "svc",
+            json!([
+                {"kind":"CALL","target":"method:class:example.CheckoutController#hasPositiveQuantity(Lexample/Request;)Z"},
+                {"kind":"IF","condition":"!hasPositiveQuantity(request)"},
+                {"kind":"CALL","target":"method:class:example.CheckoutController#invalid()Ljava/lang/String;"},
+                {"kind":"RETURN"},
+                {"kind":"END"},
+                {"kind":"CALL","target":"method:class:org.springframework.data.repository.CrudRepository#save(Ljava/lang/Object;)Ljava/lang/Object;"},
+                {"kind":"CALL","target":"method:class:example.Inventory#reserve(Lexample/Request;)Ljava/lang/String;"},
+                {"kind":"RETURN"}
+            ]),
+        );
+        observation.normalized["name"] = json!("checkout");
+        observation.normalized["ownerIdentity"] = json!("class:example.CheckoutController");
+        observation.normalized["jvmDescriptor"] = json!("(Lexample/Request;)Ljava/lang/String;");
+        observation.normalized["documentation"]["parameterTypes"] = json!(["example.Request"]);
+        observation.source_ids = vec!["checkout-source".into()];
+        let source = Source {
+            id: "checkout-source".into(),
+            service: "svc".into(),
+            revision: "rev".into(),
+            file: "CheckoutController.java".into(),
+            start_line: 1,
+            end_line: 5,
+            text: source_text.into(),
+            text_digest: "checkout-text-digest".into(),
+            evidence_digest: "checkout-evidence-digest".into(),
+            authority: "RETAINED_SOURCE_NOT_REVERIFIED".into(),
+            occurrence: None,
+            url: None,
+        };
+        let selector = json!({
+            "language":"java",
+            "scope":selector_scope,
+            "owner":"example.CheckoutController",
+            "name":"checkout",
+            "parameterTypes":["example.Request"]
+        });
+        let definition = Observation {
+            id: "process:checkout".into(),
+            kind: "PROCESS_DEFINITION".into(),
+            service: "svc".into(),
+            symbol: "checkout".into(),
+            normalized: json!({"definition":{"id":"checkout","title":"Checkout","root":{"service":"svc","selector":selector}}}),
+            digest: "process-digest".into(),
+            source_ids: vec![],
+        };
+        let mut evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0",
+            "service":"svc","revision":"rev","serviceDigest":"d",
+            "extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],"contracts":{},"entrypoints":[],"observations":{},"sources":{}
+        }))
+        .unwrap();
+        evidence
+            .observations
+            .insert(observation.id.clone(), observation);
+        evidence.sources.insert(source.id.clone(), source);
+        if ambiguous {
+            let mut second = evidence.observations.values().next().unwrap().clone();
+            second.id = "svc:symbol:checkout-test-scope".into();
+            second.normalized["scope"] = json!(":test");
+            second.digest = "checkout-test-scope-digest".into();
+            evidence.observations.insert(second.id.clone(), second);
+        }
+        Check {
+            schema: "test".into(),
+            input_digest: "d".into(),
+            context_digest: "d".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::from([("process:checkout".into(), definition)]),
+            source_inputs: None,
+            composition: None,
+        }
+    }
+
+    #[test]
+    fn process_outline_uses_exact_saved_selector_and_binds_source_records() {
+        let checked = checked_with_process_root(None, false);
+        let root = process_root_resolution(&checked, "checkout");
+        assert_eq!(root.gap, None);
+        assert_eq!(root.flow().unwrap().observation.service, "svc");
+        let (outline, sources, artifact) =
+            process_outline_from_root(&checked, "scenario:checkout", "Checkout", &root).unwrap();
+        assert_eq!(outline["status"], "STATIC_SOURCE_OUTLINE");
+        assert_eq!(outline["root"]["service"], "svc");
+        assert_eq!(outline["root"]["scope"], ":main");
+        assert_eq!(
+            outline["root"]["observation"],
+            "svc:symbol:method:class:example.CheckoutController#checkout()Ljava/lang/String;"
+        );
+        assert_eq!(outline["sourceIds"][0], "checkout-source");
+        assert!(outline["root"]["sourceRecordDigests"]["checkout-source"].is_string());
+        assert!(
+            outline["tree"]
+                .as_str()
+                .unwrap()
+                .contains("return inventory.reserve(request)")
+        );
+        assert!(
+            outline["tree"]
+                .as_str()
+                .unwrap()
+                .contains("return invalid()")
+        );
+        assert_eq!(sources.len(), 1);
+        assert!(
+            artifact
+                .as_ref()
+                .is_some_and(|(_, puml)| puml.contains("inventory.reserve"))
+        );
+        let (_, source_digests) = process_root_source_records(&checked, &root).unwrap();
+        assert!(retained_process_outline_matches(
+            &outline,
+            &json!(sources),
+            &root,
+            &sources,
+            &source_digests,
+        ));
+
+        let mut changed = checked.clone();
+        changed
+            .services
+            .get_mut("svc")
+            .unwrap()
+            .sources
+            .get_mut("checkout-source")
+            .unwrap()
+            .text
+            .push_str("\n// changed");
+        let changed_root = process_root_resolution(&changed, "checkout");
+        let (changed_sources, changed_digests) =
+            process_root_source_records(&changed, &changed_root).unwrap();
+        assert!(!retained_process_outline_matches(
+            &outline,
+            &json!(sources),
+            &changed_root,
+            &changed_sources,
+            &changed_digests,
+        ));
+    }
+
+    #[test]
+    fn ambiguous_process_root_is_a_gap_and_explicit_scope_resolves_one_observation() {
+        let ambiguous = checked_with_process_root(None, true);
+        let root = process_root_resolution(&ambiguous, "checkout");
+        assert_eq!(root.gap, Some("PROCESS_ROOT_SELECTOR_AMBIGUOUS"));
+        let (gap, sources, artifact) =
+            process_outline_from_root(&ambiguous, "scenario:checkout", "Checkout", &root).unwrap();
+        assert_eq!(gap["status"], "GAP");
+        assert_eq!(gap["gap"], "PROCESS_ROOT_SELECTOR_AMBIGUOUS");
+        assert_eq!(gap["root"]["candidates"].as_array().unwrap().len(), 2);
+        assert!(sources.is_empty());
+        assert!(artifact.is_none());
+
+        let explicitly_scoped = checked_with_process_root(Some(":main"), true);
+        let selected = process_root_resolution(&explicitly_scoped, "checkout");
+        assert_eq!(selected.gap, None);
+        assert_eq!(selected.observations.len(), 1);
+        assert_eq!(
+            selected.flow().unwrap().observation.normalized["scope"],
+            ":main"
+        );
+    }
+}
+
+#[cfg(test)]
+mod publication_receipt_tests {
+    use super::*;
+
+    const SUBJECT: &str = "scenario:receipt-test";
+    type TestHook<'a> = BeforePublicationSwitch<'a>;
+
+    fn repository() -> (tempfile::TempDir, Repository) {
+        let directory = tempfile::tempdir().unwrap();
+        Repository::init(directory.path(), "Publication receipt test").unwrap();
+        let repo = Repository::open(directory.path()).unwrap();
+        (directory, repo)
+    }
+
+    fn binding(repo: &Repository, language: Option<&str>, gap: &str) -> Bindings {
+        Bindings {
+            documentation_language: language.map(str::to_owned),
+            influence_scopes: BTreeMap::new(),
+            schema: "codeclew-documentation-bindings/1.4".into(),
+            input_digest: repo.input_digest().unwrap(),
+            renderer: RENDERER.into(),
+            extractor: "test-extractor".into(),
+            revisions: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            catalogues: BTreeMap::new(),
+            fragments: BTreeMap::new(),
+            observations: BTreeMap::new(),
+            narratives: BTreeMap::from([(
+                SUBJECT.into(),
+                Narrative {
+                    schema: "codeclew-documentation-narrative/1.3".into(),
+                    subject: SUBJECT.into(),
+                    context_digest: "sha256:test-context".into(),
+                    operations: Vec::new(),
+                    gaps: BTreeMap::from([("operation".into(), gap.into())]),
+                },
+            )]),
+            output_hashes: BTreeMap::new(),
+            retained_sources: BTreeMap::new(),
+            section_states: BTreeMap::new(),
+            target_revisions: BTreeMap::new(),
+            update_failures: BTreeMap::new(),
+            accepted_versions: BTreeMap::new(),
+        }
+    }
+
+    fn commit(
+        repo: &Repository,
+        bundle: &str,
+        binding: Bindings,
+        previous: Option<&(String, Bindings)>,
+        previous_bytes: Option<&[u8]>,
+        receipt_request: Option<&PublicationReceiptRequest>,
+        before_switch: Option<TestHook<'_>>,
+    ) -> Result<(), ClewError> {
+        let overview = format!(
+            "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"></head><body><main>test</main></body></html>\n"
+        );
+        let files = BTreeMap::from([(
+            "overview.html".into(),
+            b"<!doctype html><html lang=\"en\"><head></head><body><main>test</main></body></html>\n"
+                .to_vec(),
+        )]);
+        let input_digest = repo.input_digest()?;
+        commit_bundle_with_mode(
+            repo,
+            bundle,
+            binding,
+            files,
+            &overview,
+            &input_digest,
+            previous,
+            previous_bytes,
+            false,
+            receipt_request,
+            before_switch,
+        )
+    }
+
+    fn receipt_request(language: Option<&str>) -> PublicationReceiptRequest {
+        PublicationReceiptRequest {
+            requested_language: language.map(str::to_owned),
+            affected_subjects: BTreeSet::from([SUBJECT.into()]),
+        }
+    }
+
+    #[test]
+    fn pre_switch_receipt_uses_final_bundle_bytes_and_same_write_guard() {
+        let (_directory, repo) = repository();
+        let bundle = "a".repeat(64);
+        let receipt_request = receipt_request(Some("ru"));
+        let receipt = {
+            let mut received = None;
+            {
+                let callback_repo = &repo;
+                let mut callback = |guard: &store::WriteLock, receipt: &PublicationReceipt| {
+                    let _: &store::WriteLock = guard;
+                    assert!(
+                        callback_repo.lock().is_err(),
+                        "the callback must execute under the repository write lock"
+                    );
+                    received = Some(receipt.clone());
+                    Ok(())
+                };
+                commit(
+                    &repo,
+                    &bundle,
+                    binding(&repo, Some("ru"), "Missing reviewed detail"),
+                    None,
+                    None,
+                    Some(&receipt_request),
+                    Some(&mut callback),
+                )
+                .unwrap();
+            }
+            received.expect("pre-switch callback should receive the receipt")
+        };
+        assert_eq!(
+            receipt.schema,
+            "codeclew-documentation-publication-receipt/1.0"
+        );
+        assert_eq!(receipt.bundle_id, bundle);
+        assert_eq!(receipt.requested_language.as_deref(), Some("ru"));
+        assert_eq!(receipt.effective_language, "ru");
+        assert_eq!(
+            receipt.effective_gaps,
+            BTreeMap::from([(
+                SUBJECT.into(),
+                BTreeMap::from([("operation".into(), "Missing reviewed detail".into())]),
+            )])
+        );
+
+        let index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+        let bundle_root = format!("docs/generated/{bundle}");
+        let bindings_bytes =
+            fs::read(repo.path(&format!("{bundle_root}/bindings.json")).unwrap()).unwrap();
+        let publication_bytes = fs::read(
+            repo.path(&format!("{bundle_root}/publication.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt.root_index_hash, canonical::hash_bytes(&index));
+        assert_eq!(
+            receipt.bindings_hash,
+            canonical::hash_bytes(&bindings_bytes)
+        );
+        assert_eq!(
+            receipt.publication_hash,
+            canonical::hash_bytes(&publication_bytes)
+        );
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(serialized["effectiveLanguage"], "ru");
+        assert_eq!(
+            serialized["effectiveGaps"][SUBJECT]["operation"],
+            "Missing reviewed detail"
+        );
+    }
+
+    #[test]
+    fn pre_switch_callback_failure_keeps_the_previous_reader_pointer() {
+        let (_directory, repo) = repository();
+        let first_bundle = "b".repeat(64);
+        commit(
+            &repo,
+            &first_bundle,
+            binding(&repo, Some("en"), "Initial gap"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let old_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+        let previous = bindings::baseline(&repo).unwrap().unwrap();
+        assert_eq!(previous.0, first_bundle);
+
+        let second_bundle = "c".repeat(64);
+        let request = receipt_request(Some("ru"));
+        let mut callback = |_guard: &store::WriteLock, _receipt: &PublicationReceipt| {
+            Err(invalid("injected pre-switch failure"))
+        };
+        assert!(
+            commit(
+                &repo,
+                &second_bundle,
+                binding(&repo, Some("ru"), "Updated gap"),
+                Some(&previous),
+                Some(&old_index),
+                Some(&request),
+                Some(&mut callback),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+            old_index
+        );
+        assert_eq!(bindings::baseline(&repo).unwrap().unwrap().0, first_bundle);
     }
 }

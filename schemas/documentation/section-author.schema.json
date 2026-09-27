@@ -97,6 +97,7 @@
     },
     "selection": {
       "type": "object",
+      "description": "Leave the selection empty for the default context. Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. Keep the same selection when continuing a page with its cursor. Query kind matches a dependency record's Observation.kind, not a page-row kind such as SOURCE or DEPENDENCY. Use SYMBOL to search captured symbol and method names; symbolContains is a case-sensitive substring. Use * to match every dependency kind. In this role contract, every SYMBOL query is normalized to NAVIGATION, including when projection is omitted or RAW is requested. It returns one bounded, noncitable declaration-discovery page with fullRecordReference and sourceReferences; continue with its cursor to discover more. Request exact symbols or returned references for full records, subject to the existing Work page limits. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing them unless those contents are already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -114,24 +115,45 @@
           }
         },
         "query": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 100
-            },
-            "symbolContains": {
-              "type": "string",
-              "maxLength": 512
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "Matches a dependency record's Observation.kind, not the page-row kind. Use * for every dependency kind; availableKinds is supplied in selectionGuidance."
+                },
+                "symbolContains": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "description": "Case-sensitive substring of captured symbol or method names; empty matches every name within the selected kind."
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": ["RAW", "NAVIGATION"],
+                  "description": "Requested query view. The role host normalizes every SYMBOL query to NAVIGATION."
+                }
+              },
+              "required": ["kind"],
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": {"const": "SYMBOL"},
+                    "projection": {"const": "NAVIGATION"}
+                  },
+                  "required": ["projection"]
+                },
+                {
+                  "properties": {
+                    "projection": {"const": "RAW"}
+                  }
+                }
+              ]
             }
-          },
-          "required": [
-            "kind"
           ]
         },
         "cursor": {
@@ -143,7 +165,40 @@
         "untrackedReads": {
           "const": false
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "references": {"type": "array", "maxItems": 0},
+            "symbols": {"type": "array", "maxItems": 0},
+            "query": {"type": "null"}
+          }
+        },
+        {
+          "required": ["references"],
+          "properties": {
+            "references": {"type": "array", "minItems": 1},
+            "symbols": {"type": "array", "maxItems": 0},
+            "query": {"type": "null"}
+          }
+        },
+        {
+          "required": ["symbols"],
+          "properties": {
+            "references": {"type": "array", "maxItems": 0},
+            "symbols": {"type": "array", "minItems": 1},
+            "query": {"type": "null"}
+          }
+        },
+        {
+          "required": ["query"],
+          "properties": {
+            "references": {"type": "array", "maxItems": 0},
+            "symbols": {"type": "array", "maxItems": 0},
+            "query": {"type": "object"}
+          }
+        }
+      ]
     }
   }
 }

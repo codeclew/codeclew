@@ -11,9 +11,215 @@
     },
     {
       "$ref": "#/$defs/page"
+    },
+    {
+      "$ref": "#/$defs/sourcePartRequest"
+    },
+    {
+      "$ref": "#/$defs/sourcePart"
     }
   ],
   "$defs": {
+    "sourcePartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-source-part-request/1.0"
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "schema",
+        "reference"
+      ]
+    },
+    "sourcePart": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-source-part/1.0"
+        },
+        "work": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}/(0|[1-9][0-9]*)$"
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "authority": {
+          "const": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED"
+        },
+        "recordDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source": {
+          "$ref": "#/$defs/sourceMetadata"
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalTextBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        },
+        "fragmentDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "receiptType": {
+          "const": "SOURCE_PART"
+        },
+        "receiptDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "schema",
+        "work",
+        "snapshot",
+        "reference",
+        "sourceId",
+        "authority",
+        "recordDigest",
+        "source",
+        "startByte",
+        "endByte",
+        "totalTextBytes",
+        "text",
+        "fragmentDigest",
+        "nextCursor",
+        "receiptType",
+        "receiptDigest"
+      ]
+    },
+    "sourceMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "textDigest": {
+          "type": "string"
+        },
+        "evidenceDigest": {
+          "type": "string"
+        },
+        "authority": {
+          "type": "string"
+        },
+        "occurrence": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sourceOccurrence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "service",
+        "revision",
+        "file",
+        "startLine",
+        "endLine",
+        "textDigest",
+        "evidenceDigest",
+        "authority",
+        "url"
+      ]
+    },
+    "sourceOccurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "snapshot": {
+          "type": "string"
+        },
+        "blob": {
+          "type": "string"
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "snapshot",
+        "blob",
+        "startByte",
+        "endByte"
+      ]
+    },
     "request": {
       "type": "object",
       "additionalProperties": false,
@@ -34,11 +240,13 @@
         },
         "contextProfile": {
           "type": "string",
-          "description": "Compact section orientation (the default for a scoped service section), bounded entity declarations, or source-sharing context for a saved process overview. Subject compatibility is validated by the host.",
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, or bounded direct HTTP API contract preparation. Subject compatibility is validated by the host.",
           "enum": [
             "declarations-v1",
+            "http-api-contract-v1",
             "process-v1",
-            "section-orientation-v1"
+            "section-orientation-v1",
+            "section-entities-orientation-v1"
           ]
         },
         "maxItems": {
@@ -76,6 +284,7 @@
     },
     "selection": {
       "type": "object",
+      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, not a page-row kind such as SOURCE or DEPENDENCY. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION is available only for SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -101,15 +310,36 @@
                 "kind": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 100
+                  "maxLength": 100,
+                  "description": "Matches a dependency record's Observation.kind, not the page-row kind. Use * for every dependency kind."
                 },
                 "symbolContains": {
                   "type": "string",
-                  "maxLength": 512
+                  "maxLength": 512,
+                  "description": "Case-sensitive substring of captured symbol or method names; empty matches every name within the selected kind."
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": ["RAW", "NAVIGATION"],
+                  "description": "Optional query view. RAW is the default. NAVIGATION is valid only when kind is SYMBOL."
                 }
               },
               "required": [
                 "kind"
+              ],
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": {"const": "SYMBOL"},
+                    "projection": {"const": "NAVIGATION"}
+                  },
+                  "required": ["projection"]
+                },
+                {
+                  "properties": {
+                    "projection": {"const": "RAW"}
+                  }
+                }
               ]
             },
             {
@@ -151,10 +381,12 @@
           "type": "string",
           "enum": [
             "declarations-v1",
+            "http-api-contract-v1",
             "process-v1",
-            "section-orientation-v1"
+            "section-orientation-v1",
+            "section-entities-orientation-v1"
           ],
-          "description": "Compact section orientation (the default for a scoped service section), bounded entity declarations, or source-sharing context for a saved process overview. Subject compatibility is validated by the host."
+          "description": "Compact section orientation, entity-specific orientation for section-entities, bounded declarations-v1 context, source-sharing context for a saved process overview, or bounded direct HTTP API contract preparation. Subject compatibility is validated by the host."
         },
         "subjectReference": {
           "type": "object",

@@ -65,10 +65,36 @@ fn state_corrupt(message: &'static str) -> ClewError {
 }
 
 fn check_reference(reference: &cache::ObjectRef, schema: &str) -> Result<(), ClewError> {
-    if reference.schema != schema {
+    let digest = reference.digest.strip_prefix("sha256:").unwrap_or("");
+    if reference.schema != schema
+        || reference.size == 0
+        || reference.size > check::PORTABLE_CACHE_MAX_BYTES
+        || digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err(invalid(
-            "source input object schema does not match its field",
+            "source input object reference is not canonical for its field",
         ));
+    }
+    Ok(())
+}
+
+fn validate_reference_map(
+    map: &BTreeMap<String, cache::ObjectRef>,
+    schema: &str,
+) -> Result<(), ClewError> {
+    if map.len() > MAX_ITEMS {
+        return Err(invalid(
+            "source input reference map exceeds its record bound",
+        ));
+    }
+    for (id, reference) in map {
+        if !store::valid_id(id) {
+            return Err(invalid("source input reference map has an invalid ID"));
+        }
+        check_reference(reference, schema)?;
     }
     Ok(())
 }
@@ -327,6 +353,96 @@ fn load_manifest(
         return Err(invalid("unsupported source input manifest schema"));
     }
     Ok(manifest)
+}
+
+/// Load only explicitly selected service declarations from an immutable source
+/// input envelope. Historical scenarios, entities, notes, and other service
+/// objects remain unread and cannot become active in a recovered destination.
+pub(super) fn load_selected_services(
+    reference: &cache::ObjectRef,
+    expected_input_digest: &str,
+    selected: &BTreeSet<String>,
+    mut read: impl FnMut(&cache::ObjectRef) -> Result<Vec<u8>, ClewError>,
+) -> Result<BTreeMap<String, super::model::Service>, ClewError> {
+    if reference.schema != MANIFEST_SCHEMA || selected.is_empty() || selected.len() > MAX_ITEMS {
+        return Err(invalid("selected source input contract is invalid"));
+    }
+    let payload = read(reference)?;
+    if payload.len() as u64 != reference.size || cache::content_digest(&payload) != reference.digest
+    {
+        return Err(state_corrupt(
+            "selected source input manifest digest is invalid",
+        ));
+    }
+    let manifest: Manifest = serde_json::from_slice(&payload)
+        .map_err(|_| invalid("selected source input manifest is malformed"))?;
+    if manifest.schema != MANIFEST_SCHEMA
+        || manifest.input_digest != expected_input_digest
+        || manifest.update_state.schema != UPDATE_STATE_SCHEMA
+        || manifest.services.len() > MAX_ITEMS
+        || selected.iter().any(|id| !store::valid_id(id))
+    {
+        return Err(invalid("selected source input contract is inconsistent"));
+    }
+    validate_reference_map(&manifest.services, SERVICE_SCHEMA)?;
+    validate_reference_map(&manifest.interactions, INTERACTION_SCHEMA)?;
+    validate_reference_map(&manifest.scenarios, SCENARIO_SCHEMA)?;
+    validate_reference_map(&manifest.process_states, PROCESS_STATE_SCHEMA)?;
+    validate_reference_map(&manifest.entities, ENTITY_SCHEMA)?;
+    validate_reference_map(&manifest.evidence_expectations, EXPECTATION_SCHEMA)?;
+    validate_reference_map(&manifest.update_policies, UPDATE_POLICY_SCHEMA)?;
+    validate_reference_map(&manifest.update_state.targets, UPDATE_EVENT_SCHEMA)?;
+    if manifest.notes.len() > MAX_ITEMS
+        || manifest.notes.iter().any(|(id, note)| {
+            !store::valid_id(id)
+                || check_reference(&note.metadata, NOTE_METADATA_SCHEMA).is_err()
+                || check_reference(&note.original, NOTE_ORIGINAL_SCHEMA).is_err()
+        })
+        || manifest
+            .selected_services
+            .iter()
+            .chain(&manifest.retained_services)
+            .any(|id| !store::valid_id(id) || !manifest.services.contains_key(id))
+        || !manifest
+            .selected_services
+            .is_disjoint(&manifest.retained_services)
+    {
+        return Err(invalid("source input reference envelope is inconsistent"));
+    }
+    if selected.iter().any(|id| {
+        manifest.evidence_expectations.contains_key(id)
+            || manifest.update_policies.contains_key(id)
+            || manifest.update_state.targets.contains_key(id)
+    }) {
+        return Err(invalid(
+            "selected service has evidence expectations or update state that capture recovery does not support",
+        ));
+    }
+    let mut services = BTreeMap::new();
+    for id in selected {
+        let reference = manifest
+            .services
+            .get(id)
+            .ok_or_else(|| invalid("selected service is absent from the source input manifest"))?;
+        check_reference(reference, SERVICE_SCHEMA)?;
+        let payload = read(reference)?;
+        if payload.len() as u64 != reference.size
+            || cache::content_digest(&payload) != reference.digest
+        {
+            return Err(state_corrupt(
+                "selected service declaration digest is invalid",
+            ));
+        }
+        let service: super::model::Service = serde_json::from_slice(&payload)
+            .map_err(|_| invalid("selected service declaration is malformed"))?;
+        store::validate_service(&service)?;
+        if service.id != *id || services.insert(id.clone(), service).is_some() {
+            return Err(invalid(
+                "selected service declaration identity is inconsistent",
+            ));
+        }
+    }
+    Ok(services)
 }
 
 fn hydrate_manifest(repo: &Repository, manifest: &Manifest) -> Result<RepositoryInputs, ClewError> {

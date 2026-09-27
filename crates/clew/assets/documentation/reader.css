@@ -13,3 +13,6 @@
 
 #source-panel{top:var(--reader-header-height,66px);height:calc(100vh - var(--reader-header-height,66px))}.skip-link{z-index:50}
 @media(max-width:760px){.sidebar{top:0;height:auto}}
+
+.catalog-caveat{color:var(--muted);font-size:13px}.catalog-results .catalog-meta{margin-top:3px}.catalog-results .catalog-detail{margin-top:2px;overflow-wrap:anywhere}
+.catalog-results .catalog-meta{overflow-wrap:anywhere}

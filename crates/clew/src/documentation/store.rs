@@ -4,8 +4,10 @@ use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
 pub const MAX_RECORD: u64 = 128 * 1024 * 1024;
@@ -38,10 +40,10 @@ pub struct RepositoryInputs {
     pub update_state: super::updates::State,
 }
 
-pub struct WriteLock(PathBuf);
+pub struct WriteLock(File);
 impl Drop for WriteLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
@@ -263,10 +265,29 @@ impl Repository {
     pub fn lock(&self) -> Result<WriteLock, ClewError> {
         fs::create_dir_all(self.path(".codeclew")?).map_err(io_error)?;
         let path = self.path(".codeclew/write.lock")?;
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
-            .map_err(|_| ClewError::new(ErrorCode::WwConflict, "documentation writer lock exists; wait for its owner, or inspect an interrupted writer before removing the lock"))?;
-        writeln!(file, "{}", std::process::id()).map_err(io_error)?;
-        Ok(WriteLock(path))
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(io_error)?;
+        if !file.metadata().map_err(io_error)?.is_file() {
+            return Err(invalid("documentation writer lock is not a regular file"));
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                return Err(ClewError::new(
+                    ErrorCode::WwConflict,
+                    "documentation writer lock is held by another process",
+                ));
+            }
+            return Err(io_error(error));
+        }
+        Ok(WriteLock(file))
     }
 
     /// Serialize dependent read-modify-write operations with the repository lock.
@@ -747,6 +768,108 @@ mod tests {
         let r = Repository::open(t.path()).unwrap();
         (t, r)
     }
+
+    #[test]
+    fn write_lock_subprocess_holder() {
+        let (Some(root), Some(ready)) = (
+            std::env::var_os("CODECLEW_DOCS_LOCK_ROOT"),
+            std::env::var_os("CODECLEW_DOCS_LOCK_READY"),
+        ) else {
+            return;
+        };
+        let repo = Repository::open(Path::new(&root)).unwrap();
+        let _lock = repo.lock().unwrap();
+        fs::write(ready, b"locked").unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn repository_write_lock_recovers_after_holder_is_killed_without_replacing_inode() {
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let (root, repo) = setup();
+        let ready = root.path().join("lock-ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("write_lock_subprocess_holder")
+            .env("CODECLEW_DOCS_LOCK_ROOT", root.path())
+            .env("CODECLEW_DOCS_LOCK_READY", &ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not acquire the documentation writer lock");
+        }
+
+        let lock_path = repo.root.join(".codeclew/write.lock");
+        let initial_metadata = fs::metadata(&lock_path).unwrap();
+        let conflict = repo.lock().err().unwrap();
+        assert_eq!(conflict.code, ErrorCode::WwConflict);
+
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+
+        let successor = repo.lock().unwrap();
+        let successor_metadata = fs::metadata(&lock_path).unwrap();
+        assert_eq!(successor_metadata.dev(), initial_metadata.dev());
+        assert_eq!(successor_metadata.ino(), initial_metadata.ino());
+        let third_conflict = repo.lock().err().unwrap();
+        assert_eq!(third_conflict.code, ErrorCode::WwConflict);
+
+        drop(successor);
+        let after_release = repo.lock().unwrap();
+        let final_metadata = fs::metadata(&lock_path).unwrap();
+        assert_eq!(final_metadata.dev(), initial_metadata.dev());
+        assert_eq!(final_metadata.ino(), initial_metadata.ino());
+        drop(after_release);
+    }
+
+    #[test]
+    fn repository_write_lock_rejects_symlinks_and_nonregular_files() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::FileTypeExt;
+
+        let (root, repo) = setup();
+        let lock_path = repo.root.join(".codeclew/write.lock");
+        // Replace the idle lock inode created during setup with hostile file types.
+        fs::remove_file(&lock_path).unwrap();
+        let target = root.path().join("outside-lock-target");
+        fs::write(&target, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&target, &lock_path).unwrap();
+        let symlink_error = repo.lock().err().unwrap();
+        assert_eq!(symlink_error.code, ErrorCode::InvalidInput);
+        assert!(
+            fs::symlink_metadata(&lock_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(target).unwrap(), b"untouched");
+
+        fs::remove_file(&lock_path).unwrap();
+        let lock_path_c = CString::new(lock_path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(lock_path_c.as_ptr(), 0o600) }, 0);
+        let fifo_error = repo.lock().err().unwrap();
+        assert_eq!(fifo_error.code, ErrorCode::InvalidInput);
+        assert!(
+            fs::symlink_metadata(&lock_path)
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
+    }
+
     #[test]
     fn records_skip_only_actual_state_sidecars_and_preserve_suffix_ids() {
         let (_t, r) = setup();
