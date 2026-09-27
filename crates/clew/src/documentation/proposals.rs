@@ -668,10 +668,20 @@ impl Builder<'_> {
                     let mut other = event.clone();
                     other.id = stable(scope, &format!("{slot}/else"))?;
                     other.kind = "else".into();
-                    other.text = "Otherwise".into();
+                    other.text = super::reader::text(
+                        self.work.request.documentation_language(),
+                        "Otherwise",
+                        "Иначе",
+                    )
+                    .into();
                     op.explanation.push(Explanation {
                         id: stable(scope, &format!("paragraph/{slot}/else"))?,
-                        text: "The source describes an alternative branch.".into(),
+                        text: super::reader::text(
+                            self.work.request.documentation_language(),
+                            "The source describes an alternative branch.",
+                            "Исходный код описывает альтернативную ветвь.",
+                        )
+                        .into(),
                         event_ids: vec![other.id.clone()],
                         dependency_ids: other.dependency_ids.clone(),
                         source_ids: other.source_ids.clone(),
@@ -781,7 +791,12 @@ pub(super) fn materialize(
     let mut actors = BTreeMap::from([("caller".to_owned(), "caller".to_owned())]);
     let mut participants = vec![Participant {
         id: "caller".into(),
-        label: "Caller".into(),
+        label: super::reader::text(
+            work.request.documentation_language(),
+            "Caller",
+            "Вызывающая сторона",
+        )
+        .into(),
         service: None,
     }];
     for service in selected_service_ids(work) {

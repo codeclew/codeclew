@@ -1159,7 +1159,7 @@ pub(super) fn reader_guidance(work: &super::work::Work, summary_only: bool) -> V
                 "Apply these requirements only to detailed sequence operations in this packet; summary sections, note assessments, process overviews and dataflow views keep their admitted shape. For each detailed operation, "
             };
             guidance["format"] = serde_json::json!(format!(
-                "{scope}lead with the supported business outcome. Put material source-supported input and response fields in contract rows, and use structured steps for supported preparation, guards, early exits, ordered actions, outcomes and exceptions. Steps render as readable pseudocode derived from documented step narratives, not executable code or an observed runtime trace. Keep substantive decisions in steps or a typed decision table, not only in a note or prose. When evidence supports more than two material alternatives, require a decision table: preserve supported first-match or exclusivity semantics and no-op/default outcomes, group guards with shared outcomes, and use FIRST, UNIQUE or UNKNOWN only as the evidence supports. Keep action failures separate from selection in afterSelection; keep the table local with parent:null when its causal selection node is unproven."
+                "{scope}lead with the supported business outcome. Put material source-supported input and response fields in contract rows, and use structured steps for supported preparation, guards, early exits, ordered actions, outcomes and exceptions. Steps render as readable pseudocode derived from documented step narratives, not executable code or an observed runtime trace. Keep substantive decisions in steps or a typed decision table, not only in a note or prose. When evidence supports more than two material alternatives, require a decision table: preserve supported first-match or exclusivity semantics and no-op/default outcomes, group guards with shared outcomes, and use FIRST, UNIQUE or UNKNOWN only as the evidence supports. Keep action failures separate from selection in afterSelection; keep the table local with parent:null when its causal selection node is unproven. Before concluding that material input/response semantics or a guard/action affecting the observable outcome are unknown solely because a relevant declaration/body has not been delivered, request a relevant bounded captured lookup/read when that capability and allowance remain. Prefer known exact targets; use discovery only as needed, and keep the read focused or to a compact batch of directly relevant targets. After an unsuccessful read, unavailable evidence, or exhausted bounds, state a precise scoped uncertainty. Do not follow helpers exhaustively through transitive calls or seek runtime proof."
             ));
         }
         if !dataflow_root && !note_root {
@@ -1502,7 +1502,7 @@ fn reviewer_payload_with_parts(
     } else {
         " Assess every material, applicable readerGuidance question, including a selected section's readerQuestion, against the proposed content in the form allowed by readerGuidance.format when present and delivered evidence. If the packet supports material behavior that the proposal omits, return verdict REJECT and add a blocking ERROR issue with claim=null and relevant delivered Work handles as evidence. A precise, evidence-scoped unknown is valid when it still gives a useful bounded answer. Request registered expansion when missing evidence blocks a useful answer and a registered read could resolve it. Use NEEDS_EVIDENCE with the exact limitation only when missing evidence prevents a useful bounded answer. Do not demand irrelevant categories, every internal method or DTO field, or every visual format; do not invent values or make negative claims from absence."
     };
-    let content_root_guidance = " Assess proposal content against readerGuidance.format when present; it governs the selected root or, for conditional guidance, only the operation roots it names, while outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response. When format guidance names detailed-operation requirements, treat its evidence-supported requirements as review criteria: flag supported format omissions, and do not demand unseen helper implementations or runtime proof. For a summary root, do not require steps, contracts, participants or explanation; supported typed visuals are optional only when readerGuidance.format allows them, never a completeness requirement.";
+    let content_root_guidance = " Assess proposal content against readerGuidance.format when present; it governs the selected root or, for conditional guidance, only the operation roots it names, while outputSchema and outputContract.outputSchema in this reviewer packet constrain only the review response. When format guidance names detailed-operation requirements, treat its evidence-supported requirements as review criteria: flag supported format omissions and apply any bounded-read requirements it explicitly scopes. Do not demand a complete helper inventory, exhaustive transitive traversal or runtime proof. For a summary root, do not require steps, contracts, participants or explanation; supported typed visuals are optional only when readerGuidance.format allows them, never a completeness requirement.";
     payload["instruction"] = serde_json::json!(format!(
         "{} Follow {} exactly: assessedClaims and assessedOperations contain ID strings, while issue evidence contains delivered Work handles, not source IDs. Preserve the complete bound identity strings.{}{}",
         payload["instruction"].as_str().unwrap_or_default(),
@@ -5227,6 +5227,12 @@ mod input_cap_tests {
         let process = author_payload(&work, &[], &Value::Null, &Value::Null).unwrap();
         assert_eq!(process["readerGuidance"]["sections"], json!([]));
         assert!(process["readerGuidance"]["threads"].is_string());
+        assert!(
+            !process["readerGuidance"]["format"]
+                .as_str()
+                .unwrap()
+                .contains("bounded captured lookup/read")
+        );
         work.subject = "service:orders".into();
         let mut shared_schema = None;
         for (id, _, _) in super::super::sections::REQUIRED {
@@ -5237,6 +5243,12 @@ mod input_cap_tests {
             assert_eq!(sections.len(), 1);
             assert_eq!(sections[0]["id"], id);
             assert_eq!(initial["readerGuidance"], repair["readerGuidance"]);
+            assert!(
+                !initial["readerGuidance"]["format"]
+                    .as_str()
+                    .unwrap()
+                    .contains("bounded captured lookup/read")
+            );
             if let Some(schema) = &shared_schema {
                 assert_eq!(&initial["outputSchema"], schema);
             } else {
@@ -6515,6 +6527,12 @@ mod input_cap_tests {
                 .unwrap()
                 .contains("structured steps for supported preparation")
         );
+        assert!(
+            !ordinary_author["readerGuidance"]["format"]
+                .as_str()
+                .unwrap()
+                .contains("bounded captured lookup/read")
+        );
         let generic_review_guidance = ordinary_reviewer["instruction"].as_str().unwrap();
         for required in [
             "material, applicable readerGuidance question",
@@ -6567,6 +6585,12 @@ mod input_cap_tests {
         endpoint_work.request.entrypoint = Some("entry-main".into());
         let endpoint_author =
             author_payload(&endpoint_work, &[], &Value::Null, &Value::Null).unwrap();
+        let endpoint_repair =
+            author_payload(&endpoint_work, &[], &json!({"retry":true}), &json!({})).unwrap();
+        assert_eq!(
+            endpoint_repair["readerGuidance"],
+            endpoint_author["readerGuidance"]
+        );
         let mut endpoint_proposal = proposal.clone();
         endpoint_proposal.narrative.as_mut().unwrap().subject = endpoint_work.subject.clone();
         let endpoint_reviewer = reviewer_payload(
@@ -6607,11 +6631,13 @@ mod input_cap_tests {
                 "format lacks {required:?}"
             );
         }
+        assert!(endpoint_format.contains("bounded captured lookup/read"));
         let endpoint_review_instruction = endpoint_reviewer["instruction"].as_str().unwrap();
         for required in [
             "treat its evidence-supported requirements as review criteria",
             "flag supported format omissions",
-            "do not demand unseen helper implementations or runtime proof",
+            "apply any bounded-read requirements it explicitly scopes",
+            "Do not demand a complete helper inventory, exhaustive transitive traversal or runtime proof",
         ] {
             assert!(
                 endpoint_review_instruction.contains(required),
@@ -6670,6 +6696,7 @@ mod input_cap_tests {
                 "summary sections, note assessments, process overviews and dataflow views"
             )
         );
+        assert!(mixed_root_format.contains("bounded captured lookup/read"));
 
         let mut mixed_service_work = sequence_work();
         mixed_service_work.request.entrypoint = None;
@@ -6714,6 +6741,11 @@ mod input_cap_tests {
             dataflow_author["readerGuidance"]
         );
         assert!(dataflow_author["readerGuidance"].get("format").is_none());
+        assert!(
+            !serde_json::to_string(&dataflow_author["readerGuidance"])
+                .unwrap()
+                .contains("bounded captured lookup/read")
+        );
         assert!(dataflow_author["readerGuidance"].get("threads").is_none());
         assert!(dataflow_author["readerGuidance"].get("visuals").is_none());
 
@@ -6722,6 +6754,11 @@ mod input_cap_tests {
         note_work.request.entrypoint = Some("assessment-note-1".into());
         let note_guidance = super::reader_guidance(&note_work, false);
         assert!(note_guidance.get("format").is_none());
+        assert!(
+            !serde_json::to_string(&note_guidance)
+                .unwrap()
+                .contains("bounded captured lookup/read")
+        );
         assert!(note_guidance.get("threads").is_none());
         assert!(note_guidance.get("visuals").is_none());
 

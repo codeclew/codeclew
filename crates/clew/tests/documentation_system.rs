@@ -2179,6 +2179,13 @@ fn docsys_t02_oversized_records_are_explicit_and_pages_stay_bounded() {
 }
 
 fn proposal_fixture(f: &Fixture) -> (String, serde_json::Value, serde_json::Value) {
+    proposal_fixture_with_language(f, None)
+}
+
+fn proposal_fixture_with_language(
+    f: &Fixture,
+    documentation_language: Option<&str>,
+) -> (String, serde_json::Value, serde_json::Value) {
     use serde_json::json;
     let checked = f.checked();
     let entry = checked.services["orders"]
@@ -2186,7 +2193,7 @@ fn proposal_fixture(f: &Fixture) -> (String, serde_json::Value, serde_json::Valu
         .iter()
         .find(|e| e.symbol.contains("reserve"))
         .unwrap();
-    let request=f.input("proposal-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","entrypoint":entry.id,"maxItems":100,"maxBytes":49152}));
+    let request=f.input("proposal-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","documentationLanguage":documentation_language,"entrypoint":entry.id,"maxItems":100,"maxBytes":49152}));
     let mut page = work_prepare(f, &request);
     let id = page["work"].as_str().unwrap().to_owned();
     while let Some(cursor) = page["nextCursor"].as_str() {
@@ -2366,10 +2373,116 @@ fn docsys_t03_proposal_sequence_preserves_branches_and_arrows_without_fake_overv
     // Large sequences remain retained; the bounded display reports its missing
     // authored overview instead of inventing a linear control-flow graph.
     let mut large = operation.clone();
-    while large.events.len() <= 12 {
+    while large.events.len() <= 64 {
         large.events.extend(operation.events.clone());
     }
     assert!(render::mermaid(&large).contains("A bounded overview has not been authored"));
+}
+
+#[test]
+fn docsys_t03_generated_sequence_defaults_follow_work_language_and_keep_branch_evidence() {
+    use clew::documentation::model::Narrative;
+    use serde_json::json;
+
+    for (requested_language, language, expected_caller, expected_else, expected_description) in [
+        (
+            None,
+            "en",
+            "Caller",
+            "Otherwise",
+            "The source describes an alternative branch.",
+        ),
+        (
+            Some("ru"),
+            "ru",
+            "Вызывающая сторона",
+            "Иначе",
+            "Исходный код описывает альтернативную ветвь.",
+        ),
+    ] {
+        let f = Fixture::new();
+        let source = f.service("orders");
+        fs::write(source.join("Orders.java"), "public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+        commit(&source);
+        let (work, mut input, frozen) = proposal_fixture_with_language(&f, requested_language);
+        assert_eq!(frozen["request"]["documentationLanguage"], language);
+
+        let summary_evidence = input["operations"][0]["summary"]["evidence"].clone();
+        let steps = input["operations"][0]["steps"].as_array_mut().unwrap();
+        let alt_evidence = steps[0]["meaning"]["evidence"].clone();
+        steps[0]["otherwise"] = json!([{
+            "kind":"note",
+            "meaning":{"text":"A nonnegative quantity continues.","evidence":alt_evidence}
+        }]);
+        steps.insert(
+            0,
+            json!({
+                "kind":"message",
+                "from":"caller",
+                "to":"orders",
+                "meaning":{"text":"Request a reservation.","evidence":summary_evidence}
+            }),
+        );
+        let returned = steps.last_mut().unwrap();
+        returned["kind"] = json!("return");
+        returned["from"] = json!("orders");
+        returned["to"] = json!("caller");
+
+        let submitted = proposal_submit(&f, &work, &input);
+        assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+        let artifact = proposal_artifact(&f, &submitted);
+        let narrative: Narrative = serde_json::from_value(artifact["narrative"].clone()).unwrap();
+        let operation = &narrative.operations[0];
+        assert_eq!(operation.participants[0].id, "caller");
+        assert_eq!(operation.participants[0].label, expected_caller);
+
+        let alt_index = operation
+            .events
+            .iter()
+            .position(|event| event.kind == "alt")
+            .unwrap();
+        let alt = &operation.events[alt_index];
+        let branch_events = &operation.events[alt_index..alt_index + 6];
+        assert_eq!(
+            branch_events
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alt", "note", "else", "note", "end", "return"]
+        );
+        assert!(!alt.dependency_ids.is_empty());
+        assert!(!alt.source_ids.is_empty());
+        let otherwise = &branch_events[2];
+        assert_eq!(otherwise.text, expected_else);
+        assert_eq!(otherwise.dependency_ids, alt.dependency_ids);
+        assert_eq!(otherwise.source_ids, alt.source_ids);
+        let else_explanation = operation
+            .explanation
+            .iter()
+            .find(|paragraph| {
+                paragraph.event_ids.len() == 1
+                    && paragraph
+                        .event_ids
+                        .first()
+                        .is_some_and(|id| id == &otherwise.id)
+            })
+            .unwrap();
+        assert_eq!(else_explanation.text, expected_description);
+        assert_eq!(else_explanation.dependency_ids, alt.dependency_ids);
+        assert_eq!(else_explanation.source_ids, alt.source_ids);
+        assert_eq!(branch_events[3].dependency_ids, alt.dependency_ids);
+        assert_eq!(branch_events[3].source_ids, alt.source_ids);
+        let message = operation
+            .events
+            .iter()
+            .find(|event| event.kind == "message")
+            .unwrap();
+        assert_eq!(message.from.as_deref(), Some("caller"));
+        assert_eq!(message.to.as_deref(), Some("service-orders"));
+        let returned = branch_events.last().unwrap();
+        assert_eq!(returned.from.as_deref(), Some("service-orders"));
+        assert_eq!(returned.to.as_deref(), Some("caller"));
+    }
 }
 
 #[test]
