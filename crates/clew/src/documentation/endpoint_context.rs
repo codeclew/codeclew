@@ -98,6 +98,7 @@ struct Edge {
     authority: String,
     fact_id: Option<String>,
     source_id: Option<String>,
+    receiver_field_id: Option<String>,
 }
 
 struct FinishRows<'a> {
@@ -365,6 +366,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     authority: "RETAINED_FLOW_TARGET".into(),
                     fact_id: Some(observation.id.clone()),
                     source_id: source_reference,
+                    receiver_field_id: None,
                 },
                 &mut gaps,
             );
@@ -465,6 +467,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     },
                     fact_id: Some(observation.id.clone()),
                     source_id: source_reference,
+                    receiver_field_id: None,
                 },
                 &mut gaps,
             );
@@ -511,9 +514,10 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                                 target: Some(candidate.symbol.clone()),
                                 scope: callable.scope.clone(),
                                 kind: "CALLS".into(),
-                                authority: "SOURCE_REFERENCE_CANDIDATE".into(),
-                                fact_id: None,
-                                source_id: Some(source_id.to_owned()),
+                            authority: "SOURCE_REFERENCE_CANDIDATE".into(),
+                            fact_id: None,
+                            source_id: Some(source_id.to_owned()),
+                            receiver_field_id: None,
                             },
                             &mut gaps,
                         );
@@ -555,8 +559,9 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                                 scope: callable.scope.clone(),
                                 kind: "METHOD_REFERENCE".into(),
                                 authority: "SOURCE_REFERENCE_CANDIDATE".into(),
-                                fact_id: None,
-                                source_id: Some(source_id.to_owned()),
+                            fact_id: None,
+                            source_id: Some(source_id.to_owned()),
+                            receiver_field_id: None,
                             },
                             &mut gaps,
                         );
@@ -574,6 +579,145 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                         json!({"from":callable.identity,"name":name,"scope":callable.scope,"candidateCount":candidates.len()}),
                     ),
                 }
+            }
+            if discoveries.field_receiver_lambda_ambiguous {
+                gaps.add(
+                    "SOURCE_FIELD_RECEIVER_LAMBDA_SCOPE_AMBIGUOUS",
+                    json!({"symbol":callable.identity}),
+                );
+            }
+            for receiver_call in discoveries.field_receiver_calls {
+                let same_owner = indexes
+                    .fields_by_owner_name
+                    .get(&(callable.owner.clone(), receiver_call.field_name.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                if same_owner.is_empty() {
+                    continue;
+                }
+                if receiver_call.shadowed && !receiver_call.explicit_receiver {
+                    // The ordinary field-reference pass records the bounded
+                    // shadowing gap for this same source identifier.
+                    continue;
+                }
+                let fields: Vec<_> = same_owner
+                    .iter()
+                    .filter(|field| {
+                        exact_scope(&field.normalized["scope"]) == Some(callable.scope.as_str())
+                    })
+                    .collect();
+                let field = match fields.as_slice() {
+                    [field] => *field,
+                    [] => continue,
+                    _ => continue,
+                };
+                let Some(field_reference) = work_reference(work, "DEPENDENCY", &field.id) else {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_EVIDENCE_UNAVAILABLE",
+                        json!({"from":callable.identity,"scope":callable.scope}),
+                    );
+                    continue;
+                };
+                let Some(descriptor) = field.normalized["jvmDescriptor"].as_str() else {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_TYPE_UNSUPPORTED",
+                        json!({"from":callable.identity,"scope":callable.scope}),
+                    );
+                    continue;
+                };
+                let Ok(target_owner) = field_descriptor_class_identity(descriptor) else {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_TYPE_UNSUPPORTED",
+                        json!({"from":callable.identity,"scope":callable.scope}),
+                    );
+                    continue;
+                };
+                let owner_methods = indexes
+                    .methods_by_owner_name
+                    .get(&(target_owner.clone(), receiver_call.method_name.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let method_scope_candidates: Vec<_> = owner_methods
+                    .iter()
+                    .filter(|method| method.normalized["declarationKind"] == "METHOD")
+                    .filter(|method| {
+                        exact_scope(&method.normalized["scope"]) == Some(callable.scope.as_str())
+                    })
+                    .collect();
+                let target = match method_scope_candidates.as_slice() {
+                    [target] => *target,
+                    [] if !owner_methods.is_empty() => {
+                        gaps.add(
+                            "SOURCE_FIELD_RECEIVER_TARGET_SCOPE_UNAVAILABLE",
+                            json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope}),
+                        );
+                        continue;
+                    }
+                    [] => continue,
+                    _ => {
+                        gaps.add(
+                            "SOURCE_FIELD_RECEIVER_AMBIGUOUS_OVERLOAD",
+                            json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope,"candidateCount":method_scope_candidates.len()}),
+                        );
+                        continue;
+                    }
+                };
+                let Some(source_arity) = receiver_call.argument_count else {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_ARGUMENTS_UNSUPPORTED",
+                        json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope}),
+                    );
+                    continue;
+                };
+                let Some(target_arity) = target.normalized["jvmDescriptor"]
+                    .as_str()
+                    .and_then(|descriptor| method_descriptor_parameter_count(descriptor).ok())
+                else {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_DESCRIPTOR_UNSUPPORTED",
+                        json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope}),
+                    );
+                    continue;
+                };
+                if source_arity != target_arity {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_ARGUMENT_COUNT_MISMATCH",
+                        json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope}),
+                    );
+                    continue;
+                }
+                let target_callable = callable_from_observation(target);
+                let body_available = method_body_source(evidence, &target_callable)
+                    .ok()
+                    .is_some_and(|(_, body_source)| {
+                        source_steps::method_body(&body_source.text, &target_callable.identity)
+                            .is_some()
+                    });
+                if !body_available {
+                    gaps.add(
+                        "SOURCE_FIELD_RECEIVER_BODY_UNAVAILABLE",
+                        json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope}),
+                    );
+                    continue;
+                }
+                if provider_targets.contains(&target.symbol) {
+                    continue;
+                }
+                add_edge(
+                    &mut edges,
+                    &mut graph_edge_count,
+                    Edge {
+                        from: callable.identity.clone(),
+                        target: Some(target.symbol.clone()),
+                        scope: callable.scope.clone(),
+                        kind: "FIELD_RECEIVER_CALL".into(),
+                        authority: "SOURCE_REFERENCE_CANDIDATE".into(),
+                        fact_id: None,
+                        source_id: Some(source_id.to_owned()),
+                        receiver_field_id: Some(field.id.clone()),
+                    },
+                    &mut gaps,
+                );
             }
             for reference in discoveries.fields {
                 let same_owner = indexes
@@ -795,6 +939,33 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         dependencies.insert(field.id.clone(), *field);
     }
 
+    let receiver_field_ids: BTreeSet<_> = edges
+        .iter()
+        .filter(|edge| edge.authority == "SOURCE_REFERENCE_CANDIDATE")
+        .take(MAX_INLINE_CANDIDATE_EDGES)
+        .filter_map(|edge| edge.receiver_field_id.clone())
+        .collect();
+    for id in receiver_field_ids {
+        if dependencies.contains_key(&id) {
+            continue;
+        }
+        let Some(field) = evidence.observations.get(&id) else {
+            gaps.add(
+                "SOURCE_FIELD_RECEIVER_EVIDENCE_UNAVAILABLE",
+                json!({"id":id}),
+            );
+            continue;
+        };
+        if !reserve_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes) {
+            gaps.add(
+                "SOURCE_FIELD_RECEIVER_EVIDENCE_LIMIT",
+                json!({"limit":MAX_SOURCE_BYTES}),
+            );
+            continue;
+        }
+        dependencies.insert(id, field);
+    }
+
     let mut owner_ids: Vec<_> = owner_field_candidates.into_iter().collect();
     owner_ids.sort_by(|left, right| {
         let priority = |id: &str| {
@@ -820,6 +991,10 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             gaps.add("REFERENCED_FIELD_RECORD_UNAVAILABLE", json!({"id":id}));
             continue;
         };
+        if dependencies.contains_key(&id) {
+            owner_field_ids.insert(id);
+            continue;
+        }
         if !reserve_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes) {
             gaps.add(
                 "UNIQUE_SOURCE_BYTE_LIMIT",
@@ -916,6 +1091,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
     let mut provider_fact_references = BTreeSet::new();
     let mut source_reference_candidates = Vec::new();
     let mut omitted_candidate_edges = 0usize;
+    let mut candidate_edge_count = 0usize;
     for edge in edges {
         if let Some(fact_id) = edge.fact_id.as_deref() {
             if let Some(reference) = work_reference(work, "DEPENDENCY", fact_id) {
@@ -926,7 +1102,14 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         if edge.authority != "SOURCE_REFERENCE_CANDIDATE" {
             continue;
         }
-        if source_reference_candidates.len() >= MAX_INLINE_CANDIDATE_EDGES {
+        if candidate_edge_count >= MAX_INLINE_CANDIDATE_EDGES {
+            omitted_candidate_edges += 1;
+            continue;
+        }
+        candidate_edge_count += 1;
+        if edge.receiver_field_id.as_ref().is_some_and(|id| {
+            !dependencies.contains_key(id) || work_reference(work, "DEPENDENCY", id).is_none()
+        }) {
             omitted_candidate_edges += 1;
             continue;
         }
@@ -940,13 +1123,18 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                 .position(|key| key.0 == target && key.1 == edge.scope)
                 .map(|index| format!("m{index}"))
         });
-        source_reference_candidates.push(json!({
+        let mut candidate = json!({
             "fromNode":from_node,
             "toNode":to_node,
             "targetIdentity":if to_node.is_none(){edge.target}else{None::<String>},
             "kind":edge.kind,
             "authority":edge.authority
-        }));
+        });
+        if let Some(field_id) = edge.receiver_field_id.as_deref() {
+            candidate["receiverFieldReference"] =
+                json!(work_reference(work, "DEPENDENCY", field_id));
+        }
+        source_reference_candidates.push(candidate);
     }
     gaps.add("STRUCTURAL_DATAFLOW_NOT_AVAILABLE", Value::Null);
     gaps.add("DIRECT_DECLARED_TYPES_ONLY", Value::Null);
@@ -1403,6 +1591,7 @@ fn add_edge(edges: &mut Vec<Edge>, count: &mut usize, edge: Edge, gaps: &mut Gap
             && candidate.authority == edge.authority
             && candidate.fact_id == edge.fact_id
             && candidate.source_id == edge.source_id
+            && candidate.receiver_field_id == edge.receiver_field_id
     }) {
         return;
     }
@@ -1434,6 +1623,73 @@ fn reserve_field_tokens(
     *total_reserved += encoded.len();
     *category_reserved += encoded.len();
     true
+}
+
+fn field_descriptor_class_identity(descriptor: &str) -> Result<String, ()> {
+    let Some(internal_name) = descriptor
+        .strip_prefix('L')
+        .and_then(|descriptor| descriptor.strip_suffix(';'))
+    else {
+        return Err(());
+    };
+    if internal_name.is_empty()
+        || internal_name.starts_with('/')
+        || internal_name.ends_with('/')
+        || internal_name.split('/').any(str::is_empty)
+        || internal_name
+            .bytes()
+            .any(|byte| matches!(byte, b'.' | b';' | b'['))
+    {
+        return Err(());
+    }
+    Ok(format!("class:{}", internal_name.replace('/', ".")))
+}
+
+fn method_descriptor_parameter_count(descriptor: &str) -> Result<usize, ()> {
+    fn parse_type(bytes: &[u8], cursor: &mut usize, allow_void: bool) -> Result<(), ()> {
+        let mut dimensions = 0usize;
+        while bytes.get(*cursor) == Some(&b'[') {
+            dimensions += 1;
+            if dimensions > 255 {
+                return Err(());
+            }
+            *cursor += 1;
+        }
+        match bytes.get(*cursor).copied() {
+            Some(b'V') if allow_void && dimensions == 0 => *cursor += 1,
+            Some(b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z') => *cursor += 1,
+            Some(b'L') => {
+                let start = *cursor;
+                let end = bytes[start..]
+                    .iter()
+                    .position(|byte| *byte == b';')
+                    .map(|offset| start + offset)
+                    .ok_or(())?;
+                let reference = std::str::from_utf8(&bytes[start..=end]).map_err(|_| ())?;
+                field_descriptor_class_identity(reference)?;
+                *cursor = end + 1;
+            }
+            _ => return Err(()),
+        }
+        Ok(())
+    }
+
+    let bytes = descriptor.as_bytes();
+    if bytes.first() != Some(&b'(') {
+        return Err(());
+    }
+    let mut cursor = 1usize;
+    let mut count = 0usize;
+    while bytes.get(cursor) != Some(&b')') {
+        if cursor >= bytes.len() || count >= 255 {
+            return Err(());
+        }
+        parse_type(bytes, &mut cursor, false)?;
+        count += 1;
+    }
+    cursor += 1;
+    parse_type(bytes, &mut cursor, true)?;
+    (cursor == bytes.len()).then_some(count).ok_or(())
 }
 
 fn descriptor_object_roles(descriptor: &str) -> Result<(BTreeSet<String>, BTreeSet<String>), ()> {
@@ -1520,6 +1776,8 @@ fn descriptor_object_roles(descriptor: &str) -> Result<(BTreeSet<String>, BTreeS
 struct Discoveries {
     calls: BTreeSet<String>,
     method_references: BTreeSet<String>,
+    field_receiver_calls: BTreeSet<FieldReceiverCall>,
+    field_receiver_lambda_ambiguous: bool,
     fields: BTreeSet<FieldUse>,
     nested_executable_context: bool,
 }
@@ -1527,6 +1785,15 @@ struct Discoveries {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct FieldUse {
     name: String,
+    explicit_receiver: bool,
+    shadowed: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FieldReceiverCall {
+    field_name: String,
+    method_name: String,
+    argument_count: Option<usize>,
     explicit_receiver: bool,
     shadowed: bool,
 }
@@ -1549,6 +1816,8 @@ fn lexical_discoveries(
         return Discoveries {
             calls: BTreeSet::new(),
             method_references: BTreeSet::new(),
+            field_receiver_calls: BTreeSet::new(),
+            field_receiver_lambda_ambiguous: false,
             fields: BTreeSet::new(),
             nested_executable_context: true,
         };
@@ -1564,10 +1833,19 @@ fn lexical_discoveries(
             let in_body = token.start > body_range.0 && token.start < body_range.1;
             let in_parameters = parameter_range
                 .is_some_and(|(start, end)| token.start > start && token.start < end);
-            (in_body || in_parameters) && looks_like_variable_declaration(&tokens, *index, token)
+            (in_body || in_parameters)
+                && (looks_like_variable_declaration(&tokens, *index, token)
+                    || looks_like_instanceof_binding(&tokens, *index)
+                    || looks_like_multi_declarator_binding(&tokens, *index))
         })
         .map(|(_, token)| token.text.clone())
         .collect();
+    let mut field_receiver_calls = field_receiver_calls(source, &tokens, body_range, &shadowed);
+    let field_receiver_lambda_ambiguous =
+        has_lambda_context(&tokens, body_range) && !field_receiver_calls.is_empty();
+    if field_receiver_lambda_ambiguous {
+        field_receiver_calls.clear();
+    }
 
     for (index, token) in tokens.iter().enumerate() {
         if token.start <= body_range.0 || token.start >= body_range.1 || !is_identifier(&token.text)
@@ -1611,6 +1889,8 @@ fn lexical_discoveries(
     Discoveries {
         calls,
         method_references,
+        field_receiver_calls,
+        field_receiver_lambda_ambiguous,
         fields: referenced_fields
             .into_iter()
             .map(|(name, (explicit_receiver, shadowed))| FieldUse {
@@ -1621,6 +1901,201 @@ fn lexical_discoveries(
             .collect(),
         nested_executable_context: false,
     }
+}
+
+fn field_receiver_calls(
+    source: &str,
+    tokens: &[Token],
+    body_range: (usize, usize),
+    shadowed: &BTreeSet<String>,
+) -> BTreeSet<FieldReceiverCall> {
+    let mut calls = BTreeSet::new();
+    for (index, method) in tokens.iter().enumerate() {
+        if method.start <= body_range.0
+            || method.start >= body_range.1
+            || !is_identifier(&method.text)
+            || !tokens.get(index + 1).is_some_and(|next| next.text == "(")
+            || index < 2
+            || tokens[index - 1].text != "."
+        {
+            continue;
+        }
+        let receiver_index = index - 2;
+        let receiver = &tokens[receiver_index];
+        if !is_identifier(&receiver.text) || matches!(receiver.text.as_str(), "this" | "super") {
+            continue;
+        }
+        let explicit_receiver = receiver_index >= 2
+            && tokens[receiver_index - 1].text == "."
+            && tokens[receiver_index - 2].text == "this"
+            && (receiver_index < 3 || tokens[receiver_index - 3].text != ".");
+        if receiver_index > 0 && tokens[receiver_index - 1].text == "." && !explicit_receiver {
+            // Qualified and chained receivers require a broader resolver.
+            continue;
+        }
+        calls.insert(FieldReceiverCall {
+            field_name: receiver.text.clone(),
+            method_name: method.text.clone(),
+            argument_count: bounded_call_argument_count(source, tokens, index),
+            explicit_receiver,
+            shadowed: shadowed.contains(&receiver.text),
+        });
+    }
+    calls
+}
+
+fn has_lambda_context(tokens: &[Token], body_range: (usize, usize)) -> bool {
+    tokens.windows(2).any(|pair| {
+        pair[0].start > body_range.0
+            && pair[1].start < body_range.1
+            && pair[0].text == "-"
+            && pair[1].text == ">"
+    })
+}
+
+fn bounded_call_argument_count(
+    source: &str,
+    tokens: &[Token],
+    method_index: usize,
+) -> Option<usize> {
+    let open_index = method_index + 1;
+    if tokens.get(open_index)?.text != "(" {
+        return None;
+    }
+    let mut depth = 0usize;
+    let close_index = (open_index..tokens.len()).find_map(|index| {
+        match tokens[index].text.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth = depth.checked_sub(1)?;
+                return (depth == 0).then_some(index);
+            }
+            _ => {}
+        }
+        None
+    })?;
+    let open_end = tokens[open_index].end;
+    let close_start = tokens[close_index].start;
+    if open_end > close_start || close_start > source.len() {
+        return None;
+    }
+    let (code, comments) = source_steps::lexical_masks(source);
+    let bytes = source.as_bytes();
+    let mut parens = 1usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    let mut commas = 0usize;
+    let mut segment_has_value = false;
+    for index in open_end..close_start {
+        if comments.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if !code.get(index).copied().unwrap_or(false) {
+            // Literal text is argument content even though code_tokens masks it.
+            segment_has_value = true;
+            continue;
+        }
+        let byte = bytes[index];
+        match byte {
+            b'(' => parens += 1,
+            b')' => parens = parens.checked_sub(1)?,
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.checked_sub(1)?,
+            b'{' => braces += 1,
+            b'}' => braces = braces.checked_sub(1)?,
+            b',' if parens == 1 && brackets == 0 && braces == 0 => {
+                if !segment_has_value {
+                    return None;
+                }
+                commas += 1;
+                segment_has_value = false;
+            }
+            b'<' | b'>' if parens == 1 && brackets == 0 && braces == 0 => return None,
+            _ if !byte.is_ascii_whitespace() => segment_has_value = true,
+            _ => {}
+        }
+    }
+    if !segment_has_value {
+        return (commas == 0).then_some(0);
+    }
+    Some(commas + 1)
+}
+
+fn looks_like_instanceof_binding(tokens: &[Token], index: usize) -> bool {
+    if index < 2
+        || !is_identifier(&tokens[index].text)
+        || !(is_identifier(&tokens[index - 1].text)
+            || matches!(tokens[index - 1].text.as_str(), "]" | ">" | "?"))
+    {
+        return false;
+    }
+    for cursor in (0..index - 1).rev() {
+        let text = tokens[cursor].text.as_str();
+        if text == "instanceof" {
+            return tokens[cursor + 1..index].iter().all(|token| {
+                is_identifier(&token.text)
+                    || matches!(
+                        token.text.as_str(),
+                        "." | "[" | "]" | "<" | ">" | "?" | "," | "&"
+                    )
+            });
+        }
+        if !is_identifier(text) && !matches!(text, "." | "[" | "]" | "<" | ">" | "?" | "," | "&") {
+            return false;
+        }
+    }
+    false
+}
+
+fn looks_like_multi_declarator_binding(tokens: &[Token], index: usize) -> bool {
+    if !is_identifier(&tokens[index].text)
+        || index == 0
+        || tokens[index - 1].text != ","
+        || !is_variable_declarator_end(tokens, index)
+    {
+        return false;
+    }
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    let mut start = 0usize;
+    for cursor in (0..index).rev() {
+        match tokens[cursor].text.as_str() {
+            ")" => parentheses += 1,
+            "(" if parentheses > 0 => parentheses -= 1,
+            "(" if brackets == 0 && braces == 0 => {
+                start = cursor + 1;
+                break;
+            }
+            "]" => brackets += 1,
+            "[" if brackets > 0 => brackets -= 1,
+            "}" => braces += 1,
+            "{" if braces > 0 => braces -= 1,
+            "{" | ";" if parentheses == 0 && brackets == 0 && braces == 0 => {
+                start = cursor + 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+    (start..index - 1)
+        .any(|candidate| looks_like_variable_declaration(tokens, candidate, &tokens[candidate]))
+}
+
+fn is_variable_declarator_end(tokens: &[Token], index: usize) -> bool {
+    let mut following = index + 1;
+    while tokens.get(following).is_some_and(|token| token.text == "[") {
+        if !tokens
+            .get(following + 1)
+            .is_some_and(|token| token.text == "]")
+        {
+            return false;
+        }
+        following += 2;
+    }
+    tokens
+        .get(following)
+        .is_some_and(|token| matches!(token.text.as_str(), "=" | ";" | ","))
 }
 
 fn has_nested_executable_context(tokens: &[Token], body_range: (usize, usize)) -> bool {
@@ -2001,6 +2476,88 @@ mod tests {
         work
     }
 
+    fn field_receiver_work(
+        parameters: &str,
+        body: &str,
+        target_source: &str,
+        fields: &[(&str, &str, &str)],
+        methods: &[(&str, &str, &str, &str)],
+    ) -> Work {
+        let mut work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
+        let service = work.checked.services.get_mut(SERVICE).unwrap();
+        service
+            .observations
+            .retain(|id, _| id == "root-declaration");
+        let source_text =
+            format!("class Service {{ void handle({parameters}) {{ {body} }} }} {target_source}");
+        let source = service.sources.get_mut(SOURCE_ID).unwrap();
+        source.text = source_text.clone();
+        source.text_digest = crate::canonical::hash_bytes(source_text.as_bytes());
+        source.end_line = source_text.lines().count().max(1) as u64;
+        work.influence.retain(|id, _| id == "root-declaration");
+        work.handles
+            .retain(|_, handle| handle.kind != "DEPENDENCY" || handle.id == "root-declaration");
+
+        for (name, descriptor, field_scope) in fields {
+            let id = format!("field-{name}");
+            let identity = format!("field:{OWNER}#{name}:{descriptor}");
+            let field = observation(
+                id.clone(),
+                identity.clone(),
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"FIELD",
+                    "symbolIdentity":identity,
+                    "ownerIdentity":OWNER,
+                    "name":name,
+                    "scope":field_scope,
+                    "jvmDescriptor":descriptor,
+                    "modifiers":[],
+                    "annotations":[],
+                    "sourceTokens":["field", name]
+                }),
+                vec![SOURCE_ID.into()],
+            );
+            service.observations.insert(id.clone(), field);
+            work.influence.insert(id.clone(), "test-influence".into());
+            work.handles.insert(
+                format!("dependency:{id}"),
+                Handle {
+                    kind: "DEPENDENCY".into(),
+                    id,
+                },
+            );
+        }
+        for (owner, name, descriptor, method_scope) in methods {
+            let id = format!("method-{name}-{}", service.observations.len());
+            let identity = format!("method:{owner}#{name}{descriptor}");
+            let method = observation(
+                id.clone(),
+                identity.clone(),
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"METHOD",
+                    "symbolIdentity":identity,
+                    "ownerIdentity":owner,
+                    "name":name,
+                    "scope":method_scope,
+                    "jvmDescriptor":descriptor
+                }),
+                vec![SOURCE_ID.into()],
+            );
+            service.observations.insert(id.clone(), method);
+            work.influence.insert(id.clone(), "test-influence".into());
+            work.handles.insert(
+                format!("dependency:{id}"),
+                Handle {
+                    kind: "DEPENDENCY".into(),
+                    id,
+                },
+            );
+        }
+        work
+    }
+
     #[test]
     fn bodyless_targets_do_not_starve_a_retained_getter_body() {
         let work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
@@ -2135,6 +2692,447 @@ mod tests {
                 .any(|gap| {
                     gap["code"] == "SOURCE_REFERENCE_SCOPE_UNAVAILABLE" && gap["count"] == 1
                 })
+        );
+    }
+
+    #[test]
+    fn field_receiver_calls_select_unique_same_scope_methods_by_declared_field_type() {
+        let work = field_receiver_work(
+            "",
+            "worker.check(','); worker.noArgs(/* empty, after comment */); this.agent.combine(inner(new int[]{1,2}), \"one,two\");",
+            "class Worker { void check(char value) {} void noArgs() {} } class Agent { void combine(Value value, String text) {} } class Value {}",
+            &[
+                ("worker", "Lorders/Worker;", SCOPE),
+                ("agent", "Lorders/Agent;", SCOPE),
+            ],
+            &[
+                ("class:orders.Worker", "check", "(C)V", SCOPE),
+                ("class:orders.Worker", "noArgs", "()V", SCOPE),
+                (
+                    "class:orders.Agent",
+                    "combine",
+                    "(Lorders/Value;Ljava/lang/String;)V",
+                    SCOPE,
+                ),
+            ],
+        );
+        let rows = profile_rows(&work).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let graph = &packet["record"]["callGraph"];
+        let candidates: Vec<_> = graph["sourceReferenceCandidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|candidate| candidate["kind"] == "FIELD_RECEIVER_CALL")
+            .collect();
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates.iter().all(|candidate| {
+            candidate["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && candidate["toNode"].is_string()
+                && candidate["receiverFieldReference"].is_string()
+        }));
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert!(
+            nodes
+                .iter()
+                .any(|node| { node["symbolIdentity"] == "method:class:orders.Worker#check(C)V" })
+        );
+        assert!(nodes.iter().any(|node| {
+            node["symbolIdentity"]
+                == "method:class:orders.Agent#combine(Lorders/Value;Ljava/lang/String;)V"
+        }));
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node["symbolIdentity"] == "method:class:orders.Worker#noArgs()V")
+        );
+    }
+
+    #[test]
+    fn explicit_this_field_calls_survive_shadowing_but_parameter_and_local_receivers_do_not() {
+        let explicit = field_receiver_work(
+            "Worker worker",
+            "this.worker.run();",
+            "class Worker { void run() {} }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "run", "()V", SCOPE)],
+        );
+        let explicit_rows = profile_rows(&explicit).unwrap();
+        let explicit_packet = explicit_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert_eq!(
+            explicit_packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|candidate| candidate["kind"] == "FIELD_RECEIVER_CALL")
+                .count(),
+            1
+        );
+
+        for (parameters, body) in [
+            ("Worker worker", "worker.run();"),
+            ("", "Worker worker = null; worker.run();"),
+        ] {
+            let shadowed = field_receiver_work(
+                parameters,
+                body,
+                "class Worker { void run() {} }",
+                &[("worker", "Lorders/Worker;", SCOPE)],
+                &[("class:orders.Worker", "run", "()V", SCOPE)],
+            );
+            let rows = profile_rows(&shadowed).unwrap();
+            let packet = rows
+                .iter()
+                .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+                .unwrap();
+            assert!(
+                packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+            );
+            assert!(
+                packet["record"]["gaps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|gap| gap["code"] == "SOURCE_FIELD_SHADOWING_AMBIGUOUS")
+            );
+        }
+    }
+
+    #[test]
+    fn pattern_bindings_and_multi_declarator_locals_shadow_receiver_fields() {
+        let pattern = field_receiver_work(
+            "",
+            "if (candidate instanceof Worker worker && worker.ready()) { }",
+            "class Worker { boolean ready() { return true; } }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "ready", "()Z", SCOPE)],
+        );
+        let multi_declarators = [
+            "Worker first = null, worker = null; worker.run();",
+            "Worker first, worker; worker = obtainWorker(); worker.run();",
+            "Worker first, worker, third; worker.run();",
+            "Worker first, worker[]; worker.run();",
+            "Worker first, worker[][]; worker.run();",
+        ]
+        .map(|body| {
+            field_receiver_work(
+                "",
+                body,
+                "class Worker { void run() {} }",
+                &[("worker", "Lorders/Worker;", SCOPE)],
+                &[("class:orders.Worker", "run", "()V", SCOPE)],
+            )
+        });
+        for shadowed in [pattern].into_iter().chain(multi_declarators.into_iter()) {
+            let rows = profile_rows(&shadowed).unwrap();
+            let packet = rows
+                .iter()
+                .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+                .unwrap();
+            assert!(
+                packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+            );
+            assert!(
+                packet["record"]["gaps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|gap| gap["code"] == "SOURCE_FIELD_SHADOWING_AMBIGUOUS")
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_chained_and_masked_receiver_text_is_not_a_current_owner_field_call() {
+        let work = field_receiver_work(
+            "",
+            concat!(
+                "String text = \"this.worker.run()\"; ",
+                "/* this.worker.run(); */ other.worker.run(); ",
+                "factory().run(); Other.this.worker.run(); ",
+                "this.worker.lookup().run();"
+            ),
+            "class Worker { void run() {} }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "run", "()V", SCOPE)],
+        );
+        let rows = profile_rows(&work).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+    }
+
+    #[test]
+    fn field_receiver_overloads_scopes_descriptors_and_bodies_fail_closed() {
+        let ambiguous = field_receiver_work(
+            "",
+            "worker.run();",
+            "class Worker { void run() {} void run(int value) {} }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[
+                ("class:orders.Worker", "run", "()V", SCOPE),
+                ("class:orders.Worker", "run", "(I)V", SCOPE),
+            ],
+        );
+        let rows = profile_rows(&ambiguous).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_AMBIGUOUS_OVERLOAD")
+        );
+
+        let wrong_method_scope = field_receiver_work(
+            "",
+            "worker.run();",
+            "class Worker { void run() {} }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "run", "()V", "compile:other")],
+        );
+        let wrong_scope_rows = profile_rows(&wrong_method_scope).unwrap();
+        let wrong_scope_packet = wrong_scope_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            wrong_scope_packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_TARGET_SCOPE_UNAVAILABLE")
+        );
+
+        let wrong_field_scope = field_receiver_work(
+            "",
+            "worker.run();",
+            "class Worker { void run() {} }",
+            &[("worker", "Lorders/Worker;", "compile:other")],
+            &[("class:orders.Worker", "run", "()V", SCOPE)],
+        );
+        let wrong_field_rows = profile_rows(&wrong_field_scope).unwrap();
+        let wrong_field_packet = wrong_field_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            wrong_field_packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            wrong_field_packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_SCOPE_UNAVAILABLE")
+        );
+
+        for descriptor in ["I", "L/orders/Worker;", "Lorders/Worker"] {
+            let unsupported = field_receiver_work(
+                "",
+                "worker.run();",
+                "class Worker { void run() {} }",
+                &[("worker", descriptor, SCOPE)],
+                &[("class:orders.Worker", "run", "()V", SCOPE)],
+            );
+            let rows = profile_rows(&unsupported).unwrap();
+            let packet = rows
+                .iter()
+                .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+                .unwrap();
+            assert!(
+                packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+            );
+            assert!(
+                packet["record"]["gaps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_TYPE_UNSUPPORTED")
+            );
+        }
+
+        let missing_body = field_receiver_work(
+            "",
+            "worker.run();",
+            "class Worker {}",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "run", "()V", SCOPE)],
+        );
+        let rows = profile_rows(&missing_body).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_BODY_UNAVAILABLE")
+        );
+
+        let arity_mismatch = field_receiver_work(
+            "",
+            "worker.ready(',');",
+            "class Worker { boolean ready(int first, int second) { return true; } }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "ready", "(II)Z", SCOPE)],
+        );
+        let rows = profile_rows(&arity_mismatch).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_ARGUMENT_COUNT_MISMATCH")
+        );
+
+        let unsupported_arguments = field_receiver_work(
+            "",
+            "worker.ready(new Box<Left,Right>());",
+            "class Worker { boolean ready(Object value) { return true; } } class Box<A,B> {} class Left {} class Right {}",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[(
+                "class:orders.Worker",
+                "ready",
+                "(Ljava/lang/Object;)Z",
+                SCOPE,
+            )],
+        );
+        let rows = profile_rows(&unsupported_arguments).unwrap();
+        let packet = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_ARGUMENTS_UNSUPPORTED")
+        );
+    }
+
+    #[test]
+    fn lambda_and_nested_executable_receiver_candidates_are_gaps() {
+        let lambda = field_receiver_work(
+            "",
+            "Consumer<Worker> callback = worker -> worker.run();",
+            "class Worker { void run() {} }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "run", "()V", SCOPE)],
+        );
+        let lambda_rows = profile_rows(&lambda).unwrap();
+        let lambda_packet = lambda_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            lambda_packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            lambda_packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_FIELD_RECEIVER_LAMBDA_SCOPE_AMBIGUOUS")
+        );
+
+        let nested = field_receiver_work(
+            "",
+            "class Local { void callback() { worker.run(); } }",
+            "class Worker { void run() {} }",
+            &[("worker", "Lorders/Worker;", SCOPE)],
+            &[("class:orders.Worker", "run", "()V", SCOPE)],
+        );
+        let nested_rows = profile_rows(&nested).unwrap();
+        let nested_packet = nested_rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        assert!(
+            nested_packet["record"]["callGraph"]["sourceReferenceCandidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| candidate["kind"] != "FIELD_RECEIVER_CALL")
+        );
+        assert!(
+            nested_packet["record"]["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "SOURCE_NESTED_EXECUTABLE_CONTEXT_AMBIGUOUS")
         );
     }
 

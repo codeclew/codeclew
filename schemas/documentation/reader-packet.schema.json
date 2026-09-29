@@ -76,6 +76,16 @@
       },
       "required": ["id", "identity", "scope", "source", "bodyId", "evidence"]
     },
+    "receiverField": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "typeDescriptor": {},
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["name", "typeDescriptor", "evidence"]
+    },
     "callEdge": {
       "type": "object",
       "additionalProperties": false,
@@ -94,6 +104,7 @@
             "SOURCE_REFERENCE_CANDIDATE"
           ]
         },
+        "receiverField": { "$ref": "#/$defs/receiverField" },
         "evidence": { "$ref": "#/$defs/evidence" }
       },
       "required": ["from", "toNode", "targetIdentity", "kind", "scope", "authority", "evidence"],

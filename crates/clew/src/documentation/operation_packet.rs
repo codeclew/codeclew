@@ -318,7 +318,30 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
                 cite(&mut citations, label, "retained source for call candidate");
             }
         }
-        call_edges.push(json!({
+        let mut receiver_field = None;
+        if let Some(reference) = candidate["receiverFieldReference"].as_str() {
+            let (label, row) = selected_by_reference
+                .get(reference)
+                .ok_or_else(|| invalid("reader packet receiver field reference is not selected"))?;
+            let normalized = &row["record"]["normalized"];
+            if row["record"]["kind"] != "SYMBOL" || normalized["declarationKind"] != "FIELD" {
+                return Err(invalid(
+                    "reader packet receiver evidence is not a FIELD declaration",
+                ));
+            }
+            cite(
+                &mut citations,
+                label,
+                "declared field type for source receiver candidate",
+            );
+            evidence.push(label.clone());
+            receiver_field = Some(json!({
+                "name":normalized["name"],
+                "typeDescriptor":retained_declared_type_descriptor(normalized),
+                "evidence":[label]
+            }));
+        }
+        let mut call_edge = json!({
             "from":from,
             "toNode":to_node,
             "targetIdentity":target_identity,
@@ -326,7 +349,11 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
             "scope":call_nodes.iter().find(|node| node["id"] == from).map(|node|node["scope"].clone()).unwrap_or(Value::Null),
             "authority":"SOURCE_REFERENCE_CANDIDATE",
             "evidence":evidence
-        }));
+        });
+        if let Some(receiver_field) = receiver_field {
+            call_edge["receiverField"] = receiver_field;
+        }
+        call_edges.push(call_edge);
     }
     call_edges.sort_by(|left, right| {
         (
@@ -422,7 +449,8 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
             "@NotNull indicates declared nullability; it does not establish a nonzero numeric value.",
             "A Java null value does not establish that its JSON property may be omitted.",
             "Method names do not establish runtime behavior or side effects.",
-            "A REFERENCES edge identifies a compiler-resolved callback target; it does not establish invocation, timing, or execution order."
+            "A REFERENCES edge identifies a compiler-resolved callback target; it does not establish invocation, timing, or execution order.",
+            "A FIELD_RECEIVER_CALL candidate uses a declared field type and a unique captured same-scope method; it does not resolve injection, inheritance, overrides, or runtime dispatch."
         ],
         "runtimeAndSerialization":"UNKNOWN_FROM_THIS_PACKET",
         "citations":citations
@@ -524,6 +552,92 @@ fn cite(citations: &mut BTreeMap<String, String>, label: &str, role: &str) {
 mod tests {
     use super::*;
     use crate::canonical;
+
+    fn add_field_receiver_field(work: &mut Work, id: &str, name: &str, descriptor: &str) {
+        let owner = "class:orders.Service";
+        let identity = format!("field:{owner}#{name}:{descriptor}");
+        let normalized = json!({
+            "schema":"codeclew-java-compiler-fact/1.0",
+            "declarationKind":"FIELD",
+            "symbolIdentity":identity,
+            "ownerIdentity":owner,
+            "name":name,
+            "scope":":main",
+            "jvmDescriptor":descriptor,
+            "modifiers":[],
+            "annotations":[],
+            "sourceTokens":["private", "Field", name, ";"]
+        });
+        let fact_digest = digest(&normalized).unwrap();
+        let observation = crate::documentation::model::Observation {
+            id: id.into(),
+            kind: "SYMBOL".into(),
+            service: "orders".into(),
+            symbol: identity,
+            normalized,
+            digest: fact_digest.clone(),
+            source_ids: vec!["service-source".into()],
+        };
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(id.into(), observation.clone());
+        work.checked.dependencies.insert(id.into(), observation);
+        work.influence.insert(id.into(), fact_digest);
+        work.handles.insert(
+            format!("dependency-{id}"),
+            super::super::work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: id.into(),
+            },
+        );
+    }
+
+    fn add_field_receiver_method(work: &mut Work) {
+        let owner = "class:orders.Worker";
+        let name = "run";
+        let descriptor = "(I)V";
+        let identity = format!("method:{owner}#{name}{descriptor}");
+        let normalized = json!({
+            "schema":"codeclew-java-compiler-fact/1.0",
+            "declarationKind":"METHOD",
+            "symbolIdentity":identity,
+            "ownerIdentity":owner,
+            "name":name,
+            "scope":":main",
+            "jvmDescriptor":descriptor
+        });
+        let fact_digest = digest(&normalized).unwrap();
+        let observation = crate::documentation::model::Observation {
+            id: "worker-run-method".into(),
+            kind: "SYMBOL".into(),
+            service: "orders".into(),
+            symbol: identity,
+            normalized,
+            digest: fact_digest.clone(),
+            source_ids: vec!["service-source".into()],
+        };
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(observation.id.clone(), observation.clone());
+        work.checked
+            .dependencies
+            .insert(observation.id.clone(), observation);
+        work.influence
+            .insert("worker-run-method".into(), fact_digest);
+        work.handles.insert(
+            "dependency-worker-run-method".into(),
+            super::super::work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: "worker-run-method".into(),
+            },
+        );
+    }
 
     fn packet_field<'a>(packet: &'a Value, name: &str) -> &'a Value {
         packet["types"]
@@ -670,6 +784,129 @@ mod tests {
                 .any(|edge| { edge["authority"] == "SOURCE_REFERENCE_CANDIDATE" })
         );
         assert!(packet["coverage"]["coverage"].is_string());
+    }
+
+    #[test]
+    fn field_receiver_candidate_delivers_its_field_evidence_and_one_target_body() {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let evidence = work.checked.services.get_mut("orders").unwrap();
+        let source = evidence.sources.get_mut("service-source").unwrap();
+        let display_declarations = (0..9)
+            .map(|index| format!("  String display{index:02};\n"))
+            .collect::<String>();
+        let mut source_text = source.text.replacen(
+            "class Service {\n",
+            &format!("class Service {{\n  Worker worker;\n{display_declarations}"),
+            1,
+        );
+        let display_reads = (0..9)
+            .map(|index| format!("      this.display{index:02};\n"))
+            .collect::<String>();
+        source_text = source_text.replacen(
+            "    try {\n",
+            &format!("      this.worker.run(1);\n{display_reads}      try {{\n"),
+            1,
+        );
+        source_text.push_str("\nclass Worker { void run(int value) {} }\n");
+        source.text = source_text.clone();
+        source.text_digest = crate::canonical::hash_bytes(source_text.as_bytes());
+        source.end_line = source_text.lines().count().max(1) as u64;
+        for index in 0..9 {
+            let id = format!("a-display-field-{index:02}");
+            let name = format!("display{index:02}");
+            add_field_receiver_field(&mut work, &id, &name, "Ljava/lang/String;");
+        }
+        add_field_receiver_field(
+            &mut work,
+            "z-receiver-worker-field",
+            "worker",
+            "Lorders/Worker;",
+        );
+        add_field_receiver_method(&mut work);
+
+        let rows = endpoint_context::profile_rows(&work).unwrap();
+        let profile = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let receiver_reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.id == "z-receiver-worker-field")
+            .map(|(reference, _)| reference)
+            .unwrap();
+        assert!(
+            rows.iter().any(|row| {
+                row["kind"] == "DEPENDENCY" && row["id"] == "z-receiver-worker-field"
+            }),
+            "receiver FIELD evidence must be selected outside the owner-field display cap"
+        );
+        assert!(
+            profile["record"]["referencedOwnerFields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|group| group["fieldReferences"].as_array().unwrap())
+                .all(|reference| reference != receiver_reference)
+        );
+
+        let (packet, _) = build(&work).unwrap();
+        let edge = packet["callMap"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|edge| edge["kind"] == "FIELD_RECEIVER_CALL")
+            .unwrap();
+        assert_eq!(edge["authority"], "SOURCE_REFERENCE_CANDIDATE");
+        assert_eq!(edge["receiverField"]["name"], "worker");
+        assert_eq!(edge["receiverField"]["typeDescriptor"], "Lorders/Worker;");
+        let field_label = edge["receiverField"]["evidence"][0].as_str().unwrap();
+        assert!(
+            edge["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|label| label == field_label)
+        );
+        assert!(
+            packet["citations"][field_label]
+                .as_str()
+                .unwrap()
+                .contains("declared field type")
+        );
+        let target_node = edge["toNode"].as_str().unwrap();
+        assert_eq!(
+            packet["callMap"]["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|node| node["id"] == target_node)
+                .count(),
+            1
+        );
+        assert_eq!(
+            packet["methodBodies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|body| {
+                    body["nodes"]
+                        .as_array()
+                        .is_some_and(|nodes| nodes.iter().any(|node| node == target_node))
+                })
+                .count(),
+            1
+        );
+        assert!(
+            packet["interpretationLimits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|limit| limit
+                    .as_str()
+                    .unwrap()
+                    .contains("does not resolve injection"))
+        );
     }
 
     #[test]
