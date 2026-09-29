@@ -839,7 +839,7 @@ mod tests {
             rows.iter().any(|row| {
                 row["kind"] == "DEPENDENCY" && row["id"] == "z-receiver-worker-field"
             }),
-            "receiver FIELD evidence must be selected outside the owner-field display cap"
+            "receiver FIELD evidence must remain selected for its source-based call candidate"
         );
         assert!(
             profile["record"]["referencedOwnerFields"]
@@ -847,7 +847,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .flat_map(|group| group["fieldReferences"].as_array().unwrap())
-                .all(|reference| reference != receiver_reference)
+                .any(|reference| reference == receiver_reference)
         );
 
         let (packet, _) = build(&work).unwrap();

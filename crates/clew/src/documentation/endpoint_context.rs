@@ -1,4 +1,4 @@
-//! Bounded, nonduplicating author context for one captured Java HTTP endpoint.
+//! Reachable, nonduplicating author context for one captured Java HTTP endpoint.
 //!
 //! This is a deterministic selector over immutable Work evidence. The packet
 //! row is navigation only; provider declarations, FLOW, CALL_RELATION and
@@ -18,14 +18,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub const PROFILE: &str = "endpoint-context-v3";
 
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
-// Includes the endpoint root; descendants must have a parseable retained body.
-const MAX_CALLABLES: usize = 12;
-const MAX_SOURCE_BYTES: usize = 48 * 1024;
-const MAX_DTO_FIELDS: usize = 64;
-const MAX_REFERENCED_FIELDS: usize = 8;
-const MAX_DEPTH: usize = 4;
-const MAX_GRAPH_EDGES: usize = 256;
-const MAX_INLINE_CANDIDATE_EDGES: usize = 16;
 const MAX_GAP_EXAMPLES: usize = 8;
 const MAX_GAP_EXAMPLE_BYTES: usize = 512;
 
@@ -89,7 +81,7 @@ struct OutgoingFacts<'a> {
     relations: Vec<&'a Observation>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct Edge {
     from: String,
     target: Option<String>,
@@ -117,6 +109,7 @@ struct FinishRows<'a> {
     body_source_bytes: usize,
     field_source_bytes: usize,
     unique_source_bytes: usize,
+    max_observed_traversal_depth: usize,
 }
 
 /// Return the initial packet membership for the explicit endpoint profile.
@@ -255,20 +248,15 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     }
     let mut node_keys = Vec::<MethodKey>::new();
     let mut owner_field_candidates = BTreeSet::<String>::new();
-    let mut graph_edge_count = 0usize;
+    let mut edge_keys = BTreeSet::<Edge>::new();
+    let mut max_observed_traversal_depth = 0usize;
 
     while let Some((callable, depth, reserved_body_source_id)) = queue.pop_front() {
         let key = (callable.identity.clone(), callable.scope.clone());
         if !visited.insert(key.clone()) {
             continue;
         }
-        if visited.len() > MAX_CALLABLES {
-            gaps.add(
-                "CALLABLE_BODY_LIMIT",
-                json!({"symbol":callable.identity,"limit":MAX_CALLABLES}),
-            );
-            continue;
-        }
+        max_observed_traversal_depth = max_observed_traversal_depth.max(depth);
         let body_source_id = if let Some(source_id) = reserved_body_source_id {
             Some(source_id)
         } else {
@@ -276,14 +264,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 Ok((source_id, source)) => {
                     if counted_source_ids.contains(&source_id) {
                         Some(source_id)
-                    } else if unique_source_bytes.saturating_add(source.text.len())
-                        > MAX_SOURCE_BYTES
-                    {
-                        gaps.add(
-                            "UNIQUE_SOURCE_BYTE_LIMIT",
-                            json!({"symbol":callable.identity,"bytes":source.text.len(),"limit":MAX_SOURCE_BYTES}),
-                        );
-                        None
                     } else {
                         body_source_bytes += source.text.len();
                         unique_source_bytes += source.text.len();
@@ -354,7 +334,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             }
             add_edge(
                 &mut edges,
-                &mut graph_edge_count,
+                &mut edge_keys,
                 Edge {
                     from: callable.identity.clone(),
                     target: Some(target.to_owned()),
@@ -368,7 +348,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     source_id: source_reference,
                     receiver_field_id: None,
                 },
-                &mut gaps,
             );
             provider_targets.insert(target.to_owned());
         }
@@ -454,7 +433,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             }
             add_edge(
                 &mut edges,
-                &mut graph_edge_count,
+                &mut edge_keys,
                 Edge {
                     from: callable.identity.clone(),
                     target: Some(target.to_owned()),
@@ -469,7 +448,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     source_id: source_reference,
                     receiver_field_id: None,
                 },
-                &mut gaps,
             );
         }
 
@@ -508,7 +486,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                         }
                         add_edge(
                             &mut edges,
-                            &mut graph_edge_count,
+                            &mut edge_keys,
                             Edge {
                                 from: callable.identity.clone(),
                                 target: Some(candidate.symbol.clone()),
@@ -519,7 +497,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                             source_id: Some(source_id.to_owned()),
                             receiver_field_id: None,
                             },
-                            &mut gaps,
                         );
                     }
                     [] if !scope_candidates.is_empty() => gaps.add(
@@ -552,7 +529,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                         }
                         add_edge(
                             &mut edges,
-                            &mut graph_edge_count,
+                            &mut edge_keys,
                             Edge {
                                 from: callable.identity.clone(),
                                 target: Some(candidate.symbol.clone()),
@@ -563,7 +540,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                             source_id: Some(source_id.to_owned()),
                             receiver_field_id: None,
                             },
-                            &mut gaps,
                         );
                     }
                     [] if !same_owner.is_empty() => gaps.add(
@@ -705,7 +681,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 }
                 add_edge(
                     &mut edges,
-                    &mut graph_edge_count,
+                    &mut edge_keys,
                     Edge {
                         from: callable.identity.clone(),
                         target: Some(target.symbol.clone()),
@@ -716,7 +692,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                         source_id: Some(source_id.to_owned()),
                         receiver_field_id: Some(field.id.clone()),
                     },
-                    &mut gaps,
                 );
             }
             for reference in discoveries.fields {
@@ -764,7 +739,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             );
         }
 
-        for target in ordered_targets_for_caller(&edges, &callable.identity, &callable.scope) {
+        for target in unique_targets_for_caller(&edges, &callable.identity, &callable.scope) {
             let target_key = (target.clone(), callable.scope.clone());
             if visited.contains(&target_key) || scheduled.contains(&target_key) {
                 continue;
@@ -778,55 +753,29 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 [candidate] if candidate.normalized["declarationKind"] == "METHOD"
                     || candidate.normalized["declarationKind"] == "CONSTRUCTOR" =>
                 {
-                    if depth >= MAX_DEPTH {
+                    let target_callable = callable_from_observation(candidate);
+                    let (source_id, source) = match method_body_source(evidence, &target_callable) {
+                        Ok(body) => body,
+                        Err(code) => {
+                            gaps.add(code, json!({"symbol":target_callable.identity}));
+                            continue;
+                        }
+                    };
+                    if source_steps::method_body(&source.text, &target_callable.identity).is_none()
+                    {
                         gaps.add(
-                            "CALL_GRAPH_DEPTH_LIMIT",
-                            json!({"from":callable.identity,"target":target,"limit":MAX_DEPTH}),
+                            "METHOD_BODY_PARSE_UNAVAILABLE",
+                            json!({"symbol":target_callable.identity}),
                         );
-                    } else {
-                        let target_callable = callable_from_observation(candidate);
-                        let (source_id, source) = match method_body_source(evidence, &target_callable)
-                        {
-                            Ok(body) => body,
-                            Err(code) => {
-                                gaps.add(code, json!({"symbol":target_callable.identity}));
-                                continue;
-                            }
-                        };
-                        if source_steps::method_body(&source.text, &target_callable.identity)
-                            .is_none()
-                        {
-                            gaps.add(
-                                "METHOD_BODY_PARSE_UNAVAILABLE",
-                                json!({"symbol":target_callable.identity}),
-                            );
-                            continue;
-                        }
-                        if scheduled.len() >= MAX_CALLABLES {
-                            gaps.add(
-                                "CALLABLE_BODY_LIMIT",
-                                json!({"from":callable.identity,"target":target,"limit":MAX_CALLABLES}),
-                            );
-                            continue;
-                        }
-                        if !counted_source_ids.contains(&source_id)
-                            && unique_source_bytes.saturating_add(source.text.len())
-                                > MAX_SOURCE_BYTES
-                        {
-                            gaps.add(
-                                "UNIQUE_SOURCE_BYTE_LIMIT",
-                                json!({"symbol":target_callable.identity,"bytes":source.text.len(),"limit":MAX_SOURCE_BYTES}),
-                            );
-                            continue;
-                        }
-                        if counted_source_ids.insert(source_id.clone()) {
-                            body_source_bytes += source.text.len();
-                            unique_source_bytes += source.text.len();
-                            sources.insert(source_id.clone(), source);
-                        }
-                        scheduled.insert(target_key);
-                        queue.push_back((target_callable, depth + 1, Some(source_id)));
+                        continue;
                     }
+                    if counted_source_ids.insert(source_id.clone()) {
+                        body_source_bytes += source.text.len();
+                        unique_source_bytes += source.text.len();
+                        sources.insert(source_id.clone(), source);
+                    }
+                    scheduled.insert(target_key);
+                    queue.push_back((target_callable, depth + 1, Some(source_id)));
                 }
                 [] => {
                     let other_scope = indexes
@@ -849,7 +798,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             }
         }
 
-        // These are selected small provider facts, not a synthesized call order.
+        // Preserve each selected callable's provider facts without synthesizing call order.
         for observation in caller_flows.iter().chain(caller_relations.iter()).copied() {
             if !dependencies.contains_key(&observation.id) {
                 dependencies.insert(observation.id.clone(), observation);
@@ -881,6 +830,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             body_source_bytes,
             field_source_bytes: dto_source_bytes,
             unique_source_bytes,
+            max_observed_traversal_depth,
         });
     };
 
@@ -912,27 +862,13 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     }
     dto_field_ids.sort();
     dto_field_ids.dedup();
-    if dto_field_ids.len() > MAX_DTO_FIELDS {
-        let omitted = dto_field_ids.len() - MAX_DTO_FIELDS;
-        dto_field_ids.truncate(MAX_DTO_FIELDS);
-        gaps.add(
-            "DTO_FIELD_LIMIT",
-            json!({"omitted":omitted,"limit":MAX_DTO_FIELDS}),
-        );
-    }
     let mut selected_dto = Vec::new();
     for id in &dto_field_ids {
         let Some(field) = evidence.observations.get(id) else {
             gaps.add("DTO_FIELD_RECORD_UNAVAILABLE", json!({"id":id}));
             continue;
         };
-        if !reserve_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes) {
-            gaps.add(
-                "UNIQUE_SOURCE_BYTE_LIMIT",
-                json!({"field":field.symbol,"limit":MAX_SOURCE_BYTES}),
-            );
-            continue;
-        }
+        account_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes);
         selected_dto.push(field);
     }
     for field in &selected_dto {
@@ -942,7 +878,6 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     let receiver_field_ids: BTreeSet<_> = edges
         .iter()
         .filter(|edge| edge.authority == "SOURCE_REFERENCE_CANDIDATE")
-        .take(MAX_INLINE_CANDIDATE_EDGES)
         .filter_map(|edge| edge.receiver_field_id.clone())
         .collect();
     for id in receiver_field_ids {
@@ -956,36 +891,11 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             );
             continue;
         };
-        if !reserve_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes) {
-            gaps.add(
-                "SOURCE_FIELD_RECEIVER_EVIDENCE_LIMIT",
-                json!({"limit":MAX_SOURCE_BYTES}),
-            );
-            continue;
-        }
+        account_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes);
         dependencies.insert(id, field);
     }
 
-    let mut owner_ids: Vec<_> = owner_field_candidates.into_iter().collect();
-    owner_ids.sort_by(|left, right| {
-        let priority = |id: &str| {
-            evidence
-                .observations
-                .get(id)
-                .is_some_and(is_static_final_field)
-        };
-        priority(right)
-            .cmp(&priority(left))
-            .then_with(|| left.cmp(right))
-    });
-    if owner_ids.len() > MAX_REFERENCED_FIELDS {
-        let omitted = owner_ids.len() - MAX_REFERENCED_FIELDS;
-        owner_ids.truncate(MAX_REFERENCED_FIELDS);
-        gaps.add(
-            "REFERENCED_OWNER_FIELD_LIMIT",
-            json!({"omitted":omitted,"limit":MAX_REFERENCED_FIELDS}),
-        );
-    }
+    let owner_ids: Vec<_> = owner_field_candidates.into_iter().collect();
     for id in owner_ids {
         let Some(field) = evidence.observations.get(&id) else {
             gaps.add("REFERENCED_FIELD_RECORD_UNAVAILABLE", json!({"id":id}));
@@ -995,13 +905,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             owner_field_ids.insert(id);
             continue;
         }
-        if !reserve_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes) {
-            gaps.add(
-                "UNIQUE_SOURCE_BYTE_LIMIT",
-                json!({"field":field.symbol,"limit":MAX_SOURCE_BYTES}),
-            );
-            continue;
-        }
+        account_field_tokens(field, &mut unique_source_bytes, &mut dto_source_bytes);
         owner_field_ids.insert(id.clone());
         dependencies.insert(id, field);
     }
@@ -1061,6 +965,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         body_source_bytes,
         field_source_bytes: dto_source_bytes,
         unique_source_bytes,
+        max_observed_traversal_depth,
     })
 }
 
@@ -1081,6 +986,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         body_source_bytes,
         field_source_bytes,
         unique_source_bytes,
+        max_observed_traversal_depth,
     } = input;
     let mut rows = Vec::new();
     let delivered_sources: BTreeSet<_> = sources.keys().cloned().collect();
@@ -1090,27 +996,29 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         .collect();
     let mut provider_fact_references = BTreeSet::new();
     let mut source_reference_candidates = Vec::new();
-    let mut omitted_candidate_edges = 0usize;
-    let mut candidate_edge_count = 0usize;
     for edge in edges {
         if let Some(fact_id) = edge.fact_id.as_deref() {
             if let Some(reference) = work_reference(work, "DEPENDENCY", fact_id) {
                 provider_fact_references.insert(reference.to_owned());
+            } else {
+                gaps.add(
+                    "PROVIDER_EDGE_EVIDENCE_REFERENCE_UNAVAILABLE",
+                    json!({"factId":fact_id,"from":edge.from,"target":edge.target}),
+                );
             }
             continue;
         }
         if edge.authority != "SOURCE_REFERENCE_CANDIDATE" {
             continue;
         }
-        if candidate_edge_count >= MAX_INLINE_CANDIDATE_EDGES {
-            omitted_candidate_edges += 1;
-            continue;
-        }
-        candidate_edge_count += 1;
-        if edge.receiver_field_id.as_ref().is_some_and(|id| {
-            !dependencies.contains_key(id) || work_reference(work, "DEPENDENCY", id).is_none()
-        }) {
-            omitted_candidate_edges += 1;
+        if let Some(field_id) = edge.receiver_field_id.as_ref()
+            && (!dependencies.contains_key(field_id)
+                || work_reference(work, "DEPENDENCY", field_id).is_none())
+        {
+            gaps.add(
+                "SOURCE_REFERENCE_CANDIDATE_RECEIVER_FIELD_EVIDENCE_UNAVAILABLE",
+                json!({"from":edge.from,"target":edge.target,"fieldId":field_id}),
+            );
             continue;
         }
         let from_node = node_keys
@@ -1139,14 +1047,19 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
     gaps.add("STRUCTURAL_DATAFLOW_NOT_AVAILABLE", Value::Null);
     gaps.add("DIRECT_DECLARED_TYPES_ONLY", Value::Null);
     gaps.add("SOURCE_REFERENCE_CANDIDATE_AUTHORITY", Value::Null);
-    if omitted_candidate_edges > 0 {
-        gaps.add(
-            "SOURCE_REFERENCE_CANDIDATE_LIMIT",
-            json!({"omitted":omitted_candidate_edges,"limit":MAX_INLINE_CANDIDATE_EDGES}),
-        );
-    }
     if let Some(entry) = entry {
         let root_node = (!nodes.is_empty()).then_some("m0");
+        let dto_field_count = dto_groups
+            .iter()
+            .flat_map(|group| group["fieldReferences"].as_array().into_iter().flatten())
+            .count();
+        let referenced_owner_field_count = owner_groups
+            .iter()
+            .flat_map(|group| group["fieldReferences"].as_array().into_iter().flatten())
+            .count();
+        let callable_count = nodes.len();
+        let provider_edge_fact_count = provider_fact_references.len();
+        let source_reference_candidate_count = source_reference_candidates.len();
         rows.push(json!({"kind":"ENTRYPOINT","id":entry.id,"record":entry}));
         rows.push(json!({
             "kind":"ENDPOINT_CONTEXT_PACKET",
@@ -1163,15 +1076,20 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                     "nodes":nodes,
                     "providerEdgeFactReferences":provider_fact_references,
                     "sourceReferenceCandidates":source_reference_candidates,
-                    "depthLimit":MAX_DEPTH,
-                    "callableLimit":MAX_CALLABLES,
-                    "providerEdgeReferenceLimit":MAX_GRAPH_EDGES,
-                    "sourceReferenceCandidateLimit":MAX_INLINE_CANDIDATE_EDGES
+                    "maxObservedTraversalDepth":max_observed_traversal_depth
                 },
                 "referencedOwnerFields":owner_groups,
-                "selection":{"uniqueSourceBytes":unique_source_bytes,"uniqueBodySourceBytes":body_source_bytes,"fieldTokenBytes":field_source_bytes,"sourceByteLimit":MAX_SOURCE_BYTES,
-                    "dtoFieldLimit":MAX_DTO_FIELDS,"referencedOwnerFieldLimit":MAX_REFERENCED_FIELDS,
-                    "omittedSourceReferenceCandidates":omitted_candidate_edges},
+                "selection":{
+                    "uniqueSourceBytes":unique_source_bytes,
+                    "uniqueBodySourceBytes":body_source_bytes,
+                    "fieldTokenBytes":field_source_bytes,
+                    "callableCount":callable_count,
+                    "providerEdgeFactCount":provider_edge_fact_count,
+                    "sourceReferenceCandidateCount":source_reference_candidate_count,
+                    "dtoFieldCount":dto_field_count,
+                    "referencedOwnerFieldCount":referenced_owner_field_count,
+                    "maxObservedTraversalDepth":max_observed_traversal_depth
+                },
                 "gaps":gaps.rows(),
             }
         }));
@@ -1321,14 +1239,6 @@ fn callable_from_observation(observation: &Observation) -> Callable<'_> {
     }
 }
 
-fn is_static_final_field(observation: &Observation) -> bool {
-    let Some(modifiers) = observation.normalized["modifiers"].as_array() else {
-        return false;
-    };
-    modifiers.iter().any(|modifier| modifier == "STATIC")
-        && modifiers.iter().any(|modifier| modifier == "FINAL")
-}
-
 fn declaration_indexes<'a>(
     evidence: &'a ServiceEvidence,
     work: &Work,
@@ -1467,9 +1377,6 @@ fn method_body_source<'a>(
     {
         return Err("METHOD_BODY_SOURCE_PROVENANCE_INVALID");
     }
-    if source.text.len() > MAX_SOURCE_BYTES {
-        return Err("METHOD_BODY_SOURCE_LIMIT");
-    }
     Ok((source_id.to_owned(), source))
 }
 
@@ -1543,59 +1450,20 @@ fn reference_source_within_method(
     })
 }
 
-fn ordered_targets_for_caller(edges: &[Edge], caller: &str, scope: &str) -> Vec<String> {
-    let mut priorities = BTreeMap::<String, u8>::new();
-    for edge in edges
+fn unique_targets_for_caller(edges: &[Edge], caller: &str, scope: &str) -> Vec<String> {
+    edges
         .iter()
         .filter(|edge| edge.from == caller && edge.scope == scope)
-    {
-        let Some(target) = edge.target.as_ref() else {
-            continue;
-        };
-        let priority = match edge.authority.as_str() {
-            "COMPILER_EXACT_CALL_RELATION" => 0,
-            "COMPILER_EXACT_REFERENCE_RELATION" => 0,
-            "RETAINED_FLOW_TARGET" => 1,
-            "SOURCE_REFERENCE_CANDIDATE" => 2,
-            _ => 3,
-        };
-        priorities
-            .entry(target.clone())
-            .and_modify(|current| *current = (*current).min(priority))
-            .or_insert(priority);
-    }
-    let mut targets: Vec<_> = priorities.into_iter().collect();
-    targets.sort_by(
-        |(left_target, left_priority), (right_target, right_priority)| {
-            left_priority
-                .cmp(right_priority)
-                .then_with(|| left_target.cmp(right_target))
-        },
-    );
-    targets.into_iter().map(|(target, _)| target).collect()
+        .filter_map(|edge| edge.target.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
-fn add_edge(edges: &mut Vec<Edge>, count: &mut usize, edge: Edge, gaps: &mut Gaps) {
-    if *count >= MAX_GRAPH_EDGES {
-        gaps.add(
-            "CALL_GRAPH_EDGE_LIMIT",
-            json!({"limit":MAX_GRAPH_EDGES,"from":edge.from,"target":edge.target}),
-        );
+fn add_edge(edges: &mut Vec<Edge>, edge_keys: &mut BTreeSet<Edge>, edge: Edge) {
+    if !edge_keys.insert(edge.clone()) {
         return;
     }
-    if edges.iter().any(|candidate| {
-        candidate.from == edge.from
-            && candidate.target == edge.target
-            && candidate.scope == edge.scope
-            && candidate.kind == edge.kind
-            && candidate.authority == edge.authority
-            && candidate.fact_id == edge.fact_id
-            && candidate.source_id == edge.source_id
-            && candidate.receiver_field_id == edge.receiver_field_id
-    }) {
-        return;
-    }
-    *count += 1;
     edges.push(edge);
 }
 
@@ -1606,23 +1474,19 @@ fn work_reference<'a>(work: &'a Work, kind: &str, id: &str) -> Option<&'a str> {
         .map(|(reference, _)| reference.as_str())
 }
 
-fn reserve_field_tokens(
+fn account_field_tokens(
     field: &Observation,
     total_reserved: &mut usize,
     category_reserved: &mut usize,
-) -> bool {
+) {
     let Some(tokens) = field.normalized["sourceTokens"].as_array() else {
-        return true;
+        return;
     };
     let Ok(encoded) = serde_json::to_vec(tokens) else {
-        return false;
+        return;
     };
-    if total_reserved.saturating_add(encoded.len()) > MAX_SOURCE_BYTES {
-        return false;
-    }
     *total_reserved += encoded.len();
     *category_reserved += encoded.len();
-    true
 }
 
 fn field_descriptor_class_identity(descriptor: &str) -> Result<String, ()> {
@@ -2233,6 +2097,7 @@ mod tests {
     const ROOT: &str = "method:class:orders.Service#handle()V";
     const GETTER: &str = "method:class:orders.Service#getValue()Ljava/lang/String;";
     const SOURCE_ID: &str = "service-source";
+    const BODYLESS_CANDIDATE_COUNT: usize = 11;
 
     fn observation(
         id: impl Into<String>,
@@ -2300,7 +2165,7 @@ mod tests {
         observations.insert(root.id.clone(), root);
 
         let mut targets = Vec::new();
-        for index in 0..MAX_CALLABLES - 1 {
+        for index in 0..BODYLESS_CANDIDATE_COUNT {
             let name = format!("getStatus{index:02}");
             let identity = format!("method:class:orders.Service#{name}()Ljava/lang/String;");
             let id = format!("synthetic-{index:02}");
@@ -2443,6 +2308,285 @@ mod tests {
         }
     }
 
+    fn insert_evidence_observation(work: &mut Work, observation: Observation) {
+        let id = observation.id.clone();
+        work.checked
+            .services
+            .get_mut(SERVICE)
+            .unwrap()
+            .observations
+            .insert(id.clone(), observation);
+        work.influence.insert(id.clone(), "test-influence".into());
+        work.handles.insert(
+            format!("dependency:{id}"),
+            Handle {
+                kind: "DEPENDENCY".into(),
+                id,
+            },
+        );
+    }
+
+    fn exact_call_relation(
+        id: String,
+        from: &str,
+        target: &str,
+        relation_kind: &str,
+        source_digest: &str,
+    ) -> Observation {
+        Observation {
+            id,
+            kind: "CALL_RELATION".into(),
+            service: SERVICE.into(),
+            symbol: from.into(),
+            normalized: json!({
+                "scope":SCOPE,
+                "sourceIdentity":from,
+                "targetIdentity":target,
+                "relationKind":relation_kind,
+                "resolution":"COMPILER_EXACT",
+                "callSite":{
+                    "sourceId":SOURCE_ID,
+                    "sourceStatus":"SOURCE_RETAINED",
+                    "sourceDigest":source_digest,
+                    "evidenceDigest":"source-evidence-digest"
+                }
+            }),
+            digest: "relation-digest".into(),
+            source_ids: vec![SOURCE_ID.into()],
+        }
+    }
+
+    fn reachable_context_exceeds_all_selection_cutoffs() -> Work {
+        const DTO: &str = "class:orders.Dto";
+        const PROVIDER_TARGET_COUNT: usize = 257;
+        const SOURCE_CANDIDATE_COUNT: usize = 18;
+        const OWNER_FIELD_COUNT: usize = 10;
+        const DTO_FIELD_COUNT: usize = 65;
+        const CHAIN_LENGTH: usize = 6;
+        const RETAINED_PROVIDER_BODY_COUNT: usize = 13;
+
+        let mut work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
+        let root_identity = "method:class:orders.Service#handle()Lorders/Dto;";
+        {
+            let evidence = work.checked.services.get_mut(SERVICE).unwrap();
+            evidence
+                .observations
+                .retain(|id, _| id == "root-declaration");
+            let root = evidence.observations.get_mut("root-declaration").unwrap();
+            root.symbol = root_identity.into();
+            root.normalized["symbolIdentity"] = json!(root_identity);
+            root.normalized["jvmDescriptor"] = json!("()Lorders/Dto;");
+            evidence.entrypoints[0].symbol = root_identity.into();
+        }
+        work.influence.retain(|id, _| id == "root-declaration");
+        work.handles
+            .retain(|_, handle| handle.kind != "DEPENDENCY" || handle.id == "root-declaration");
+
+        let provider_names: Vec<_> = (0..PROVIDER_TARGET_COUNT)
+            .map(|index| format!("provider{index:03}"))
+            .collect();
+        let candidate_names: Vec<_> = (0..SOURCE_CANDIDATE_COUNT)
+            .map(|index| format!("candidate{index:02}"))
+            .collect();
+        let chain_names: Vec<_> = (0..CHAIN_LENGTH)
+            .map(|index| format!("chain{index:02}"))
+            .collect();
+        let method_names = provider_names
+            .iter()
+            .take(RETAINED_PROVIDER_BODY_COUNT)
+            .chain(&candidate_names)
+            .chain(&chain_names)
+            .cloned()
+            .collect::<Vec<_>>();
+        let method_bodies = method_names
+            .iter()
+            .map(|name| format!("String {name}() {{ return \"\"; }}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let candidate_calls = candidate_names
+            .iter()
+            .map(|name| format!("this.{name}();"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let owner_field_reads = (0..OWNER_FIELD_COUNT)
+            .map(|index| format!("this.ownerField{index:02};"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let source_text = format!(
+            "class Service {{ Dto handle() {{ {candidate_calls} {owner_field_reads} return null; }} {method_bodies} }} class Dto {{}} /*{}*/",
+            "x".repeat(50 * 1024)
+        );
+        let source_digest = crate::canonical::hash_bytes(source_text.as_bytes());
+        {
+            let source = work
+                .checked
+                .services
+                .get_mut(SERVICE)
+                .unwrap()
+                .sources
+                .get_mut(SOURCE_ID)
+                .unwrap();
+            source.text = source_text;
+            source.text_digest = source_digest.clone();
+            source.end_line = 1;
+        }
+
+        for (index, name) in provider_names.iter().enumerate() {
+            let identity = format!("method:{OWNER}#{name}()Ljava/lang/String;");
+            insert_evidence_observation(
+                &mut work,
+                observation(
+                    format!("declaration-{name}"),
+                    identity.clone(),
+                    method_declaration(&identity, name),
+                    if index < RETAINED_PROVIDER_BODY_COUNT {
+                        vec![SOURCE_ID.into()]
+                    } else {
+                        Vec::new()
+                    },
+                ),
+            );
+        }
+        for name in candidate_names.iter().chain(&chain_names) {
+            let identity = format!("method:{OWNER}#{name}()Ljava/lang/String;");
+            insert_evidence_observation(
+                &mut work,
+                observation(
+                    format!("declaration-{name}"),
+                    identity.clone(),
+                    method_declaration(&identity, name),
+                    vec![SOURCE_ID.into()],
+                ),
+            );
+        }
+
+        insert_evidence_observation(
+            &mut work,
+            observation(
+                "dto-declaration",
+                DTO,
+                json!({
+                    "schema":JAVA_COMPILER_FACT_SCHEMA,
+                    "declarationKind":"CLASS",
+                    "symbolIdentity":DTO,
+                    "ownerIdentity":"class:orders",
+                    "name":"Dto",
+                    "scope":SCOPE
+                }),
+                vec![SOURCE_ID.into()],
+            ),
+        );
+        for index in 0..DTO_FIELD_COUNT {
+            let name = format!("dtoField{index:02}");
+            let identity = format!("field:{DTO}#{name}:Ljava/lang/String;");
+            insert_evidence_observation(
+                &mut work,
+                observation(
+                    format!("dto-field-{index:02}"),
+                    identity.clone(),
+                    json!({
+                        "schema":JAVA_COMPILER_FACT_SCHEMA,
+                        "declarationKind":"FIELD",
+                        "symbolIdentity":identity,
+                        "ownerIdentity":DTO,
+                        "name":name,
+                        "scope":SCOPE,
+                        "jvmDescriptor":"Ljava/lang/String;",
+                        "modifiers":[],
+                        "annotations":[],
+                        "sourceTokens":[name]
+                    }),
+                    vec![SOURCE_ID.into()],
+                ),
+            );
+        }
+        for index in 0..OWNER_FIELD_COUNT {
+            let name = format!("ownerField{index:02}");
+            let identity = format!("field:{OWNER}#{name}:Ljava/lang/String;");
+            let modifiers = if index == OWNER_FIELD_COUNT - 1 {
+                json!(["STATIC", "FINAL"])
+            } else {
+                json!([])
+            };
+            insert_evidence_observation(
+                &mut work,
+                observation(
+                    format!("owner-field-{index:02}"),
+                    identity.clone(),
+                    json!({
+                        "schema":JAVA_COMPILER_FACT_SCHEMA,
+                        "declarationKind":"FIELD",
+                        "symbolIdentity":identity,
+                        "ownerIdentity":OWNER,
+                        "name":name,
+                        "scope":SCOPE,
+                        "jvmDescriptor":"Ljava/lang/String;",
+                        "modifiers":modifiers,
+                        "annotations":[],
+                        "sourceTokens":[name]
+                    }),
+                    vec![SOURCE_ID.into()],
+                ),
+            );
+        }
+
+        for (index, name) in provider_names.iter().enumerate() {
+            let target = format!("method:{OWNER}#{name}()Ljava/lang/String;");
+            insert_evidence_observation(
+                &mut work,
+                exact_call_relation(
+                    format!("root-provider-relation-{index:03}"),
+                    root_identity,
+                    &target,
+                    "CALLS",
+                    &source_digest,
+                ),
+            );
+        }
+        let first_provider = format!("method:{OWNER}#{}()Ljava/lang/String;", provider_names[0]);
+        insert_evidence_observation(
+            &mut work,
+            exact_call_relation(
+                "root-reference-relation".into(),
+                root_identity,
+                &first_provider,
+                "REFERENCES",
+                &source_digest,
+            ),
+        );
+
+        let first_chain = format!("method:{OWNER}#{}()Ljava/lang/String;", chain_names[0]);
+        insert_evidence_observation(
+            &mut work,
+            exact_call_relation(
+                "root-chain-relation".into(),
+                root_identity,
+                &first_chain,
+                "CALLS",
+                &source_digest,
+            ),
+        );
+        for index in 0..CHAIN_LENGTH {
+            let from = format!("method:{OWNER}#{}()Ljava/lang/String;", chain_names[index]);
+            let target_index = (index + 1) % CHAIN_LENGTH;
+            let target = format!(
+                "method:{OWNER}#{}()Ljava/lang/String;",
+                chain_names[target_index]
+            );
+            insert_evidence_observation(
+                &mut work,
+                exact_call_relation(
+                    format!("chain-relation-{index:02}"),
+                    &from,
+                    &target,
+                    "CALLS",
+                    &source_digest,
+                ),
+            );
+        }
+        work
+    }
+
     fn method_reference_work() -> Work {
         let mut work = bodyless_candidates_do_not_spend_body_slots_before_a_real_getter();
         let service = work.checked.services.get_mut(SERVICE).unwrap();
@@ -2580,13 +2724,152 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            MAX_CALLABLES
+            BODYLESS_CANDIDATE_COUNT + 1
         );
         let gaps = packet["record"]["gaps"].as_array().unwrap();
         assert!(gaps.iter().any(|gap| {
-            gap["code"] == "METHOD_BODY_PARSE_UNAVAILABLE" && gap["count"] == MAX_CALLABLES - 1
+            gap["code"] == "METHOD_BODY_PARSE_UNAVAILABLE"
+                && gap["count"] == BODYLESS_CANDIDATE_COUNT
         }));
-        assert!(!gaps.iter().any(|gap| gap["code"] == "CALLABLE_BODY_LIMIT"));
+        assert_eq!(graph["maxObservedTraversalDepth"], 1);
+        assert!(graph.get("callableLimit").is_none());
+        assert!(
+            packet["record"]["selection"]
+                .get("sourceByteLimit")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reachable_context_keeps_evidence_past_former_selection_cutoffs() {
+        let work = reachable_context_exceeds_all_selection_cutoffs();
+        let rows = profile_rows(&work).unwrap();
+        let context = rows
+            .iter()
+            .find(|row| row["kind"] == "ENDPOINT_CONTEXT_PACKET")
+            .unwrap();
+        let record = &context["record"];
+        let graph = &record["callGraph"];
+        let nodes = graph["nodes"].as_array().unwrap();
+        let candidates = graph["sourceReferenceCandidates"].as_array().unwrap();
+        let selection = &record["selection"];
+
+        assert_eq!(nodes.len(), 1 + 13 + 18 + 6);
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|node| node["symbolIdentity"]
+                    == "method:class:orders.Service#provider000()Ljava/lang/String;")
+                .count(),
+            1
+        );
+        let unique_nodes: BTreeSet<_> = nodes
+            .iter()
+            .filter_map(|node| node["symbolIdentity"].as_str())
+            .collect();
+        assert_eq!(unique_nodes.len(), nodes.len());
+        assert!(
+            graph["providerEdgeFactReferences"]
+                .as_array()
+                .unwrap()
+                .len()
+                > 256
+        );
+        assert_eq!(candidates.len(), 18);
+        assert_eq!(selection["dtoFieldCount"], 65);
+        assert_eq!(selection["referencedOwnerFieldCount"], 10);
+        assert!(
+            record["gaps"].as_array().unwrap().iter().any(|gap| {
+                gap["code"] == "METHOD_BODY_SOURCE_UNAVAILABLE" && gap["count"] == 244
+            })
+        );
+        assert_eq!(graph["maxObservedTraversalDepth"], 6);
+        assert!(selection["uniqueBodySourceBytes"].as_u64().unwrap() > 48 * 1024);
+        assert!(selection["uniqueSourceBytes"].as_u64().unwrap() > 48 * 1024);
+        assert_eq!(selection["callableCount"], nodes.len());
+        assert_eq!(selection["sourceReferenceCandidateCount"], candidates.len());
+        assert!(graph.get("depthLimit").is_none());
+        assert!(graph.get("callableLimit").is_none());
+        assert!(graph.get("providerEdgeReferenceLimit").is_none());
+        assert!(graph.get("sourceReferenceCandidateLimit").is_none());
+        assert!(selection.get("sourceByteLimit").is_none());
+        assert!(selection.get("dtoFieldLimit").is_none());
+        assert!(selection.get("referencedOwnerFieldLimit").is_none());
+        assert!(
+            !record["gaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| matches!(
+                    gap["code"].as_str(),
+                    Some(
+                        "CALLABLE_BODY_LIMIT"
+                            | "UNIQUE_SOURCE_BYTE_LIMIT"
+                            | "CALL_GRAPH_DEPTH_LIMIT"
+                            | "CALL_GRAPH_EDGE_LIMIT"
+                            | "SOURCE_REFERENCE_CANDIDATE_LIMIT"
+                            | "DTO_FIELD_LIMIT"
+                            | "REFERENCED_OWNER_FIELD_LIMIT"
+                    )
+                ))
+        );
+
+        let (packet, audit) = super::super::operation_packet::build(&work).unwrap();
+        assert_eq!(packet["callMap"]["order"], "NOT_EXECUTION_ORDER");
+        assert_eq!(
+            packet["callMap"]["nodes"].as_array().unwrap().len(),
+            nodes.len()
+        );
+        assert_eq!(packet["methodSources"].as_array().unwrap().len(), 1);
+        assert!(packet["methodSources"][0]["text"].as_str().unwrap().len() > 48 * 1024);
+        assert_eq!(
+            packet["methodBodies"].as_array().unwrap().len(),
+            nodes.len()
+        );
+        assert_eq!(packet["types"][0]["fields"].as_array().unwrap().len(), 65);
+        assert_eq!(packet["constants"].as_array().unwrap().len(), 1);
+        let packet_edges = packet["callMap"]["edges"].as_array().unwrap();
+        assert!(packet_edges.iter().any(|edge| {
+            edge["kind"] == "CALLS" && edge["authority"] == "COMPILER_EXACT_CALL_RELATION"
+        }));
+        assert!(packet_edges.iter().any(|edge| {
+            edge["kind"] == "REFERENCES" && edge["authority"] == "COMPILER_EXACT_REFERENCE_RELATION"
+        }));
+        assert_eq!(
+            packet_edges
+                .iter()
+                .filter(|edge| edge["authority"] == "SOURCE_REFERENCE_CANDIDATE")
+                .count(),
+            18
+        );
+        let chain_zero = packet["callMap"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["identity"].as_str().unwrap().contains("#chain00("))
+            .unwrap()["id"]
+            .clone();
+        let chain_last = packet["callMap"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["identity"].as_str().unwrap().contains("#chain05("))
+            .unwrap()["id"]
+            .clone();
+        assert!(
+            packet_edges
+                .iter()
+                .any(|edge| { edge["from"] == chain_last && edge["toNode"] == chain_zero })
+        );
+        assert_eq!(
+            audit["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["kind"] == "SOURCE")
+                .count(),
+            1
+        );
     }
 
     #[test]
