@@ -982,19 +982,38 @@ pub(super) fn context_items(
                     })
                     .map(|o| o.id.clone()),
             );
-            // Follow bounded source-local bodies. Compiler relations stay
-            // separate from FLOW and can add calls hidden behind FLOW
-            // boundaries, such as invocations inside try statements.
+            // Follow bounded source-local bodies. Compiler REFERENCES select
+            // callback declarations without establishing their invocation.
             let mut call_frontier_counts = BTreeMap::<String, usize>::new();
             let mut call_frontier_examples = Vec::new();
             let mut reported_call_gaps = BTreeSet::new();
-            let mut traversed_call_relations = BTreeSet::new();
+            let mut traversed_relations = BTreeSet::new();
+            let mut reference_frontier_counts = BTreeMap::<String, usize>::new();
+            let mut reference_frontier_examples = Vec::new();
+            let mut reported_reference_gaps = BTreeSet::new();
             {
                 let mut report_call_gap = |observation: &Observation, reason: &str| {
                     if reported_call_gaps.insert((observation.id.clone(), reason.to_owned())) {
                         *call_frontier_counts.entry(reason.to_owned()).or_default() += 1;
                         if call_frontier_examples.len() < 8 {
                             call_frontier_examples.push(json!({
+                                "relationId":observation.id,
+                                "sourceIdentity":observation.normalized["sourceIdentity"],
+                                "targetIdentity":observation.normalized["targetIdentity"],
+                                "scope":observation.normalized["scope"],
+                                "sourceIds":observation.source_ids,
+                                "reason":reason
+                            }));
+                        }
+                    }
+                };
+                let mut report_reference_gap = |observation: &Observation, reason: &str| {
+                    if reported_reference_gaps.insert((observation.id.clone(), reason.to_owned())) {
+                        *reference_frontier_counts
+                            .entry(reason.to_owned())
+                            .or_default() += 1;
+                        if reference_frontier_examples.len() < 8 {
+                            reference_frontier_examples.push(json!({
                                 "relationId":observation.id,
                                 "sourceIdentity":observation.normalized["sourceIdentity"],
                                 "targetIdentity":observation.normalized["targetIdentity"],
@@ -1032,12 +1051,59 @@ pub(super) fn context_items(
                         .filter_map(|id| checked.dependencies.get(id))
                     {
                         if observation.kind == "CALL_RELATION" {
-                            traversed_call_relations.insert(observation.id.clone());
+                            traversed_relations.insert(observation.id.clone());
                             let owner = observation.normalized["sourceIdentity"].as_str();
                             let scope = observation.normalized["scope"]
                                 .as_str()
                                 .unwrap_or("")
                                 .to_owned();
+                            if observation.normalized["relationKind"] == "REFERENCES" {
+                                if owner.is_none_or(str::is_empty)
+                                    || owner != Some(observation.symbol.as_str())
+                                    || scope.is_empty()
+                                    || !declarations.contains(&(
+                                        owner.unwrap_or_default().to_owned(),
+                                        scope.clone(),
+                                    ))
+                                {
+                                    report_reference_gap(
+                                        observation,
+                                        "REFERENCE_RELATION_OWNER_OR_SCOPE_UNAVAILABLE",
+                                    );
+                                    continue;
+                                }
+                                if observation.normalized["resolution"] != "COMPILER_EXACT" {
+                                    report_reference_gap(
+                                        observation,
+                                        "REFERENCE_RELATION_RESOLUTION_UNVERIFIED",
+                                    );
+                                    continue;
+                                }
+                                if !source_bound_relation(e, observation) {
+                                    report_reference_gap(
+                                        observation,
+                                        "REFERENCE_SITE_SOURCE_UNAVAILABLE",
+                                    );
+                                    continue;
+                                }
+                                let Some(target) = observation.normalized["targetIdentity"]
+                                    .as_str()
+                                    .filter(|target| !target.is_empty())
+                                else {
+                                    report_reference_gap(
+                                        observation,
+                                        "REFERENCE_TARGET_IDENTITY_UNAVAILABLE",
+                                    );
+                                    continue;
+                                };
+                                let key = (target.to_owned(), scope);
+                                targets.insert(key.clone());
+                                relation_targets
+                                    .entry(key)
+                                    .or_default()
+                                    .push(observation.id.clone());
+                                continue;
+                            }
                             if owner.is_none_or(str::is_empty)
                                 || !declarations.contains(&(
                                     owner.unwrap_or_default().to_owned(),
@@ -1055,21 +1121,7 @@ pub(super) fn context_items(
                                 report_call_gap(observation, "CALL_RELATION_RESOLUTION_UNVERIFIED");
                                 continue;
                             }
-                            let call_site = &observation.normalized["callSite"];
-                            let call_source_bound = match observation.source_ids.as_slice() {
-                                [source_id]
-                                    if call_site["sourceId"].as_str() == Some(source_id) =>
-                                {
-                                    e.sources.get(source_id).is_some_and(|source| {
-                                        source.service == e.service
-                                            && call_site["sourceDigest"] == source.text_digest
-                                            && call_site["evidenceDigest"] == source.evidence_digest
-                                    })
-                                }
-                                _ => false,
-                            };
-                            if call_site["sourceStatus"] != "SOURCE_RETAINED" || !call_source_bound
-                            {
+                            if !source_bound_relation(e, observation) {
                                 report_call_gap(observation, "CALL_SITE_SOURCE_UNAVAILABLE");
                                 continue;
                             }
@@ -1095,13 +1147,14 @@ pub(super) fn context_items(
                                 .as_str()
                                 .filter(|target| !target.is_empty())
                         {
-                            targets.insert((
+                            let key = (
                                 target.to_owned(),
                                 observation.normalized["scope"]
                                     .as_str()
                                     .unwrap_or("")
                                     .to_owned(),
-                            ));
+                            );
+                            targets.insert(key.clone());
                         }
                     }
                     for (target, scope) in targets {
@@ -1114,7 +1167,7 @@ pub(super) fn context_items(
                             .get(&target_scope)
                             .map(Vec::as_slice)
                             .unwrap_or_default();
-                        let reason = if ambiguous_symbols.contains(target.as_str()) {
+                        let call_reason = if ambiguous_symbols.contains(target.as_str()) {
                             Some("CALL_TARGET_SCOPE_AMBIGUOUS")
                         } else {
                             match candidate_ids {
@@ -1126,16 +1179,25 @@ pub(super) fn context_items(
                                 _ => Some("CALL_TARGET_SOURCE_AMBIGUOUS"),
                             }
                         };
-                        if let Some(reason) = reason {
-                            if let Some(relation_ids) = relation_targets.get(&target_scope) {
-                                for relation_id in relation_ids {
-                                    if let Some(relation) = checked.dependencies.get(relation_id) {
+                        if let Some(relation_ids) = relation_targets.get(&target_scope) {
+                            for relation_id in relation_ids {
+                                if let Some(relation) = checked.dependencies.get(relation_id) {
+                                    if relation.normalized["relationKind"] == "REFERENCES" {
+                                        if let Some(reason) = call_reason {
+                                            report_reference_gap(
+                                                relation,
+                                                reference_target_gap(reason),
+                                            );
+                                        }
+                                    } else if let Some(reason) = call_reason {
                                         report_call_gap(relation, reason);
                                     }
                                 }
                             }
-                        } else if let Some(observation_ids) =
-                            observations_by_symbol_scope.get(&target_scope)
+                        }
+                        if call_reason.is_none()
+                            && let Some(observation_ids) =
+                                observations_by_symbol_scope.get(&target_scope)
                         {
                             selected.extend(observation_ids.iter().cloned());
                         }
@@ -1169,7 +1231,7 @@ pub(super) fn context_items(
                         continue;
                     };
                     for relation_id in relation_ids {
-                        if !traversed_call_relations.insert(relation_id.clone()) {
+                        if !traversed_relations.insert(relation_id.clone()) {
                             continue;
                         }
                         selected.insert(relation_id.clone());
@@ -1180,18 +1242,53 @@ pub(super) fn context_items(
                             .as_str()
                             .filter(|target| !target.is_empty());
                         let source = &relation.normalized["callSite"];
-                        let source_bound = match relation.source_ids.as_slice() {
-                            [source_id] if source["sourceId"].as_str() == Some(source_id) => {
-                                e.sources.get(source_id).is_some_and(|source| {
-                                    source.service == e.service
-                                        && relation.normalized["callSite"]["sourceDigest"]
-                                            == source.text_digest
-                                        && relation.normalized["callSite"]["evidenceDigest"]
-                                            == source.evidence_digest
-                                })
+                        let source_bound = source_bound_relation(e, relation);
+                        if relation.normalized["relationKind"] == "REFERENCES" {
+                            let gap = if relation.normalized["sourceIdentity"].as_str()
+                                != Some(owner_scope.0.as_str())
+                            {
+                                Some("REFERENCE_RELATION_OWNER_UNAVAILABLE")
+                            } else if relation.normalized["scope"].as_str()
+                                != Some(owner_scope.1.as_str())
+                            {
+                                Some("REFERENCE_RELATION_SCOPE_UNAVAILABLE")
+                            } else if relation.normalized["resolution"] != "COMPILER_EXACT" {
+                                Some("REFERENCE_RELATION_RESOLUTION_UNVERIFIED")
+                            } else if source["sourceStatus"] != "SOURCE_RETAINED" || !source_bound {
+                                Some("REFERENCE_SITE_SOURCE_UNAVAILABLE")
+                            } else if target.is_none() {
+                                Some("REFERENCE_TARGET_IDENTITY_UNAVAILABLE")
+                            } else {
+                                let target = target.unwrap();
+                                let target_scope = (target.to_owned(), owner_scope.1.clone());
+                                let candidates = declarations_by_symbol_scope
+                                    .get(&target_scope)
+                                    .map(Vec::as_slice)
+                                    .unwrap_or_default();
+                                if ambiguous_symbols.contains(target) {
+                                    Some("REFERENCE_TARGET_SCOPE_AMBIGUOUS")
+                                } else {
+                                    match candidates {
+                                        [candidate_id] if selected.contains(candidate_id) => None,
+                                        [_] => Some("REFERENCE_EXPANSION_DEPTH_LIMIT"),
+                                        [] if declaration_scopes.contains_key(target) => {
+                                            Some("REFERENCE_TARGET_EXISTS_ONLY_IN_OTHER_SCOPE")
+                                        }
+                                        [] => Some("REFERENCE_TARGET_BODY_NOT_CAPTURED"),
+                                        _ => Some("REFERENCE_TARGET_SOURCE_AMBIGUOUS"),
+                                    }
+                                }
+                            };
+                            if let Some(reason) = gap {
+                                report_reference_gap(relation, reason);
                             }
-                            _ => false,
-                        };
+                            if selected.len() > 4096 {
+                                return Err(invalid(
+                                    "entrypoint context exceeds bounded dependency scope",
+                                ));
+                            }
+                            continue;
+                        }
                         let gap = if relation.normalized["sourceIdentity"].as_str()
                             != Some(owner_scope.0.as_str())
                         {
@@ -1251,6 +1348,22 @@ pub(super) fn context_items(
                         "omittedExampleCount":total.saturating_sub(reported),
                         "authority":"SOURCE_RELATION_WITH_UNEXPANDED_LOCAL_BODY",
                         "nextRead":"Expand the listed call relation dependencies and source references before claiming callee behavior."
+                    }
+                }));
+            }
+            if !reference_frontier_counts.is_empty() {
+                let reported = reference_frontier_examples.len();
+                let total: usize = reference_frontier_counts.values().sum();
+                items.push(json!({
+                    "kind":"REFERENCE_FRONTIER_GAPS",
+                    "id":format!("{id}:reference-frontier-gaps"),
+                    "record":{
+                        "countsByReason":reference_frontier_counts,
+                        "examples":reference_frontier_examples,
+                        "exampleLimit":8,
+                        "omittedExampleCount":total.saturating_sub(reported),
+                        "authority":"REFERENCE_FRONTIER_DIAGNOSTIC",
+                        "nextRead":"Inspect the callback declaration and source before describing its behavior; a reference does not establish invocation or timing."
                     }
                 }));
             }
@@ -1383,6 +1496,33 @@ fn compact(items: Vec<Value>) -> Vec<Value> {
         }
         item
     }).collect()
+}
+
+fn source_bound_relation(evidence: &ServiceEvidence, relation: &Observation) -> bool {
+    let site = &relation.normalized["callSite"];
+    if site["sourceStatus"] != "SOURCE_RETAINED" {
+        return false;
+    }
+    match relation.source_ids.as_slice() {
+        [source_id] if site["sourceId"].as_str() == Some(source_id) => {
+            evidence.sources.get(source_id).is_some_and(|source| {
+                source.service == evidence.service
+                    && site["sourceDigest"] == source.text_digest
+                    && site["evidenceDigest"] == source.evidence_digest
+            })
+        }
+        _ => false,
+    }
+}
+
+fn reference_target_gap(call_gap: &str) -> &'static str {
+    match call_gap {
+        "CALL_TARGET_SCOPE_AMBIGUOUS" => "REFERENCE_TARGET_SCOPE_AMBIGUOUS",
+        "CALL_TARGET_EXISTS_ONLY_IN_OTHER_SCOPE" => "REFERENCE_TARGET_EXISTS_ONLY_IN_OTHER_SCOPE",
+        "CALL_TARGET_BODY_NOT_CAPTURED" => "REFERENCE_TARGET_BODY_NOT_CAPTURED",
+        "CALL_TARGET_SOURCE_AMBIGUOUS" => "REFERENCE_TARGET_SOURCE_AMBIGUOUS",
+        _ => "REFERENCE_TARGET_NOT_EXPANDED",
+    }
 }
 
 fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
@@ -1696,6 +1836,418 @@ mod tests {
             cursor: None,
             limit: 20,
         }
+    }
+
+    fn synthetic_adapter_check() -> (check::Check, String, String, String, String, String) {
+        use crate::java_adapter_v2::JavaCompilerFact;
+
+        let template = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let entry = template.checked.services["orders"].entrypoints[0].clone();
+        let root = entry.symbol.clone();
+        let root_decl = template.checked.services["orders"]
+            .observations
+            .values()
+            .find(|observation| observation.kind == "SYMBOL" && observation.symbol == root)
+            .unwrap();
+        let root_owner = root_decl.normalized["ownerIdentity"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let root_name = root_decl.normalized["name"].as_str().unwrap().to_owned();
+        let root_descriptor = root_decl.normalized["jvmDescriptor"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let callback = format!("method:{root_owner}#notifyEvent()V");
+        let process = format!("method:{root_owner}#process()V");
+        let file = "src/main/java/orders/Controller.java";
+        let source = concat!(
+            "package orders;\n",
+            "class Controller {\n",
+            "  Response handle(Request request) {\n",
+            "    Runnable callback = this::notifyEvent;\n",
+            "    this.process();\n",
+            "    Runnable methodRef = this::process;\n",
+            "    this.notifyEvent();\n",
+            "    return null;\n",
+            "  }\n",
+            "  void notifyEvent() {}\n",
+            "  void process() {}\n",
+            "}\n"
+        );
+        let adapter_fact = |raw: Value| {
+            let fact: JavaCompilerFact = serde_json::from_value(raw).unwrap();
+            let mut value = serde_json::to_value(fact).unwrap();
+            value["scope"] = json!({"compilation":":main"});
+            let binding = super::super::digest(&value).unwrap();
+            (value, binding)
+        };
+        let declaration = |identity: &str,
+                           owner: &str,
+                           name: &str,
+                           descriptor: &str,
+                           start_line: u64,
+                           end_line: u64| {
+            adapter_fact(json!({
+                "kind":"DECLARATION",
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"METHOD",
+                "name":name,
+                "symbolIdentity":identity,
+                "ownerIdentity":owner,
+                "jvmDescriptor":descriptor,
+                "modifiers":[],
+                "annotations":[],
+                "file":file,
+                "startLine":start_line,
+                "endLine":end_line,
+                "resolution":"COMPILER_EXACT"
+            }))
+        };
+        let relation = |kind: &str, target: &str, line: u64| {
+            adapter_fact(json!({
+                "kind":"RELATION",
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "relationKind":kind,
+                "sourceIdentity":root,
+                "targetIdentity":target,
+                "file":file,
+                "startLine":line,
+                "endLine":line,
+                "resolution":"COMPILER_EXACT"
+            }))
+        };
+        let facts = vec![
+            declaration(&root, &root_owner, &root_name, &root_descriptor, 3, 9),
+            declaration(&callback, &root_owner, "notifyEvent", "()V", 10, 10),
+            declaration(&process, &root_owner, "process", "()V", 11, 11),
+            relation("REFERENCES", &callback, 4),
+            relation("CALLS", &process, 5),
+        ];
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0",
+            "id":"orders",
+            "title":"Orders",
+            "repositoryId":"orders",
+            "repository":"https://example.invalid/orders",
+            "language":"java",
+            "profile":"java-17plus-maven-writable-then-seal",
+            "compilations":[":main"],
+            "targetRef":"main",
+            "sourceLinkTemplate":"{repository}/blob/{revision}/{file}",
+            "contractFiles":[]
+        }))
+        .unwrap();
+        let mut evidence = analysis::project(
+            &service,
+            &"a".repeat(40),
+            &super::super::digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            facts,
+            &BTreeMap::from([(file.into(), source.into())]),
+            false,
+        )
+        .unwrap();
+        let root_observation = evidence
+            .observations
+            .values()
+            .find(|observation| observation.kind == "SYMBOL" && observation.symbol == root)
+            .unwrap();
+        let root_id = root_observation.id.clone();
+        let mut entry = entry;
+        entry.dependency_ids = vec![root_id];
+        entry.source_ids = root_observation.source_ids.clone();
+        let entrypoint_id = entry.id.clone();
+        evidence.entrypoints.push(entry);
+        let reference_id = evidence
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "CALL_RELATION"
+                    && observation.normalized["relationKind"] == "REFERENCES"
+            })
+            .unwrap()
+            .id
+            .clone();
+        let call_id = evidence
+            .observations
+            .values()
+            .find(|observation| {
+                observation.kind == "CALL_RELATION"
+                    && observation.normalized["relationKind"] == "CALLS"
+            })
+            .unwrap()
+            .id
+            .clone();
+        let callback_id = evidence
+            .observations
+            .values()
+            .find(|observation| observation.kind == "SYMBOL" && observation.symbol == callback)
+            .unwrap()
+            .id
+            .clone();
+        let process_id = evidence
+            .observations
+            .values()
+            .find(|observation| observation.kind == "SYMBOL" && observation.symbol == process)
+            .unwrap()
+            .id
+            .clone();
+        let dependencies = evidence.observations.clone();
+        let checked = check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "synthetic-input".into(),
+            context_digest: "synthetic-context".into(),
+            services: BTreeMap::from([("orders".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies,
+            source_inputs: None,
+            composition: None,
+        };
+        (
+            checked,
+            reference_id,
+            call_id,
+            callback_id,
+            process_id,
+            entrypoint_id,
+        )
+    }
+
+    fn packet_work_from_selection(
+        mut template: super::super::work::Work,
+        mut evidence: ServiceEvidence,
+        selected: &[Value],
+    ) -> super::super::work::Work {
+        let dependency_ids: BTreeSet<_> = selected
+            .iter()
+            .filter(|item| item["kind"] == "DEPENDENCY")
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect();
+        let source_ids: BTreeSet<_> = selected
+            .iter()
+            .filter(|item| item["kind"] == "SOURCE")
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect();
+        evidence
+            .observations
+            .retain(|id, _| dependency_ids.contains(id));
+        evidence.sources.retain(|id, _| source_ids.contains(id));
+        let entry = evidence.entrypoints[0].clone();
+        let dependencies = evidence.observations.clone();
+        template.subject = format!("service:{}", evidence.service);
+        template.request.entrypoint = Some(entry.id.clone());
+        template.request.context_profile = Some(super::super::endpoint_context::PROFILE.into());
+        template.checked.services = BTreeMap::from([(evidence.service.clone(), evidence)]);
+        template.checked.dependencies = dependencies.clone();
+        template.handles.clear();
+        template.influence = dependencies
+            .values()
+            .map(|observation| (observation.id.clone(), observation.digest.clone()))
+            .collect();
+        template.handles.insert(
+            "e0".into(),
+            super::super::work::Handle {
+                kind: "ENTRYPOINT".into(),
+                id: entry.id,
+            },
+        );
+        for (index, id) in dependency_ids.into_iter().enumerate() {
+            template.handles.insert(
+                format!("d{index}"),
+                super::super::work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id,
+                },
+            );
+        }
+        for (index, id) in source_ids.into_iter().enumerate() {
+            template.handles.insert(
+                format!("s{index}"),
+                super::super::work::Handle {
+                    kind: "SOURCE".into(),
+                    id,
+                },
+            );
+        }
+        template
+    }
+
+    fn context_items_for_evidence(evidence: &ServiceEvidence, entrypoint: &str) -> Vec<Value> {
+        let dependencies = evidence.observations.clone();
+        let checked = check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "synthetic-input".into(),
+            context_digest: "synthetic-context".into(),
+            services: BTreeMap::from([(evidence.service.clone(), evidence.clone())]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies,
+            source_inputs: None,
+            composition: None,
+        };
+        let mut args = entrypoint_context_args();
+        args.entrypoint = Some(entrypoint.into());
+        context_items(&checked, &args, None).unwrap()
+    }
+
+    #[test]
+    fn compiler_reference_flows_from_adapter_facts_through_selection_into_author_packet() {
+        let (checked, reference_id, call_id, callback_id, process_id, entrypoint_id) =
+            synthetic_adapter_check();
+        let evidence = checked.services["orders"].clone();
+        let mut args = entrypoint_context_args();
+        args.entrypoint = Some(entrypoint_id.clone());
+        let selected = context_items(&checked, &args, None).unwrap();
+        let selected_dependencies: BTreeSet<_> = selected
+            .iter()
+            .filter(|item| item["kind"] == "DEPENDENCY")
+            .filter_map(|item| item["id"].as_str().map(str::to_owned))
+            .collect();
+        assert!(selected_dependencies.contains(&reference_id));
+        assert!(selected_dependencies.contains(&call_id));
+        assert!(selected_dependencies.contains(&callback_id));
+
+        let template = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let work = packet_work_from_selection(template, evidence.clone(), &selected);
+        let (packet, _) = super::super::operation_packet::build(&work).unwrap();
+        let nodes = packet["callMap"]["nodes"].as_array().unwrap();
+        let callback_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|node| node["identity"] == evidence.observations[&callback_id].symbol)
+            .collect();
+        assert_eq!(
+            callback_nodes.len(),
+            1,
+            "the callback body is selected once"
+        );
+        assert!(callback_nodes[0]["bodyId"].is_string());
+        let edges = packet["callMap"]["edges"].as_array().unwrap();
+        let reference_edges: Vec<_> = edges
+            .iter()
+            .filter(|edge| edge["kind"] == "REFERENCES")
+            .collect();
+        assert_eq!(reference_edges.len(), 1);
+        assert_eq!(
+            reference_edges[0]["authority"],
+            "COMPILER_EXACT_REFERENCE_RELATION"
+        );
+        assert_eq!(reference_edges[0]["toNode"], callback_nodes[0]["id"]);
+        assert!(edges.iter().any(|edge| {
+            edge["kind"] == "CALLS" && edge["authority"] == "COMPILER_EXACT_CALL_RELATION"
+        }));
+        assert!(
+            edges.iter().any(|edge| {
+                edge["kind"] == "CALLS"
+                    && edge["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                    && edge["toNode"] == callback_nodes[0]["id"]
+            }),
+            "an exact REFERENCES edge must not erase a lexical call candidate"
+        );
+        let process_node = nodes
+            .iter()
+            .find(|node| node["identity"] == evidence.observations[&process_id].symbol)
+            .unwrap();
+        assert!(
+            edges.iter().any(|edge| {
+                edge["kind"] == "METHOD_REFERENCE"
+                    && edge["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                    && edge["toNode"] == process_node["id"]
+            }),
+            "an exact CALLS edge must not erase a lexical method-reference candidate"
+        );
+        assert!(!edges.iter().any(|edge| {
+            edge["kind"] == "METHOD_REFERENCE"
+                && edge["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && edge["toNode"] == callback_nodes[0]["id"]
+        }));
+        assert_eq!(packet["callMap"]["order"], "NOT_EXECUTION_ORDER");
+        assert!(packet["interpretationLimits"].as_array().unwrap().iter().any(
+            |limit| limit == "A REFERENCES edge identifies a compiler-resolved callback target; it does not establish invocation, timing, or execution order."
+        ));
+
+        let mut wrong_scope = evidence.clone();
+        wrong_scope
+            .observations
+            .get_mut(&callback_id)
+            .unwrap()
+            .normalized["scope"] = json!(":test");
+        let wrong_scope_rows = context_items_for_evidence(&wrong_scope, &entrypoint_id);
+        assert!(
+            !wrong_scope_rows
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == callback_id })
+        );
+        assert!(wrong_scope_rows.iter().any(|item| {
+            item["kind"] == "REFERENCE_FRONTIER_GAPS"
+                && item["record"]["countsByReason"]["REFERENCE_TARGET_EXISTS_ONLY_IN_OTHER_SCOPE"]
+                    == 1
+        }));
+
+        let mut missing_source = evidence.clone();
+        let relation = missing_source.observations.get_mut(&reference_id).unwrap();
+        relation.source_ids.clear();
+        relation.normalized["callSite"]["sourceStatus"] = json!("SOURCE_UNAVAILABLE");
+        let missing_source_rows = context_items_for_evidence(&missing_source, &entrypoint_id);
+        assert!(
+            !missing_source_rows
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == callback_id })
+        );
+        assert!(missing_source_rows.iter().any(|item| {
+            item["kind"] == "REFERENCE_FRONTIER_GAPS"
+                && item["record"]["countsByReason"]["REFERENCE_SITE_SOURCE_UNAVAILABLE"] == 1
+        }));
+
+        let mut ambiguous = evidence.clone();
+        ambiguous.boundaries.push(format!(
+            "SCOPE_AMBIGUOUS:{}",
+            evidence.observations[&callback_id].symbol
+        ));
+        let ambiguous_rows = context_items_for_evidence(&ambiguous, &entrypoint_id);
+        assert!(
+            !ambiguous_rows
+                .iter()
+                .any(|item| { item["kind"] == "DEPENDENCY" && item["id"] == callback_id })
+        );
+        assert!(ambiguous_rows.iter().any(|item| {
+            item["kind"] == "REFERENCE_FRONTIER_GAPS"
+                && item["record"]["countsByReason"]["REFERENCE_TARGET_SCOPE_AMBIGUOUS"] == 1
+        }));
+
+        let mut wrong_site = evidence.clone();
+        let relation_source_id = wrong_site.observations[&reference_id].source_ids[0].clone();
+        wrong_site
+            .sources
+            .get_mut(&relation_source_id)
+            .unwrap()
+            .file = "src/other/Controller.java".into();
+        let wrong_site_rows = context_items_for_evidence(&wrong_site, &entrypoint_id);
+        let wrong_site_work = packet_work_from_selection(
+            super::super::work::api_contract_tests::endpoint_context_fixture(),
+            wrong_site,
+            &wrong_site_rows,
+        );
+        let (wrong_site_packet, _) =
+            super::super::operation_packet::build(&wrong_site_work).unwrap();
+        let wrong_site_edges = wrong_site_packet["callMap"]["edges"].as_array().unwrap();
+        assert!(!wrong_site_edges.iter().any(|edge| {
+            edge["kind"] == "REFERENCES" && edge["authority"] == "COMPILER_EXACT_REFERENCE_RELATION"
+        }));
+        assert!(wrong_site_edges.iter().any(|edge| {
+            edge["kind"] == "METHOD_REFERENCE" && edge["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+        }));
+        assert!(
+            wrong_site_packet["limitations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|gap| gap["code"] == "REFERENCE_SITE_NOT_CONTAINED_IN_METHOD_BODY")
+        );
     }
 
     #[test]

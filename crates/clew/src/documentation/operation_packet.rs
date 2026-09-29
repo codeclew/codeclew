@@ -245,14 +245,19 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
         } else {
             normalized["kind"].as_str().unwrap_or("CALL")
         };
-        let authority =
-            if record["kind"] == "CALL_RELATION" && normalized["resolution"] == "COMPILER_EXACT" {
-                "COMPILER_EXACT_CALL_RELATION"
-            } else if record["kind"] == "FLOW" {
-                "RETAINED_FLOW_TARGET"
-            } else {
-                "UNVERIFIED_PROVIDER_RELATION"
-            };
+        let authority = if record["kind"] == "CALL_RELATION"
+            && normalized["relationKind"] == "REFERENCES"
+            && normalized["resolution"] == "COMPILER_EXACT"
+        {
+            "COMPILER_EXACT_REFERENCE_RELATION"
+        } else if record["kind"] == "CALL_RELATION" && normalized["resolution"] == "COMPILER_EXACT"
+        {
+            "COMPILER_EXACT_CALL_RELATION"
+        } else if record["kind"] == "FLOW" {
+            "RETAINED_FLOW_TARGET"
+        } else {
+            "UNVERIFIED_PROVIDER_RELATION"
+        };
         let scope = normalized["scope"].as_str().unwrap_or_default();
         let edge_key = (
             from.clone(),
@@ -265,7 +270,15 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
             .entry(edge_key)
             .or_default()
             .insert(label.clone());
-        cite(&mut citations, label, "retained provider call evidence");
+        cite(
+            &mut citations,
+            label,
+            if kind == "REFERENCES" {
+                "retained provider reference evidence"
+            } else {
+                "retained provider call evidence"
+            },
+        );
     }
     for ((from, target_identity, kind, scope, authority), evidence) in provider_edges {
         let to_node = node_ids.get(&target_identity).cloned();
@@ -408,7 +421,8 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
             "Annotation names and source tokens are copied from saved declarations; annotation argument semantics are not inferred.",
             "@NotNull indicates declared nullability; it does not establish a nonzero numeric value.",
             "A Java null value does not establish that its JSON property may be omitted.",
-            "Method names do not establish runtime behavior or side effects."
+            "Method names do not establish runtime behavior or side effects.",
+            "A REFERENCES edge identifies a compiler-resolved callback target; it does not establish invocation, timing, or execution order."
         ],
         "runtimeAndSerialization":"UNKNOWN_FROM_THIS_PACKET",
         "citations":citations

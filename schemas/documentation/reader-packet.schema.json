@@ -89,6 +89,7 @@
           "enum": [
             "RETAINED_FLOW_TARGET",
             "COMPILER_EXACT_CALL_RELATION",
+            "COMPILER_EXACT_REFERENCE_RELATION",
             "UNVERIFIED_PROVIDER_RELATION",
             "SOURCE_REFERENCE_CANDIDATE"
           ]

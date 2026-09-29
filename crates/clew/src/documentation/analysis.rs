@@ -934,15 +934,24 @@ pub(crate) fn project_scoped(
             );
             continue;
         }
-        // Compiler call relations have independent authority and source
-        // coordinates. Retain them as dependencies instead of folding them
-        // into FLOW, whose source-order events have different limits and
-        // explicit control-flow boundaries.
+        // Compiler relations have independent authority and source
+        // coordinates. Retain them instead of folding them into FLOW, whose
+        // source-order events have different limits and control-flow
+        // boundaries. REFERENCES are compiler-confirmed method references;
+        // they do not establish invocation or execution order.
         if fact["kind"] == "RELATION"
-            && matches!(fact["relationKind"].as_str(), Some("CALLS" | "CONSTRUCTS"))
+            && matches!(
+                fact["relationKind"].as_str(),
+                Some("CALLS" | "CONSTRUCTS" | "REFERENCES")
+            )
         {
             let scope = resolve_scope_key(&fact["scope"], known)?;
-            let identity = scoped_identity(&scope, &format!("call-site:{}", digest(fact)?));
+            let relation_prefix = if fact["relationKind"] == "REFERENCES" {
+                "reference-site"
+            } else {
+                "call-site"
+            };
+            let identity = scoped_identity(&scope, &format!("{relation_prefix}:{}", digest(fact)?));
             let id = dependency_id(&service.id, "call-relation", &identity)?;
             let source = add_source(
                 &mut evidence,
@@ -965,14 +974,17 @@ pub(crate) fn project_scoped(
             });
             if fact["sourceIdentity"].as_str().is_none_or(str::is_empty) {
                 call_site["ownerStatus"] = json!("SOURCE_OWNER_UNAVAILABLE");
+                let boundary = if fact["relationKind"] == "REFERENCES" {
+                    "REFERENCE_RELATION_OWNER_UNAVAILABLE"
+                } else {
+                    "CALL_RELATION_OWNER_UNAVAILABLE"
+                };
                 if !evidence
                     .boundaries
                     .iter()
-                    .any(|boundary| boundary == "CALL_RELATION_OWNER_UNAVAILABLE")
+                    .any(|existing| existing == boundary)
                 {
-                    evidence
-                        .boundaries
-                        .push("CALL_RELATION_OWNER_UNAVAILABLE".into());
+                    evidence.boundaries.push(boundary.into());
                 }
             } else {
                 call_site["ownerStatus"] = json!("SOURCE_OWNER_RETAINED");

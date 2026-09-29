@@ -2,7 +2,8 @@
 //!
 //! This is a deterministic selector over immutable Work evidence. The packet
 //! row is navigation only; provider declarations, FLOW, CALL_RELATION and
-//! retained SOURCE records remain the only factual rows.
+//! retained SOURCE records remain the only factual rows. Compiler REFERENCES
+//! identify callback targets without establishing invocation or timing.
 
 use super::{
     invalid,
@@ -314,6 +315,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         let caller_relations = outgoing.map_or(&[][..], |facts| facts.relations.as_slice());
 
         let mut provider_targets = BTreeSet::<String>::new();
+        let mut provider_reference_targets = BTreeSet::<String>::new();
         for observation in caller_flows.iter().copied() {
             dependencies.insert(observation.id.clone(), observation);
             if !matches!(
@@ -372,6 +374,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         for observation in caller_relations.iter().copied() {
             dependencies.insert(observation.id.clone(), observation);
             let relation_kind = observation.normalized["relationKind"].as_str();
+            let is_reference = relation_kind == Some("REFERENCES");
             let target = observation.normalized["targetIdentity"]
                 .as_str()
                 .filter(|v| !v.is_empty());
@@ -379,18 +382,38 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             let reason = if observation.normalized["sourceIdentity"].as_str()
                 != Some(callable.identity.as_str())
             {
-                Some("CALL_RELATION_OWNER_UNAVAILABLE")
+                Some(if is_reference {
+                    "REFERENCE_RELATION_OWNER_UNAVAILABLE"
+                } else {
+                    "CALL_RELATION_OWNER_UNAVAILABLE"
+                })
             } else if exact_scope(&observation.normalized["scope"]) != Some(callable.scope.as_str())
             {
-                Some("CALL_RELATION_SCOPE_UNAVAILABLE")
-            } else if !matches!(relation_kind, Some("CALLS" | "CONSTRUCTS"))
+                Some(if is_reference {
+                    "REFERENCE_RELATION_SCOPE_UNAVAILABLE"
+                } else {
+                    "CALL_RELATION_SCOPE_UNAVAILABLE"
+                })
+            } else if !(matches!(relation_kind, Some("CALLS" | "CONSTRUCTS")) || is_reference)
                 || observation.normalized["resolution"] != "COMPILER_EXACT"
             {
-                Some("CALL_RELATION_RESOLUTION_UNVERIFIED")
+                Some(if is_reference {
+                    "REFERENCE_RELATION_RESOLUTION_UNVERIFIED"
+                } else {
+                    "CALL_RELATION_RESOLUTION_UNVERIFIED"
+                })
             } else if !source_bound {
-                Some("CALL_SITE_SOURCE_UNAVAILABLE")
+                Some(if is_reference {
+                    "REFERENCE_SITE_SOURCE_UNAVAILABLE"
+                } else {
+                    "CALL_SITE_SOURCE_UNAVAILABLE"
+                })
             } else if target.is_none() {
-                Some("CALL_TARGET_IDENTITY_UNAVAILABLE")
+                Some(if is_reference {
+                    "REFERENCE_TARGET_IDENTITY_UNAVAILABLE"
+                } else {
+                    "CALL_TARGET_IDENTITY_UNAVAILABLE"
+                })
             } else {
                 None
             };
@@ -402,16 +425,31 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 continue;
             }
             let target = target.unwrap();
-            let source_reference = body_source_id
-                .as_deref()
-                .and_then(|body_id| owning_body_source_reference(evidence, observation, body_id));
+            let source_reference = body_source_id.as_deref().and_then(|body_id| {
+                if is_reference {
+                    reference_source_within_method(evidence, observation, body_id)
+                } else {
+                    owning_body_source_reference(evidence, observation, body_id)
+                }
+            });
             if source_reference.is_none() {
+                if is_reference {
+                    gaps.add(
+                        "REFERENCE_SITE_NOT_CONTAINED_IN_METHOD_BODY",
+                        json!({"from":callable.identity,"factId":observation.id}),
+                    );
+                    continue;
+                }
                 gaps.add(
                     "CALL_SITE_SOURCE_NOT_CONTAINED_IN_METHOD_BODY",
                     json!({"from":callable.identity,"factId":observation.id}),
                 );
             }
-            provider_targets.insert(target.to_owned());
+            if is_reference {
+                provider_reference_targets.insert(target.to_owned());
+            } else {
+                provider_targets.insert(target.to_owned());
+            }
             add_edge(
                 &mut edges,
                 &mut graph_edge_count,
@@ -420,7 +458,11 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     target: Some(target.to_owned()),
                     scope: callable.scope.clone(),
                     kind: relation_kind.unwrap().to_owned(),
-                    authority: "COMPILER_EXACT_CALL_RELATION".into(),
+                    authority: if is_reference {
+                        "COMPILER_EXACT_REFERENCE_RELATION".into()
+                    } else {
+                        "COMPILER_EXACT_CALL_RELATION".into()
+                    },
                     fact_id: Some(observation.id.clone()),
                     source_id: source_reference,
                 },
@@ -500,20 +542,25 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     })
                     .collect();
                 match candidates.as_slice() {
-                    [candidate] => add_edge(
-                        &mut edges,
-                        &mut graph_edge_count,
-                        Edge {
-                            from: callable.identity.clone(),
-                            target: Some(candidate.symbol.clone()),
-                            scope: callable.scope.clone(),
-                            kind: "METHOD_REFERENCE".into(),
-                            authority: "SOURCE_REFERENCE_CANDIDATE".into(),
-                            fact_id: None,
-                            source_id: Some(source_id.to_owned()),
-                        },
-                        &mut gaps,
-                    ),
+                    [candidate] => {
+                        if provider_reference_targets.contains(&candidate.symbol) {
+                            continue;
+                        }
+                        add_edge(
+                            &mut edges,
+                            &mut graph_edge_count,
+                            Edge {
+                                from: callable.identity.clone(),
+                                target: Some(candidate.symbol.clone()),
+                                scope: callable.scope.clone(),
+                                kind: "METHOD_REFERENCE".into(),
+                                authority: "SOURCE_REFERENCE_CANDIDATE".into(),
+                                fact_id: None,
+                                source_id: Some(source_id.to_owned()),
+                            },
+                            &mut gaps,
+                        );
+                    }
                     [] if !same_owner.is_empty() => gaps.add(
                         "SOURCE_REFERENCE_SCOPE_UNAVAILABLE",
                         json!({"from":callable.identity,"name":name,"scope":callable.scope}),
@@ -1274,6 +1321,40 @@ fn owning_body_source_reference(
     })
 }
 
+fn reference_source_within_method(
+    evidence: &ServiceEvidence,
+    fact: &Observation,
+    body_source_id: &str,
+) -> Option<String> {
+    let body = evidence.sources.get(body_source_id)?;
+    fact.source_ids.iter().find_map(|source_id| {
+        if source_id == body_source_id {
+            return Some(body_source_id.to_owned());
+        }
+        let part = evidence.sources.get(source_id)?;
+        let same_source_region = body.service == part.service
+            && body.revision == part.revision
+            && body.file == part.file
+            && body.authority == part.authority
+            && body.start_line <= part.start_line
+            && body.end_line >= part.end_line
+            && !part.text.is_empty()
+            && part.start_line + part.text.lines().count().saturating_sub(1) as u64
+                == part.end_line;
+        if !same_source_region {
+            return None;
+        }
+        body.text.match_indices(&part.text).find_map(|(start, _)| {
+            let line = body.start_line
+                + body.text[..start]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count() as u64;
+            (line == part.start_line).then(|| body_source_id.to_owned())
+        })
+    })
+}
+
 fn ordered_targets_for_caller(edges: &[Edge], caller: &str, scope: &str) -> Vec<String> {
     let mut priorities = BTreeMap::<String, u8>::new();
     for edge in edges
@@ -1285,6 +1366,7 @@ fn ordered_targets_for_caller(edges: &[Edge], caller: &str, scope: &str) -> Vec<
         };
         let priority = match edge.authority.as_str() {
             "COMPILER_EXACT_CALL_RELATION" => 0,
+            "COMPILER_EXACT_REFERENCE_RELATION" => 0,
             "RETAINED_FLOW_TARGET" => 1,
             "SOURCE_REFERENCE_CANDIDATE" => 2,
             _ => 3,
