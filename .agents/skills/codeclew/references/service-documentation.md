@@ -496,6 +496,75 @@ flow, type and configuration references where required; preserve unresolved
 boundary obligations. No agent may promote syntax or imported claims to runtime
 proof. Human input is retained verbatim with its separate authority.
 
+## Draft one Java endpoint explanation
+
+For a captured Java HTTP endpoint, select `endpoint-context-v3` in the request
+before preparing Work. The profile is part of immutable Work identity, so an
+existing Work with another profile cannot be switched in place. Prepare a new
+Work from the same saved snapshot; this does not capture source again.
+
+```json
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Service maintainers",
+  "entrypoint": "HTTP_ENTRYPOINT_ID",
+  "contextProfile": "endpoint-context-v3",
+  "maxItems": 100,
+  "maxBytes": 49152
+}
+```
+
+Use the author-only configuration schema
+`schemas/documentation/operation-draft-execution.schema.json`.
+It contains `schema`, one existing isolated `author` role, and a finite
+`budget`; it has no reviewer, fallback or repair settings. The role shape is
+the same one used by `agent-job.schema.json`.
+
+```json
+{
+  "schema": "codeclew-documentation-operation-draft-execution/1.0",
+  "author": {
+    "adapter": "macos-seatbelt-stdio/1.0",
+    "model": "OPERATOR_SELECTED_MODEL",
+    "command": ["/absolute/path/to/driver"],
+    "runtimeReads": ["/absolute/path/to/driver-runtime"],
+    "cap": {
+      "maximum": {"inputTokens": 120000, "outputTokens": 8000, "costUnits": 100},
+      "overheadInputTokens": 0,
+      "timeoutMs": 180000,
+      "outputBytes": 32768
+    }
+  },
+  "budget": {
+    "account": "orders-operation-drafts",
+    "costUnit": "OPERATOR_DEFINED",
+    "ceiling": {"inputTokens": 160000, "outputTokens": 10000, "costUnits": 120},
+    "stopLoss": {"inputTokens": 140000, "outputTokens": 9000, "costUnits": 110}
+  }
+}
+```
+
+Then prepare from the saved snapshot and run the explicit draft mode:
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders --snapshot SAVED_SNAPSHOT --input /work/operation-request.json
+clew docs work run --root /work/architecture --work WORK_ID --config /operator/operation-draft.json --draft
+clew docs work status --root /work/architecture --work WORK_ID
+```
+
+The author receives only the compact operation packet, common language and
+source-as-untrusted-data instructions, and
+`schemas/documentation/operation-answer.schema.json`.
+Codeclew validates the returned packet digest and citation labels, then saves
+`answer.json`, `operation.md`, `index.html`, the packet and its separate
+operator-only audit under `.codeclew/drafts/WORK_ID`. Status is `DRAFT` /
+`UNREVIEWED`; the command does not publish or create a proposal. One author call
+is admitted. A saved answer is reused to restore missing draft files. An invalid
+answer is retained without an author repair, and a dispatch without a saved
+response is marked uncertain with its maximum reservation retained; rerunning
+that Work does not dispatch another call. This path describes Java endpoint
+Work only. Other profiles continue through their documented authoring paths.
+
 ## Run isolated authoring and review
 
 Submit a `codeclew-documentation-proposal/1.0` object through `docs proposal

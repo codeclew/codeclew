@@ -14,6 +14,8 @@ use std::{
     path::PathBuf,
 };
 
+#[path = "agent_jobs/operation_draft.rs"]
+mod operation_draft;
 #[path = "agent_jobs/recovery.rs"]
 mod recovery;
 
@@ -256,7 +258,7 @@ pub fn reserve(repo: &Repository, config: &Config, run: &str) -> Result<Vec<Stri
     }
     if !total.within(&ledger.stop_loss) {
         return Err(invalid(
-            "BUDGET_EXHAUSTED: cannot reserve author, mandatory review and configured repair/fallback path below stop-loss",
+            "BUDGET_EXHAUSTED: cannot reserve the configured calls below stop-loss",
         ));
     }
     save_account(repo, &config.budget, &ledger)?;
@@ -544,6 +546,10 @@ pub struct RunReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_budget: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<recovery::CheckpointRef>,
 }
 
@@ -565,6 +571,8 @@ struct RunCheckpoint {
     work: String,
     snapshot: String,
     config_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_mode: Option<String>,
     driver_digests: BTreeMap<String, String>,
     phase: String,
     pages: Vec<Value>,
@@ -645,6 +653,7 @@ impl RunCheckpoint {
             work: report.work.clone(),
             snapshot,
             config_digest,
+            execution_mode: report.execution_mode.clone(),
             driver_digests,
             phase: "AUTHOR".into(),
             pages: Vec::new(),
@@ -688,6 +697,11 @@ impl RunCheckpoint {
         if self.config_digest != config_digest || &self.driver_digests != driver_digests {
             return Err(invalid(
                 "RECOVERY_CONFIG_MISMATCH: execution config or admitted driver changed during a nonterminal run",
+            ));
+        }
+        if self.execution_mode != report.execution_mode {
+            return Err(invalid(
+                "RECOVERY_MODE_MISMATCH: saved phase belongs to a different execution mode",
             ));
         }
         if !matches!(
@@ -867,7 +881,7 @@ pub fn status(
         rows,
         cursor,
         limit,
-        serde_json::json!({"reportSchema":report.schema,"run":report.run,"work":report.work,"status":report.status,"configDigest":report.config_digest,"proposal":report.proposal,"publication":report.publication,"gap":report.gap,"contextBudget":report.context_budget}),
+        serde_json::json!({"reportSchema":report.schema,"run":report.run,"work":report.work,"status":report.status,"executionMode":report.execution_mode,"draft":report.draft,"configDigest":report.config_digest,"proposal":report.proposal,"publication":report.publication,"gap":report.gap,"contextBudget":report.context_budget}),
     )
 }
 pub fn cancel(repo: &Repository, work: &str) -> Result<Value, ClewError> {
@@ -1783,6 +1797,8 @@ fn call(
     driver: &Role,
     payload: Value,
     author_contract: Option<Value>,
+    retry_uncertain_dispatch: bool,
+    include_expansion_budget: bool,
 ) -> Result<(Value, String, String), ClewError> {
     let cancel_path = repo.path(&format!(".codeclew/jobs/{}/cancel.json", report.run))?;
     if checkpoint.pending_call.is_none() && cancel_path.exists() {
@@ -1833,13 +1849,14 @@ fn call(
                 "RECOVERY_CALL_BINDING_MISMATCH: pending invocation does not match this run config or Work snapshot",
             ));
         }
+        let expansion_budget = include_expansion_budget.then_some(checkpoint.expansions_remaining);
         let request = job_envelope(
             report,
             role_name,
             driver,
             &identity.invocation,
             payload,
-            Some(checkpoint.expansions_remaining),
+            expansion_budget,
         );
         ensure_input_cap(driver, &request)?;
         let candidate = recovery::InputRecord::new(
@@ -1887,13 +1904,14 @@ fn call(
     } else {
         let invocation = uuid::Uuid::new_v4().simple().to_string();
         let reservation = next_reserved(repo, &c.budget, &report.run, role_name)?;
+        let expansion_budget = include_expansion_budget.then_some(checkpoint.expansions_remaining);
         let request = job_envelope(
             report,
             role_name,
             driver,
             &invocation,
             payload,
-            Some(checkpoint.expansions_remaining),
+            expansion_budget,
         );
         let request_bytes = ensure_input_cap(driver, &request)?;
         let snapshot = checkpoint.snapshot.clone();
@@ -2003,6 +2021,18 @@ fn call(
                 driver.cap.overhead_input_tokens,
             )?;
         }
+        if !retry_uncertain_dispatch {
+            let reason = "DRAFT_DISPATCH_UNCERTAIN: the author may have received the request, no durable response exists, and the maximum reservation is retained; inspect the provider before preparing new Work";
+            report.attempts[attempt_index].status = "DISPATCH_UNCERTAIN_MAXIMUM_RETAINED".into();
+            report.attempts[attempt_index].failure = Some(reason.into());
+            if let Some(pending) = checkpoint.pending_call.as_mut() {
+                pending.status = "UNCERTAIN_NO_RESULT".into();
+                pending.failure = Some(reason.into());
+            }
+            save_run_checkpoint(repo, report, checkpoint)?;
+            save_report(repo, report)?;
+            return Err(invalid(reason));
+        }
         report.attempts[attempt_index].status = "INTERRUPTED_MAXIMUM_RETAINED".into();
         report.attempts[attempt_index].failure =
             Some("RECOVERY_INTERRUPTED_NO_DURABLE_RESULT".into());
@@ -2017,6 +2047,8 @@ fn call(
             driver,
             request["payload"].clone(),
             author_contract,
+            retry_uncertain_dispatch,
+            include_expansion_budget,
         );
     }
 
@@ -3921,6 +3953,8 @@ fn execute_run(
                 &config.reviewer,
                 payload,
                 None,
+                true,
+                true,
             )?;
             if result["action"] == "expand" {
                 if contract.is_some() {
@@ -4080,6 +4114,8 @@ fn execute_run(
             driver,
             payload,
             author_binding,
+            true,
+            true,
         )?;
         match result["action"].as_str() {
             Some("expand") => {
@@ -4390,6 +4426,14 @@ pub fn run(
         ));
     }
     let prior = latest_report(repo, id)?;
+    if prior
+        .as_ref()
+        .is_some_and(|report| report.execution_mode.is_some())
+    {
+        return Err(invalid(
+            "RECOVERY_MODE_MISMATCH: this Work has an operation draft run; use `docs work run --draft` with its original configuration or prepare new Work for the generic author/reviewer workflow",
+        ));
+    }
     let accepted_retry = prior
         .as_ref()
         .is_some_and(|report| report.status == "ACCEPTED");
@@ -4463,6 +4507,8 @@ pub fn run(
             gap: None,
             accounting: None,
             context_budget: None,
+            execution_mode: None,
+            draft: None,
             checkpoint: None,
         };
         let mut checkpoint = None;
@@ -4531,6 +4577,14 @@ pub fn run(
     }
     save_report(repo, &report)?;
     status(repo, id, None, 20)
+}
+
+pub fn run_operation_draft(
+    repo: &Repository,
+    id: &str,
+    config_path: Option<&std::path::Path>,
+) -> Result<Value, ClewError> {
+    operation_draft::run(repo, id, config_path)
 }
 
 fn finalize_failed_run(
@@ -4780,6 +4834,8 @@ mod input_cap_tests {
             gap: None,
             accounting: None,
             context_budget: None,
+            execution_mode: None,
+            draft: None,
             checkpoint: None,
         };
         let mut remaining = 2;
@@ -5246,6 +5302,8 @@ mod input_cap_tests {
             gap: None,
             accounting: None,
             context_budget: None,
+            execution_mode: None,
+            draft: None,
             checkpoint: None,
         };
         let checkpoint = RunCheckpoint::new(
@@ -5337,6 +5395,8 @@ mod input_cap_tests {
             gap: None,
             accounting: None,
             context_budget: None,
+            execution_mode: None,
+            draft: None,
             checkpoint: Some(recovery::CheckpointRef {
                 schema: "codeclew-documentation-recovery-checkpoint-ref/1.0".into(),
                 run: run.clone(),
@@ -7007,6 +7067,8 @@ mod input_cap_tests {
             gap: None,
             accounting: None,
             context_budget: None,
+            execution_mode: None,
+            draft: None,
             checkpoint: None,
         };
         let mut driver = Role {
@@ -7162,6 +7224,8 @@ mod input_cap_tests {
             gap: None,
             accounting: None,
             context_budget: None,
+            execution_mode: None,
+            draft: None,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(
@@ -7254,6 +7318,8 @@ mod input_cap_tests {
             &driver,
             request["payload"].clone(),
             None,
+            true,
+            true,
         )
         .unwrap();
         assert_eq!(replayed, authored);

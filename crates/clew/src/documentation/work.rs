@@ -45,6 +45,9 @@ pub enum Command {
         work: String,
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Produce one endpoint answer draft from compact packet evidence without publication.
+        #[arg(long)]
+        draft: bool,
     },
     Status {
         #[arg(long)]
@@ -579,8 +582,18 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             store::read::<Request>(&input, store::MAX_RECORD)?.with_language_flag(language)?,
             snapshot.as_deref(),
         ),
-        Command::Run { root, work, config } => {
-            super::agent_jobs::run(&Repository::open(&root)?, &work, config.as_deref())
+        Command::Run {
+            root,
+            work,
+            config,
+            draft,
+        } => {
+            let repository = Repository::open(&root)?;
+            if draft {
+                super::agent_jobs::run_operation_draft(&repository, &work, config.as_deref())
+            } else {
+                super::agent_jobs::run(&repository, &work, config.as_deref())
+            }
         }
         Command::Status {
             root,
@@ -641,7 +654,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
-fn write_explanation_outputs(
+pub(super) fn write_explanation_outputs(
     output_dir: &std::path::Path,
     work: &str,
     packet: &Value,

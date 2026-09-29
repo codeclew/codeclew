@@ -15,6 +15,13 @@ const ANSWER_SCHEMA: &str = "codeclew-operation-answer/1.0";
 const PACKET_SCHEMA: &str = "codeclew-documentation-reader-packet/1.0";
 const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "loop"];
 
+pub(super) fn output_schema() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../../schemas/documentation/operation-answer.schema.json"
+    ))
+    .expect("operation answer schema is valid JSON")
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationAnswer {

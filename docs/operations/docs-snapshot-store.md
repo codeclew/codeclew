@@ -432,19 +432,20 @@ this changes transmission, not snapshot hydration or invalidation scope.
 
 For one captured Java HTTP endpoint, Work accepts
 `"contextProfile": "endpoint-context-v3"`. The profile supplies the retained
-endpoint route, direct request/response FIELD facts, bounded reachable method
-sources, and complete retained FLOW or CALL_RELATION facts. A descendant call
-target enters the 12-method budget only after its retained source is available
-and its method body parses. Missing or unparseable bodies remain explicit gaps
-and do not consume that descendant budget.
+endpoint route, direct request/response FIELD facts, eligible reachable method
+sources, and retained FLOW or CALL_RELATION facts. It keeps all selected
+reachable method bodies and deduplicates their source text; traversal ends at
+the natural evidence frontier and uses visited identities to stop cycles.
+Provenance, scope and ambiguity checks remain in force. Missing or unparseable
+bodies remain explicit gaps. There is no method-count or aggregate-source-byte
+selector cutoff; delivery and provider limits must be reported explicitly rather
+than silently dropping selected source evidence.
 Legacy same-owner helper and constant discovery is marked
 `SOURCE_REFERENCE_CANDIDATE`; it is lexical evidence and does not establish
-compiler resolution. Method bodies and field token facts share a 48 KiB
-selection budget. DTO class source is not included. The initial page places
+compiler resolution. DTO class source is not included. The initial page places
 FIELD facts and selected SOURCE rows before FLOW and CALL_RELATION facts. The
 packet groups references to those facts and reports unavailable, ambiguous, or
-truncated paths as gaps. Captured `STATIC` + `FINAL` fields are preferred when
-the referenced-owner-field limit applies.
+truncated paths as gaps.
 
 An explicit `this::method` is a lexical `METHOD_REFERENCE` candidate; it records
 a callable reference and does not establish invocation at that source position.
@@ -457,6 +458,11 @@ effects remain unknown. This projection does not create a Work read receipt or
 an accepted narrative. Add `--audit-output packet-audit.json` to write a
 separate verification file with full selected rows, Work handles and digests;
 those audit-only rows are not described as delivered to the author.
+
+For the ordinary one-author endpoint draft, use `docs work run --draft`; it
+builds this packet and renders the returned answer through the same saved Work.
+The complete preparation, author-only configuration and recovery recipe is in
+`skills/codeclew/references/service-documentation.md`.
 
 To render a structured answer conforming to
 `codeclew-operation-answer/1.0`, run

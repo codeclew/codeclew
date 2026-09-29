@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/operation-draft-execution.schema.json",
+  "title": "Codeclew endpoint operation draft execution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "author",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-operation-draft-execution/1.0"
+    },
+    "author": {
+      "$ref": "agent-job.schema.json#/$defs/role"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account",
+        "costUnit",
+        "ceiling",
+        "stopLoss"
+      ],
+      "properties": {
+        "account": {
+          "type": "string",
+          "minLength": 1
+        },
+        "costUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "ceiling": {
+          "$ref": "agent-job.schema.json#/$defs/amount"
+        },
+        "stopLoss": {
+          "$ref": "agent-job.schema.json#/$defs/amount"
+        }
+      }
+    }
+  }
+}

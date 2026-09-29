@@ -64,11 +64,31 @@ clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --un
 
 The Work result includes `PROCESS_ROOT` handles for the process overview and process-specific behavior. Use the overview handle as a proposal operation target when `entrypoint` is `process-overview`; prepare another Work without `entrypoint` to author the process-specific root. The handles have `operation`/`gap` roles but not `evidence`: cite source and dependency handles delivered by recorded reads. `selection.json` names those handles, and a human/current agent authors the schema-constrained proposal from recorded reads. This is real authoring work, not an automatic consequence of capture. Alternatively, `docs work run --root /work/architecture --work WORK_ID --config /work/execution.json` uses an explicitly configured author/reviewer; do not invent provider credentials or assume it runs free. Local publication remains `UNASSESSED`; configured meaning review is separate.
 
-`proposal publish` and an accepted `work run` create an immutable internal bundle and update the working `docs/index.html` pointer (the frozen publication). This does not automatically release a version. Open the bundle returned by that command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
+For one captured Java HTTP endpoint, prepare Work with
+`contextProfile: "endpoint-context-v3"` in its request before calculating Work
+identity, then use `docs work run --root /work/architecture --work WORK_ID
+--config /operator/operation-draft.json --draft`. This path calls one configured
+author with the compact operation packet and writes `DRAFT` / `UNREVIEWED`
+`answer.json`, `operation.md` and `index.html` beneath
+`/work/architecture/.codeclew/drafts/WORK_ID`. The author-only config schema is
+`codeclew-documentation-operation-draft-execution/1.0`; it contains `author`
+and `budget`, with no reviewer, fallback or repair settings. The draft is not a
+proposal and is never published by this command. See the Codeclew skill's
+service-documentation reference for the preparation and config examples.
+
+`proposal publish` and an accepted generic `work run` without `--draft` create an immutable internal bundle and update the working `docs/index.html` pointer (the frozen publication). The operation draft path does not. This does not automatically release a version. Open the bundle returned by a publishing command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
 
 ### Recover a Work run
 
-If `docs work run` is interrupted, retry the **same Work with the same execution configuration**. Intact, validated saved role results are reused. A dispatched call with no saved result may be retried within the run's original finite allowance; when provider usage is unknown, accounting keeps the maximum reservation. This is recovery behavior, not an exactly-once or provider-billing guarantee.
+For a generic author/reviewer `docs work run`, retry the **same Work with the same execution configuration**. Intact, validated saved role results are reused. A dispatched call with no saved result may be retried within that run's original finite allowance; when provider usage is unknown, accounting keeps the maximum reservation. This is recovery behavior, not an exactly-once or provider-billing guarantee.
+
+For `docs work run --draft`, a saved raw answer is reused to render or restore
+the local draft without another author call. An invalid answer is retained with
+its usage and receives no hidden repair call. A dispatch with no durable result
+is reported as `DRAFT_UNCERTAIN`, retaining the maximum reservation; repeating
+the command does not redrive it. Prepare new Work to make another author
+attempt. Work profile, compact packet, author config and driver are bound to the
+draft run, and a generic run cannot be resumed in draft mode or the reverse.
 
 Configuration, driver, evidence, read-ledger or publication mismatches return an explicit `RECOVERY_*` refusal. Inspect the retained report and current documentation state; do not delete saved run data, change configuration to force a retry, or repeat capture as a recovery shortcut. An accepted retry whose intended publication is still current can finish without another model call, bundle or history entry. If a later unrelated publication has changed the current output, recovery refuses conservatively and does not roll it back. Cancellation applies to its run only. A terminal run with recorded attempts is not an implicit fresh run or reviewer-only retry; retain and inspect its report and results before deciding what work to prepare next.
 
