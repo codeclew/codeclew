@@ -321,27 +321,37 @@ separate lifecycle concerns.
 
 ### Work references
 
-New work records use `codeclew-documentation-work-manifest/1.0`: an immutable
-`evidenceSnapshot` handle replaces the embedded Check. Requests, authoring
-inputs, retained prose, handles, influence and obligations remain bound to the
-work identity. The manifest schema and digest are checked before its evidence
-is opened; an explicit historical `snapshot` must match `evidenceSnapshot`.
-Missing or corrupt evidence fails without source acquisition or latest fallback.
+New work records use `codeclew-documentation-work-manifest/2.0`: an immutable
+`evidenceSnapshot` handle replaces the embedded Check, and typed references to
+the handle and influence maps replace their per-Work copies. Equal map payloads
+share content-addressed objects even when request, subject, scope, or snapshot
+bindings differ. The manifest separately binds those identities, external
+inputs, retained prose, obligations, and profile, so sharing a table never
+merges Work identities. References validate their schema, digest, size, typed
+payload and canonical encoding. The manifest commits only after both objects
+are durably stored. An interrupted preparation can leave unreferenced table
+objects that a retry can reuse. The documentation CAS has no object collector;
+shared and orphaned objects are retained.
 
-Legacy inline `codeclew-documentation-work/1.0` records keep their original
-identity and remain readable. Legacy Work with no pinned `snapshot` cannot
-continue through proposal validation or start an agent run: it reports
-`LEGACY_WORK_REQUIRES_REPREPARE`. Prepare new Work from a saved snapshot; merely
-having an `evidenceSnapshot` field does not silently grant historical authority
-to older records. Existing accepted run status remains readable. The 64 MiB Work-record limit now applies to the
-manifest metadata, not to the hydrated Check. This does not remove bounds on
-individual immutable evidence objects or on authoring metadata.
+The manifest schema and digest are checked before its evidence is opened; an
+explicit historical `snapshot` must match `evidenceSnapshot`. Missing or
+corrupt tables or evidence fail without source acquisition or latest fallback.
+Restore a complete documentation-root backup when a referenced table object is
+missing or corrupt. `docs work prepare --root DOCS --subject service:ID --input request.json --snapshot SNAPSHOT` prepares a new format against the same saved evidence.
+Older inline Work records are unsupported by this reader and report
+`DOCS_WORK_REPREPARE_REQUIRED`. They and their read, answer, and other records
+remain unchanged and bound to the old Work ID; new Work has a new identity and
+never silently rebinds those records. The 64 MiB Work-record limit applies to
+manifest metadata, not to the hydrated Check or the separate maps. Each shared
+object remains subject to the cache's existing portable object-size bound.
 
 An agent run reuses its verified Work for initial and expansion pages, avoiding
 reopening the same snapshot for each page. Reads in a new process still hydrate
-the full Check. Handles/influence scale with the selected analysis; they are
-not yet a constant-size query result. Page limits remain independent of the
-complete model-request budget.
+the full Check and the referenced tables. Repeated preparation validates the
+saved manifest and both tables against the freshly derived request, scope,
+snapshot, input, and profile bindings while reusing the Check already hydrated
+for that preparation. Page limits remain independent of the complete
+model-request budget.
 
 Check hydration verifies dependency-index pages in one traversal, then decodes
 the selected observation payloads. Every referenced page and entry count is

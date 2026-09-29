@@ -230,7 +230,7 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Handle {
     pub kind: String,
@@ -261,11 +261,13 @@ const HTTP_API_CONTRACT_PROFILE: &str = "http-api-contract-v1";
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const MAX_DIRECT_API_TYPES: usize = 8;
 const WORK_SCHEMA: &str = "codeclew-documentation-work/1.0";
-const WORK_MANIFEST_SCHEMA: &str = "codeclew-documentation-work-manifest/1.0";
+const WORK_MANIFEST_SCHEMA: &str = "codeclew-documentation-work-manifest/2.0";
+const WORK_HANDLES_OBJECT_SCHEMA: &str = "codeclew-documentation-work-handles/1.0";
+const WORK_INFLUENCE_OBJECT_SCHEMA: &str = "codeclew-documentation-work-influence/1.0";
 
-/// The persisted work record keeps the immutable check in the content-addressed
-/// cache instead of duplicating its (potentially very large) hydrated form.
-/// `Work` remains the public, hydrated runtime representation.
+/// The persisted work record keeps its immutable check and the potentially large
+/// handle/influence tables in the content-addressed cache. `Work` remains the
+/// public, hydrated runtime representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredWork {
@@ -276,8 +278,8 @@ struct StoredWork {
     snapshot: String,
     retained: Option<Narrative>,
     external_inputs: BTreeMap<String, Value>,
-    handles: BTreeMap<String, Handle>,
-    influence: BTreeMap<String, String>,
+    handles_ref: super::cache::ObjectRef,
+    influence_ref: super::cache::ObjectRef,
     obligations: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     review_reasons: Vec<Value>,
@@ -285,8 +287,8 @@ struct StoredWork {
 }
 
 impl StoredWork {
-    fn from_runtime(work: &Work, evidence_snapshot: String) -> Self {
-        Self {
+    fn from_runtime(work: &Work, evidence_snapshot: String) -> Result<Self, ClewError> {
+        Ok(Self {
             schema: WORK_MANIFEST_SCHEMA.into(),
             id: String::new(),
             subject: work.subject.clone(),
@@ -294,23 +296,23 @@ impl StoredWork {
             snapshot: evidence_snapshot.clone(),
             retained: work.retained.clone(),
             external_inputs: work.external_inputs.clone(),
-            handles: work.handles.clone(),
-            influence: work.influence.clone(),
+            handles_ref: work_table_reference(WORK_HANDLES_OBJECT_SCHEMA, &work.handles)?,
+            influence_ref: work_table_reference(WORK_INFLUENCE_OBJECT_SCHEMA, &work.influence)?,
             obligations: work.obligations.clone(),
             review_reasons: work.review_reasons.clone(),
             evidence_snapshot,
-        }
+        })
     }
 
     fn validate_identity(&self, id: &str) -> Result<(), ClewError> {
         if self.schema != WORK_MANIFEST_SCHEMA {
             return Err(invalid(
-                "DOCS_REINDEX_REQUIRED: unsupported stored work schema; initialize a fresh documentation root, run docs check, and prepare new work",
+                "DOCS_WORK_REPREPARE_REQUIRED: saved Work uses an unsupported format; prepare new Work with docs work prepare --root <root> --subject <service:ID or scenario:ID> --input <request.json> --snapshot <snapshot>",
             ));
         }
         if self.snapshot.is_empty() || self.snapshot != self.evidence_snapshot {
             return Err(invalid(
-                "DOCS_REINDEX_REQUIRED: work requires an explicit snapshot matching its retained evidence; initialize a fresh documentation root, run docs check, and prepare new work",
+                "DOCS_WORK_REPREPARE_REQUIRED: saved Work lacks a matching retained snapshot; prepare new Work with docs work prepare --root <root> --subject <service:ID or scenario:ID> --input <request.json> --snapshot <snapshot>",
             ));
         }
         let recorded = self.id.clone();
@@ -323,7 +325,12 @@ impl StoredWork {
         Ok(())
     }
 
-    fn into_runtime(self, checked: Check) -> Work {
+    fn into_runtime(
+        self,
+        checked: Check,
+        handles: BTreeMap<String, Handle>,
+        influence: BTreeMap<String, String>,
+    ) -> Work {
         Work {
             schema: WORK_SCHEMA.into(),
             id: self.id,
@@ -333,12 +340,153 @@ impl StoredWork {
             snapshot: Some(self.snapshot),
             retained: self.retained,
             external_inputs: self.external_inputs,
-            handles: self.handles,
-            influence: self.influence,
+            handles,
+            influence,
             obligations: self.obligations,
             review_reasons: self.review_reasons,
         }
     }
+}
+
+fn work_table_reference<T: Serialize>(
+    schema: &str,
+    table: &T,
+) -> Result<super::cache::ObjectRef, ClewError> {
+    let payload = bytes(table)?;
+    if payload.len() as u64 > super::check::PORTABLE_CACHE_MAX_BYTES {
+        return Err(ClewError::new(
+            ErrorCode::SliceBudgetExceeded,
+            "documentation Work table exceeds the portable cache budget",
+        ));
+    }
+    Ok(super::cache::ObjectRef::new(
+        schema.into(),
+        super::cache::content_digest(&payload),
+        payload.len() as u64,
+    ))
+}
+
+fn valid_work_table_digest(digest: &str) -> bool {
+    digest.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+fn work_table_error(kind: &str, detail: &str) -> ClewError {
+    ClewError::new(
+        ErrorCode::StateCorrupt,
+        format!(
+            "DOCS_WORK_TABLE_CORRUPT: {kind} table {detail}; restore a complete documentation-root backup before retrying docs work commands"
+        ),
+    )
+}
+
+fn read_work_table<T>(
+    repo: &Repository,
+    reference: &super::cache::ObjectRef,
+    schema: &str,
+    kind: &str,
+) -> Result<T, ClewError>
+where
+    T: serde::de::DeserializeOwned + Serialize,
+{
+    if reference.schema != schema
+        || !valid_work_table_digest(&reference.digest)
+        || reference.size == 0
+        || reference.size > super::check::PORTABLE_CACHE_MAX_BYTES
+    {
+        return Err(work_table_error(
+            kind,
+            "reference schema, digest, or size is invalid",
+        ));
+    }
+    let payload = super::cache::get(repo, reference, super::check::PORTABLE_CACHE_MAX_BYTES)
+        .map_err(|error| {
+            work_table_error(kind, &format!("could not be verified ({})", error.message))
+        })?
+        .ok_or_else(|| work_table_error(kind, "is missing from the immutable object store"))?;
+    let value: T = serde_json::from_slice(&payload).map_err(|error| {
+        work_table_error(kind, &format!("does not match its typed schema ({error})"))
+    })?;
+    if bytes(&value)? != payload {
+        return Err(work_table_error(
+            kind,
+            "does not use its canonical typed encoding",
+        ));
+    }
+    Ok(value)
+}
+
+fn persist_work_tables(
+    repo: &Repository,
+    work: &Work,
+    stored: &StoredWork,
+) -> Result<(), ClewError> {
+    let handles = super::cache::put_json(repo, WORK_HANDLES_OBJECT_SCHEMA, &work.handles)?;
+    let influence = super::cache::put_json(repo, WORK_INFLUENCE_OBJECT_SCHEMA, &work.influence)?;
+    if handles != stored.handles_ref || influence != stored.influence_ref {
+        return Err(work_table_error(
+            "shared",
+            "reference changed while preparing the manifest",
+        ));
+    }
+    Ok(())
+}
+
+fn load_work_tables(
+    repo: &Repository,
+    stored: &StoredWork,
+) -> Result<(BTreeMap<String, Handle>, BTreeMap<String, String>), ClewError> {
+    Ok((
+        read_work_table(
+            repo,
+            &stored.handles_ref,
+            WORK_HANDLES_OBJECT_SCHEMA,
+            "handles",
+        )?,
+        read_work_table(
+            repo,
+            &stored.influence_ref,
+            WORK_INFLUENCE_OBJECT_SCHEMA,
+            "influence",
+        )?,
+    ))
+}
+
+fn validate_existing_work(
+    repo: &Repository,
+    expected: &StoredWork,
+    encoded: &[u8],
+    work: &Work,
+) -> Result<(), ClewError> {
+    let existing = load_stored(repo, &expected.id)?;
+    if bytes(&existing)? != encoded {
+        return Err(work_table_error(
+            "saved",
+            "manifest does not match the freshly derived Work bindings",
+        ));
+    }
+    let (handles, influence) = load_work_tables(repo, &existing)?;
+    if handles != work.handles || influence != work.influence {
+        return Err(work_table_error(
+            "saved",
+            "payload does not match the freshly derived Work bindings",
+        ));
+    }
+    Ok(())
+}
+
+fn publish_new_work(
+    repo: &Repository,
+    work: &Work,
+    stored: &StoredWork,
+    encoded: &[u8],
+) -> Result<(), ClewError> {
+    persist_work_tables(repo, work, stored)?;
+    repo.atomic(&format!("{}/work.json", directory(&stored.id)?), encoded)
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -369,8 +517,12 @@ pub(super) fn directory(id: &str) -> Result<String, ClewError> {
 }
 fn load_stored(repo: &Repository, id: &str) -> Result<StoredWork, ClewError> {
     let path = repo.path(&format!("{}/work.json", directory(id)?))?;
-    let stored: StoredWork = store::read(&path, 64 * 1024 * 1024).map_err(|error| invalid(format!(
-        "DOCS_REINDEX_REQUIRED: unsupported saved work format ({}); initialize a fresh documentation root, run docs check, and prepare new work", error.message)))?;
+    let stored: StoredWork = store::read(&path, 64 * 1024 * 1024).map_err(|error| {
+        invalid(format!(
+            "DOCS_WORK_REPREPARE_REQUIRED: saved Work format is unsupported or corrupt ({}); if this is an older Work format, prepare new Work with docs work prepare --root <root> --subject <service:ID or scenario:ID> --input <request.json> --snapshot <snapshot>; if the current record is corrupt, restore a complete documentation-root backup before retrying docs work commands",
+            error.message
+        ))
+    })?;
     stored.validate_identity(id)?;
     validate_context_profile(&stored.subject, &stored.request)?;
     stored.request.validate_documentation_language()?;
@@ -381,17 +533,25 @@ pub(super) fn load_influence(
     repo: &Repository,
     id: &str,
 ) -> Result<BTreeMap<String, String>, ClewError> {
-    Ok(load_stored(repo, id)?.influence)
+    let stored = load_stored(repo, id)?;
+    read_work_table(
+        repo,
+        &stored.influence_ref,
+        WORK_INFLUENCE_OBJECT_SCHEMA,
+        "influence",
+    )
 }
 
 pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     let stored = super::progress::run("LOAD_WORK_RECORD", || load_stored(repo, id))?;
+    let (handles, influence) =
+        super::progress::run("LOAD_WORK_TABLES", || load_work_tables(repo, &stored))?;
     let checked = super::progress::run("LOAD_RETAINED_SNAPSHOT", || {
         Check::load_snapshot(repo, &stored.evidence_snapshot)
     })?;
     validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
     validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
-    Ok(stored.into_runtime(checked))
+    Ok(stored.into_runtime(checked, handles, influence))
 }
 
 pub fn read_state(repo: &Repository, id: &str) -> Result<ReadState, ClewError> {
@@ -1277,7 +1437,7 @@ pub fn prepare_with_snapshot(
         let (_, obligation) = http_api_contract_preparation(&work)?;
         work.obligations.push(obligation);
     }
-    let mut stored = StoredWork::from_runtime(&work, evidence_snapshot);
+    let mut stored = StoredWork::from_runtime(&work, evidence_snapshot)?;
     stored.id = digest(&stored)?[7..].into();
     // Validate selection before committing an unusable work object.
     rows(&work, &Selection::default())?;
@@ -1302,9 +1462,12 @@ pub fn prepare_with_snapshot(
         }
         let path = format!("{}/work.json", directory(&stored.id)?);
         if repo.path(&path)?.exists() {
-            load(repo, &stored.id)?;
+            validate_existing_work(repo, &stored, &encoded, &work)?;
         } else {
-            repo.atomic(&path, &encoded)?;
+            // CAS transactions are durable before the atomic root record becomes
+            // visible. An interrupted write can leave harmless shared objects;
+            // a retry validates and reuses them before publishing the manifest.
+            publish_new_work(repo, &work, &stored, &encoded)?;
         }
     }
     work.id = stored.id;
@@ -2570,7 +2733,7 @@ mod section_context_tests {
     #[test]
     fn documentation_language_changes_work_identity_without_changing_evidence() {
         let mut work = fixture(1, true);
-        let old = StoredWork::from_runtime(&work, "capture".into());
+        let old = StoredWork::from_runtime(&work, "capture".into()).unwrap();
         assert!(
             serde_json::to_value(&old).unwrap()["request"]
                 .get("documentationLanguage")
@@ -2578,13 +2741,13 @@ mod section_context_tests {
         );
         work.request.normalize_documentation_language().unwrap();
         assert_eq!(work.request.documentation_language(), "en");
-        let english = StoredWork::from_runtime(&work, "capture".into());
+        let english = StoredWork::from_runtime(&work, "capture".into()).unwrap();
         work.request.documentation_language = Some("ru".into());
-        let russian = StoredWork::from_runtime(&work, "capture".into());
+        let russian = StoredWork::from_runtime(&work, "capture".into()).unwrap();
         assert_ne!(digest(&old).unwrap(), digest(&english).unwrap());
         assert_ne!(digest(&english).unwrap(), digest(&russian).unwrap());
         assert_eq!(english.evidence_snapshot, russian.evidence_snapshot);
-        assert_eq!(english.influence, russian.influence);
+        assert_eq!(english.influence_ref, russian.influence_ref);
         assert_eq!(english.retained, russian.retained);
         let rows = rows(&work, &Selection::default()).unwrap();
         let section = rows.iter().find(|row| row["kind"] == "SECTION").unwrap();
@@ -2897,7 +3060,7 @@ mod section_context_tests {
     #[test]
     fn section_projection_version_separates_old_and_new_immutable_work_ledgers() {
         let mut work = fixture(1, false);
-        let old = StoredWork::from_runtime(&work, "capture".into());
+        let old = StoredWork::from_runtime(&work, "capture".into()).unwrap();
         let old_bytes = bytes(&old).unwrap();
         let old_id = digest(&old).unwrap();
         normalize_section_profile(&work.subject, &mut work.request);
@@ -2906,13 +3069,13 @@ mod section_context_tests {
             Some(SECTION_ORIENTATION_PROFILE)
         );
         validate_context_profile(&work.subject, &work.request).unwrap();
-        let current = StoredWork::from_runtime(&work, "capture".into());
+        let current = StoredWork::from_runtime(&work, "capture".into()).unwrap();
         assert_ne!(digest(&current).unwrap(), old_id);
         assert_eq!(bytes(&old).unwrap(), old_bytes);
         let current_id = digest(&current).unwrap();
         normalize_section_profile(&work.subject, &mut work.request);
         assert_eq!(
-            digest(&StoredWork::from_runtime(&work, "capture".into())).unwrap(),
+            digest(&StoredWork::from_runtime(&work, "capture".into()).unwrap()).unwrap(),
             current_id
         );
         work.request.entrypoint = None;
@@ -2922,7 +3085,7 @@ mod section_context_tests {
         let mut legacy_entity = entity_fixture(0);
         legacy_entity.request.context_profile = Some(SECTION_ORIENTATION_PROFILE.into());
         let old_entity_id =
-            digest(&StoredWork::from_runtime(&legacy_entity, "capture".into())).unwrap();
+            digest(&StoredWork::from_runtime(&legacy_entity, "capture".into()).unwrap()).unwrap();
         let error =
             validate_context_profile(&legacy_entity.subject, &legacy_entity.request).unwrap_err();
         assert!(error.message.contains("retained snapshot"));
@@ -2937,8 +3100,267 @@ mod section_context_tests {
         validate_context_profile(&legacy_entity.subject, &legacy_entity.request).unwrap();
         assert_ne!(
             old_entity_id,
-            digest(&StoredWork::from_runtime(&legacy_entity, "capture".into())).unwrap()
+            digest(&StoredWork::from_runtime(&legacy_entity, "capture".into()).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn stored_work_shares_equal_tables_while_manifest_keeps_request_and_scope_bindings() {
+        let first = fixture(3, true);
+        let snapshot = "snapshot-a/100";
+        let first_stored = StoredWork::from_runtime(&first, snapshot.into()).unwrap();
+
+        let mut legacy = json!({
+            "schema":"codeclew-documentation-work-manifest/1.0",
+            "id":"",
+            "subject":first.subject,
+            "request":first.request,
+            "snapshot":snapshot,
+            "retained":first.retained,
+            "externalInputs":first.external_inputs,
+            "handles":first.handles,
+            "influence":first.influence,
+            "obligations":first.obligations,
+            "reviewReasons":first.review_reasons,
+            "evidenceSnapshot":snapshot
+        });
+        if first.review_reasons.is_empty() {
+            legacy.as_object_mut().unwrap().remove("reviewReasons");
+        }
+        let legacy_id = digest(&legacy).unwrap()[7..].to_owned();
+        let mut new_id = first_stored.clone();
+        new_id.id.clear();
+        new_id.id = digest(&new_id).unwrap()[7..].into();
+        assert_ne!(legacy_id, new_id.id);
+
+        let mut different_request = first.clone();
+        different_request.request.audience = "On-call operators".into();
+        let request_stored =
+            StoredWork::from_runtime(&different_request, "snapshot-a/100".into()).unwrap();
+        assert_eq!(first_stored.handles_ref, request_stored.handles_ref);
+        assert_eq!(first_stored.influence_ref, request_stored.influence_ref);
+        assert_ne!(
+            digest(&first_stored).unwrap(),
+            digest(&request_stored).unwrap()
+        );
+
+        let mut different_scope = different_request;
+        different_scope.subject = "scenario:checkout".into();
+        different_scope.request.context_profile = Some("scenario-scope-v1".into());
+        different_scope.handles.insert(
+            "scenario-root".into(),
+            Handle {
+                kind: "PROCESS_ROOT".into(),
+                id: "checkout".into(),
+            },
+        );
+        different_scope
+            .influence
+            .insert("scenario:checkout".into(), "sha256:scope-a".into());
+        let scope_stored =
+            StoredWork::from_runtime(&different_scope, "snapshot-a/100".into()).unwrap();
+        assert_ne!(first_stored.handles_ref, scope_stored.handles_ref);
+        assert_ne!(first_stored.influence_ref, scope_stored.influence_ref);
+        assert_ne!(
+            digest(&request_stored).unwrap(),
+            digest(&scope_stored).unwrap()
+        );
+
+        let other_snapshot = first.clone();
+        let snapshot_stored =
+            StoredWork::from_runtime(&other_snapshot, "snapshot-b/100".into()).unwrap();
+        assert_eq!(first_stored.handles_ref, snapshot_stored.handles_ref);
+        assert_eq!(first_stored.influence_ref, snapshot_stored.influence_ref);
+        assert_ne!(
+            digest(&first_stored).unwrap(),
+            digest(&snapshot_stored).unwrap()
+        );
+    }
+
+    #[test]
+    fn work_table_roundtrip_and_repeated_validation_preserve_current_bindings() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Shared Work tables").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let work = fixture(12, true);
+        let mut stored = StoredWork::from_runtime(&work, "missing-snapshot/1".into()).unwrap();
+        stored.id = digest(&stored).unwrap()[7..].into();
+        let encoded = bytes(&stored).unwrap();
+
+        // A crash after durable CAS puts but before work.json leaves only
+        // recoverable objects; retrying publication reuses those exact bytes.
+        persist_work_tables(&repo, &work, &stored).unwrap();
+        let path = format!("{}/work.json", directory(&stored.id).unwrap());
+        assert!(!repo.path(&path).unwrap().exists());
+        publish_new_work(&repo, &work, &stored, &encoded).unwrap();
+        assert_eq!(
+            load_work_tables(&repo, &stored).unwrap(),
+            (work.handles.clone(), work.influence.clone())
+        );
+        validate_existing_work(&repo, &stored, &encoded, &work).unwrap();
+
+        let mut changed = work.clone();
+        changed
+            .influence
+            .insert("new-scope".into(), "new-digest".into());
+        let error = validate_existing_work(&repo, &stored, &encoded, &changed).unwrap_err();
+        assert!(error.message.contains("freshly derived Work bindings"));
+
+        // Proposal influence loading resolves only the requested table; it
+        // neither consults the unrelated handle reference nor hydrates the
+        // deliberately unavailable snapshot handle.
+        let mut influence_only = stored.clone();
+        influence_only.handles_ref.schema = "unsupported-handles/1.0".into();
+        influence_only.id.clear();
+        influence_only.id = digest(&influence_only).unwrap()[7..].into();
+        let influence_bytes = bytes(&influence_only).unwrap();
+        let influence_path = format!("{}/work.json", directory(&influence_only.id).unwrap());
+        repo.atomic(&influence_path, &influence_bytes).unwrap();
+        assert_eq!(
+            load_influence(&repo, &influence_only.id).unwrap(),
+            work.influence
+        );
+        assert!(
+            load_work_tables(&repo, &influence_only)
+                .unwrap_err()
+                .message
+                .contains("handles table reference schema")
+        );
+    }
+
+    #[test]
+    fn repeated_validation_rejects_missing_or_corrupt_existing_table_objects() {
+        for defect in ["missing", "corrupt"] {
+            let temporary = tempfile::tempdir().unwrap();
+            Repository::init(temporary.path(), "Corrupt saved Work table").unwrap();
+            let repo = Repository::open(temporary.path()).unwrap();
+            let work = fixture(4, true);
+            let mut stored = StoredWork::from_runtime(&work, "snapshot-test".into()).unwrap();
+            stored.id = digest(&stored).unwrap()[7..].into();
+            let encoded = bytes(&stored).unwrap();
+            publish_new_work(&repo, &work, &stored, &encoded).unwrap();
+
+            let layout: Value = serde_json::from_slice(
+                &fs::read(repo.path(".codeclew/cache/object-layout.json").unwrap()).unwrap(),
+            )
+            .unwrap();
+            let database = repo.root.join(layout["database"].as_str().unwrap());
+            let influence_bytes = bytes(&work.influence).unwrap();
+            let digest = stored.influence_ref.digest.clone();
+            drop(repo);
+
+            let connection = rusqlite::Connection::open(database).unwrap();
+            if defect == "missing" {
+                connection
+                    .execute("DELETE FROM objects WHERE digest = ?1", [&digest])
+                    .unwrap();
+            } else {
+                let mut damaged = influence_bytes;
+                damaged[0] ^= 1;
+                connection
+                    .execute(
+                        "UPDATE objects SET payload = ?1 WHERE digest = ?2",
+                        rusqlite::params![damaged, digest],
+                    )
+                    .unwrap();
+            }
+            drop(connection);
+
+            let reopened = Repository::open(temporary.path()).unwrap();
+            let error = validate_existing_work(&reopened, &stored, &encoded, &work).unwrap_err();
+            assert!(error.message.contains("DOCS_WORK_TABLE_CORRUPT"));
+            assert!(
+                error
+                    .message
+                    .contains("restore a complete documentation-root backup")
+            );
+            let object = super::super::cache::get(
+                &reopened,
+                &stored.influence_ref,
+                super::super::check::PORTABLE_CACHE_MAX_BYTES,
+            );
+            if defect == "missing" {
+                assert!(object.unwrap().is_none());
+            } else {
+                assert!(object.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn missing_wrong_schema_and_wrong_size_work_references_fail_actionably() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Invalid Work table references").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let work = fixture(2, false);
+        let stored = StoredWork::from_runtime(&work, "snapshot/1".into()).unwrap();
+        persist_work_tables(&repo, &work, &stored).unwrap();
+
+        for defect in ["missing", "schema", "size"] {
+            let mut broken = stored.clone();
+            match defect {
+                "missing" => {
+                    broken.influence_ref.digest = super::super::cache::content_digest(b"absent");
+                    broken.influence_ref.size = 6;
+                }
+                "schema" => {
+                    broken.influence_ref =
+                        work_table_reference("wrong-schema/1.0", &work.influence).unwrap();
+                    super::super::cache::put_json(&repo, "wrong-schema/1.0", &work.influence)
+                        .unwrap();
+                }
+                "size" => broken.influence_ref.size += 1,
+                _ => unreachable!(),
+            }
+            broken.id = digest(&broken).unwrap()[7..].into();
+            let path = format!("{}/work.json", directory(&broken.id).unwrap());
+            repo.atomic(&path, &bytes(&broken).unwrap()).unwrap();
+            let error = load_influence(&repo, &broken.id).unwrap_err();
+            assert!(error.message.contains("DOCS_WORK_TABLE_CORRUPT"));
+            assert!(
+                error
+                    .message
+                    .contains("restore a complete documentation-root backup")
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_inline_work_requests_reprepare_without_rewriting_old_record() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Old inline Work").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let id = "a".repeat(64);
+        let path = format!("{}/work.json", directory(&id).unwrap());
+        let old = serde_json::to_vec(&json!({
+            "schema":"codeclew-documentation-work-manifest/1.0",
+            "id":id,
+            "subject":"service:orders",
+            "request":{"schema":"codeclew-documentation-work-request/1.0","audience":"Maintainers"},
+            "snapshot":"snapshot/10",
+            "retained":null,
+            "externalInputs":{},
+            "handles":{},
+            "influence":{},
+            "obligations":[],
+            "evidenceSnapshot":"snapshot/10"
+        }))
+        .unwrap();
+        repo.atomic(&path, &old).unwrap();
+        let read_path = format!("{}/reads.json", directory(&id).unwrap());
+        let old_reads = bytes(&ReadState {
+            work: id.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+        repo.atomic(&read_path, &old_reads).unwrap();
+        let error = load_stored(&repo, &id).unwrap_err();
+        assert!(error.message.contains("DOCS_WORK_REPREPARE_REQUIRED"));
+        assert!(error.message.contains("docs work prepare"));
+        assert!(error.message.contains("--snapshot <snapshot>"));
+        assert_eq!(fs::read(repo.path(&path).unwrap()).unwrap(), old);
+        assert_eq!(fs::read(repo.path(&read_path).unwrap()).unwrap(), old_reads);
+        assert_eq!(read_state(&repo, &id).unwrap().work, id);
     }
 
     #[test]
@@ -3665,9 +4087,28 @@ pub(super) mod api_contract_tests {
     }
 
     fn seal_work_identity(work: &mut Work) {
-        let mut stored = StoredWork::from_runtime(work, "snapshot-test".into());
+        let mut stored = StoredWork::from_runtime(work, "snapshot-test".into()).unwrap();
         stored.id = digest(&stored).unwrap()[7..].into();
         work.id = stored.id;
+    }
+
+    #[test]
+    fn shared_table_roundtrip_keeps_packet_rows_and_citations_unchanged() {
+        let mut work = endpoint_context_fixture();
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Packet Work tables").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut stored = StoredWork::from_runtime(&work, "snapshot-test".into()).unwrap();
+        stored.id = digest(&stored).unwrap()[7..].into();
+        work.id = stored.id.clone();
+        let original = super::super::operation_packet::build(&work).unwrap();
+        persist_work_tables(&repo, &work, &stored).unwrap();
+        let (handles, influence) = load_work_tables(&repo, &stored).unwrap();
+        let restored = stored.into_runtime(work.checked.clone(), handles, influence);
+        assert_eq!(
+            super::super::operation_packet::build(&restored).unwrap(),
+            original
+        );
     }
 
     fn direct_dependency_symbols(rows: &[Value]) -> BTreeSet<String> {
@@ -4131,7 +4572,7 @@ pub(super) mod api_contract_tests {
     }
 
     #[test]
-    fn endpoint_context_prefers_captured_static_final_fields_at_owner_field_limit() {
+    fn endpoint_context_preserves_all_captured_owner_fields_and_static_final() {
         let mut work = endpoint_context_fixture();
         let names: Vec<_> = (0..9).map(|index| format!("injected{index:02}")).collect();
         let references = names
@@ -4192,12 +4633,11 @@ pub(super) mod api_contract_tests {
             })
             .filter_map(|row| row["id"].as_str().map(str::to_owned))
             .collect();
-        assert_eq!(selected.len(), 8);
+        assert_eq!(selected.len(), 10);
         assert!(selected.contains("default-code-field"));
-        assert!(selected.contains("aaa-owner-di-field-injected00"));
-        assert!(selected.contains("aaa-owner-di-field-injected06"));
-        assert!(!selected.contains("aaa-owner-di-field-injected07"));
-        assert!(!selected.contains("aaa-owner-di-field-injected08"));
+        for index in 0..9 {
+            assert!(selected.contains(&format!("aaa-owner-di-field-injected{index:02}")));
+        }
     }
 
     #[test]
