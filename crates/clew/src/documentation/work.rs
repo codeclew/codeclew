@@ -690,7 +690,7 @@ pub(super) fn write_explanation_outputs(
     }))
 }
 
-fn write_atomic_file(path: &std::path::Path, contents: &[u8]) -> Result<(), ClewError> {
+pub(super) fn write_atomic_file(path: &std::path::Path, contents: &[u8]) -> Result<(), ClewError> {
     use std::{fs::OpenOptions, io::Write};
 
     let parent = path

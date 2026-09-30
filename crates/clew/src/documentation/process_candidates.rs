@@ -63,7 +63,7 @@ fn accessor_or_synthetic(symbol: &str) -> bool {
 fn scope(observation: &Observation) -> &str {
     observation.normalized["scope"].as_str().unwrap_or("")
 }
-fn callable(observation: &Observation) -> bool {
+pub(super) fn callable(observation: &Observation) -> bool {
     observation.kind == "SYMBOL"
         && (matches!(
             observation.normalized["declarationKind"].as_str(),

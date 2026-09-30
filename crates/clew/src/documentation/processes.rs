@@ -155,6 +155,22 @@ pub enum Command {
         #[arg(long)]
         snapshot: Option<String>,
     },
+    /// Save the complete retained call/evidence graph for one exact declaration.
+    Graph {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        service: String,
+        /// Exact callable SYMBOL observation ID from the selected snapshot.
+        #[arg(long)]
+        declaration: String,
+        /// Immutable handle returned by docs check or docs recompose.
+        #[arg(long)]
+        snapshot: String,
+        /// Full graph artifact written atomically to this path.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 #[derive(Debug, Subcommand)]
 pub enum SuppressCommand {
@@ -173,6 +189,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         | Command::Put { root, .. }
         | Command::Inspect { root, .. }
         | Command::Prepare { root, .. }
+        | Command::Graph { root, .. }
         | Command::Suppress { root, .. } => root,
     };
     let repo = Repository::open(root)?;
@@ -319,6 +336,13 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             }
             work::prepare_with_snapshot(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?, snapshot.as_deref())
         }
+        Command::Graph {
+            service,
+            declaration,
+            snapshot,
+            output,
+            ..
+        } => super::process_graph::run(&repo, &service, &declaration, &snapshot, &output),
     }
 }
 fn validate_suppress_entry(entry: &str) -> Result<(), ClewError> {

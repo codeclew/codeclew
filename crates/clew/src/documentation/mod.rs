@@ -29,6 +29,7 @@ pub mod plantuml;
 pub mod process_candidates;
 mod process_context;
 pub mod process_flow;
+mod process_graph;
 pub mod process_states;
 pub mod processes;
 pub mod progress;

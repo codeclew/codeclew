@@ -43,6 +43,27 @@ Use the latest list/show `inputDigest`, including `sha256:`, for each catalog mu
 
 Select one method from returned evidence. `docs process candidates --root /work/architecture --service orders --snapshot SOURCE_SNAPSHOT --declaration SYMBOL_OBSERVATION_ID` supports an explicit callable root even where automatic discovery is incomplete. A candidate is navigation, not accepted business meaning. Create a process definition using the existing process schema/fixture: exact service/selector, explicit requested scope, participants, trigger/outcomes, bounded `maxDepth`/`maxNodes`, and only declared interactions. Source methods must use the selector values exposed by retained evidence rather than guessed JVM identities.
 
+To inspect the complete retained call/evidence graph for one exact method without
+authoring a bounded process definition, save a graph artifact from the same
+snapshot:
+
+```sh
+clew docs process graph --root /work/architecture --service orders --declaration SYMBOL_OBSERVATION_ID --snapshot SOURCE_SNAPSHOT --output /work/orders-process-graph.json
+```
+
+The snapshot is required and this command does not capture source, save a
+process definition, or run an author. Every retained FLOW event stays in its
+original ordinal order; repeated callsites remain separate links, while each
+resolved method body appears once and cycles point back to the visited method.
+The artifact keeps complete retained source bodies and records missing or
+ambiguous evidence as frontiers. Its overview may project an isolated direct
+field getter/setter to a READ/WRITE item, but the full methods, callsites,
+observations, and sources remain available in the same artifact. The
+`knownReachableCollection` status describes exhaustion of uniquely resolved
+same-scope links; `runtimeGraphCompleteness` remains `NOT_ESTABLISHED`.
+Resource or write errors fail the command instead of producing a truncated
+successful artifact.
+
 ```sh
 clew docs recompose --root /work/architecture --snapshot SOURCE_SNAPSHOT
 clew docs process inspect --root /work/architecture --input /work/process.json --snapshot ENTITY_SNAPSHOT
