@@ -4,7 +4,7 @@ use super::{
     model::{Observation, ServiceEvidence, Source},
     process_candidates,
     store::Repository,
-    work,
+    work::{self, Work},
 };
 use crate::error::ClewError;
 use serde_json::{Value, json};
@@ -72,7 +72,7 @@ fn exact_scope(observation: &Observation) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn callable_observation(observation: &Observation) -> bool {
+pub(super) fn callable_observation(observation: &Observation) -> bool {
     process_candidates::callable(observation)
         && (matches!(
             observation.normalized["declarationKind"].as_str(),
@@ -88,6 +88,51 @@ fn callable_observation(observation: &Observation) -> bool {
                         | "secondary_constructor"
                 )
             )))
+}
+
+/// Rebuild the full audit graph from Work's already hydrated retained snapshot.
+/// This path performs no repository reads or source capture.
+pub(super) fn collect_from_work(work: &Work) -> Result<Value, ClewError> {
+    if work.request.context_profile.as_deref() != Some("process-graph-v1") {
+        return Err(invalid(
+            "PROCESS_GRAPH_PROFILE_REQUIRED: prepare fresh Work with contextProfile=process-graph-v1",
+        ));
+    }
+    let snapshot = work
+        .snapshot
+        .as_deref()
+        .ok_or_else(|| invalid("PROCESS_GRAPH_SNAPSHOT_REQUIRED: saved snapshot is unavailable"))?;
+    let service = work
+        .subject
+        .strip_prefix("service:")
+        .filter(|service| !service.trim().is_empty())
+        .ok_or_else(|| invalid("PROCESS_GRAPH_SERVICE_REQUIRED: Work must select one service"))?;
+    let declaration = work
+        .request
+        .root_declaration
+        .as_deref()
+        .filter(|declaration| !declaration.trim().is_empty())
+        .ok_or_else(|| invalid("PROCESS_GRAPH_ROOT_REQUIRED: Work has no exact rootDeclaration"))?;
+    let evidence = work.checked.services.get(service).ok_or_else(|| {
+        invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
+    })?;
+    let root = evidence
+        .observations
+        .get(declaration)
+        .filter(|observation| {
+            observation.service == service
+                && callable_observation(observation)
+                && exact_scope(observation).is_some()
+        })
+        .ok_or_else(|| {
+            invalid(
+                "PROCESS_GRAPH_ROOT_INVALID: Work root is not an exact scoped callable observation",
+            )
+        })?;
+    let mut artifact = collect(evidence, root, snapshot, &work.checked.input_digest)?;
+    let artifact_digest = digest(&artifact)?;
+    artifact["artifactDigest"] = json!(artifact_digest);
+    Ok(artifact)
 }
 
 fn collect(

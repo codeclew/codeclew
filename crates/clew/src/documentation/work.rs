@@ -124,6 +124,10 @@ pub struct Request {
     pub entrypoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_declaration: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
@@ -554,6 +558,7 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     })?;
     validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
     validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
+    validate_process_graph_root(&stored.subject, &stored.request, &checked)?;
     Ok(stored.into_runtime(checked, handles, influence))
 }
 
@@ -782,6 +787,54 @@ fn validate_endpoint_context_profile(
     {
         return Err(invalid(
             "CONTEXT_PROFILE_INCOMPATIBLE: endpoint-context-v3 requires one captured Java HTTP endpoint",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_process_graph_root(
+    subject: &str,
+    request: &Request,
+    checked: &Check,
+) -> Result<(), ClewError> {
+    if request.context_profile.as_deref() != Some("process-graph-v1") {
+        return Ok(());
+    }
+    let service = subject
+        .strip_prefix("service:")
+        .filter(|service| !service.trim().is_empty())
+        .ok_or_else(|| invalid("process-graph-v1 requires one non-empty service subject"))?;
+    let declaration = request
+        .root_declaration
+        .as_deref()
+        .filter(|declaration| !declaration.trim().is_empty())
+        .ok_or_else(|| invalid("process-graph-v1 requires an exact rootDeclaration"))?;
+    let evidence = checked
+        .services
+        .get(service)
+        .ok_or_else(|| invalid("process-graph-v1 service evidence is unavailable"))?;
+    let root = evidence
+        .observations
+        .get(declaration)
+        .filter(|observation| {
+            observation.service == service
+                && super::process_graph::callable_observation(observation)
+                && observation.normalized["scope"]
+                    .as_str()
+                    .is_some_and(|scope| !scope.trim().is_empty())
+                && checked.dependencies.contains_key(&observation.id)
+        })
+        .ok_or_else(|| {
+            invalid(format!(
+                "PROCESS_GRAPH_ROOT_INVALID: rootDeclaration must be an exact scoped callable SYMBOL observation in selected service {service} and snapshot; use a retained declaration ID"
+            ))
+        })?;
+    if root.normalized["ownerIdentity"]
+        .as_str()
+        .is_none_or(|owner| owner.trim().is_empty())
+    {
+        return Err(invalid(
+            "PROCESS_GRAPH_ROOT_OWNER_UNAVAILABLE: selected declaration has no exact retained ownerIdentity",
         ));
     }
     Ok(())
@@ -1153,6 +1206,12 @@ fn http_api_contract_obligation(
 }
 
 fn validate_context_profile(subject: &str, request: &Request) -> Result<(), ClewError> {
+    let has_process_fields = request.root_declaration.is_some() || request.question.is_some();
+    if has_process_fields && request.context_profile.as_deref() != Some("process-graph-v1") {
+        return Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: rootDeclaration and question require process-graph-v1",
+        ));
+    }
     match request.context_profile.as_deref() {
         None if subject.starts_with("service:")
             && request.entrypoint.as_deref() == Some("section-entities") =>
@@ -1197,6 +1256,25 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         }
         Some("process-v1") => Err(invalid(
             "CONTEXT_PROFILE_INCOMPATIBLE: process-v1 requires a saved process overview",
+        )),
+        Some("process-graph-v1")
+            if subject
+                .strip_prefix("service:")
+                .is_some_and(|service| !service.trim().is_empty())
+                && request.entrypoint.is_none()
+                && request
+                    .root_declaration
+                    .as_deref()
+                    .is_some_and(|declaration| !declaration.trim().is_empty())
+                && request
+                    .question
+                    .as_deref()
+                    .is_some_and(|question| !question.trim().is_empty()) =>
+        {
+            Ok(())
+        }
+        Some("process-graph-v1") => Err(invalid(
+            "CONTEXT_PROFILE_INCOMPATIBLE: process-graph-v1 requires service:ID, an exact rootDeclaration, a non-empty question, and no entrypoint",
         )),
         Some(super::endpoint_context::PROFILE)
             if subject.starts_with("service:") && request.entrypoint.is_some() =>
@@ -1254,6 +1332,11 @@ pub fn prepare_with_snapshot(
             "work requires an audience, 1..100 items and 2048..49152 bytes",
         ));
     }
+    if request.context_profile.as_deref() == Some("process-graph-v1") && snapshot.is_none() {
+        return Err(invalid(
+            "PROCESS_GRAPH_SNAPSHOT_REQUIRED: process-graph-v1 requires an explicit saved snapshot; source capture is not performed",
+        ));
+    }
     let (kind, id) = subject
         .split_once(':')
         .ok_or_else(|| invalid("work subject must be service:ID or scenario:ID"))?;
@@ -1285,6 +1368,7 @@ pub fn prepare_with_snapshot(
     validate_context_profile(&subject, &request)?;
     validate_http_api_contract_profile(&subject, &request, &checked)?;
     validate_endpoint_context_profile(&subject, &request, &checked)?;
+    validate_process_graph_root(&subject, &request, &checked)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -1844,6 +1928,16 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
         && selection.query.is_none()
     {
         let rows = super::endpoint_context::profile_rows(work)?;
+        let mut rows = annotate_rows(work, rows)?;
+        super::endpoint_context::restrict_unselected_source_references(work, &mut rows);
+        return Ok(rows);
+    }
+    if work.request.context_profile.as_deref() == Some("process-graph-v1")
+        && selection.references.is_empty()
+        && selection.symbols.is_empty()
+        && selection.query.is_none()
+    {
+        let rows = super::endpoint_context::process_profile_rows(work)?;
         let mut rows = annotate_rows(work, rows)?;
         super::endpoint_context::restrict_unselected_source_references(work, &mut rows);
         return Ok(rows);
@@ -2611,6 +2705,8 @@ mod section_context_tests {
                 documentation_language: None,
                 entrypoint: Some("section-responsibilities".into()),
                 context_profile: None,
+                root_declaration: None,
+                question: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: vec![],
@@ -3783,6 +3879,8 @@ pub(super) mod api_contract_tests {
                 documentation_language: Some("en".into()),
                 entrypoint: Some("entry-http".into()),
                 context_profile: None,
+                root_declaration: None,
+                question: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: Vec::new(),
@@ -4675,6 +4773,50 @@ pub(super) mod api_contract_tests {
         work.request.context_profile = Some("declarations-v1".into());
         work.request.entrypoint = Some("section-entities".into());
         assert!(validate_context_profile(&work.subject, &work.request).is_ok());
+    }
+
+    #[test]
+    fn process_graph_profile_requires_an_exact_scoped_service_root_and_saved_snapshot() {
+        let mut work = endpoint_context_fixture();
+        let ordinary_request = serde_json::to_value(&work.request).unwrap();
+        assert!(ordinary_request.get("rootDeclaration").is_none());
+        assert!(ordinary_request.get("question").is_none());
+        work.request.entrypoint = None;
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("endpoint-declaration".into());
+        work.request.question = Some("Explain this internal operation.".into());
+        validate_context_profile(&work.subject, &work.request).unwrap();
+        validate_process_graph_root(&work.subject, &work.request, &work.checked).unwrap();
+
+        assert!(validate_context_profile("scenario:orders", &work.request).is_err());
+        let mut wrong_root = work.request.clone();
+        wrong_root.root_declaration = Some("missing-root".into());
+        assert!(validate_process_graph_root(&work.subject, &wrong_root, &work.checked).is_err());
+        let mut conflicting_endpoint = work.request.clone();
+        conflicting_endpoint.entrypoint = Some("entry-http".into());
+        assert!(validate_context_profile(&work.subject, &conflicting_endpoint).is_err());
+        let mut unrelated_profile = work.request.clone();
+        unrelated_profile.context_profile = Some("endpoint-context-v3".into());
+        assert!(validate_context_profile(&work.subject, &unrelated_profile).is_err());
+        let mut unscoped = work.clone();
+        unscoped
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .get_mut("endpoint-declaration")
+            .unwrap()
+            .normalized["scope"] = Value::Null;
+        assert!(
+            validate_process_graph_root(&work.subject, &work.request, &unscoped.checked).is_err()
+        );
+
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Process graph admission").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let error = prepare_with_snapshot(&repo, work.subject, work.request, None).unwrap_err();
+        assert!(error.message.contains("PROCESS_GRAPH_SNAPSHOT_REQUIRED"));
     }
 
     #[test]

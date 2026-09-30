@@ -45,9 +45,14 @@ pub(super) fn validate_and_render(
     packet: &Value,
     answer: Value,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
-    if packet["schema"] != PACKET_SCHEMA || packet["profile"] != "endpoint-context-v3" {
+    if packet["schema"] != PACKET_SCHEMA
+        || !matches!(
+            packet["profile"].as_str(),
+            Some("endpoint-context-v3" | "process-graph-v1")
+        )
+    {
         return Err(invalid(
-            "operation answer requires an endpoint reader packet",
+            "operation answer requires a supported endpoint or internal process reader packet",
         ));
     }
     let citations = packet["citations"]
@@ -285,7 +290,14 @@ fn render_html(
     ));
     html.push_str("<section><h2>Summary</h2>");
     html.push_str(&render_claim_html(&answer.summary, evidence_index));
-    html.push_str("</section><section><h2>Ordered operation</h2>");
+    let ordered_heading = if packet["profile"] == "process-graph-v1" {
+        "Ordered internal process behavior"
+    } else {
+        "Ordered operation"
+    };
+    html.push_str("</section><section><h2>");
+    html.push_str(ordered_heading);
+    html.push_str("</h2>");
     html.push_str(&render_html_steps(&answer.steps, evidence_index, true));
     html.push_str("</section><section><h2>Offline operation tree</h2><figure class=\"step-tree\"><figcaption>Derived from the supplied answer steps</figcaption>");
     html.push_str(&render_tree_html(&answer.steps, evidence_index));
@@ -305,11 +317,17 @@ fn render_markdown(
     citations: &serde_json::Map<String, Value>,
     evidence_index: &BTreeMap<String, usize>,
 ) -> String {
+    let ordered_heading = if packet["profile"] == "process-graph-v1" {
+        "Ordered internal process behavior"
+    } else {
+        "Ordered operation"
+    };
     let mut markdown = format!(
-        "# {}\n\n> **DRAFT / UNREVIEWED.** Structure and evidence-label binding were validated; semantic correctness was not reviewed.\n\nPacket digest: `{}`\n\n## Summary\n\n{}\n\n## Ordered operation\n\n{}\n\n## Offline operation tree\n\n{}\n\n",
+        "# {}\n\n> **DRAFT / UNREVIEWED.** Structure and evidence-label binding were validated; semantic correctness was not reviewed.\n\nPacket digest: `{}`\n\n## Summary\n\n{}\n\n## {}\n\n{}\n\n## Offline operation tree\n\n{}\n\n",
         markdown_escape(&answer.title),
         markdown_escape(&answer.packet_digest),
         render_claim_markdown(&answer.summary, evidence_index),
+        ordered_heading,
         render_markdown_steps(&answer.steps, evidence_index, 0, true),
         markdown_tree_block(&answer.steps)
     );

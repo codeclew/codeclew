@@ -97,6 +97,15 @@ and `budget`, with no reviewer, fallback or repair settings. The draft is not a
 proposal and is never published by this command. See the Codeclew skill's
 service-documentation reference for the preparation and config examples.
 
+For an internal service callable, use `contextProfile: "process-graph-v1"`, an
+exact scoped callable `rootDeclaration` observation ID from the selected saved
+snapshot, and a persisted natural-language `question`; omit `entrypoint`. Run
+the same `docs work run --draft` command with that Work and the author-only
+configuration above. The packet contains retained internal method context and
+explicitly labeled source candidates without inventing an HTTP endpoint or
+claiming runtime dispatch. Draft status, saved-answer replay, and nonpublication
+behavior are the same as for the endpoint profile.
+
 `proposal publish` and an accepted generic `work run` without `--draft` create an immutable internal bundle and update the working `docs/index.html` pointer (the frozen publication). The operation draft path does not. This does not automatically release a version. Open the bundle returned by a publishing command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
 
 ### Recover a Work run

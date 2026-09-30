@@ -783,6 +783,8 @@ mod tests {
                 documentation_language: None,
                 entrypoint: None,
                 context_profile: None,
+                root_declaration: None,
+                question: None,
                 max_items: 20,
                 max_bytes,
                 external_inputs: Vec::new(),

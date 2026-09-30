@@ -15,6 +15,9 @@ pub const AUDIT_SCHEMA: &str = "codeclew-documentation-reader-packet-audit/1.0";
 /// Build the short author packet and a separate audit projection of every
 /// immutable profile row selected for it.
 pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
+    if work.request.context_profile.as_deref() == Some("process-graph-v1") {
+        return build_process_graph(work);
+    }
     if work.request.context_profile.as_deref() != Some(endpoint_context::PROFILE) {
         return Err(invalid(
             "READER_PACKET_PROFILE_REQUIRED: prepare fresh Work with endpoint-context-v3",
@@ -489,9 +492,498 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
     Ok((packet, audit))
 }
 
+fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
+    let rows = endpoint_context::process_profile_rows(work)?;
+    let graph = super::process_graph::collect_from_work(work)?;
+    let mut row_counts = BTreeMap::<String, usize>::new();
+    let mut selected_by_key = BTreeMap::<(String, String), (String, Value)>::new();
+    let mut selected_by_reference = BTreeMap::<String, (String, Value)>::new();
+    let mut records = Vec::with_capacity(rows.len());
+    let mut selected_bindings = Vec::with_capacity(rows.len());
+    let mut used_labels = BTreeSet::new();
+
+    for row in rows {
+        let kind = row["kind"]
+            .as_str()
+            .ok_or_else(|| invalid("process packet selected row has no kind"))?
+            .to_owned();
+        let id = row["id"]
+            .as_str()
+            .ok_or_else(|| invalid("process packet selected row has no id"))?
+            .to_owned();
+        let work_reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.kind == kind && handle.id == id)
+            .map(|(reference, _)| reference.clone());
+        let label = work_reference
+            .clone()
+            .unwrap_or_else(|| synthetic_label(&kind, &mut row_counts));
+        if !used_labels.insert(label.clone()) {
+            return Err(invalid("process packet evidence labels are ambiguous"));
+        }
+        let record_digest = digest(&row)?;
+        selected_bindings.push(json!({"label":label,"recordDigest":record_digest}));
+        records.push(json!({
+            "label":label,
+            "kind":kind,
+            "id":id,
+            "workReference":work_reference.clone(),
+            "recordDigest":record_digest,
+            "deliveredToAuthor":false,
+            "row":row.clone()
+        }));
+        selected_by_key.insert((kind, id), (label.clone(), row.clone()));
+        if let Some(reference) = work_reference {
+            selected_by_reference.insert(reference, (label, row));
+        }
+    }
+
+    let process_row = rows_by_kind(&selected_by_key, "PROCESS_CONTEXT_PACKET")
+        .ok_or_else(|| invalid("process-graph-v1 selected no process context row"))?;
+    let process_label = process_row.0.clone();
+    let process_record = &process_row.1["record"];
+    let coverage_row = rows_by_kind(&selected_by_key, "COVERAGE")
+        .ok_or_else(|| invalid("process-graph-v1 selected no coverage row"))?;
+    let coverage_label = coverage_row.0.clone();
+    let coverage_record = &coverage_row.1["record"];
+    let mut citations = BTreeMap::<String, String>::new();
+    cite(
+        &mut citations,
+        &process_label,
+        "selected internal process context",
+    );
+    cite(&mut citations, &coverage_label, "saved capture coverage");
+
+    let root = &process_record["root"];
+    let root_reference = process_record["rootDeclarationReference"]
+        .as_str()
+        .ok_or_else(|| invalid("process context has no root declaration reference"))?;
+    let (root_label, _) = selected_by_reference
+        .get(root_reference)
+        .ok_or_else(|| invalid("process root declaration is not selected"))?;
+    cite(&mut citations, root_label, "exact internal process root");
+
+    let mut method_ids = BTreeMap::<(String, String), String>::new();
+    let mut method_identities = BTreeMap::<String, String>::new();
+    let mut methods = Vec::new();
+    let mut method_sources = Vec::new();
+    let mut emitted_sources = BTreeSet::<String>::new();
+    for node in process_record["callGraph"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let identity = node["symbolIdentity"].as_str().unwrap_or_default();
+        let scope = node["scope"].as_str().unwrap_or_default();
+        let node_id = node["id"].as_str().unwrap_or_default();
+        method_ids.insert((identity.to_owned(), scope.to_owned()), node_id.to_owned());
+        method_identities.insert(node_id.to_owned(), identity.to_owned());
+        let declaration_reference = node["declarationReference"]
+            .as_str()
+            .ok_or_else(|| invalid("selected callable has no declaration reference"))?;
+        let (declaration_label, _) = selected_by_reference
+            .get(declaration_reference)
+            .ok_or_else(|| invalid("selected callable declaration reference is unavailable"))?;
+        cite(
+            &mut citations,
+            declaration_label,
+            "selected callable declaration",
+        );
+
+        let source_reference = node["bodyReference"].as_str();
+        let mut body = Value::Null;
+        let mut evidence = vec![declaration_label.clone()];
+        if let Some(source_reference) = source_reference
+            && let Some((source_label, source_row)) = selected_by_reference.get(source_reference)
+        {
+            let source = &source_row["record"];
+            cite(&mut citations, source_label, "retained callable source");
+            evidence.push(source_label.clone());
+            if emitted_sources.insert(source_reference.to_owned()) {
+                method_sources.push(json!({
+                    "reference":source_reference,
+                    "authority":source["authority"],
+                    "text":source["text"],
+                    "evidence":[source_label]
+                }));
+            }
+            if let Some(text) = source["text"].as_str()
+                && let Some((start, end)) = source_steps::method_body(text, identity)
+            {
+                body = json!({
+                    "sourceReference":source_reference,
+                    "startByte":start,
+                    "endByte":end,
+                    "evidence":[source_label]
+                });
+            }
+        }
+        methods.push(json!({
+            "id":node_id,
+            "symbolIdentity":identity,
+            "ownerIdentity":node["ownerIdentity"],
+            "name":node["name"],
+            "scope":scope,
+            "declarationReference":declaration_reference,
+            "body":body,
+            "evidence":evidence
+        }));
+    }
+
+    // Class-level retained source is useful context when a method declaration
+    // links to the containing class source but has no method-specific source
+    // reference. Share the source once with its type and source evidence; do
+    // not re-embed it in every method or type entry.
+    for (type_reference, (type_label, type_row)) in &selected_by_reference {
+        let record = &type_row["record"];
+        if type_row["kind"] != "DEPENDENCY"
+            || !matches!(
+                record["normalized"]["declarationKind"].as_str(),
+                Some("CLASS" | "INTERFACE" | "ENUM" | "RECORD" | "ANNOTATION_TYPE")
+            )
+        {
+            continue;
+        }
+        for source_id in record["sourceIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let Some(source_reference) = work_reference(work, "SOURCE", source_id) else {
+                continue;
+            };
+            let Some((source_label, source_row)) = selected_by_reference.get(source_reference)
+            else {
+                continue;
+            };
+            if !emitted_sources.insert(source_reference.to_owned()) {
+                continue;
+            }
+            let source = &source_row["record"];
+            cite(
+                &mut citations,
+                type_label,
+                "retained containing type declaration",
+            );
+            cite(
+                &mut citations,
+                source_label,
+                "retained containing type source",
+            );
+            method_sources.push(json!({
+                "reference":source_reference,
+                "authority":source["authority"],
+                "text":source["text"],
+                "evidence":[type_label,source_label],
+                "contextFor":type_reference
+            }));
+        }
+    }
+
+    let mut edges = Vec::new();
+    for fact_reference in process_record["callGraph"]["providerEdgeFactReferences"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let (label, row) = selected_by_reference
+            .get(fact_reference)
+            .ok_or_else(|| invalid("process callsite evidence reference is unavailable"))?;
+        let record = &row["record"];
+        let normalized = &record["normalized"];
+        let (source_identity, target_identity, kind, scope, authority) =
+            if record["kind"] == "CALL_RELATION" {
+                (
+                    normalized["sourceIdentity"].as_str().unwrap_or_default(),
+                    normalized["targetIdentity"].as_str().unwrap_or_default(),
+                    normalized["relationKind"].as_str().unwrap_or("CALLS"),
+                    normalized["scope"].as_str().unwrap_or_default(),
+                    if normalized["resolution"] == "COMPILER_EXACT" {
+                        "COMPILER_EXACT_PROVIDER_RELATION"
+                    } else {
+                        "UNVERIFIED_PROVIDER_RELATION"
+                    },
+                )
+            } else {
+                (
+                    record["symbol"].as_str().unwrap_or_default(),
+                    normalized["target"].as_str().unwrap_or_default(),
+                    normalized["kind"].as_str().unwrap_or("CALL"),
+                    normalized["scope"].as_str().unwrap_or_default(),
+                    "RETAINED_FLOW_TARGET",
+                )
+            };
+        let from = method_ids
+            .get(&(source_identity.to_owned(), scope.to_owned()))
+            .cloned();
+        let to = method_ids
+            .get(&(target_identity.to_owned(), scope.to_owned()))
+            .cloned();
+        cite(&mut citations, label, "retained callsite evidence");
+        let source_reference = record["sourceIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find_map(|id| {
+                let reference = work_reference(work, "SOURCE", id)?;
+                selected_by_reference
+                    .contains_key(reference)
+                    .then(|| reference.to_owned())
+            });
+        let mut edge_evidence = vec![label.clone()];
+        if let Some(source_reference) = source_reference.as_deref()
+            && let Some((source_label, _)) = selected_by_reference.get(source_reference)
+        {
+            cite(&mut citations, source_label, "retained callsite source");
+            edge_evidence.push(source_label.clone());
+        }
+        edges.push(json!({
+            "id":format!("fact:{fact_reference}"),
+            "fromMethodId":from,
+            "targetMethodId":to,
+            "targetIdentity":target_identity,
+            "kind":kind,
+            "scope":scope,
+            "authority":authority,
+            "callsiteReference":fact_reference,
+            "sourceReference":source_reference,
+            "evidence":edge_evidence
+        }));
+    }
+    for candidate in process_record["callGraph"]["sourceReferenceCandidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let from = candidate["fromNode"].as_str().unwrap_or_default();
+        let to = candidate["toNode"].as_str();
+        let source_reference = candidate["sourceReference"].as_str();
+        let receiver_field_reference = candidate["receiverFieldReference"].as_str();
+        let target_identity = to
+            .and_then(|target| method_identities.get(target))
+            .map_or_else(
+                || candidate["targetIdentity"].clone(),
+                |identity| json!(identity),
+            );
+        let mut evidence = vec![process_label.clone()];
+        for reference in [source_reference, receiver_field_reference]
+            .into_iter()
+            .flatten()
+        {
+            if let Some((label, _)) = selected_by_reference.get(reference) {
+                cite(&mut citations, label, "source-context candidate evidence");
+                evidence.push(label.clone());
+            }
+        }
+        edges.push(json!({
+            "fromMethodId":from,
+            "targetMethodId":to,
+            "targetIdentity":target_identity,
+            "kind":candidate["kind"],
+            "authority":"SOURCE_REFERENCE_CANDIDATE",
+            "sourceReference":source_reference,
+            "receiverFieldReference":receiver_field_reference,
+            "evidence":evidence
+        }));
+    }
+    edges.sort_by(|left, right| {
+        (
+            left["fromMethodId"].as_str(),
+            left["targetMethodId"].as_str(),
+            left["callsiteReference"].as_str(),
+            left["authority"].as_str(),
+        )
+            .cmp(&(
+                right["fromMethodId"].as_str(),
+                right["targetMethodId"].as_str(),
+                right["callsiteReference"].as_str(),
+                right["authority"].as_str(),
+            ))
+    });
+
+    let mut field_refs = BTreeSet::<String>::new();
+    for group in process_record["referencedOwnerFields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        field_refs.extend(
+            group["fieldReferences"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned),
+        );
+    }
+    for candidate in process_record["callGraph"]["sourceReferenceCandidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(reference) = candidate["receiverFieldReference"].as_str() {
+            field_refs.insert(reference.to_owned());
+        }
+    }
+    let mut fields = Vec::new();
+    for reference in field_refs {
+        let (label, row) = selected_by_reference
+            .get(&reference)
+            .ok_or_else(|| invalid("selected field declaration reference is unavailable"))?;
+        let normalized = &row["record"]["normalized"];
+        cite(&mut citations, label, "retained field declaration");
+        fields.push(json!({
+            "reference":reference,
+            "ownerIdentity":normalized["ownerIdentity"],
+            "name":normalized["name"],
+            "typeDescriptor":retained_declared_type_descriptor(normalized),
+            "modifiers":array_or_empty(&normalized["modifiers"]),
+            "annotations":array_or_empty(&normalized["annotations"]),
+            "sourceTokens":array_or_empty(&normalized["sourceTokens"]),
+            "evidence":[label]
+        }));
+    }
+    fields.sort_by(|left, right| {
+        left["ownerIdentity"]
+            .as_str()
+            .cmp(&right["ownerIdentity"].as_str())
+            .then_with(|| left["name"].as_str().cmp(&right["name"].as_str()))
+    });
+
+    let mut types = Vec::new();
+    for (reference, (label, row)) in &selected_by_reference {
+        if row["record"]["kind"] != "SYMBOL"
+            || !matches!(
+                row["record"]["normalized"]["declarationKind"].as_str(),
+                Some("CLASS" | "INTERFACE" | "ENUM" | "RECORD" | "ANNOTATION_TYPE")
+            )
+        {
+            continue;
+        }
+        let normalized = &row["record"]["normalized"];
+        cite(&mut citations, label, "retained type and class context");
+        types.push(json!({
+            "reference":reference,
+            "symbolIdentity":normalized["symbolIdentity"],
+            "declarationKind":normalized["declarationKind"],
+            "ownerIdentity":normalized["ownerIdentity"],
+            "name":normalized["name"],
+            "scope":normalized["scope"],
+            "superclass":normalized["superclass"],
+            "interfaces":array_or_empty(&normalized["interfaces"]),
+            "evidence":[label]
+        }));
+    }
+    types.sort_by(|left, right| {
+        left["symbolIdentity"]
+            .as_str()
+            .cmp(&right["symbolIdentity"].as_str())
+    });
+
+    let limitations: Vec<_> = process_record["gaps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|gap| json!({"code":gap["code"],"count":gap["count"],"examples":gap["examples"]}))
+        .collect();
+    let root_node = root["declarationId"].as_str().and_then(|_| {
+        method_ids
+            .get(&(
+                root["symbolIdentity"].as_str()?.to_owned(),
+                root["scope"].as_str()?.to_owned(),
+            ))
+            .cloned()
+    });
+    let mut packet = json!({
+        "schema":PACKET_SCHEMA,
+        "profile":"process-graph-v1",
+        "authority":"IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+        "audience":work.request.audience,
+        "documentationLanguage":work.request.documentation_language(),
+        "notice":"This packet uses retained source and provider evidence to support an internal process draft. It is not a runtime trace, accepted narrative, review, or publication.",
+        "title":format!("{} · {}",work.subject,root["symbolIdentity"].as_str().unwrap_or_default()),
+        "question":work.request.question,
+        "context":{
+            "authority":process_record["authority"],
+            "evidence":[process_label]
+        },
+        "root":{
+            "methodId":root_node,
+            "symbolIdentity":root["symbolIdentity"],
+            "ownerIdentity":root["ownerIdentity"],
+            "name":root["name"],
+            "scope":root["scope"],
+            "declarationReference":root_reference,
+            "evidence":[root_label]
+        },
+        "methods":methods,
+        "edges":edges,
+        "fields":fields,
+        "types":types,
+        "methodSources":method_sources,
+        "coverage":{
+            "coverage":coverage_record["coverage"],
+            "runtimeMode":coverage_record["runtimeMode"],
+            "boundaries":coverage_record["boundaries"],
+            "callAuthority":coverage_record["callAuthority"],
+            "evidence":[coverage_label]
+        },
+        "limitations":limitations,
+        "interpretationLimits":[
+            "Retained FLOW and compiler relations preserve provider evidence, not runtime execution or statement timing.",
+            "SOURCE_REFERENCE_CANDIDATE edges identify same-scope source-context candidates only; they do not establish executed calls, receiver identity, inheritance dispatch, or order.",
+            "Only the supplied root, selected declarations, retained method source, fields, types, and listed frontiers support claims; missing context remains unknown.",
+            "A field type or superclass declaration does not establish the runtime object or selected override."
+        ],
+        "graphAuditBinding":{
+            "schema":graph["schema"],
+            "artifactDigest":graph["artifactDigest"],
+            "rootMethodId":graph["rootMethodId"],
+            "snapshot":graph["snapshot"]["handle"],
+            "service":graph["snapshot"]["service"]
+        },
+        "citations":citations
+    });
+    let packet_digest = digest(&packet)?;
+    packet["packetDigest"] = json!(packet_digest);
+    let selected_rows_digest = digest(&selected_bindings)?;
+    let profile = work.request.context_profile.as_deref().unwrap_or_default();
+    let binding_digest = digest(&(
+        work.id.as_str(),
+        work.snapshot.as_deref(),
+        profile,
+        work.checked.context_digest.as_str(),
+        work.checked.input_digest.as_str(),
+        selected_rows_digest.as_str(),
+        packet_digest.as_str(),
+    ))?;
+    let mut audit = json!({
+        "schema":AUDIT_SCHEMA,
+        "purpose":"VERIFICATION_ONLY_NOT_DELIVERED_TO_AUTHOR",
+        "workId":work.id,
+        "snapshot":work.snapshot,
+        "profile":profile,
+        "contextDigest":work.checked.context_digest,
+        "inputDigest":work.checked.input_digest,
+        "packetDigest":packet_digest,
+        "selectedRowsDigest":selected_rows_digest,
+        "bindingDigest":binding_digest,
+        "processGraph":graph,
+        "records":records
+    });
+    let audit_digest = digest(&audit)?;
+    audit["auditDigest"] = json!(audit_digest);
+    Ok((packet, audit))
+}
+
 fn synthetic_label(kind: &str, counts: &mut BTreeMap<String, usize>) -> String {
     let (key, prefix) = match kind {
         "ENDPOINT_CONTEXT_PACKET" => ("packet", "p"),
+        "PROCESS_CONTEXT_PACKET" => ("packet", "p"),
         "COVERAGE" => ("coverage", "c"),
         "REVIEW_REASON" => ("review", "r"),
         "EXTERNAL_INPUT" => ("external", "x"),
@@ -502,6 +994,13 @@ fn synthetic_label(kind: &str, counts: &mut BTreeMap<String, usize>) -> String {
     let next = counts.entry(key.to_owned()).or_default();
     *next += 1;
     format!("{prefix}{next}")
+}
+
+fn work_reference<'a>(work: &'a Work, kind: &str, id: &str) -> Option<&'a str> {
+    work.handles
+        .iter()
+        .find(|(_, handle)| handle.kind == kind && handle.id == id)
+        .map(|(reference, _)| reference.as_str())
 }
 
 fn rows_by_kind<'a>(
@@ -670,6 +1169,183 @@ mod tests {
         }
     }
 
+    fn add_process_profile_fields(work: &mut Work, root_source: &str, shadow: Option<&str>) {
+        let service = work.checked.services.get_mut("orders").unwrap();
+        let source = service.sources.get_mut("endpoint-source").unwrap();
+        source.text = root_source.into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = source.text.lines().count().max(1) as u64;
+
+        let helper_source_text =
+            "class OtherHelper { static boolean predicate() { return true; } }";
+        let helper_source = crate::documentation::model::Source {
+            id: "other-helper-source".into(),
+            service: "orders".into(),
+            revision: service.revision.clone(),
+            file: "src/OtherHelper.java".into(),
+            start_line: 1,
+            end_line: 1,
+            text: helper_source_text.into(),
+            text_digest: crate::canonical::hash_bytes(helper_source_text.as_bytes()),
+            evidence_digest: "test-helper-source-evidence".into(),
+            authority: "TRANSFORMED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        service
+            .sources
+            .insert(helper_source.id.clone(), helper_source);
+        work.handles.insert(
+            "source-other-helper".into(),
+            super::super::work::Handle {
+                kind: "SOURCE".into(),
+                id: "other-helper-source".into(),
+            },
+        );
+        let sibling_source_text =
+            "class OtherHelperSibling { static boolean predicate() { return false; } }";
+        let sibling_source = crate::documentation::model::Source {
+            id: "sibling-helper-source".into(),
+            service: "orders".into(),
+            revision: service.revision.clone(),
+            file: "src/OtherHelperSibling.java".into(),
+            start_line: 1,
+            end_line: 1,
+            text: sibling_source_text.into(),
+            text_digest: crate::canonical::hash_bytes(sibling_source_text.as_bytes()),
+            evidence_digest: "test-sibling-source-evidence".into(),
+            authority: "TRANSFORMED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        service
+            .sources
+            .insert(sibling_source.id.clone(), sibling_source);
+        work.handles.insert(
+            "source-sibling-helper".into(),
+            super::super::work::Handle {
+                kind: "SOURCE".into(),
+                id: "sibling-helper-source".into(),
+            },
+        );
+
+        let facts = [
+            (
+                "other-helper-type",
+                "class:orders.OtherHelper",
+                json!({
+                    "schema":"codeclew-java-compiler-fact/1.0",
+                    "declarationKind":"CLASS",
+                    "symbolIdentity":"class:orders.OtherHelper",
+                    "ownerIdentity":"class:orders",
+                    "name":"OtherHelper",
+                    "scope":":main"
+                }),
+                vec!["other-helper-source".to_owned()],
+            ),
+            (
+                "other-helper-predicate",
+                "method:class:orders.OtherHelper#predicate()Z",
+                json!({
+                    "schema":"codeclew-java-compiler-fact/1.0",
+                    "declarationKind":"METHOD",
+                    "symbolIdentity":"method:class:orders.OtherHelper#predicate()Z",
+                    "ownerIdentity":"class:orders.OtherHelper",
+                    "name":"predicate",
+                    "scope":":main",
+                    "jvmDescriptor":"()Z",
+                    "modifiers":["STATIC"]
+                }),
+                Vec::new(),
+            ),
+            (
+                "sibling-helper-type",
+                "class:orders.OtherHelperSibling",
+                json!({
+                    "schema":"codeclew-java-compiler-fact/1.0",
+                    "declarationKind":"CLASS",
+                    "symbolIdentity":"class:orders.OtherHelperSibling",
+                    "ownerIdentity":"class:orders",
+                    "name":"OtherHelperSibling",
+                    "scope":":main"
+                }),
+                vec!["sibling-helper-source".to_owned()],
+            ),
+            (
+                "sibling-helper-predicate",
+                "method:class:orders.OtherHelperSibling#predicate()Z",
+                json!({
+                    "schema":"codeclew-java-compiler-fact/1.0",
+                    "declarationKind":"METHOD",
+                    "symbolIdentity":"method:class:orders.OtherHelperSibling#predicate()Z",
+                    "ownerIdentity":"class:orders.OtherHelperSibling",
+                    "name":"predicate",
+                    "scope":":main",
+                    "jvmDescriptor":"()Z",
+                    "modifiers":["STATIC"]
+                }),
+                vec!["sibling-helper-source".to_owned()],
+            ),
+        ];
+        for (id, symbol, normalized, source_ids) in facts {
+            let fact_digest = digest(&normalized).unwrap();
+            let observation = crate::documentation::model::Observation {
+                id: id.into(),
+                kind: "SYMBOL".into(),
+                service: "orders".into(),
+                symbol: symbol.into(),
+                normalized,
+                digest: fact_digest.clone(),
+                source_ids,
+            };
+            service
+                .observations
+                .insert(observation.id.clone(), observation.clone());
+            work.checked
+                .dependencies
+                .insert(observation.id.clone(), observation);
+            work.influence.insert(id.into(), fact_digest);
+            work.handles.insert(
+                format!("dependency-{id}"),
+                super::super::work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.into(),
+                },
+            );
+        }
+        work.request.entrypoint = None;
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("endpoint-declaration".into());
+        work.request.question = Some("Explain this internal operation and its gaps.".into());
+        work.snapshot = Some("snapshot-for-process-packet".into());
+        if let Some(shadow) = shadow {
+            let source_text = work.checked.services["orders"].sources["endpoint-source"]
+                .text
+                .clone();
+            let root_source = match shadow {
+                "parameter" => {
+                    source_text.replace("handle(Request request)", "handle(Request OtherHelper)")
+                }
+                "local" => source_text.replace(
+                    "if (OtherHelper.predicate())",
+                    "Request OtherHelper = request; if (OtherHelper.predicate())",
+                ),
+                _ => source_text,
+            };
+            let source = work
+                .checked
+                .services
+                .get_mut("orders")
+                .unwrap()
+                .sources
+                .get_mut("endpoint-source")
+                .unwrap();
+            source.text = root_source;
+            source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+            source.end_line = source.text.lines().count().max(1) as u64;
+        }
+    }
+
     #[test]
     fn compact_packet_is_deterministic_bound_and_smaller_than_full_profile_rows() {
         let work = super::super::work::api_contract_tests::endpoint_context_fixture();
@@ -784,6 +1460,200 @@ mod tests {
                 .any(|edge| { edge["authority"] == "SOURCE_REFERENCE_CANDIDATE" })
         );
         assert!(packet["coverage"]["coverage"].is_string());
+    }
+
+    #[test]
+    fn process_graph_profile_builds_an_internal_packet_with_separate_full_audit() {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let root_symbol = work.checked.services["orders"].observations["endpoint-declaration"]
+            .symbol
+            .clone();
+        let retained_target = work.checked.services["orders"].observations["flow-endpoint-service"]
+            .normalized["target"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let extra_flow = crate::documentation::model::Observation {
+            id: "flow-endpoint-service-second".into(),
+            kind: "FLOW".into(),
+            service: "orders".into(),
+            symbol: root_symbol,
+            normalized: json!({"kind":"CALL","target":retained_target,"scope":":main","ordinal":1}),
+            digest: "second-flow-digest".into(),
+            source_ids: vec!["endpoint-source".into()],
+        };
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(extra_flow.id.clone(), extra_flow.clone());
+        work.checked
+            .dependencies
+            .insert(extra_flow.id.clone(), extra_flow.clone());
+        work.influence
+            .insert(extra_flow.id.clone(), extra_flow.digest.clone());
+        work.handles.insert(
+            "dependency-flow-second".into(),
+            super::super::work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: extra_flow.id,
+            },
+        );
+        work.request.entrypoint = None;
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("endpoint-declaration".into());
+        work.request.question = Some("Explain the internal operation and its gaps.".into());
+        work.snapshot = Some("snapshot-for-process-packet".into());
+
+        let (packet, audit) = build(&work).unwrap();
+        assert_eq!(packet["profile"], "process-graph-v1");
+        assert_eq!(
+            packet["question"],
+            "Explain the internal operation and its gaps."
+        );
+        assert!(packet.get("endpoint").is_none());
+        assert!(packet.get("trigger").is_none());
+        assert!(packet.get("exposure").is_none());
+        assert_eq!(
+            packet["graphAuditBinding"]["snapshot"],
+            work.snapshot.unwrap()
+        );
+        assert!(packet["graphAuditBinding"]["artifactDigest"].is_string());
+        assert!(!packet["methods"].as_array().unwrap().is_empty());
+        assert!(!packet["methodSources"].as_array().unwrap().is_empty());
+        assert!(
+            packet["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|edge| edge["authority"] == "RETAINED_FLOW_TARGET")
+                .count()
+                >= 2,
+            "distinct retained callsite observations remain distinct compact edges"
+        );
+        assert!(audit["processGraph"]["methods"][0]["providerSlots"].is_array());
+        assert!(
+            audit["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["row"]["record"]["id"] == "flow-endpoint-service-second")
+        );
+
+        let source_references: Vec<_> = packet["methodSources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|source| source["reference"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            source_references
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            source_references.len(),
+            "one author source item per retained source"
+        );
+        let mut cited = BTreeSet::new();
+        collect_evidence(&packet, &mut cited);
+        let citations: BTreeSet<_> = packet["citations"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(citations, cited);
+        let packet_text = String::from_utf8(canonical::bytes(&packet).unwrap()).unwrap();
+        assert!(!packet_text.contains("providerSlots"));
+        assert!(!packet_text.contains("unboundEvents"));
+        assert!(!packet_text.contains("\"observation\""));
+    }
+
+    #[test]
+    fn process_graph_static_helper_candidate_delivers_containing_class_source() {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let root_source = "class Controller { Response handle(Request request) { if (OtherHelper.predicate()) return service.process(request); return null; } }";
+        add_process_profile_fields(&mut work, root_source, None);
+
+        let (packet, audit) = build(&work).unwrap();
+        let target_identity = "method:class:orders.OtherHelper#predicate()Z";
+        let helper_source = packet["methodSources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| {
+                source["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("class OtherHelper")
+            })
+            .unwrap();
+        let helper_source_reference = helper_source["reference"].as_str().unwrap();
+        assert!(packet["methods"].as_array().unwrap().iter().any(|method| {
+            method["symbolIdentity"] == target_identity
+                && method["ownerIdentity"] == "class:orders.OtherHelper"
+                && method["scope"] == ":main"
+                && method["body"]["sourceReference"] == helper_source_reference
+        }));
+        assert!(!packet["methods"].as_array().unwrap().iter().any(|method| {
+            method["symbolIdentity"] == "method:class:orders.OtherHelperSibling#predicate()Z"
+        }));
+        let helper_method = packet["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|method| method["symbolIdentity"] == target_identity)
+            .unwrap();
+        assert!(packet["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && edge["kind"] == "TYPE_QUALIFIED_CALL"
+                && edge["targetMethodId"] == helper_method["id"]
+        }));
+        assert!(
+            helper_source["text"]
+                .as_str()
+                .unwrap()
+                .contains("static boolean predicate() { return true; }")
+        );
+        assert_eq!(
+            packet["methodSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|source| source["reference"] == helper_source_reference)
+                .count(),
+            1,
+            "containing class text is delivered once even when the method has no own source reference"
+        );
+        assert!(
+            audit["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["kind"] == "SOURCE" && row["id"] == "other-helper-source" })
+        );
+
+        for shadow in ["parameter", "local"] {
+            let mut shadowed = super::super::work::api_contract_tests::endpoint_context_fixture();
+            add_process_profile_fields(&mut shadowed, root_source, Some(shadow));
+            let (shadow_packet, _) = build(&shadowed).unwrap();
+            assert!(
+                !shadow_packet["methods"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|method| { method["symbolIdentity"] == target_identity })
+            );
+            assert!(
+                shadow_packet["limitations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|gap| { gap["code"] == "SOURCE_RECEIVER_SHADOWING_AMBIGUOUS" })
+            );
+        }
     }
 
     #[test]

@@ -288,10 +288,12 @@ the ordinary authoring or publication flow. See the
 [v0.12.1 public-pilot notes](docs/releases/v0.12.1.md).
 
 The current source also supports an explicit `clew docs work run --draft` path
-for new Java endpoint Work prepared with `contextProfile: "endpoint-context-v3"`.
-It calls one configured author and saves local `DRAFT` / `UNREVIEWED` views; it
-does not create a proposal or publish. See the
-[service documentation workflow](skills/codeclew/references/service-documentation.md#draft-one-java-endpoint-explanation)
+for new Java endpoint Work prepared with `contextProfile: "endpoint-context-v3"`
+and internal callable Work prepared with `contextProfile: "process-graph-v1"`,
+an exact `rootDeclaration`, and a persisted `question`. It calls one configured
+author and saves local `DRAFT` / `UNREVIEWED` views; it does not create a
+proposal or publish. See the
+[service documentation workflow](skills/codeclew/references/service-documentation.md#draft-one-internal-service-process-explanation)
 and [field runbook](docs/operations/field-documentation.md).
 
 ## Source-build requirements

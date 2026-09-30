@@ -46,6 +46,7 @@ SUPPORTED_KEYWORDS = {
     "description",
     "type",
     "properties",
+    "patternProperties",
     "required",
     "additionalProperties",
     "items",
@@ -56,11 +57,14 @@ SUPPORTED_KEYWORDS = {
     "maxLength",
     "minItems",
     "maxItems",
+    "minProperties",
     "minimum",
     "maximum",
     "format",
     "allOf",
+    "anyOf",
     "oneOf",
+    "uniqueItems",
     "if",
     "then",
     "else",
@@ -163,6 +167,19 @@ class MiniSchema:
                     matches += 1
             if matches != 1:
                 self.errors.append(f"{path}: oneOf must match exactly one variant ({matches})")
+        if "anyOf" in node:
+            matches = 0
+            for index, sub in enumerate(node["anyOf"]):
+                probe: list[str] = []
+                sub_validator = MiniSchema(sub, probe)
+                try:
+                    sub_validator.validate(instance, sub, f"{path}.anyOf[{index}]", defs)
+                except SchemaFailure:
+                    raise
+                if not probe:
+                    matches += 1
+            if matches == 0:
+                self.errors.append(f"{path}: anyOf must match at least one variant")
         if "if" in node:
             head: list[str] = []
             head_v = MiniSchema(node["if"], head)
@@ -179,16 +196,27 @@ class MiniSchema:
             self.errors.append(f"{path}: expected object, got {type(instance).__name__}")
             return
         properties = node.get("properties", {})
+        pattern_properties = node.get("patternProperties", {})
+        min_properties = node.get("minProperties")
+        if min_properties is not None and len(instance) < min_properties:
+            self.errors.append(f"{path}: fewer than {min_properties} properties")
         for key, sub in properties.items():
             if key in instance:
                 self.validate(instance[key], sub, f"{path}.{key}", defs)
             elif key in node.get("required", []):
                 self.errors.append(f"{path}: missing required property '{key}'")
-        if node.get("additionalProperties") is False:
-            allowed = set(properties)
-            for key in instance:
-                if key not in allowed:
+        for key, value in instance.items():
+            matching_patterns = [
+                sub for pattern, sub in pattern_properties.items() if re.search(pattern, key)
+            ]
+            for index, sub in enumerate(matching_patterns):
+                self.validate(value, sub, f"{path}.{key}.pattern[{index}]", defs)
+            if key not in properties and not matching_patterns:
+                additional = node.get("additionalProperties", True)
+                if additional is False:
                     self.errors.append(f"{path}: unexpected property '{key}'")
+                elif isinstance(additional, dict):
+                    self.validate(value, additional, f"{path}.{key}", defs)
         for key in node.get("required", []):
             if key not in instance:
                 self.errors.append(f"{path}: missing required property '{key}'")
@@ -209,6 +237,8 @@ class MiniSchema:
         if items:
             for index, item in enumerate(instance):
                 self.validate(item, items, f"{path}[{index}]", defs)
+        if node.get("uniqueItems") is True and len(instance) != len({json.dumps(item, sort_keys=True) for item in instance}):
+            self.errors.append(f"{path}: array items must be unique")
 
     def _validate_string(self, instance: Any, node: dict[str, Any], path: str) -> None:
         if not isinstance(instance, str):

@@ -562,8 +562,47 @@ operator-only audit under `.codeclew/drafts/WORK_ID`. Status is `DRAFT` /
 is admitted. A saved answer is reused to restore missing draft files. An invalid
 answer is retained without an author repair, and a dispatch without a saved
 response is marked uncertain with its maximum reservation retained; rerunning
-that Work does not dispatch another call. This path describes Java endpoint
-Work only. Other profiles continue through their documented authoring paths.
+that Work does not dispatch another call. This recipe covers the HTTP endpoint
+profile. Use the next recipe for an internal callable whose behavior is not
+entered through an HTTP endpoint.
+
+## Draft one internal service process explanation
+
+For an internal operation, choose the exact callable `SYMBOL` observation ID
+from the selected service and saved snapshot. Persist the question with that
+root before Work identity is calculated. The process profile has no
+`entrypoint`; a non-null endpoint selector cannot be combined with it.
+
+```json
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Service maintainers",
+  "contextProfile": "process-graph-v1",
+  "rootDeclaration": "EXACT_SCOPED_CALLABLE_SYMBOL_OBSERVATION_ID",
+  "question": "How does this internal service operation decide what to do?",
+  "maxItems": 100,
+  "maxBytes": 49152
+}
+```
+
+Prepare from the saved snapshot that supplied the exact declaration:
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders --snapshot SAVED_SNAPSHOT --input /work/internal-operation-request.json
+clew docs work run --root /work/architecture --work WORK_ID --config /operator/operation-draft.json --draft
+clew docs work status --root /work/architecture --work WORK_ID
+```
+
+Use the same author-only configuration shown in the endpoint recipe. The
+author packet answers the persisted question from the exact root, retained
+method sources, fields, types, provider callsites and explicitly marked source
+context candidates. It contains no HTTP endpoint or trigger. A candidate can
+identify useful helper source, but it does not establish that a call executed,
+which runtime receiver or override was selected, or inter-method order. Missing
+or ambiguous context remains a cited limitation for the author to describe.
+The output is still `DRAFT` / `UNREVIEWED`, is not a proposal, and is never
+published by this command. Saved-result recovery and no-retry handling are the
+same as in the endpoint recipe.
 
 ## Run isolated authoring and review
 

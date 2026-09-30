@@ -341,6 +341,8 @@ fn run_queue(
                     .and_then(|operation| operation.documentation_language.clone()),
                 entrypoint,
                 context_profile: None,
+                root_declaration: None,
+                question: None,
                 max_items: 20,
                 max_bytes: 40 * 1024,
                 external_inputs: vec![],

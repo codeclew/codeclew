@@ -70,6 +70,7 @@ struct DeclarationIndexes<'a> {
     methods_by_owner_name: BTreeMap<(String, String), Vec<&'a Observation>>,
     method_scopes_by_identity: BTreeMap<String, BTreeSet<String>>,
     types_by_identity_scope: BTreeMap<MethodKey, Vec<&'a Observation>>,
+    types_by_name_scope: BTreeMap<(String, String), Vec<&'a Observation>>,
     fields_by_owner_name: BTreeMap<(String, String), Vec<&'a Observation>>,
     fields_by_owner_scope: BTreeMap<(String, String), Vec<&'a Observation>>,
     outgoing_by_identity_scope: BTreeMap<MethodKey, OutgoingFacts<'a>>,
@@ -98,6 +99,7 @@ struct FinishRows<'a> {
     evidence: &'a ServiceEvidence,
     entrypoint_id: &'a str,
     entry: Option<&'a super::model::Entrypoint>,
+    process_root: Option<&'a Observation>,
     dependencies: BTreeMap<String, &'a Observation>,
     sources: BTreeMap<String, &'a Source>,
     nodes: Vec<Value>,
@@ -115,22 +117,39 @@ struct FinishRows<'a> {
 /// Return the initial packet membership for the explicit endpoint profile.
 /// Follow-up Work reads remain the ordinary reference/query/read-part paths.
 pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
-    let (service, entrypoint_id) = work
+    profile_rows_with_root(work, None)
+}
+
+pub(super) fn process_profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
+    let declaration = work
+        .request
+        .root_declaration
+        .as_deref()
+        .ok_or_else(|| invalid("process-graph-v1 requires an exact rootDeclaration"))?;
+    profile_rows_with_root(work, Some(declaration))
+}
+
+fn profile_rows_with_root(
+    work: &Work,
+    process_root_id: Option<&str>,
+) -> Result<Vec<Value>, ClewError> {
+    let service = work
         .subject
         .strip_prefix("service:")
-        .and_then(|service| {
-            work.request
-                .entrypoint
-                .as_deref()
-                .map(|entrypoint| (service, entrypoint))
-        })
+        .filter(|service| !service.is_empty())
+        .ok_or_else(|| invalid("operation context requires one service subject"))?;
+    let entrypoint_id = process_root_id
+        .or(work.request.entrypoint.as_deref())
         .ok_or_else(|| invalid("endpoint-context-v3 requires a service HTTP endpoint"))?;
     let evidence = work
         .checked
         .services
         .get(service)
-        .ok_or_else(|| invalid("endpoint-context-v3 service evidence is unavailable"))?;
-    let entry = unique_entrypoint(evidence, entrypoint_id);
+        .ok_or_else(|| invalid("operation context service evidence is unavailable"))?;
+    let entry = process_root_id
+        .is_none()
+        .then(|| unique_entrypoint(evidence, entrypoint_id))
+        .flatten();
     let mut gaps = Gaps::default();
     let mut dependencies = BTreeMap::<String, &Observation>::new();
     let mut sources = BTreeMap::<String, &Source>::new();
@@ -149,7 +168,32 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     let mut root_scope = None;
     let mut root_descriptor = None;
 
-    if let Some(entry) = entry {
+    if let Some(declaration_id) = process_root_id {
+        let root = evidence
+            .observations
+            .get(declaration_id)
+            .filter(|observation| {
+                observation.service == service
+                    && work.influence.contains_key(&observation.id)
+                    && super::process_graph::callable_observation(observation)
+            });
+        if let Some(root) = root {
+            root_scope = exact_scope(&root.normalized["scope"]).map(str::to_owned);
+            if root_scope.is_some() {
+                root_callable = Some(callable_from_observation(root));
+            } else {
+                gaps.add(
+                    "PROCESS_ROOT_SCOPE_UNAVAILABLE",
+                    json!({"declarationId":declaration_id}),
+                );
+            }
+        } else {
+            gaps.add(
+                "PROCESS_ROOT_DECLARATION_UNAVAILABLE",
+                json!({"declarationId":declaration_id}),
+            );
+        }
+    } else if let Some(entry) = entry {
         let roots: Vec<_> = evidence
             .observations
             .values()
@@ -207,7 +251,9 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         );
     }
 
-    if let Some(root) = root_callable.as_ref() {
+    if process_root_id.is_none()
+        && let Some(root) = root_callable.as_ref()
+    {
         if let Some(descriptor) = root_descriptor.as_deref() {
             match descriptor_object_roles(descriptor) {
                 Ok((inputs, outputs)) => {
@@ -248,6 +294,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
     }
     let mut node_keys = Vec::<MethodKey>::new();
     let mut owner_field_candidates = BTreeSet::<String>::new();
+    let mut candidate_body_sources = BTreeMap::<MethodKey, String>::new();
     let mut edge_keys = BTreeSet::<Edge>::new();
     let mut max_observed_traversal_depth = 0usize;
 
@@ -255,6 +302,9 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         let key = (callable.identity.clone(), callable.scope.clone());
         if !visited.insert(key.clone()) {
             continue;
+        }
+        if process_root_id.is_some() {
+            dependencies.insert(callable.observation.id.clone(), callable.observation);
         }
         max_observed_traversal_depth = max_observed_traversal_depth.max(depth);
         let body_source_id = if let Some(source_id) = reserved_body_source_id {
@@ -503,6 +553,21 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                         "SOURCE_REFERENCE_SCOPE_UNAVAILABLE",
                         json!({"from":callable.identity,"name":name,"scope":callable.scope}),
                     ),
+                    [] if process_root_id.is_some()
+                        && provider_targets.iter().any(|target| {
+                            indexes
+                                .methods_by_identity_scope
+                                .get(&(target.clone(), callable.scope.clone()))
+                                .is_some_and(|methods| {
+                                    methods.iter().any(|method| {
+                                        method.normalized["name"] == name
+                                    })
+                                })
+                        }) => {}
+                    [] if process_root_id.is_some() => gaps.add(
+                        "SOURCE_HELPER_DECLARATION_NOT_CAPTURED",
+                        json!({"from":callable.identity,"owner":callable.owner,"name":name,"scope":callable.scope}),
+                    ),
                     [] => {}
                     _ => gaps.add(
                         "SOURCE_REFERENCE_AMBIGUOUS_OVERLOAD",
@@ -568,7 +633,185 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                     .get(&(callable.owner.clone(), receiver_call.field_name.clone()))
                     .map(Vec::as_slice)
                     .unwrap_or_default();
+                let same_scope_field_exists = same_owner.iter().any(|field| {
+                    exact_scope(&field.normalized["scope"]) == Some(callable.scope.as_str())
+                });
+                if receiver_call.shadowed && !receiver_call.explicit_receiver {
+                    if process_root_id.is_some() {
+                        gaps.add(
+                            "SOURCE_RECEIVER_SHADOWING_AMBIGUOUS",
+                            json!({"from":callable.identity,"receiver":receiver_call.field_name,"method":receiver_call.method_name,"scope":callable.scope}),
+                        );
+                    }
+                    continue;
+                }
+                if process_root_id.is_some()
+                    && !receiver_call.explicit_receiver
+                    && !same_scope_field_exists
+                {
+                    let type_candidates = indexes
+                        .types_by_name_scope
+                        .get(&(receiver_call.field_name.clone(), callable.scope.clone()))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    match type_candidates {
+                        [type_row] => {
+                            let target_owner = type_row.normalized["symbolIdentity"]
+                                .as_str()
+                                .unwrap_or_default();
+                            let owner_methods = indexes
+                                .methods_by_owner_name
+                                .get(&(target_owner.to_owned(), receiver_call.method_name.clone()))
+                                .map(Vec::as_slice)
+                                .unwrap_or_default();
+                            let method_scope_candidates: Vec<_> = owner_methods
+                                .iter()
+                                .filter(|method| method.normalized["declarationKind"] == "METHOD")
+                                .filter(|method| {
+                                    exact_scope(&method.normalized["scope"])
+                                        == Some(callable.scope.as_str())
+                                })
+                                .collect();
+                            let Some(source_arity) = receiver_call.argument_count else {
+                                gaps.add(
+                                    "SOURCE_QUALIFIED_CALL_ARGUMENTS_UNSUPPORTED",
+                                    json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"scope":callable.scope}),
+                                );
+                                continue;
+                            };
+                            let matching_arity: Vec<_> = method_scope_candidates
+                                .iter()
+                                .filter(|method| {
+                                    method.normalized["jvmDescriptor"].as_str().and_then(
+                                        |descriptor| {
+                                            method_descriptor_parameter_count(descriptor).ok()
+                                        },
+                                    ) == Some(source_arity)
+                                })
+                                .copied()
+                                .collect();
+                            let static_candidates: Vec<_> = matching_arity
+                                .iter()
+                                .filter(|method| {
+                                    has_modifier(&method.normalized["modifiers"], "STATIC")
+                                })
+                                .copied()
+                                .collect();
+                            let target = match static_candidates.as_slice() {
+                                [target] => *target,
+                                [] if !matching_arity.is_empty() => {
+                                    gaps.add(
+                                        "SOURCE_QUALIFIED_TARGET_NOT_STATIC",
+                                        json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"method":receiver_call.method_name,"scope":callable.scope}),
+                                    );
+                                    continue;
+                                }
+                                [] if !method_scope_candidates.is_empty() => {
+                                    gaps.add(
+                                        "SOURCE_QUALIFIED_CALL_ARITY_UNMATCHED",
+                                        json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"method":receiver_call.method_name,"argumentCount":source_arity,"scope":callable.scope}),
+                                    );
+                                    continue;
+                                }
+                                [] => {
+                                    gaps.add(
+                                        "SOURCE_QUALIFIED_TARGET_DECLARATION_NOT_CAPTURED",
+                                        json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"method":receiver_call.method_name,"scope":callable.scope}),
+                                    );
+                                    continue;
+                                }
+                                _ => {
+                                    gaps.add(
+                                        "SOURCE_QUALIFIED_TARGET_AMBIGUOUS",
+                                        json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"method":receiver_call.method_name,"candidateCount":static_candidates.len(),"scope":callable.scope}),
+                                    );
+                                    continue;
+                                }
+                            };
+                            let target_callable = callable_from_observation(target);
+                            let target_source = method_body_source(evidence, &target_callable)
+                                .ok()
+                                .filter(|(_, source)| {
+                                    source_steps::method_body(
+                                        &source.text,
+                                        &target_callable.identity,
+                                    )
+                                    .is_some()
+                                })
+                                .map(|(id, _)| id)
+                                .or_else(|| {
+                                    type_row.source_ids.iter().find_map(|source_id| {
+                                        let source = evidence.sources.get(source_id)?;
+                                        (source.service == service
+                                            && source.revision == evidence.revision
+                                            && source.text_digest
+                                                == crate::canonical::hash_bytes(
+                                                    source.text.as_bytes(),
+                                                )
+                                            && source_steps::method_body(
+                                                &source.text,
+                                                &target_callable.identity,
+                                            )
+                                            .is_some())
+                                        .then(|| source_id.clone())
+                                    })
+                                });
+                            let Some(target_source) = target_source else {
+                                gaps.add(
+                                    "SOURCE_QUALIFIED_CALL_BODY_UNAVAILABLE",
+                                    json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"target":target.symbol,"scope":callable.scope}),
+                                );
+                                continue;
+                            };
+                            let target_key = (target.symbol.clone(), callable.scope.clone());
+                            candidate_body_sources.insert(target_key, target_source);
+                            dependencies.insert(type_row.id.clone(), *type_row);
+                            if provider_targets.contains(&target.symbol) {
+                                continue;
+                            }
+                            add_edge(
+                                &mut edges,
+                                &mut edge_keys,
+                                Edge {
+                                    from: callable.identity.clone(),
+                                    target: Some(target.symbol.clone()),
+                                    scope: callable.scope.clone(),
+                                    kind: "TYPE_QUALIFIED_CALL".into(),
+                                    authority: "SOURCE_REFERENCE_CANDIDATE".into(),
+                                    fact_id: None,
+                                    source_id: Some(source_id.to_owned()),
+                                    receiver_field_id: None,
+                                },
+                            );
+                            continue;
+                        }
+                        [] => {}
+                        _ => {
+                            gaps.add(
+                                "SOURCE_QUALIFIED_TYPE_AMBIGUOUS",
+                                json!({"from":callable.identity,"receiver":receiver_call.field_name,"method":receiver_call.method_name,"scope":callable.scope,"candidateCount":type_candidates.len()}),
+                            );
+                            continue;
+                        }
+                    }
+                }
+                if process_root_id.is_some()
+                    && !receiver_call.explicit_receiver
+                    && !same_scope_field_exists
+                {
+                    gaps.add(
+                        "SOURCE_QUALIFIED_RECEIVER_TYPE_NOT_CAPTURED",
+                        json!({"from":callable.identity,"receiver":receiver_call.field_name,"method":receiver_call.method_name,"scope":callable.scope}),
+                    );
+                    continue;
+                }
                 if same_owner.is_empty() {
+                    if process_root_id.is_some() {
+                        gaps.add(
+                            "SOURCE_FIELD_RECEIVER_FIELD_NOT_CAPTURED",
+                            json!({"from":callable.identity,"field":receiver_call.field_name,"method":receiver_call.method_name,"scope":callable.scope}),
+                        );
+                    }
                     continue;
                 }
                 if receiver_call.shadowed && !receiver_call.explicit_receiver {
@@ -626,6 +869,13 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                         gaps.add(
                             "SOURCE_FIELD_RECEIVER_TARGET_SCOPE_UNAVAILABLE",
                             json!({"from":callable.identity,"fieldReference":field_reference,"scope":callable.scope}),
+                        );
+                        continue;
+                    }
+                    [] if process_root_id.is_some() && owner_methods.is_empty() => {
+                        gaps.add(
+                            "SOURCE_FIELD_RECEIVER_TARGET_DECLARATION_NOT_CAPTURED",
+                            json!({"from":callable.identity,"fieldReference":field_reference,"targetOwner":target_owner,"method":receiver_call.method_name,"scope":callable.scope}),
                         );
                         continue;
                     }
@@ -753,8 +1003,27 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
                 [candidate] if candidate.normalized["declarationKind"] == "METHOD"
                     || candidate.normalized["declarationKind"] == "CONSTRUCTOR" =>
                 {
+                    if process_root_id.is_some() {
+                        dependencies.insert(candidate.id.clone(), *candidate);
+                    }
                     let target_callable = callable_from_observation(candidate);
-                    let (source_id, source) = match method_body_source(evidence, &target_callable) {
+                    let source_candidate = candidate_body_sources
+                        .get(&target_key)
+                        .cloned()
+                        .map(|source_id| {
+                            evidence
+                                .sources
+                                .get(&source_id)
+                                .map(|source| (source_id, source))
+                                .ok_or("METHOD_BODY_SOURCE_UNAVAILABLE")
+                        })
+                        .transpose();
+                    let body_source = match source_candidate {
+                        Ok(Some(body)) => Ok(body),
+                        Ok(None) => method_body_source(evidence, &target_callable),
+                        Err(code) => Err(code),
+                    };
+                    let (source_id, source) = match body_source {
                         Ok(body) => body,
                         Err(code) => {
                             gaps.add(code, json!({"symbol":target_callable.identity}));
@@ -819,6 +1088,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
             evidence,
             entrypoint_id,
             entry,
+            process_root: process_root_id.and_then(|id| evidence.observations.get(id)),
             dependencies,
             sources,
             nodes,
@@ -910,6 +1180,81 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         dependencies.insert(id, field);
     }
 
+    if process_root_id.is_some() {
+        let mut type_queue = VecDeque::<String>::new();
+        for observation in dependencies.values() {
+            if observation.kind != "SYMBOL" {
+                continue;
+            }
+            if let Some(owner) = observation.normalized["ownerIdentity"].as_str() {
+                type_queue.push_back(owner.to_owned());
+            }
+            if observation.normalized["declarationKind"] == "FIELD" {
+                let descriptor = observation.normalized["jvmDescriptor"]
+                    .as_str()
+                    .or_else(|| observation.normalized["typeDescriptor"].as_str());
+                if let Some(descriptor) = descriptor
+                    && let Ok(identity) = field_descriptor_class_identity(descriptor)
+                {
+                    type_queue.push_back(identity);
+                }
+            }
+        }
+        let mut visited_types = BTreeSet::new();
+        while let Some(identity) = type_queue.pop_front() {
+            if !visited_types.insert(identity.clone()) {
+                continue;
+            }
+            let type_rows = indexes
+                .types_by_identity_scope
+                .get(&(identity.clone(), scope.to_owned()))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let [type_row] = type_rows else {
+                gaps.add(
+                    if type_rows.is_empty() {
+                        "PROCESS_TYPE_DECLARATION_NOT_CAPTURED"
+                    } else {
+                        "PROCESS_TYPE_DECLARATION_AMBIGUOUS"
+                    },
+                    json!({"identity":identity,"scope":scope,"candidateCount":type_rows.len()}),
+                );
+                continue;
+            };
+            dependencies.insert(type_row.id.clone(), *type_row);
+            for source_id in &type_row.source_ids {
+                match evidence.sources.get(source_id) {
+                    Some(source)
+                        if source.service == service
+                            && source.revision == evidence.revision
+                            && source.text_digest
+                                == crate::canonical::hash_bytes(source.text.as_bytes()) =>
+                    {
+                        sources.insert(source_id.clone(), source);
+                    }
+                    _ => gaps.add(
+                        "PROCESS_TYPE_SOURCE_UNAVAILABLE",
+                        json!({"identity":identity,"sourceId":source_id}),
+                    ),
+                }
+            }
+            if let Some(superclass) = type_row.normalized["superclass"].as_str() {
+                if !superclass.trim().is_empty() {
+                    type_queue.push_back(superclass.to_owned());
+                }
+            }
+            for interface in type_row.normalized["interfaces"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|interface| !interface.trim().is_empty())
+            {
+                type_queue.push_back(interface.to_owned());
+            }
+        }
+    }
+
     let dto_groups: Vec<_> = direct_types
         .into_iter()
         .map(|(identity, roles)| {
@@ -954,6 +1299,7 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
         evidence,
         entrypoint_id,
         entry,
+        process_root: process_root_id.and_then(|id| evidence.observations.get(id)),
         dependencies,
         sources,
         nodes,
@@ -975,6 +1321,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         evidence,
         entrypoint_id,
         entry,
+        process_root,
         dependencies,
         sources,
         nodes,
@@ -1036,7 +1383,8 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
             "toNode":to_node,
             "targetIdentity":if to_node.is_none(){edge.target}else{None::<String>},
             "kind":edge.kind,
-            "authority":edge.authority
+            "authority":edge.authority,
+            "sourceReference":edge.source_id.as_deref().and_then(|id| work_reference(work,"SOURCE",id)),
         });
         if let Some(field_id) = edge.receiver_field_id.as_deref() {
             candidate["receiverFieldReference"] =
@@ -1091,6 +1439,76 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                     "maxObservedTraversalDepth":max_observed_traversal_depth
                 },
                 "gaps":gaps.rows(),
+            }
+        }));
+    } else if let Some(root) = process_root {
+        let root_reference = work_reference(work, "DEPENDENCY", &root.id);
+        let root_identity = root.normalized["symbolIdentity"]
+            .as_str()
+            .unwrap_or(&root.symbol);
+        let root_evidence = root_reference.into_iter().collect::<Vec<_>>();
+        let provider_edge_fact_count = provider_fact_references.len();
+        let source_reference_candidate_count = source_reference_candidates.len();
+        let referenced_owner_field_count = owner_groups
+            .iter()
+            .flat_map(|group| group["fieldReferences"].as_array().into_iter().flatten())
+            .count();
+        let mut process_nodes = nodes.clone();
+        for node in &mut process_nodes {
+            let identity = node["symbolIdentity"].as_str().unwrap_or_default();
+            let scope = node["scope"].as_str().unwrap_or_default();
+            let declarations: Vec<_> = dependencies
+                .values()
+                .filter(|observation| {
+                    observation.kind == "SYMBOL"
+                        && observation.normalized["symbolIdentity"] == identity
+                        && observation.normalized["scope"] == scope
+                })
+                .collect();
+            if let [declaration] = declarations.as_slice() {
+                let reference = work_reference(work, "DEPENDENCY", &declaration.id);
+                node["declarationReference"] = json!(reference);
+                node["ownerIdentity"] = declaration.normalized["ownerIdentity"].clone();
+                node["name"] = declaration.normalized["name"].clone();
+                node["evidence"] = json!(reference.into_iter().collect::<Vec<_>>());
+            }
+        }
+        rows.push(json!({
+            "kind":"PROCESS_CONTEXT_PACKET",
+            "id":format!("process-context:{entrypoint_id}"),
+            "record":{
+                "profile":"process-graph-v1",
+                "authority":"DERIVED_NAVIGATION_ONLY",
+                "rootDeclarationReference":root_reference,
+                "root":{
+                    "declarationId":root.id,
+                    "symbolIdentity":root_identity,
+                    "ownerIdentity":root.normalized["ownerIdentity"],
+                    "name":root.normalized["name"],
+                    "scope":root.normalized["scope"],
+                    "evidence":root_evidence
+                },
+                "callGraph":{
+                    "authority":"RETAINED_TARGET_RELATIONS_AND_SOURCE_CANDIDATES",
+                    "order":"NOT_EXECUTION_ORDER",
+                    "rootNode":(!nodes.is_empty()).then_some("m0"),
+                    "nodes":process_nodes,
+                    "providerEdgeFactReferences":provider_fact_references,
+                    "sourceReferenceCandidates":source_reference_candidates,
+                    "maxObservedTraversalDepth":max_observed_traversal_depth
+                },
+                "referencedOwnerFields":owner_groups,
+                "selection":{
+                    "uniqueSourceBytes":unique_source_bytes,
+                    "uniqueBodySourceBytes":body_source_bytes,
+                    "fieldTokenBytes":field_source_bytes,
+                    "callableCount":nodes.len(),
+                    "providerEdgeFactCount":provider_edge_fact_count,
+                    "sourceReferenceCandidateCount":source_reference_candidate_count,
+                    "referencedOwnerFieldCount":referenced_owner_field_count,
+                    "maxObservedTraversalDepth":max_observed_traversal_depth
+                },
+                "gaps":gaps.rows()
             }
         }));
     } else {
@@ -1249,6 +1667,7 @@ fn declaration_indexes<'a>(
         methods_by_owner_name: BTreeMap::new(),
         method_scopes_by_identity: BTreeMap::new(),
         types_by_identity_scope: BTreeMap::new(),
+        types_by_name_scope: BTreeMap::new(),
         fields_by_owner_name: BTreeMap::new(),
         fields_by_owner_scope: BTreeMap::new(),
         outgoing_by_identity_scope: BTreeMap::new(),
@@ -1304,6 +1723,14 @@ fn declaration_indexes<'a>(
                     }
                     "CLASS" | "INTERFACE" | "ENUM" | "RECORD" | "ANNOTATION_TYPE" => {
                         if let Some(scope) = scope {
+                            let name = observation.normalized["name"].as_str().unwrap_or_default();
+                            if !name.is_empty() {
+                                indexes
+                                    .types_by_name_scope
+                                    .entry((name.to_owned(), scope.clone()))
+                                    .or_default()
+                                    .push(observation);
+                            }
                             indexes
                                 .types_by_identity_scope
                                 .entry((identity.to_owned(), scope))
@@ -1344,6 +1771,9 @@ fn declaration_indexes<'a>(
         values.sort_by(|a, b| a.id.cmp(&b.id));
     }
     for values in indexes.types_by_identity_scope.values_mut() {
+        values.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    for values in indexes.types_by_name_scope.values_mut() {
         values.sort_by(|a, b| a.id.cmp(&b.id));
     }
     for values in indexes.fields_by_owner_name.values_mut() {
@@ -1554,6 +1984,15 @@ fn method_descriptor_parameter_count(descriptor: &str) -> Result<usize, ()> {
     cursor += 1;
     parse_type(bytes, &mut cursor, true)?;
     (cursor == bytes.len()).then_some(count).ok_or(())
+}
+
+fn has_modifier(modifiers: &Value, expected: &str) -> bool {
+    modifiers
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|modifier| modifier == expected)
 }
 
 fn descriptor_object_roles(descriptor: &str) -> Result<(BTreeSet<String>, BTreeSet<String>), ()> {
@@ -2279,6 +2718,8 @@ mod tests {
                 documentation_language: Some("en".into()),
                 entrypoint: Some("entry-http".into()),
                 context_profile: Some(PROFILE.into()),
+                root_declaration: None,
+                question: None,
                 max_items: 100,
                 max_bytes: 128 * 1024,
                 external_inputs: Vec::new(),

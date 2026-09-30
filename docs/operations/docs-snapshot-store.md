@@ -464,6 +464,14 @@ builds this packet and renders the returned answer through the same saved Work.
 The complete preparation, author-only configuration and recovery recipe is in
 `skills/codeclew/references/service-documentation.md`.
 
+Internal callable drafts use the separate `process-graph-v1` profile with an
+exact scoped `rootDeclaration` and a persisted question from the same saved
+snapshot. Their compact author packet includes linked containing-type source
+when retained, while marking source candidates as context rather than executed
+calls. The full process graph remains in the operator-only audit. Use the same
+`docs work run --draft` command and author-only configuration; do not reuse an
+endpoint-context Work for this profile.
+
 To render a structured answer conforming to
 `codeclew-operation-answer/1.0`, run
 `clew docs work explain --root docs --work WORK_ID --input answer.json --output-dir .codeclew/drafts/WORK_ID`.

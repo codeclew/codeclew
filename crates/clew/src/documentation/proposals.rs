@@ -1358,6 +1358,8 @@ mod operation_input_tests {
                 documentation_language: None,
                 entrypoint: Some(root.into()),
                 context_profile: None,
+                root_declaration: None,
+                question: None,
                 max_items: 20,
                 max_bytes: 40960,
                 external_inputs: Vec::new(),
