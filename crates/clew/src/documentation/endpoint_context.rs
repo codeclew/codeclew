@@ -1384,8 +1384,14 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
             "targetIdentity":if to_node.is_none(){edge.target}else{None::<String>},
             "kind":edge.kind,
             "authority":edge.authority,
-            "sourceReference":edge.source_id.as_deref().and_then(|id| work_reference(work,"SOURCE",id)),
         });
+        if process_root.is_some() {
+            candidate["sourceReference"] = json!(
+                edge.source_id
+                    .as_deref()
+                    .and_then(|id| work_reference(work, "SOURCE", id))
+            );
+        }
         if let Some(field_id) = edge.receiver_field_id.as_deref() {
             candidate["receiverFieldReference"] =
                 json!(work_reference(work, "DEPENDENCY", field_id));
@@ -3326,6 +3332,11 @@ mod tests {
         assert!(nodes.iter().any(|node| node["symbolIdentity"] == GETTER));
         assert_eq!(graph["order"], "NOT_EXECUTION_ORDER");
         let candidates = graph["sourceReferenceCandidates"].as_array().unwrap();
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.get("sourceReference").is_none())
+        );
         assert!(candidates.iter().any(|candidate| {
             candidate["kind"] == "METHOD_REFERENCE"
                 && candidate["authority"] == "SOURCE_REFERENCE_CANDIDATE"

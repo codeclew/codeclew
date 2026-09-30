@@ -1579,6 +1579,11 @@ mod tests {
 
         let (packet, audit) = build(&work).unwrap();
         let target_identity = "method:class:orders.OtherHelper#predicate()Z";
+        assert!(packet["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["kind"] == "TYPE_QUALIFIED_CALL"
+                && edge["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && edge["sourceReference"].is_string()
+        }));
         let helper_source = packet["methodSources"]
             .as_array()
             .unwrap()
