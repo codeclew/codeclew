@@ -128,6 +128,10 @@ pub struct Request {
     pub root_declaration: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// Host-selected answer schema and author-instruction policy for new drafts.
+    /// Absent in legacy Work and deliberately omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_contract: Option<String>,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
@@ -846,6 +850,32 @@ fn normalize_http_api_contract_profile(subject: &str, request: &mut Request, che
     }
 }
 
+fn normalize_operation_authoring_contract(request: &mut Request) -> Result<(), ClewError> {
+    let operation_profile = matches!(
+        request.context_profile.as_deref(),
+        Some(super::endpoint_context::PROFILE | "process-graph-v1")
+    );
+    match (operation_profile, request.authoring_contract.as_deref()) {
+        (true, None) => {
+            request.authoring_contract = Some(super::operation_answer::AUTHORING_CONTRACT.into());
+        }
+        (true, Some(identity)) if identity == super::operation_answer::AUTHORING_CONTRACT => {}
+        (true, Some(_)) => {
+            return Err(invalid(format!(
+                "OPERATION_AUTHORING_CONTRACT_UNSUPPORTED: prepare new Work from the saved snapshot using {} and the selected operation profile",
+                super::operation_answer::AUTHORING_CONTRACT
+            )));
+        }
+        (false, None) => {}
+        (false, Some(_)) => {
+            return Err(invalid(
+                "OPERATION_AUTHORING_CONTRACT_PROFILE_MISMATCH: authoringContract is supported only for endpoint-context-v3 or process-graph-v1",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_http_api_contract_profile(
     subject: &str,
     request: &Request,
@@ -1369,6 +1399,7 @@ pub fn prepare_with_snapshot(
     validate_http_api_contract_profile(&subject, &request, &checked)?;
     validate_endpoint_context_profile(&subject, &request, &checked)?;
     validate_process_graph_root(&subject, &request, &checked)?;
+    normalize_operation_authoring_contract(&mut request)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -2707,6 +2738,7 @@ mod section_context_tests {
                 context_profile: None,
                 root_declaration: None,
                 question: None,
+                authoring_contract: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: vec![],
@@ -3881,6 +3913,7 @@ pub(super) mod api_contract_tests {
                 context_profile: None,
                 root_declaration: None,
                 question: None,
+                authoring_contract: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: Vec::new(),
@@ -4817,6 +4850,70 @@ pub(super) mod api_contract_tests {
         let repo = Repository::open(temporary.path()).unwrap();
         let error = prepare_with_snapshot(&repo, work.subject, work.request, None).unwrap_err();
         assert!(error.message.contains("PROCESS_GRAPH_SNAPSHOT_REQUIRED"));
+    }
+
+    #[test]
+    fn operation_authoring_identity_separates_new_work_and_preserves_legacy_record_bytes() {
+        let mut old = endpoint_context_fixture();
+        old.snapshot = Some("sha256:saved-operation-snapshot/1".into());
+        assert!(old.request.authoring_contract.is_none());
+
+        let mut old_stored = StoredWork::from_runtime(&old, old.snapshot.clone().unwrap()).unwrap();
+        old_stored.id = digest(&old_stored).unwrap()[7..].into();
+        let old_bytes = bytes(&old_stored).unwrap();
+        let old_id = old_stored.id.clone();
+        let loaded_old: StoredWork = serde_json::from_slice(&old_bytes).unwrap();
+        loaded_old.validate_identity(&old_id).unwrap();
+        assert!(loaded_old.request.authoring_contract.is_none());
+        assert!(
+            serde_json::to_value(&loaded_old).unwrap()["request"]
+                .get("authoringContract")
+                .is_none()
+        );
+        assert_eq!(bytes(&loaded_old).unwrap(), old_bytes);
+
+        let mut current = old.clone();
+        normalize_operation_authoring_contract(&mut current.request).unwrap();
+        assert_eq!(
+            current.request.authoring_contract.as_deref(),
+            Some(super::super::operation_answer::AUTHORING_CONTRACT)
+        );
+        let mut current_stored =
+            StoredWork::from_runtime(&current, current.snapshot.clone().unwrap()).unwrap();
+        current_stored.id = digest(&current_stored).unwrap()[7..].into();
+        assert_ne!(current_stored.id, old_id);
+        assert_eq!(current_stored.snapshot, old_stored.snapshot);
+        assert_eq!(
+            current_stored.evidence_snapshot,
+            old_stored.evidence_snapshot
+        );
+        assert_eq!(current_stored.handles_ref, old_stored.handles_ref);
+        assert_eq!(current_stored.influence_ref, old_stored.influence_ref);
+
+        let mut repeated = current.clone();
+        normalize_operation_authoring_contract(&mut repeated.request).unwrap();
+        let mut repeated_stored =
+            StoredWork::from_runtime(&repeated, repeated.snapshot.clone().unwrap()).unwrap();
+        repeated_stored.id = digest(&repeated_stored).unwrap()[7..].into();
+        assert_eq!(repeated_stored.id, current_stored.id);
+
+        let mut obsolete = current.request.clone();
+        obsolete.authoring_contract = Some("codeclew-operation-draft-authoring/1.0".into());
+        let error = normalize_operation_authoring_contract(&mut obsolete).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("OPERATION_AUTHORING_CONTRACT_UNSUPPORTED")
+        );
+
+        let mut incompatible = current.request.clone();
+        incompatible.context_profile = None;
+        let error = normalize_operation_authoring_contract(&mut incompatible).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("OPERATION_AUTHORING_CONTRACT_PROFILE_MISMATCH")
+        );
     }
 
     #[test]

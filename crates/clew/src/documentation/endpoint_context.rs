@@ -3650,6 +3650,7 @@ mod tests {
                 context_profile: Some(PROFILE.into()),
                 root_declaration: None,
                 question: None,
+                authoring_contract: None,
                 max_items: 100,
                 max_bytes: 128 * 1024,
                 external_inputs: Vec::new(),

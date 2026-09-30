@@ -233,8 +233,8 @@ fn validate_work(work: &super::super::work::Work) -> Result<(), ClewError> {
             "OPERATION_DRAFT_SNAPSHOT_REQUIRED: prepare new Work from a saved snapshot before running a draft; this command never captures source",
         ));
     }
-    match work.request.context_profile.as_deref() {
-        Some("endpoint-context-v3") if work.subject.starts_with("service:") => {}
+    let profile_supported = match work.request.context_profile.as_deref() {
+        Some("endpoint-context-v3") if work.subject.starts_with("service:") => true,
         Some("process-graph-v1")
             if work.subject.starts_with("service:")
                 && work.request.entrypoint.is_none()
@@ -247,12 +247,24 @@ fn validate_work(work: &super::super::work::Work) -> Result<(), ClewError> {
                     .request
                     .question
                     .as_deref()
-                    .is_some_and(|question| !question.trim().is_empty()) => {}
-        _ => {
-            return Err(invalid(
-                "OPERATION_DRAFT_PREPARE_REQUIRED: prepare new service Work from a saved snapshot with endpoint-context-v3 for an HTTP endpoint, or process-graph-v1 plus exact rootDeclaration and question for an internal process; then run `clew docs work run --root <root> --work <newWork> --config <draft.json> --draft`; existing Work is immutable and source capture is not repeated",
-            ));
+                    .is_some_and(|question| !question.trim().is_empty()) =>
+        {
+            true
         }
+        _ => false,
+    };
+    if !profile_supported {
+        return Err(invalid(
+            "OPERATION_DRAFT_PREPARE_REQUIRED: prepare new service Work from a saved snapshot with endpoint-context-v3 for an HTTP endpoint, or process-graph-v1 plus exact rootDeclaration and question for an internal process; then run `clew docs work run --root <root> --work <newWork> --config <draft.json> --draft`; existing Work is immutable and source capture is not repeated",
+        ));
+    }
+    if work.request.authoring_contract.as_deref()
+        != Some(super::super::operation_answer::AUTHORING_CONTRACT)
+    {
+        return Err(invalid(format!(
+            "OPERATION_AUTHORING_CONTRACT_REQUIRED: this Work lacks the supported immutable answer and author-instruction identity {}; prepare new Work from the same saved snapshot before running a draft",
+            super::super::operation_answer::AUTHORING_CONTRACT
+        )));
     }
     Ok(())
 }
@@ -424,11 +436,12 @@ labels = packet.fetch("citations").keys.sort
 answer = if ARGV.first == "invalid"
   {"schema" => "unsupported"}
 else
-  {"schema" => "codeclew-operation-answer/1.0",
+  {"schema" => "codeclew-operation-answer/1.1",
    "packetDigest" => packet.fetch("packetDigest"),
    "title" => "Captured endpoint behavior",
    "summary" => {"text" => "The endpoint follows the supplied source evidence.", "evidence" => [labels.fetch(0)]},
    "steps" => [{"kind" => "return", "meaning" => {"text" => "Return the captured response.", "evidence" => [labels.fetch(0)]}}],
+   "preparations" => [],
    "uncertainties" => []}
 end
 puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
@@ -452,6 +465,8 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         let mut work = super::super::super::work::api_contract_tests::endpoint_context_fixture();
         work.id = "a".repeat(64);
         work.snapshot = Some(format!("sha256:{}/1", "b".repeat(64)));
+        work.request.authoring_contract =
+            Some(super::super::super::operation_answer::AUTHORING_CONTRACT.into());
         let config_path = temporary.path().join("draft-config.json");
         fs::write(
             &config_path,
@@ -707,7 +722,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         assert!(payload.get("sourceParts").is_none());
         assert!(payload.get("proposal").is_none());
         let saved = super::super::recovery::load_result(&repo, &input).unwrap();
-        assert_eq!(saved.result["schema"], "codeclew-operation-answer/1.0");
+        assert_eq!(saved.result["schema"], "codeclew-operation-answer/1.1");
         assert_eq!(saved.result["packetDigest"], packet["packetDigest"]);
 
         let output_dir = PathBuf::from(first["draft"]["outputDirectory"].as_str().unwrap());
@@ -912,6 +927,28 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         let error = validate_work(&work).unwrap_err();
         assert!(error.message.contains("prepare new service Work"));
         assert!(error.message.contains("endpoint-context-v3"));
+    }
+
+    #[test]
+    fn obsolete_authoring_contract_fails_before_dispatch_and_requests_new_work() {
+        let (_temporary, repo, mut work, config_path) = setup("success");
+        work.request.authoring_contract = Some("codeclew-operation-draft-authoring/1.0".into());
+
+        let error = run_loaded(&repo, &work, Some(&config_path)).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("OPERATION_AUTHORING_CONTRACT_REQUIRED")
+        );
+        assert!(error.message.contains("prepare new Work"));
+        assert!(latest_report(&repo, &work.id).unwrap().is_none());
+        let config: DraftConfig = store::read(&config_path, store::MAX_RECORD).unwrap();
+        assert!(
+            account(&repo, &config.budget)
+                .unwrap()
+                .reservations
+                .is_empty()
+        );
     }
 
     #[test]

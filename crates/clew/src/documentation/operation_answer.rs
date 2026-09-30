@@ -14,6 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 const ANSWER_SCHEMA: &str = "codeclew-operation-answer/1.0";
 const PACKET_SCHEMA: &str = "codeclew-documentation-reader-packet/1.0";
 const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "loop"];
+// Bump when the answer schema or generic author instruction changes materially;
+// this identity is persisted on newly prepared operation Work.
+pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.1";
 
 pub(super) fn output_schema() -> Value {
     serde_json::from_str(include_str!(

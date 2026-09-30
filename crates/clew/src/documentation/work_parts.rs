@@ -785,6 +785,7 @@ mod tests {
                 context_profile: None,
                 root_declaration: None,
                 question: None,
+                authoring_contract: None,
                 max_items: 20,
                 max_bytes,
                 external_inputs: Vec::new(),

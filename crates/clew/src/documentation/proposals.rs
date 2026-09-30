@@ -1360,6 +1360,7 @@ mod operation_input_tests {
                 context_profile: None,
                 root_declaration: None,
                 question: None,
+                authoring_contract: None,
                 max_items: 20,
                 max_bytes: 40960,
                 external_inputs: Vec::new(),

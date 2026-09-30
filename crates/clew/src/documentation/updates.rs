@@ -343,6 +343,7 @@ fn run_queue(
                 context_profile: None,
                 root_declaration: None,
                 question: None,
+                authoring_contract: None,
                 max_items: 20,
                 max_bytes: 40 * 1024,
                 external_inputs: vec![],
