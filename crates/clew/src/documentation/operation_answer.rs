@@ -124,10 +124,18 @@ impl ReaderLabels {
 
     fn ordered(self, process: bool) -> &'static str {
         match (self.russian, process) {
-            (true, true) => "Порядок внутреннего процесса",
-            (true, false) => "Порядок операции",
-            (false, true) => "Ordered internal process behavior",
-            (false, false) => "Ordered operation",
+            (true, true) => "Пояснение внутреннего процесса",
+            (true, false) => "Пояснение операции",
+            (false, true) => "Internal process explanation",
+            (false, false) => "Operation explanation",
+        }
+    }
+
+    fn no_match(self) -> &'static str {
+        if self.russian {
+            "Иначе (ни одно из условий выше не выполнено)"
+        } else {
+            "Otherwise (none of the conditions above matched)"
         }
     }
 
@@ -1521,8 +1529,6 @@ fn render_html(
 ) -> String {
     let language = packet["documentationLanguage"].as_str().unwrap_or("en");
     let preparation_titles = preparation_titles(answer);
-    let decision_tables =
-        render_decision_tables_html(&answer.steps, evidence_index, &preparation_titles, labels);
     let preparations =
         render_preparations_html(answer, packet, evidence_index, &preparation_titles, labels);
     let movement_rows = data_movement_rows(answer, labels);
@@ -1547,9 +1553,6 @@ fn render_html(
             labels.ordered(packet["profile"] == "process-graph-v1"),
         ),
     ];
-    if !decision_tables.is_empty() {
-        nav.push(("first-match-decisions", labels.first_match()));
-    }
     if !preparations.is_empty() {
         nav.push(("preparations", labels.preparations()));
     }
@@ -1574,6 +1577,7 @@ fn render_html(
         html_escape(labels.summary())
     ));
     html.push_str(&render_claim_html(&answer.summary, evidence_index, labels));
+    html.push_str(&render_uncertainties_html(answer, labels));
     html.push_str("</section><section id=\"ordered-behavior\"><h2>");
     html.push_str(&html_escape(
         labels.ordered(packet["profile"] == "process-graph-v1"),
@@ -1582,13 +1586,12 @@ fn render_html(
     html.push_str(&render_html_steps(
         &answer.steps,
         evidence_index,
-        true,
+        false,
         "",
         &preparation_titles,
         labels,
     ));
     html.push_str("</section>");
-    html.push_str(&decision_tables);
     html.push_str(&preparations);
     html.push_str(&data_movement);
     html.push_str(&render_packet_fact_tables_html(
@@ -1596,7 +1599,6 @@ fn render_html(
         evidence_index,
         labels,
     ));
-    html.push_str(&render_uncertainties_html(answer, labels));
     html.push_str(&render_evidence_index_html(
         citations,
         evidence_index,
@@ -1739,6 +1741,7 @@ a{color:var(--accent)}code{overflow-wrap:anywhere}.review-status{padding:.85rem 
 .step-tree ul{list-style:none;margin:.25rem 0 .25rem 1rem;padding-left:1rem;border-left:2px solid var(--line)}.step-tree li{position:relative;padding:.25rem 0 .25rem .4rem}.step-tree li::before{content:"";position:absolute;left:-1rem;top:1.25rem;width:.8rem;border-top:2px solid var(--line)}
 .tree-node{display:inline-block;max-width:100%}.tree-branch-label{margin:.35rem 0 0 1rem;color:#bdc9dc;font-size:.9em}
 table{border-collapse:collapse;width:100%;margin:1rem 0 1.5rem}caption{text-align:left;font-weight:700;margin:.5rem 0}th,td{border:1px solid #596273;padding:.5rem .65rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#242b36}
+.table-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.table-scroll table{min-width:34rem}.decision-outcome>summary{cursor:pointer;font-weight:600}
 .evidence-index,.limitations,.uncertainties{padding-left:1.4rem}.muted{color:#bac4d3}figure{margin:0}figcaption{font-weight:650}
 @media(prefers-color-scheme:light){body{background:#fff;color:#18202b}.claim,.step-node,.tree-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted{color:#49586d}th{background:#edf1f7}}
 "#;
@@ -1803,11 +1806,28 @@ fn render_html_steps(
     let mut output = format!("<{tag} class=\"{class}\">");
     for (index, step) in steps.iter().enumerate() {
         let step_path = step_path(path_prefix, index + 1);
-        output.push_str(&format!(
-            "<li id=\"step-{step_path}\"><div class=\"step-node\"><span class=\"step-kind\">"
-        ));
-        output.push_str(&html_escape(&step.kind));
-        output.push_str("</span><span class=\"step-text\">");
+        if let Some(table) = (step.kind == "decision")
+            .then(|| first_match_table(step, step_path.clone()))
+            .flatten()
+        {
+            output.push_str(&format!(
+                "<li>{}</li>",
+                render_inline_first_match_html(&table, evidence_index, preparation_titles, labels,)
+            ));
+            continue;
+        }
+        if ordered || !path_prefix.is_empty() {
+            output.push_str(&format!(
+                "<li id=\"step-{step_path}\"><div class=\"step-node\"><span class=\"step-kind\">"
+            ));
+            output.push_str(&html_escape(&step.kind));
+            output.push_str("</span>");
+        } else {
+            output.push_str(&format!(
+                "<li id=\"step-{step_path}\"><div class=\"step-node\">"
+            ));
+        }
+        output.push_str("<span class=\"step-text\">");
         output.push_str(&html_escape(&step.meaning.text));
         output.push_str("</span>");
         output.push_str(&render_evidence_html(
@@ -1864,6 +1884,97 @@ fn render_html_steps(
     }
     output.push_str(&format!("</{tag}>"));
     output
+}
+
+fn render_inline_first_match_html(
+    table: &FirstMatchTable<'_>,
+    evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    let mut output = format!(
+        "<div class=\"inline-decision\"><div class=\"table-scroll\"><table class=\"first-match\"><caption>{}</caption><thead><tr><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.first_match()),
+        html_escape(labels.condition()),
+        html_escape(labels.outcome())
+    );
+    for branch in &table.branches {
+        output.push_str(&format!(
+            "<tr id=\"step-{}\"><td>{}{}{}{}{}</td><td>{}</td></tr>",
+            html_escape(&branch.path),
+            html_escape(&branch.decision.meaning.text),
+            render_evidence_html(&branch.decision.meaning.evidence, evidence_index),
+            branch
+                .decision
+                .meaning
+                .uncertainty
+                .as_deref()
+                .map(|uncertainty| format!(
+                    "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
+                    html_escape(labels.uncertainty()),
+                    html_escape(uncertainty)
+                ))
+                .unwrap_or_default(),
+            render_step_metadata_html(branch.decision, labels),
+            render_preparation_links_html(
+                &branch.decision.preparation_refs,
+                preparation_titles,
+                labels,
+            ),
+            render_decision_outcome_detail_html(
+                &branch.decision.children,
+                &format!("{}-then", branch.path),
+                evidence_index,
+                preparation_titles,
+                labels,
+            )
+        ));
+    }
+    if !table.otherwise.is_empty() {
+        output.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td></tr>",
+            html_escape(labels.no_match()),
+            render_decision_outcome_detail_html(
+                table.otherwise,
+                &table.otherwise_path,
+                evidence_index,
+                preparation_titles,
+                labels,
+            )
+        ));
+    }
+    output.push_str("</tbody></table></div>");
+    output.push_str(&format!(
+        "<p class=\"muted\">{}</p></div>",
+        html_escape(labels.first_match_note())
+    ));
+    output
+}
+
+fn render_decision_outcome_detail_html(
+    steps: &[OperationStep],
+    path_prefix: &str,
+    evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    let Some((first, summary)) = branch_summary(steps) else {
+        return "<span class=\"muted\">—</span>".into();
+    };
+    format!(
+        "<details class=\"decision-outcome\"><summary><span class=\"step-kind\">{}</span> {} <span class=\"muted\">{}</span></summary>{}</details>",
+        html_escape(&first.kind),
+        html_escape(&summary),
+        html_escape(labels.details_link()),
+        render_html_steps(
+            steps,
+            evidence_index,
+            false,
+            path_prefix,
+            preparation_titles,
+            labels,
+        )
+    )
 }
 
 fn render_preparation_links_html(
@@ -2345,28 +2456,6 @@ fn branch_summary(steps: &[OperationStep]) -> Option<(&OperationStep, String)> {
     ))
 }
 
-fn table_outcome_html(
-    steps: &[OperationStep],
-    path_prefix: &str,
-    evidence_index: &BTreeMap<String, usize>,
-    preparation_titles: &BTreeMap<String, String>,
-    labels: ReaderLabels,
-) -> String {
-    let Some((first, summary)) = branch_summary(steps) else {
-        return "<span class=\"muted\">—</span>".into();
-    };
-    let target = step_path(path_prefix, 1);
-    format!(
-        "<span class=\"step-kind\">{}</span> {} <a href=\"#step-{target}\">{}</a>{}{}{}",
-        html_escape(&first.kind),
-        html_escape(&summary),
-        html_escape(labels.details_link()),
-        render_evidence_html(&first.meaning.evidence, evidence_index),
-        render_step_metadata_html(first, labels),
-        render_preparation_links_html(&first.preparation_refs, preparation_titles, labels)
-    )
-}
-
 fn table_outcome_markdown(
     steps: &[OperationStep],
     path_prefix: &str,
@@ -2387,69 +2476,6 @@ fn table_outcome_markdown(
         markdown_step_metadata(first, labels),
         render_preparation_links_markdown(&first.preparation_refs, preparation_titles, labels)
     )
-}
-
-fn render_decision_tables_html(
-    steps: &[OperationStep],
-    evidence_index: &BTreeMap<String, usize>,
-    preparation_titles: &BTreeMap<String, String>,
-    labels: ReaderLabels,
-) -> String {
-    let mut tables = Vec::new();
-    collect_first_match_tables(steps, "", &mut tables);
-    if tables.is_empty() {
-        return String::new();
-    }
-    let mut output = format!(
-        "<section id=\"first-match-decisions\"><h2>{}</h2>",
-        html_escape(labels.first_match())
-    );
-    for table in tables {
-        output.push_str(&format!(
-            "<table class=\"first-match\"><caption>{}</caption><thead><tr><th>{}</th><th>{}</th></tr></thead><tbody>",
-            html_escape(labels.first_match()),
-            html_escape(labels.condition()),
-            html_escape(labels.outcome())
-        ));
-        for branch in &table.branches {
-            output.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td></tr>",
-                html_escape(&branch.decision.meaning.text),
-                render_evidence_html(&branch.decision.meaning.evidence, evidence_index),
-                table_outcome_html(
-                    &branch.decision.children,
-                    &format!("{}-then", branch.path),
-                    evidence_index,
-                    preparation_titles,
-                    labels
-                )
-            ));
-        }
-        if !table.otherwise.is_empty() {
-            output.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td></tr>",
-                html_escape(if labels.russian {
-                    "Иначе"
-                } else {
-                    "Otherwise"
-                }),
-                table_outcome_html(
-                    &table.otherwise,
-                    &table.otherwise_path,
-                    evidence_index,
-                    preparation_titles,
-                    labels
-                )
-            ));
-        }
-        output.push_str("</tbody></table>");
-        output.push_str(&format!(
-            "<p class=\"muted\">{}</p>",
-            html_escape(labels.first_match_note())
-        ));
-    }
-    output.push_str("</section>");
-    output
 }
 
 fn render_decision_tables_markdown(
@@ -3934,74 +3960,122 @@ mod tests {
     }
 
     #[test]
-    fn linear_else_if_chain_renders_once_and_links_to_unchanged_branch_details() {
+    fn linear_else_if_chain_renders_inline_at_its_position_with_independent_outcomes() {
         let packet = packet();
         let mut raw_answer = answer(&packet);
-        raw_answer["steps"] = json!([{
-            "kind":"decision",
-            "meaning":{"text":"Condition alpha holds.","evidence":["d1"]},
-            "children":[{
-                "kind":"try",
-                "meaning":{"text":"Try the alpha operation.","evidence":["d1"]},
-                "children":[{"kind":"action","meaning":{"text":"Apply alpha.","evidence":["d1"]}}],
-                "otherwise":[{"kind":"throw","meaning":{"text":"Record alpha failure.","evidence":["d1"]}}]
-            }],
-            "otherwise":[{
+        raw_answer["steps"] = json!([
+            {"kind":"action","meaning":{"text":"Before selection.","evidence":["d1"]}},
+            {
                 "kind":"decision",
-                "meaning":{"text":"Condition beta holds.","evidence":["d1"]},
-                "children":[{
-                    "kind":"loop",
-                    "meaning":{"text":"Repeat beta checks while retaining the validated values and then prepare the outgoing request for the transport client.","evidence":["d1"]},
-                    "to":"betaTransportRequest",
-                    "children":[{"kind":"action","meaning":{"text":"Apply beta.","evidence":["d1"]}}],
-                    "otherwise":[{"kind":"return","meaning":{"text":"Exit the beta loop.","evidence":["d1"]}}]
-                }],
+                "meaning":{"text":"Condition alpha holds.","evidence":["d1"]},
+                "from":"incomingState",
+                "to":"selectedOutcome",
+                "interaction":"chooseNextOperation",
+                "preparationRefs":["decision-context"],
+                "children":[
+                    {
+                        "kind":"decision",
+                        "meaning":{"text":"Nested condition delta holds.","evidence":["d1"]},
+                        "children":[{"kind":"action","meaning":{"text":"Run nested delta.","evidence":["d1"]}}],
+                        "otherwise":[{
+                            "kind":"decision",
+                            "meaning":{"text":"Nested condition epsilon holds.","evidence":["d1"]},
+                            "children":[{"kind":"return","meaning":{"text":"Run nested epsilon.","evidence":["d1"]}}],
+                            "otherwise":[{"kind":"throw","meaning":{"text":"Use nested fallback.","evidence":["d1"]}}]
+                        }]
+                    },
+                    {
+                        "kind":"try",
+                        "meaning":{"text":"Try the alpha operation.","evidence":["d1"]},
+                        "children":[{"kind":"action","meaning":{"text":"Apply alpha.","evidence":["d1"]}}],
+                        "otherwise":[{"kind":"throw","meaning":{"text":"Record alpha failure.","evidence":["d1"]}}]
+                    }
+                ],
                 "otherwise":[{
                     "kind":"decision",
-                    "meaning":{"text":"Condition gamma holds.","evidence":["d1"]},
-                    "children":[{"kind":"return","meaning":{"text":"Apply gamma.","evidence":["d1"]}}],
-                    "otherwise":[{"kind":"throw","meaning":{"text":"Use the default outcome.","evidence":["d1"]}}]
+                    "meaning":{"text":"Condition beta holds.","evidence":["d1"]},
+                    "children":[{
+                        "kind":"loop",
+                        "meaning":{"text":"Repeat beta checks while retaining the validated values and then prepare the outgoing request for the transport client.","evidence":["d1"]},
+                        "to":"betaTransportRequest",
+                        "children":[{"kind":"action","meaning":{"text":"Apply beta.","evidence":["d1"]}}],
+                        "otherwise":[{"kind":"return","meaning":{"text":"Exit the beta loop.","evidence":["d1"]}}]
+                    }],
+                    "otherwise":[{
+                        "kind":"decision",
+                        "meaning":{"text":"Condition gamma holds.","evidence":["d1"]},
+                        "children":[{"kind":"return","meaning":{"text":"Apply gamma.","evidence":["d1"]}}],
+                        "otherwise":[{"kind":"throw","meaning":{"text":"Use the default outcome.","evidence":["d1"]}}]
+                    }]
                 }]
-            }]
+            },
+            {"kind":"action","meaning":{"text":"After the selection boundary.","evidence":["d1"]}}
+        ]);
+        raw_answer["steps"][1]["preparationRefs"] = json!(["decision-context"]);
+        raw_answer["preparations"] = json!([{
+            "id":"decision-context",
+            "title":"Shared decision context",
+            "summary":{
+                "text":"Preparation shared by the selected decision.",
+                "evidence":["d1"],
+                "uncertainty":"The exact helper owner is not retained."
+            },
+            "steps":[]
         }]);
+        raw_answer["uncertainties"] = json!(["The runtime dispatcher is not established."]);
         let original_answer = raw_answer.clone();
 
         let rendered = validate_and_render(&packet, &audit(&packet), raw_answer).unwrap();
 
         assert_eq!(rendered.answer, original_answer);
-        assert_eq!(rendered.html.matches("class=\"first-match\"").count(), 1);
+        assert_eq!(rendered.html.matches("class=\"first-match\"").count(), 2);
         assert_eq!(
             rendered
                 .markdown
                 .matches("| Condition | Action summary |")
                 .count(),
-            1
+            2
         );
-        let table_start = rendered.html.find("id=\"first-match-decisions\"").unwrap();
-        let table_end = rendered.html[table_start..].find("</section>").unwrap() + table_start;
-        let table = &rendered.html[table_start..table_end];
-        assert!(table.find("Condition alpha").unwrap() < table.find("Condition beta").unwrap());
-        assert!(table.find("Condition beta").unwrap() < table.find("Condition gamma").unwrap());
-        assert!(table.contains("Try the alpha operation."));
-        assert!(!table.contains("Apply alpha."));
-        assert_eq!(
-            table
-                .matches("Repeat beta checks while retaining the validated values")
-                .count(),
-            1
+        let primary_end = rendered.html.find("class=\"technical-details\"").unwrap();
+        let primary = &rendered.html[..primary_end];
+        let before = primary.find("Before selection.").unwrap();
+        let alpha = primary.find("Condition alpha holds.").unwrap();
+        let beta = primary.find("Condition beta holds.").unwrap();
+        let gamma = primary.find("Condition gamma holds.").unwrap();
+        let after = primary.find("After the selection boundary.").unwrap();
+        assert!(before < alpha && alpha < beta && beta < gamma && gamma < after);
+        assert!(
+            primary
+                .find("The runtime dispatcher is not established.")
+                .unwrap()
+                < alpha
         );
-        assert!(table.contains("betaTransportRequest"));
-        assert!(table.contains("Use the default outcome."));
-        assert!(!table.contains("Record alpha failure."));
-        assert!(!table.contains("Apply beta."));
-        assert!(table.contains("not an executable DMN rule"));
-        assert!(table.contains("reevaluation behavior"));
-        assert!(rendered.html.contains("href=\"#step-1-then-1\""));
-        assert!(rendered.html.contains("id=\"step-1-then-1\""));
-        assert!(rendered.html.contains("href=\"#first-match-decisions\""));
+        assert!(primary.contains("Otherwise (none of the conditions above matched)"));
+        assert!(primary.contains("href=\"#preparation-decision-context\""));
+        assert!(primary.contains("From:</strong> incomingState"));
+        assert!(primary.contains("To:</strong> selectedOutcome"));
+        assert!(primary.contains("Interaction:</strong> chooseNextOperation"));
+        assert!(primary.contains("id=\"step-2\""));
+        assert!(primary.contains("id=\"step-2-else-1\""));
+        assert!(primary.contains("id=\"step-2-else-1-else-1\""));
+        let alpha_outcome = &primary[alpha..beta];
+        assert!(alpha_outcome.contains("Nested condition delta holds."));
+        assert!(alpha_outcome.contains("Nested condition epsilon holds."));
+        assert!(alpha_outcome.contains("Run nested delta."));
+        assert!(alpha_outcome.contains("Try the alpha operation."));
+        assert!(alpha_outcome.contains("Record alpha failure."));
+        assert!(!alpha_outcome.contains("Condition beta holds."));
+        assert!(!alpha_outcome.contains("Condition gamma holds."));
+        let beta_outcome = &primary[beta..gamma];
+        assert!(beta_outcome.contains("Apply beta."));
+        assert!(!beta_outcome.contains("Apply alpha."));
+        assert!(!beta_outcome.contains("Apply gamma."));
+        assert!(primary.contains("Use the default outcome."));
+        assert!(primary.contains("not an executable DMN rule"));
+        assert!(primary.contains("reevaluation behavior"));
         assert!(rendered.html.contains("Catch / otherwise path"));
         assert!(rendered.html.contains("Otherwise / exit path"));
-        assert!(rendered.markdown.contains("#step-1-else-1-then-1"));
+        assert!(rendered.markdown.contains("#step-2-else-1-then-1"));
         assert!(rendered.markdown.contains("Record alpha failure."));
     }
 
