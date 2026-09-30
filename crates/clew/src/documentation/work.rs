@@ -645,7 +645,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let loaded = load(&Repository::open(&root)?, &id)?;
             let (packet, audit) = super::operation_packet::build(&loaded)?;
             let answer: Value = store::read(&input, store::MAX_RECORD)?;
-            let rendered = super::operation_answer::validate_and_render(&packet, answer)?;
+            let rendered = super::operation_answer::validate_and_render(&packet, &audit, answer)?;
             write_explanation_outputs(
                 &output_dir,
                 &loaded.id,

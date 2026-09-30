@@ -39,10 +39,268 @@ pub(super) struct RenderedAnswer {
     pub(super) answer: Value,
 }
 
+#[derive(Clone, Copy)]
+struct ReaderLabels {
+    russian: bool,
+}
+
+impl ReaderLabels {
+    fn new(packet: &Value) -> Self {
+        Self {
+            russian: packet["documentationLanguage"].as_str() == Some("ru"),
+        }
+    }
+
+    fn status(self) -> &'static str {
+        if self.russian {
+            "ЧЕРНОВИК / НЕ ПРОВЕРЕНО"
+        } else {
+            "DRAFT / UNREVIEWED"
+        }
+    }
+
+    fn status_note(self) -> &'static str {
+        if self.russian {
+            "Проверены структура и привязка меток к свидетельствам. Семантическая корректность не проверялась."
+        } else {
+            "Structure and evidence-label binding were validated. Semantic correctness was not reviewed."
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        if self.russian {
+            "Кратко"
+        } else {
+            "Summary"
+        }
+    }
+
+    fn ordered(self, process: bool) -> &'static str {
+        match (self.russian, process) {
+            (true, true) => "Порядок внутреннего процесса",
+            (true, false) => "Порядок операции",
+            (false, true) => "Ordered internal process behavior",
+            (false, false) => "Ordered operation",
+        }
+    }
+
+    fn facts(self, process: bool) -> &'static str {
+        match (self.russian, process) {
+            (true, true) => "Типы и поля процесса",
+            (true, false) => "Поля DTO и сведения об аннотациях",
+            (false, true) => "Process types and fields",
+            (false, false) => "Captured DTO and annotation facts",
+        }
+    }
+
+    fn owner(self) -> &'static str {
+        if self.russian {
+            "Владелец"
+        } else {
+            "Owner"
+        }
+    }
+
+    fn type_name(self) -> &'static str {
+        if self.russian { "Тип" } else { "Type" }
+    }
+
+    fn field_name(self) -> &'static str {
+        if self.russian { "Поле" } else { "Field" }
+    }
+
+    fn declared_type(self) -> &'static str {
+        if self.russian {
+            "Объявленный тип"
+        } else {
+            "Declared type"
+        }
+    }
+
+    fn modifiers(self) -> &'static str {
+        if self.russian {
+            "Модификаторы"
+        } else {
+            "Modifiers"
+        }
+    }
+
+    fn annotations(self) -> &'static str {
+        if self.russian {
+            "Аннотации"
+        } else {
+            "Annotations"
+        }
+    }
+
+    fn declaration(self) -> &'static str {
+        if self.russian {
+            "Токены объявления"
+        } else {
+            "Declaration tokens"
+        }
+    }
+
+    fn evidence(self) -> &'static str {
+        if self.russian {
+            "Свидетельства"
+        } else {
+            "Evidence"
+        }
+    }
+
+    fn superclass(self) -> &'static str {
+        if self.russian {
+            "Базовый класс"
+        } else {
+            "Superclass"
+        }
+    }
+
+    fn interfaces(self) -> &'static str {
+        if self.russian {
+            "Интерфейсы"
+        } else {
+            "Interfaces"
+        }
+    }
+
+    fn directions(self) -> &'static str {
+        if self.russian {
+            "Направления"
+        } else {
+            "Directions"
+        }
+    }
+
+    fn no_fields(self) -> &'static str {
+        if self.russian {
+            "В пакете нет сохранённых объявлений полей."
+        } else {
+            "No field declarations are listed in this packet."
+        }
+    }
+
+    fn cited_evidence(self) -> &'static str {
+        if self.russian {
+            "Использованные свидетельства"
+        } else {
+            "Cited evidence"
+        }
+    }
+
+    fn technical_details(self) -> &'static str {
+        if self.russian {
+            "Технические сведения"
+        } else {
+            "Technical details"
+        }
+    }
+
+    fn full_inventory(self) -> &'static str {
+        if self.russian {
+            "Полный список свидетельств"
+        } else {
+            "Full evidence inventory"
+        }
+    }
+
+    fn source_locations(self) -> &'static str {
+        if self.russian {
+            "Сохранённые фрагменты исходного кода"
+        } else {
+            "Retained source locations"
+        }
+    }
+
+    fn no_source_location(self) -> &'static str {
+        if self.russian {
+            "Для этого свидетельства в пакете нет сохранённой позиции исходного кода."
+        } else {
+            "No retained source location is available for this evidence in the packet."
+        }
+    }
+
+    fn source_link(self) -> &'static str {
+        if self.russian {
+            "исходный код"
+        } else {
+            "source"
+        }
+    }
+
+    fn first_match(self) -> &'static str {
+        if self.russian {
+            "Первое подходящее условие"
+        } else {
+            "First matching condition"
+        }
+    }
+
+    fn condition(self) -> &'static str {
+        if self.russian {
+            "Условие"
+        } else {
+            "Condition"
+        }
+    }
+
+    fn outcome(self) -> &'static str {
+        if self.russian {
+            "Краткое действие"
+        } else {
+            "Action summary"
+        }
+    }
+
+    fn details_link(self) -> &'static str {
+        if self.russian {
+            "Подробности"
+        } else {
+            "Details"
+        }
+    }
+
+    fn first_match_note(self) -> &'static str {
+        if self.russian {
+            "Условия рассматриваются по порядку; следующее условие относится к ветви, только если предыдущие не сработали. Эта таблица — справочное представление, а не исполняемое DMN-правило; она не доказывает чистоту или повторную вычислимость предикатов."
+        } else {
+            "Conditions are considered in order; a later row applies only when earlier conditions are false. This is a reading aid, not an executable DMN rule, and it does not establish predicate purity or reevaluation behavior."
+        }
+    }
+
+    fn children_label(self, kind: &str) -> &'static str {
+        match (self.russian, kind) {
+            (true, "decision") => "Если условие выполнено",
+            (true, "try") => "Защищённая ветвь try",
+            (true, "loop") => "Тело цикла",
+            (true, _) => "Следующие шаги",
+            (false, "decision") => "When the condition holds",
+            (false, "try") => "Protected try path",
+            (false, "loop") => "Loop body",
+            (false, _) => "Following substeps",
+        }
+    }
+
+    fn otherwise_label(self, kind: &str) -> &'static str {
+        match (self.russian, kind) {
+            (true, "decision") => "Если условие не выполнено",
+            (true, "try") => "Ветка catch / иначе",
+            (true, "loop") => "Иначе / выход из цикла",
+            (true, _) => "Иначе",
+            (false, "decision") => "When the condition does not hold",
+            (false, "try") => "Catch / otherwise path",
+            (false, "loop") => "Otherwise / exit path",
+            (false, _) => "Otherwise path",
+        }
+    }
+}
+
 /// Validate an answer against the exact compact packet and render all document
 /// views from the same authored step tree.
 pub(super) fn validate_and_render(
     packet: &Value,
+    audit: &Value,
     answer: Value,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
     if packet["schema"] != PACKET_SCHEMA
@@ -102,9 +360,28 @@ pub(super) fn validate_and_render(
         return Err(invalid("operation answer uncertainties must not be empty"));
     }
 
+    let labels = ReaderLabels::new(packet);
     let evidence_index = evidence_index(citations);
-    let html = render_html(packet, &parsed, citations, &evidence_index);
-    let markdown = render_markdown(packet, &parsed, citations, &evidence_index);
+    let used_labels = answer_evidence_labels(&parsed);
+    let source_navigation = source_navigation(packet, audit, &used_labels);
+    let html = render_html(
+        packet,
+        &parsed,
+        citations,
+        &evidence_index,
+        &used_labels,
+        &source_navigation,
+        labels,
+    );
+    let markdown = render_markdown(
+        packet,
+        &parsed,
+        citations,
+        &evidence_index,
+        &used_labels,
+        &source_navigation,
+        labels,
+    );
     Ok(RenderedAnswer {
         html,
         markdown,
@@ -269,11 +546,290 @@ fn evidence_index(citations: &serde_json::Map<String, Value>) -> BTreeMap<String
         .collect()
 }
 
+fn answer_evidence_labels(answer: &OperationAnswer) -> BTreeSet<String> {
+    fn visit(steps: &[Step], labels: &mut BTreeSet<String>) {
+        for step in steps {
+            labels.extend(step.meaning.evidence.iter().cloned());
+            visit(&step.children, labels);
+            visit(&step.otherwise, labels);
+        }
+    }
+    let mut labels = answer.summary.evidence.iter().cloned().collect();
+    visit(&answer.steps, &mut labels);
+    labels
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SourceLocation {
+    reference: String,
+    file: String,
+    start_line: u64,
+    end_line: u64,
+    excerpt: String,
+}
+
+#[derive(Default)]
+struct SourceNavigation {
+    locations: Vec<SourceLocation>,
+    evidence_locations: BTreeMap<String, Vec<usize>>,
+}
+
+fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> SourceNavigation {
+    if audit["packetDigest"] != packet["packetDigest"]
+        || audit["schema"] != "codeclew-documentation-reader-packet-audit/1.0"
+        || !audit_digest_matches(audit)
+    {
+        return SourceNavigation::default();
+    }
+    let mut source_by_id = BTreeMap::<String, SourceLocation>::new();
+    let mut source_by_reference = BTreeMap::<String, SourceLocation>::new();
+    let mut source_text_by_reference = BTreeMap::<String, String>::new();
+    let mut evidence_source_ids = BTreeMap::<String, BTreeSet<String>>::new();
+    for row in audit["records"].as_array().into_iter().flatten() {
+        let Some(label) = row["label"].as_str() else {
+            continue;
+        };
+        let Some(kind) = row["kind"].as_str() else {
+            continue;
+        };
+        let record = &row["row"]["record"];
+        if kind == "SOURCE"
+            && let Some(location) = audit_source_location(label, record)
+        {
+            let id = row["id"].as_str().unwrap_or_default().to_owned();
+            source_by_id.insert(id, location.clone());
+            source_by_reference.insert(label.to_owned(), location.clone());
+            source_text_by_reference.insert(label.to_owned(), location.excerpt.clone());
+            evidence_source_ids
+                .entry(label.to_owned())
+                .or_default()
+                .insert(row["id"].as_str().unwrap_or_default().to_owned());
+        }
+        if let Some(source_ids) = record["sourceIds"].as_array() {
+            for source_id in source_ids.iter().filter_map(Value::as_str) {
+                evidence_source_ids
+                    .entry(label.to_owned())
+                    .or_default()
+                    .insert(source_id.to_owned());
+            }
+        }
+    }
+
+    let mut locations_by_evidence = BTreeMap::<String, BTreeSet<SourceLocation>>::new();
+    for label in used {
+        if let Some(source_ids) = evidence_source_ids.get(label) {
+            for source_id in source_ids {
+                if let Some(location) = source_by_id.get(source_id) {
+                    locations_by_evidence
+                        .entry(label.clone())
+                        .or_default()
+                        .insert(location.clone());
+                }
+            }
+        }
+    }
+
+    for source in packet["methodSources"].as_array().into_iter().flatten() {
+        let Some(reference) = source["reference"].as_str() else {
+            continue;
+        };
+        if let Some(text) = source["text"].as_str() {
+            source_text_by_reference.insert(reference.to_owned(), text.to_owned());
+        }
+        let Some(parent_location) = source_by_reference.get(reference).cloned() else {
+            continue;
+        };
+        let Some(text) = source["text"].as_str() else {
+            continue;
+        };
+        for alias in source["sourceAliases"].as_array().into_iter().flatten() {
+            let Some(alias_reference) = alias["reference"].as_str() else {
+                continue;
+            };
+            let start = alias["startByte"]
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok());
+            let end = alias["endByte"]
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok());
+            let Some(location) = start.zip(end).and_then(|(start, end)| {
+                source_location_for_range(alias_reference, &parent_location, text, start, end)
+            }) else {
+                continue;
+            };
+            for label in std::iter::once(alias_reference)
+                .chain(strings(&alias["evidence"]).iter().map(String::as_str))
+            {
+                if used.contains(label) {
+                    locations_by_evidence
+                        .entry(label.to_owned())
+                        .or_default()
+                        .insert(location.clone());
+                }
+            }
+        }
+    }
+
+    let mut add_body_location =
+        |source_reference: &str, start: usize, end: usize, evidence: Vec<String>| {
+            let (Some(parent_location), Some(text)) = (
+                source_by_reference.get(source_reference),
+                source_text_by_reference.get(source_reference),
+            ) else {
+                return;
+            };
+            let Some(location) =
+                source_location_for_range(source_reference, parent_location, text, start, end)
+            else {
+                return;
+            };
+            for label in evidence.into_iter().filter(|label| used.contains(label)) {
+                locations_by_evidence
+                    .entry(label)
+                    .or_default()
+                    .insert(location.clone());
+            }
+        };
+    for body in packet["methodBodies"].as_array().into_iter().flatten() {
+        let (Some(reference), Some(start), Some(end)) = (
+            body["source"].as_str(),
+            body["startByte"]
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok()),
+            body["endByte"]
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok()),
+        ) else {
+            continue;
+        };
+        let labels = std::iter::once(reference.to_owned())
+            .chain(
+                strings(&body["evidence"])
+                    .into_iter()
+                    .filter(|label| label == reference),
+            )
+            .collect();
+        add_body_location(reference, start, end, labels);
+    }
+    for method in packet["methods"].as_array().into_iter().flatten() {
+        let body = &method["body"];
+        let (Some(reference), Some(start), Some(end)) = (
+            body["sourceReference"].as_str(),
+            body["startByte"]
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok()),
+            body["endByte"]
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok()),
+        ) else {
+            continue;
+        };
+        let mut labels = vec![reference.to_owned()];
+        if let Some(declaration) = method["declarationReference"].as_str() {
+            labels.push(declaration.to_owned());
+        }
+        add_body_location(reference, start, end, labels);
+    }
+
+    let mut locations = BTreeSet::new();
+    for label in used {
+        if let Some(candidates) = locations_by_evidence.get(label) {
+            locations.extend(candidates.iter().cloned());
+        }
+    }
+    let locations: Vec<_> = locations.into_iter().collect();
+    let location_indices: BTreeMap<_, _> = locations
+        .iter()
+        .enumerate()
+        .map(|(index, location)| (location.clone(), index))
+        .collect();
+    let evidence_locations = locations_by_evidence
+        .into_iter()
+        .filter(|(label, _)| used.contains(label))
+        .map(|(label, candidates)| {
+            let indices = candidates
+                .iter()
+                .filter_map(|location| location_indices.get(location).copied())
+                .collect();
+            (label, indices)
+        })
+        .collect();
+    SourceNavigation {
+        locations,
+        evidence_locations,
+    }
+}
+
+fn audit_digest_matches(audit: &Value) -> bool {
+    let Some(declared_digest) = audit["auditDigest"].as_str() else {
+        return false;
+    };
+    let mut unsigned = audit.clone();
+    let Some(object) = unsigned.as_object_mut() else {
+        return false;
+    };
+    object.remove("auditDigest");
+    super::digest(&unsigned)
+        .ok()
+        .is_some_and(|actual| actual == declared_digest)
+}
+
+fn audit_source_location(reference: &str, source: &Value) -> Option<SourceLocation> {
+    let file = source["file"].as_str()?.trim();
+    let start_line = source["startLine"].as_u64()?;
+    let end_line = source["endLine"].as_u64()?;
+    if file.is_empty() || start_line == 0 || end_line < start_line {
+        return None;
+    }
+    Some(SourceLocation {
+        reference: reference.to_owned(),
+        file: file.to_owned(),
+        start_line,
+        end_line,
+        excerpt: source["text"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+
+fn source_location_for_range(
+    reference: &str,
+    parent: &SourceLocation,
+    text: &str,
+    start: usize,
+    end: usize,
+) -> Option<SourceLocation> {
+    if start >= end {
+        return None;
+    }
+    let excerpt = text.get(start..end)?;
+    let start_prefix = text.get(..start)?;
+    let end_char_start = start.checked_add(excerpt.char_indices().next_back()?.0)?;
+    let end_prefix = text.get(..end_char_start)?;
+    let start_line = parent
+        .start_line
+        .checked_add(start_prefix.bytes().filter(|byte| *byte == b'\n').count() as u64)?;
+    let end_line = parent
+        .start_line
+        .checked_add(end_prefix.bytes().filter(|byte| *byte == b'\n').count() as u64)?;
+    if start_line < parent.start_line || end_line > parent.end_line || end_line < start_line {
+        return None;
+    }
+    Some(SourceLocation {
+        reference: reference.to_owned(),
+        file: parent.file.clone(),
+        start_line,
+        end_line,
+        excerpt: excerpt.to_owned(),
+    })
+}
+
 fn render_html(
     packet: &Value,
     answer: &OperationAnswer,
     citations: &serde_json::Map<String, Value>,
     evidence_index: &BTreeMap<String, usize>,
+    used_labels: &BTreeSet<String>,
+    source_navigation: &SourceNavigation,
+    labels: ReaderLabels,
 ) -> String {
     let language = packet["documentationLanguage"].as_str().unwrap_or("en");
     let mut html = String::from("<!doctype html><html lang=\"");
@@ -284,29 +840,66 @@ fn render_html(
     html.push_str(OFFLINE_STYLE);
     html.push_str("</style></head><body><main>");
     html.push_str(&format!(
-        "<h1>{}</h1><p class=\"review-status\"><strong>DRAFT / UNREVIEWED</strong> — Structure and evidence-label binding were validated. Semantic correctness was not reviewed.</p><p class=\"packet-digest\">Packet digest: <code>{}</code></p>",
+        "<h1>{}</h1><p class=\"review-status\"><strong>{}</strong> — {}</p>",
         html_escape(&answer.title),
-        html_escape(&answer.packet_digest)
+        html_escape(labels.status()),
+        html_escape(labels.status_note())
     ));
-    html.push_str("<section><h2>Summary</h2>");
-    html.push_str(&render_claim_html(&answer.summary, evidence_index));
-    let ordered_heading = if packet["profile"] == "process-graph-v1" {
-        "Ordered internal process behavior"
-    } else {
-        "Ordered operation"
-    };
-    html.push_str("</section><section><h2>");
-    html.push_str(ordered_heading);
+    html.push_str(&format!(
+        "<nav class=\"document-nav\" aria-label=\"{}\"><a href=\"#summary\">{}</a><a href=\"#ordered-behavior\">{}</a><a href=\"#cited-evidence\">{}</a></nav>",
+        html_escape(if labels.russian { "Навигация по документу" } else { "Document navigation" }),
+        html_escape(labels.summary()),
+        html_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
+        html_escape(labels.cited_evidence())
+    ));
+    html.push_str(&format!(
+        "<section id=\"summary\"><h2>{}</h2>",
+        html_escape(labels.summary())
+    ));
+    html.push_str(&render_claim_html(&answer.summary, evidence_index, labels));
+    html.push_str("</section><section id=\"ordered-behavior\"><h2>");
+    html.push_str(&html_escape(
+        labels.ordered(packet["profile"] == "process-graph-v1"),
+    ));
     html.push_str("</h2>");
-    html.push_str(&render_html_steps(&answer.steps, evidence_index, true));
-    html.push_str("</section><section><h2>Offline operation tree</h2><figure class=\"step-tree\"><figcaption>Derived from the supplied answer steps</figcaption>");
-    html.push_str(&render_tree_html(&answer.steps, evidence_index));
-    html.push_str("</figure></section>");
-    html.push_str(&render_decision_tables_html(&answer.steps, evidence_index));
-    html.push_str(&render_packet_fact_tables_html(packet, evidence_index));
-    html.push_str(&render_packet_limits_html(packet));
-    html.push_str(&render_uncertainties_html(answer));
-    html.push_str(&render_evidence_index_html(citations, evidence_index));
+    html.push_str(&render_html_steps(
+        &answer.steps,
+        evidence_index,
+        true,
+        "",
+        labels,
+    ));
+    html.push_str("</section>");
+    html.push_str(&render_decision_tables_html(
+        &answer.steps,
+        evidence_index,
+        labels,
+    ));
+    html.push_str(&render_packet_fact_tables_html(
+        packet,
+        evidence_index,
+        labels,
+    ));
+    html.push_str(&render_uncertainties_html(answer, labels));
+    html.push_str(&render_evidence_index_html(
+        citations,
+        evidence_index,
+        used_labels,
+        source_navigation,
+        labels,
+    ));
+    html.push_str(&format!(
+        "<details class=\"technical-details\"><summary>{}</summary><p class=\"packet-digest\">{}: <code>{}</code></p><details><summary>{}</summary><figure class=\"step-tree\"><figcaption>{}</figcaption>{}</figure></details>{}{}</details>",
+        html_escape(labels.technical_details()),
+        html_escape(if labels.russian { "Хеш пакета" } else { "Packet digest" }),
+        html_escape(&answer.packet_digest),
+        html_escape(if labels.russian { "Дерево шагов" } else { "Operation tree" }),
+        html_escape(if labels.russian { "Построено из переданных шагов ответа" } else { "Derived from the supplied answer steps" }),
+        render_tree_html(&answer.steps, evidence_index, labels),
+        render_packet_limits_html(packet, labels),
+        render_full_inventory_html(citations, evidence_index, used_labels, labels)
+    ));
+    html.push_str(&render_source_locations_html(source_navigation, labels));
     html.push_str("</main></body></html>");
     html
 }
@@ -316,29 +909,65 @@ fn render_markdown(
     answer: &OperationAnswer,
     citations: &serde_json::Map<String, Value>,
     evidence_index: &BTreeMap<String, usize>,
+    used_labels: &BTreeSet<String>,
+    source_navigation: &SourceNavigation,
+    labels: ReaderLabels,
 ) -> String {
-    let ordered_heading = if packet["profile"] == "process-graph-v1" {
-        "Ordered internal process behavior"
-    } else {
-        "Ordered operation"
-    };
     let mut markdown = format!(
-        "# {}\n\n> **DRAFT / UNREVIEWED.** Structure and evidence-label binding were validated; semantic correctness was not reviewed.\n\nPacket digest: `{}`\n\n## Summary\n\n{}\n\n## {}\n\n{}\n\n## Offline operation tree\n\n{}\n\n",
+        "# {}\n\n> **{}** {}\n\n<nav>**{}:** [ {} ](#summary) · [ {} ](#ordered-behavior) · [ {} ](#cited-evidence)</nav>\n\n<a id=\"summary\"></a>\n## {}\n\n{}\n\n<a id=\"ordered-behavior\"></a>\n## {}\n\n{}\n\n",
         markdown_escape(&answer.title),
-        markdown_escape(&answer.packet_digest),
-        render_claim_markdown(&answer.summary, evidence_index),
-        ordered_heading,
-        render_markdown_steps(&answer.steps, evidence_index, 0, true),
-        markdown_tree_block(&answer.steps)
+        markdown_escape(labels.status()),
+        markdown_escape(labels.status_note()),
+        markdown_escape(if labels.russian {
+            "Содержание"
+        } else {
+            "Contents"
+        }),
+        markdown_escape(labels.summary()),
+        markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
+        markdown_escape(labels.cited_evidence()),
+        markdown_escape(labels.summary()),
+        render_claim_markdown(&answer.summary, evidence_index, labels),
+        markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
+        render_markdown_steps(&answer.steps, evidence_index, 0, true, "", labels)
     );
     markdown.push_str(&render_decision_tables_markdown(
         &answer.steps,
         evidence_index,
+        labels,
     ));
-    markdown.push_str(&render_packet_fact_tables_markdown(packet, evidence_index));
-    markdown.push_str(&render_packet_limits_markdown(packet));
-    markdown.push_str(&render_uncertainties_markdown(answer));
-    markdown.push_str(&render_evidence_index_markdown(citations, evidence_index));
+    markdown.push_str(&render_packet_fact_tables_markdown(
+        packet,
+        evidence_index,
+        labels,
+    ));
+    markdown.push_str(&render_uncertainties_markdown(answer, labels));
+    markdown.push_str(&render_evidence_index_markdown(
+        citations,
+        evidence_index,
+        used_labels,
+        source_navigation,
+        labels,
+    ));
+    markdown.push_str(&format!(
+        "<details>\n<summary>{}</summary>\n\n**{}:** `{}`\n\n### {}\n\n{}\n\n{}{}\n</details>\n",
+        markdown_escape(labels.technical_details()),
+        markdown_escape(if labels.russian {
+            "Хеш пакета"
+        } else {
+            "Packet digest"
+        }),
+        markdown_escape(&answer.packet_digest),
+        markdown_escape(if labels.russian {
+            "Дерево шагов"
+        } else {
+            "Operation tree"
+        }),
+        markdown_tree_block(&answer.steps, labels),
+        render_packet_limits_markdown(packet, labels),
+        render_full_inventory_markdown(citations, evidence_index, used_labels, labels)
+    ));
+    markdown.push_str(&render_source_locations_markdown(source_navigation, labels));
     markdown
 }
 
@@ -358,7 +987,11 @@ table{border-collapse:collapse;width:100%;margin:1rem 0 1.5rem}caption{text-alig
 @media(prefers-color-scheme:light){body{background:#fff;color:#18202b}.claim,.step-node,.tree-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted{color:#49586d}th{background:#edf1f7}}
 "#;
 
-fn render_claim_html(claim: &Claim, evidence_index: &BTreeMap<String, usize>) -> String {
+fn render_claim_html(
+    claim: &Claim,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
     let mut output = format!(
         "<div class=\"claim\"><p class=\"claim-text\">{}</p>{}",
         html_escape(&claim.text),
@@ -366,7 +999,12 @@ fn render_claim_html(claim: &Claim, evidence_index: &BTreeMap<String, usize>) ->
     );
     if let Some(uncertainty) = claim.uncertainty.as_deref() {
         output.push_str(&format!(
-            "<p class=\"claim-uncertainty\"><strong>Uncertainty:</strong> {}</p>",
+            "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
+            html_escape(if labels.russian {
+                "Неопределённость"
+            } else {
+                "Uncertainty"
+            }),
             html_escape(uncertainty)
         ));
     }
@@ -396,6 +1034,8 @@ fn render_html_steps(
     steps: &[Step],
     evidence_index: &BTreeMap<String, usize>,
     ordered: bool,
+    path_prefix: &str,
+    labels: ReaderLabels,
 ) -> String {
     let tag = if ordered { "ol" } else { "ul" };
     let class = if ordered {
@@ -404,8 +1044,11 @@ fn render_html_steps(
         "nested-steps"
     };
     let mut output = format!("<{tag} class=\"{class}\">");
-    for step in steps {
-        output.push_str("<li><div class=\"step-node\"><span class=\"step-kind\">");
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = step_path(path_prefix, index + 1);
+        output.push_str(&format!(
+            "<li id=\"step-{step_path}\"><div class=\"step-node\"><span class=\"step-kind\">"
+        ));
         output.push_str(&html_escape(&step.kind));
         output.push_str("</span><span class=\"step-text\">");
         output.push_str(&html_escape(&step.meaning.text));
@@ -414,10 +1057,15 @@ fn render_html_steps(
             &step.meaning.evidence,
             evidence_index,
         ));
-        output.push_str(&render_step_metadata_html(step));
+        output.push_str(&render_step_metadata_html(step, labels));
         if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
             output.push_str(&format!(
-                "<p class=\"claim-uncertainty\"><strong>Uncertainty:</strong> {}</p>",
+                "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
+                html_escape(if labels.russian {
+                    "Неопределённость"
+                } else {
+                    "Uncertainty"
+                }),
                 html_escape(uncertainty)
             ));
         }
@@ -425,15 +1073,27 @@ fn render_html_steps(
         if !step.children.is_empty() {
             output.push_str(&format!(
                 "<div class=\"path-group\"><div class=\"path-label\">{}</div>{}</div>",
-                html_escape(children_label(&step.kind)),
-                render_html_steps(&step.children, evidence_index, false)
+                html_escape(labels.children_label(&step.kind)),
+                render_html_steps(
+                    &step.children,
+                    evidence_index,
+                    false,
+                    &format!("{step_path}-then"),
+                    labels
+                )
             ));
         }
         if !step.otherwise.is_empty() {
             output.push_str(&format!(
                 "<div class=\"path-group\"><div class=\"path-label\">{}</div>{}</div>",
-                html_escape(otherwise_label(&step.kind)),
-                render_html_steps(&step.otherwise, evidence_index, false)
+                html_escape(labels.otherwise_label(&step.kind)),
+                render_html_steps(
+                    &step.otherwise,
+                    evidence_index,
+                    false,
+                    &format!("{step_path}-else"),
+                    labels
+                )
             ));
         }
         output.push_str("</li>");
@@ -442,12 +1102,30 @@ fn render_html_steps(
     output
 }
 
-fn render_step_metadata_html(step: &Step) -> String {
+fn step_path(prefix: &str, index: usize) -> String {
+    if prefix.is_empty() {
+        index.to_string()
+    } else {
+        format!("{prefix}-{index}")
+    }
+}
+
+fn render_step_metadata_html(step: &Step, labels: ReaderLabels) -> String {
     let mut values = Vec::new();
     for (label, value) in [
-        ("From", step.from.as_deref()),
-        ("To", step.to.as_deref()),
-        ("Interaction", step.interaction.as_deref()),
+        (
+            if labels.russian { "От" } else { "From" },
+            step.from.as_deref(),
+        ),
+        (if labels.russian { "К" } else { "To" }, step.to.as_deref()),
+        (
+            if labels.russian {
+                "Взаимодействие"
+            } else {
+                "Interaction"
+            },
+            step.interaction.as_deref(),
+        ),
     ] {
         if let Some(value) = value {
             values.push(format!(
@@ -463,25 +1141,11 @@ fn render_step_metadata_html(step: &Step) -> String {
     }
 }
 
-fn children_label(kind: &str) -> &'static str {
-    match kind {
-        "decision" => "When the condition holds",
-        "try" => "Protected try path",
-        "loop" => "Loop body",
-        _ => "Following substeps",
-    }
-}
-
-fn otherwise_label(kind: &str) -> &'static str {
-    match kind {
-        "try" => "Catch / otherwise path",
-        "loop" => "Otherwise / exit path",
-        "decision" => "When the condition does not hold",
-        _ => "Otherwise path",
-    }
-}
-
-fn render_tree_html(steps: &[Step], evidence_index: &BTreeMap<String, usize>) -> String {
+fn render_tree_html(
+    steps: &[Step],
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
     if steps.is_empty() {
         return String::from("<p class=\"muted\">No steps supplied.</p>");
     }
@@ -495,12 +1159,12 @@ fn render_tree_html(steps: &[Step], evidence_index: &BTreeMap<String, usize>) ->
             &step.meaning.evidence,
             evidence_index,
         ));
-        output.push_str(&render_step_metadata_html(step));
+        output.push_str(&render_step_metadata_html(step, labels));
         if !step.children.is_empty() {
             output.push_str(&format!(
                 "</div><div class=\"tree-branch-label\">{}</div>{}",
-                html_escape(children_label(&step.kind)),
-                render_tree_html(&step.children, evidence_index)
+                html_escape(labels.children_label(&step.kind)),
+                render_tree_html(&step.children, evidence_index, labels)
             ));
         } else {
             output.push_str("</div>");
@@ -508,8 +1172,8 @@ fn render_tree_html(steps: &[Step], evidence_index: &BTreeMap<String, usize>) ->
         if !step.otherwise.is_empty() {
             output.push_str(&format!(
                 "<div class=\"tree-branch-label\">{}</div>{}",
-                html_escape(otherwise_label(&step.kind)),
-                render_tree_html(&step.otherwise, evidence_index)
+                html_escape(labels.otherwise_label(&step.kind)),
+                render_tree_html(&step.otherwise, evidence_index, labels)
             ));
         }
         output.push_str("</li>");
@@ -518,8 +1182,14 @@ fn render_tree_html(steps: &[Step], evidence_index: &BTreeMap<String, usize>) ->
     output
 }
 
-fn render_tree_text(steps: &[Step]) -> String {
-    fn append(steps: &[Step], depth: usize, label: Option<&str>, lines: &mut Vec<String>) {
+fn render_tree_text(steps: &[Step], labels: ReaderLabels) -> String {
+    fn append(
+        steps: &[Step],
+        depth: usize,
+        label: Option<&str>,
+        lines: &mut Vec<String>,
+        labels: ReaderLabels,
+    ) {
         if let Some(label) = label {
             lines.push(format!("{}[{}]", "  ".repeat(depth), label));
         }
@@ -543,22 +1213,24 @@ fn render_tree_text(steps: &[Step]) -> String {
                 append(
                     &step.children,
                     depth + 1,
-                    Some(children_label(&step.kind)),
+                    Some(labels.children_label(&step.kind)),
                     lines,
+                    labels,
                 );
             }
             if !step.otherwise.is_empty() {
                 append(
                     &step.otherwise,
                     depth + 1,
-                    Some(otherwise_label(&step.kind)),
+                    Some(labels.otherwise_label(&step.kind)),
                     lines,
+                    labels,
                 );
             }
         }
     }
     let mut lines = Vec::new();
-    append(steps, 0, None, &mut lines);
+    append(steps, 0, None, &mut lines, labels);
     lines.join("\n")
 }
 
@@ -592,10 +1264,14 @@ fn render_markdown_steps(
     evidence_index: &BTreeMap<String, usize>,
     depth: usize,
     ordered: bool,
+    path_prefix: &str,
+    labels: ReaderLabels,
 ) -> String {
     let mut output = String::new();
     let indent = "   ".repeat(depth);
     for (index, step) in steps.iter().enumerate() {
+        let step_path = step_path(path_prefix, index + 1);
+        output.push_str(&format!("<a id=\"step-{step_path}\"></a>"));
         let prefix = if ordered && depth == 0 {
             format!("{}. ", index + 1)
         } else {
@@ -605,13 +1281,18 @@ fn render_markdown_steps(
             "{prefix}**{}:** {}{}{}\n",
             markdown_escape(&step.kind),
             markdown_escape(&step.meaning.text),
-            render_evidence_markdown(&step.meaning.evidence, evidence_index),
-            markdown_step_metadata(step)
+            render_evidence_markdown(&step.meaning.evidence, evidence_index, labels),
+            markdown_step_metadata(step, labels)
         ));
         if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
             output.push_str(&format!(
-                "{}  - **Uncertainty:** {}\n",
+                "{}  - **{}:** {}\n",
                 indent,
+                markdown_escape(if labels.russian {
+                    "Неопределённость"
+                } else {
+                    "Uncertainty"
+                }),
                 markdown_escape(uncertainty)
             ));
         }
@@ -619,38 +1300,52 @@ fn render_markdown_steps(
             output.push_str(&format!(
                 "{}  **{}:**\n",
                 indent,
-                markdown_escape(children_label(&step.kind))
+                markdown_escape(labels.children_label(&step.kind))
             ));
             output.push_str(&render_markdown_steps(
                 &step.children,
                 evidence_index,
                 depth + 1,
                 false,
+                &format!("{step_path}-then"),
+                labels,
             ));
         }
         if !step.otherwise.is_empty() {
             output.push_str(&format!(
                 "{}  **{}:**\n",
                 indent,
-                markdown_escape(otherwise_label(&step.kind))
+                markdown_escape(labels.otherwise_label(&step.kind))
             ));
             output.push_str(&render_markdown_steps(
                 &step.otherwise,
                 evidence_index,
                 depth + 1,
                 false,
+                &format!("{step_path}-else"),
+                labels,
             ));
         }
     }
     output
 }
 
-fn markdown_step_metadata(step: &Step) -> String {
+fn markdown_step_metadata(step: &Step, labels: ReaderLabels) -> String {
     let mut values = Vec::new();
     for (label, value) in [
-        ("From", step.from.as_deref()),
-        ("To", step.to.as_deref()),
-        ("Interaction", step.interaction.as_deref()),
+        (
+            if labels.russian { "От" } else { "From" },
+            step.from.as_deref(),
+        ),
+        (if labels.russian { "К" } else { "To" }, step.to.as_deref()),
+        (
+            if labels.russian {
+                "Взаимодействие"
+            } else {
+                "Interaction"
+            },
+            step.interaction.as_deref(),
+        ),
     ] {
         if let Some(value) = value {
             values.push(format!("**{label}:** {}", markdown_escape(value)));
@@ -663,26 +1358,39 @@ fn markdown_step_metadata(step: &Step) -> String {
     }
 }
 
-fn render_claim_markdown(claim: &Claim, evidence_index: &BTreeMap<String, usize>) -> String {
+fn render_claim_markdown(
+    claim: &Claim,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
     let mut output = format!(
         "{}{}",
         markdown_escape(&claim.text),
-        render_evidence_markdown(&claim.evidence, evidence_index)
+        render_evidence_markdown(&claim.evidence, evidence_index, labels)
     );
     if let Some(uncertainty) = claim.uncertainty.as_deref() {
         output.push_str(&format!(
-            "\n\n**Uncertainty:** {}",
+            "\n\n**{}:** {}",
+            markdown_escape(if labels.russian {
+                "Неопределённость"
+            } else {
+                "Uncertainty"
+            }),
             markdown_escape(uncertainty)
         ));
     }
     output
 }
 
-fn render_evidence_markdown(labels: &[String], index: &BTreeMap<String, usize>) -> String {
-    if labels.is_empty() {
+fn render_evidence_markdown(
+    evidence: &[String],
+    index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if evidence.is_empty() {
         return String::new();
     }
-    let links = labels
+    let links = evidence
         .iter()
         .map(|label| match index.get(label) {
             Some(number) => format!("[{}](#evidence-{number})", markdown_escape(label)),
@@ -690,37 +1398,202 @@ fn render_evidence_markdown(labels: &[String], index: &BTreeMap<String, usize>) 
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!("  _(Evidence: {links})_ ")
+    format!(
+        "  _({}: {links})_ ",
+        if labels.russian {
+            "Свидетельства"
+        } else {
+            "Evidence"
+        }
+    )
 }
 
-fn collect_decisions<'a>(steps: &'a [Step], output: &mut Vec<&'a Step>) {
-    for step in steps {
-        if step.kind == "decision" {
-            output.push(step);
+struct FirstMatchBranch<'a> {
+    decision: &'a Step,
+    path: String,
+}
+
+struct FirstMatchTable<'a> {
+    branches: Vec<FirstMatchBranch<'a>>,
+    otherwise: &'a [Step],
+    otherwise_path: String,
+}
+
+fn first_match_table<'a>(root: &'a Step, root_path: String) -> Option<FirstMatchTable<'a>> {
+    let mut branches = Vec::new();
+    let mut decision = root;
+    let mut path = root_path;
+    loop {
+        if decision.kind != "decision" {
+            return None;
         }
-        collect_decisions(&step.children, output);
-        collect_decisions(&step.otherwise, output);
+        branches.push(FirstMatchBranch {
+            decision,
+            path: path.clone(),
+        });
+        match decision.otherwise.as_slice() {
+            [next] if next.kind == "decision" => {
+                decision = next;
+                path.push_str("-else-1");
+            }
+            otherwise => {
+                if branches.len() + usize::from(!otherwise.is_empty()) <= 2 {
+                    return None;
+                }
+                return Some(FirstMatchTable {
+                    branches,
+                    otherwise,
+                    otherwise_path: format!("{path}-else"),
+                });
+            }
+        }
     }
 }
 
-fn render_decision_tables_html(steps: &[Step], evidence_index: &BTreeMap<String, usize>) -> String {
-    let mut decisions = Vec::new();
-    collect_decisions(steps, &mut decisions);
-    if decisions.is_empty() {
+fn collect_first_match_tables<'a>(
+    steps: &'a [Step],
+    path_prefix: &str,
+    output: &mut Vec<FirstMatchTable<'a>>,
+) {
+    for (index, step) in steps.iter().enumerate() {
+        let path = step_path(path_prefix, index + 1);
+        if let Some(table) = (step.kind == "decision")
+            .then(|| first_match_table(step, path.clone()))
+            .flatten()
+        {
+            for branch in &table.branches {
+                collect_first_match_tables(
+                    &branch.decision.children,
+                    &format!("{}-then", branch.path),
+                    output,
+                );
+            }
+            collect_first_match_tables(&table.otherwise, &table.otherwise_path, output);
+            output.push(table);
+            continue;
+        }
+        collect_first_match_tables(&step.children, &format!("{path}-then"), output);
+        collect_first_match_tables(&step.otherwise, &format!("{path}-else"), output);
+    }
+}
+
+fn branch_summary(steps: &[Step]) -> Option<(&Step, String)> {
+    let first = steps.first()?;
+    let text = first
+        .meaning
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let summary = text.chars().take(120).collect::<String>();
+    let summary = if text.chars().count() > 120 {
+        format!("{summary}…")
+    } else {
+        summary
+    };
+    let remaining = steps.len().saturating_sub(1);
+    Some((
+        first,
+        if remaining == 0 {
+            summary
+        } else {
+            format!("{summary} (+{remaining})")
+        },
+    ))
+}
+
+fn table_outcome_html(
+    steps: &[Step],
+    path_prefix: &str,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let Some((first, summary)) = branch_summary(steps) else {
+        return "<span class=\"muted\">—</span>".into();
+    };
+    let target = step_path(path_prefix, 1);
+    format!(
+        "<span class=\"step-kind\">{}</span> {} <a href=\"#step-{target}\">{}</a>{}",
+        html_escape(&first.kind),
+        html_escape(&summary),
+        html_escape(labels.details_link()),
+        render_evidence_html(&first.meaning.evidence, evidence_index)
+    )
+}
+
+fn table_outcome_markdown(
+    steps: &[Step],
+    path_prefix: &str,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let Some((first, summary)) = branch_summary(steps) else {
+        return "—".into();
+    };
+    let target = step_path(path_prefix, 1);
+    format!(
+        "**{}:** {} [ {} ](#step-{target}){}",
+        markdown_escape(&first.kind),
+        markdown_escape(&summary),
+        markdown_escape(labels.details_link()),
+        render_evidence_markdown(&first.meaning.evidence, evidence_index, labels)
+    )
+}
+
+fn render_decision_tables_html(
+    steps: &[Step],
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let mut tables = Vec::new();
+    collect_first_match_tables(steps, "", &mut tables);
+    if tables.is_empty() {
         return String::new();
     }
-    let mut output = String::from("<section><h2>Decision tables</h2>");
-    for decision in decisions {
+    let mut output = format!(
+        "<section id=\"first-match-decisions\"><h2>{}</h2>",
+        html_escape(labels.first_match())
+    );
+    for table in tables {
         output.push_str(&format!(
-            "<table><caption>Decision: {}{}</caption><thead><tr><th>When the condition holds</th><th>When the condition does not hold</th></tr></thead><tbody><tr><td>{}</td><td>{}</td></tr></tbody></table>",
-            html_escape(&decision.meaning.text),
-            render_evidence_html(&decision.meaning.evidence, evidence_index),
-            render_html_steps(&decision.children, evidence_index, true),
-            if decision.otherwise.is_empty() {
-                "<span class=\"muted\">No otherwise path is supplied in this answer.</span>".into()
-            } else {
-                render_html_steps(&decision.otherwise, evidence_index, true)
-            }
+            "<table class=\"first-match\"><caption>{}</caption><thead><tr><th>{}</th><th>{}</th></tr></thead><tbody>",
+            html_escape(labels.first_match()),
+            html_escape(labels.condition()),
+            html_escape(labels.outcome())
+        ));
+        for branch in &table.branches {
+            output.push_str(&format!(
+                "<tr><td>{}{}</td><td>{}</td></tr>",
+                html_escape(&branch.decision.meaning.text),
+                render_evidence_html(&branch.decision.meaning.evidence, evidence_index),
+                table_outcome_html(
+                    &branch.decision.children,
+                    &format!("{}-then", branch.path),
+                    evidence_index,
+                    labels
+                )
+            ));
+        }
+        if !table.otherwise.is_empty() {
+            output.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td></tr>",
+                html_escape(if labels.russian {
+                    "Иначе"
+                } else {
+                    "Otherwise"
+                }),
+                table_outcome_html(
+                    &table.otherwise,
+                    &table.otherwise_path,
+                    evidence_index,
+                    labels
+                )
+            ));
+        }
+        output.push_str("</tbody></table>");
+        output.push_str(&format!(
+            "<p class=\"muted\">{}</p>",
+            html_escape(labels.first_match_note())
         ));
     }
     output.push_str("</section>");
@@ -730,85 +1603,97 @@ fn render_decision_tables_html(steps: &[Step], evidence_index: &BTreeMap<String,
 fn render_decision_tables_markdown(
     steps: &[Step],
     evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
 ) -> String {
-    let mut decisions = Vec::new();
-    collect_decisions(steps, &mut decisions);
-    if decisions.is_empty() {
+    let mut tables = Vec::new();
+    collect_first_match_tables(steps, "", &mut tables);
+    if tables.is_empty() {
         return String::new();
     }
-    let mut output = String::from("## Decision tables\n\n");
-    for decision in decisions {
+    let mut output = format!(
+        "<a id=\"first-match-decisions\"></a>\n## {}\n\n",
+        markdown_escape(labels.first_match())
+    );
+    for table in tables {
         output.push_str(&format!(
-            "### {}{}\n\n| When the condition holds | When the condition does not hold |\n|---|---|\n| {} | {} |\n\n",
-            markdown_escape(&decision.meaning.text),
-            render_evidence_markdown(&decision.meaning.evidence, evidence_index),
-            markdown_path_cell(&decision.children, evidence_index),
-            if decision.otherwise.is_empty() {
-                "No otherwise path is supplied in this answer.".into()
-            } else {
-                markdown_path_cell(&decision.otherwise, evidence_index)
-            },
+            "| {} | {} |\n|---|---|\n",
+            markdown_escape(labels.condition()),
+            markdown_escape(labels.outcome())
+        ));
+        for branch in &table.branches {
+            output.push_str(&format!(
+                "| {}{} | {} |\n",
+                markdown_table_cell(&branch.decision.meaning.text),
+                render_evidence_markdown(&branch.decision.meaning.evidence, evidence_index, labels),
+                table_outcome_markdown(
+                    &branch.decision.children,
+                    &format!("{}-then", branch.path),
+                    evidence_index,
+                    labels
+                )
+            ));
+        }
+        if !table.otherwise.is_empty() {
+            output.push_str(&format!(
+                "| {} | {} |\n",
+                markdown_escape(if labels.russian {
+                    "Иначе"
+                } else {
+                    "Otherwise"
+                }),
+                table_outcome_markdown(
+                    &table.otherwise,
+                    &table.otherwise_path,
+                    evidence_index,
+                    labels
+                )
+            ));
+        }
+        output.push_str(&format!(
+            "\n{}\n\n",
+            markdown_escape(labels.first_match_note())
         ));
     }
     output
-}
-
-fn markdown_path_cell(steps: &[Step], evidence_index: &BTreeMap<String, usize>) -> String {
-    fn append(steps: &[Step], depth: usize, output: &mut Vec<(usize, String, Vec<String>)>) {
-        for step in steps {
-            output.push((
-                depth,
-                format!("{}: {}", step.kind, tree_plain_text(&step.meaning.text)),
-                step.meaning.evidence.clone(),
-            ));
-            if !step.children.is_empty() {
-                output.push((depth + 1, children_label(&step.kind).into(), Vec::new()));
-                append(&step.children, depth + 2, output);
-            }
-            if !step.otherwise.is_empty() {
-                output.push((depth + 1, otherwise_label(&step.kind).into(), Vec::new()));
-                append(&step.otherwise, depth + 2, output);
-            }
-        }
-    }
-    let mut output = Vec::new();
-    append(steps, 0, &mut output);
-    if output.is_empty() {
-        return "No path is supplied in this answer.".into();
-    }
-    output
-        .into_iter()
-        .map(|(depth, text, labels)| {
-            format!(
-                "{}{}{}",
-                "&nbsp;".repeat(depth * 2),
-                markdown_table_cell(&text),
-                render_evidence_markdown(&labels, evidence_index)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("<br>")
 }
 
 fn render_packet_fact_tables_html(
     packet: &Value,
     evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
 ) -> String {
+    if packet["profile"] == "process-graph-v1" {
+        return render_process_fact_tables_html(packet, evidence_index, labels);
+    }
     let types = packet["types"].as_array().cloned().unwrap_or_default();
     let constants = packet["constants"].as_array().cloned().unwrap_or_default();
     if types.is_empty() && constants.is_empty() {
         return String::new();
     }
-    let mut output = String::from("<section><h2>Captured DTO and annotation facts</h2>");
+    let mut output = format!(
+        "<section id=\"packet-facts\"><h2>{}</h2>",
+        html_escape(labels.facts(false))
+    );
     for dto in types {
         let fields = dto["fields"].as_array().cloned().unwrap_or_default();
         output.push_str(&format!(
-            "<table><caption>Type {} · directions {}</caption><thead><tr><th>Field</th><th>Declared type</th><th>Modifiers</th><th>Annotations</th><th>Declaration tokens</th><th>Evidence</th></tr></thead><tbody>",
+            "<table><caption>{} {} · {} {}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+            html_escape(labels.type_name()),
             html_escape(&value_text(&dto["identity"])),
-            html_escape(&value_text(&dto["directions"]))
+            html_escape(labels.directions()),
+            html_escape(&value_text(&dto["directions"])),
+            html_escape(labels.field_name()),
+            html_escape(labels.declared_type()),
+            html_escape(labels.modifiers()),
+            html_escape(labels.annotations()),
+            html_escape(labels.declaration()),
+            html_escape(labels.evidence())
         ));
         if fields.is_empty() {
-            output.push_str("<tr><td colspan=\"6\" class=\"muted\">No field declarations are listed in this packet.</td></tr>");
+            output.push_str(&format!(
+                "<tr><td colspan=\"6\" class=\"muted\">{}</td></tr>",
+                html_escape(labels.no_fields())
+            ));
         }
         for field in fields {
             let labels = combined_labels(&dto["evidence"], &field["evidence"]);
@@ -825,7 +1710,17 @@ fn render_packet_fact_tables_html(
         output.push_str("</tbody></table>");
     }
     if !constants.is_empty() {
-        output.push_str("<table><caption>Retained constant declarations</caption><thead><tr><th>Owner</th><th>Name</th><th>Declared type</th><th>Modifiers</th><th>Annotations</th><th>Declaration tokens</th><th>Evidence</th></tr></thead><tbody>");
+        output.push_str(&format!(
+            "<table><caption>{}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+            html_escape(if labels.russian { "Сохранённые константы" } else { "Retained constant declarations" }),
+            html_escape(labels.owner()),
+            html_escape(labels.field_name()),
+            html_escape(labels.declared_type()),
+            html_escape(labels.modifiers()),
+            html_escape(labels.annotations()),
+            html_escape(labels.declaration()),
+            html_escape(labels.evidence())
+        ));
         for constant in constants {
             output.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
@@ -847,13 +1742,20 @@ fn render_packet_fact_tables_html(
 fn render_packet_fact_tables_markdown(
     packet: &Value,
     evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
 ) -> String {
+    if packet["profile"] == "process-graph-v1" {
+        return render_process_fact_tables_markdown(packet, evidence_index, labels);
+    }
     let types = packet["types"].as_array().cloned().unwrap_or_default();
     let constants = packet["constants"].as_array().cloned().unwrap_or_default();
     if types.is_empty() && constants.is_empty() {
         return String::new();
     }
-    let mut output = String::from("## Captured DTO and annotation facts\n\n");
+    let mut output = format!(
+        "<a id=\"packet-facts\"></a>\n## {}\n\n",
+        markdown_escape(labels.facts(false))
+    );
     for dto in types {
         output.push_str(&format!(
             "### Type {} · directions {}\n\n| Field | Declared type | Modifiers | Annotations | Declaration tokens | Evidence |\n|---|---|---|---|---|---|\n",
@@ -898,7 +1800,174 @@ fn render_packet_fact_tables_markdown(
     output
 }
 
-fn render_packet_limits_html(packet: &Value) -> String {
+fn process_owner_name(owner: &Value, type_names: &BTreeMap<String, String>) -> String {
+    let identity = owner.as_str().unwrap_or_default();
+    match type_names.get(identity) {
+        Some(name) if name != identity => format!("{name} ({identity})"),
+        _ => value_text(owner),
+    }
+}
+
+fn render_process_fact_tables_html(
+    packet: &Value,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let types = packet["types"].as_array().cloned().unwrap_or_default();
+    let fields = packet["fields"].as_array().cloned().unwrap_or_default();
+    if types.is_empty() && fields.is_empty() {
+        return String::new();
+    }
+    let type_names: BTreeMap<_, _> = types
+        .iter()
+        .filter_map(|type_row| {
+            Some((
+                type_row["symbolIdentity"].as_str()?.to_owned(),
+                type_row["name"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut output = format!(
+        "<section id=\"packet-facts\"><h2>{}</h2>",
+        html_escape(labels.facts(true))
+    );
+    if !types.is_empty() {
+        output.push_str(&format!(
+            "<table><caption>{}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+            html_escape(if labels.russian { "Сохранённые типы" } else { "Retained types" }),
+            html_escape(labels.type_name()),
+            html_escape(if labels.russian { "Вид" } else { "Kind" }),
+            html_escape(labels.owner()),
+            html_escape(labels.superclass()),
+            html_escape(labels.interfaces())
+        ));
+        for type_row in types {
+            output.push_str(&format!(
+                "<tr><td>{} <code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&value_text(&type_row["name"])),
+                html_escape(&value_text(&type_row["symbolIdentity"])),
+                html_escape(&value_text(&type_row["declarationKind"])),
+                html_escape(&value_text(&type_row["ownerIdentity"])),
+                html_escape(&value_text(&type_row["superclass"])),
+                html_escape(&value_text(&type_row["interfaces"]))
+            ));
+        }
+        output.push_str("</tbody></table>");
+    }
+    if !fields.is_empty() {
+        output.push_str(&format!(
+            "<table><caption>{}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+            html_escape(if labels.russian { "Сохранённые поля" } else { "Retained fields" }),
+            html_escape(labels.owner()),
+            html_escape(labels.field_name()),
+            html_escape(labels.declared_type()),
+            html_escape(labels.modifiers()),
+            html_escape(labels.annotations()),
+            html_escape(labels.declaration()),
+            html_escape(labels.evidence())
+        ));
+        for field in fields {
+            output.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+                html_escape(&process_owner_name(&field["ownerIdentity"], &type_names)),
+                html_escape(&value_text(&field["name"])),
+                html_escape(&value_text(&field["typeDescriptor"])),
+                html_escape(&value_text(&field["modifiers"])),
+                html_escape(&value_text(&field["annotations"])),
+                html_escape(&tokens_text(&field["sourceTokens"])),
+                render_evidence_html(&strings(&field["evidence"]), evidence_index)
+            ));
+        }
+        output.push_str("</tbody></table>");
+    }
+    output.push_str("</section>");
+    output
+}
+
+fn render_process_fact_tables_markdown(
+    packet: &Value,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let types = packet["types"].as_array().cloned().unwrap_or_default();
+    let fields = packet["fields"].as_array().cloned().unwrap_or_default();
+    if types.is_empty() && fields.is_empty() {
+        return String::new();
+    }
+    let type_names: BTreeMap<_, _> = types
+        .iter()
+        .filter_map(|type_row| {
+            Some((
+                type_row["symbolIdentity"].as_str()?.to_owned(),
+                type_row["name"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut output = format!(
+        "<a id=\"packet-facts\"></a>\n## {}\n\n",
+        markdown_escape(labels.facts(true))
+    );
+    if !types.is_empty() {
+        output.push_str(&format!(
+            "### {}\n\n| {} | {} | {} | {} | {} |\n|---|---|---|---|---|\n",
+            markdown_escape(if labels.russian {
+                "Сохранённые типы"
+            } else {
+                "Retained types"
+            }),
+            markdown_escape(labels.type_name()),
+            markdown_escape(if labels.russian { "Вид" } else { "Kind" }),
+            markdown_escape(labels.owner()),
+            markdown_escape(labels.superclass()),
+            markdown_escape(labels.interfaces())
+        ));
+        for type_row in types {
+            output.push_str(&format!(
+                "| {} `{}` | {} | {} | {} | {} |\n",
+                markdown_table_cell(&value_text(&type_row["name"])),
+                markdown_code_cell(&value_text(&type_row["symbolIdentity"])),
+                markdown_table_cell(&value_text(&type_row["declarationKind"])),
+                markdown_table_cell(&value_text(&type_row["ownerIdentity"])),
+                markdown_table_cell(&value_text(&type_row["superclass"])),
+                markdown_table_cell(&value_text(&type_row["interfaces"]))
+            ));
+        }
+        output.push('\n');
+    }
+    if !fields.is_empty() {
+        output.push_str(&format!(
+            "### {}\n\n| {} | {} | {} | {} | {} | {} | {} |\n|---|---|---|---|---|---|---|\n",
+            markdown_escape(if labels.russian {
+                "Сохранённые поля"
+            } else {
+                "Retained fields"
+            }),
+            markdown_escape(labels.owner()),
+            markdown_escape(labels.field_name()),
+            markdown_escape(labels.declared_type()),
+            markdown_escape(labels.modifiers()),
+            markdown_escape(labels.annotations()),
+            markdown_escape(labels.declaration()),
+            markdown_escape(labels.evidence())
+        ));
+        for field in fields {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                markdown_table_cell(&process_owner_name(&field["ownerIdentity"], &type_names)),
+                markdown_table_cell(&value_text(&field["name"])),
+                markdown_table_cell(&value_text(&field["typeDescriptor"])),
+                markdown_table_cell(&value_text(&field["modifiers"])),
+                markdown_table_cell(&value_text(&field["annotations"])),
+                markdown_code_cell(&tokens_text(&field["sourceTokens"])),
+                markdown_evidence_cell(&strings(&field["evidence"]), evidence_index)
+            ));
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn render_packet_limits_html(packet: &Value, labels: ReaderLabels) -> String {
     let limits = packet["limitations"]
         .as_array()
         .cloned()
@@ -924,14 +1993,58 @@ fn render_packet_limits_html(packet: &Value) -> String {
     {
         return String::new();
     }
-    let mut output = String::from("<section class=\"limitations\"><h2>Packet gaps and limits</h2>");
-    append_html_value_list(&mut output, "Captured gaps", &limits);
-    append_html_value_list(&mut output, "Interpretation limits", &interpretation);
-    append_html_value_list(&mut output, "Endpoint boundaries", &endpoint_boundaries);
-    append_html_value_list(&mut output, "Coverage boundaries", &coverage_boundaries);
+    let mut output = format!(
+        "<section class=\"limitations\"><h2>{}</h2>",
+        html_escape(if labels.russian {
+            "Ограничения пакета"
+        } else {
+            "Packet gaps and limits"
+        })
+    );
+    append_html_value_list(
+        &mut output,
+        if labels.russian {
+            "Сохранённые пробелы"
+        } else {
+            "Captured gaps"
+        },
+        &limits,
+    );
+    append_html_value_list(
+        &mut output,
+        if labels.russian {
+            "Ограничения интерпретации"
+        } else {
+            "Interpretation limits"
+        },
+        &interpretation,
+    );
+    append_html_value_list(
+        &mut output,
+        if labels.russian {
+            "Границы HTTP-точки"
+        } else {
+            "Endpoint boundaries"
+        },
+        &endpoint_boundaries,
+    );
+    append_html_value_list(
+        &mut output,
+        if labels.russian {
+            "Границы покрытия"
+        } else {
+            "Coverage boundaries"
+        },
+        &coverage_boundaries,
+    );
     if let Some(runtime) = runtime {
         output.push_str(&format!(
-            "<p><strong>Runtime and serialization:</strong> {}</p>",
+            "<p><strong>{}:</strong> {}</p>",
+            html_escape(if labels.russian {
+                "Среда выполнения и сериализация"
+            } else {
+                "Runtime and serialization"
+            }),
             html_escape(&value_text(runtime))
         ));
     }
@@ -956,7 +2069,7 @@ fn append_html_value_list(output: &mut String, title: &str, values: &[Value]) {
     output.push_str("</ul>");
 }
 
-fn render_packet_limits_markdown(packet: &Value) -> String {
+fn render_packet_limits_markdown(packet: &Value, labels: ReaderLabels) -> String {
     let limits = packet["limitations"]
         .as_array()
         .cloned()
@@ -982,14 +2095,58 @@ fn render_packet_limits_markdown(packet: &Value) -> String {
     {
         return String::new();
     }
-    let mut output = String::from("## Packet gaps and limits\n\n");
-    append_markdown_value_list(&mut output, "Captured gaps", &limits);
-    append_markdown_value_list(&mut output, "Interpretation limits", &interpretation);
-    append_markdown_value_list(&mut output, "Endpoint boundaries", &endpoint_boundaries);
-    append_markdown_value_list(&mut output, "Coverage boundaries", &coverage_boundaries);
+    let mut output = format!(
+        "## {}\n\n",
+        markdown_escape(if labels.russian {
+            "Ограничения пакета"
+        } else {
+            "Packet gaps and limits"
+        })
+    );
+    append_markdown_value_list(
+        &mut output,
+        if labels.russian {
+            "Сохранённые пробелы"
+        } else {
+            "Captured gaps"
+        },
+        &limits,
+    );
+    append_markdown_value_list(
+        &mut output,
+        if labels.russian {
+            "Ограничения интерпретации"
+        } else {
+            "Interpretation limits"
+        },
+        &interpretation,
+    );
+    append_markdown_value_list(
+        &mut output,
+        if labels.russian {
+            "Границы HTTP-точки"
+        } else {
+            "Endpoint boundaries"
+        },
+        &endpoint_boundaries,
+    );
+    append_markdown_value_list(
+        &mut output,
+        if labels.russian {
+            "Границы покрытия"
+        } else {
+            "Coverage boundaries"
+        },
+        &coverage_boundaries,
+    );
     if let Some(runtime) = runtime {
         output.push_str(&format!(
-            "**Runtime and serialization:** {}\n\n",
+            "**{}:** {}\n\n",
+            markdown_escape(if labels.russian {
+                "Среда выполнения и сериализация"
+            } else {
+                "Runtime and serialization"
+            }),
             markdown_escape(&value_text(runtime))
         ));
     }
@@ -1007,11 +2164,18 @@ fn append_markdown_value_list(output: &mut String, title: &str, values: &[Value]
     output.push('\n');
 }
 
-fn render_uncertainties_html(answer: &OperationAnswer) -> String {
+fn render_uncertainties_html(answer: &OperationAnswer, labels: ReaderLabels) -> String {
     if answer.uncertainties.is_empty() {
         return String::new();
     }
-    let mut output = String::from("<section><h2>Uncertainties</h2><ul class=\"uncertainties\">");
+    let mut output = format!(
+        "<section><h2>{}</h2><ul class=\"uncertainties\">",
+        html_escape(if labels.russian {
+            "Неопределённости"
+        } else {
+            "Uncertainties"
+        })
+    );
     for uncertainty in &answer.uncertainties {
         output.push_str(&format!("<li>{}</li>", html_escape(uncertainty)));
     }
@@ -1019,11 +2183,18 @@ fn render_uncertainties_html(answer: &OperationAnswer) -> String {
     output
 }
 
-fn render_uncertainties_markdown(answer: &OperationAnswer) -> String {
+fn render_uncertainties_markdown(answer: &OperationAnswer, labels: ReaderLabels) -> String {
     if answer.uncertainties.is_empty() {
         return String::new();
     }
-    let mut output = String::from("## Uncertainties\n\n");
+    let mut output = format!(
+        "## {}\n\n",
+        markdown_escape(if labels.russian {
+            "Неопределённости"
+        } else {
+            "Uncertainties"
+        })
+    );
     for uncertainty in &answer.uncertainties {
         output.push_str(&format!("- {}\n", markdown_escape(uncertainty)));
     }
@@ -1034,17 +2205,26 @@ fn render_uncertainties_markdown(answer: &OperationAnswer) -> String {
 fn render_evidence_index_html(
     citations: &serde_json::Map<String, Value>,
     evidence_index: &BTreeMap<String, usize>,
+    used_labels: &BTreeSet<String>,
+    source_navigation: &SourceNavigation,
+    labels: ReaderLabels,
 ) -> String {
-    if evidence_index.is_empty() {
+    if used_labels.is_empty() {
         return String::new();
     }
-    let mut output =
-        String::from("<section><h2>Packet evidence index</h2><ol class=\"evidence-index\">");
-    for (label, number) in evidence_index {
+    let mut output = format!(
+        "<section id=\"cited-evidence\"><h2>{}</h2><ol class=\"evidence-index\">",
+        html_escape(labels.cited_evidence())
+    );
+    for label in used_labels {
+        let Some(number) = evidence_index.get(label) else {
+            continue;
+        };
         output.push_str(&format!(
-            "<li id=\"evidence-{number}\"><strong>{}</strong> — {}</li>",
+            "<li id=\"evidence-{number}\"><strong>{}</strong> — {}{} </li>",
             html_escape(label),
-            html_escape(&value_text(&citations[label]))
+            html_escape(&value_text(&citations[label])),
+            render_source_links_html(label, source_navigation, labels)
         ));
     }
     output.push_str("</ol></section>");
@@ -1054,17 +2234,222 @@ fn render_evidence_index_html(
 fn render_evidence_index_markdown(
     citations: &serde_json::Map<String, Value>,
     evidence_index: &BTreeMap<String, usize>,
+    used_labels: &BTreeSet<String>,
+    source_navigation: &SourceNavigation,
+    labels: ReaderLabels,
 ) -> String {
-    if evidence_index.is_empty() {
+    if used_labels.is_empty() {
         return String::new();
     }
-    let mut output = String::from("## Packet evidence index\n\n");
-    for (label, number) in evidence_index {
+    let mut output = format!(
+        "<a id=\"cited-evidence\"></a>\n## {}\n\n",
+        markdown_escape(labels.cited_evidence())
+    );
+    for label in used_labels {
+        let Some(number) = evidence_index.get(label) else {
+            continue;
+        };
         output.push_str(&format!(
-            "<a id=\"evidence-{number}\"></a>- **{}** — {}\n",
+            "<a id=\"evidence-{number}\"></a>- **{}** — {}{}\n",
             markdown_escape(label),
-            markdown_escape(&value_text(&citations[label]))
+            markdown_escape(&value_text(&citations[label])),
+            render_source_links_markdown(label, source_navigation, labels)
         ));
+    }
+    output.push('\n');
+    output
+}
+
+fn render_source_links_html(
+    label: &str,
+    navigation: &SourceNavigation,
+    labels: ReaderLabels,
+) -> String {
+    match navigation
+        .evidence_locations
+        .get(label)
+        .filter(|items| !items.is_empty())
+    {
+        Some(items) => {
+            let links = items
+                .iter()
+                .map(|index| {
+                    let location = &navigation.locations[*index];
+                    format!(
+                        "<a href=\"#source-{}\">{}:{}–{}</a>",
+                        index + 1,
+                        html_escape(&location.file),
+                        location.start_line,
+                        location.end_line
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                " <span class=\"source-links\">{}: {links}</span>",
+                html_escape(labels.source_link())
+            )
+        }
+        None => format!(
+            " <span class=\"muted source-missing\">{}</span>",
+            html_escape(labels.no_source_location())
+        ),
+    }
+}
+
+fn render_source_links_markdown(
+    label: &str,
+    navigation: &SourceNavigation,
+    labels: ReaderLabels,
+) -> String {
+    match navigation
+        .evidence_locations
+        .get(label)
+        .filter(|items| !items.is_empty())
+    {
+        Some(items) => {
+            let links = items
+                .iter()
+                .map(|index| {
+                    let location = &navigation.locations[*index];
+                    format!(
+                        "[{}:{}–{}](#source-{})",
+                        markdown_code_cell(&location.file),
+                        location.start_line,
+                        location.end_line,
+                        index + 1
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("  _({}: {links})_", markdown_escape(labels.source_link()))
+        }
+        None => format!("  _({})_", markdown_escape(labels.no_source_location())),
+    }
+}
+
+fn render_full_inventory_html(
+    citations: &serde_json::Map<String, Value>,
+    evidence_index: &BTreeMap<String, usize>,
+    used_labels: &BTreeSet<String>,
+    labels: ReaderLabels,
+) -> String {
+    let unused: Vec<_> = evidence_index
+        .keys()
+        .filter(|label| !used_labels.contains(*label))
+        .collect();
+    if unused.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<details class=\"full-evidence\"><summary>{}</summary><ol class=\"evidence-index\">",
+        html_escape(labels.full_inventory())
+    );
+    for label in unused {
+        if let Some(number) = evidence_index.get(label) {
+            output.push_str(&format!(
+                "<li id=\"evidence-{number}\"><strong>{}</strong> — {}</li>",
+                html_escape(label),
+                html_escape(&value_text(&citations[label]))
+            ));
+        }
+    }
+    output.push_str("</ol></details>");
+    output
+}
+
+fn render_full_inventory_markdown(
+    citations: &serde_json::Map<String, Value>,
+    evidence_index: &BTreeMap<String, usize>,
+    used_labels: &BTreeSet<String>,
+    labels: ReaderLabels,
+) -> String {
+    let unused: Vec<_> = evidence_index
+        .keys()
+        .filter(|label| !used_labels.contains(*label))
+        .collect();
+    if unused.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<details>\n<summary>{}</summary>\n\n",
+        markdown_escape(labels.full_inventory())
+    );
+    for label in unused {
+        if let Some(number) = evidence_index.get(label) {
+            output.push_str(&format!(
+                "<a id=\"evidence-{number}\"></a>- **{}** — {}\n",
+                markdown_escape(label),
+                markdown_escape(&value_text(&citations[label]))
+            ));
+        }
+    }
+    output.push_str("\n</details>\n");
+    output
+}
+
+fn render_source_locations_html(navigation: &SourceNavigation, labels: ReaderLabels) -> String {
+    if navigation.locations.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<section id=\"source-locations\"><h2>{}</h2><ol class=\"source-locations\">",
+        html_escape(labels.source_locations())
+    );
+    for (index, location) in navigation.locations.iter().enumerate() {
+        output.push_str(&format!(
+            "<li id=\"source-{}\"><strong><code>{}</code>: {}–{}</strong> <span class=\"muted\">{}</span>",
+            index + 1,
+            html_escape(&location.file),
+            location.start_line,
+            location.end_line,
+            html_escape(&location.reference)
+        ));
+        if !location.excerpt.is_empty() {
+            output.push_str(&format!(
+                "<details><summary>{}</summary><pre><code>{}</code></pre></details>",
+                html_escape(if labels.russian {
+                    "Показать сохранённый фрагмент"
+                } else {
+                    "View retained excerpt"
+                }),
+                html_escape(&location.excerpt)
+            ));
+        }
+        output.push_str("</li>");
+    }
+    output.push_str("</ol></section>");
+    output
+}
+
+fn render_source_locations_markdown(navigation: &SourceNavigation, labels: ReaderLabels) -> String {
+    if navigation.locations.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<a id=\"source-locations\"></a>\n## {}\n\n",
+        markdown_escape(labels.source_locations())
+    );
+    for (index, location) in navigation.locations.iter().enumerate() {
+        output.push_str(&format!(
+            "<a id=\"source-{}\"></a>- **{}:** {}–{} _({})_\n",
+            index + 1,
+            markdown_code_cell(&location.file),
+            location.start_line,
+            location.end_line,
+            markdown_escape(&location.reference)
+        ));
+        if !location.excerpt.is_empty() {
+            output.push_str(&format!(
+                "\n<details>\n<summary>{}</summary>\n\n{}\n</details>\n\n",
+                markdown_escape(if labels.russian {
+                    "Показать сохранённый фрагмент"
+                } else {
+                    "View retained excerpt"
+                }),
+                markdown_code_block(&location.excerpt)
+            ));
+        }
     }
     output.push('\n');
     output
@@ -1103,15 +2488,19 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[unavailable]".into())
 }
 
-fn markdown_tree_block(steps: &[Step]) -> String {
-    let tree = render_tree_text(steps);
-    let longest_backtick_run = tree
+fn markdown_tree_block(steps: &[Step], labels: ReaderLabels) -> String {
+    let tree = render_tree_text(steps, labels);
+    markdown_code_block(&tree)
+}
+
+fn markdown_code_block(text: &str) -> String {
+    let longest_backtick_run = text
         .split(|character| character != '`')
         .map(str::len)
         .max()
         .unwrap_or(0);
     let fence = "`".repeat(3.max(longest_backtick_run + 1));
-    format!("{fence}text\n{tree}\n{fence}\n")
+    format!("{fence}text\n{text}\n{fence}")
 }
 
 fn markdown_table_cell(value: &str) -> String {
@@ -1253,6 +2642,42 @@ mod tests {
         packet
     }
 
+    fn audit(packet: &Value) -> Value {
+        let mut audit = json!({
+            "schema":"codeclew-documentation-reader-packet-audit/1.0",
+            "packetDigest":packet["packetDigest"],
+            "records":[]
+        });
+        seal_audit(&mut audit);
+        audit
+    }
+
+    fn seal_audit(audit: &mut Value) {
+        audit.as_object_mut().unwrap().remove("auditDigest");
+        let audit_digest = crate::documentation::digest(audit).unwrap();
+        audit["auditDigest"] = json!(audit_digest);
+    }
+
+    fn seal(packet: &mut Value) {
+        packet.as_object_mut().unwrap().remove("packetDigest");
+        let packet_digest = crate::documentation::digest(packet).unwrap();
+        packet["packetDigest"] = json!(packet_digest);
+    }
+
+    fn simple_answer(packet: &Value, evidence: &str) -> Value {
+        json!({
+            "schema":ANSWER_SCHEMA,
+            "packetDigest":packet["packetDigest"],
+            "title":"Reader test",
+            "summary":{"text":"A concise summary.","evidence":[evidence]},
+            "steps":[{
+                "kind":"action",
+                "meaning":{"text":"Retain the supported action.","evidence":[evidence]}
+            }],
+            "uncertainties":[]
+        })
+    }
+
     fn answer(packet: &Value) -> Value {
         json!({
             "schema":ANSWER_SCHEMA,
@@ -1296,51 +2721,41 @@ mod tests {
     #[test]
     fn one_tree_preserves_decision_and_try_catch_paths_in_each_view() {
         let packet = packet();
-        let rendered = validate_and_render(&packet, answer(&packet)).unwrap();
+        let rendered = validate_and_render(&packet, &audit(&packet), answer(&packet)).unwrap();
 
         assert!(rendered.html.contains("When the condition holds"));
         assert!(rendered.html.contains("When the condition does not hold"));
         assert!(rendered.html.contains("Protected try path"));
         assert!(rendered.html.contains("Catch / otherwise path"));
+        assert_eq!(rendered.html.matches("class=\"first-match\"").count(), 0);
         assert_eq!(
-            rendered.html.matches("<table><caption>Decision:").count(),
-            2
-        );
-        let decision_tables = rendered
-            .markdown
-            .split("## Decision tables\n\n")
-            .nth(1)
-            .unwrap()
-            .split("## Captured DTO and annotation facts")
-            .next()
-            .unwrap();
-        assert_eq!(
-            decision_tables
-                .matches("| When the condition holds |")
+            rendered
+                .markdown
+                .matches("| Condition | Action summary |")
                 .count(),
-            2
+            0
         );
-        assert!(decision_tables.contains("When the condition does not hold"));
-        assert!(decision_tables.contains("Protected try path"));
-        assert!(decision_tables.contains("Catch / otherwise path"));
+        assert!(rendered.html.contains("Technical details"));
+        assert!(rendered.html.contains("#summary"));
     }
 
     #[test]
     fn digest_evidence_labels_nonempty_steps_and_checks_are_validated() {
         let packet = packet();
         let valid = answer(&packet);
+        let audit = audit(&packet);
 
         let mut wrong_digest = valid.clone();
         wrong_digest["packetDigest"] = json!("sha256:wrong");
-        assert!(validate_and_render(&packet, wrong_digest).is_err());
+        assert!(validate_and_render(&packet, &audit, wrong_digest).is_err());
 
         let mut unknown_label = valid.clone();
         unknown_label["summary"]["evidence"] = json!(["missing"]);
-        assert!(validate_and_render(&packet, unknown_label).is_err());
+        assert!(validate_and_render(&packet, &audit, unknown_label).is_err());
 
         let mut empty_steps = valid.clone();
         empty_steps["steps"] = json!([]);
-        assert!(validate_and_render(&packet, empty_steps).is_err());
+        assert!(validate_and_render(&packet, &audit, empty_steps).is_err());
 
         let mut authored_check = valid;
         authored_check["summary"]["checks"] = json!([{
@@ -1349,13 +2764,13 @@ mod tests {
             "field":"name",
             "expected":"handle"
         }]);
-        assert!(validate_and_render(&packet, authored_check).is_err());
+        assert!(validate_and_render(&packet, &audit, authored_check).is_err());
     }
 
     #[test]
     fn packet_limitations_and_fact_tables_are_rendered_without_reauthoring() {
         let packet = packet();
-        let rendered = validate_and_render(&packet, answer(&packet)).unwrap();
+        let rendered = validate_and_render(&packet, &audit(&packet), answer(&packet)).unwrap();
 
         assert!(rendered.html.contains("CALL_TARGET_BODY_NOT_CAPTURED"));
         assert!(rendered.html.contains("UNKNOWN_FROM_THIS_PACKET"));
@@ -1379,6 +2794,216 @@ mod tests {
     }
 
     #[test]
+    fn linear_else_if_chain_renders_once_and_links_to_unchanged_branch_details() {
+        let packet = packet();
+        let mut raw_answer = answer(&packet);
+        raw_answer["steps"] = json!([{
+            "kind":"decision",
+            "meaning":{"text":"Condition alpha holds.","evidence":["d1"]},
+            "children":[{
+                "kind":"try",
+                "meaning":{"text":"Try the alpha operation.","evidence":["d1"]},
+                "children":[{"kind":"action","meaning":{"text":"Apply alpha.","evidence":["d1"]}}],
+                "otherwise":[{"kind":"throw","meaning":{"text":"Record alpha failure.","evidence":["d1"]}}]
+            }],
+            "otherwise":[{
+                "kind":"decision",
+                "meaning":{"text":"Condition beta holds.","evidence":["d1"]},
+                "children":[{
+                    "kind":"loop",
+                    "meaning":{"text":"Repeat beta checks.","evidence":["d1"]},
+                    "children":[{"kind":"action","meaning":{"text":"Apply beta.","evidence":["d1"]}}],
+                    "otherwise":[{"kind":"return","meaning":{"text":"Exit the beta loop.","evidence":["d1"]}}]
+                }],
+                "otherwise":[{
+                    "kind":"decision",
+                    "meaning":{"text":"Condition gamma holds.","evidence":["d1"]},
+                    "children":[{"kind":"return","meaning":{"text":"Apply gamma.","evidence":["d1"]}}],
+                    "otherwise":[{"kind":"throw","meaning":{"text":"Use the default outcome.","evidence":["d1"]}}]
+                }]
+            }]
+        }]);
+        let original_answer = raw_answer.clone();
+
+        let rendered = validate_and_render(&packet, &audit(&packet), raw_answer).unwrap();
+
+        assert_eq!(rendered.answer, original_answer);
+        assert_eq!(rendered.html.matches("class=\"first-match\"").count(), 1);
+        assert_eq!(
+            rendered
+                .markdown
+                .matches("| Condition | Action summary |")
+                .count(),
+            1
+        );
+        let table_start = rendered.html.find("id=\"first-match-decisions\"").unwrap();
+        let table_end = rendered.html[table_start..].find("</section>").unwrap() + table_start;
+        let table = &rendered.html[table_start..table_end];
+        assert!(table.find("Condition alpha").unwrap() < table.find("Condition beta").unwrap());
+        assert!(table.find("Condition beta").unwrap() < table.find("Condition gamma").unwrap());
+        assert!(table.contains("Try the alpha operation."));
+        assert!(!table.contains("Apply alpha."));
+        assert_eq!(table.matches("Repeat beta checks.").count(), 1);
+        assert!(table.contains("Use the default outcome."));
+        assert!(!table.contains("Record alpha failure."));
+        assert!(!table.contains("Apply beta."));
+        assert!(table.contains("not an executable DMN rule"));
+        assert!(table.contains("reevaluation behavior"));
+        assert!(rendered.html.contains("href=\"#step-1-then-1\""));
+        assert!(rendered.html.contains("id=\"step-1-then-1\""));
+        assert!(rendered.html.contains("Catch / otherwise path"));
+        assert!(rendered.html.contains("Otherwise / exit path"));
+        assert!(rendered.markdown.contains("#step-1-else-1-then-1"));
+        assert!(rendered.markdown.contains("Record alpha failure."));
+    }
+
+    #[test]
+    fn process_flat_types_and_fields_render_with_selected_language_and_cited_inventory() {
+        let mut packet = json!({
+            "schema":PACKET_SCHEMA,
+            "profile":"process-graph-v1",
+            "documentationLanguage":"ru",
+            "citations":{"type-ref":"retained type","field-ref":"retained field","unused-ref":"other selected evidence"},
+            "types":[{
+                "reference":"type-ref",
+                "symbolIdentity":"class:orders.OrderRules",
+                "declarationKind":"CLASS",
+                "ownerIdentity":null,
+                "name":"OrderRules",
+                "scope":":main",
+                "superclass":"class:orders.BaseRules",
+                "interfaces":[],
+                "evidence":["type-ref"]
+            }],
+            "fields":[{
+                "reference":"field-ref",
+                "ownerIdentity":"class:orders.OrderRules",
+                "name":"retryLimit",
+                "typeDescriptor":"int",
+                "modifiers":["PRIVATE"],
+                "annotations":[],
+                "sourceTokens":["private","int","retryLimit"],
+                "evidence":["field-ref"]
+            }],
+            "coverage":{"evidence":["unused-ref"]}
+        });
+        seal(&mut packet);
+        let answer = simple_answer(&packet, "field-ref");
+        let original_answer = answer.clone();
+        let rendered = validate_and_render(&packet, &audit(&packet), answer).unwrap();
+
+        assert_eq!(rendered.answer, original_answer);
+        assert!(rendered.html.contains("ЧЕРНОВИК / НЕ ПРОВЕРЕНО"));
+        assert!(rendered.html.contains("Навигация по документу"));
+        assert!(rendered.html.contains("Порядок внутреннего процесса"));
+        assert!(rendered.html.contains("OrderRules"));
+        assert!(rendered.html.contains("class:orders.OrderRules"));
+        assert!(rendered.html.contains("retryLimit"));
+        assert!(rendered.html.contains("int"));
+        assert!(!rendered.html.contains("Type — · directions"));
+        assert!(
+            !rendered
+                .markdown
+                .contains("Captured DTO and annotation facts")
+        );
+        assert!(rendered.markdown.contains("## Типы и поля процесса"));
+        let inventory = rendered
+            .markdown
+            .find("<summary>Полный список свидетельств</summary>")
+            .unwrap();
+        assert!(
+            rendered.markdown[inventory..].contains("unused\\-ref"),
+            "inventory section: {}",
+            &rendered.markdown[inventory..]
+        );
+        assert!(rendered.html.contains("<details class=\"full-evidence\">"));
+    }
+
+    #[test]
+    fn cited_evidence_navigates_to_verified_source_alias_range_and_escapes_source_html() {
+        let mut packet = packet();
+        let source_text = "class Demo {\n  String helper() { return \"<unsafe>&café\"; }\n}\n";
+        let start = source_text.find("String helper").unwrap();
+        let end = source_text.find("café").unwrap() + "café".len();
+        packet["citations"]["source-container"] = json!("retained class source");
+        packet["citations"]["method-alias"] = json!("retained method range");
+        packet["methodSources"] = json!([{
+            "reference":"source-container",
+            "text":source_text,
+            "evidence":["source-container"],
+            "sourceAliases":[{
+                "reference":"method-alias",
+                "authority":"TRANSFORMED_SOURCE",
+                "startByte":start,
+                "endByte":end,
+                "evidence":["method-alias"]
+            }]
+        }]);
+        seal(&mut packet);
+        let mut audit = json!({
+            "schema":"codeclew-documentation-reader-packet-audit/1.0",
+            "packetDigest":packet["packetDigest"],
+            "records":[{
+                "label":"source-container",
+                "kind":"SOURCE",
+                "id":"source-container-id",
+                "row":{"record":{
+                    "file":"src/orders/Demo.java",
+                    "startLine":10,
+                    "endLine":12,
+                    "text":source_text
+                }}
+            }]
+        });
+        seal_audit(&mut audit);
+        let answer = simple_answer(&packet, "method-alias");
+        let original_answer = answer.clone();
+        let rendered = validate_and_render(&packet, &audit, answer).unwrap();
+
+        assert_eq!(rendered.answer, original_answer);
+        assert!(
+            rendered.markdown.contains("src/orders/Demo.java"),
+            "source section: {}",
+            &rendered.markdown[rendered
+                .markdown
+                .find("Retained source locations")
+                .unwrap_or(0)..]
+        );
+        assert!(rendered.markdown.contains("11–11"));
+        assert!(rendered.html.contains("src/orders/Demo.java</code>: 11–11"));
+        assert!(rendered.html.contains("href=\"#source-"));
+        assert!(rendered.html.contains("id=\"source-"));
+        assert!(rendered.html.contains("&lt;unsafe&gt;&amp;"));
+        assert!(rendered.html.contains("café"));
+        assert!(!rendered.html.contains("<unsafe>"));
+        for href in rendered
+            .html
+            .split("href=\"#")
+            .skip(1)
+            .filter_map(|tail| tail.split('\"').next())
+        {
+            assert!(
+                rendered.html.contains(&format!("id=\"{href}\"")),
+                "broken internal link #{href}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_source_metadata_is_reported_without_creating_a_broken_link() {
+        let packet = packet();
+        let rendered =
+            validate_and_render(&packet, &audit(&packet), simple_answer(&packet, "d1")).unwrap();
+        assert!(
+            rendered
+                .html
+                .contains("No retained source location is available")
+        );
+        assert!(!rendered.html.contains("href=\"#source-"));
+        assert!(!rendered.markdown.contains("](#source-"));
+    }
+
+    #[test]
     fn all_untrusted_html_text_is_escaped() {
         let mut packet = packet();
         packet["citations"]["d1"] = json!("role <img src=x onerror=alert(1)>");
@@ -1389,7 +3014,7 @@ mod tests {
         let mut answer = answer(&packet);
         answer["title"] = json!("<script>alert(1)</script>");
         answer["summary"]["text"] = json!("Use <b>captured</b> evidence.");
-        let rendered = validate_and_render(&packet, answer).unwrap();
+        let rendered = validate_and_render(&packet, &audit(&packet), answer).unwrap();
 
         assert!(!rendered.html.contains("<script>"));
         assert!(!rendered.html.contains("<img src=x"));

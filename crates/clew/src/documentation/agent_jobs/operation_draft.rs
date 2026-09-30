@@ -177,6 +177,7 @@ fn run_loaded(
 
     let rendered = match super::super::operation_answer::validate_and_render(
         &packet,
+        &audit,
         answer.clone(),
     ) {
         Ok(rendered) => rendered,
