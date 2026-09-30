@@ -4,7 +4,7 @@
 //! record read receipts. The full selected rows are retained only in the
 //! optional audit value returned alongside the compact packet.
 
-use super::{digest, endpoint_context, invalid, source_steps, work::Work};
+use super::{digest, endpoint_context, invalid, model::Source, source_steps, work::Work};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -658,9 +658,6 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
             else {
                 continue;
             };
-            if !emitted_sources.insert(source_reference.to_owned()) {
-                continue;
-            }
             let source = &source_row["record"];
             cite(
                 &mut citations,
@@ -672,14 +669,109 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
                 source_label,
                 "retained containing type source",
             );
-            method_sources.push(json!({
-                "reference":source_reference,
-                "authority":source["authority"],
-                "text":source["text"],
-                "evidence":[type_label,source_label],
-                "contextFor":type_reference
-            }));
+            if let Some(existing) = method_sources
+                .iter_mut()
+                .find(|item| item["reference"] == source_reference)
+            {
+                if existing["contextFor"].is_null() {
+                    existing["contextFor"] = json!(type_reference);
+                }
+                if !existing["contextReferences"].is_array() {
+                    existing["contextReferences"] = json!([]);
+                }
+                let context_references = existing["contextReferences"].as_array_mut().unwrap();
+                if !context_references
+                    .iter()
+                    .any(|reference| reference.as_str() == Some(type_reference))
+                {
+                    context_references.push(json!(type_reference));
+                }
+                let source_evidence = existing["evidence"].as_array_mut().unwrap();
+                for label in [type_label.as_str(), source_label.as_str()] {
+                    if !source_evidence
+                        .iter()
+                        .any(|evidence| evidence.as_str() == Some(label))
+                    {
+                        source_evidence.push(json!(label));
+                    }
+                }
+            } else if emitted_sources.insert(source_reference.to_owned()) {
+                method_sources.push(json!({
+                    "reference":source_reference,
+                    "authority":source["authority"],
+                    "text":source["text"],
+                    "evidence":[type_label,source_label],
+                    "contextFor":type_reference,
+                    "contextReferences":[type_reference]
+                }));
+            }
         }
+    }
+
+    let mut source_contexts = Vec::new();
+    for context in process_record["sourceContexts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let declaration_reference = context["declarationReference"]
+            .as_str()
+            .ok_or_else(|| invalid("process source context has no declaration reference"))?;
+        let (declaration_label, _) = selected_by_reference
+            .get(declaration_reference)
+            .ok_or_else(|| invalid("process source context declaration is not selected"))?;
+        cite(
+            &mut citations,
+            declaration_label,
+            "source-context candidate declaration",
+        );
+        let source_reference = context["sourceReference"].as_str();
+        let mut evidence = vec![declaration_label.clone()];
+        if let Some(source_reference) = source_reference {
+            let (source_label, source_row) = selected_by_reference
+                .get(source_reference)
+                .ok_or_else(|| invalid("process source-context source is not selected"))?;
+            let source = &source_row["record"];
+            cite(
+                &mut citations,
+                source_label,
+                "retained source-context candidate body",
+            );
+            evidence.push(source_label.clone());
+            if emitted_sources.insert(source_reference.to_owned()) {
+                method_sources.push(json!({
+                    "reference":source_reference,
+                    "authority":source["authority"],
+                    "text":source["text"],
+                    "evidence":[source_label]
+                }));
+            }
+        }
+        let referenced_from_source_reference = context["referencedFromSourceReference"].as_str();
+        if let Some(source_reference) = referenced_from_source_reference {
+            let (source_label, _) = selected_by_reference
+                .get(source_reference)
+                .ok_or_else(|| invalid("process source-context origin is not selected"))?;
+            cite(
+                &mut citations,
+                source_label,
+                "source that names a context candidate",
+            );
+            if !evidence.iter().any(|item| item == source_label) {
+                evidence.push(source_label.clone());
+            }
+        }
+        source_contexts.push(json!({
+            "kind":context["kind"],
+            "authority":context["authority"],
+            "symbolIdentity":context["symbolIdentity"],
+            "ownerIdentity":context["ownerIdentity"],
+            "scope":context["scope"],
+            "declarationReference":declaration_reference,
+            "sourceReference":source_reference,
+            "referencedFromSourceReference":referenced_from_source_reference,
+            "evidence":evidence
+        }));
     }
 
     let mut edges = Vec::new();
@@ -805,6 +897,13 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
             ))
     });
 
+    coalesce_process_method_sources(
+        &mut method_sources,
+        &mut methods,
+        &mut edges,
+        &selected_by_reference,
+    )?;
+
     let mut field_refs = BTreeSet::<String>::new();
     for group in process_record["referencedOwnerFields"]
         .as_array()
@@ -922,6 +1021,7 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
         },
         "methods":methods,
         "edges":edges,
+        "sourceContexts":source_contexts,
         "fields":fields,
         "types":types,
         "methodSources":method_sources,
@@ -978,6 +1078,218 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
     let audit_digest = digest(&audit)?;
     audit["auditDigest"] = json!(audit_digest);
     Ok((packet, audit))
+}
+
+fn coalesce_process_method_sources(
+    method_sources: &mut Vec<Value>,
+    methods: &mut [Value],
+    edges: &mut [Value],
+    selected_by_reference: &BTreeMap<String, (String, Value)>,
+) -> Result<(), ClewError> {
+    let mut aliases = BTreeMap::<String, (String, usize, usize)>::new();
+    let mut ambiguous = BTreeSet::<String>::new();
+
+    for method in methods.iter() {
+        let Some(source_reference) = method["body"]["sourceReference"].as_str() else {
+            continue;
+        };
+        let Some(source_entry) = method_sources
+            .iter()
+            .find(|entry| entry["reference"].as_str() == Some(source_reference))
+        else {
+            continue;
+        };
+        if source_entry["contextFor"].is_string() {
+            continue;
+        }
+        let Some((_, source_row)) = selected_by_reference.get(source_reference) else {
+            continue;
+        };
+        let source: Source = serde_json::from_value(source_row["record"].clone())
+            .map_err(|_| invalid("process method source record is invalid"))?;
+        let owner = method["ownerIdentity"].as_str().unwrap_or_default();
+        let scope = method["scope"].as_str().unwrap_or_default();
+        if owner.is_empty() || scope.is_empty() {
+            continue;
+        }
+
+        let mut candidates = Vec::<(String, usize, usize)>::new();
+        for context in method_sources.iter().filter(|entry| {
+            entry["reference"].as_str() != Some(source_reference) && entry["contextFor"].is_string()
+        }) {
+            let container_reference = context["reference"].as_str().unwrap_or_default();
+            let context_references: Vec<_> = context["contextReferences"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .chain(context["contextFor"].as_str())
+                .collect();
+            let belongs_to_owner = context_references.iter().any(|type_reference| {
+                selected_by_reference
+                    .get(*type_reference)
+                    .is_some_and(|(_, type_row)| {
+                        type_row["record"]["normalized"]["symbolIdentity"] == owner
+                            && type_row["record"]["normalized"]["scope"] == scope
+                    })
+            });
+            if !belongs_to_owner {
+                continue;
+            }
+            let Some((_, container_row)) = selected_by_reference.get(container_reference) else {
+                continue;
+            };
+            let container: Source = serde_json::from_value(container_row["record"].clone())
+                .map_err(|_| invalid("process containing type source record is invalid"))?;
+            if let Some((start, end)) = exact_source_range(&container, &source) {
+                candidates.push((container_reference.to_owned(), start, end));
+            }
+        }
+
+        candidates.sort();
+        candidates.dedup();
+        match candidates.as_slice() {
+            [(container_reference, start, end)] => {
+                if aliases.get(source_reference).is_some_and(|existing| {
+                    existing != &(container_reference.clone(), *start, *end)
+                }) {
+                    ambiguous.insert(source_reference.to_owned());
+                } else {
+                    aliases.insert(
+                        source_reference.to_owned(),
+                        (container_reference.clone(), *start, *end),
+                    );
+                }
+            }
+            [] => {}
+            _ => {
+                ambiguous.insert(source_reference.to_owned());
+            }
+        }
+    }
+    for reference in ambiguous {
+        aliases.remove(&reference);
+    }
+    if aliases.is_empty() {
+        return Ok(());
+    }
+
+    for (source_reference, (container_reference, start, end)) in &aliases {
+        let source_entry = method_sources
+            .iter()
+            .find(|entry| entry["reference"].as_str() == Some(source_reference))
+            .ok_or_else(|| invalid("process source alias target is unavailable"))?;
+        let (authority, evidence) = (
+            source_entry["authority"].clone(),
+            source_entry["evidence"].clone(),
+        );
+        let container_entry = method_sources
+            .iter_mut()
+            .find(|entry| entry["reference"].as_str() == Some(container_reference))
+            .ok_or_else(|| invalid("process source alias container is unavailable"))?;
+        if !container_entry["sourceAliases"].is_array() {
+            container_entry["sourceAliases"] = json!([]);
+        }
+        container_entry["sourceAliases"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "reference":source_reference,
+                "authority":authority,
+                "startByte":start,
+                "endByte":end,
+                "evidence":evidence
+            }));
+    }
+
+    for method in methods {
+        let body = &mut method["body"];
+        let Some(source_reference) = body["sourceReference"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some((container_reference, start, end)) = aliases.get(&source_reference) else {
+            continue;
+        };
+        let body_start = body["startByte"]
+            .as_u64()
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| invalid("process method body start offset is invalid"))?;
+        let body_end = body["endByte"]
+            .as_u64()
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| invalid("process method body end offset is invalid"))?;
+        let source_start = *start;
+        let source_end = *end;
+        if body_start > body_end || body_end > source_end.saturating_sub(source_start) {
+            return Err(invalid(
+                "process method body range exceeds its aliased source",
+            ));
+        }
+        body["sourceReference"] = json!(container_reference);
+        body["startByte"] = json!(source_start + body_start);
+        body["endByte"] = json!(source_start + body_end);
+    }
+    for edge in edges {
+        let Some(source_reference) = edge["sourceReference"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Some((container_reference, _, _)) = aliases.get(&source_reference) {
+            edge["sourceReference"] = json!(container_reference);
+        }
+    }
+    method_sources.retain(|entry| {
+        entry["reference"]
+            .as_str()
+            .map_or(true, |reference| !aliases.contains_key(reference))
+    });
+    Ok(())
+}
+
+fn exact_source_range(container: &Source, part: &Source) -> Option<(usize, usize)> {
+    if part.text.is_empty()
+        || container.service != part.service
+        || container.revision != part.revision
+        || container.file != part.file
+        || container.authority != part.authority
+        || container.start_line > part.start_line
+        || container.end_line < part.end_line
+    {
+        return None;
+    }
+    match (&container.occurrence, &part.occurrence) {
+        (Some(container_occurrence), Some(part_occurrence)) => {
+            if container_occurrence.snapshot != part_occurrence.snapshot
+                || container_occurrence.blob != part_occurrence.blob
+            {
+                return None;
+            }
+            super::process_context::covered_text(container, part)
+        }
+        (None, None) => {
+            let mut matches = container.text.char_indices().filter_map(|(start, _)| {
+                let end = start.checked_add(part.text.len())?;
+                (container.text.get(start..end)? == part.text)
+                    .then_some((start, end))
+                    .filter(|(start, end)| {
+                        source_line_at(container, *start) == Some(part.start_line)
+                            && end
+                                .checked_sub(1)
+                                .and_then(|offset| source_line_at(container, offset))
+                                == Some(part.end_line)
+                    })
+            });
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        }
+        _ => None,
+    }
+}
+
+fn source_line_at(source: &Source, byte_offset: usize) -> Option<u64> {
+    let prefix = source.text.get(..byte_offset)?;
+    source
+        .start_line
+        .checked_add(prefix.bytes().filter(|byte| *byte == b'\n').count() as u64)
 }
 
 fn synthetic_label(kind: &str, counts: &mut BTreeMap<String, usize>) -> String {
@@ -1346,6 +1658,292 @@ mod tests {
         }
     }
 
+    fn add_process_context_source(work: &mut Work, id: &str, file: &str, text: &str) {
+        let service = work.checked.services.get_mut("orders").unwrap();
+        let source = crate::documentation::model::Source {
+            id: id.into(),
+            service: "orders".into(),
+            revision: service.revision.clone(),
+            file: file.into(),
+            start_line: 1,
+            end_line: text.lines().count().max(1) as u64,
+            text: text.into(),
+            text_digest: crate::canonical::hash_bytes(text.as_bytes()),
+            evidence_digest: format!("test-evidence-{id}"),
+            authority: "TRANSFORMED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        };
+        service.sources.insert(id.into(), source);
+        work.handles.insert(
+            format!("source-{id}"),
+            super::super::work::Handle {
+                kind: "SOURCE".into(),
+                id: id.into(),
+            },
+        );
+    }
+
+    fn add_process_context_symbol(
+        work: &mut Work,
+        id: &str,
+        symbol: &str,
+        normalized: Value,
+        source_ids: &[&str],
+    ) {
+        let fact_digest = digest(&normalized).unwrap();
+        let observation = crate::documentation::model::Observation {
+            id: id.into(),
+            kind: "SYMBOL".into(),
+            service: "orders".into(),
+            symbol: symbol.into(),
+            normalized,
+            digest: fact_digest.clone(),
+            source_ids: source_ids
+                .iter()
+                .map(|source_id| (*source_id).into())
+                .collect(),
+        };
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(id.into(), observation.clone());
+        work.checked.dependencies.insert(id.into(), observation);
+        work.influence.insert(id.into(), fact_digest);
+        work.handles.insert(
+            format!("dependency-{id}"),
+            super::super::work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: id.into(),
+            },
+        );
+    }
+
+    fn process_constructor_context_work(mapper_source_text: &str) -> Work {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let root_source = "class Controller { Response handle(Request request) { new ConcreteMapper(); this.relay(); return null; } boolean relay() { new ConcreteMapper(); return false; } }";
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap();
+        source.text = root_source.into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = 1;
+        let root = work.checked.services["orders"].observations["endpoint-declaration"]
+            .symbol
+            .clone();
+        add_process_context_symbol(
+            &mut work,
+            "relay-method",
+            "method:class:orders.Controller#relay()Z",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"METHOD",
+                "symbolIdentity":"method:class:orders.Controller#relay()Z",
+                "ownerIdentity":"class:orders.Controller",
+                "name":"relay",
+                "scope":":main",
+                "jvmDescriptor":"()Z"
+            }),
+            &["endpoint-source"],
+        );
+        let constructor_flow = crate::documentation::model::Observation {
+            id: "flow-concrete-mapper-construction".into(),
+            kind: "FLOW".into(),
+            service: "orders".into(),
+            symbol: root,
+            normalized: json!({
+                "kind":"CONSTRUCT",
+                "target":"method:class:orders.ConcreteMapper#<init>()V",
+                "scope":":main",
+                "ordinal":0
+            }),
+            digest: "test-constructor-flow-digest".into(),
+            source_ids: vec!["endpoint-source".into()],
+        };
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(constructor_flow.id.clone(), constructor_flow.clone());
+        work.checked
+            .dependencies
+            .insert(constructor_flow.id.clone(), constructor_flow.clone());
+        work.influence
+            .insert(constructor_flow.id.clone(), constructor_flow.digest.clone());
+        work.handles.insert(
+            "dependency-flow-concrete-mapper-construction".into(),
+            super::super::work::Handle {
+                kind: "DEPENDENCY".into(),
+                id: constructor_flow.id,
+            },
+        );
+
+        add_process_context_source(
+            &mut work,
+            "concrete-mapper-source",
+            "src/ConcreteMapper.java",
+            mapper_source_text,
+        );
+        add_process_context_source(
+            &mut work,
+            "other-helper-context-source",
+            "src/OtherHelper.java",
+            "class OtherHelper { static boolean predicate() { return true; } }",
+        );
+        add_process_context_source(
+            &mut work,
+            "other-config-source",
+            "src/OtherConfig.java",
+            "class OtherConfig { static final String PREFIX = \"value\"; }",
+        );
+        add_process_context_source(
+            &mut work,
+            "duplicate-mapper-source",
+            "src/other/ConcreteMapper.java",
+            "package other; class ConcreteMapper { boolean unrelated() { return false; } }",
+        );
+        add_process_context_source(
+            &mut work,
+            "base-mapper-source",
+            "src/BaseMapper.java",
+            "abstract class BaseMapper {}",
+        );
+        add_process_context_symbol(
+            &mut work,
+            "concrete-mapper-type",
+            "class:orders.ConcreteMapper",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.ConcreteMapper",
+                "ownerIdentity":"class:orders",
+                "name":"ConcreteMapper",
+                "scope":":main",
+                "superclass":"class:orders.BaseMapper",
+                "interfaces":[]
+            }),
+            &["concrete-mapper-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "concrete-mapper-method",
+            "method:class:orders.ConcreteMapper#map(Lorders/Request;)Z",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"METHOD",
+                "symbolIdentity":"method:class:orders.ConcreteMapper#map(Lorders/Request;)Z",
+                "ownerIdentity":"class:orders.ConcreteMapper",
+                "name":"map",
+                "scope":":main",
+                "jvmDescriptor":"(Lorders/Request;)Z"
+            }),
+            &["concrete-mapper-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "base-mapper-type",
+            "class:orders.BaseMapper",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.BaseMapper",
+                "ownerIdentity":"class:orders",
+                "name":"BaseMapper",
+                "scope":":main"
+            }),
+            &["base-mapper-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "other-helper-context-type",
+            "class:orders.OtherHelper",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.OtherHelper",
+                "ownerIdentity":"class:orders",
+                "name":"OtherHelper",
+                "scope":":main"
+            }),
+            &["other-helper-context-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "other-helper-context-method",
+            "method:class:orders.OtherHelper#predicate()Z",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"METHOD",
+                "symbolIdentity":"method:class:orders.OtherHelper#predicate()Z",
+                "ownerIdentity":"class:orders.OtherHelper",
+                "name":"predicate",
+                "scope":":main",
+                "jvmDescriptor":"()Z",
+                "modifiers":["STATIC"]
+            }),
+            &["other-helper-context-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "other-config-type",
+            "class:orders.OtherConfig",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.OtherConfig",
+                "ownerIdentity":"class:orders",
+                "name":"OtherConfig",
+                "scope":":main"
+            }),
+            &["other-config-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "other-config-prefix-field",
+            "field:class:orders.OtherConfig#PREFIX:Ljava/lang/String;",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"FIELD",
+                "symbolIdentity":"field:class:orders.OtherConfig#PREFIX:Ljava/lang/String;",
+                "ownerIdentity":"class:orders.OtherConfig",
+                "name":"PREFIX",
+                "scope":":main",
+                "jvmDescriptor":"Ljava/lang/String;",
+                "modifiers":["STATIC","FINAL"],
+                "sourceTokens":["static","final","String","PREFIX"]
+            }),
+            &["other-config-source"],
+        );
+        add_process_context_symbol(
+            &mut work,
+            "duplicate-concrete-mapper-type",
+            "class:orders.other.ConcreteMapper",
+            json!({
+                "schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"CLASS",
+                "symbolIdentity":"class:orders.other.ConcreteMapper",
+                "ownerIdentity":"class:orders.other",
+                "name":"ConcreteMapper",
+                "scope":":main"
+            }),
+            &["duplicate-mapper-source"],
+        );
+        work.request.entrypoint = None;
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("endpoint-declaration".into());
+        work.request.question = Some("Explain this internal process.".into());
+        work.snapshot = Some("saved-process-context-snapshot".into());
+        work
+    }
+
     #[test]
     fn compact_packet_is_deterministic_bound_and_smaller_than_full_profile_rows() {
         let work = super::super::work::api_contract_tests::endpoint_context_fixture();
@@ -1662,6 +2260,154 @@ mod tests {
     }
 
     #[test]
+    fn process_constructor_context_resolves_exact_owner_and_referenced_helpers_without_graph_edges()
+    {
+        let mapper_source = "class ConcreteMapper { boolean map(Request request) { if (OtherHelper.predicate()) return OtherConfig.PREFIX != null; return false; } }";
+        let work = process_constructor_context_work(mapper_source);
+        let (packet, audit) = build(&work).unwrap();
+
+        let mapper_type = packet["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["symbolIdentity"] == "class:orders.ConcreteMapper")
+            .unwrap();
+        assert_eq!(mapper_type["ownerIdentity"], "class:orders");
+        assert_eq!(mapper_type["scope"], ":main");
+        assert_eq!(mapper_type["superclass"], "class:orders.BaseMapper");
+        let source_contexts = packet["sourceContexts"].as_array().unwrap();
+        assert!(source_contexts.iter().any(|context| {
+            context["kind"] == "TYPE_SOURCE"
+                && context["symbolIdentity"] == "class:orders.ConcreteMapper"
+                && context["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && context["sourceReference"].is_string()
+        }));
+        assert!(source_contexts.iter().any(|context| {
+            context["kind"] == "METHOD_SOURCE"
+                && context["symbolIdentity"] == "method:class:orders.OtherHelper#predicate()Z"
+                && context["authority"] == "SOURCE_REFERENCE_CANDIDATE"
+                && context["referencedFromSourceReference"].is_string()
+        }));
+        assert!(source_contexts.iter().any(|context| {
+            context["kind"] == "STATIC_FIELD_REFERENCE"
+                && context["symbolIdentity"]
+                    == "field:class:orders.OtherConfig#PREFIX:Ljava/lang/String;"
+                && context["sourceReference"].is_null()
+                && context["referencedFromSourceReference"].is_string()
+        }));
+        assert!(packet["fields"].as_array().unwrap().iter().any(|field| {
+            field["ownerIdentity"] == "class:orders.OtherConfig" && field["name"] == "PREFIX"
+        }));
+
+        let helper_source = packet["methodSources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| {
+                source["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("class OtherHelper"))
+            })
+            .unwrap();
+        assert!(
+            helper_source["text"]
+                .as_str()
+                .unwrap()
+                .contains("static boolean predicate() { return true; }")
+        );
+        assert_eq!(
+            packet["methodSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|source| source["reference"] == helper_source["reference"])
+                .count(),
+            1
+        );
+        assert!(!packet["methods"].as_array().unwrap().iter().any(|method| {
+            method["symbolIdentity"] == "method:class:orders.ConcreteMapper#map(Lorders/Request;)Z"
+                || method["symbolIdentity"] == "method:class:orders.OtherHelper#predicate()Z"
+        }));
+        assert!(packet["edges"].as_array().unwrap().iter().all(|edge| {
+            edge["targetIdentity"] != "method:class:orders.ConcreteMapper#map(Lorders/Request;)Z"
+                && edge["targetIdentity"] != "method:class:orders.OtherHelper#predicate()Z"
+        }));
+        assert!(packet["limitations"].as_array().unwrap().iter().any(|gap| {
+            gap["code"] == "PROCESS_CONSTRUCTED_TYPE_AMBIGUOUS"
+                && gap["examples"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|example| example["from"] == "method:class:orders.Controller#relay()Z")
+        }));
+        assert!(audit["records"].as_array().unwrap().iter().any(|record| {
+            record["kind"] == "DEPENDENCY"
+                && record["row"]["record"]["normalized"]["symbolIdentity"]
+                    == "class:orders.ConcreteMapper"
+        }));
+    }
+
+    #[test]
+    fn process_context_does_not_resolve_shadowed_static_type_or_deliver_missing_helper_body() {
+        for mapper_source in [
+            "class ConcreteMapper { boolean map(Request OtherConfig) { return OtherConfig.PREFIX != null; } }",
+            "class ConcreteMapper { boolean map(Request request) { Request OtherConfig = request; return OtherConfig.PREFIX != null; } }",
+        ] {
+            let work = process_constructor_context_work(mapper_source);
+            let (packet, _) = build(&work).unwrap();
+            assert!(!packet["fields"].as_array().unwrap().iter().any(|field| {
+                field["ownerIdentity"] == "class:orders.OtherConfig" && field["name"] == "PREFIX"
+            }));
+            assert!(
+                packet["limitations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|gap| { gap["code"] == "PROCESS_QUALIFIED_FIELD_TYPE_SHADOWED" })
+            );
+        }
+
+        let mut missing = process_constructor_context_work(
+            "class ConcreteMapper { boolean map(Request request) { return OtherHelper.predicate(); } }",
+        );
+        missing
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("other-helper-context-source")
+            .unwrap()
+            .text = "class OtherHelper {}".into();
+        let source = missing
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("other-helper-context-source")
+            .unwrap();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        let (packet, _) = build(&missing).unwrap();
+        assert!(packet["limitations"].as_array().unwrap().iter().any(|gap| {
+            gap["code"] == "SOURCE_CONTEXT_METHOD_BODY_UNAVAILABLE"
+                || gap["code"] == "SOURCE_CONTEXT_METHOD_BODY_AMBIGUOUS"
+        }));
+        assert!(
+            packet["sourceContexts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|context| {
+                    context["kind"] == "METHOD_SOURCE"
+                        && context["symbolIdentity"]
+                            == "method:class:orders.OtherHelper#predicate()Z"
+                        && context["sourceReference"].is_null()
+                })
+        );
+    }
+
+    #[test]
     fn field_receiver_candidate_delivers_its_field_evidence_and_one_target_body() {
         let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
         let evidence = work.checked.services.get_mut("orders").unwrap();
@@ -1919,6 +2665,190 @@ mod tests {
                 "sourceTokens":["int", "status"]
             }))
             .is_null()
+        );
+    }
+
+    fn source_fixture(
+        id: &str,
+        file: &str,
+        start_line: u64,
+        end_line: u64,
+        text: &str,
+        occurrence: Option<crate::documentation::model::SourceOccurrence>,
+    ) -> Source {
+        Source {
+            id: id.into(),
+            service: "svc".into(),
+            revision: "rev".into(),
+            file: file.into(),
+            start_line,
+            end_line,
+            text: text.into(),
+            text_digest: crate::canonical::hash_bytes(text.as_bytes()),
+            evidence_digest: format!("evidence-{id}"),
+            authority: "TRANSFORMED_SOURCE".into(),
+            occurrence,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn process_source_ranges_require_exact_unique_location_and_matching_provenance() {
+        let parent_text = "class C {\n  static String value = \"x\";\n}\n";
+        let part_text = "  static String value = \"x\";";
+        let parent = source_fixture("parent", "src/C.java", 20, 22, parent_text, None);
+        let part = source_fixture("part", "src/C.java", 21, 21, part_text, None);
+        let start = parent_text.find(part_text).unwrap();
+        assert_eq!(
+            exact_source_range(&parent, &part),
+            Some((start, start + part_text.len()))
+        );
+
+        let repeated_text = "class C { static String value = \"x\"; static String value = \"x\"; }";
+        let repeated = source_fixture("repeat", "src/C.java", 20, 20, repeated_text, None);
+        let same_line_part = source_fixture(
+            "part",
+            "src/C.java",
+            20,
+            20,
+            "static String value = \"x\";",
+            None,
+        );
+        assert_eq!(exact_source_range(&repeated, &same_line_part), None);
+
+        let other_file = source_fixture("other", "src/Other.java", 21, 21, part_text, None);
+        assert_eq!(exact_source_range(&parent, &other_file), None);
+
+        let snapshot = "snapshot-a";
+        let blob = "blob-a";
+        let mut parent_with_occurrence = parent.clone();
+        parent_with_occurrence.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            snapshot: snapshot.into(),
+            blob: blob.into(),
+            start_byte: 0,
+            end_byte: parent_text.len(),
+        });
+        let mut part_with_occurrence = part.clone();
+        part_with_occurrence.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            snapshot: snapshot.into(),
+            blob: blob.into(),
+            start_byte: start,
+            end_byte: start + part_text.len(),
+        });
+        assert_eq!(
+            exact_source_range(&parent_with_occurrence, &part_with_occurrence),
+            Some((start, start + part_text.len()))
+        );
+        part_with_occurrence.occurrence.as_mut().unwrap().blob = "blob-b".into();
+        assert_eq!(
+            exact_source_range(&parent_with_occurrence, &part_with_occurrence),
+            None
+        );
+    }
+
+    #[test]
+    fn process_packet_aliases_method_source_to_its_exact_owner_class_range() {
+        let parent_text = "class Widget {\n  void map() {\n    Helpers.value();\n  }\n}\n";
+        let part_text = "  void map() {\n    Helpers.value();\n  }";
+        let start = parent_text.find(part_text).unwrap();
+        let snapshot = "snapshot-a";
+        let blob = "blob-widget";
+        let parent = source_fixture(
+            "class-source",
+            "src/Widget.java",
+            20,
+            24,
+            parent_text,
+            Some(crate::documentation::model::SourceOccurrence {
+                snapshot: snapshot.into(),
+                blob: blob.into(),
+                start_byte: 0,
+                end_byte: parent_text.len(),
+            }),
+        );
+        let part = source_fixture(
+            "method-source",
+            "src/Widget.java",
+            21,
+            23,
+            part_text,
+            Some(crate::documentation::model::SourceOccurrence {
+                snapshot: snapshot.into(),
+                blob: blob.into(),
+                start_byte: start,
+                end_byte: start + part_text.len(),
+            }),
+        );
+        let selected = BTreeMap::from([
+            (
+                "source-class".into(),
+                (
+                    "label-class".into(),
+                    json!({"kind":"SOURCE","record":parent}),
+                ),
+            ),
+            (
+                "source-method".into(),
+                (
+                    "label-method".into(),
+                    json!({"kind":"SOURCE","record":part}),
+                ),
+            ),
+            (
+                "type-widget".into(),
+                (
+                    "label-type".into(),
+                    json!({"kind":"DEPENDENCY","record":{"normalized":{"symbolIdentity":"class:svc.Widget","scope":":main"}}}),
+                ),
+            ),
+        ]);
+        let mut sources = vec![
+            json!({"reference":"source-method","authority":"TRANSFORMED_SOURCE","text":part_text,"evidence":["label-method"]}),
+            json!({"reference":"source-class","authority":"TRANSFORMED_SOURCE","text":parent_text,"evidence":["label-class"],"contextFor":"type-widget","contextReferences":["type-widget"]}),
+        ];
+        let mut methods = vec![json!({
+            "ownerIdentity":"class:svc.Widget",
+            "scope":":main",
+            "body":{"sourceReference":"source-method","startByte":0,"endByte":part_text.len(),"evidence":["label-method"]}
+        })];
+        let mut edges = vec![json!({"sourceReference":"source-method"})];
+
+        coalesce_process_method_sources(&mut sources, &mut methods, &mut edges, &selected).unwrap();
+
+        assert_eq!(sources.len(), 1);
+        let alias = &sources[0]["sourceAliases"][0];
+        assert_eq!(alias["reference"], "source-method");
+        assert_eq!(alias["startByte"], start);
+        assert_eq!(alias["endByte"], start + part_text.len());
+        assert_eq!(alias["evidence"], json!(["label-method"]));
+        assert_eq!(methods[0]["body"]["sourceReference"], "source-class");
+        assert_eq!(
+            &parent_text[methods[0]["body"]["startByte"].as_u64().unwrap() as usize
+                ..methods[0]["body"]["endByte"].as_u64().unwrap() as usize],
+            part_text
+        );
+        assert_eq!(edges[0]["sourceReference"], "source-class");
+
+        let mut other_owner_methods = vec![json!({
+            "ownerIdentity":"class:svc.OtherWidget",
+            "scope":":main",
+            "body":{"sourceReference":"source-method","startByte":0,"endByte":part_text.len(),"evidence":["label-method"]}
+        })];
+        let mut untouched_sources = vec![
+            json!({"reference":"source-method","authority":"TRANSFORMED_SOURCE","text":part_text,"evidence":["label-method"]}),
+            json!({"reference":"source-class","authority":"TRANSFORMED_SOURCE","text":parent_text,"evidence":["label-class"],"contextFor":"type-widget","contextReferences":["type-widget"]}),
+        ];
+        coalesce_process_method_sources(
+            &mut untouched_sources,
+            &mut other_owner_methods,
+            &mut [],
+            &selected,
+        )
+        .unwrap();
+        assert_eq!(untouched_sources.len(), 2);
+        assert_eq!(
+            other_owner_methods[0]["body"]["sourceReference"],
+            "source-method"
         );
     }
 }

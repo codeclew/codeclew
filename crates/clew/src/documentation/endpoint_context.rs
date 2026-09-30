@@ -68,6 +68,7 @@ struct Callable<'a> {
 struct DeclarationIndexes<'a> {
     methods_by_identity_scope: BTreeMap<MethodKey, Vec<&'a Observation>>,
     methods_by_owner_name: BTreeMap<(String, String), Vec<&'a Observation>>,
+    methods_by_owner_scope: BTreeMap<(String, String), Vec<&'a Observation>>,
     method_scopes_by_identity: BTreeMap<String, BTreeSet<String>>,
     types_by_identity_scope: BTreeMap<MethodKey, Vec<&'a Observation>>,
     types_by_name_scope: BTreeMap<(String, String), Vec<&'a Observation>>,
@@ -105,6 +106,7 @@ struct FinishRows<'a> {
     nodes: Vec<Value>,
     node_keys: Vec<MethodKey>,
     edges: Vec<Edge>,
+    source_contexts: BTreeSet<SourceContext>,
     dto_groups: Vec<Value>,
     owner_groups: Vec<Value>,
     gaps: Gaps,
@@ -112,6 +114,14 @@ struct FinishRows<'a> {
     field_source_bytes: usize,
     unique_source_bytes: usize,
     max_observed_traversal_depth: usize,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SourceContext {
+    kind: String,
+    declaration_id: String,
+    source_id: Option<String>,
+    referenced_from_source_id: Option<String>,
 }
 
 /// Return the initial packet membership for the explicit endpoint profile.
@@ -155,6 +165,9 @@ fn profile_rows_with_root(
     let mut sources = BTreeMap::<String, &Source>::new();
     let mut nodes = Vec::<Value>::new();
     let mut edges = Vec::<Edge>::new();
+    let mut source_contexts = BTreeSet::<SourceContext>::new();
+    let mut exact_constructor_types =
+        BTreeMap::<MethodKey, BTreeMap<String, BTreeSet<String>>>::new();
     let mut direct_types = BTreeMap::<String, BTreeSet<String>>::new();
     let mut dto_field_ids = Vec::<String>::new();
     let mut owner_field_ids = BTreeSet::<String>::new();
@@ -373,6 +386,47 @@ fn profile_rows_with_root(
                 );
                 continue;
             }
+            if process_root_id.is_some()
+                && observation.normalized["kind"] == "CONSTRUCT"
+                && let Some(owner) = constructor_target_owner_identity(target)
+            {
+                let type_rows = indexes
+                    .types_by_identity_scope
+                    .get(&(owner.clone(), callable.scope.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                match type_rows {
+                    [type_row] => {
+                        if let Some(name) = type_row.normalized["name"].as_str() {
+                            exact_constructor_types
+                                .entry((callable.identity.clone(), callable.scope.clone()))
+                                .or_default()
+                                .entry(name.to_owned())
+                                .or_default()
+                                .insert(owner);
+                        }
+                        retain_process_type_context(
+                            evidence,
+                            service,
+                            type_row,
+                            body_source_id.as_deref(),
+                            &mut dependencies,
+                            &mut sources,
+                            &mut source_contexts,
+                            &mut gaps,
+                            &mut unique_source_bytes,
+                        );
+                    }
+                    [] => gaps.add(
+                        "PROCESS_CONSTRUCTED_TYPE_NOT_CAPTURED",
+                        json!({"from":callable.identity,"target":target,"scope":callable.scope}),
+                    ),
+                    _ => gaps.add(
+                        "PROCESS_CONSTRUCTED_TYPE_AMBIGUOUS",
+                        json!({"from":callable.identity,"target":target,"scope":callable.scope,"candidateCount":type_rows.len()}),
+                    ),
+                }
+            }
             let source_reference = body_source_id
                 .as_deref()
                 .and_then(|body_id| owning_body_source_reference(evidence, observation, body_id));
@@ -516,6 +570,137 @@ fn profile_rows_with_root(
                     "SOURCE_NESTED_EXECUTABLE_CONTEXT_AMBIGUOUS",
                     json!({"symbol":callable.identity}),
                 );
+            }
+            if process_root_id.is_some() {
+                for spelling in &discoveries.unsupported_qualified_references {
+                    gaps.add(
+                        "PROCESS_QUALIFIED_SOURCE_REFERENCE_UNSUPPORTED",
+                        json!({"from":callable.identity,"spelling":spelling,"scope":callable.scope}),
+                    );
+                }
+            }
+            if process_root_id.is_some() {
+                for type_name in &discoveries.constructed_types {
+                    let candidates = exact_constructor_types
+                        .get(&(callable.identity.clone(), callable.scope.clone()))
+                        .and_then(|types| types.get(type_name))
+                        .filter(|identities| !identities.is_empty())
+                        .map(|identities| {
+                            identities
+                                .iter()
+                                .flat_map(|identity| {
+                                    indexes
+                                        .types_by_identity_scope
+                                        .get(&(identity.clone(), callable.scope.clone()))
+                                        .into_iter()
+                                        .flatten()
+                                        .copied()
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_else(|| {
+                            process_type_candidates(&indexes, type_name, &callable.scope)
+                        });
+                    match candidates.as_slice() {
+                        [type_row] => retain_process_type_context(
+                            evidence,
+                            service,
+                            type_row,
+                            Some(source_id),
+                            &mut dependencies,
+                            &mut sources,
+                            &mut source_contexts,
+                            &mut gaps,
+                            &mut unique_source_bytes,
+                        ),
+                        [] => gaps.add(
+                            "PROCESS_CONSTRUCTED_TYPE_NOT_CAPTURED",
+                            json!({"from":callable.identity,"typeName":type_name,"scope":callable.scope}),
+                        ),
+                        _ => gaps.add(
+                            "PROCESS_CONSTRUCTED_TYPE_AMBIGUOUS",
+                            json!({"from":callable.identity,"typeName":type_name,"scope":callable.scope,"candidateCount":candidates.len()}),
+                        ),
+                    }
+                }
+                for qualified_field in &discoveries.qualified_fields {
+                    let type_candidates = process_type_candidates(
+                        &indexes,
+                        &qualified_field.type_name,
+                        &callable.scope,
+                    );
+                    if qualified_field.shadowed {
+                        if !type_candidates.is_empty() {
+                            gaps.add(
+                                "PROCESS_QUALIFIED_FIELD_TYPE_SHADOWED",
+                                json!({"from":callable.identity,"typeName":qualified_field.type_name,"field":qualified_field.field_name,"scope":callable.scope}),
+                            );
+                        }
+                        continue;
+                    }
+                    let [type_row] = type_candidates.as_slice() else {
+                        gaps.add(
+                            if type_candidates.is_empty() {
+                                "PROCESS_QUALIFIED_FIELD_TYPE_NOT_CAPTURED"
+                            } else {
+                                "PROCESS_QUALIFIED_FIELD_TYPE_AMBIGUOUS"
+                            },
+                            json!({"from":callable.identity,"typeName":qualified_field.type_name,"field":qualified_field.field_name,"scope":callable.scope,"candidateCount":type_candidates.len()}),
+                        );
+                        continue;
+                    };
+                    let owner = type_row.normalized["symbolIdentity"]
+                        .as_str()
+                        .unwrap_or_default();
+                    let field_candidates = indexes
+                        .fields_by_owner_name
+                        .get(&(owner.to_owned(), qualified_field.field_name.clone()))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|field| {
+                            exact_scope(&field.normalized["scope"]) == Some(callable.scope.as_str())
+                        })
+                        .copied()
+                        .collect::<Vec<_>>();
+                    let [field] = field_candidates.as_slice() else {
+                        gaps.add(
+                            if field_candidates.is_empty() {
+                                "PROCESS_QUALIFIED_FIELD_NOT_CAPTURED"
+                            } else {
+                                "PROCESS_QUALIFIED_FIELD_AMBIGUOUS"
+                            },
+                            json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"field":qualified_field.field_name,"scope":callable.scope,"candidateCount":field_candidates.len()}),
+                        );
+                        continue;
+                    };
+                    if !has_modifier(&field.normalized["modifiers"], "STATIC") {
+                        gaps.add(
+                            "PROCESS_QUALIFIED_FIELD_NOT_STATIC",
+                            json!({"from":callable.identity,"typeReference":work_reference(work,"DEPENDENCY",&type_row.id),"field":qualified_field.field_name,"scope":callable.scope}),
+                        );
+                        continue;
+                    }
+                    retain_process_type_context(
+                        evidence,
+                        service,
+                        type_row,
+                        Some(source_id),
+                        &mut dependencies,
+                        &mut sources,
+                        &mut source_contexts,
+                        &mut gaps,
+                        &mut unique_source_bytes,
+                    );
+                    dependencies.insert(field.id.clone(), *field);
+                    owner_field_candidates.insert(field.id.clone());
+                    source_contexts.insert(SourceContext {
+                        kind: "STATIC_FIELD_REFERENCE".into(),
+                        declaration_id: field.id.clone(),
+                        source_id: None,
+                        referenced_from_source_id: Some(source_id.to_owned()),
+                    });
+                }
             }
             for name in discoveries.calls {
                 let scope_candidates = indexes
@@ -1075,6 +1260,23 @@ fn profile_rows_with_root(
         }
     }
 
+    if process_root_id.is_some()
+        && let Some(scope) = root_scope.as_deref().filter(|scope| !scope.is_empty())
+    {
+        expand_process_source_contexts(
+            evidence,
+            service,
+            scope,
+            &indexes,
+            &mut dependencies,
+            &mut sources,
+            &mut source_contexts,
+            &mut owner_field_candidates,
+            &mut gaps,
+            &mut unique_source_bytes,
+        );
+    }
+
     let Some(scope) = root_scope.as_deref().filter(|scope| !scope.is_empty()) else {
         // Do not match an unscoped endpoint to a seemingly similar declaration.
         let dto_groups = direct_types
@@ -1094,6 +1296,7 @@ fn profile_rows_with_root(
             nodes,
             node_keys,
             edges,
+            source_contexts,
             dto_groups,
             owner_groups: Vec::new(),
             gaps,
@@ -1305,6 +1508,7 @@ fn profile_rows_with_root(
         nodes,
         node_keys,
         edges,
+        source_contexts,
         dto_groups,
         owner_groups,
         gaps,
@@ -1327,6 +1531,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         nodes,
         node_keys,
         edges,
+        source_contexts,
         dto_groups,
         owner_groups,
         mut gaps,
@@ -1343,6 +1548,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         .collect();
     let mut provider_fact_references = BTreeSet::new();
     let mut source_reference_candidates = Vec::new();
+    let mut source_context_rows = Vec::new();
     for edge in edges {
         if let Some(fact_id) = edge.fact_id.as_deref() {
             if let Some(reference) = work_reference(work, "DEPENDENCY", fact_id) {
@@ -1401,6 +1607,70 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
     gaps.add("STRUCTURAL_DATAFLOW_NOT_AVAILABLE", Value::Null);
     gaps.add("DIRECT_DECLARED_TYPES_ONLY", Value::Null);
     gaps.add("SOURCE_REFERENCE_CANDIDATE_AUTHORITY", Value::Null);
+    if process_root.is_some() {
+        for candidate in source_contexts {
+            let declaration_reference =
+                work_reference(work, "DEPENDENCY", &candidate.declaration_id);
+            let source_reference = candidate
+                .source_id
+                .as_deref()
+                .and_then(|id| work_reference(work, "SOURCE", id));
+            let referenced_from_source_reference = candidate
+                .referenced_from_source_id
+                .as_deref()
+                .and_then(|id| work_reference(work, "SOURCE", id));
+            let Some(declaration_reference) = declaration_reference else {
+                gaps.add(
+                    "SOURCE_CONTEXT_DECLARATION_REFERENCE_UNAVAILABLE",
+                    json!({"declarationId":candidate.declaration_id,"kind":candidate.kind}),
+                );
+                continue;
+            };
+            if candidate.source_id.is_some() && source_reference.is_none() {
+                gaps.add(
+                    "SOURCE_CONTEXT_SOURCE_REFERENCE_UNAVAILABLE",
+                    json!({"declarationId":candidate.declaration_id,"sourceId":candidate.source_id,"kind":candidate.kind}),
+                );
+                continue;
+            }
+            if candidate.referenced_from_source_id.is_some()
+                && referenced_from_source_reference.is_none()
+            {
+                gaps.add(
+                    "SOURCE_CONTEXT_ORIGIN_REFERENCE_UNAVAILABLE",
+                    json!({"declarationId":candidate.declaration_id,"sourceId":candidate.referenced_from_source_id,"kind":candidate.kind}),
+                );
+                continue;
+            }
+            let Some(declaration) = dependencies.get(&candidate.declaration_id) else {
+                gaps.add(
+                    "SOURCE_CONTEXT_DECLARATION_UNAVAILABLE",
+                    json!({"declarationId":candidate.declaration_id,"kind":candidate.kind}),
+                );
+                continue;
+            };
+            let mut evidence = vec![declaration_reference.to_owned()];
+            if let Some(reference) = source_reference {
+                evidence.push(reference.to_owned());
+            }
+            if let Some(reference) = referenced_from_source_reference {
+                if !evidence.iter().any(|item| item == reference) {
+                    evidence.push(reference.to_owned());
+                }
+            }
+            source_context_rows.push(json!({
+                "kind":candidate.kind,
+                "authority":"SOURCE_REFERENCE_CANDIDATE",
+                "symbolIdentity":declaration.normalized["symbolIdentity"],
+                "ownerIdentity":declaration.normalized["ownerIdentity"],
+                "scope":declaration.normalized["scope"],
+                "declarationReference":declaration_reference,
+                "sourceReference":source_reference,
+                "referencedFromSourceReference":referenced_from_source_reference,
+                "evidence":evidence
+            }));
+        }
+    }
     if let Some(entry) = entry {
         let root_node = (!nodes.is_empty()).then_some("m0");
         let dto_field_count = dto_groups
@@ -1455,6 +1725,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         let root_evidence = root_reference.into_iter().collect::<Vec<_>>();
         let provider_edge_fact_count = provider_fact_references.len();
         let source_reference_candidate_count = source_reference_candidates.len();
+        let source_context_count = source_context_rows.len();
         let referenced_owner_field_count = owner_groups
             .iter()
             .flat_map(|group| group["fieldReferences"].as_array().into_iter().flatten())
@@ -1503,6 +1774,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                     "sourceReferenceCandidates":source_reference_candidates,
                     "maxObservedTraversalDepth":max_observed_traversal_depth
                 },
+                "sourceContexts":source_context_rows,
                 "referencedOwnerFields":owner_groups,
                 "selection":{
                     "uniqueSourceBytes":unique_source_bytes,
@@ -1511,6 +1783,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                     "callableCount":nodes.len(),
                     "providerEdgeFactCount":provider_edge_fact_count,
                     "sourceReferenceCandidateCount":source_reference_candidate_count,
+                    "sourceContextCount":source_context_count,
                     "referencedOwnerFieldCount":referenced_owner_field_count,
                     "maxObservedTraversalDepth":max_observed_traversal_depth
                 },
@@ -1671,6 +1944,7 @@ fn declaration_indexes<'a>(
     let mut indexes = DeclarationIndexes {
         methods_by_identity_scope: BTreeMap::new(),
         methods_by_owner_name: BTreeMap::new(),
+        methods_by_owner_scope: BTreeMap::new(),
         method_scopes_by_identity: BTreeMap::new(),
         types_by_identity_scope: BTreeMap::new(),
         types_by_name_scope: BTreeMap::new(),
@@ -1715,6 +1989,11 @@ fn declaration_indexes<'a>(
                             .or_default()
                             .push(observation);
                         if let Some(scope) = scope {
+                            indexes
+                                .methods_by_owner_scope
+                                .entry((owner.to_owned(), scope.clone()))
+                                .or_default()
+                                .push(observation);
                             indexes
                                 .methods_by_identity_scope
                                 .entry((identity.to_owned(), scope.clone()))
@@ -1776,6 +2055,9 @@ fn declaration_indexes<'a>(
     for values in indexes.methods_by_owner_name.values_mut() {
         values.sort_by(|a, b| a.id.cmp(&b.id));
     }
+    for values in indexes.methods_by_owner_scope.values_mut() {
+        values.sort_by(|a, b| a.id.cmp(&b.id));
+    }
     for values in indexes.types_by_identity_scope.values_mut() {
         values.sort_by(|a, b| a.id.cmp(&b.id));
     }
@@ -1814,6 +2096,587 @@ fn method_body_source<'a>(
         return Err("METHOD_BODY_SOURCE_PROVENANCE_INVALID");
     }
     Ok((source_id.to_owned(), source))
+}
+
+fn process_type_candidates<'a>(
+    indexes: &DeclarationIndexes<'a>,
+    type_name: &str,
+    scope: &str,
+) -> Vec<&'a Observation> {
+    if type_name.contains('.') {
+        return indexes
+            .types_by_identity_scope
+            .get(&(format!("class:{type_name}"), scope.to_owned()))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .to_vec();
+    }
+    indexes
+        .types_by_name_scope
+        .get(&(type_name.to_owned(), scope.to_owned()))
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .to_vec()
+}
+
+fn constructor_target_owner_identity(target: &str) -> Option<String> {
+    let method_identity = target.strip_prefix("method:")?;
+    let (owner, _) = method_identity.split_once('#')?;
+    owner.starts_with("class:").then(|| owner.to_owned())
+}
+
+fn retain_process_type_context<'a>(
+    evidence: &'a ServiceEvidence,
+    service: &str,
+    type_row: &'a Observation,
+    referenced_from_source_id: Option<&str>,
+    dependencies: &mut BTreeMap<String, &'a Observation>,
+    sources: &mut BTreeMap<String, &'a Source>,
+    source_contexts: &mut BTreeSet<SourceContext>,
+    gaps: &mut Gaps,
+    unique_source_bytes: &mut usize,
+) {
+    dependencies.insert(type_row.id.clone(), type_row);
+    for source_id in &type_row.source_ids {
+        let Some(source) = evidence.sources.get(source_id) else {
+            gaps.add(
+                "PROCESS_TYPE_SOURCE_UNAVAILABLE",
+                json!({"identity":type_row.normalized["symbolIdentity"],"sourceId":source_id}),
+            );
+            continue;
+        };
+        if source.service != service
+            || source.revision != evidence.revision
+            || source.text.is_empty()
+            || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
+        {
+            gaps.add(
+                "PROCESS_TYPE_SOURCE_PROVENANCE_INVALID",
+                json!({"identity":type_row.normalized["symbolIdentity"],"sourceId":source_id}),
+            );
+            continue;
+        }
+        if !sources.contains_key(source_id) {
+            *unique_source_bytes += source.text.len();
+        }
+        sources.insert(source_id.clone(), source);
+        source_contexts.insert(SourceContext {
+            kind: "TYPE_SOURCE".into(),
+            declaration_id: type_row.id.clone(),
+            source_id: Some(source_id.clone()),
+            referenced_from_source_id: referenced_from_source_id.map(str::to_owned),
+        });
+    }
+    if type_row.source_ids.is_empty() {
+        gaps.add(
+            "PROCESS_TYPE_SOURCE_UNAVAILABLE",
+            json!({"identity":type_row.normalized["symbolIdentity"]}),
+        );
+    }
+}
+
+fn process_context_method_body_source<'a>(
+    evidence: &'a ServiceEvidence,
+    service: &str,
+    callable: &Callable<'a>,
+    containing_source_ids: &[String],
+) -> Result<(String, &'a Source, (usize, usize)), &'static str> {
+    let mut containing = BTreeMap::<String, &'a Source>::new();
+    for source_id in containing_source_ids {
+        let Some(source) = evidence.sources.get(source_id) else {
+            continue;
+        };
+        if source.service != service
+            || source.revision != evidence.revision
+            || source.text.is_empty()
+            || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
+        {
+            continue;
+        }
+        if source_steps::method_body(&source.text, &callable.identity).is_some() {
+            containing.insert(source_id.clone(), source);
+        }
+    }
+    match containing.into_iter().collect::<Vec<_>>().as_slice() {
+        [(source_id, source)] => {
+            let range = source_steps::method_body(&source.text, &callable.identity)
+                .ok_or("SOURCE_CONTEXT_METHOD_BODY_UNAVAILABLE")?;
+            return Ok((source_id.clone(), source, range));
+        }
+        [_, _, ..] => return Err("SOURCE_CONTEXT_METHOD_BODY_AMBIGUOUS"),
+        [] => {}
+    }
+    if let Ok((source_id, source)) = method_body_source(evidence, callable)
+        && source.service == service
+        && source.revision == evidence.revision
+        && !source.text.is_empty()
+        && source.text_digest == crate::canonical::hash_bytes(source.text.as_bytes())
+        && let Some(range) = source_steps::method_body(&source.text, &callable.identity)
+    {
+        return Ok((source_id, source, range));
+    }
+    Err("SOURCE_CONTEXT_METHOD_BODY_UNAVAILABLE")
+}
+
+fn enqueue_process_context_method<'a>(
+    evidence: &'a ServiceEvidence,
+    service: &str,
+    indexes: &DeclarationIndexes<'a>,
+    target: &'a Observation,
+    from_source_id: &str,
+    dependencies: &mut BTreeMap<String, &'a Observation>,
+    sources: &mut BTreeMap<String, &'a Source>,
+    source_contexts: &mut BTreeSet<SourceContext>,
+    gaps: &mut Gaps,
+    unique_source_bytes: &mut usize,
+    queue: &mut VecDeque<(Callable<'a>, String, (usize, usize))>,
+    scheduled: &mut BTreeSet<MethodKey>,
+) {
+    let callable = callable_from_observation(target);
+    let key = (callable.identity.clone(), callable.scope.clone());
+    dependencies.insert(target.id.clone(), target);
+    let owner_types = indexes
+        .types_by_identity_scope
+        .get(&(callable.owner.clone(), callable.scope.clone()))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if let [owner_type] = owner_types {
+        retain_process_type_context(
+            evidence,
+            service,
+            owner_type,
+            Some(from_source_id),
+            dependencies,
+            sources,
+            source_contexts,
+            gaps,
+            unique_source_bytes,
+        );
+    } else if owner_types.len() > 1 {
+        gaps.add(
+            "SOURCE_CONTEXT_OWNER_TYPE_AMBIGUOUS",
+            json!({"method":callable.identity,"owner":callable.owner,"scope":callable.scope,"candidateCount":owner_types.len()}),
+        );
+    }
+    let owner_source_ids: Vec<_> = owner_types
+        .iter()
+        .flat_map(|owner_type| owner_type.source_ids.iter().cloned())
+        .collect();
+    match process_context_method_body_source(evidence, service, &callable, &owner_source_ids) {
+        Ok((source_id, source, body_range)) => {
+            if !sources.contains_key(&source_id) {
+                *unique_source_bytes += source.text.len();
+            }
+            sources.insert(source_id.clone(), source);
+            source_contexts.insert(SourceContext {
+                kind: "METHOD_SOURCE".into(),
+                declaration_id: target.id.clone(),
+                source_id: Some(source_id.clone()),
+                referenced_from_source_id: Some(from_source_id.to_owned()),
+            });
+            if scheduled.insert(key) {
+                queue.push_back((callable, source_id, body_range));
+            }
+        }
+        Err(code) => {
+            source_contexts.insert(SourceContext {
+                kind: "METHOD_SOURCE".into(),
+                declaration_id: target.id.clone(),
+                source_id: None,
+                referenced_from_source_id: Some(from_source_id.to_owned()),
+            });
+            gaps.add(
+                code,
+                json!({"method":target.normalized["symbolIdentity"],"owner":target.normalized["ownerIdentity"],"scope":target.normalized["scope"]}),
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_process_source_contexts<'a>(
+    evidence: &'a ServiceEvidence,
+    service: &str,
+    scope: &str,
+    indexes: &DeclarationIndexes<'a>,
+    dependencies: &mut BTreeMap<String, &'a Observation>,
+    sources: &mut BTreeMap<String, &'a Source>,
+    source_contexts: &mut BTreeSet<SourceContext>,
+    owner_field_candidates: &mut BTreeSet<String>,
+    gaps: &mut Gaps,
+    unique_source_bytes: &mut usize,
+) {
+    let mut type_queue: VecDeque<String> = source_contexts
+        .iter()
+        .filter(|candidate| candidate.kind == "TYPE_SOURCE")
+        .map(|candidate| candidate.declaration_id.clone())
+        .collect();
+    let mut visited_types = BTreeSet::new();
+    let mut method_queue = VecDeque::<(Callable<'_>, String, (usize, usize))>::new();
+    let mut scheduled_methods = BTreeSet::<MethodKey>::new();
+
+    while !type_queue.is_empty() || !method_queue.is_empty() {
+        while let Some(type_id) = type_queue.pop_front() {
+            let Some(type_row) = dependencies.get(&type_id).copied() else {
+                continue;
+            };
+            let (Some(identity), Some(type_scope)) = (
+                type_row.normalized["symbolIdentity"].as_str(),
+                exact_scope(&type_row.normalized["scope"]),
+            ) else {
+                gaps.add(
+                    "SOURCE_CONTEXT_TYPE_IDENTITY_UNAVAILABLE",
+                    json!({"typeDeclaration":type_id}),
+                );
+                continue;
+            };
+            if type_scope != scope
+                || !visited_types.insert((identity.to_owned(), type_scope.to_owned()))
+            {
+                continue;
+            }
+            let Some(owner_methods) = indexes
+                .methods_by_owner_scope
+                .get(&(identity.to_owned(), scope.to_owned()))
+            else {
+                continue;
+            };
+            for method in owner_methods
+                .iter()
+                .filter(|method| method.normalized["declarationKind"] == "METHOD")
+            {
+                let callable = callable_from_observation(method);
+                let key = (callable.identity.clone(), callable.scope.clone());
+                if !scheduled_methods.insert(key) {
+                    continue;
+                }
+                match process_context_method_body_source(
+                    evidence,
+                    service,
+                    &callable,
+                    &type_row.source_ids,
+                ) {
+                    Ok((source_id, source, body_range)) => {
+                        if !sources.contains_key(&source_id) {
+                            *unique_source_bytes += source.text.len();
+                        }
+                        sources.insert(source_id.clone(), source);
+                        method_queue.push_back((callable, source_id, body_range));
+                    }
+                    Err("SOURCE_CONTEXT_METHOD_BODY_AMBIGUOUS") => gaps.add(
+                        "SOURCE_CONTEXT_METHOD_BODY_AMBIGUOUS",
+                        json!({"method":callable.identity,"owner":identity,"scope":scope}),
+                    ),
+                    Err(_)
+                        if has_modifier(&method.normalized["modifiers"], "ABSTRACT")
+                            || has_modifier(&method.normalized["modifiers"], "NATIVE") => {}
+                    Err(code) => gaps.add(
+                        code,
+                        json!({"method":callable.identity,"owner":identity,"scope":scope}),
+                    ),
+                }
+            }
+        }
+
+        while let Some((callable, source_id, body_range)) = method_queue.pop_front() {
+            let Some(source) = sources.get(&source_id) else {
+                gaps.add(
+                    "SOURCE_CONTEXT_SOURCE_UNAVAILABLE",
+                    json!({"method":callable.identity,"sourceId":source_id}),
+                );
+                continue;
+            };
+            let discoveries =
+                lexical_discoveries(&source.text, body_range, &callable.owner, &callable.name);
+            if discoveries.nested_executable_context {
+                gaps.add(
+                    "SOURCE_CONTEXT_NESTED_EXECUTABLE_CONTEXT_AMBIGUOUS",
+                    json!({"method":callable.identity}),
+                );
+                continue;
+            }
+            for spelling in &discoveries.unsupported_qualified_references {
+                gaps.add(
+                    "PROCESS_QUALIFIED_SOURCE_REFERENCE_UNSUPPORTED",
+                    json!({"method":callable.identity,"spelling":spelling,"scope":scope}),
+                );
+            }
+
+            for type_name in discoveries.constructed_types {
+                let type_candidates = process_type_candidates(indexes, &type_name, scope);
+                match type_candidates.as_slice() {
+                    [type_row] => {
+                        retain_process_type_context(
+                            evidence,
+                            service,
+                            type_row,
+                            Some(&source_id),
+                            dependencies,
+                            sources,
+                            source_contexts,
+                            gaps,
+                            unique_source_bytes,
+                        );
+                        type_queue.push_back(type_row.id.clone());
+                    }
+                    [] => gaps.add(
+                        "PROCESS_SOURCE_CONTEXT_CONSTRUCTED_TYPE_NOT_CAPTURED",
+                        json!({"method":callable.identity,"typeName":type_name,"scope":scope}),
+                    ),
+                    _ => gaps.add(
+                        "PROCESS_SOURCE_CONTEXT_CONSTRUCTED_TYPE_AMBIGUOUS",
+                        json!({"method":callable.identity,"typeName":type_name,"scope":scope,"candidateCount":type_candidates.len()}),
+                    ),
+                }
+            }
+
+            for name in discoveries
+                .calls
+                .into_iter()
+                .chain(discoveries.method_references)
+            {
+                let candidates = indexes
+                    .methods_by_owner_name
+                    .get(&(callable.owner.clone(), name.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|method| {
+                        method.normalized["declarationKind"] == "METHOD"
+                            && exact_scope(&method.normalized["scope"]) == Some(scope)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                match candidates.as_slice() {
+                    [candidate] => enqueue_process_context_method(
+                        evidence,
+                        service,
+                        indexes,
+                        candidate,
+                        &source_id,
+                        dependencies,
+                        sources,
+                        source_contexts,
+                        gaps,
+                        unique_source_bytes,
+                        &mut method_queue,
+                        &mut scheduled_methods,
+                    ),
+                    [] => gaps.add(
+                        "SOURCE_CONTEXT_HELPER_NOT_CAPTURED",
+                        json!({"method":callable.identity,"owner":callable.owner,"name":name,"scope":scope}),
+                    ),
+                    _ => gaps.add(
+                        "SOURCE_CONTEXT_HELPER_AMBIGUOUS",
+                        json!({"method":callable.identity,"owner":callable.owner,"name":name,"scope":scope,"candidateCount":candidates.len()}),
+                    ),
+                }
+            }
+
+            for receiver_call in discoveries.field_receiver_calls {
+                if receiver_call.shadowed && !receiver_call.explicit_receiver {
+                    gaps.add(
+                        "SOURCE_CONTEXT_RECEIVER_SHADOWED",
+                        json!({"method":callable.identity,"receiver":receiver_call.field_name,"target":receiver_call.method_name,"scope":scope}),
+                    );
+                    continue;
+                }
+                let same_owner_field = indexes
+                    .fields_by_owner_name
+                    .get(&(callable.owner.clone(), receiver_call.field_name.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|field| exact_scope(&field.normalized["scope"]) == Some(scope))
+                    .copied()
+                    .collect::<Vec<_>>();
+                let (target_owner, require_static, receiver_field) = match same_owner_field
+                    .as_slice()
+                {
+                    [field] => {
+                        let descriptor = field.normalized["jvmDescriptor"]
+                            .as_str()
+                            .or_else(|| field.normalized["typeDescriptor"].as_str());
+                        let Some(target_owner) = descriptor
+                            .and_then(|value| field_descriptor_class_identity(value).ok())
+                        else {
+                            gaps.add(
+                                "SOURCE_CONTEXT_RECEIVER_FIELD_TYPE_UNSUPPORTED",
+                                json!({"method":callable.identity,"field":receiver_call.field_name,"scope":scope}),
+                            );
+                            continue;
+                        };
+                        dependencies.insert(field.id.clone(), *field);
+                        owner_field_candidates.insert(field.id.clone());
+                        source_contexts.insert(SourceContext {
+                            kind: "FIELD_RECEIVER_REFERENCE".into(),
+                            declaration_id: field.id.clone(),
+                            source_id: None,
+                            referenced_from_source_id: Some(source_id.clone()),
+                        });
+                        (target_owner, false, Some(*field))
+                    }
+                    [] => {
+                        let type_candidates =
+                            process_type_candidates(indexes, &receiver_call.field_name, scope);
+                        let [type_row] = type_candidates.as_slice() else {
+                            gaps.add(
+                                if type_candidates.is_empty() { "SOURCE_CONTEXT_RECEIVER_TYPE_NOT_CAPTURED" } else { "SOURCE_CONTEXT_RECEIVER_TYPE_AMBIGUOUS" },
+                                json!({"method":callable.identity,"receiver":receiver_call.field_name,"scope":scope,"candidateCount":type_candidates.len()}),
+                            );
+                            continue;
+                        };
+                        retain_process_type_context(
+                            evidence,
+                            service,
+                            type_row,
+                            Some(&source_id),
+                            dependencies,
+                            sources,
+                            source_contexts,
+                            gaps,
+                            unique_source_bytes,
+                        );
+                        (
+                            type_row.normalized["symbolIdentity"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            true,
+                            None,
+                        )
+                    }
+                    _ => {
+                        gaps.add(
+                            "SOURCE_CONTEXT_RECEIVER_FIELD_AMBIGUOUS",
+                            json!({"method":callable.identity,"receiver":receiver_call.field_name,"scope":scope,"candidateCount":same_owner_field.len()}),
+                        );
+                        continue;
+                    }
+                };
+                let Some(source_arity) = receiver_call.argument_count else {
+                    gaps.add(
+                        "SOURCE_CONTEXT_RECEIVER_ARGUMENTS_UNSUPPORTED",
+                        json!({"method":callable.identity,"receiver":receiver_call.field_name,"target":receiver_call.method_name,"scope":scope}),
+                    );
+                    continue;
+                };
+                let candidates =
+                    indexes
+                        .methods_by_owner_name
+                        .get(&(target_owner.clone(), receiver_call.method_name.clone()))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|method| {
+                            method.normalized["declarationKind"] == "METHOD"
+                                && exact_scope(&method.normalized["scope"]) == Some(scope)
+                                && method.normalized["jvmDescriptor"].as_str().and_then(
+                                    |descriptor| method_descriptor_parameter_count(descriptor).ok(),
+                                ) == Some(source_arity)
+                                && (!require_static
+                                    || has_modifier(&method.normalized["modifiers"], "STATIC"))
+                        })
+                        .copied()
+                        .collect::<Vec<_>>();
+                match candidates.as_slice() {
+                    [candidate] => {
+                        if let Some(field) = receiver_field {
+                            dependencies.insert(field.id.clone(), field);
+                        }
+                        enqueue_process_context_method(
+                            evidence,
+                            service,
+                            indexes,
+                            candidate,
+                            &source_id,
+                            dependencies,
+                            sources,
+                            source_contexts,
+                            gaps,
+                            unique_source_bytes,
+                            &mut method_queue,
+                            &mut scheduled_methods,
+                        );
+                    }
+                    [] => gaps.add(
+                        "SOURCE_CONTEXT_RECEIVER_TARGET_NOT_CAPTURED",
+                        json!({"method":callable.identity,"targetOwner":target_owner,"target":receiver_call.method_name,"scope":scope}),
+                    ),
+                    _ => gaps.add(
+                        "SOURCE_CONTEXT_RECEIVER_TARGET_AMBIGUOUS",
+                        json!({"method":callable.identity,"targetOwner":target_owner,"target":receiver_call.method_name,"scope":scope,"candidateCount":candidates.len()}),
+                    ),
+                }
+            }
+
+            for qualified_field in discoveries.qualified_fields {
+                let type_candidates =
+                    process_type_candidates(indexes, &qualified_field.type_name, scope);
+                if qualified_field.shadowed {
+                    if !type_candidates.is_empty() {
+                        gaps.add(
+                            "PROCESS_QUALIFIED_FIELD_TYPE_SHADOWED",
+                            json!({"method":callable.identity,"typeName":qualified_field.type_name,"field":qualified_field.field_name,"scope":scope}),
+                        );
+                    }
+                    continue;
+                }
+                let [type_row] = type_candidates.as_slice() else {
+                    gaps.add(
+                        if type_candidates.is_empty() { "PROCESS_QUALIFIED_FIELD_TYPE_NOT_CAPTURED" } else { "PROCESS_QUALIFIED_FIELD_TYPE_AMBIGUOUS" },
+                        json!({"method":callable.identity,"typeName":qualified_field.type_name,"field":qualified_field.field_name,"scope":scope,"candidateCount":type_candidates.len()}),
+                    );
+                    continue;
+                };
+                let owner = type_row.normalized["symbolIdentity"]
+                    .as_str()
+                    .unwrap_or_default();
+                let candidates = indexes
+                    .fields_by_owner_name
+                    .get(&(owner.to_owned(), qualified_field.field_name.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|field| exact_scope(&field.normalized["scope"]) == Some(scope))
+                    .copied()
+                    .collect::<Vec<_>>();
+                let [field] = candidates.as_slice() else {
+                    gaps.add(
+                        if candidates.is_empty() { "PROCESS_QUALIFIED_FIELD_NOT_CAPTURED" } else { "PROCESS_QUALIFIED_FIELD_AMBIGUOUS" },
+                        json!({"method":callable.identity,"typeReference":type_row.id,"field":qualified_field.field_name,"scope":scope,"candidateCount":candidates.len()}),
+                    );
+                    continue;
+                };
+                if !has_modifier(&field.normalized["modifiers"], "STATIC") {
+                    gaps.add(
+                        "PROCESS_QUALIFIED_FIELD_NOT_STATIC",
+                        json!({"method":callable.identity,"typeReference":type_row.id,"field":qualified_field.field_name,"scope":scope}),
+                    );
+                    continue;
+                }
+                retain_process_type_context(
+                    evidence,
+                    service,
+                    type_row,
+                    Some(&source_id),
+                    dependencies,
+                    sources,
+                    source_contexts,
+                    gaps,
+                    unique_source_bytes,
+                );
+                dependencies.insert(field.id.clone(), *field);
+                owner_field_candidates.insert(field.id.clone());
+                source_contexts.insert(SourceContext {
+                    kind: "STATIC_FIELD_REFERENCE".into(),
+                    declaration_id: field.id.clone(),
+                    source_id: None,
+                    referenced_from_source_id: Some(source_id.clone()),
+                });
+            }
+        }
+    }
 }
 
 fn relation_source_bound(
@@ -2085,10 +2948,20 @@ fn descriptor_object_roles(descriptor: &str) -> Result<(BTreeSet<String>, BTreeS
 struct Discoveries {
     calls: BTreeSet<String>,
     method_references: BTreeSet<String>,
+    constructed_types: BTreeSet<String>,
     field_receiver_calls: BTreeSet<FieldReceiverCall>,
+    qualified_fields: BTreeSet<QualifiedFieldUse>,
+    unsupported_qualified_references: BTreeSet<String>,
     field_receiver_lambda_ambiguous: bool,
     fields: BTreeSet<FieldUse>,
     nested_executable_context: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct QualifiedFieldUse {
+    type_name: String,
+    field_name: String,
+    shadowed: bool,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2125,7 +2998,10 @@ fn lexical_discoveries(
         return Discoveries {
             calls: BTreeSet::new(),
             method_references: BTreeSet::new(),
+            constructed_types: BTreeSet::new(),
             field_receiver_calls: BTreeSet::new(),
+            qualified_fields: BTreeSet::new(),
+            unsupported_qualified_references: BTreeSet::new(),
             field_receiver_lambda_ambiguous: false,
             fields: BTreeSet::new(),
             nested_executable_context: true,
@@ -2133,6 +3009,9 @@ fn lexical_discoveries(
     }
     let mut calls = BTreeSet::new();
     let mut method_references = BTreeSet::new();
+    let mut constructed_types = BTreeSet::new();
+    let mut qualified_fields = BTreeSet::new();
+    let mut unsupported_qualified_references = BTreeSet::new();
     let mut referenced_fields = BTreeMap::<String, (bool, bool)>::new();
     let parameter_range = method_parameter_range(&tokens, body_range.0, method_name);
     let shadowed: BTreeSet<_> = tokens
@@ -2166,6 +3045,30 @@ fn lexical_discoveries(
         let owner_qualified =
             previous_dot && index > 1 && is_owner_qualifier(owner, &tokens[index - 2].text);
         let following_call = tokens.get(index + 1).is_some_and(|next| next.text == "(");
+        if previous_dot && index >= 3 && tokens[index - 3].text == "." {
+            unsupported_qualified_references.insert(format!(
+                "{}.{}",
+                tokens[index - 2].text,
+                token.text
+            ));
+        }
+        if token.text == "new"
+            && let Some(type_token) = tokens.get(index + 1)
+            && is_identifier(&type_token.text)
+        {
+            let mut qualified_name = type_token.text.clone();
+            let mut cursor = index + 2;
+            while tokens.get(cursor).is_some_and(|part| part.text == ".")
+                && tokens
+                    .get(cursor + 1)
+                    .is_some_and(|part| is_identifier(&part.text))
+            {
+                qualified_name.push('.');
+                qualified_name.push_str(&tokens[cursor + 1].text);
+                cursor += 2;
+            }
+            constructed_types.insert(qualified_name);
+        }
         let current_this_method_reference = index >= 3
             && tokens[index - 1].text == ":"
             && tokens[index - 2].text == ":"
@@ -2175,6 +3078,9 @@ fn lexical_discoveries(
             method_references.insert(token.text.clone());
             continue;
         }
+        if following_call && index > 0 && tokens[index - 1].text == "new" {
+            continue;
+        }
         if following_call && (!previous_dot || explicit_receiver) {
             if !matches!(
                 token.text.as_str(),
@@ -2182,6 +3088,21 @@ fn lexical_discoveries(
             ) {
                 calls.insert(token.text.clone());
             }
+            continue;
+        }
+        if previous_dot
+            && !explicit_receiver
+            && !owner_qualified
+            && index >= 2
+            && is_identifier(&tokens[index - 2].text)
+            && (index < 3 || tokens[index - 3].text != ".")
+            && !following_call
+        {
+            qualified_fields.insert(QualifiedFieldUse {
+                type_name: tokens[index - 2].text.clone(),
+                field_name: token.text.clone(),
+                shadowed: shadowed.contains(&tokens[index - 2].text),
+            });
             continue;
         }
         let eligible_field = !previous_dot || explicit_receiver || owner_qualified;
@@ -2198,7 +3119,10 @@ fn lexical_discoveries(
     Discoveries {
         calls,
         method_references,
+        constructed_types,
         field_receiver_calls,
+        qualified_fields,
+        unsupported_qualified_references,
         field_receiver_lambda_ambiguous,
         fields: referenced_fields
             .into_iter()

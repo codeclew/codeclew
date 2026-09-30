@@ -165,6 +165,19 @@ class DocumentationSelectionContractTest(unittest.TestCase):
                     "contextFor": "d1",
                 }
             ],
+            "sourceContexts": [
+                {
+                    "kind": "METHOD_SOURCE",
+                    "authority": "SOURCE_REFERENCE_CANDIDATE",
+                    "symbolIdentity": "method:orders.Helper#predicate()Z",
+                    "ownerIdentity": "class:orders.Helper",
+                    "scope": ":main",
+                    "declarationReference": "d2",
+                    "sourceReference": "s2",
+                    "referencedFromSourceReference": "s1",
+                    "evidence": ["d2", "s2", "s1"],
+                }
+            ],
             "coverage": {
                 "coverage": "COMPLETE",
                 "runtimeMode": "BUILD",
@@ -183,7 +196,7 @@ class DocumentationSelectionContractTest(unittest.TestCase):
                 "snapshot": "sha256:" + "b" * 64 + "/0",
                 "service": "orders",
             },
-            "citations": {"p1": "selected process context", "d1": "root", "s1": "source", "c1": "coverage"},
+            "citations": {"p1": "selected process context", "d1": "root", "d2": "helper declaration", "s1": "source", "s2": "helper source", "c1": "coverage"},
             "packetDigest": "sha256:" + "c" * 64,
         }
         process_packet_schema = READER_PACKET_SCHEMA["$defs"]["processPacket"]

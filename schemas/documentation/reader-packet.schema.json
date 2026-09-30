@@ -348,9 +348,45 @@
         "authority": { "type": "string", "minLength": 1 },
         "text": { "type": "string" },
         "evidence": { "$ref": "#/$defs/evidence" },
-        "contextFor": { "$ref": "#/$defs/label" }
+        "contextFor": { "$ref": "#/$defs/label" },
+        "contextReferences": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/label" } },
+        "sourceAliases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "reference": { "$ref": "#/$defs/label" },
+              "authority": { "type": "string", "minLength": 1 },
+              "startByte": { "type": "integer", "minimum": 0 },
+              "endByte": { "type": "integer", "minimum": 0 },
+              "evidence": { "$ref": "#/$defs/evidence" }
+            },
+            "required": ["reference", "authority", "startByte", "endByte", "evidence"]
+          }
+        }
       },
       "required": ["reference", "authority", "text", "evidence"]
+    },
+    "processSourceContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["TYPE_SOURCE", "METHOD_SOURCE", "STATIC_FIELD_REFERENCE", "FIELD_RECEIVER_REFERENCE"] },
+        "authority": { "const": "SOURCE_REFERENCE_CANDIDATE" },
+        "symbolIdentity": { "type": ["string", "null"] },
+        "ownerIdentity": { "type": ["string", "null"] },
+        "scope": { "type": ["string", "null"] },
+        "declarationReference": { "$ref": "#/$defs/label" },
+        "sourceReference": { "oneOf": [{ "$ref": "#/$defs/label" }, { "type": "null" }] },
+        "referencedFromSourceReference": { "oneOf": [{ "$ref": "#/$defs/label" }, { "type": "null" }] },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["kind", "authority", "symbolIdentity", "ownerIdentity", "scope", "declarationReference", "sourceReference", "referencedFromSourceReference", "evidence"],
+      "anyOf": [
+        { "properties": { "sourceReference": { "$ref": "#/$defs/label" } } },
+        { "properties": { "referencedFromSourceReference": { "$ref": "#/$defs/label" } } }
+      ]
     },
     "processPacket": {
       "type": "object",
@@ -392,6 +428,7 @@
         "fields": { "type": "array", "items": { "$ref": "#/$defs/processField" } },
         "types": { "type": "array", "items": { "$ref": "#/$defs/processType" } },
         "methodSources": { "type": "array", "items": { "$ref": "#/$defs/processSource" } },
+        "sourceContexts": { "type": "array", "items": { "$ref": "#/$defs/processSourceContext" } },
         "coverage": { "$ref": "#/$defs/coverage" },
         "limitations": {
           "type": "array",
