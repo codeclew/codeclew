@@ -27,8 +27,6 @@ pub(super) fn run(
     id: &str,
     config_path: Option<&Path>,
 ) -> Result<Value, ClewError> {
-    let preflight = super::super::work::load(repo, id)?;
-    validate_work(&preflight)?;
     let _run_lock = acquire_run_lock(repo, id)?;
     let work = super::super::work::load(repo, id)?;
     run_loaded(repo, &work, config_path)
