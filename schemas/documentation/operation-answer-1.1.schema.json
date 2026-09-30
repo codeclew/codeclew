@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/operation-answer-1.1.schema.json",
+  "title": "Codeclew documentation operation answer 1.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "packetDigest",
+    "title",
+    "summary",
+    "steps",
+    "preparations",
+    "uncertainties"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-operation-answer/1.1"
+    },
+    "packetDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "$ref": "#/$defs/Claim"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Step"
+      }
+    },
+    "preparations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Preparation"
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "Claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "evidence"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "checks": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "uncertainty": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "Step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "meaning"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "action",
+            "decision",
+            "try",
+            "return",
+            "throw",
+            "loop"
+          ]
+        },
+        "meaning": {
+          "$ref": "#/$defs/Claim"
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "interaction": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Step"
+          }
+        },
+        "otherwise": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Step"
+          }
+        },
+        "preparationRefs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "decision"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "children"
+            ],
+            "properties": {
+              "children": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "try",
+                  "loop"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "children"
+            ],
+            "properties": {
+              "children": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "action",
+                  "return",
+                  "throw"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "otherwise": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "return",
+                  "throw"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "children": {
+                "maxItems": 0
+              },
+              "otherwise": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "summary",
+        "steps"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subjectReference": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact declaration/type reference present in this packet. It identifies the source being explained, not concrete runtime dispatch."
+        },
+        "summary": {
+          "$ref": "#/$defs/Claim"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Step"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "subjectReference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "subjectReference"
+            ]
+          },
+          "then": {},
+          "else": {
+            "properties": {
+              "summary": {
+                "required": ["uncertainty"],
+                "properties": {
+                  "uncertainty": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

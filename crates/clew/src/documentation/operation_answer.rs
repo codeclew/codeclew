@@ -3,15 +3,13 @@
 //! This validates packet binding, evidence labels, and tree shape. It does not
 //! review semantic correctness or publish documentation.
 
-use super::{
-    digest, invalid,
-    proposals::{Claim, Step},
-};
+use super::{digest, invalid, proposals::Claim};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-const ANSWER_SCHEMA: &str = "codeclew-operation-answer/1.0";
+const ANSWER_SCHEMA_V1_0: &str = "codeclew-operation-answer/1.0";
+const ANSWER_SCHEMA_V1_1: &str = "codeclew-operation-answer/1.1";
 const PACKET_SCHEMA: &str = "codeclew-documentation-reader-packet/1.0";
 const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "loop"];
 // Bump when the answer schema or generic author instruction changes materially;
@@ -20,9 +18,22 @@ pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/
 
 pub(super) fn output_schema() -> Value {
     serde_json::from_str(include_str!(
-        "../../../../schemas/documentation/operation-answer.schema.json"
+        "../../../../schemas/documentation/operation-answer-1.1.schema.json"
     ))
     .expect("operation answer schema is valid JSON")
+}
+
+pub(super) fn validate_and_render_draft(
+    packet: &Value,
+    audit: &Value,
+    answer: Value,
+) -> Result<RenderedAnswer, crate::error::ClewError> {
+    if answer["schema"].as_str() != Some(ANSWER_SCHEMA_V1_1) {
+        return Err(invalid(
+            "new operation drafts require codeclew-operation-answer/1.1; the raw author response was retained",
+        ));
+    }
+    validate_and_render(packet, audit, answer)
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,8 +43,41 @@ struct OperationAnswer {
     packet_digest: String,
     title: String,
     summary: Claim,
-    steps: Vec<Step>,
+    steps: Vec<OperationStep>,
+    #[serde(default)]
+    preparations: Vec<Preparation>,
     uncertainties: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OperationStep {
+    kind: String,
+    meaning: Claim,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    interaction: Option<String>,
+    #[serde(default)]
+    preparation_refs: Vec<String>,
+    #[serde(default)]
+    children: Vec<OperationStep>,
+    #[serde(default)]
+    otherwise: Vec<OperationStep>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Preparation {
+    id: String,
+    title: String,
+    #[serde(default)]
+    subject_reference: Option<String>,
+    summary: Claim,
+    #[serde(default)]
+    steps: Vec<OperationStep>,
 }
 
 pub(super) struct RenderedAnswer {
@@ -240,6 +284,70 @@ impl ReaderLabels {
         }
     }
 
+    fn preparations(self) -> &'static str {
+        if self.russian {
+            "Подготовка значений и проверки"
+        } else {
+            "Prepared values and checks"
+        }
+    }
+
+    fn data_movement(self) -> &'static str {
+        if self.russian {
+            "Перемещение данных из шагов"
+        } else {
+            "Data movement stated in steps"
+        }
+    }
+
+    fn subject(self) -> &'static str {
+        if self.russian {
+            "Исходный код"
+        } else {
+            "Source identity"
+        }
+    }
+
+    fn from(self) -> &'static str {
+        if self.russian { "Из" } else { "From" }
+    }
+
+    fn to(self) -> &'static str {
+        if self.russian { "В" } else { "To" }
+    }
+
+    fn unknown(self) -> &'static str {
+        if self.russian {
+            "Неизвестно"
+        } else {
+            "Unknown"
+        }
+    }
+
+    fn uncertainty(self) -> &'static str {
+        if self.russian {
+            "Неопределённость"
+        } else {
+            "Uncertainty"
+        }
+    }
+
+    fn preparation_reference(self) -> &'static str {
+        if self.russian {
+            "Общее объяснение"
+        } else {
+            "Shared preparation"
+        }
+    }
+
+    fn data_movement_note(self) -> &'static str {
+        if self.russian {
+            "Таблица показывает только явно указанные значения from/to в шагах; совпадение имён не создаёт связь."
+        } else {
+            "This view contains only explicit from/to values in authored steps; matching names do not create a link."
+        }
+    }
+
     fn condition(self) -> &'static str {
         if self.russian {
             "Условие"
@@ -316,6 +424,7 @@ pub(super) fn validate_and_render(
             "operation answer requires a supported endpoint or internal process reader packet",
         ));
     }
+    let answer_schema = validate_answer_version(&answer)?;
     let citations = packet["citations"]
         .as_object()
         .ok_or_else(|| invalid("reader packet has no citation-label map"))?;
@@ -328,7 +437,7 @@ pub(super) fn validate_and_render(
 
     let parsed: OperationAnswer = serde_json::from_value(answer.clone())
         .map_err(|_| invalid("operation answer has an invalid schema or shape"))?;
-    if parsed.schema != ANSWER_SCHEMA {
+    if parsed.schema != answer_schema {
         return Err(invalid("unsupported operation-answer schema"));
     }
     let declared_packet_digest = packet["packetDigest"]
@@ -355,6 +464,9 @@ pub(super) fn validate_and_render(
         return Err(invalid("operation answer must contain at least one step"));
     }
     validate_steps(&parsed.steps, &known_labels)?;
+    if parsed.schema == ANSWER_SCHEMA_V1_1 {
+        validate_preparations(&parsed, packet, &known_labels)?;
+    }
     if parsed
         .uncertainties
         .iter()
@@ -390,6 +502,270 @@ pub(super) fn validate_and_render(
         markdown,
         answer,
     })
+}
+
+fn validate_answer_version(answer: &Value) -> Result<&str, crate::error::ClewError> {
+    let schema = answer["schema"]
+        .as_str()
+        .ok_or_else(|| invalid("operation answer has no schema"))?;
+    match schema {
+        ANSWER_SCHEMA_V1_0 => {
+            if answer.get("preparations").is_some()
+                || step_tree_has_preparation_refs(&answer["steps"])
+            {
+                return Err(invalid(
+                    "operation-answer/1.0 cannot contain preparations or preparationRefs",
+                ));
+            }
+        }
+        ANSWER_SCHEMA_V1_1 => {
+            if !answer["preparations"].is_array() {
+                return Err(invalid(
+                    "operation-answer/1.1 requires a preparations array, which may be empty",
+                ));
+            }
+        }
+        _ => return Err(invalid("unsupported operation-answer schema")),
+    }
+    Ok(schema)
+}
+
+fn step_tree_has_preparation_refs(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(step_tree_has_preparation_refs),
+        Value::Object(fields) => {
+            fields.contains_key("preparationRefs")
+                || fields
+                    .get("children")
+                    .is_some_and(step_tree_has_preparation_refs)
+                || fields
+                    .get("otherwise")
+                    .is_some_and(step_tree_has_preparation_refs)
+        }
+        _ => false,
+    }
+}
+
+fn validate_preparations(
+    answer: &OperationAnswer,
+    packet: &Value,
+    known_labels: &BTreeSet<String>,
+) -> Result<(), crate::error::ClewError> {
+    let known_subjects = packet_subject_references(packet);
+    let mut ids = BTreeSet::new();
+    for preparation in &answer.preparations {
+        if preparation.id.is_empty()
+            || !preparation
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(invalid(
+                "preparation id must contain only ASCII letters, digits, underscores, or hyphens",
+            ));
+        }
+        if preparation.title.trim().is_empty() {
+            return Err(invalid("preparation title must not be empty"));
+        }
+        if !ids.insert(preparation.id.clone()) {
+            return Err(invalid("preparation ids must be unique"));
+        }
+        validate_claim(
+            &preparation.summary,
+            known_labels,
+            &format!("preparation {} summary", preparation.id),
+        )?;
+        match preparation.subject_reference.as_deref() {
+            Some(reference)
+                if reference.trim().is_empty() || !known_subjects.contains_key(reference) =>
+            {
+                return Err(invalid(format!(
+                    "preparation {} subjectReference must identify a declaration or type in this packet",
+                    preparation.id
+                )));
+            }
+            None if preparation
+                .summary
+                .uncertainty
+                .as_deref()
+                .is_none_or(|uncertainty| uncertainty.trim().is_empty()) =>
+            {
+                return Err(invalid(format!(
+                    "preparation {} without subjectReference needs a precise summary uncertainty",
+                    preparation.id
+                )));
+            }
+            _ => {}
+        }
+        validate_steps(&preparation.steps, known_labels)?;
+    }
+
+    let mut references_by_preparation = BTreeMap::<String, Vec<String>>::new();
+    let operation_references = resolved_preparation_references(&answer.steps, &ids, "operation")?;
+    for preparation in &answer.preparations {
+        references_by_preparation.insert(
+            preparation.id.clone(),
+            resolved_preparation_references(&preparation.steps, &ids, &preparation.id)?,
+        );
+    }
+
+    let mut pending = VecDeque::from(operation_references);
+    let mut reachable = BTreeSet::new();
+    while let Some(reference) = pending.pop_front() {
+        if !reachable.insert(reference.clone()) {
+            continue;
+        }
+        if let Some(links) = references_by_preparation.get(&reference) {
+            pending.extend(links.iter().cloned());
+        }
+    }
+    if reachable != ids {
+        return Err(invalid(
+            "every preparation must be reachable from an operation step through preparationRefs",
+        ));
+    }
+    Ok(())
+}
+
+fn resolved_preparation_references(
+    steps: &[OperationStep],
+    known_ids: &BTreeSet<String>,
+    owner: &str,
+) -> Result<Vec<String>, crate::error::ClewError> {
+    let mut references = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let location = format!("{owner} step {}", index + 1);
+        let mut local = BTreeSet::new();
+        for reference in &step.preparation_refs {
+            if reference.trim().is_empty() || !known_ids.contains(reference) {
+                return Err(invalid(format!(
+                    "{location} has an unresolved preparationRef"
+                )));
+            }
+            if !local.insert(reference) {
+                return Err(invalid(format!(
+                    "{location} repeats the same preparationRef"
+                )));
+            }
+            references.push(reference.clone());
+        }
+        references.extend(resolved_preparation_references(
+            &step.children,
+            known_ids,
+            owner,
+        )?);
+        references.extend(resolved_preparation_references(
+            &step.otherwise,
+            known_ids,
+            owner,
+        )?);
+    }
+    Ok(references)
+}
+
+fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
+    let mut subjects = BTreeMap::<String, String>::new();
+    let mut insert = |reference: &str, identity: &str, owner: Option<&str>, scope: Option<&str>| {
+        if reference.trim().is_empty() || identity.trim().is_empty() {
+            return;
+        }
+        let mut display = format!("{reference} · {identity}");
+        if let Some(owner) = owner.filter(|owner| !owner.trim().is_empty() && *owner != identity) {
+            display.push_str(" · ");
+            display.push_str(owner);
+        }
+        if let Some(scope) = scope.filter(|scope| !scope.trim().is_empty()) {
+            display.push_str(" · ");
+            display.push_str(scope);
+        }
+        subjects
+            .entry(reference.to_owned())
+            .and_modify(|existing| {
+                if existing != &display {
+                    existing.clear();
+                }
+            })
+            .or_insert(display);
+    };
+
+    for node in packet["callMap"]["nodes"].as_array().into_iter().flatten() {
+        if let (Some(reference), Some(identity)) = (node["id"].as_str(), node["identity"].as_str())
+        {
+            insert(
+                reference,
+                identity,
+                node["ownerIdentity"].as_str(),
+                node["scope"].as_str(),
+            );
+        }
+    }
+    for type_row in packet["types"].as_array().into_iter().flatten() {
+        if let Some(identity) = type_row["symbolIdentity"].as_str() {
+            if let Some(reference) = type_row["reference"].as_str() {
+                insert(
+                    reference,
+                    identity,
+                    type_row["ownerIdentity"].as_str(),
+                    type_row["scope"].as_str(),
+                );
+            }
+        } else if let Some(identity) = type_row["identity"].as_str() {
+            insert(
+                identity,
+                identity,
+                type_row["ownerIdentity"].as_str(),
+                type_row["scope"].as_str(),
+            );
+        }
+    }
+    for field in packet["fields"].as_array().into_iter().flatten() {
+        if let (Some(reference), Some(owner), Some(name)) = (
+            field["reference"].as_str(),
+            field["ownerIdentity"].as_str(),
+            field["name"].as_str(),
+        ) {
+            insert(reference, &format!("{owner}#{name}"), None, None);
+        }
+    }
+    for method in packet["methods"].as_array().into_iter().flatten() {
+        if let (Some(reference), Some(identity)) = (
+            method["declarationReference"].as_str(),
+            method["symbolIdentity"].as_str(),
+        ) {
+            insert(
+                reference,
+                identity,
+                method["ownerIdentity"].as_str(),
+                method["scope"].as_str(),
+            );
+        }
+    }
+    if let (Some(reference), Some(identity)) = (
+        packet["root"]["declarationReference"].as_str(),
+        packet["root"]["symbolIdentity"].as_str(),
+    ) {
+        insert(
+            reference,
+            identity,
+            packet["root"]["ownerIdentity"].as_str(),
+            packet["root"]["scope"].as_str(),
+        );
+    }
+    for context in packet["sourceContexts"].as_array().into_iter().flatten() {
+        if let (Some(reference), Some(identity)) = (
+            context["declarationReference"].as_str(),
+            context["symbolIdentity"].as_str(),
+        ) {
+            insert(
+                reference,
+                identity,
+                context["ownerIdentity"].as_str(),
+                context["scope"].as_str(),
+            );
+        }
+    }
+    subjects.retain(|_, display: &mut String| !display.is_empty());
+    subjects
 }
 
 fn packet_evidence_labels(packet: &Value) -> Result<BTreeSet<String>, crate::error::ClewError> {
@@ -474,7 +850,7 @@ fn validate_evidence_label(
 }
 
 fn validate_steps(
-    steps: &[Step],
+    steps: &[OperationStep],
     known_labels: &BTreeSet<String>,
 ) -> Result<(), crate::error::ClewError> {
     for (index, step) in steps.iter().enumerate() {
@@ -485,7 +861,7 @@ fn validate_steps(
 }
 
 fn validate_step(
-    step: &Step,
+    step: &OperationStep,
     known_labels: &BTreeSet<String>,
     location: &str,
 ) -> Result<(), crate::error::ClewError> {
@@ -550,7 +926,7 @@ fn evidence_index(citations: &serde_json::Map<String, Value>) -> BTreeMap<String
 }
 
 fn answer_evidence_labels(answer: &OperationAnswer) -> BTreeSet<String> {
-    fn visit(steps: &[Step], labels: &mut BTreeSet<String>) {
+    fn visit(steps: &[OperationStep], labels: &mut BTreeSet<String>) {
         for step in steps {
             labels.extend(step.meaning.evidence.iter().cloned());
             visit(&step.children, labels);
@@ -559,7 +935,316 @@ fn answer_evidence_labels(answer: &OperationAnswer) -> BTreeSet<String> {
     }
     let mut labels = answer.summary.evidence.iter().cloned().collect();
     visit(&answer.steps, &mut labels);
+    for preparation in &answer.preparations {
+        labels.extend(preparation.summary.evidence.iter().cloned());
+        visit(&preparation.steps, &mut labels);
+    }
     labels
+}
+
+fn preparation_titles(answer: &OperationAnswer) -> BTreeMap<String, String> {
+    answer
+        .preparations
+        .iter()
+        .map(|preparation| (preparation.id.clone(), preparation.title.clone()))
+        .collect()
+}
+
+fn preparation_step_prefix(id: &str) -> String {
+    format!("prep-{}-{id}", id.len())
+}
+
+fn render_preparations_html(
+    answer: &OperationAnswer,
+    packet: &Value,
+    evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.preparations.is_empty() {
+        return String::new();
+    }
+    let subjects = packet_subject_references(packet);
+    let mut output = format!(
+        "<section id=\"preparations\"><h2>{}</h2>",
+        html_escape(labels.preparations())
+    );
+    for preparation in &answer.preparations {
+        output.push_str(&format!(
+            "<article class=\"preparation\" id=\"preparation-{}\"><h3>{}</h3>",
+            html_escape(&preparation.id),
+            html_escape(&preparation.title)
+        ));
+        if let Some(reference) = preparation.subject_reference.as_deref() {
+            let identity = subjects
+                .get(reference)
+                .map(String::as_str)
+                .unwrap_or(labels.unknown());
+            output.push_str(&format!(
+                "<p class=\"step-meta\"><strong>{}:</strong> <code>{}</code></p>",
+                html_escape(labels.subject()),
+                html_escape(identity)
+            ));
+        }
+        output.push_str(&render_claim_html(
+            &preparation.summary,
+            evidence_index,
+            labels,
+        ));
+        if !preparation.steps.is_empty() {
+            output.push_str(&render_html_steps(
+                &preparation.steps,
+                evidence_index,
+                true,
+                &preparation_step_prefix(&preparation.id),
+                preparation_titles,
+                labels,
+            ));
+        }
+        output.push_str("</article>");
+    }
+    output.push_str("</section>");
+    output
+}
+
+fn render_preparations_markdown(
+    answer: &OperationAnswer,
+    packet: &Value,
+    evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.preparations.is_empty() {
+        return String::new();
+    }
+    let subjects = packet_subject_references(packet);
+    let mut output = format!(
+        "<a id=\"preparations\"></a>\n## {}\n\n",
+        markdown_escape(labels.preparations())
+    );
+    for preparation in &answer.preparations {
+        output.push_str(&format!(
+            "<a id=\"preparation-{}\"></a>\n### {}\n\n",
+            preparation.id,
+            markdown_escape(&preparation.title)
+        ));
+        if let Some(reference) = preparation.subject_reference.as_deref() {
+            let identity = subjects
+                .get(reference)
+                .map(String::as_str)
+                .unwrap_or(labels.unknown());
+            output.push_str(&format!(
+                "**{}:** `{}`\n\n",
+                markdown_escape(labels.subject()),
+                markdown_code_cell(identity)
+            ));
+        }
+        output.push_str(&render_claim_markdown(
+            &preparation.summary,
+            evidence_index,
+            labels,
+        ));
+        output.push_str("\n\n");
+        if !preparation.steps.is_empty() {
+            output.push_str(&render_markdown_steps(
+                &preparation.steps,
+                evidence_index,
+                0,
+                true,
+                &preparation_step_prefix(&preparation.id),
+                preparation_titles,
+                labels,
+            ));
+            output.push('\n');
+        }
+    }
+    output
+}
+
+struct DataMovementRow<'a> {
+    path: String,
+    context: Vec<String>,
+    step: &'a OperationStep,
+}
+
+fn data_movement_rows<'a>(
+    answer: &'a OperationAnswer,
+    labels: ReaderLabels,
+) -> Vec<DataMovementRow<'a>> {
+    fn collect<'a>(
+        steps: &'a [OperationStep],
+        path_prefix: &str,
+        context: &[String],
+        output: &mut Vec<DataMovementRow<'a>>,
+        labels: ReaderLabels,
+    ) {
+        for (index, step) in steps.iter().enumerate() {
+            let path = step_path(path_prefix, index + 1);
+            if step.from.is_some() || step.to.is_some() {
+                output.push(DataMovementRow {
+                    path: path.clone(),
+                    context: context.to_vec(),
+                    step,
+                });
+            }
+            let context_summary = |branch: &str| {
+                let mut summary = format!("{branch}: {}", step.meaning.text);
+                if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
+                    summary.push_str(&format!(" [{}: {uncertainty}]", labels.uncertainty()));
+                }
+                summary
+            };
+            let child_context = context_summary(labels.children_label(&step.kind));
+            let mut nested_context = context.to_vec();
+            nested_context.push(child_context);
+            collect(
+                &step.children,
+                &format!("{path}-then"),
+                &nested_context,
+                output,
+                labels,
+            );
+            let otherwise_context = context_summary(labels.otherwise_label(&step.kind));
+            let mut nested_context = context.to_vec();
+            nested_context.push(otherwise_context);
+            collect(
+                &step.otherwise,
+                &format!("{path}-else"),
+                &nested_context,
+                output,
+                labels,
+            );
+        }
+    }
+
+    let mut rows = Vec::new();
+    collect(
+        &answer.steps,
+        "",
+        &[if labels.russian {
+            "Операция"
+        } else {
+            "Operation"
+        }
+        .into()],
+        &mut rows,
+        labels,
+    );
+    for preparation in &answer.preparations {
+        let mut preparation_context = format!("{}: {}", labels.preparations(), preparation.title);
+        if let Some(uncertainty) = preparation.summary.uncertainty.as_deref() {
+            preparation_context.push_str(&format!(" [{}: {uncertainty}]", labels.uncertainty()));
+        }
+        collect(
+            &preparation.steps,
+            &preparation_step_prefix(&preparation.id),
+            &[preparation_context],
+            &mut rows,
+            labels,
+        );
+    }
+    rows
+}
+
+fn render_data_movement_html(
+    rows: &[DataMovementRow<'_>],
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<section id=\"data-movement\"><h2>{}</h2><p class=\"muted\">{}</p><table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.data_movement()),
+        html_escape(labels.data_movement_note()),
+        html_escape(if labels.russian {
+            "Контекст"
+        } else {
+            "Context"
+        }),
+        html_escape(labels.from()),
+        html_escape(labels.to()),
+        html_escape(if labels.russian { "Шаг" } else { "Step" }),
+        html_escape(labels.evidence()),
+        html_escape(labels.uncertainty())
+    );
+    for row in rows {
+        let context = row
+            .context
+            .iter()
+            .map(|part| html_escape(part))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let path = format!("step-{}", row.path);
+        output.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"#{path}\">{}</a> {}</td><td>{}</td><td>{}</td></tr>",
+            context,
+            html_escape(row.step.from.as_deref().unwrap_or(labels.unknown())),
+            html_escape(row.step.to.as_deref().unwrap_or(labels.unknown())),
+            html_escape(&row.step.kind),
+            html_escape(&row.step.meaning.text),
+            render_evidence_html(&row.step.meaning.evidence, evidence_index),
+            row.step.meaning.uncertainty.as_deref().map(html_escape).map(|value| {
+                format!("<strong>{}:</strong> {value}", html_escape(labels.uncertainty()))
+            }).unwrap_or_else(|| "—".into())
+        ));
+    }
+    output.push_str("</tbody></table></section>");
+    output
+}
+
+fn render_data_movement_markdown(
+    rows: &[DataMovementRow<'_>],
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<a id=\"data-movement\"></a>\n## {}\n\n{}\n\n| {} | {} | {} | {} | {} | {} |\n|---|---|---|---|---|---|\n",
+        markdown_escape(labels.data_movement()),
+        markdown_escape(labels.data_movement_note()),
+        markdown_escape(if labels.russian {
+            "Контекст"
+        } else {
+            "Context"
+        }),
+        markdown_escape(labels.from()),
+        markdown_escape(labels.to()),
+        markdown_escape(if labels.russian { "Шаг" } else { "Step" }),
+        markdown_escape(labels.evidence()),
+        markdown_escape(labels.uncertainty())
+    );
+    for row in rows {
+        let context = row
+            .context
+            .iter()
+            .map(|part| markdown_table_cell(part))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let path = format!("step-{}", row.path);
+        output.push_str(&format!(
+            "| {} | {} | {} | [{}]({}) — {} | {} | {} |\n",
+            context,
+            markdown_table_cell(row.step.from.as_deref().unwrap_or(labels.unknown())),
+            markdown_table_cell(row.step.to.as_deref().unwrap_or(labels.unknown())),
+            markdown_table_cell(&row.step.kind),
+            format!("#{path}"),
+            markdown_table_cell(&row.step.meaning.text),
+            markdown_evidence_cell(&row.step.meaning.evidence, evidence_index),
+            row.step
+                .meaning
+                .uncertainty
+                .as_deref()
+                .map(markdown_escape)
+                .map(|value| { format!("**{}:** {value}", markdown_escape(labels.uncertainty())) })
+                .unwrap_or_else(|| "—".into())
+        ));
+    }
+    output.push('\n');
+    output
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -835,6 +1520,13 @@ fn render_html(
     labels: ReaderLabels,
 ) -> String {
     let language = packet["documentationLanguage"].as_str().unwrap_or("en");
+    let preparation_titles = preparation_titles(answer);
+    let decision_tables =
+        render_decision_tables_html(&answer.steps, evidence_index, &preparation_titles, labels);
+    let preparations =
+        render_preparations_html(answer, packet, evidence_index, &preparation_titles, labels);
+    let movement_rows = data_movement_rows(answer, labels);
+    let data_movement = render_data_movement_html(&movement_rows, evidence_index, labels);
     let mut html = String::from("<!doctype html><html lang=\"");
     html.push_str(&html_escape(language));
     html.push_str("\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>");
@@ -848,12 +1540,34 @@ fn render_html(
         html_escape(labels.status()),
         html_escape(labels.status_note())
     ));
+    let mut nav = vec![
+        ("summary", labels.summary()),
+        (
+            "ordered-behavior",
+            labels.ordered(packet["profile"] == "process-graph-v1"),
+        ),
+    ];
+    if !decision_tables.is_empty() {
+        nav.push(("first-match-decisions", labels.first_match()));
+    }
+    if !preparations.is_empty() {
+        nav.push(("preparations", labels.preparations()));
+    }
+    if !data_movement.is_empty() {
+        nav.push(("data-movement", labels.data_movement()));
+    }
+    nav.push(("cited-evidence", labels.cited_evidence()));
     html.push_str(&format!(
-        "<nav class=\"document-nav\" aria-label=\"{}\"><a href=\"#summary\">{}</a><a href=\"#ordered-behavior\">{}</a><a href=\"#cited-evidence\">{}</a></nav>",
-        html_escape(if labels.russian { "Навигация по документу" } else { "Document navigation" }),
-        html_escape(labels.summary()),
-        html_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
-        html_escape(labels.cited_evidence())
+        "<nav class=\"document-nav\" aria-label=\"{}\">{}</nav>",
+        html_escape(if labels.russian {
+            "Навигация по документу"
+        } else {
+            "Document navigation"
+        }),
+        nav.iter()
+            .map(|(anchor, title)| format!("<a href=\"#{anchor}\">{}</a>", html_escape(title)))
+            .collect::<Vec<_>>()
+            .join(" · ")
     ));
     html.push_str(&format!(
         "<section id=\"summary\"><h2>{}</h2>",
@@ -870,14 +1584,13 @@ fn render_html(
         evidence_index,
         true,
         "",
+        &preparation_titles,
         labels,
     ));
     html.push_str("</section>");
-    html.push_str(&render_decision_tables_html(
-        &answer.steps,
-        evidence_index,
-        labels,
-    ));
+    html.push_str(&decision_tables);
+    html.push_str(&preparations);
+    html.push_str(&data_movement);
     html.push_str(&render_packet_fact_tables_html(
         packet,
         evidence_index,
@@ -898,7 +1611,7 @@ fn render_html(
         html_escape(&answer.packet_digest),
         html_escape(if labels.russian { "Дерево шагов" } else { "Operation tree" }),
         html_escape(if labels.russian { "Построено из переданных шагов ответа" } else { "Derived from the supplied answer steps" }),
-        render_tree_html(&answer.steps, evidence_index, labels),
+        render_tree_html(&answer.steps, evidence_index, &preparation_titles, labels),
         render_packet_limits_html(packet, labels),
         render_full_inventory_html(citations, evidence_index, used_labels, labels)
     ));
@@ -916,8 +1629,44 @@ fn render_markdown(
     source_navigation: &SourceNavigation,
     labels: ReaderLabels,
 ) -> String {
+    let preparation_titles = preparation_titles(answer);
+    let decision_tables =
+        render_decision_tables_markdown(&answer.steps, evidence_index, &preparation_titles, labels);
+    let preparations =
+        render_preparations_markdown(answer, packet, evidence_index, &preparation_titles, labels);
+    let movement_rows = data_movement_rows(answer, labels);
+    let data_movement = render_data_movement_markdown(&movement_rows, evidence_index, labels);
+    let mut nav = vec![
+        format!("[ {} ](#summary)", markdown_escape(labels.summary())),
+        format!(
+            "[ {} ](#ordered-behavior)",
+            markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1"))
+        ),
+    ];
+    if !decision_tables.is_empty() {
+        nav.push(format!(
+            "[ {} ](#first-match-decisions)",
+            markdown_escape(labels.first_match())
+        ));
+    }
+    if !preparations.is_empty() {
+        nav.push(format!(
+            "[ {} ](#preparations)",
+            markdown_escape(labels.preparations())
+        ));
+    }
+    if !data_movement.is_empty() {
+        nav.push(format!(
+            "[ {} ](#data-movement)",
+            markdown_escape(labels.data_movement())
+        ));
+    }
+    nav.push(format!(
+        "[ {} ](#cited-evidence)",
+        markdown_escape(labels.cited_evidence())
+    ));
     let mut markdown = format!(
-        "# {}\n\n> **{}** {}\n\n<nav>**{}:** [ {} ](#summary) · [ {} ](#ordered-behavior) · [ {} ](#cited-evidence)</nav>\n\n<a id=\"summary\"></a>\n## {}\n\n{}\n\n<a id=\"ordered-behavior\"></a>\n## {}\n\n{}\n\n",
+        "# {}\n\n> **{}** {}\n\n<nav>**{}:** {}</nav>\n\n<a id=\"summary\"></a>\n## {}\n\n{}\n\n<a id=\"ordered-behavior\"></a>\n## {}\n\n{}\n\n",
         markdown_escape(&answer.title),
         markdown_escape(labels.status()),
         markdown_escape(labels.status_note()),
@@ -926,19 +1675,23 @@ fn render_markdown(
         } else {
             "Contents"
         }),
-        markdown_escape(labels.summary()),
-        markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
-        markdown_escape(labels.cited_evidence()),
+        nav.join(" · "),
         markdown_escape(labels.summary()),
         render_claim_markdown(&answer.summary, evidence_index, labels),
         markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
-        render_markdown_steps(&answer.steps, evidence_index, 0, true, "", labels)
+        render_markdown_steps(
+            &answer.steps,
+            evidence_index,
+            0,
+            true,
+            "",
+            &preparation_titles,
+            labels
+        )
     );
-    markdown.push_str(&render_decision_tables_markdown(
-        &answer.steps,
-        evidence_index,
-        labels,
-    ));
+    markdown.push_str(&decision_tables);
+    markdown.push_str(&preparations);
+    markdown.push_str(&data_movement);
     markdown.push_str(&render_packet_fact_tables_markdown(
         packet,
         evidence_index,
@@ -966,7 +1719,7 @@ fn render_markdown(
         } else {
             "Operation tree"
         }),
-        markdown_tree_block(&answer.steps, labels),
+        markdown_tree_block(&answer.steps, &preparation_titles, labels),
         render_packet_limits_markdown(packet, labels),
         render_full_inventory_markdown(citations, evidence_index, used_labels, labels)
     ));
@@ -1034,10 +1787,11 @@ fn render_evidence_html(labels: &[String], index: &BTreeMap<String, usize>) -> S
 }
 
 fn render_html_steps(
-    steps: &[Step],
+    steps: &[OperationStep],
     evidence_index: &BTreeMap<String, usize>,
     ordered: bool,
     path_prefix: &str,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let tag = if ordered { "ol" } else { "ul" };
@@ -1061,6 +1815,11 @@ fn render_html_steps(
             evidence_index,
         ));
         output.push_str(&render_step_metadata_html(step, labels));
+        output.push_str(&render_preparation_links_html(
+            &step.preparation_refs,
+            preparation_titles,
+            labels,
+        ));
         if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
             output.push_str(&format!(
                 "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
@@ -1082,6 +1841,7 @@ fn render_html_steps(
                     evidence_index,
                     false,
                     &format!("{step_path}-then"),
+                    preparation_titles,
                     labels
                 )
             ));
@@ -1095,6 +1855,7 @@ fn render_html_steps(
                     evidence_index,
                     false,
                     &format!("{step_path}-else"),
+                    preparation_titles,
                     labels
                 )
             ));
@@ -1105,6 +1866,60 @@ fn render_html_steps(
     output
 }
 
+fn render_preparation_links_html(
+    references: &[String],
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    let links = references
+        .iter()
+        .filter_map(|reference| {
+            let title = preparation_titles.get(reference)?;
+            Some(format!(
+                "<a href=\"#preparation-{}\">{}</a>",
+                html_escape(reference),
+                html_escape(title)
+            ))
+        })
+        .collect::<Vec<_>>();
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p class=\"step-meta preparation-refs\"><strong>{}:</strong> {}</p>",
+            html_escape(labels.preparation_reference()),
+            links.join(" · ")
+        )
+    }
+}
+
+fn render_preparation_links_markdown(
+    references: &[String],
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    let links = references
+        .iter()
+        .filter_map(|reference| {
+            let title = preparation_titles.get(reference)?;
+            Some(format!(
+                "[{}](#preparation-{})",
+                markdown_escape(title),
+                reference
+            ))
+        })
+        .collect::<Vec<_>>();
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "  **{}:** {}",
+            markdown_escape(labels.preparation_reference()),
+            links.join(" · ")
+        )
+    }
+}
+
 fn step_path(prefix: &str, index: usize) -> String {
     if prefix.is_empty() {
         index.to_string()
@@ -1113,7 +1928,7 @@ fn step_path(prefix: &str, index: usize) -> String {
     }
 }
 
-fn render_step_metadata_html(step: &Step, labels: ReaderLabels) -> String {
+fn render_step_metadata_html(step: &OperationStep, labels: ReaderLabels) -> String {
     let mut values = Vec::new();
     for (label, value) in [
         (
@@ -1145,8 +1960,9 @@ fn render_step_metadata_html(step: &Step, labels: ReaderLabels) -> String {
 }
 
 fn render_tree_html(
-    steps: &[Step],
+    steps: &[OperationStep],
     evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     if steps.is_empty() {
@@ -1163,11 +1979,16 @@ fn render_tree_html(
             evidence_index,
         ));
         output.push_str(&render_step_metadata_html(step, labels));
+        output.push_str(&render_preparation_links_html(
+            &step.preparation_refs,
+            preparation_titles,
+            labels,
+        ));
         if !step.children.is_empty() {
             output.push_str(&format!(
                 "</div><div class=\"tree-branch-label\">{}</div>{}",
                 html_escape(labels.children_label(&step.kind)),
-                render_tree_html(&step.children, evidence_index, labels)
+                render_tree_html(&step.children, evidence_index, preparation_titles, labels)
             ));
         } else {
             output.push_str("</div>");
@@ -1176,7 +1997,7 @@ fn render_tree_html(
             output.push_str(&format!(
                 "<div class=\"tree-branch-label\">{}</div>{}",
                 html_escape(labels.otherwise_label(&step.kind)),
-                render_tree_html(&step.otherwise, evidence_index, labels)
+                render_tree_html(&step.otherwise, evidence_index, preparation_titles, labels)
             ));
         }
         output.push_str("</li>");
@@ -1185,12 +2006,17 @@ fn render_tree_html(
     output
 }
 
-fn render_tree_text(steps: &[Step], labels: ReaderLabels) -> String {
+fn render_tree_text(
+    steps: &[OperationStep],
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
     fn append(
-        steps: &[Step],
+        steps: &[OperationStep],
         depth: usize,
         label: Option<&str>,
         lines: &mut Vec<String>,
+        preparation_titles: &BTreeMap<String, String>,
         labels: ReaderLabels,
     ) {
         if let Some(label) = label {
@@ -1202,6 +2028,17 @@ fn render_tree_text(steps: &[Step], labels: ReaderLabels) -> String {
             } else {
                 "├─"
             };
+            let preparation_links = step
+                .preparation_refs
+                .iter()
+                .filter_map(|reference| preparation_titles.get(reference))
+                .map(|title| format!("{}: {}", labels.preparation_reference(), title))
+                .collect::<Vec<_>>();
+            let preparation_suffix = if preparation_links.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", preparation_links.join("; "))
+            };
             lines.push(format!(
                 "{}{} {}: {}{}",
                 "  ".repeat(depth),
@@ -1210,7 +2047,7 @@ fn render_tree_text(steps: &[Step], labels: ReaderLabels) -> String {
                 tree_plain_text(&step.meaning.text)
                     .replace('\n', " ")
                     .trim(),
-                tree_metadata(step)
+                format!("{}{}", tree_metadata(step), preparation_suffix)
             ));
             if !step.children.is_empty() {
                 append(
@@ -1218,6 +2055,7 @@ fn render_tree_text(steps: &[Step], labels: ReaderLabels) -> String {
                     depth + 1,
                     Some(labels.children_label(&step.kind)),
                     lines,
+                    preparation_titles,
                     labels,
                 );
             }
@@ -1227,13 +2065,14 @@ fn render_tree_text(steps: &[Step], labels: ReaderLabels) -> String {
                     depth + 1,
                     Some(labels.otherwise_label(&step.kind)),
                     lines,
+                    preparation_titles,
                     labels,
                 );
             }
         }
     }
     let mut lines = Vec::new();
-    append(steps, 0, None, &mut lines, labels);
+    append(steps, 0, None, &mut lines, preparation_titles, labels);
     lines.join("\n")
 }
 
@@ -1241,7 +2080,7 @@ fn tree_plain_text(value: &str) -> String {
     value.replace("\r", " ").replace('\t', " ")
 }
 
-fn tree_metadata(step: &Step) -> String {
+fn tree_metadata(step: &OperationStep) -> String {
     let mut values = Vec::new();
     for (name, value) in [
         ("from", step.from.as_deref()),
@@ -1263,11 +2102,12 @@ fn tree_metadata(step: &Step) -> String {
 }
 
 fn render_markdown_steps(
-    steps: &[Step],
+    steps: &[OperationStep],
     evidence_index: &BTreeMap<String, usize>,
     depth: usize,
     ordered: bool,
     path_prefix: &str,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let mut output = String::new();
@@ -1281,11 +2121,12 @@ fn render_markdown_steps(
             format!("{}- ", indent)
         };
         output.push_str(&format!(
-            "{prefix}**{}:** {}{}{}\n",
+            "{prefix}**{}:** {}{}{}{}\n",
             markdown_escape(&step.kind),
             markdown_escape(&step.meaning.text),
             render_evidence_markdown(&step.meaning.evidence, evidence_index, labels),
-            markdown_step_metadata(step, labels)
+            markdown_step_metadata(step, labels),
+            render_preparation_links_markdown(&step.preparation_refs, preparation_titles, labels)
         ));
         if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
             output.push_str(&format!(
@@ -1311,6 +2152,7 @@ fn render_markdown_steps(
                 depth + 1,
                 false,
                 &format!("{step_path}-then"),
+                preparation_titles,
                 labels,
             ));
         }
@@ -1326,6 +2168,7 @@ fn render_markdown_steps(
                 depth + 1,
                 false,
                 &format!("{step_path}-else"),
+                preparation_titles,
                 labels,
             ));
         }
@@ -1333,7 +2176,7 @@ fn render_markdown_steps(
     output
 }
 
-fn markdown_step_metadata(step: &Step, labels: ReaderLabels) -> String {
+fn markdown_step_metadata(step: &OperationStep, labels: ReaderLabels) -> String {
     let mut values = Vec::new();
     for (label, value) in [
         (
@@ -1412,17 +2255,20 @@ fn render_evidence_markdown(
 }
 
 struct FirstMatchBranch<'a> {
-    decision: &'a Step,
+    decision: &'a OperationStep,
     path: String,
 }
 
 struct FirstMatchTable<'a> {
     branches: Vec<FirstMatchBranch<'a>>,
-    otherwise: &'a [Step],
+    otherwise: &'a [OperationStep],
     otherwise_path: String,
 }
 
-fn first_match_table<'a>(root: &'a Step, root_path: String) -> Option<FirstMatchTable<'a>> {
+fn first_match_table<'a>(
+    root: &'a OperationStep,
+    root_path: String,
+) -> Option<FirstMatchTable<'a>> {
     let mut branches = Vec::new();
     let mut decision = root;
     let mut path = root_path;
@@ -1454,7 +2300,7 @@ fn first_match_table<'a>(root: &'a Step, root_path: String) -> Option<FirstMatch
 }
 
 fn collect_first_match_tables<'a>(
-    steps: &'a [Step],
+    steps: &'a [OperationStep],
     path_prefix: &str,
     output: &mut Vec<FirstMatchTable<'a>>,
 ) {
@@ -1480,7 +2326,7 @@ fn collect_first_match_tables<'a>(
     }
 }
 
-fn branch_summary(steps: &[Step]) -> Option<(&Step, String)> {
+fn branch_summary(steps: &[OperationStep]) -> Option<(&OperationStep, String)> {
     let first = steps.first()?;
     let text = first
         .meaning
@@ -1488,27 +2334,22 @@ fn branch_summary(steps: &[Step]) -> Option<(&Step, String)> {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let summary = text.chars().take(120).collect::<String>();
-    let summary = if text.chars().count() > 120 {
-        format!("{summary}…")
-    } else {
-        summary
-    };
     let remaining = steps.len().saturating_sub(1);
     Some((
         first,
         if remaining == 0 {
-            summary
+            text
         } else {
-            format!("{summary} (+{remaining})")
+            format!("{text} (+{remaining})")
         },
     ))
 }
 
 fn table_outcome_html(
-    steps: &[Step],
+    steps: &[OperationStep],
     path_prefix: &str,
     evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let Some((first, summary)) = branch_summary(steps) else {
@@ -1516,18 +2357,21 @@ fn table_outcome_html(
     };
     let target = step_path(path_prefix, 1);
     format!(
-        "<span class=\"step-kind\">{}</span> {} <a href=\"#step-{target}\">{}</a>{}",
+        "<span class=\"step-kind\">{}</span> {} <a href=\"#step-{target}\">{}</a>{}{}{}",
         html_escape(&first.kind),
         html_escape(&summary),
         html_escape(labels.details_link()),
-        render_evidence_html(&first.meaning.evidence, evidence_index)
+        render_evidence_html(&first.meaning.evidence, evidence_index),
+        render_step_metadata_html(first, labels),
+        render_preparation_links_html(&first.preparation_refs, preparation_titles, labels)
     )
 }
 
 fn table_outcome_markdown(
-    steps: &[Step],
+    steps: &[OperationStep],
     path_prefix: &str,
     evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let Some((first, summary)) = branch_summary(steps) else {
@@ -1535,17 +2379,20 @@ fn table_outcome_markdown(
     };
     let target = step_path(path_prefix, 1);
     format!(
-        "**{}:** {} [ {} ](#step-{target}){}",
+        "**{}:** {} [ {} ](#step-{target}){}{}{}",
         markdown_escape(&first.kind),
         markdown_escape(&summary),
         markdown_escape(labels.details_link()),
-        render_evidence_markdown(&first.meaning.evidence, evidence_index, labels)
+        render_evidence_markdown(&first.meaning.evidence, evidence_index, labels),
+        markdown_step_metadata(first, labels),
+        render_preparation_links_markdown(&first.preparation_refs, preparation_titles, labels)
     )
 }
 
 fn render_decision_tables_html(
-    steps: &[Step],
+    steps: &[OperationStep],
     evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let mut tables = Vec::new();
@@ -1573,6 +2420,7 @@ fn render_decision_tables_html(
                     &branch.decision.children,
                     &format!("{}-then", branch.path),
                     evidence_index,
+                    preparation_titles,
                     labels
                 )
             ));
@@ -1589,6 +2437,7 @@ fn render_decision_tables_html(
                     &table.otherwise,
                     &table.otherwise_path,
                     evidence_index,
+                    preparation_titles,
                     labels
                 )
             ));
@@ -1604,8 +2453,9 @@ fn render_decision_tables_html(
 }
 
 fn render_decision_tables_markdown(
-    steps: &[Step],
+    steps: &[OperationStep],
     evidence_index: &BTreeMap<String, usize>,
+    preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let mut tables = Vec::new();
@@ -1632,6 +2482,7 @@ fn render_decision_tables_markdown(
                     &branch.decision.children,
                     &format!("{}-then", branch.path),
                     evidence_index,
+                    preparation_titles,
                     labels
                 )
             ));
@@ -1648,6 +2499,7 @@ fn render_decision_tables_markdown(
                     &table.otherwise,
                     &table.otherwise_path,
                     evidence_index,
+                    preparation_titles,
                     labels
                 )
             ));
@@ -2491,8 +3343,12 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[unavailable]".into())
 }
 
-fn markdown_tree_block(steps: &[Step], labels: ReaderLabels) -> String {
-    let tree = render_tree_text(steps, labels);
+fn markdown_tree_block(
+    steps: &[OperationStep],
+    preparation_titles: &BTreeMap<String, String>,
+    labels: ReaderLabels,
+) -> String {
+    let tree = render_tree_text(steps, preparation_titles, labels);
     markdown_code_block(&tree)
 }
 
@@ -2599,6 +3455,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const ANSWER_SCHEMA: &str = ANSWER_SCHEMA_V1_1;
+
     fn packet() -> Value {
         let mut packet = json!({
             "schema":PACKET_SCHEMA,
@@ -2677,6 +3535,7 @@ mod tests {
                 "kind":"action",
                 "meaning":{"text":"Retain the supported action.","evidence":[evidence]}
             }],
+            "preparations":[],
             "uncertainties":[]
         })
     }
@@ -2717,8 +3576,286 @@ mod tests {
                     }]
                 }
             ],
+            "preparations":[],
             "uncertainties":[]
         })
+    }
+
+    #[test]
+    fn version_1_0_answer_still_renders_offline_without_rewriting_its_value() {
+        let packet = packet();
+        let mut legacy = simple_answer(&packet, "d1");
+        legacy["schema"] = json!(ANSWER_SCHEMA_V1_0);
+        legacy.as_object_mut().unwrap().remove("preparations");
+        let original = legacy.clone();
+
+        let rendered = validate_and_render(&packet, &audit(&packet), legacy).unwrap();
+
+        assert_eq!(rendered.answer, original);
+        assert!(rendered.html.contains("Reader test"));
+        assert!(!rendered.html.contains("id=\"preparations\""));
+        assert!(!rendered.markdown.contains("## Prepared values and checks"));
+        let mut unsupported = original.clone();
+        unsupported["preparations"] = json!([]);
+        assert!(validate_and_render(&packet, &audit(&packet), unsupported).is_err());
+    }
+
+    #[test]
+    fn preparations_are_shared_linked_and_data_movement_keeps_evidence_uncertainty_and_context() {
+        let mut packet = packet();
+        packet["callMap"]["nodes"] = json!([
+            {
+                "id":"declaration-a",
+                "identity":"method:example.first.Mapper#map()V",
+                "ownerIdentity":"class:example.first.Mapper",
+                "scope":":module-a",
+                "evidence":["d1"]
+            },
+            {
+                "id":"declaration-b",
+                "identity":"method:example.second.Mapper#map()V",
+                "ownerIdentity":"class:example.second.Mapper",
+                "scope":":module-b",
+                "evidence":["d1"]
+            }
+        ]);
+        seal(&mut packet);
+
+        let mut authored = answer(&packet);
+        authored["steps"] = json!([{
+            "kind":"decision",
+            "meaning":{
+                "text":"The caller selects a preparation path.",
+                "evidence":["d1"],
+                "uncertainty":"The retained packet does not establish the runtime receiver."
+            },
+            "children":[{
+                "kind":"action",
+                "meaning":{"text":"Use the shared preparation.","evidence":["d1"]},
+                "preparationRefs":["a","unresolved-subject"]
+            }],
+            "otherwise":[{
+                "kind":"action",
+                "meaning":{"text":"Use the alternate explanation.","evidence":["d1"]},
+                "preparationRefs":["a","a-1-then"]
+            }]
+        }]);
+        authored["preparations"] = json!([
+            {
+                "id":"a",
+                "title":"Shared mapper preparation",
+                "subjectReference":"declaration-a",
+                "summary":{"text":"The first mapper prepares a value.","evidence":["d1"]},
+                "steps":[{
+                    "kind":"decision",
+                    "meaning":{
+                        "text":"An optional input is present.",
+                        "evidence":["d1"],
+                        "uncertainty":"The predicate may depend on runtime state."
+                    },
+                    "children":[{
+                        "kind":"action",
+                        "meaning":{
+                            "text":"Read the optional source value.",
+                            "evidence":["d1"],
+                            "uncertainty":"The destination is not identified in this packet."
+                        },
+                        "from":"request.options",
+                        "preparationRefs":["a-1-then"]
+                    }]
+                }]
+            },
+            {
+                "id":"a-1-then",
+                "title":"Same-named mapper in another owner",
+                "subjectReference":"declaration-b",
+                "summary":{"text":"The second mapper has a distinct retained identity.","evidence":["d1"]},
+                "steps":[{
+                    "kind":"action",
+                    "meaning":{"text":"Map the normalized value.","evidence":["d1"]},
+                    "from":"normalized.input",
+                    "to":"payload.value",
+                    "preparationRefs":["a"]
+                },{
+                    "kind":"try",
+                    "meaning":{
+                        "text":"The caller attempts an optional retry.",
+                        "evidence":["d1"],
+                        "uncertainty":"The retained source does not show which external failures qualify."
+                    },
+                    "children":[{
+                        "kind":"loop",
+                        "meaning":{
+                            "text":"Repeat for each selected item.",
+                            "evidence":["d1"],
+                            "uncertainty":"The loop termination condition is not retained."
+                        },
+                        "children":[{
+                            "kind":"action",
+                            "meaning":{"text":"Prepare one retry item.","evidence":["d1"]},
+                            "from":"retry.input",
+                            "to":"retry.output"
+                        }]
+                    }],
+                    "otherwise":[{
+                        "kind":"throw",
+                        "meaning":{"text":"Record an unavailable retry outcome.","evidence":["d1"]}
+                    }]
+                }]
+            },
+            {
+                "id":"unresolved-subject",
+                "title":"Caller-side partial preparation",
+                "summary":{
+                    "text":"The caller prepares a value before the concrete helper is known.",
+                    "evidence":["d1"],
+                    "uncertainty":"No exact helper declaration is available in the packet."
+                },
+                "steps":[{
+                    "kind":"action",
+                    "meaning":{"text":"Retain the supported caller-side value.","evidence":["d1"]},
+                    "from":"caller.value",
+                    "to":"prepared.value"
+                }]
+            }
+        ]);
+        let original = authored.clone();
+
+        let rendered = validate_and_render(&packet, &audit(&packet), authored).unwrap();
+
+        assert_eq!(rendered.answer, original);
+        assert_eq!(rendered.html.matches("id=\"preparation-a\"").count(), 1);
+        assert_eq!(
+            rendered.html.matches("id=\"preparation-a-1-then\"").count(),
+            1
+        );
+        assert_eq!(rendered.html.matches("class=\"preparation\"").count(), 3);
+        assert!(rendered.html.contains("method:example.first.Mapper#map()V"));
+        assert!(
+            rendered
+                .html
+                .contains("method:example.second.Mapper#map()V")
+        );
+        assert!(rendered.html.contains(":module-a"));
+        assert!(rendered.html.contains(":module-b"));
+        assert!(rendered.html.contains("id=\"step-prep-1-a-1-then-1\""));
+        assert!(rendered.html.contains("id=\"step-prep-8-a-1-then-1\""));
+        assert!(rendered.html.contains("href=\"#step-prep-1-a-1-then-1\""));
+        assert!(rendered.html.contains("href=\"#step-prep-8-a-1-then-1\""));
+        let movement_start = rendered.html.find("id=\"data-movement\"").unwrap();
+        let movement_end =
+            rendered.html[movement_start..].find("</section>").unwrap() + movement_start;
+        let movement = &rendered.html[movement_start..movement_end];
+        assert!(movement.contains("Unknown"));
+        assert!(movement.contains("The predicate may depend on runtime state."));
+        assert!(movement.contains("The destination is not identified in this packet."));
+        assert!(movement.contains("request.options"));
+        assert!(movement.contains("normalized.input"));
+        assert!(movement.contains("payload.value"));
+        assert!(movement.contains(
+            "Prepared values and checks: Caller-side partial preparation [Uncertainty: No exact helper declaration is available in the packet.]"
+        ));
+        assert!(movement.contains("Protected try path"));
+        assert!(movement.contains("Loop body"));
+        assert!(
+            movement.contains("The retained source does not show which external failures qualify.")
+        );
+        assert!(movement.contains("The loop termination condition is not retained."));
+        assert!(movement.contains("href=\"#evidence-1\""));
+        assert!(movement.contains("href=\"#step-prep-1-a-1-then-1\""));
+        assert!(movement.contains("href=\"#step-prep-8-a-1-then-1\""));
+        assert!(rendered.markdown.contains("Unknown"));
+        assert!(
+            rendered
+                .markdown
+                .contains("The predicate may depend on runtime state")
+        );
+        assert!(
+            rendered
+                .markdown
+                .contains("The destination is not identified in this packet")
+        );
+        assert!(rendered.markdown.contains("Protected try path"));
+        assert!(rendered.markdown.contains("Loop body"));
+        assert!(rendered.markdown.contains(
+            "Caller\\-side partial preparation \\[Uncertainty: No exact helper declaration is available in the packet\\.\\]"
+        ));
+        assert!(rendered.markdown.contains("external failures qualify"));
+        assert!(rendered.markdown.contains("loop termination condition"));
+        assert!(
+            rendered
+                .markdown
+                .contains("[Shared mapper preparation](#preparation-a)")
+        );
+        assert!(
+            rendered
+                .markdown
+                .contains("method:example.first.Mapper#map()V")
+        );
+        for href in rendered
+            .html
+            .split("href=\"#")
+            .skip(1)
+            .filter_map(|tail| tail.split('"').next())
+        {
+            assert!(
+                rendered.html.contains(&format!("id=\"{href}\"")),
+                "broken internal link #{href}"
+            );
+        }
+    }
+
+    #[test]
+    fn preparation_references_and_subjects_are_validated_without_expanding_cycles() {
+        let packet = packet();
+        let mut valid = simple_answer(&packet, "d1");
+        valid["steps"][0]["preparationRefs"] = json!(["shared"]);
+        valid["preparations"] = json!([{
+            "id":"shared",
+            "title":"Shared explanation",
+            "summary":{"text":"A shared explanation with uncertainty.","evidence":["d1"],"uncertainty":"The exact helper is not retained."},
+            "steps":[{
+                "kind":"action",
+                "meaning":{"text":"Keep the supported partial explanation.","evidence":["d1"]},
+                "preparationRefs":["shared"]
+            }]
+        }]);
+        let rendered = validate_and_render(&packet, &audit(&packet), valid.clone()).unwrap();
+        assert_eq!(
+            rendered.html.matches("id=\"preparation-shared\"").count(),
+            1
+        );
+        assert!(rendered.html.contains("href=\"#preparation-shared\""));
+
+        let mut unknown_ref = valid.clone();
+        unknown_ref["steps"][0]["preparationRefs"] = json!(["missing"]);
+        assert!(validate_and_render(&packet, &audit(&packet), unknown_ref).is_err());
+
+        let mut unknown_subject = valid.clone();
+        unknown_subject["preparations"][0]["subjectReference"] = json!("missing-declaration");
+        assert!(validate_and_render(&packet, &audit(&packet), unknown_subject).is_err());
+
+        let mut missing_uncertainty = valid.clone();
+        missing_uncertainty["preparations"][0]["summary"] =
+            json!({"text":"The subject is absent.","evidence":["d1"]});
+        assert!(validate_and_render(&packet, &audit(&packet), missing_uncertainty).is_err());
+
+        let mut duplicate_id = valid.clone();
+        let duplicate = duplicate_id["preparations"][0].clone();
+        duplicate_id["preparations"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert!(validate_and_render(&packet, &audit(&packet), duplicate_id).is_err());
+
+        let mut unreachable = valid.clone();
+        unreachable["preparations"].as_array_mut().unwrap().push(json!({
+            "id":"unused",
+            "title":"Unreachable explanation",
+            "summary":{"text":"No step links to this record.","evidence":["d1"],"uncertainty":"Its subject is not known."},
+            "steps":[]
+        }));
+        assert!(validate_and_render(&packet, &audit(&packet), unreachable).is_err());
     }
 
     #[test]
@@ -2814,7 +3951,8 @@ mod tests {
                 "meaning":{"text":"Condition beta holds.","evidence":["d1"]},
                 "children":[{
                     "kind":"loop",
-                    "meaning":{"text":"Repeat beta checks.","evidence":["d1"]},
+                    "meaning":{"text":"Repeat beta checks while retaining the validated values and then prepare the outgoing request for the transport client.","evidence":["d1"]},
+                    "to":"betaTransportRequest",
                     "children":[{"kind":"action","meaning":{"text":"Apply beta.","evidence":["d1"]}}],
                     "otherwise":[{"kind":"return","meaning":{"text":"Exit the beta loop.","evidence":["d1"]}}]
                 }],
@@ -2846,7 +3984,13 @@ mod tests {
         assert!(table.find("Condition beta").unwrap() < table.find("Condition gamma").unwrap());
         assert!(table.contains("Try the alpha operation."));
         assert!(!table.contains("Apply alpha."));
-        assert_eq!(table.matches("Repeat beta checks.").count(), 1);
+        assert_eq!(
+            table
+                .matches("Repeat beta checks while retaining the validated values")
+                .count(),
+            1
+        );
+        assert!(table.contains("betaTransportRequest"));
         assert!(table.contains("Use the default outcome."));
         assert!(!table.contains("Record alpha failure."));
         assert!(!table.contains("Apply beta."));
@@ -2854,6 +3998,7 @@ mod tests {
         assert!(table.contains("reevaluation behavior"));
         assert!(rendered.html.contains("href=\"#step-1-then-1\""));
         assert!(rendered.html.contains("id=\"step-1-then-1\""));
+        assert!(rendered.html.contains("href=\"#first-match-decisions\""));
         assert!(rendered.html.contains("Catch / otherwise path"));
         assert!(rendered.html.contains("Otherwise / exit path"));
         assert!(rendered.markdown.contains("#step-1-else-1-then-1"));
@@ -2959,7 +4104,18 @@ mod tests {
             }]
         });
         seal_audit(&mut audit);
-        let answer = simple_answer(&packet, "method-alias");
+        let mut answer = simple_answer(&packet, "method-alias");
+        answer["steps"][0]["preparationRefs"] = json!(["container-context"]);
+        answer["preparations"] = json!([{
+            "id":"container-context",
+            "title":"Surrounding declaration context",
+            "summary":{
+                "text":"The surrounding class source provides additional context.",
+                "evidence":["source-container"],
+                "uncertainty":"No separate declaration identity is supplied for this context."
+            },
+            "steps":[]
+        }]);
         let original_answer = answer.clone();
         let rendered = validate_and_render(&packet, &audit, answer).unwrap();
 
@@ -2973,7 +4129,9 @@ mod tests {
                 .unwrap_or(0)..]
         );
         assert!(rendered.markdown.contains("11–11"));
+        assert!(rendered.markdown.contains("10–12"));
         assert!(rendered.html.contains("src/orders/Demo.java</code>: 11–11"));
+        assert!(rendered.html.contains("src/orders/Demo.java</code>: 10–12"));
         assert!(rendered.html.contains("href=\"#source-"));
         assert!(rendered.html.contains("id=\"source-"));
         assert!(rendered.html.contains("&lt;unsafe&gt;&amp;"));

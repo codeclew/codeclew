@@ -554,7 +554,13 @@ clew docs work status --root /work/architecture --work WORK_ID
 
 The author receives only the compact operation packet, common language and
 source-as-untrusted-data instructions, and
-`schemas/documentation/operation-answer.schema.json`.
+`schemas/documentation/operation-answer-1.1.schema.json`. New draft answers use
+`codeclew-operation-answer/1.1`; the prior 1.0 answer remains available for
+offline rendering. Version 1.1 adds shared `preparations` that describe
+evidence-supported input transformations, checks, and failures. Steps link to
+shared explanations with `preparationRefs`; links do not assert execution or
+order. The rendered data-movement view uses only explicit step `from` and `to`
+values and leaves missing endpoints unknown.
 Codeclew validates the returned packet digest and citation labels, then saves
 `answer.json`, `operation.md`, `index.html`, the packet and its separate
 operator-only audit under `.codeclew/drafts/WORK_ID`. Status is `DRAFT` /
@@ -562,7 +568,11 @@ operator-only audit under `.codeclew/drafts/WORK_ID`. Status is `DRAFT` /
 is admitted. A saved answer is reused to restore missing draft files. An invalid
 answer is retained without an author repair, and a dispatch without a saved
 response is marked uncertain with its maximum reservation retained; rerunning
-that Work does not dispatch another call. This recipe covers the HTTP endpoint
+that Work does not dispatch another call. New operation Work persists a
+centrally selected `authoringContract` covering both the answer schema and
+generic author policy. Material changes to either require a new identity; prepare
+new Work from the same saved snapshot to use it. The operator does not edit old
+Work records or set an identity to reuse completed results. This recipe covers the HTTP endpoint
 profile. Use the next recipe for an internal callable whose behavior is not
 entered through an HTTP endpoint.
 

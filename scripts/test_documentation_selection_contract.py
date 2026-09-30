@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "schemas/documentation/section-author.schema.json"
 WORK_SCHEMA_PATH = ROOT / "schemas/documentation/work.schema.json"
 READER_PACKET_SCHEMA_PATH = ROOT / "schemas/documentation/reader-packet.schema.json"
+OPERATION_ANSWER_SCHEMA_PATH = ROOT / "schemas/documentation/operation-answer-1.1.schema.json"
 VALIDATOR_PATH = Path(__file__).with_name("validate_nessy_acceptance.py")
 SPEC = importlib.util.spec_from_file_location("codeclew_mini_schema", VALIDATOR_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -26,6 +27,7 @@ SELECTION_SCHEMA = SCHEMA["$defs"]["selection"]
 WORK_SCHEMA = json.loads(WORK_SCHEMA_PATH.read_text(encoding="utf-8"))
 WORK_SELECTION_SCHEMA = WORK_SCHEMA["$defs"]["selection"]
 READER_PACKET_SCHEMA = json.loads(READER_PACKET_SCHEMA_PATH.read_text(encoding="utf-8"))
+OPERATION_ANSWER_SCHEMA = json.loads(OPERATION_ANSWER_SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def selection_errors(
@@ -58,7 +60,74 @@ def definition_errors(
     return errors
 
 
+def operation_answer_schema_errors(value: dict[str, object]) -> list[str]:
+    schema = {
+        key: sub_schema
+        for key, sub_schema in OPERATION_ANSWER_SCHEMA.items()
+        if key != "$id"
+    }
+    errors: list[str] = []
+    validator = mini_schema.MiniSchema(schema, errors)
+    try:
+        validator.validate(value, schema, "$", schema["$defs"])
+        validator.finish()
+    except mini_schema.SchemaFailure as exc:
+        errors.append(str(exc))
+    return errors
+
+
 class DocumentationSelectionContractTest(unittest.TestCase):
+    def test_operation_answer_1_1_schema_accepts_preparations_and_requires_unbound_uncertainty(self) -> None:
+        answer = {
+            "schema": "codeclew-operation-answer/1.1",
+            "packetDigest": "sha256:" + "a" * 64,
+            "title": "Internal transfer",
+            "summary": {"text": "The operation prepares a value.", "evidence": ["d1"]},
+            "steps": [
+                {
+                    "kind": "action",
+                    "meaning": {"text": "Use the preparation.", "evidence": ["d1"]},
+                    "preparationRefs": ["shared", "partial"],
+                }
+            ],
+            "preparations": [
+                {
+                    "id": "shared",
+                    "title": "Shared mapping",
+                    "subjectReference": "method:example.Mapper#map()V",
+                    "summary": {"text": "The mapper creates a value.", "evidence": ["d1"]},
+                    "steps": [
+                        {
+                            "kind": "action",
+                            "meaning": {"text": "Map the input.", "evidence": ["d1"]},
+                            "from": "request.input",
+                            "to": "payload.value",
+                        }
+                    ],
+                },
+                {
+                    "id": "partial",
+                    "title": "Caller-side partial work",
+                    "summary": {
+                        "text": "The caller prepares a value before helper dispatch.",
+                        "evidence": ["d1"],
+                        "uncertainty": "The exact helper declaration is not retained.",
+                    },
+                    "steps": [],
+                },
+            ],
+            "uncertainties": [],
+        }
+        self.assertEqual(operation_answer_schema_errors(answer), [])
+
+        missing_uncertainty = json.loads(json.dumps(answer))
+        del missing_uncertainty["preparations"][1]["summary"]["uncertainty"]
+        self.assertNotEqual(operation_answer_schema_errors(missing_uncertainty), [])
+
+        duplicate_reference = json.loads(json.dumps(answer))
+        duplicate_reference["steps"][0]["preparationRefs"] = ["shared", "shared"]
+        self.assertNotEqual(operation_answer_schema_errors(duplicate_reference), [])
+
     def test_process_graph_work_request_requires_its_exact_root_and_question(self) -> None:
         request_schema = WORK_SCHEMA["$defs"]["request"]
         valid = {
