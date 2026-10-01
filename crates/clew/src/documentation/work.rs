@@ -48,6 +48,9 @@ pub enum Command {
         /// Produce one endpoint answer draft from compact packet evidence without publication.
         #[arg(long)]
         draft: bool,
+        /// Start a fresh attempt after a terminal unsuccessful draft; retains the prior report and accounting.
+        #[arg(long, requires = "draft")]
+        new_run: bool,
     },
     Status {
         #[arg(long)]
@@ -596,10 +599,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             work,
             config,
             draft,
+            new_run,
         } => {
             let repository = Repository::open(&root)?;
             if draft {
-                super::agent_jobs::run_operation_draft(&repository, &work, config.as_deref())
+                super::agent_jobs::run_operation_draft(
+                    &repository,
+                    &work,
+                    config.as_deref(),
+                    new_run,
+                )
             } else {
                 super::agent_jobs::run(&repository, &work, config.as_deref())
             }
@@ -804,43 +813,7 @@ fn validate_process_graph_root(
     if request.context_profile.as_deref() != Some("process-graph-v1") {
         return Ok(());
     }
-    let service = subject
-        .strip_prefix("service:")
-        .filter(|service| !service.trim().is_empty())
-        .ok_or_else(|| invalid("process-graph-v1 requires one non-empty service subject"))?;
-    let declaration = request
-        .root_declaration
-        .as_deref()
-        .filter(|declaration| !declaration.trim().is_empty())
-        .ok_or_else(|| invalid("process-graph-v1 requires an exact rootDeclaration"))?;
-    let evidence = checked
-        .services
-        .get(service)
-        .ok_or_else(|| invalid("process-graph-v1 service evidence is unavailable"))?;
-    let root = evidence
-        .observations
-        .get(declaration)
-        .filter(|observation| {
-            observation.service == service
-                && super::process_graph::callable_observation(observation)
-                && observation.normalized["scope"]
-                    .as_str()
-                    .is_some_and(|scope| !scope.trim().is_empty())
-                && checked.dependencies.contains_key(&observation.id)
-        })
-        .ok_or_else(|| {
-            invalid(format!(
-                "PROCESS_GRAPH_ROOT_INVALID: rootDeclaration must be an exact scoped callable SYMBOL observation in selected service {service} and snapshot; use a retained declaration ID"
-            ))
-        })?;
-    if root.normalized["ownerIdentity"]
-        .as_str()
-        .is_none_or(|owner| owner.trim().is_empty())
-    {
-        return Err(invalid(
-            "PROCESS_GRAPH_ROOT_OWNER_UNAVAILABLE: selected declaration has no exact retained ownerIdentity",
-        ));
-    }
+    super::process_graph::resolve_work_root(subject, request, checked)?;
     Ok(())
 }
 
@@ -1303,8 +1276,24 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         {
             Ok(())
         }
+        Some("process-graph-v1")
+            if subject
+                .strip_prefix("scenario:")
+                .is_some_and(|id| super::store::valid_id(id))
+                && request.entrypoint.is_none()
+                && request
+                    .root_declaration
+                    .as_deref()
+                    .is_none_or(|declaration| !declaration.trim().is_empty())
+                && request
+                    .question
+                    .as_deref()
+                    .is_some_and(|question| !question.trim().is_empty()) =>
+        {
+            Ok(())
+        }
         Some("process-graph-v1") => Err(invalid(
-            "CONTEXT_PROFILE_INCOMPATIBLE: process-graph-v1 requires service:ID, an exact rootDeclaration, a non-empty question, and no entrypoint",
+            "CONTEXT_PROFILE_INCOMPATIBLE: process-graph-v1 requires either service:ID with an exact rootDeclaration, or a saved scenario:ID resolved from its frozen selector; both require a non-empty question and no entrypoint",
         )),
         Some(super::endpoint_context::PROFILE)
             if subject.starts_with("service:") && request.entrypoint.is_some() =>
@@ -1377,6 +1366,9 @@ pub fn prepare_with_snapshot(
     validate_context_profile(&subject, &request)?;
     let selected = match kind {
         "service" if repo.services()?.contains_key(id) => BTreeSet::from([id.to_owned()]),
+        "scenario" if request.context_profile.as_deref() == Some("process-graph-v1") => {
+            BTreeSet::new()
+        }
         "scenario"
             if repo.scenarios()?.contains_key(id)
                 && (request.entrypoint.is_none()
@@ -1394,6 +1386,13 @@ pub fn prepare_with_snapshot(
         }
     };
     let (checked, evidence_snapshot) = Check::retained(repo, snapshot, &selected)?;
+    if request.context_profile.as_deref() == Some("process-graph-v1")
+        && subject.starts_with("scenario:")
+        && request.root_declaration.is_none()
+    {
+        let selection = super::process_graph::resolve_work_root(&subject, &request, &checked)?;
+        request.root_declaration = Some(selection.declaration.id.clone());
+    }
     normalize_http_api_contract_profile(&subject, &mut request, &checked);
     validate_context_profile(&subject, &request)?;
     validate_http_api_contract_profile(&subject, &request, &checked)?;
@@ -1498,7 +1497,13 @@ pub fn prepare_with_snapshot(
             );
         }
     }
-    if kind == "scenario" && repo.scenarios()?[id].process.is_some() {
+    if kind == "scenario"
+        && request.context_profile.as_deref() != Some("process-graph-v1")
+        && repo
+            .scenarios()?
+            .get(id)
+            .is_some_and(|scenario| scenario.process.is_some())
+    {
         for (index, root) in super::processes::expected(&checked, id)
             .into_iter()
             .filter(|root| root == id || root == super::processes::OVERVIEW)
@@ -4872,6 +4877,25 @@ pub(super) mod api_contract_tests {
         );
         assert_eq!(bytes(&loaded_old).unwrap(), old_bytes);
 
+        let mut previous_contract = old.clone();
+        previous_contract.request.authoring_contract =
+            Some("codeclew-operation-draft-authoring/1.1".into());
+        let mut previous_stored = StoredWork::from_runtime(
+            &previous_contract,
+            previous_contract.snapshot.clone().unwrap(),
+        )
+        .unwrap();
+        previous_stored.id = digest(&previous_stored).unwrap()[7..].into();
+        let previous_id = previous_stored.id.clone();
+        let previous_bytes = bytes(&previous_stored).unwrap();
+        let loaded_previous: StoredWork = serde_json::from_slice(&previous_bytes).unwrap();
+        loaded_previous.validate_identity(&previous_id).unwrap();
+        assert_eq!(
+            loaded_previous.request.authoring_contract.as_deref(),
+            Some("codeclew-operation-draft-authoring/1.1")
+        );
+        assert_eq!(bytes(&loaded_previous).unwrap(), previous_bytes);
+
         let mut current = old.clone();
         normalize_operation_authoring_contract(&mut current.request).unwrap();
         assert_eq!(
@@ -4882,6 +4906,7 @@ pub(super) mod api_contract_tests {
             StoredWork::from_runtime(&current, current.snapshot.clone().unwrap()).unwrap();
         current_stored.id = digest(&current_stored).unwrap()[7..].into();
         assert_ne!(current_stored.id, old_id);
+        assert_ne!(current_stored.id, previous_id);
         assert_eq!(current_stored.snapshot, old_stored.snapshot);
         assert_eq!(
             current_stored.evidence_snapshot,

@@ -105,27 +105,20 @@ fn process_profile_defers_provider_authority_until_recorded_expansion() {
     // sequence, contract, note-assessment or typed-view content in that slot.
     let good: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&proposal).unwrap()).unwrap();
-    for (field, value, diagnostic) in [
+    for (field, value) in [
         (
             "steps",
             json!([{"kind":"note","meaning":{"text":"A step","evidence":[deferred]}}]),
-            "section proposals use a supported summary",
         ),
         (
             "contracts",
             json!([{"title":"Payload","kind":"payload","rows":[{"label":"Quantity","description":{"text":"A quantity","evidence":[deferred]}}]}]),
-            "section proposals use a supported summary",
         ),
         (
             "assessment",
             json!({"outcome":"UNKNOWN","period":"Current"}),
-            "assessments require an explicit note root",
         ),
-        (
-            "dataflow",
-            json!({"nodes":[],"edges":[]}),
-            "typed data-flow content requires a saved view root",
-        ),
+        ("dataflow", json!({"nodes":[],"edges":[]})),
     ] {
         let mut invalid = good.clone();
         invalid["operations"][0][field] = value;
@@ -140,7 +133,15 @@ fn process_profile_defers_provider_authority_until_recorded_expansion() {
             path.to_str().unwrap(),
         ]);
         assert_eq!(rejected["status"], "NEEDS_REPAIR", "{rejected}");
-        assert!(rejected.to_string().contains(diagnostic), "{rejected}");
+        assert!(
+            rejected["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["kind"] == "DIAGNOSTIC"
+                    && row["record"]["code"] == "INVALID_PROPOSAL"),
+            "{rejected}"
+        );
     }
     for key in ["activation", "provider-behavior", "runtime"] {
         let mut invalid = good.clone();
@@ -234,5 +235,206 @@ fn process_profile_cannot_be_requested_for_service_sections() {
     assert!(
         error.to_string().contains("CONTEXT_PROFILE_INCOMPATIBLE"),
         "{error}"
+    );
+}
+
+#[test]
+fn saved_scenario_question_prepares_full_graph_work_from_frozen_selection() {
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    f.service("inventory");
+    let source_text = "public class Orders {\n  public int reserve(int quantity) {\n    if (quantity > 0) {\n      int normalized = normalize(quantity);\n      return finish(normalized);\n    }\n    return -1;\n  }\n  private int normalize(int quantity) { return quantity + 1; }\n  private int finish(int quantity) { return quantity * 2; }\n}\n";
+    std::fs::write(source_repo.join("Orders.java"), source_text).unwrap();
+    support::commit(&source_repo);
+
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let initial_digest = repo.input_digest().unwrap();
+    repo.put(
+        "catalog/interactions/handoff.json",
+        &json!({
+            "schema":"codeclew-documentation-interaction/1.0",
+            "id":"handoff",
+            "title":"Declared handoff",
+            "from":{"service":"orders"},
+            "to":{"service":"inventory"},
+            "transport":{"kind":"http","method":"POST","path":"/handoff"},
+            "declaration":{"origin":"human","rationale":"A declared continuation for the saved-process explanation."}
+        }),
+        Some(&initial_digest),
+    )
+    .unwrap();
+    let process = f.input(
+        "saved-process.json",
+        &json!({
+            "schema":"codeclew-documentation-process/1.0",
+            "id":"quantity",
+            "title":"Quantity flow",
+            "summary":"Explain the selected operation and declared continuation.",
+            "root":{"service":"orders","selector":{"language":"java","scope":":main","owner":"Orders","name":"reserve","parameterTypes":["int"]}},
+            "interactions":["handoff"],
+            "maxDepth":1,
+            "maxNodes":1,
+            "process":{"scope":"One selected method","participants":["orders","inventory"],"objects":[],"trigger":"A request supplies a quantity.","outcomes":["A result is returned."],"linkedSubviews":[]}
+        }),
+    );
+    let expected = f.ok(&["docs", "process", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "process",
+        "put",
+        "--input",
+        process.to_str().unwrap(),
+        "--expected-input-digest",
+        &expected,
+    ]);
+    let (check_code, check_report) = f.run(&["docs", "check"]);
+    assert!(matches!(check_code, 0 | 3 | 4), "{check_report}");
+    let raw_snapshot = check_report["snapshot"].as_str().unwrap();
+    // The public source-syntax fixture has no compiler scope or exact target
+    // facts. Add three retained compiler-shaped declarations to the immutable
+    // test snapshot so the CLI path exercises the exact-scope graph contract.
+    let mut checked =
+        clew::documentation::check::Check::load_snapshot(&repo, raw_snapshot).unwrap();
+    let evidence = checked.services.get_mut("orders").unwrap();
+    let source_id = "orders-full-source".to_owned();
+    let revision = evidence.revision.clone();
+    evidence.sources.insert(
+        source_id.clone(),
+        clew::documentation::model::Source {
+            id: source_id.clone(),
+            service: "orders".into(),
+            revision,
+            file: "Orders.java".into(),
+            start_line: 1,
+            end_line: source_text.lines().count() as u64,
+            text: source_text.into(),
+            text_digest: clew::canonical::hash_bytes(source_text.as_bytes()),
+            evidence_digest: clew::canonical::hash(&source_text).unwrap(),
+            authority: "RETAINED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        },
+    );
+    for (id, name, modifiers) in [
+        ("graph-reserve", "reserve", json!(["PUBLIC"])),
+        ("graph-normalize", "normalize", json!(["PRIVATE"])),
+        ("graph-finish", "finish", json!(["PRIVATE"])),
+    ] {
+        let identity = format!("method:class:Orders#{name}(I)I");
+        let normalized = json!({
+            "schema":"codeclew-java-compiler-fact/1.0",
+            "declarationKind":"METHOD",
+            "symbolIdentity":identity,
+            "ownerIdentity":"class:Orders",
+            "name":name,
+            "scope":":main",
+            "jvmDescriptor":"(I)I",
+            "modifiers":modifiers,
+            "annotations":[],
+            "documentation":{"events":[],"parameterTypes":["int"]}
+        });
+        let observation = clew::documentation::model::Observation {
+            id: id.into(),
+            kind: "SYMBOL".into(),
+            service: "orders".into(),
+            symbol: identity,
+            digest: clew::canonical::hash(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![source_id.clone()],
+        };
+        evidence
+            .observations
+            .insert(observation.id.clone(), observation.clone());
+        checked
+            .dependencies
+            .insert(observation.id.clone(), observation);
+    }
+    let snapshot_handle = checked.save_snapshot(&repo).unwrap();
+
+    let prepare = [
+        "docs",
+        "process",
+        "prepare",
+        "--id",
+        "quantity",
+        "--question",
+        "How does this quantity operation reach its result?",
+        "--language",
+        "ru",
+        "--snapshot",
+        &snapshot_handle,
+    ];
+    let first = f.ok(&prepare);
+    assert_eq!(first["contextProfile"], "process-graph-v1");
+    assert_eq!(first["snapshot"], snapshot_handle);
+    let work = first["work"].as_str().unwrap().to_owned();
+    let repeated = f.ok(&prepare);
+    assert_eq!(repeated["work"], work, "identical input must reuse Work");
+
+    let mut page = first;
+    let mut rows = Vec::new();
+    loop {
+        assert!(page["omitted"].as_array().unwrap().is_empty());
+        rows.extend(page["items"].as_array().unwrap().iter().cloned());
+        let Some(cursor) = page["nextCursor"].as_str() else {
+            break;
+        };
+        let selection = f.input("process-graph-page.json", &json!({"cursor":cursor}));
+        page = f.ok(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            &work,
+            "--input",
+            selection.to_str().unwrap(),
+        ]);
+    }
+    let process_context = rows
+        .iter()
+        .find(|row| row["kind"] == "PROCESS_CONTEXT_PACKET")
+        .expect("process graph packet is retained in Work")
+        .clone();
+    assert_eq!(process_context["record"]["profile"], "process-graph-v1");
+    assert_eq!(
+        process_context["record"]["root"]["symbolIdentity"],
+        "method:class:Orders#reserve(I)I"
+    );
+    let nodes = process_context["record"]["callGraph"]["nodes"]
+        .as_array()
+        .unwrap();
+    assert!(
+        nodes.len() > 1,
+        "maxNodes=1 is scenario context only; retained record: {}",
+        process_context["record"]
+    );
+    assert!(
+        process_context["record"]["callGraph"]["nodes"]
+            .to_string()
+            .contains("normalize")
+    );
+    assert!(
+        process_context["record"]["callGraph"]["nodes"]
+            .to_string()
+            .contains("finish")
+    );
+    let frozen_scenario = rows
+        .iter()
+        .find(|row| row["record"]["kind"] == "SCENARIO_SELECTION")
+        .expect("frozen scenario dependency is included");
+    assert_eq!(
+        frozen_scenario["record"]["normalized"]["title"],
+        "Quantity flow"
+    );
+    let declared_interaction = rows
+        .iter()
+        .find(|row| row["record"]["kind"] == "DECLARED_INTERACTION")
+        .expect("selected declared interaction dependency is included");
+    assert_eq!(
+        declared_interaction["record"]["normalized"]["id"],
+        "handoff"
     );
 }

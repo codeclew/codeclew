@@ -3869,6 +3869,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn work_draft_new_run_flag_requires_draft_and_is_accepted_with_it() {
+        let base = vec![
+            "clew",
+            "docs",
+            "work",
+            "run",
+            "--root",
+            "/tmp",
+            "--work",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        let mut without_draft = base.clone();
+        without_draft.push("--new-run");
+        assert!(Cli::try_parse_from(without_draft).is_err());
+
+        let mut with_draft = base;
+        with_draft.extend(["--draft", "--new-run"]);
+        assert!(Cli::try_parse_from(with_draft).is_ok());
+    }
+
+    #[test]
     fn removed_entrypoints_are_unparseable() {
         for removed in ["project", "index", "resolve", "thread", "task-apply"] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());

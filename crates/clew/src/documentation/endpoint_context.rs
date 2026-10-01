@@ -101,6 +101,7 @@ struct FinishRows<'a> {
     entrypoint_id: &'a str,
     entry: Option<&'a super::model::Entrypoint>,
     process_root: Option<&'a Observation>,
+    selector_resolution: Option<super::check::Resolution>,
     dependencies: BTreeMap<String, &'a Observation>,
     sources: BTreeMap<String, &'a Source>,
     nodes: Vec<Value>,
@@ -131,32 +132,98 @@ pub(super) fn profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
 }
 
 pub(super) fn process_profile_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
-    let declaration = work
-        .request
-        .root_declaration
-        .as_deref()
-        .ok_or_else(|| invalid("process-graph-v1 requires an exact rootDeclaration"))?;
-    profile_rows_with_root(work, Some(declaration))
+    let selection =
+        super::process_graph::resolve_work_root(&work.subject, &work.request, &work.checked)?;
+    let scenario = selection.scenario;
+    let mut rows = profile_rows_with_root(
+        work,
+        Some((
+            selection.service.as_str(),
+            selection.declaration.id.as_str(),
+            selection.selector_resolution.as_ref(),
+        )),
+    )?;
+    if let Some(scenario) = scenario {
+        if !work.influence.contains_key(&scenario.id) {
+            return Err(invalid(
+                "PROCESS_GRAPH_SCENARIO_SELECTION_UNINFLUENTIAL: frozen process definition is not bound to this Work",
+            ));
+        }
+        if !work
+            .handles
+            .values()
+            .any(|handle| handle.kind == "DEPENDENCY" && handle.id == scenario.id)
+        {
+            return Err(invalid(
+                "PROCESS_GRAPH_SCENARIO_SELECTION_UNAVAILABLE: frozen process definition has no Work dependency handle",
+            ));
+        }
+        rows.push(json!({"kind":"DEPENDENCY","id":scenario.id,"record":scenario}));
+        for interaction_id in scenario.normalized["interactions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let id = format!("interaction:{interaction_id}");
+            let interaction = work
+                .checked
+                .dependencies
+                .get(&id)
+                .filter(|dependency| {
+                    dependency.kind == "DECLARED_INTERACTION"
+                        && dependency.id == id
+                        && work.influence.contains_key(&id)
+                })
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "PROCESS_GRAPH_DECLARED_CONTINUATION_UNAVAILABLE: frozen process declares {id}, but the selected snapshot does not retain that interaction"
+                    ))
+                })?;
+            if !work
+                .handles
+                .values()
+                .any(|handle| handle.kind == "DEPENDENCY" && handle.id == interaction.id)
+            {
+                return Err(invalid(format!(
+                    "PROCESS_GRAPH_DECLARED_CONTINUATION_UNAVAILABLE: {id} has no Work dependency handle"
+                )));
+            }
+            rows.push(json!({"kind":"DEPENDENCY","id":interaction.id,"record":interaction}));
+        }
+    }
+    Ok(rows)
 }
 
 fn profile_rows_with_root(
     work: &Work,
-    process_root_id: Option<&str>,
+    process_root: Option<(&str, &str, Option<&super::check::Resolution>)>,
 ) -> Result<Vec<Value>, ClewError> {
-    let service = work
-        .subject
-        .strip_prefix("service:")
-        .filter(|service| !service.is_empty())
-        .ok_or_else(|| invalid("operation context requires one service subject"))?;
-    let entrypoint_id = process_root_id
+    let default_service = if process_root.is_none() {
+        Some(
+            work.subject
+                .strip_prefix("service:")
+                .filter(|service| !service.is_empty())
+                .ok_or_else(|| invalid("operation context requires one service subject"))?,
+        )
+    } else {
+        None
+    };
+    let service = process_root
+        .map(|root| root.0)
+        .or(default_service)
+        .ok_or_else(|| invalid("operation context service is unavailable"))?;
+    let entrypoint_id = process_root
+        .map(|root| root.1)
         .or(work.request.entrypoint.as_deref())
         .ok_or_else(|| invalid("endpoint-context-v3 requires a service HTTP endpoint"))?;
+    let selector_resolution = process_root.and_then(|root| root.2);
     let evidence = work
         .checked
         .services
         .get(service)
         .ok_or_else(|| invalid("operation context service evidence is unavailable"))?;
-    let entry = process_root_id
+    let entry = process_root
         .is_none()
         .then(|| unique_entrypoint(evidence, entrypoint_id))
         .flatten();
@@ -181,7 +248,7 @@ fn profile_rows_with_root(
     let mut root_scope = None;
     let mut root_descriptor = None;
 
-    if let Some(declaration_id) = process_root_id {
+    if let Some((_, declaration_id, _)) = process_root {
         let root = evidence
             .observations
             .get(declaration_id)
@@ -264,7 +331,7 @@ fn profile_rows_with_root(
         );
     }
 
-    if process_root_id.is_none()
+    if process_root.is_none()
         && let Some(root) = root_callable.as_ref()
     {
         if let Some(descriptor) = root_descriptor.as_deref() {
@@ -316,7 +383,7 @@ fn profile_rows_with_root(
         if !visited.insert(key.clone()) {
             continue;
         }
-        if process_root_id.is_some() {
+        if process_root.is_some() {
             dependencies.insert(callable.observation.id.clone(), callable.observation);
         }
         max_observed_traversal_depth = max_observed_traversal_depth.max(depth);
@@ -386,7 +453,7 @@ fn profile_rows_with_root(
                 );
                 continue;
             }
-            if process_root_id.is_some()
+            if process_root.is_some()
                 && observation.normalized["kind"] == "CONSTRUCT"
                 && let Some(owner) = constructor_target_owner_identity(target)
             {
@@ -571,7 +638,7 @@ fn profile_rows_with_root(
                     json!({"symbol":callable.identity}),
                 );
             }
-            if process_root_id.is_some() {
+            if process_root.is_some() {
                 for spelling in &discoveries.unsupported_qualified_references {
                     gaps.add(
                         "PROCESS_QUALIFIED_SOURCE_REFERENCE_UNSUPPORTED",
@@ -579,7 +646,7 @@ fn profile_rows_with_root(
                     );
                 }
             }
-            if process_root_id.is_some() {
+            if process_root.is_some() {
                 for type_name in &discoveries.constructed_types {
                     let candidates = exact_constructor_types
                         .get(&(callable.identity.clone(), callable.scope.clone()))
@@ -738,7 +805,7 @@ fn profile_rows_with_root(
                         "SOURCE_REFERENCE_SCOPE_UNAVAILABLE",
                         json!({"from":callable.identity,"name":name,"scope":callable.scope}),
                     ),
-                    [] if process_root_id.is_some()
+                    [] if process_root.is_some()
                         && provider_targets.iter().any(|target| {
                             indexes
                                 .methods_by_identity_scope
@@ -749,7 +816,7 @@ fn profile_rows_with_root(
                                     })
                                 })
                         }) => {}
-                    [] if process_root_id.is_some() => gaps.add(
+                    [] if process_root.is_some() => gaps.add(
                         "SOURCE_HELPER_DECLARATION_NOT_CAPTURED",
                         json!({"from":callable.identity,"owner":callable.owner,"name":name,"scope":callable.scope}),
                     ),
@@ -822,7 +889,7 @@ fn profile_rows_with_root(
                     exact_scope(&field.normalized["scope"]) == Some(callable.scope.as_str())
                 });
                 if receiver_call.shadowed && !receiver_call.explicit_receiver {
-                    if process_root_id.is_some() {
+                    if process_root.is_some() {
                         gaps.add(
                             "SOURCE_RECEIVER_SHADOWING_AMBIGUOUS",
                             json!({"from":callable.identity,"receiver":receiver_call.field_name,"method":receiver_call.method_name,"scope":callable.scope}),
@@ -830,7 +897,7 @@ fn profile_rows_with_root(
                     }
                     continue;
                 }
-                if process_root_id.is_some()
+                if process_root.is_some()
                     && !receiver_call.explicit_receiver
                     && !same_scope_field_exists
                 {
@@ -980,7 +1047,7 @@ fn profile_rows_with_root(
                         }
                     }
                 }
-                if process_root_id.is_some()
+                if process_root.is_some()
                     && !receiver_call.explicit_receiver
                     && !same_scope_field_exists
                 {
@@ -991,7 +1058,7 @@ fn profile_rows_with_root(
                     continue;
                 }
                 if same_owner.is_empty() {
-                    if process_root_id.is_some() {
+                    if process_root.is_some() {
                         gaps.add(
                             "SOURCE_FIELD_RECEIVER_FIELD_NOT_CAPTURED",
                             json!({"from":callable.identity,"field":receiver_call.field_name,"method":receiver_call.method_name,"scope":callable.scope}),
@@ -1057,7 +1124,7 @@ fn profile_rows_with_root(
                         );
                         continue;
                     }
-                    [] if process_root_id.is_some() && owner_methods.is_empty() => {
+                    [] if process_root.is_some() && owner_methods.is_empty() => {
                         gaps.add(
                             "SOURCE_FIELD_RECEIVER_TARGET_DECLARATION_NOT_CAPTURED",
                             json!({"from":callable.identity,"fieldReference":field_reference,"targetOwner":target_owner,"method":receiver_call.method_name,"scope":callable.scope}),
@@ -1188,7 +1255,7 @@ fn profile_rows_with_root(
                 [candidate] if candidate.normalized["declarationKind"] == "METHOD"
                     || candidate.normalized["declarationKind"] == "CONSTRUCTOR" =>
                 {
-                    if process_root_id.is_some() {
+                    if process_root.is_some() {
                         dependencies.insert(candidate.id.clone(), *candidate);
                     }
                     let target_callable = callable_from_observation(candidate);
@@ -1260,7 +1327,7 @@ fn profile_rows_with_root(
         }
     }
 
-    if process_root_id.is_some()
+    if process_root.is_some()
         && let Some(scope) = root_scope.as_deref().filter(|scope| !scope.is_empty())
     {
         expand_process_source_contexts(
@@ -1290,7 +1357,8 @@ fn profile_rows_with_root(
             evidence,
             entrypoint_id,
             entry,
-            process_root: process_root_id.and_then(|id| evidence.observations.get(id)),
+            process_root: process_root.and_then(|(_, id, _)| evidence.observations.get(id)),
+            selector_resolution: selector_resolution.cloned(),
             dependencies,
             sources,
             nodes,
@@ -1383,7 +1451,7 @@ fn profile_rows_with_root(
         dependencies.insert(id, field);
     }
 
-    if process_root_id.is_some() {
+    if process_root.is_some() {
         let mut type_queue = VecDeque::<String>::new();
         for observation in dependencies.values() {
             if observation.kind != "SYMBOL" {
@@ -1502,7 +1570,8 @@ fn profile_rows_with_root(
         evidence,
         entrypoint_id,
         entry,
-        process_root: process_root_id.and_then(|id| evidence.observations.get(id)),
+        process_root: process_root.and_then(|(_, id, _)| evidence.observations.get(id)),
+        selector_resolution: selector_resolution.cloned(),
         dependencies,
         sources,
         nodes,
@@ -1526,6 +1595,7 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
         entrypoint_id,
         entry,
         process_root,
+        selector_resolution,
         dependencies,
         sources,
         nodes,
@@ -1723,6 +1793,17 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
             .as_str()
             .unwrap_or(&root.symbol);
         let root_evidence = root_reference.into_iter().collect::<Vec<_>>();
+        let mut root_record = json!({
+            "declarationId":root.id,
+            "symbolIdentity":root_identity,
+            "ownerIdentity":root.normalized["ownerIdentity"],
+            "name":root.normalized["name"],
+            "scope":root.normalized["scope"],
+            "evidence":root_evidence
+        });
+        if let Some(resolution) = selector_resolution {
+            root_record["selectorResolution"] = json!(resolution);
+        }
         let provider_edge_fact_count = provider_fact_references.len();
         let source_reference_candidate_count = source_reference_candidates.len();
         let source_context_count = source_context_rows.len();
@@ -1750,21 +1831,11 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                 node["evidence"] = json!(reference.into_iter().collect::<Vec<_>>());
             }
         }
-        rows.push(json!({
-            "kind":"PROCESS_CONTEXT_PACKET",
-            "id":format!("process-context:{entrypoint_id}"),
-            "record":{
+        let process_record = json!({
                 "profile":"process-graph-v1",
                 "authority":"DERIVED_NAVIGATION_ONLY",
                 "rootDeclarationReference":root_reference,
-                "root":{
-                    "declarationId":root.id,
-                    "symbolIdentity":root_identity,
-                    "ownerIdentity":root.normalized["ownerIdentity"],
-                    "name":root.normalized["name"],
-                    "scope":root.normalized["scope"],
-                    "evidence":root_evidence
-                },
+                "root":root_record,
                 "callGraph":{
                     "authority":"RETAINED_TARGET_RELATIONS_AND_SOURCE_CANDIDATES",
                     "order":"NOT_EXECUTION_ORDER",
@@ -1788,7 +1859,11 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
                     "maxObservedTraversalDepth":max_observed_traversal_depth
                 },
                 "gaps":gaps.rows()
-            }
+        });
+        rows.push(json!({
+            "kind":"PROCESS_CONTEXT_PACKET",
+            "id":format!("process-context:{entrypoint_id}"),
+            "record":process_record
         }));
     } else {
         rows.push(json!({

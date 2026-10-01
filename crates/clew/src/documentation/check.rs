@@ -433,7 +433,10 @@ pub fn assemble(
     })
 }
 
-fn resolution(endpoint: &Endpoint, services: &BTreeMap<String, ServiceEvidence>) -> Resolution {
+pub(super) fn resolution(
+    endpoint: &Endpoint,
+    services: &BTreeMap<String, ServiceEvidence>,
+) -> Resolution {
     let matches = services
         .get(&endpoint.service)
         .map(|e| analysis::resolve(endpoint.selector.as_ref(), e))

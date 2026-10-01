@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MAX_ROLE_TIMEOUT_MS: u64 = 900_000;
+
 pub struct Execution {
     pub output: Option<Value>,
     pub failure: Option<String>,
@@ -28,15 +30,8 @@ fn quoted(path: &Path) -> Result<String, ClewError> {
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
-pub fn admit(repo: &Repository, role: &Role) -> Result<Value, ClewError> {
-    if !cfg!(target_os = "macos")
-        || role.adapter != "macos-seatbelt-stdio/1.0"
-        || !Path::new("/usr/bin/sandbox-exec").is_file()
-    {
-        return Err(invalid(
-            "ISOLATION_UNAVAILABLE: configure a supported isolated stdio adapter for this host",
-        ));
-    }
+
+fn validate_role(role: &Role) -> Result<(), ClewError> {
     if !matches!(
         role.usage_authority.as_str(),
         "MAXIMUM_ONLY" | "TRANSPORT_METADATA"
@@ -47,12 +42,25 @@ pub fn admit(repo: &Repository, role: &Role) -> Result<Value, ClewError> {
         || role.runtime_reads.len() > 64
         || !role.cap.maximum.positive()
         || role.cap.timeout_ms == 0
-        || role.cap.timeout_ms > 600_000
+        || role.cap.timeout_ms > MAX_ROLE_TIMEOUT_MS
         || role.cap.output_bytes == 0
         || role.cap.output_bytes > 2 * 1024 * 1024
     {
         return Err(invalid("invalid role command or finite per-call caps"));
     }
+    Ok(())
+}
+
+pub fn admit(repo: &Repository, role: &Role) -> Result<Value, ClewError> {
+    if !cfg!(target_os = "macos")
+        || role.adapter != "macos-seatbelt-stdio/1.0"
+        || !Path::new("/usr/bin/sandbox-exec").is_file()
+    {
+        return Err(invalid(
+            "ISOLATION_UNAVAILABLE: configure a supported isolated stdio adapter for this host",
+        ));
+    }
+    validate_role(role)?;
     let program = Path::new(&role.command[0]);
     if !program.is_absolute() || !program.is_file() {
         return Err(invalid(
@@ -359,4 +367,39 @@ pub fn execute(
 #[cfg(not(unix))]
 pub fn execute(_: &Repository, _: &Role, _: &Value, _: &Path) -> Result<Execution, ClewError> {
     Err(invalid("ISOLATION_UNAVAILABLE"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::agent_jobs::{Amount, Cap, Role};
+    use super::validate_role;
+
+    fn role(timeout_ms: u64) -> Role {
+        Role {
+            adapter: "macos-seatbelt-stdio/1.0".into(),
+            model: "adapter-timeout-test".into(),
+            usage_authority: "MAXIMUM_ONLY".into(),
+            command: vec!["/usr/bin/true".into()],
+            runtime_reads: Vec::new(),
+            environment: Vec::new(),
+            network: false,
+            cap: Cap {
+                maximum: Amount {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cost_units: 1,
+                },
+                overhead_input_tokens: 0,
+                timeout_ms,
+                output_bytes: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn role_timeout_validation_accepts_the_fifteen_minute_boundary() {
+        assert!(validate_role(&role(0)).is_err());
+        assert!(validate_role(&role(900_000)).is_ok());
+        assert!(validate_role(&role(900_001)).is_err());
+    }
 }

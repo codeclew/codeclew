@@ -106,6 +106,30 @@ explicitly labeled source candidates without inventing an HTTP endpoint or
 claiming runtime dispatch. Draft status, saved-answer replay, and nonpublication
 behavior are the same as for the endpoint profile.
 
+To start from an already saved process definition, use the same immutable
+snapshot selection through the process command:
+
+```sh
+clew docs process prepare --root /work/architecture --id PROCESS_ID --question "Explain the selected operation and its boundaries." --language en --snapshot SOURCE_SNAPSHOT
+```
+
+This prepares `scenario:PROCESS_ID` with `process-graph-v1`; `--language` accepts
+`en` or `ru`, and `--question` cannot be combined with `--overview`. The chosen
+snapshot must contain the frozen saved-process selection and one retained
+callable matching its exact service, owner, and selector scope. Missing or
+ambiguous matches report candidates and stop before authoring; use supported
+`docs process put` followed by `docs recompose --snapshot ORIGINAL_CAPTURE` to
+change the selected root, then prepare new Work from the recomposed snapshot.
+The author packet carries the frozen title, summary, trigger, desired outcomes,
+and declared continuations as user-requested intent. Desired outcomes are not
+source-proven postconditions, and a declared interaction does not prove an
+executed cross-service call. This route traverses retained graph evidence
+independently of the saved process's `maxDepth` and `maxNodes` composition
+limits; it does not recapture source or establish runtime dispatch, execution
+order, external effects, endpoint exposure, or successful completion.
+Previously prepared Work remains bound to its original process definition and
+snapshot.
+
 `proposal publish` and an accepted generic `work run` without `--draft` create an immutable internal bundle and update the working `docs/index.html` pointer (the frozen publication). The operation draft path does not. This does not automatically release a version. Open the bundle returned by a publishing command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
 
 ### Recover a Work run
@@ -116,9 +140,21 @@ For `docs work run --draft`, a saved raw answer is reused to render or restore
 the local draft without another author call. An invalid answer is retained with
 its usage and receives no hidden repair call. A dispatch with no durable result
 is reported as `DRAFT_UNCERTAIN`, retaining the maximum reservation; repeating
-the command does not redrive it. Prepare new Work to make another author
-attempt. Work profile, compact packet, author config and driver are bound to the
-draft run, and a generic run cannot be resumed in draft mode or the reverse.
+the command does not redrive it. Inspect the retained report and provider state;
+then, when another attempt is intended, run
+`clew docs work run --root <docs-root> --work <work-id> --config <draft.json> --draft --new-run`.
+This creates one fresh run on the same saved Work and accepts only a terminal
+unsuccessful draft: `DRAFT_UNCERTAIN` / `DISPATCH_UNCERTAIN`,
+`DRAFT_INVALID_ANSWER` / `ANSWER_INVALID`, `DRAFT_CANCELLED` / `CANCELLED`, or
+`DRAFT_FAILED` / `FAILED`. Its selected checkpoint, original config digest,
+snapshot, packet digest, and execution mode must still match the retained run.
+The old report, checkpoint, cancellation marker, and maximum reservation remain
+available for audit; the new run gets its own run identity and reservation.
+The new config and admitted driver may be corrected for this explicit fresh
+attempt, subject to the selected budget account's immutable ceiling. Successful
+drafts and nonterminal runs are not eligible. Without `--new-run`, normal replay
+still reuses the selected run and refuses config or driver mismatches; a generic
+run cannot be resumed in draft mode or the reverse.
 
 Configuration, driver, evidence, read-ledger or publication mismatches return an explicit `RECOVERY_*` refusal. Inspect the retained report and current documentation state; do not delete saved run data, change configuration to force a retry, or repeat capture as a recovery shortcut. An accepted retry whose intended publication is still current can finish without another model call, bundle or history entry. If a later unrelated publication has changed the current output, recovery refuses conservatively and does not roll it back. Cancellation applies to its run only. A terminal run with recorded attempts is not an implicit fresh run or reviewer-only retry; retain and inspect its report and results before deciding what work to prepare next.
 

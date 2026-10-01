@@ -997,6 +997,90 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
             ))
             .cloned()
     });
+    let process_intent = if work.subject.starts_with("scenario:") {
+        let scenario_row = selected_by_key
+            .get(&("DEPENDENCY".to_owned(), work.subject.clone()))
+            .ok_or_else(|| {
+                invalid("frozen process intention is not selected for the author packet")
+            })?;
+        let scenario_record = &scenario_row.1["record"];
+        if scenario_record["kind"] != "SCENARIO_SELECTION" || scenario_record["id"] != work.subject
+        {
+            return Err(invalid(
+                "selected process intention does not match this scenario Work",
+            ));
+        }
+        let definition_reference = scenario_row.0.as_str();
+        cite(
+            &mut citations,
+            definition_reference,
+            "frozen saved process intention, not source evidence",
+        );
+        let definition = &scenario_record["normalized"];
+        let process = definition
+            .get("process")
+            .filter(|process| process.is_object())
+            .ok_or_else(|| invalid("frozen scenario has no process intention"))?;
+        let mut declared_continuations = Vec::new();
+        for interaction_id in definition["interactions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let id = format!("interaction:{interaction_id}");
+            let (label, row) = selected_by_key
+                .get(&("DEPENDENCY".to_owned(), id.clone()))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "declared process continuation {id} is missing from the selected packet rows"
+                    ))
+                })?;
+            if row["record"]["kind"] != "DECLARED_INTERACTION" {
+                return Err(invalid(format!(
+                    "selected process continuation {id} is not a declared interaction"
+                )));
+            }
+            cite(
+                &mut citations,
+                label,
+                "declared interaction, not evidence of execution",
+            );
+            declared_continuations.push(json!({
+                "id":interaction_id,
+                "reference":label,
+                "digest":row["record"]["digest"],
+                "authority":"DECLARED_INTERACTION_NOT_EXECUTED",
+                "definition":row["record"]["normalized"]
+            }));
+        }
+        let linked_subviews: Vec<Value> = process["linkedSubviews"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|id| {
+                json!({
+                    "id":id,
+                    "authority":"USER_INTENTION_ONLY_NOT_RESOLVED_AS_A_CONTINUATION"
+                })
+            })
+            .collect();
+        Some(json!({
+            "authority":"USER_INTENTION_NOT_SOURCE_EVIDENCE",
+            "definitionReference":definition_reference,
+            "definitionDigest":scenario_record["digest"],
+            "title":definition["title"],
+            "summary":definition["summary"],
+            "scope":process["scope"],
+            "trigger":process["trigger"],
+            "desiredOutcomes":process["outcomes"],
+            "declaredContinuations":declared_continuations,
+            "linkedSubviews":linked_subviews
+        }))
+    } else {
+        None
+    };
     let mut packet = json!({
         "schema":PACKET_SCHEMA,
         "profile":"process-graph-v1",
@@ -1048,6 +1132,9 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
         },
         "citations":citations
     });
+    if let Some(process_intent) = process_intent {
+        packet["processIntent"] = process_intent;
+    }
     let packet_digest = digest(&packet)?;
     packet["packetDigest"] = json!(packet_digest);
     let selected_rows_digest = digest(&selected_bindings)?;

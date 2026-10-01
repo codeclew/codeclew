@@ -127,6 +127,86 @@ fn original_capture(f: &Fixture) -> (Repository, Check, String) {
     (repo, checked, parent)
 }
 
+fn add_scoped_process_root(repo: &Repository, snapshot: &str, source_text: &str) -> String {
+    let mut checked = Check::load_snapshot(repo, snapshot).unwrap();
+    let evidence = checked.services.get_mut("orders").unwrap();
+    let source_id = "orders-full-process-source".to_owned();
+    evidence.sources.insert(
+        source_id.clone(),
+        clew::documentation::model::Source {
+            id: source_id.clone(),
+            service: "orders".into(),
+            revision: evidence.revision.clone(),
+            file: "Orders.java".into(),
+            start_line: 1,
+            end_line: source_text.lines().count() as u64,
+            text: source_text.into(),
+            text_digest: clew::canonical::hash_bytes(source_text.as_bytes()),
+            evidence_digest: clew::canonical::hash(&source_text).unwrap(),
+            authority: "RETAINED_SOURCE".into(),
+            occurrence: None,
+            url: None,
+        },
+    );
+    let identity = "method:class:Orders#reserve(I)I";
+    let normalized = json!({
+        "schema":"codeclew-java-compiler-fact/1.0",
+        "declarationKind":"METHOD",
+        "symbolIdentity":identity,
+        "ownerIdentity":"class:Orders",
+        "name":"reserve",
+        "scope":":main",
+        "jvmDescriptor":"(I)I",
+        "modifiers":["PUBLIC"],
+        "annotations":[],
+        "documentation":{"events":[],"parameterTypes":["int"]}
+    });
+    let observation = clew::documentation::model::Observation {
+        id: "graph-reserve".into(),
+        kind: "SYMBOL".into(),
+        service: "orders".into(),
+        symbol: identity.into(),
+        digest: clew::canonical::hash(&normalized).unwrap(),
+        normalized,
+        source_ids: vec![source_id],
+    };
+    evidence
+        .observations
+        .insert(observation.id.clone(), observation.clone());
+    checked
+        .dependencies
+        .insert(observation.id.clone(), observation);
+    checked.save_snapshot(repo).unwrap()
+}
+
+fn all_work_rows(f: &Fixture, work: &str, prefix: &str) -> Vec<Value> {
+    let mut rows = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut selection = serde_json::Map::new();
+        if let Some(cursor) = cursor.as_deref() {
+            selection.insert("cursor".into(), json!(cursor));
+        }
+        let input = f.input(&format!("{prefix}-page.json"), &Value::Object(selection));
+        let page = f.ok(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            work,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        assert!(page["omitted"].as_array().unwrap().is_empty(), "{page}");
+        rows.extend(page["items"].as_array().unwrap().iter().cloned());
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    rows
+}
+
 #[test]
 fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
     let f = Fixture::new();
@@ -271,6 +351,148 @@ fn recompose_preserves_capture_and_replaces_only_declarations_offline() {
     println!(
         "RECOMPOSITION_MEASUREMENT {}",
         json!({"firstSeconds":first_seconds,"repeatSeconds":repeat_seconds,"firstAddedObjects":after_recompose.object_count-before.object_count,"firstAddedPayloadBytes":after_recompose.object_bytes-before.object_bytes,"repeatAddedObjects":after_second.object_count-after_first.object_count,"repeatAddedPayloadBytes":after_second.object_bytes-after_first.object_bytes,"sourceGitAttempts":0,"sourceServices":2,"scope":"synthetic CLI fixture, warm installed test binary; compile/setup excluded"})
+    );
+}
+
+#[test]
+fn saved_process_put_recompose_changes_new_work_but_keeps_old_work_frozen() {
+    let f = Fixture::new();
+    let orders = f.service("orders");
+    let source_text =
+        "public class Orders { public int reserve(int quantity) { return quantity; } }\n";
+    fs::write(orders.join("Orders.java"), source_text).unwrap();
+    support::commit(&orders);
+
+    let process = |title: &str, summary: &str, trigger: &str, outcome: &str| {
+        json!({
+            "schema":"codeclew-documentation-process/1.0",
+            "id":"frozen-flow",
+            "title":title,
+            "summary":summary,
+            "root":{"service":"orders","selector":{"language":"java","scope":":main","owner":"Orders","name":"reserve","parameterTypes":["int"]}},
+            "interactions":[],
+            "maxDepth":1,
+            "maxNodes":1,
+            "process":{"scope":"One selected operation","participants":["orders"],"objects":[],"trigger":trigger,"outcomes":[outcome],"linkedSubviews":[]}
+        })
+    };
+    let original_definition = f.input(
+        "original-process.json",
+        &process(
+            "Original process",
+            "Original saved definition.",
+            "Original trigger",
+            "Original result",
+        ),
+    );
+    let expected_input = f.ok(&["docs", "process", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "process",
+        "put",
+        "--input",
+        original_definition.to_str().unwrap(),
+        "--expected-input-digest",
+        &expected_input,
+    ]);
+
+    let (capture_code, capture_report) = f.run(&["docs", "check"]);
+    assert!(matches!(capture_code, 0 | 3 | 4), "{capture_report}");
+    let raw_capture = capture_report["snapshot"].as_str().unwrap();
+    let repo = Repository::open(&f.docs).unwrap();
+    let parent = add_scoped_process_root(&repo, raw_capture, source_text);
+    let original = Check::load_snapshot(&repo, &parent).unwrap();
+    let old_work = f.ok(&[
+        "docs",
+        "process",
+        "prepare",
+        "--id",
+        "frozen-flow",
+        "--question",
+        "Explain the original selected operation.",
+        "--language",
+        "en",
+        "--snapshot",
+        &parent,
+    ]);
+    let old_work_id = old_work["work"].as_str().unwrap().to_owned();
+
+    let changed_definition = f.input(
+        "changed-process.json",
+        &process(
+            "Revised process",
+            "Revised saved definition.",
+            "Revised trigger",
+            "Revised result",
+        ),
+    );
+    let expected_input = f.ok(&["docs", "process", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "process",
+        "put",
+        "--input",
+        changed_definition.to_str().unwrap(),
+        "--expected-input-digest",
+        &expected_input,
+    ]);
+    let (recompose_code, recompose_report) = recompose(&f, &parent);
+    assert!(matches!(recompose_code, 0 | 3 | 4), "{recompose_report}");
+    let derived = recompose_report["snapshot"].as_str().unwrap().to_owned();
+    assert_ne!(derived, parent);
+    let recomposed = Check::load_snapshot(&repo, &derived).unwrap();
+    assert_eq!(recomposed.services, original.services);
+    assert_eq!(
+        serde_json::to_value(&recomposed.source_inputs).unwrap(),
+        serde_json::to_value(&original.source_inputs).unwrap()
+    );
+    assert_eq!(
+        original.dependencies["scenario:frozen-flow"].normalized["title"],
+        "Original process"
+    );
+    assert_eq!(
+        recomposed.dependencies["scenario:frozen-flow"].normalized["title"],
+        "Revised process"
+    );
+
+    let revised_work = f.ok(&[
+        "docs",
+        "process",
+        "prepare",
+        "--id",
+        "frozen-flow",
+        "--question",
+        "Explain the revised selected operation.",
+        "--language",
+        "en",
+        "--snapshot",
+        &derived,
+    ]);
+    let revised_work_id = revised_work["work"].as_str().unwrap();
+    assert_ne!(revised_work_id, old_work_id);
+    let revised_rows = all_work_rows(&f, revised_work_id, "revised-work");
+    assert_eq!(
+        revised_rows
+            .iter()
+            .find(|row| row["record"]["kind"] == "SCENARIO_SELECTION")
+            .unwrap()["record"]["normalized"]["title"],
+        "Revised process"
+    );
+
+    let old_rows_after_recompose = all_work_rows(&f, &old_work_id, "old-work-after-recompose");
+    assert_eq!(
+        old_rows_after_recompose
+            .iter()
+            .find(|row| row["record"]["kind"] == "SCENARIO_SELECTION")
+            .expect("old Work continues to read its frozen process selection")["record"]["normalized"]
+            ["title"],
+        "Original process"
     );
 }
 

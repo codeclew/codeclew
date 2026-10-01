@@ -4583,8 +4583,9 @@ pub fn run_operation_draft(
     repo: &Repository,
     id: &str,
     config_path: Option<&std::path::Path>,
+    new_run: bool,
 ) -> Result<Value, ClewError> {
-    operation_draft::run(repo, id, config_path)
+    operation_draft::run(repo, id, config_path, new_run)
 }
 
 fn finalize_failed_run(

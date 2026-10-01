@@ -149,8 +149,14 @@ pub enum Command {
         root: PathBuf,
         #[arg(long)]
         id: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "question")]
         overview: bool,
+        /// Natural-language explanation scope; selects the complete process graph profile.
+        #[arg(long)]
+        question: Option<String>,
+        /// Language for the saved Work and its author packet.
+        #[arg(long, value_parser = ["en", "ru"])]
+        language: Option<String>,
         /// Prepare against saved evidence, including a recomposed snapshot.
         #[arg(long)]
         snapshot: Option<String>,
@@ -328,13 +334,37 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         Command::Prepare {
             id,
             overview,
+            question,
+            language,
             snapshot,
             ..
         } => {
-            if !repo.scenarios()?.contains_key(&id) {
+            let process_graph = question.is_some();
+            if question
+                .as_deref()
+                .is_some_and(|question| question.trim().is_empty())
+            {
+                return Err(invalid("--question must contain non-whitespace text"));
+            }
+            if !process_graph && !repo.scenarios()?.contains_key(&id) {
                 return Err(invalid("unknown process"));
             }
-            work::prepare_with_snapshot(&repo,format!("scenario:{id}"),serde_json::from_value(json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Process maintainers and architecture readers","entrypoint":overview.then_some(OVERVIEW),"contextProfile":overview.then_some(super::process_context::PROFILE),"maxItems":20,"maxBytes":40960})).map_err(io_error)?, snapshot.as_deref())
+            work::prepare_with_snapshot(
+                &repo,
+                format!("scenario:{id}"),
+                serde_json::from_value(json!({
+                    "schema":"codeclew-documentation-work-request/1.0",
+                    "audience":"Process maintainers and architecture readers",
+                    "documentationLanguage":language,
+                    "entrypoint":(!process_graph && overview).then_some(OVERVIEW),
+                    "contextProfile":if process_graph { Some("process-graph-v1") } else if overview { Some(super::process_context::PROFILE) } else { None },
+                    "question":question,
+                    "maxItems":20,
+                    "maxBytes":40960
+                }))
+                .map_err(io_error)?,
+                snapshot.as_deref(),
+            )
         }
         Command::Graph {
             service,

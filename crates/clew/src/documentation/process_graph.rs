@@ -1,10 +1,10 @@
 //! Complete, finite call/evidence graphs over one retained service snapshot.
 use super::{
     bytes, digest, invalid,
-    model::{Observation, ServiceEvidence, Source},
+    model::{Observation, Scenario, ServiceEvidence, Source},
     process_candidates,
     store::Repository,
-    work::{self, Work},
+    work::{self, Request, Work},
 };
 use crate::error::ClewError;
 use serde_json::{Value, json};
@@ -69,7 +69,7 @@ pub(super) fn run(
 fn exact_scope(observation: &Observation) -> Option<&str> {
     observation.normalized["scope"]
         .as_str()
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
 }
 
 pub(super) fn callable_observation(observation: &Observation) -> bool {
@@ -90,6 +90,150 @@ pub(super) fn callable_observation(observation: &Observation) -> bool {
             )))
 }
 
+/// The shared root selection for saved-scenario and explicit service graph Work.
+/// Scenario selections are read only from the immutable snapshot dependency.
+pub(super) struct ResolvedRoot<'a> {
+    pub service: String,
+    pub declaration: &'a Observation,
+    pub scenario: Option<&'a Observation>,
+    pub selector_resolution: Option<super::check::Resolution>,
+}
+
+pub(super) fn resolve_work_root<'a>(
+    subject: &str,
+    request: &Request,
+    checked: &'a super::check::Check,
+) -> Result<ResolvedRoot<'a>, ClewError> {
+    if let Some(service) = subject
+        .strip_prefix("service:")
+        .filter(|service| !service.trim().is_empty())
+    {
+        let declaration_id = request
+            .root_declaration
+            .as_deref()
+            .filter(|declaration| !declaration.trim().is_empty())
+            .ok_or_else(|| {
+                invalid("PROCESS_GRAPH_ROOT_REQUIRED: service Work needs an exact rootDeclaration")
+            })?;
+        let evidence = checked.services.get(service).ok_or_else(|| {
+            invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
+        })?;
+        let declaration = evidence
+            .observations
+            .get(declaration_id)
+            .filter(|observation| {
+                observation.service == service
+                    && callable_observation(observation)
+                    && exact_scope(observation).is_some()
+                    && owner_identity(observation).is_some()
+                    && checked.dependencies.get(&observation.id).is_some_and(|dependency| {
+                        dependency.kind == "SYMBOL" && dependency.digest == observation.digest
+                    })
+            })
+            .ok_or_else(|| {
+                invalid(format!(
+                    "PROCESS_GRAPH_ROOT_INVALID: rootDeclaration must be an exact scoped callable SYMBOL observation in selected service {service} and snapshot; use a retained declaration ID"
+                ))
+            })?;
+        return Ok(ResolvedRoot {
+            service: service.to_owned(),
+            declaration,
+            scenario: None,
+            selector_resolution: None,
+        });
+    }
+
+    let scenario_id = subject
+        .strip_prefix("scenario:")
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| invalid("PROCESS_GRAPH_SUBJECT_REQUIRED: use service:ID or scenario:ID"))?;
+    let scenario_dependency = checked
+        .dependencies
+        .get(subject)
+        .filter(|dependency| {
+            dependency.id == subject
+                && dependency.kind == "SCENARIO_SELECTION"
+                && dependency.symbol == scenario_id
+                && dependency.normalized["schema"] == "codeclew-documentation-process/1.0"
+                && dependency.normalized["id"] == scenario_id
+        })
+        .ok_or_else(|| {
+            invalid(format!(
+                "PROCESS_GRAPH_SCENARIO_SELECTION_UNAVAILABLE: snapshot has no frozen SCENARIO_SELECTION for {subject}"
+            ))
+        })?;
+    let scenario: Scenario = serde_json::from_value(scenario_dependency.normalized.clone())
+        .map_err(|_| {
+            invalid(
+                "PROCESS_GRAPH_SCENARIO_SELECTION_INVALID: frozen process definition is malformed",
+            )
+        })?;
+    if scenario.process.is_none() {
+        return Err(invalid(
+            "PROCESS_GRAPH_SCENARIO_SELECTION_INVALID: frozen selection has no process metadata",
+        ));
+    }
+    let service = scenario.root.service.clone();
+    let evidence = checked.services.get(&service).ok_or_else(|| {
+        invalid(format!(
+            "PROCESS_GRAPH_SCENARIO_SERVICE_UNAVAILABLE: frozen process root service {service} is not selected in the snapshot"
+        ))
+    })?;
+    let resolution = super::check::resolution(&scenario.root, &checked.services);
+    let matches = super::analysis::resolve(scenario.root.selector.as_ref(), evidence);
+    if !matches!(
+        resolution.status.as_str(),
+        "RESOLVED" | "SOURCE_MATCH" | "SOURCE_UNAVAILABLE"
+    ) || matches.len() != 1
+    {
+        return Err(invalid(format!(
+            "PROCESS_GRAPH_SCENARIO_ROOT_{}: saved selector for {subject} did not resolve to one retained callable; candidates={}; details={}; limitations=exact selector scope is honored, missing or ambiguous overloads are never guessed",
+            resolution.status,
+            serde_json::to_string(&resolution.candidates).unwrap_or_else(|_| "[]".into()),
+            serde_json::to_string(&resolution.details).unwrap_or_else(|_| "[]".into()),
+        )));
+    }
+    let declaration = matches[0];
+    if declaration.service != service
+        || !callable_observation(declaration)
+        || exact_scope(declaration).is_none()
+        || owner_identity(declaration).is_none()
+        || !checked
+            .dependencies
+            .get(&declaration.id)
+            .is_some_and(|dependency| {
+                dependency.kind == "SYMBOL" && dependency.digest == declaration.digest
+            })
+    {
+        return Err(invalid(format!(
+            "PROCESS_GRAPH_SCENARIO_ROOT_NOT_CALLABLE: saved selector for {subject} matched candidate {}; the selected snapshot needs one callable with exact retained scope and owner; limitations={}",
+            declaration.id,
+            serde_json::to_string(&resolution.details).unwrap_or_else(|_| "[]".into()),
+        )));
+    }
+    if let Some(explicit) = request.root_declaration.as_deref() {
+        if explicit.trim().is_empty() || explicit != declaration.id {
+            return Err(invalid(format!(
+                "PROCESS_GRAPH_SCENARIO_ROOT_OVERRIDE_CONFLICT: frozen process selector for {subject} resolves to {}; rootDeclaration cannot switch it (candidates={}); edit the saved definition and recompose to select another root",
+                declaration.id,
+                serde_json::to_string(&resolution.candidates).unwrap_or_else(|_| "[]".into()),
+            )));
+        }
+    }
+    Ok(ResolvedRoot {
+        service,
+        declaration,
+        scenario: Some(scenario_dependency),
+        selector_resolution: Some(resolution),
+    })
+}
+
+fn owner_identity(observation: &Observation) -> Option<&str> {
+    observation.normalized["ownerIdentity"]
+        .as_str()
+        .filter(|owner| !owner.trim().is_empty())
+}
+
 /// Rebuild the full audit graph from Work's already hydrated retained snapshot.
 /// This path performs no repository reads or source capture.
 pub(super) fn collect_from_work(work: &Work) -> Result<Value, ClewError> {
@@ -102,34 +246,20 @@ pub(super) fn collect_from_work(work: &Work) -> Result<Value, ClewError> {
         .snapshot
         .as_deref()
         .ok_or_else(|| invalid("PROCESS_GRAPH_SNAPSHOT_REQUIRED: saved snapshot is unavailable"))?;
-    let service = work
-        .subject
-        .strip_prefix("service:")
-        .filter(|service| !service.trim().is_empty())
-        .ok_or_else(|| invalid("PROCESS_GRAPH_SERVICE_REQUIRED: Work must select one service"))?;
-    let declaration = work
-        .request
-        .root_declaration
-        .as_deref()
-        .filter(|declaration| !declaration.trim().is_empty())
-        .ok_or_else(|| invalid("PROCESS_GRAPH_ROOT_REQUIRED: Work has no exact rootDeclaration"))?;
-    let evidence = work.checked.services.get(service).ok_or_else(|| {
-        invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
-    })?;
-    let root = evidence
-        .observations
-        .get(declaration)
-        .filter(|observation| {
-            observation.service == service
-                && callable_observation(observation)
-                && exact_scope(observation).is_some()
-        })
+    let selection = resolve_work_root(&work.subject, &work.request, &work.checked)?;
+    let evidence = work
+        .checked
+        .services
+        .get(&selection.service)
         .ok_or_else(|| {
-            invalid(
-                "PROCESS_GRAPH_ROOT_INVALID: Work root is not an exact scoped callable observation",
-            )
+            invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
         })?;
-    let mut artifact = collect(evidence, root, snapshot, &work.checked.input_digest)?;
+    let mut artifact = collect(
+        evidence,
+        selection.declaration,
+        snapshot,
+        &work.checked.input_digest,
+    )?;
     let artifact_digest = digest(&artifact)?;
     artifact["artifactDigest"] = json!(artifact_digest);
     Ok(artifact)
@@ -871,6 +1001,120 @@ mod tests {
 
     fn add_method(evidence: &mut ServiceEvidence, id: &str, symbol: &str, events: Vec<Value>) {
         add_method_in_scope(evidence, id, ":main", symbol, events);
+    }
+
+    fn scenario_check(scope: Option<&str>) -> super::super::check::Check {
+        let mut evidence = empty_evidence();
+        add_method_in_scope(&mut evidence, "root-main", "main", "reserve", vec![]);
+        add_method_in_scope(&mut evidence, "root-worker", "worker", "reserve", vec![]);
+        let scenario = Scenario {
+            view: None,
+            process: Some(super::super::processes::Details {
+                scope: "A selected local process".into(),
+                participants: vec!["svc".into()],
+                objects: vec![],
+                trigger: "An explicit request".into(),
+                outcomes: vec!["A result".into()],
+                linked_subviews: vec![],
+            }),
+            schema: "codeclew-documentation-process/1.0".into(),
+            id: "flow".into(),
+            title: "Saved process".into(),
+            summary: "A saved process selection.".into(),
+            root: super::super::model::Endpoint {
+                service: "svc".into(),
+                selector: Some(super::super::model::Selector {
+                    language: "java".into(),
+                    scope: scope.map(str::to_owned),
+                    owner: "Worker".into(),
+                    name: "reserve".into(),
+                    parameter_types: Some(vec![]),
+                }),
+                call_site: None,
+            },
+            interactions: vec![],
+            max_depth: 1,
+            max_nodes: 1,
+        };
+        let scenario_dependency = Observation {
+            id: "scenario:flow".into(),
+            kind: "SCENARIO_SELECTION".into(),
+            service: "svc".into(),
+            symbol: "flow".into(),
+            normalized: serde_json::to_value(scenario).unwrap(),
+            digest: "scenario-digest".into(),
+            source_ids: vec![],
+        };
+        let mut dependencies = evidence.observations.clone();
+        dependencies.insert(scenario_dependency.id.clone(), scenario_dependency);
+        super::super::check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "input".into(),
+            context_digest: "context".into(),
+            source_inputs: None,
+            composition: None,
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies,
+        }
+    }
+
+    fn scenario_request(root_declaration: Option<&str>) -> Request {
+        serde_json::from_value(json!({
+            "schema":"codeclew-documentation-work-request/1.0",
+            "audience":"Process maintainers",
+            "contextProfile":"process-graph-v1",
+            "rootDeclaration":root_declaration,
+            "question":"Explain the selected operation."
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn scenario_root_resolution_honors_frozen_scope_and_rejects_guesses() {
+        let checked = scenario_check(Some("main"));
+        let resolved =
+            resolve_work_root("scenario:flow", &scenario_request(None), &checked).unwrap();
+        assert_eq!(resolved.declaration.id, "root-main");
+        assert_eq!(resolved.scenario.unwrap().kind, "SCENARIO_SELECTION");
+        assert_eq!(
+            resolved.selector_resolution.unwrap().status,
+            "SOURCE_UNAVAILABLE"
+        );
+
+        let conflict = resolve_work_root(
+            "scenario:flow",
+            &scenario_request(Some("root-worker")),
+            &checked,
+        )
+        .err()
+        .expect("explicit root override must conflict")
+        .to_string();
+        assert!(conflict.contains("ROOT_OVERRIDE_CONFLICT"), "{conflict}");
+
+        let missing_scope = resolve_work_root(
+            "scenario:flow",
+            &scenario_request(None),
+            &scenario_check(Some("missing")),
+        )
+        .err()
+        .expect("missing scope must fail")
+        .to_string();
+        assert!(missing_scope.contains("candidates=[]"), "{missing_scope}");
+
+        let ambiguous = resolve_work_root(
+            "scenario:flow",
+            &scenario_request(None),
+            &scenario_check(None),
+        )
+        .err()
+        .expect("ambiguous scope must fail")
+        .to_string();
+        assert!(ambiguous.contains("candidates="), "{ambiguous}");
+        assert!(ambiguous.contains("root-main"), "{ambiguous}");
+        assert!(ambiguous.contains("root-worker"), "{ambiguous}");
     }
 
     fn add_source(evidence: &mut ServiceEvidence, id: &str, text: &str) {

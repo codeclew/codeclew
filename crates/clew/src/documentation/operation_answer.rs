@@ -3,22 +3,23 @@
 //! This validates packet binding, evidence labels, and tree shape. It does not
 //! review semantic correctness or publish documentation.
 
-use super::{digest, invalid, proposals::Claim};
+use super::{digest, invalid};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const ANSWER_SCHEMA_V1_0: &str = "codeclew-operation-answer/1.0";
 const ANSWER_SCHEMA_V1_1: &str = "codeclew-operation-answer/1.1";
+const ANSWER_SCHEMA_V1_2: &str = "codeclew-operation-answer/1.2";
 const PACKET_SCHEMA: &str = "codeclew-documentation-reader-packet/1.0";
 const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "loop"];
 // Bump when the answer schema or generic author instruction changes materially;
 // this identity is persisted on newly prepared operation Work.
-pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.1";
+pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.2";
 
 pub(super) fn output_schema() -> Value {
     serde_json::from_str(include_str!(
-        "../../../../schemas/documentation/operation-answer-1.1.schema.json"
+        "../../../../schemas/documentation/operation-answer-1.2.schema.json"
     ))
     .expect("operation answer schema is valid JSON")
 }
@@ -28,9 +29,9 @@ pub(super) fn validate_and_render_draft(
     audit: &Value,
     answer: Value,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
-    if answer["schema"].as_str() != Some(ANSWER_SCHEMA_V1_1) {
+    if answer["schema"].as_str() != Some(ANSWER_SCHEMA_V1_2) {
         return Err(invalid(
-            "new operation drafts require codeclew-operation-answer/1.1; the raw author response was retained",
+            "new operation drafts require codeclew-operation-answer/1.2; the raw author response was retained",
         ));
     }
     validate_and_render(packet, audit, answer)
@@ -45,15 +46,70 @@ struct OperationAnswer {
     summary: Claim,
     steps: Vec<OperationStep>,
     #[serde(default)]
+    glossary: Vec<GlossaryTerm>,
+    #[serde(default)]
+    predicates: Vec<Predicate>,
+    #[serde(default)]
     preparations: Vec<Preparation>,
     uncertainties: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Claim {
+    text: String,
+    evidence: Vec<String>,
+    #[serde(default)]
+    checks: Vec<super::proposals::Assertion>,
+    #[serde(default)]
+    uncertainty: Option<String>,
+    #[serde(default)]
+    glossary_refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum GlossaryKind {
+    BusinessEntity,
+    Request,
+    TechnicalCarrier,
+    Term,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GlossaryTerm {
+    id: String,
+    label: String,
+    kind: GlossaryKind,
+    definition: Claim,
+    #[serde(default)]
+    subject_refs: Vec<String>,
+    #[serde(default)]
+    technical_names: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Predicate {
+    id: String,
+    label: String,
+    meaning: Claim,
+    source_check: Claim,
+    evaluation: Claim,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationStep {
+    #[serde(default)]
+    id: Option<String>,
     kind: String,
     meaning: Claim,
+    #[serde(default)]
+    predicate_ref: Option<String>,
+    #[serde(default)]
+    glossary_refs: Vec<String>,
     #[serde(default)]
     from: Option<String>,
     #[serde(default)]
@@ -116,9 +172,9 @@ impl ReaderLabels {
 
     fn summary(self) -> &'static str {
         if self.russian {
-            "Кратко"
+            "Полное резюме"
         } else {
-            "Summary"
+            "Full summary"
         }
     }
 
@@ -136,6 +192,14 @@ impl ReaderLabels {
             "Иначе (ни одно из условий выше не выполнено)"
         } else {
             "Otherwise (none of the conditions above matched)"
+        }
+    }
+
+    fn no_match_outcome(self) -> &'static str {
+        if self.russian {
+            "Исход для этого случая не сохранён."
+        } else {
+            "No outcome for this case is retained."
         }
     }
 
@@ -246,9 +310,60 @@ impl ReaderLabels {
 
     fn technical_details(self) -> &'static str {
         if self.russian {
-            "Технические сведения"
+            "Техническая справка"
         } else {
-            "Technical details"
+            "Technical reference"
+        }
+    }
+
+    fn evidence_reference(self) -> &'static str {
+        if self.russian {
+            "Свидетельства к пояснениям и расположения исходного кода"
+        } else {
+            "Claim evidence and source locations"
+        }
+    }
+
+    fn evidence_count(self, count: usize) -> String {
+        format!(
+            "{} ({count})",
+            if self.russian {
+                "Свидетельства"
+            } else {
+                "Evidence"
+            }
+        )
+    }
+
+    fn packet_facts_reference(self) -> &'static str {
+        if self.russian {
+            "Сохранённые факты пакета"
+        } else {
+            "Captured packet facts"
+        }
+    }
+
+    fn data_movement_reference(self) -> &'static str {
+        if self.russian {
+            "Таблица перемещения данных"
+        } else {
+            "Data movement table"
+        }
+    }
+
+    fn tree_reference(self) -> &'static str {
+        if self.russian {
+            "Дерево шагов операции"
+        } else {
+            "Operation step tree"
+        }
+    }
+
+    fn packet_limits_reference(self) -> &'static str {
+        if self.russian {
+            "Пробелы и ограничения пакета"
+        } else {
+            "Packet gaps and limits"
         }
     }
 
@@ -297,6 +412,83 @@ impl ReaderLabels {
             "Подготовка значений и проверки"
         } else {
             "Prepared values and checks"
+        }
+    }
+
+    fn glossary(self) -> &'static str {
+        if self.russian {
+            "Словарь"
+        } else {
+            "Glossary"
+        }
+    }
+
+    fn predicate_details(self) -> &'static str {
+        if self.russian {
+            "Пояснения условий и проверки в исходном коде"
+        } else {
+            "Condition meaning and source checks"
+        }
+    }
+
+    fn predicate_meaning(self) -> &'static str {
+        if self.russian {
+            "Смысл условия"
+        } else {
+            "Condition meaning"
+        }
+    }
+
+    fn source_check(self) -> &'static str {
+        if self.russian {
+            "Проверка в исходном коде"
+        } else {
+            "Exact source check"
+        }
+    }
+
+    fn evaluation(self) -> &'static str {
+        if self.russian {
+            "Как вычисляется условие"
+        } else {
+            "Evaluation behavior"
+        }
+    }
+
+    fn evidence_mapping(self) -> &'static str {
+        if self.russian {
+            "Свидетельства по блокам"
+        } else {
+            "Evidence by block"
+        }
+    }
+
+    fn technical_names(self) -> &'static str {
+        if self.russian {
+            "Технические имена"
+        } else {
+            "Technical names"
+        }
+    }
+
+    fn subject_references(self) -> &'static str {
+        if self.russian {
+            "Ссылки на объявления"
+        } else {
+            "Declaration references"
+        }
+    }
+
+    fn glossary_kind(self, kind: &GlossaryKind) -> &'static str {
+        match (self.russian, kind) {
+            (true, GlossaryKind::BusinessEntity) => "Сущность предметной области",
+            (true, GlossaryKind::Request) => "Запрос",
+            (true, GlossaryKind::TechnicalCarrier) => "Технический носитель",
+            (true, GlossaryKind::Term) => "Термин",
+            (false, GlossaryKind::BusinessEntity) => "Business entity",
+            (false, GlossaryKind::Request) => "Request",
+            (false, GlossaryKind::TechnicalCarrier) => "Technical carrier",
+            (false, GlossaryKind::Term) => "Term",
         }
     }
 
@@ -372,6 +564,14 @@ impl ReaderLabels {
         }
     }
 
+    fn horizontal_table_hint(self) -> &'static str {
+        if self.russian {
+            "Переведите фокус на таблицу и прокрутите её по горизонтали, чтобы увидеть все столбцы."
+        } else {
+            "Focus this table and scroll horizontally to view all columns."
+        }
+    }
+
     fn details_link(self) -> &'static str {
         if self.russian {
             "Подробности"
@@ -382,9 +582,9 @@ impl ReaderLabels {
 
     fn first_match_note(self) -> &'static str {
         if self.russian {
-            "Условия рассматриваются по порядку; следующее условие относится к ветви, только если предыдущие не сработали. Эта таблица — справочное представление, а не исполняемое DMN-правило; она не доказывает чистоту или повторную вычислимость предикатов."
+            "Побеждает первая подходящая строка; следующая строка относится к ветви, только если предыдущие условия не сработали. Эта таблица — справочное представление, а не исполняемое DMN-правило; она не доказывает чистоту или повторную вычислимость предикатов."
         } else {
-            "Conditions are considered in order; a later row applies only when earlier conditions are false. This is a reading aid, not an executable DMN rule, and it does not establish predicate purity or reevaluation behavior."
+            "The first matching row wins; a later row applies only when earlier conditions are false. This is a reading aid, not an executable DMN rule, and it does not establish predicate purity or reevaluation behavior."
         }
     }
 
@@ -472,8 +672,14 @@ pub(super) fn validate_and_render(
         return Err(invalid("operation answer must contain at least one step"));
     }
     validate_steps(&parsed.steps, &known_labels)?;
-    if parsed.schema == ANSWER_SCHEMA_V1_1 {
+    if matches!(
+        parsed.schema.as_str(),
+        ANSWER_SCHEMA_V1_1 | ANSWER_SCHEMA_V1_2
+    ) {
         validate_preparations(&parsed, packet, &known_labels)?;
+    }
+    if parsed.schema == ANSWER_SCHEMA_V1_2 {
+        validate_semantic_contract(&parsed, packet, &known_labels)?;
     }
     if parsed
         .uncertainties
@@ -525,6 +731,11 @@ fn validate_answer_version(answer: &Value) -> Result<&str, crate::error::ClewErr
                     "operation-answer/1.0 cannot contain preparations or preparationRefs",
                 ));
             }
+            if has_legacy_semantic_fields(answer) {
+                return Err(invalid(
+                    "operation-answer/1.0 cannot contain operation-answer/1.2 semantic fields",
+                ));
+            }
         }
         ANSWER_SCHEMA_V1_1 => {
             if !answer["preparations"].is_array() {
@@ -532,10 +743,131 @@ fn validate_answer_version(answer: &Value) -> Result<&str, crate::error::ClewErr
                     "operation-answer/1.1 requires a preparations array, which may be empty",
                 ));
             }
+            if has_legacy_semantic_fields(answer) {
+                return Err(invalid(
+                    "operation-answer/1.1 cannot contain operation-answer/1.2 semantic fields",
+                ));
+            }
+        }
+        ANSWER_SCHEMA_V1_2 => {
+            for field in ["preparations", "glossary", "predicates"] {
+                if !answer[field].is_array() {
+                    return Err(invalid(format!(
+                        "operation-answer/1.2 requires a {field} array, which may be empty"
+                    )));
+                }
+            }
+            if !claim_has_glossary_refs(&answer["summary"])
+                || !steps_have_glossary_refs(&answer["steps"])
+                || !predicate_refs_only_on_decisions(&answer["steps"])
+                || answer["glossary"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|term| !claim_has_glossary_refs(&term["definition"]))
+                || answer["predicates"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|predicate| {
+                        ["meaning", "sourceCheck", "evaluation"]
+                            .into_iter()
+                            .any(|field| !claim_has_glossary_refs(&predicate[field]))
+                    })
+                || answer["preparations"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|preparation| {
+                        !preparation["steps"].is_array()
+                            || !claim_has_glossary_refs(&preparation["summary"])
+                            || !steps_have_glossary_refs(&preparation["steps"])
+                            || !predicate_refs_only_on_decisions(&preparation["steps"])
+                    })
+            {
+                return Err(invalid(
+                    "operation-answer/1.2 requires an explicit glossaryRefs array on every claim and step",
+                ));
+            }
         }
         _ => return Err(invalid("unsupported operation-answer schema")),
     }
     Ok(schema)
+}
+
+fn claim_has_glossary_refs(value: &Value) -> bool {
+    value["glossaryRefs"].as_array().is_some()
+}
+
+fn steps_have_glossary_refs(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(steps) => steps.iter().all(|step| {
+            step["glossaryRefs"].as_array().is_some()
+                && claim_has_glossary_refs(&step["meaning"])
+                && steps_have_glossary_refs(&step["children"])
+                && steps_have_glossary_refs(&step["otherwise"])
+        }),
+        _ => false,
+    }
+}
+
+fn predicate_refs_only_on_decisions(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(steps) => steps.iter().all(predicate_refs_only_on_decisions),
+        Value::Object(step) => {
+            (!step.contains_key("predicateRef") || step["kind"] == "decision")
+                && step
+                    .get("children")
+                    .is_none_or(predicate_refs_only_on_decisions)
+                && step
+                    .get("otherwise")
+                    .is_none_or(predicate_refs_only_on_decisions)
+        }
+        _ => false,
+    }
+}
+
+fn has_legacy_semantic_fields(answer: &Value) -> bool {
+    fn contains_key(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key(key) || object.values().any(|value| contains_key(value, key))
+            }
+            Value::Array(values) => values.iter().any(|value| contains_key(value, key)),
+            _ => false,
+        }
+    }
+
+    fn steps_have_ids(value: &Value) -> bool {
+        match value {
+            Value::Array(steps) => steps.iter().any(steps_have_ids),
+            Value::Object(step) => {
+                step.contains_key("id")
+                    || step.get("children").is_some_and(steps_have_ids)
+                    || step.get("otherwise").is_some_and(steps_have_ids)
+            }
+            _ => false,
+        }
+    }
+
+    answer["glossary"]
+        .as_array()
+        .is_some_and(|terms| !terms.is_empty())
+        || answer["predicates"]
+            .as_array()
+            .is_some_and(|predicates| !predicates.is_empty())
+        || contains_key(answer, "predicateRef")
+        || contains_key(answer, "glossaryRefs")
+        || steps_have_ids(&answer["steps"])
+        || answer["preparations"]
+            .as_array()
+            .is_some_and(|preparations| {
+                preparations
+                    .iter()
+                    .any(|prep| steps_have_ids(&prep["steps"]))
+            })
 }
 
 fn step_tree_has_preparation_refs(value: &Value) -> bool {
@@ -635,6 +967,214 @@ fn validate_preparations(
     Ok(())
 }
 
+fn validate_semantic_contract(
+    answer: &OperationAnswer,
+    packet: &Value,
+    known_labels: &BTreeSet<String>,
+) -> Result<(), crate::error::ClewError> {
+    let known_subjects = packet_subject_references(packet);
+    let mut all_ids = BTreeSet::new();
+    let mut glossary_ids = BTreeSet::new();
+    for term in &answer.glossary {
+        validate_semantic_id(&term.id, "glossary")?;
+        if !all_ids.insert(term.id.clone()) || !glossary_ids.insert(term.id.clone()) {
+            return Err(invalid("operation answer block ids must be unique"));
+        }
+        if term.label.trim().is_empty() {
+            return Err(invalid(format!(
+                "glossary {} label must not be empty",
+                term.id
+            )));
+        }
+        if !unique_values(&term.subject_refs) || !unique_values(&term.technical_names) {
+            return Err(invalid(format!(
+                "glossary {} subjectRefs and technicalNames must not contain duplicates",
+                term.id
+            )));
+        }
+        validate_claim(
+            &term.definition,
+            known_labels,
+            &format!("glossary {} definition", term.id),
+        )?;
+        for reference in &term.subject_refs {
+            if reference.trim().is_empty() || !known_subjects.contains_key(reference) {
+                return Err(invalid(format!(
+                    "glossary {} subjectRefs must identify declarations or types in this packet",
+                    term.id
+                )));
+            }
+        }
+        if term
+            .technical_names
+            .iter()
+            .any(|name| name.trim().is_empty())
+        {
+            return Err(invalid(format!(
+                "glossary {} technicalNames must not be empty",
+                term.id
+            )));
+        }
+    }
+    for term in &answer.glossary {
+        validate_glossary_refs(
+            &term.definition.glossary_refs,
+            &glossary_ids,
+            &format!("glossary {} definition", term.id),
+        )?;
+    }
+
+    let mut predicate_ids = BTreeSet::new();
+    for predicate in &answer.predicates {
+        validate_semantic_id(&predicate.id, "predicate")?;
+        if !all_ids.insert(predicate.id.clone()) || !predicate_ids.insert(predicate.id.clone()) {
+            return Err(invalid("operation answer block ids must be unique"));
+        }
+        if predicate.label.trim().is_empty() {
+            return Err(invalid(format!(
+                "predicate {} label must not be empty",
+                predicate.id
+            )));
+        }
+        for (name, claim) in [
+            ("meaning", &predicate.meaning),
+            ("sourceCheck", &predicate.source_check),
+            ("evaluation", &predicate.evaluation),
+        ] {
+            let location = format!("predicate {} {name}", predicate.id);
+            validate_claim(claim, known_labels, &location)?;
+            validate_glossary_refs(&claim.glossary_refs, &glossary_ids, &location)?;
+        }
+    }
+
+    let mut referenced_predicates = BTreeSet::new();
+    validate_glossary_refs(&answer.summary.glossary_refs, &glossary_ids, "summary")?;
+    validate_semantic_steps(
+        &answer.steps,
+        "operation",
+        &mut all_ids,
+        &glossary_ids,
+        &predicate_ids,
+        &mut referenced_predicates,
+    )?;
+    for preparation in &answer.preparations {
+        if !all_ids.insert(preparation.id.clone()) {
+            return Err(invalid("operation answer block ids must be unique"));
+        }
+        validate_glossary_refs(
+            &preparation.summary.glossary_refs,
+            &glossary_ids,
+            &format!("preparation {} summary", preparation.id),
+        )?;
+        validate_semantic_steps(
+            &preparation.steps,
+            &format!("preparation {}", preparation.id),
+            &mut all_ids,
+            &glossary_ids,
+            &predicate_ids,
+            &mut referenced_predicates,
+        )?;
+    }
+    if referenced_predicates != predicate_ids {
+        return Err(invalid(
+            "every predicate must be referenced by at least one decision step",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_semantic_steps(
+    steps: &[OperationStep],
+    owner: &str,
+    all_ids: &mut BTreeSet<String>,
+    glossary_ids: &BTreeSet<String>,
+    predicate_ids: &BTreeSet<String>,
+    referenced_predicates: &mut BTreeSet<String>,
+) -> Result<(), crate::error::ClewError> {
+    for (index, step) in steps.iter().enumerate() {
+        let location = format!("{owner} step {}", index + 1);
+        let id = step.id.as_deref().ok_or_else(|| {
+            invalid(format!(
+                "{location} requires a stable id in operation-answer/1.2"
+            ))
+        })?;
+        validate_semantic_id(id, "step")?;
+        if !all_ids.insert(id.to_owned()) {
+            return Err(invalid("operation answer block ids must be unique"));
+        }
+        validate_glossary_refs(&step.glossary_refs, glossary_ids, &location)?;
+        validate_glossary_refs(&step.meaning.glossary_refs, glossary_ids, &location)?;
+        match (step.kind.as_str(), step.predicate_ref.as_deref()) {
+            ("decision", Some(reference)) if predicate_ids.contains(reference) => {
+                referenced_predicates.insert(reference.to_owned());
+            }
+            ("decision", _) => {
+                return Err(invalid(format!(
+                    "{location} decision requires a resolved predicateRef"
+                )));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(format!(
+                    "{location} may use predicateRef only when kind is decision"
+                )));
+            }
+            (_, None) => {}
+        }
+        validate_semantic_steps(
+            &step.children,
+            owner,
+            all_ids,
+            glossary_ids,
+            predicate_ids,
+            referenced_predicates,
+        )?;
+        validate_semantic_steps(
+            &step.otherwise,
+            owner,
+            all_ids,
+            glossary_ids,
+            predicate_ids,
+            referenced_predicates,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_semantic_id(id: &str, owner: &str) -> Result<(), crate::error::ClewError> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(invalid(format!(
+            "{owner} id must contain only ASCII letters, digits, underscores, or hyphens"
+        )));
+    }
+    Ok(())
+}
+
+fn unique_values(values: &[String]) -> bool {
+    let mut unique = BTreeSet::new();
+    values.iter().all(|value| unique.insert(value))
+}
+
+fn validate_glossary_refs(
+    references: &[String],
+    known_ids: &BTreeSet<String>,
+    location: &str,
+) -> Result<(), crate::error::ClewError> {
+    let mut seen = BTreeSet::new();
+    for reference in references {
+        if reference.trim().is_empty() || !known_ids.contains(reference) {
+            return Err(invalid(format!("{location} has an unresolved glossaryRef")));
+        }
+        if !seen.insert(reference) {
+            return Err(invalid(format!("{location} repeats the same glossaryRef")));
+        }
+    }
+    Ok(())
+}
+
 fn resolved_preparation_references(
     steps: &[OperationStep],
     known_ids: &BTreeSet<String>,
@@ -672,28 +1212,62 @@ fn resolved_preparation_references(
 }
 
 fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
-    let mut subjects = BTreeMap::<String, String>::new();
+    #[derive(Default)]
+    struct Subject {
+        identity: String,
+        owner: Option<String>,
+        scope: Option<String>,
+        conflicted: bool,
+    }
+
+    fn metadata(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn merge_metadata(current: &mut Option<String>, incoming: Option<String>) -> bool {
+        match (current.as_ref(), incoming) {
+            (Some(current), Some(incoming)) if current != &incoming => false,
+            (None, Some(incoming)) => {
+                *current = Some(incoming);
+                true
+            }
+            _ => true,
+        }
+    }
+
+    let mut subjects = BTreeMap::<String, Subject>::new();
     let mut insert = |reference: &str, identity: &str, owner: Option<&str>, scope: Option<&str>| {
         if reference.trim().is_empty() || identity.trim().is_empty() {
             return;
         }
-        let mut display = format!("{reference} · {identity}");
-        if let Some(owner) = owner.filter(|owner| !owner.trim().is_empty() && *owner != identity) {
-            display.push_str(" · ");
-            display.push_str(owner);
+        let owner = metadata(owner);
+        let scope = metadata(scope);
+        let Some(existing) = subjects.get_mut(reference) else {
+            subjects.insert(
+                reference.to_owned(),
+                Subject {
+                    identity: identity.to_owned(),
+                    owner,
+                    scope,
+                    conflicted: false,
+                },
+            );
+            return;
+        };
+        if existing.conflicted {
+            return;
         }
-        if let Some(scope) = scope.filter(|scope| !scope.trim().is_empty()) {
-            display.push_str(" · ");
-            display.push_str(scope);
+        if existing.identity != identity
+            || !merge_metadata(&mut existing.owner, owner)
+            || !merge_metadata(&mut existing.scope, scope)
+        {
+            // Conflict is sticky: a later duplicate cannot make this packet
+            // reference trustworthy again.
+            existing.conflicted = true;
         }
-        subjects
-            .entry(reference.to_owned())
-            .and_modify(|existing| {
-                if existing != &display {
-                    existing.clear();
-                }
-            })
-            .or_insert(display);
     };
 
     for node in packet["callMap"]["nodes"].as_array().into_iter().flatten() {
@@ -732,7 +1306,12 @@ fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
             field["ownerIdentity"].as_str(),
             field["name"].as_str(),
         ) {
-            insert(reference, &format!("{owner}#{name}"), None, None);
+            let descriptor = metadata(field["typeDescriptor"].as_str());
+            let identity = descriptor
+                .as_deref()
+                .map(|descriptor| format!("field:{owner}#{name}:{descriptor}"))
+                .unwrap_or_else(|| format!("{owner}#{name}"));
+            insert(reference, &identity, Some(owner), field["scope"].as_str());
         }
     }
     for method in packet["methods"].as_array().into_iter().flatten() {
@@ -772,8 +1351,26 @@ fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
             );
         }
     }
-    subjects.retain(|_, display: &mut String| !display.is_empty());
     subjects
+        .into_iter()
+        .filter_map(|(reference, subject)| {
+            if subject.conflicted {
+                return None;
+            }
+            let mut display = format!("{reference} · {}", subject.identity);
+            if let Some(owner) = subject.owner.as_deref().filter(|owner| {
+                *owner != subject.identity && !subject.identity.starts_with(&format!("{owner}#"))
+            }) {
+                display.push_str(" · ");
+                display.push_str(owner);
+            }
+            if let Some(scope) = subject.scope {
+                display.push_str(" · ");
+                display.push_str(&scope);
+            }
+            Some((reference, display))
+        })
+        .collect()
 }
 
 fn packet_evidence_labels(packet: &Value) -> Result<BTreeSet<String>, crate::error::ClewError> {
@@ -873,6 +1470,9 @@ fn validate_step(
     known_labels: &BTreeSet<String>,
     location: &str,
 ) -> Result<(), crate::error::ClewError> {
+    if let Some(id) = step.id.as_deref() {
+        validate_semantic_id(id, "step")?;
+    }
     if !STEP_KINDS.contains(&step.kind.as_str()) {
         return Err(invalid(format!("{location} has an unsupported kind")));
     }
@@ -943,11 +1543,164 @@ fn answer_evidence_labels(answer: &OperationAnswer) -> BTreeSet<String> {
     }
     let mut labels = answer.summary.evidence.iter().cloned().collect();
     visit(&answer.steps, &mut labels);
+    for term in &answer.glossary {
+        labels.extend(term.definition.evidence.iter().cloned());
+    }
+    for predicate in &answer.predicates {
+        labels.extend(predicate.meaning.evidence.iter().cloned());
+        labels.extend(predicate.source_check.evidence.iter().cloned());
+        labels.extend(predicate.evaluation.evidence.iter().cloned());
+    }
     for preparation in &answer.preparations {
         labels.extend(preparation.summary.evidence.iter().cloned());
         visit(&preparation.steps, &mut labels);
     }
     labels
+}
+
+struct BlockEvidence<'a> {
+    id: String,
+    label: String,
+    evidence: &'a [String],
+}
+
+fn block_evidence(answer: &OperationAnswer) -> Vec<BlockEvidence<'_>> {
+    fn visit_steps<'a>(steps: &'a [OperationStep], rows: &mut Vec<BlockEvidence<'a>>) {
+        for (index, step) in steps.iter().enumerate() {
+            let id = step
+                .id
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("step-{}", index + 1));
+            rows.push(BlockEvidence {
+                id: format!("step-{id}"),
+                label: step.meaning.text.clone(),
+                evidence: &step.meaning.evidence,
+            });
+            visit_steps(&step.children, rows);
+            visit_steps(&step.otherwise, rows);
+        }
+    }
+
+    let mut rows = vec![BlockEvidence {
+        id: "summary".into(),
+        label: "Summary".into(),
+        evidence: &answer.summary.evidence,
+    }];
+    for term in &answer.glossary {
+        rows.push(BlockEvidence {
+            id: format!("glossary-{}", term.id),
+            label: term.label.clone(),
+            evidence: &term.definition.evidence,
+        });
+    }
+    for predicate in &answer.predicates {
+        rows.push(BlockEvidence {
+            id: format!("predicate-{}-meaning", predicate.id),
+            label: format!("{} · {}", predicate.label, "meaning"),
+            evidence: &predicate.meaning.evidence,
+        });
+        rows.push(BlockEvidence {
+            id: format!("predicate-{}-source-check", predicate.id),
+            label: format!("{} · exact source check", predicate.label),
+            evidence: &predicate.source_check.evidence,
+        });
+        rows.push(BlockEvidence {
+            id: format!("predicate-{}-evaluation", predicate.id),
+            label: format!("{} · evaluation", predicate.label),
+            evidence: &predicate.evaluation.evidence,
+        });
+    }
+    visit_steps(&answer.steps, &mut rows);
+    for preparation in &answer.preparations {
+        rows.push(BlockEvidence {
+            id: format!("preparation-{}", preparation.id),
+            label: preparation.title.clone(),
+            evidence: &preparation.summary.evidence,
+        });
+        visit_steps(&preparation.steps, &mut rows);
+    }
+    rows
+}
+
+fn table_scroll_start(labels: ReaderLabels, region_label: &str) -> String {
+    format!(
+        "<div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"{}\"><p class=\"table-scroll-hint\">{}</p>",
+        html_escape(region_label),
+        html_escape(labels.horizontal_table_hint())
+    )
+}
+
+fn render_block_evidence_html(
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.schema != ANSWER_SCHEMA_V1_2 {
+        return String::new();
+    }
+    let rows = block_evidence(answer);
+    let mut output = format!(
+        "<section class=\"block-evidence-map\"><h3>{}</h3>{}<table><thead><tr><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        html_escape(labels.evidence_mapping()),
+        table_scroll_start(labels, labels.evidence_mapping()),
+        html_escape(if labels.russian {
+            "Смысловой блок"
+        } else {
+            "Meaning block"
+        }),
+        html_escape(if labels.russian {
+            "Метка блока"
+        } else {
+            "Block ID"
+        }),
+        html_escape(labels.evidence())
+    );
+    for row in rows {
+        output.push_str(&format!(
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+            html_escape(&row.label),
+            html_escape(&row.id),
+            render_evidence_html(row.evidence, evidence_index, labels)
+        ));
+    }
+    output.push_str("</tbody></table></div></section>");
+    output
+}
+
+fn render_block_evidence_markdown(
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.schema != ANSWER_SCHEMA_V1_2 {
+        return String::new();
+    }
+    let mut output = format!(
+        "### {}\n\n| {} | {} | {} |\n|---|---|---|\n",
+        markdown_escape(labels.evidence_mapping()),
+        markdown_escape(if labels.russian {
+            "Смысловой блок"
+        } else {
+            "Meaning block"
+        }),
+        markdown_escape(if labels.russian {
+            "Метка блока"
+        } else {
+            "Block ID"
+        }),
+        markdown_escape(labels.evidence())
+    );
+    for row in block_evidence(answer) {
+        output.push_str(&format!(
+            "| {} | `{}` | {} |\n",
+            markdown_table_cell(&row.label),
+            markdown_code_cell(&row.id),
+            markdown_evidence_cell(row.evidence, evidence_index)
+        ));
+    }
+    output.push('\n');
+    output
 }
 
 fn preparation_titles(answer: &OperationAnswer) -> BTreeMap<String, String> {
@@ -960,6 +1713,249 @@ fn preparation_titles(answer: &OperationAnswer) -> BTreeMap<String, String> {
 
 fn preparation_step_prefix(id: &str) -> String {
     format!("prep-{}-{id}", id.len())
+}
+
+fn render_glossary_links_html(
+    references: &[String],
+    glossary: &[GlossaryTerm],
+    labels: ReaderLabels,
+) -> String {
+    let links = references
+        .iter()
+        .filter_map(|reference| {
+            let term = glossary.iter().find(|term| &term.id == reference)?;
+            Some(format!(
+                "<a href=\"#glossary-{}\">{}</a>",
+                html_escape(reference),
+                html_escape(&term.label)
+            ))
+        })
+        .collect::<Vec<_>>();
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p class=\"glossary-links\"><strong>{}:</strong> {}</p>",
+            html_escape(labels.glossary()),
+            links.join(" · ")
+        )
+    }
+}
+
+fn render_glossary_links_markdown(
+    references: &[String],
+    glossary: &[GlossaryTerm],
+    labels: ReaderLabels,
+) -> String {
+    let links = references
+        .iter()
+        .filter_map(|reference| {
+            let term = glossary.iter().find(|term| &term.id == reference)?;
+            Some(format!(
+                "[{}](#glossary-{})",
+                markdown_escape(&term.label),
+                reference
+            ))
+        })
+        .collect::<Vec<_>>();
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "  **{}:** {}",
+            markdown_escape(labels.glossary()),
+            links.join(" · ")
+        )
+    }
+}
+
+fn render_glossary_html(
+    answer: &OperationAnswer,
+    packet: &Value,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.glossary.is_empty() {
+        return String::new();
+    }
+    let subjects = packet_subject_references(packet);
+    let mut output = format!(
+        "<section id=\"glossary\"><h2>{}</h2><div class=\"glossary-list\">",
+        html_escape(labels.glossary())
+    );
+    for term in &answer.glossary {
+        output.push_str(&format!(
+            "<article class=\"glossary-term\" id=\"glossary-{}\"><h3>{} <span class=\"term-kind\">{}</span></h3>{}",
+            html_escape(&term.id),
+            html_escape(&term.label),
+            html_escape(labels.glossary_kind(&term.kind)),
+            render_claim_html(&term.definition, evidence_index, &answer.glossary, labels)
+        ));
+        if !term.subject_refs.is_empty() || !term.technical_names.is_empty() {
+            output.push_str(&format!(
+                "<details class=\"technical-term-details\"><summary>{}</summary>",
+                html_escape(labels.technical_names())
+            ));
+            if !term.technical_names.is_empty() {
+                output.push_str(&format!(
+                    "<p><strong>{}:</strong> {}</p>",
+                    html_escape(labels.technical_names()),
+                    term.technical_names
+                        .iter()
+                        .map(|name| format!("<code>{}</code>", html_escape(name)))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                ));
+            }
+            if !term.subject_refs.is_empty() {
+                output.push_str(&format!(
+                    "<p><strong>{}:</strong> {}</p>",
+                    html_escape(labels.subject_references()),
+                    term.subject_refs
+                        .iter()
+                        .map(|reference| {
+                            format!(
+                                "<code>{}</code> — {}",
+                                html_escape(reference),
+                                html_escape(
+                                    subjects
+                                        .get(reference)
+                                        .map(String::as_str)
+                                        .unwrap_or(labels.unknown())
+                                )
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+            output.push_str("</details>");
+        }
+        output.push_str("</article>");
+    }
+    output.push_str("</div></section>");
+    output
+}
+
+fn render_glossary_markdown(
+    answer: &OperationAnswer,
+    packet: &Value,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.glossary.is_empty() {
+        return String::new();
+    }
+    let subjects = packet_subject_references(packet);
+    let mut output = format!(
+        "<a id=\"glossary\"></a>\n## {}\n\n",
+        markdown_escape(labels.glossary())
+    );
+    for term in &answer.glossary {
+        output.push_str(&format!(
+            "<a id=\"glossary-{}\"></a>\n### {} _({})_\n\n{}\n\n",
+            term.id,
+            markdown_escape(&term.label),
+            markdown_escape(labels.glossary_kind(&term.kind)),
+            render_claim_markdown(&term.definition, evidence_index, &answer.glossary, labels)
+        ));
+        if !term.subject_refs.is_empty() || !term.technical_names.is_empty() {
+            output.push_str(&format!(
+                "<details>\n<summary>{}</summary>\n\n",
+                markdown_escape(labels.technical_names())
+            ));
+            if !term.technical_names.is_empty() {
+                output.push_str(&format!(
+                    "**{}:** {}\n\n",
+                    markdown_escape(labels.technical_names()),
+                    term.technical_names
+                        .iter()
+                        .map(|name| format!("`{}`", markdown_code_cell(name)))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                ));
+            }
+            if !term.subject_refs.is_empty() {
+                output.push_str(&format!(
+                    "**{}:** {}\n\n",
+                    markdown_escape(labels.subject_references()),
+                    term.subject_refs
+                        .iter()
+                        .map(|reference| format!(
+                            "`{}` — {}",
+                            markdown_code_cell(reference),
+                            markdown_escape(
+                                subjects
+                                    .get(reference)
+                                    .map(String::as_str)
+                                    .unwrap_or(labels.unknown())
+                            )
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+            output.push_str("</details>\n\n");
+        }
+    }
+    output
+}
+
+fn render_predicates_html(
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.predicates.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<section id=\"semantic-predicates\"><h3>{}</h3>",
+        html_escape(labels.predicate_details())
+    );
+    for predicate in &answer.predicates {
+        output.push_str(&format!(
+            "<details class=\"predicate-definition\" id=\"predicate-{}\"><summary>{}</summary><div class=\"predicate-meaning\"><strong>{}:</strong>{}</div><div class=\"predicate-source-check\"><strong>{}:</strong>{}</div><div class=\"predicate-evaluation\"><strong>{}:</strong>{}</div></details>",
+            html_escape(&predicate.id),
+            html_escape(&predicate.label),
+            html_escape(labels.predicate_meaning()),
+            render_claim_html(&predicate.meaning, evidence_index, &answer.glossary, labels),
+            html_escape(labels.source_check()),
+            render_claim_html(&predicate.source_check, evidence_index, &answer.glossary, labels),
+            html_escape(labels.evaluation()),
+            render_claim_html(&predicate.evaluation, evidence_index, &answer.glossary, labels)
+        ));
+    }
+    output.push_str("</section>");
+    output
+}
+
+fn render_predicates_markdown(
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if answer.predicates.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "<a id=\"semantic-predicates\"></a>\n### {}\n\n",
+        markdown_escape(labels.predicate_details())
+    );
+    for predicate in &answer.predicates {
+        output.push_str(&format!(
+            "<details>\n<summary id=\"predicate-{}\">{}</summary>\n\n**{}:** {}\n\n**{}:** {}\n\n**{}:** {}\n\n</details>\n\n",
+            predicate.id,
+            markdown_escape(&predicate.label),
+            markdown_escape(labels.predicate_meaning()),
+            render_claim_markdown(&predicate.meaning, evidence_index, &answer.glossary, labels),
+            markdown_escape(labels.source_check()),
+            render_claim_markdown(&predicate.source_check, evidence_index, &answer.glossary, labels),
+            markdown_escape(labels.evaluation()),
+            render_claim_markdown(&predicate.evaluation, evidence_index, &answer.glossary, labels)
+        ));
+    }
+    output
 }
 
 fn render_preparations_html(
@@ -983,7 +1979,9 @@ fn render_preparations_html(
             html_escape(&preparation.id),
             html_escape(&preparation.title)
         ));
-        if let Some(reference) = preparation.subject_reference.as_deref() {
+        if answer.schema != ANSWER_SCHEMA_V1_2
+            && let Some(reference) = preparation.subject_reference.as_deref()
+        {
             let identity = subjects
                 .get(reference)
                 .map(String::as_str)
@@ -997,11 +1995,13 @@ fn render_preparations_html(
         output.push_str(&render_claim_html(
             &preparation.summary,
             evidence_index,
+            &answer.glossary,
             labels,
         ));
         if !preparation.steps.is_empty() {
             output.push_str(&render_html_steps(
                 &preparation.steps,
+                answer,
                 evidence_index,
                 true,
                 &preparation_step_prefix(&preparation.id),
@@ -1033,10 +2033,12 @@ fn render_preparations_markdown(
     for preparation in &answer.preparations {
         output.push_str(&format!(
             "<a id=\"preparation-{}\"></a>\n### {}\n\n",
-            preparation.id,
+            html_escape(&preparation.id),
             markdown_escape(&preparation.title)
         ));
-        if let Some(reference) = preparation.subject_reference.as_deref() {
+        if answer.schema != ANSWER_SCHEMA_V1_2
+            && let Some(reference) = preparation.subject_reference.as_deref()
+        {
             let identity = subjects
                 .get(reference)
                 .map(String::as_str)
@@ -1050,12 +2052,14 @@ fn render_preparations_markdown(
         output.push_str(&render_claim_markdown(
             &preparation.summary,
             evidence_index,
+            &answer.glossary,
             labels,
         ));
         output.push_str("\n\n");
         if !preparation.steps.is_empty() {
             output.push_str(&render_markdown_steps(
                 &preparation.steps,
+                answer,
                 evidence_index,
                 0,
                 true,
@@ -1067,6 +2071,184 @@ fn render_preparations_markdown(
         }
     }
     output
+}
+
+fn render_preparation_technical_html(
+    answer: &OperationAnswer,
+    packet: &Value,
+    labels: ReaderLabels,
+) -> String {
+    if answer.schema != ANSWER_SCHEMA_V1_2 {
+        return String::new();
+    }
+    let subjects = packet_subject_references(packet);
+    let mut output = String::new();
+    for preparation in &answer.preparations {
+        let mut step_rows = String::new();
+        append_preparation_metadata_rows_html(
+            &preparation.steps,
+            &preparation.id,
+            &mut step_rows,
+            labels,
+        );
+        let subject = preparation.subject_reference.as_deref().map(|reference| {
+            format!(
+                "<p class=\"step-meta\"><strong>{}:</strong> <code>{}</code> — {}</p>",
+                html_escape(labels.subject()),
+                html_escape(reference),
+                html_escape(
+                    subjects
+                        .get(reference)
+                        .map(String::as_str)
+                        .unwrap_or(labels.unknown())
+                )
+            )
+        });
+        if subject.is_none() && step_rows.is_empty() {
+            continue;
+        }
+        if output.is_empty() {
+            output.push_str(&format!(
+                "<section class=\"preparation-technical-reference\"><h3>{}</h3>",
+                html_escape(if labels.russian {
+                    "Технические ссылки подготовок"
+                } else {
+                    "Preparation source and technical metadata"
+                })
+            ));
+        }
+        output.push_str(&format!(
+            "<article class=\"preparation-metadata\"><h4>{}</h4>{}{}</article>",
+            html_escape(&preparation.title),
+            subject.unwrap_or_default(),
+            if step_rows.is_empty() {
+                String::new()
+            } else {
+                format!("<ul>{step_rows}</ul>")
+            }
+        ));
+    }
+    if !output.is_empty() {
+        output.push_str("</section>");
+    }
+    output
+}
+
+fn append_preparation_metadata_rows_html(
+    steps: &[OperationStep],
+    path_prefix: &str,
+    output: &mut String,
+    labels: ReaderLabels,
+) {
+    for (index, step) in steps.iter().enumerate() {
+        let path = step_path(path_prefix, index + 1);
+        if step.from.is_some() || step.to.is_some() || step.interaction.is_some() {
+            let block = step.id.as_deref().unwrap_or(&path);
+            output.push_str(&format!(
+                "<li><code>{}</code>{}</li>",
+                html_escape(block),
+                render_step_metadata_html(step, labels)
+            ));
+        }
+        append_preparation_metadata_rows_html(
+            &step.children,
+            &format!("{path}-then"),
+            output,
+            labels,
+        );
+        append_preparation_metadata_rows_html(
+            &step.otherwise,
+            &format!("{path}-else"),
+            output,
+            labels,
+        );
+    }
+}
+
+fn render_preparation_technical_markdown(
+    answer: &OperationAnswer,
+    packet: &Value,
+    labels: ReaderLabels,
+) -> String {
+    if answer.schema != ANSWER_SCHEMA_V1_2 {
+        return String::new();
+    }
+    let subjects = packet_subject_references(packet);
+    let mut rows = String::new();
+    for preparation in &answer.preparations {
+        let mut preparation_rows = String::new();
+        if let Some(reference) = preparation.subject_reference.as_deref() {
+            preparation_rows.push_str(&format!(
+                "- **{}:** `{}` — {}\n",
+                markdown_escape(labels.subject()),
+                markdown_code_cell(reference),
+                markdown_escape(
+                    subjects
+                        .get(reference)
+                        .map(String::as_str)
+                        .unwrap_or(labels.unknown())
+                )
+            ));
+        }
+        append_preparation_metadata_rows_markdown(
+            &preparation.steps,
+            &preparation.id,
+            &mut preparation_rows,
+            labels,
+        );
+        if !preparation_rows.is_empty() {
+            rows.push_str(&format!(
+                "### {}\n\n{}\n",
+                markdown_escape(&preparation.title),
+                preparation_rows
+            ));
+        }
+    }
+    if rows.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<details class=\"preparation-technical-reference\"><summary>{}</summary>\n\n{}\n</details>\n\n",
+            markdown_escape(if labels.russian {
+                "Технические ссылки подготовок"
+            } else {
+                "Preparation source and technical metadata"
+            }),
+            rows
+        )
+    }
+}
+
+fn append_preparation_metadata_rows_markdown(
+    steps: &[OperationStep],
+    path_prefix: &str,
+    output: &mut String,
+    labels: ReaderLabels,
+) {
+    for (index, step) in steps.iter().enumerate() {
+        let path = step_path(path_prefix, index + 1);
+        let metadata = markdown_step_metadata(step, labels);
+        if !metadata.is_empty() {
+            let block = step.id.as_deref().unwrap_or(&path);
+            output.push_str(&format!(
+                "- **{}:**{}\n",
+                markdown_code_cell(block),
+                metadata
+            ));
+        }
+        append_preparation_metadata_rows_markdown(
+            &step.children,
+            &format!("{path}-then"),
+            output,
+            labels,
+        );
+        append_preparation_metadata_rows_markdown(
+            &step.otherwise,
+            &format!("{path}-else"),
+            output,
+            labels,
+        );
+    }
 }
 
 struct DataMovementRow<'a> {
@@ -1163,9 +2345,10 @@ fn render_data_movement_html(
         return String::new();
     }
     let mut output = format!(
-        "<section id=\"data-movement\"><h2>{}</h2><p class=\"muted\">{}</p><table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
+        "<section id=\"data-movement\"><h2>{}</h2><p class=\"muted\">{}</p>{}<table><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
         html_escape(labels.data_movement()),
         html_escape(labels.data_movement_note()),
+        table_scroll_start(labels, labels.data_movement()),
         html_escape(if labels.russian {
             "Контекст"
         } else {
@@ -1184,21 +2367,22 @@ fn render_data_movement_html(
             .map(|part| html_escape(part))
             .collect::<Vec<_>>()
             .join(" → ");
-        let path = format!("step-{}", row.path);
+        let path = step_anchor(row.step, &row.path);
         output.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"#{path}\">{}</a> {}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"#{}\">{}</a> {}</td><td>{}</td><td>{}</td></tr>",
             context,
             html_escape(row.step.from.as_deref().unwrap_or(labels.unknown())),
             html_escape(row.step.to.as_deref().unwrap_or(labels.unknown())),
+            html_escape(&path),
             html_escape(&row.step.kind),
             html_escape(&row.step.meaning.text),
-            render_evidence_html(&row.step.meaning.evidence, evidence_index),
+            render_evidence_html(&row.step.meaning.evidence, evidence_index, labels),
             row.step.meaning.uncertainty.as_deref().map(html_escape).map(|value| {
                 format!("<strong>{}:</strong> {value}", html_escape(labels.uncertainty()))
             }).unwrap_or_else(|| "—".into())
         ));
     }
-    output.push_str("</tbody></table></section>");
+    output.push_str("</tbody></table></div></section>");
     output
 }
 
@@ -1232,7 +2416,7 @@ fn render_data_movement_markdown(
             .map(|part| markdown_table_cell(part))
             .collect::<Vec<_>>()
             .join(" → ");
-        let path = format!("step-{}", row.path);
+        let path = step_anchor(row.step, &row.path);
         output.push_str(&format!(
             "| {} | {} | {} | [{}]({}) — {} | {} | {} |\n",
             context,
@@ -1518,6 +2702,26 @@ fn source_location_for_range(
     })
 }
 
+const HASH_NAVIGATION_SCRIPT: &str = r##"(()=>{
+  const revealHashTarget=()=>{
+    const hash=window.location.hash;
+    if(!hash||hash==="#")return;
+    let id;
+    try{id=decodeURIComponent(hash.slice(1));}catch(_error){return;}
+    const target=document.getElementById(id);
+    if(!target)return;
+    for(let node=target;node;node=node.parentElement){
+      if(node.tagName==="DETAILS")node.open=true;
+    }
+  };
+  window.addEventListener("hashchange",revealHashTarget);
+  document.addEventListener("click",event=>{
+    const link=event.target.closest&&event.target.closest('a[href^="#"]');
+    if(link&&link.hash===window.location.hash)window.setTimeout(revealHashTarget,0);
+  });
+  revealHashTarget();
+})();"##;
+
 fn render_html(
     packet: &Value,
     answer: &OperationAnswer,
@@ -1533,6 +2737,17 @@ fn render_html(
         render_preparations_html(answer, packet, evidence_index, &preparation_titles, labels);
     let movement_rows = data_movement_rows(answer, labels);
     let data_movement = render_data_movement_html(&movement_rows, evidence_index, labels);
+    let packet_facts = render_packet_fact_tables_html(packet, evidence_index, labels);
+    let cited_evidence = render_evidence_index_html(
+        citations,
+        evidence_index,
+        used_labels,
+        source_navigation,
+        labels,
+    );
+    let source_locations = render_source_locations_html(source_navigation, labels);
+    let full_inventory = render_full_inventory_html(citations, evidence_index, used_labels, labels);
+    let block_evidence = render_block_evidence_html(answer, evidence_index, labels);
     let mut html = String::from("<!doctype html><html lang=\"");
     html.push_str(&html_escape(language));
     html.push_str("\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>");
@@ -1546,15 +2761,20 @@ fn render_html(
         html_escape(labels.status()),
         html_escape(labels.status_note())
     ));
-    let mut nav = vec![
-        ("summary", labels.summary()),
-        (
-            "ordered-behavior",
-            labels.ordered(packet["profile"] == "process-graph-v1"),
-        ),
-    ];
+    let mut nav = Vec::new();
+    if !answer.glossary.is_empty() {
+        nav.push(("glossary", labels.glossary()));
+    }
+    nav.push((
+        "ordered-behavior",
+        labels.ordered(packet["profile"] == "process-graph-v1"),
+    ));
     if !preparations.is_empty() {
         nav.push(("preparations", labels.preparations()));
+    }
+    nav.push(("summary", labels.summary()));
+    if !answer.predicates.is_empty() {
+        nav.push(("semantic-predicates", labels.predicate_details()));
     }
     if !data_movement.is_empty() {
         nav.push(("data-movement", labels.data_movement()));
@@ -1572,53 +2792,80 @@ fn render_html(
             .collect::<Vec<_>>()
             .join(" · ")
     ));
-    html.push_str(&format!(
-        "<section id=\"summary\"><h2>{}</h2>",
-        html_escape(labels.summary())
-    ));
-    html.push_str(&render_claim_html(&answer.summary, evidence_index, labels));
     html.push_str(&render_uncertainties_html(answer, labels));
-    html.push_str("</section><section id=\"ordered-behavior\"><h2>");
+    html.push_str(&render_glossary_html(
+        answer,
+        packet,
+        evidence_index,
+        labels,
+    ));
+    html.push_str("<section id=\"ordered-behavior\"><h2>");
     html.push_str(&html_escape(
         labels.ordered(packet["profile"] == "process-graph-v1"),
     ));
     html.push_str("</h2>");
     html.push_str(&render_html_steps(
         &answer.steps,
+        answer,
         evidence_index,
         false,
         "",
         &preparation_titles,
         labels,
     ));
+    html.push_str(&render_predicates_html(answer, evidence_index, labels));
     html.push_str("</section>");
     html.push_str(&preparations);
-    html.push_str(&data_movement);
-    html.push_str(&render_packet_fact_tables_html(
-        packet,
-        evidence_index,
-        labels,
-    ));
-    html.push_str(&render_evidence_index_html(
-        citations,
-        evidence_index,
-        used_labels,
-        source_navigation,
-        labels,
-    ));
+    html.push_str(&render_summary_details_html(answer, evidence_index, labels));
     html.push_str(&format!(
-        "<details class=\"technical-details\"><summary>{}</summary><p class=\"packet-digest\">{}: <code>{}</code></p><details><summary>{}</summary><figure class=\"step-tree\"><figcaption>{}</figcaption>{}</figure></details>{}{}</details>",
+        "<details class=\"technical-details\"><summary>{}</summary><p class=\"packet-digest\">{}: <code>{}</code></p>",
         html_escape(labels.technical_details()),
         html_escape(if labels.russian { "Хеш пакета" } else { "Packet digest" }),
-        html_escape(&answer.packet_digest),
-        html_escape(if labels.russian { "Дерево шагов" } else { "Operation tree" }),
-        html_escape(if labels.russian { "Построено из переданных шагов ответа" } else { "Derived from the supplied answer steps" }),
-        render_tree_html(&answer.steps, evidence_index, &preparation_titles, labels),
-        render_packet_limits_html(packet, labels),
-        render_full_inventory_html(citations, evidence_index, used_labels, labels)
+        html_escape(&answer.packet_digest)
     ));
-    html.push_str(&render_source_locations_html(source_navigation, labels));
-    html.push_str("</main></body></html>");
+    html.push_str(&render_preparation_technical_html(answer, packet, labels));
+    if !packet_facts.is_empty() {
+        html.push_str(&format!(
+            "<details class=\"packet-facts-reference\"><summary>{}</summary>{}</details>",
+            html_escape(labels.packet_facts_reference()),
+            packet_facts
+        ));
+    }
+    if !data_movement.is_empty() {
+        html.push_str(&format!(
+            "<details class=\"data-movement-reference\"><summary>{}</summary>{}</details>",
+            html_escape(labels.data_movement_reference()),
+            data_movement
+        ));
+    }
+    if !block_evidence.is_empty()
+        || !cited_evidence.is_empty()
+        || !source_locations.is_empty()
+        || !full_inventory.is_empty()
+    {
+        html.push_str(&format!(
+            "<details class=\"evidence-reference\"><summary>{}</summary>{}{}{}{}</details>",
+            html_escape(labels.evidence_reference()),
+            block_evidence,
+            cited_evidence,
+            source_locations,
+            full_inventory
+        ));
+    }
+    html.push_str(&format!(
+        "<details class=\"step-tree-reference\"><summary>{}</summary><figure class=\"step-tree\"><figcaption>{}</figcaption>{}</figure></details>",
+        html_escape(labels.tree_reference()),
+        html_escape(if labels.russian { "Построено из переданных шагов ответа" } else { "Derived from the supplied answer steps" }),
+        render_tree_html(&answer.steps, answer, evidence_index, &preparation_titles, labels)
+    ));
+    html.push_str(&format!(
+        "<details class=\"packet-limits-reference\"><summary>{}</summary>{}</details>",
+        html_escape(labels.packet_limits_reference()),
+        render_packet_limits_html(packet, labels)
+    ));
+    html.push_str("</details></main><script>");
+    html.push_str(HASH_NAVIGATION_SCRIPT);
+    html.push_str("</script></body></html>");
     html
 }
 
@@ -1632,43 +2879,46 @@ fn render_markdown(
     labels: ReaderLabels,
 ) -> String {
     let preparation_titles = preparation_titles(answer);
-    let decision_tables =
-        render_decision_tables_markdown(&answer.steps, evidence_index, &preparation_titles, labels);
+    let decision_tables = render_decision_tables_markdown(
+        &answer.steps,
+        answer,
+        evidence_index,
+        &preparation_titles,
+        labels,
+    );
     let preparations =
         render_preparations_markdown(answer, packet, evidence_index, &preparation_titles, labels);
     let movement_rows = data_movement_rows(answer, labels);
     let data_movement = render_data_movement_markdown(&movement_rows, evidence_index, labels);
-    let mut nav = vec![
-        format!("[ {} ](#summary)", markdown_escape(labels.summary())),
-        format!(
-            "[ {} ](#ordered-behavior)",
-            markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1"))
-        ),
-    ];
-    if !decision_tables.is_empty() {
+    let mut nav = Vec::new();
+    if !answer.glossary.is_empty() {
         nav.push(format!(
-            "[ {} ](#first-match-decisions)",
-            markdown_escape(labels.first_match())
+            "[ {} ](#glossary)",
+            markdown_escape(labels.glossary())
         ));
     }
+    nav.push(format!(
+        "[ {} ](#ordered-behavior)",
+        markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1"))
+    ));
     if !preparations.is_empty() {
         nav.push(format!(
             "[ {} ](#preparations)",
             markdown_escape(labels.preparations())
         ));
     }
-    if !data_movement.is_empty() {
+    if !decision_tables.is_empty() {
         nav.push(format!(
-            "[ {} ](#data-movement)",
-            markdown_escape(labels.data_movement())
+            "[ {} ](#first-match-decisions)",
+            markdown_escape(labels.first_match())
         ));
     }
     nav.push(format!(
-        "[ {} ](#cited-evidence)",
-        markdown_escape(labels.cited_evidence())
+        "[ {} ](#summary)",
+        markdown_escape(labels.summary())
     ));
     let mut markdown = format!(
-        "# {}\n\n> **{}** {}\n\n<nav>**{}:** {}</nav>\n\n<a id=\"summary\"></a>\n## {}\n\n{}\n\n<a id=\"ordered-behavior\"></a>\n## {}\n\n{}\n\n",
+        "# {}\n\n> **{}** {}\n\n<nav>**{}:** {}</nav>\n\n",
         markdown_escape(&answer.title),
         markdown_escape(labels.status()),
         markdown_escape(labels.status_note()),
@@ -1677,29 +2927,61 @@ fn render_markdown(
         } else {
             "Contents"
         }),
-        nav.join(" · "),
-        markdown_escape(labels.summary()),
-        render_claim_markdown(&answer.summary, evidence_index, labels),
-        markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1")),
-        render_markdown_steps(
-            &answer.steps,
-            evidence_index,
-            0,
-            true,
-            "",
-            &preparation_titles,
-            labels
-        )
+        nav.join(" · ")
     );
+    markdown.push_str(&render_uncertainties_markdown(answer, labels));
+    markdown.push_str(&render_glossary_markdown(
+        answer,
+        packet,
+        evidence_index,
+        labels,
+    ));
+    markdown.push_str(&format!(
+        "<a id=\"ordered-behavior\"></a>\n## {}\n\n",
+        markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1"))
+    ));
     markdown.push_str(&decision_tables);
+    markdown.push_str(&render_markdown_steps(
+        &answer.steps,
+        answer,
+        evidence_index,
+        0,
+        true,
+        "",
+        &preparation_titles,
+        labels,
+    ));
+    markdown.push_str(&render_predicates_markdown(answer, evidence_index, labels));
     markdown.push_str(&preparations);
+    markdown.push_str(&render_summary_details_markdown(
+        answer,
+        evidence_index,
+        labels,
+    ));
+    markdown.push_str(&format!(
+        "<details class=\"technical-details\"><summary>{}</summary>\n\n<a id=\"technical-reference\"></a>\n**{}:** `{}`\n\n",
+        markdown_escape(labels.technical_details()),
+        markdown_escape(if labels.russian {
+            "Хеш пакета"
+        } else {
+            "Packet digest"
+        }),
+        markdown_escape(&answer.packet_digest)
+    ));
+    markdown.push_str(&render_preparation_technical_markdown(
+        answer, packet, labels,
+    ));
+    markdown.push_str(&render_block_evidence_markdown(
+        answer,
+        evidence_index,
+        labels,
+    ));
     markdown.push_str(&data_movement);
     markdown.push_str(&render_packet_fact_tables_markdown(
         packet,
         evidence_index,
         labels,
     ));
-    markdown.push_str(&render_uncertainties_markdown(answer, labels));
     markdown.push_str(&render_evidence_index_markdown(
         citations,
         evidence_index,
@@ -1707,54 +2989,53 @@ fn render_markdown(
         source_navigation,
         labels,
     ));
-    markdown.push_str(&format!(
-        "<details>\n<summary>{}</summary>\n\n**{}:** `{}`\n\n### {}\n\n{}\n\n{}{}\n</details>\n",
-        markdown_escape(labels.technical_details()),
-        markdown_escape(if labels.russian {
-            "Хеш пакета"
-        } else {
-            "Packet digest"
-        }),
-        markdown_escape(&answer.packet_digest),
-        markdown_escape(if labels.russian {
-            "Дерево шагов"
-        } else {
-            "Operation tree"
-        }),
-        markdown_tree_block(&answer.steps, &preparation_titles, labels),
-        render_packet_limits_markdown(packet, labels),
-        render_full_inventory_markdown(citations, evidence_index, used_labels, labels)
-    ));
     markdown.push_str(&render_source_locations_markdown(source_navigation, labels));
+    markdown.push_str(&render_packet_limits_markdown(packet, labels));
+    markdown.push_str(&render_full_inventory_markdown(
+        citations,
+        evidence_index,
+        used_labels,
+        labels,
+    ));
+    markdown.push_str(&format!(
+        "### {}\n\n{}\n\n</details>\n",
+        markdown_escape(labels.tree_reference()),
+        markdown_tree_block(&answer.steps, &preparation_titles, labels)
+    ));
     markdown
 }
 
 const OFFLINE_STYLE: &str = r#"
 :root{color-scheme:light dark;font:16px/1.55 system-ui,sans-serif;--line:#8792a2;--panel:#171b22;--accent:#73b7ff}
-*{box-sizing:border-box}body{margin:0;background:#101319;color:#e8edf5}main{max-width:1120px;margin:auto;padding:2rem}
+*{box-sizing:border-box}html,body{width:100%;min-width:0}body{margin:0;background:#101319;color:#e8edf5}main{width:100%;max-width:1120px;min-width:0;margin:auto;padding:2rem}
+main>*,main section,main details,.document-nav,.claim{max-width:100%;min-width:0}.document-nav{display:flex;flex-wrap:wrap;align-items:baseline;gap:.25rem .65rem}.document-nav a{min-width:0;overflow-wrap:anywhere;word-break:break-word}
 h1,h2,h3{line-height:1.2}h2{margin-top:2.2rem;border-bottom:1px solid #394252;padding-bottom:.45rem}
-a{color:var(--accent)}code{overflow-wrap:anywhere}.review-status{padding:.85rem 1rem;border-left:4px solid #d99e45;background:#29231a}
+a{color:var(--accent);overflow-wrap:anywhere;word-break:break-word}code{overflow-wrap:anywhere;word-break:break-word}.review-status{padding:.85rem 1rem;border-left:4px solid #d99e45;background:#29231a;overflow-wrap:anywhere}
 .packet-digest{color:#bac4d3}.claim,.step-node,.tree-node{border:1px solid #394252;border-radius:.55rem;padding:.8rem 1rem;margin:.55rem 0;background:var(--panel)}
-.claim-text,.step-text{white-space:pre-wrap}.claim-uncertainty{color:#ffd08a}.citations{display:inline-flex;gap:.45rem;flex-wrap:wrap;margin-left:.45rem;font-size:.9em}
+.claim-text,.step-text{white-space:pre-wrap;overflow-wrap:anywhere}.full-summary-text{width:100%;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.claim-uncertainty{color:#ffd08a}.citations{display:inline-flex;gap:.45rem;flex-wrap:wrap;margin-left:.45rem;font-size:.9em;min-width:0;max-width:100%}
 .citation{border:1px solid #52627a;border-radius:1rem;padding:.05rem .5rem;text-decoration:none}.step-kind{font-size:.75em;text-transform:uppercase;letter-spacing:.06em;color:#9ed0ff;margin-right:.55rem}
 .step-meta{color:#b7c1d0;font-size:.9em}.ordered-steps,.nested-steps{padding-left:1.5rem}.path-group{margin:.5rem 0 .75rem 1rem;padding-left:.8rem;border-left:2px solid #52627a}.path-label{font-weight:650;color:#bdc9dc}
 .step-tree ul{list-style:none;margin:.25rem 0 .25rem 1rem;padding-left:1rem;border-left:2px solid var(--line)}.step-tree li{position:relative;padding:.25rem 0 .25rem .4rem}.step-tree li::before{content:"";position:absolute;left:-1rem;top:1.25rem;width:.8rem;border-top:2px solid var(--line)}
 .tree-node{display:inline-block;max-width:100%}.tree-branch-label{margin:.35rem 0 0 1rem;color:#bdc9dc;font-size:.9em}
 table{border-collapse:collapse;width:100%;margin:1rem 0 1.5rem}caption{text-align:left;font-weight:700;margin:.5rem 0}th,td{border:1px solid #596273;padding:.5rem .65rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#242b36}
-.table-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.table-scroll table{min-width:34rem}.decision-outcome>summary{cursor:pointer;font-weight:600}
+.table-scroll{width:100%;min-width:0;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.table-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.table-scroll table{min-width:34rem}.table-scroll-hint{margin:.2rem 0 .45rem;font-size:.85em;color:#bac4d3}.decision-outcome>summary{cursor:pointer;font-weight:600}
+pre{width:100%;min-width:0;max-width:100%;overflow:auto;white-space:pre}.source-locations pre{white-space:pre}.technical-details,.packet-facts-reference,.evidence-reference{width:100%;min-width:0;max-width:100%}.source-locations,.source-locations li,.source-locations li>* ,.source-locations strong,.evidence-index,.evidence-index li{max-width:100%;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 .evidence-index,.limitations,.uncertainties{padding-left:1.4rem}.muted{color:#bac4d3}figure{margin:0}figcaption{font-weight:650}
-@media(prefers-color-scheme:light){body{background:#fff;color:#18202b}.claim,.step-node,.tree-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted{color:#49586d}th{background:#edf1f7}}
+@media(max-width:720px){main{padding:1rem}}
+@media(prefers-color-scheme:light){body{background:#fff;color:#18202b}a{color:#005ea8}.claim,.step-node,.tree-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted,.table-scroll-hint{color:#49586d}.claim-uncertainty{color:#704400}th{background:#edf1f7}}
 "#;
 
 fn render_claim_html(
     claim: &Claim,
     evidence_index: &BTreeMap<String, usize>,
+    glossary: &[GlossaryTerm],
     labels: ReaderLabels,
 ) -> String {
     let mut output = format!(
-        "<div class=\"claim\"><p class=\"claim-text\">{}</p>{}",
+        "<div class=\"claim\"><p class=\"claim-text\">{}</p>{}{}",
         html_escape(&claim.text),
-        render_evidence_html(&claim.evidence, evidence_index)
+        render_evidence_html(&claim.evidence, evidence_index, labels),
+        render_glossary_links_html(&claim.glossary_refs, glossary, labels)
     );
     if let Some(uncertainty) = claim.uncertainty.as_deref() {
         output.push_str(&format!(
@@ -1771,11 +3052,38 @@ fn render_claim_html(
     output
 }
 
-fn render_evidence_html(labels: &[String], index: &BTreeMap<String, usize>) -> String {
-    if labels.is_empty() {
+fn render_summary_details_html(
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let mut output = format!(
+        "<details id=\"summary\" class=\"full-summary\"><summary>{}</summary><div class=\"claim\"><pre class=\"full-summary-text\"><code>{}</code></pre>{}{}",
+        html_escape(labels.summary()),
+        html_escape(&answer.summary.text),
+        render_evidence_html(&answer.summary.evidence, evidence_index, labels),
+        render_glossary_links_html(&answer.summary.glossary_refs, &answer.glossary, labels)
+    );
+    if let Some(uncertainty) = answer.summary.uncertainty.as_deref() {
+        output.push_str(&format!(
+            "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
+            html_escape(labels.uncertainty()),
+            html_escape(uncertainty)
+        ));
+    }
+    output.push_str("</div></details>");
+    output
+}
+
+fn render_evidence_html(
+    evidence: &[String],
+    index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    if evidence.is_empty() {
         return String::new();
     }
-    let links = labels
+    let links = evidence
         .iter()
         .map(|label| match index.get(label) {
             Some(number) => format!(
@@ -1786,11 +3094,15 @@ fn render_evidence_html(labels: &[String], index: &BTreeMap<String, usize>) -> S
         })
         .collect::<Vec<_>>()
         .join(" ");
-    format!("<span class=\"citations\" aria-label=\"Packet evidence\">{links}</span>")
+    format!(
+        "<details class=\"citations\"><summary>{}</summary><span class=\"citation-list\">{links}</span></details>",
+        html_escape(&labels.evidence_count(evidence.len()))
+    )
 }
 
 fn render_html_steps(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
     evidence_index: &BTreeMap<String, usize>,
     ordered: bool,
     path_prefix: &str,
@@ -1806,35 +3118,64 @@ fn render_html_steps(
     let mut output = format!("<{tag} class=\"{class}\">");
     for (index, step) in steps.iter().enumerate() {
         let step_path = step_path(path_prefix, index + 1);
+        let anchor = step_anchor(step, &step_path);
         if let Some(table) = (step.kind == "decision")
             .then(|| first_match_table(step, step_path.clone()))
             .flatten()
         {
             output.push_str(&format!(
                 "<li>{}</li>",
-                render_inline_first_match_html(&table, evidence_index, preparation_titles, labels,)
+                render_inline_first_match_html(
+                    &table,
+                    answer,
+                    evidence_index,
+                    preparation_titles,
+                    labels,
+                )
             ));
             continue;
         }
         if ordered || !path_prefix.is_empty() {
             output.push_str(&format!(
-                "<li id=\"step-{step_path}\"><div class=\"step-node\"><span class=\"step-kind\">"
+                "<li id=\"{}\"><div class=\"step-node\"><span class=\"step-kind\">",
+                html_escape(&anchor)
             ));
             output.push_str(&html_escape(&step.kind));
             output.push_str("</span>");
         } else {
             output.push_str(&format!(
-                "<li id=\"step-{step_path}\"><div class=\"step-node\">"
+                "<li id=\"{}\"><div class=\"step-node\">",
+                html_escape(&anchor)
             ));
         }
         output.push_str("<span class=\"step-text\">");
-        output.push_str(&html_escape(&step.meaning.text));
+        if let Some(predicate) = predicate_for_step(step, &answer.predicates) {
+            output.push_str(&format!(
+                "<a href=\"#predicate-{}\">{}</a>",
+                html_escape(&predicate.id),
+                html_escape(&predicate.label)
+            ));
+        } else {
+            output.push_str(&html_escape(&step.meaning.text));
+        }
         output.push_str("</span>");
         output.push_str(&render_evidence_html(
             &step.meaning.evidence,
             evidence_index,
+            labels,
         ));
-        output.push_str(&render_step_metadata_html(step, labels));
+        if answer.schema != ANSWER_SCHEMA_V1_2 {
+            output.push_str(&render_step_metadata_html(step, labels));
+        }
+        let mut glossary_refs = step.glossary_refs.clone();
+        glossary_refs.extend(step.meaning.glossary_refs.iter().cloned());
+        glossary_refs.sort();
+        glossary_refs.dedup();
+        output.push_str(&render_glossary_links_html(
+            &glossary_refs,
+            &answer.glossary,
+            labels,
+        ));
         output.push_str(&render_preparation_links_html(
             &step.preparation_refs,
             preparation_titles,
@@ -1858,6 +3199,7 @@ fn render_html_steps(
                 html_escape(labels.children_label(&step.kind)),
                 render_html_steps(
                     &step.children,
+                    answer,
                     evidence_index,
                     false,
                     &format!("{step_path}-then"),
@@ -1872,6 +3214,7 @@ fn render_html_steps(
                 html_escape(labels.otherwise_label(&step.kind)),
                 render_html_steps(
                     &step.otherwise,
+                    answer,
                     evidence_index,
                     false,
                     &format!("{step_path}-else"),
@@ -1888,22 +3231,43 @@ fn render_html_steps(
 
 fn render_inline_first_match_html(
     table: &FirstMatchTable<'_>,
+    answer: &OperationAnswer,
     evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
 ) -> String {
     let mut output = format!(
-        "<div class=\"inline-decision\"><div class=\"table-scroll\"><table class=\"first-match\"><caption>{}</caption><thead><tr><th>{}</th><th>{}</th></tr></thead><tbody>",
+        "<div class=\"inline-decision\">{}<table class=\"first-match\"><caption>{}</caption><thead><tr><th>{}</th><th>{}</th></tr></thead><tbody>",
+        table_scroll_start(labels, labels.first_match()),
         html_escape(labels.first_match()),
         html_escape(labels.condition()),
         html_escape(labels.outcome())
     );
     for branch in &table.branches {
+        let condition = predicate_for_step(branch.decision, &answer.predicates)
+            .map(|predicate| {
+                format!(
+                    "<a href=\"#predicate-{}\">{}</a>",
+                    html_escape(&predicate.id),
+                    html_escape(&predicate.label)
+                )
+            })
+            .unwrap_or_else(|| html_escape(&branch.decision.meaning.text));
+        let anchor = step_anchor(branch.decision, &branch.path);
+        let mut glossary_refs = branch.decision.glossary_refs.clone();
+        glossary_refs.extend(branch.decision.meaning.glossary_refs.iter().cloned());
+        glossary_refs.sort();
+        glossary_refs.dedup();
         output.push_str(&format!(
-            "<tr id=\"step-{}\"><td>{}{}{}{}{}</td><td>{}</td></tr>",
-            html_escape(&branch.path),
-            html_escape(&branch.decision.meaning.text),
-            render_evidence_html(&branch.decision.meaning.evidence, evidence_index),
+            "<tr id=\"{}\"><td>{}{}{}{}{}{}</td><td>{}</td></tr>",
+            html_escape(&anchor),
+            condition,
+            if answer.schema == ANSWER_SCHEMA_V1_2 {
+                String::new()
+            } else {
+                render_evidence_html(&branch.decision.meaning.evidence, evidence_index, labels)
+            },
+            render_glossary_links_html(&glossary_refs, &answer.glossary, labels),
             branch
                 .decision
                 .meaning
@@ -1915,7 +3279,11 @@ fn render_inline_first_match_html(
                     html_escape(uncertainty)
                 ))
                 .unwrap_or_default(),
-            render_step_metadata_html(branch.decision, labels),
+            if answer.schema == ANSWER_SCHEMA_V1_2 {
+                String::new()
+            } else {
+                render_step_metadata_html(branch.decision, labels)
+            },
             render_preparation_links_html(
                 &branch.decision.preparation_refs,
                 preparation_titles,
@@ -1923,6 +3291,7 @@ fn render_inline_first_match_html(
             ),
             render_decision_outcome_detail_html(
                 &branch.decision.children,
+                answer,
                 &format!("{}-then", branch.path),
                 evidence_index,
                 preparation_titles,
@@ -1930,17 +3299,25 @@ fn render_inline_first_match_html(
             )
         ));
     }
-    if !table.otherwise.is_empty() {
+    if !table.otherwise.is_empty() || answer.schema == ANSWER_SCHEMA_V1_2 {
         output.push_str(&format!(
             "<tr><td>{}</td><td>{}</td></tr>",
             html_escape(labels.no_match()),
-            render_decision_outcome_detail_html(
-                table.otherwise,
-                &table.otherwise_path,
-                evidence_index,
-                preparation_titles,
-                labels,
-            )
+            if table.otherwise.is_empty() {
+                format!(
+                    "<span class=\"muted\">{}</span>",
+                    html_escape(labels.no_match_outcome())
+                )
+            } else {
+                render_decision_outcome_detail_html(
+                    table.otherwise,
+                    answer,
+                    &table.otherwise_path,
+                    evidence_index,
+                    preparation_titles,
+                    labels,
+                )
+            }
         ));
     }
     output.push_str("</tbody></table></div>");
@@ -1953,6 +3330,7 @@ fn render_inline_first_match_html(
 
 fn render_decision_outcome_detail_html(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
     path_prefix: &str,
     evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
@@ -1968,6 +3346,7 @@ fn render_decision_outcome_detail_html(
         html_escape(labels.details_link()),
         render_html_steps(
             steps,
+            answer,
             evidence_index,
             false,
             path_prefix,
@@ -2039,6 +3418,24 @@ fn step_path(prefix: &str, index: usize) -> String {
     }
 }
 
+fn step_anchor(step: &OperationStep, path: &str) -> String {
+    step.id
+        .as_deref()
+        .map(|id| format!("block-{id}"))
+        .unwrap_or_else(|| format!("step-{path}"))
+}
+
+fn predicate_for_step<'a>(
+    step: &OperationStep,
+    predicates: &'a [Predicate],
+) -> Option<&'a Predicate> {
+    step.predicate_ref.as_deref().and_then(|reference| {
+        predicates
+            .iter()
+            .find(|predicate| predicate.id == reference)
+    })
+}
+
 fn render_step_metadata_html(step: &OperationStep, labels: ReaderLabels) -> String {
     let mut values = Vec::new();
     for (label, value) in [
@@ -2072,6 +3469,7 @@ fn render_step_metadata_html(step: &OperationStep, labels: ReaderLabels) -> Stri
 
 fn render_tree_html(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
     evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
@@ -2088,6 +3486,16 @@ fn render_tree_html(
         output.push_str(&render_evidence_html(
             &step.meaning.evidence,
             evidence_index,
+            labels,
+        ));
+        let mut glossary_refs = step.glossary_refs.clone();
+        glossary_refs.extend(step.meaning.glossary_refs.iter().cloned());
+        glossary_refs.sort();
+        glossary_refs.dedup();
+        output.push_str(&render_glossary_links_html(
+            &glossary_refs,
+            &answer.glossary,
+            labels,
         ));
         output.push_str(&render_step_metadata_html(step, labels));
         output.push_str(&render_preparation_links_html(
@@ -2099,7 +3507,13 @@ fn render_tree_html(
             output.push_str(&format!(
                 "</div><div class=\"tree-branch-label\">{}</div>{}",
                 html_escape(labels.children_label(&step.kind)),
-                render_tree_html(&step.children, evidence_index, preparation_titles, labels)
+                render_tree_html(
+                    &step.children,
+                    answer,
+                    evidence_index,
+                    preparation_titles,
+                    labels
+                )
             ));
         } else {
             output.push_str("</div>");
@@ -2108,7 +3522,13 @@ fn render_tree_html(
             output.push_str(&format!(
                 "<div class=\"tree-branch-label\">{}</div>{}",
                 html_escape(labels.otherwise_label(&step.kind)),
-                render_tree_html(&step.otherwise, evidence_index, preparation_titles, labels)
+                render_tree_html(
+                    &step.otherwise,
+                    answer,
+                    evidence_index,
+                    preparation_titles,
+                    labels
+                )
             ));
         }
         output.push_str("</li>");
@@ -2214,6 +3634,7 @@ fn tree_metadata(step: &OperationStep) -> String {
 
 fn render_markdown_steps(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
     evidence_index: &BTreeMap<String, usize>,
     depth: usize,
     ordered: bool,
@@ -2225,20 +3646,46 @@ fn render_markdown_steps(
     let indent = "   ".repeat(depth);
     for (index, step) in steps.iter().enumerate() {
         let step_path = step_path(path_prefix, index + 1);
-        output.push_str(&format!("<a id=\"step-{step_path}\"></a>"));
+        let anchor = step_anchor(step, &step_path);
+        output.push_str(&format!("<a id=\"{}\"></a>", html_escape(&anchor)));
         let prefix = if ordered && depth == 0 {
             format!("{}. ", index + 1)
         } else {
             format!("{}- ", indent)
         };
+        let condition = predicate_for_step(step, &answer.predicates)
+            .map(|predicate| {
+                format!(
+                    "[{}](#predicate-{})",
+                    markdown_escape(&predicate.label),
+                    predicate.id
+                )
+            })
+            .unwrap_or_else(|| markdown_escape(&step.meaning.text));
         output.push_str(&format!(
             "{prefix}**{}:** {}{}{}{}\n",
             markdown_escape(&step.kind),
-            markdown_escape(&step.meaning.text),
-            render_evidence_markdown(&step.meaning.evidence, evidence_index, labels),
-            markdown_step_metadata(step, labels),
+            condition,
+            if answer.schema == ANSWER_SCHEMA_V1_2 {
+                String::new()
+            } else {
+                render_evidence_markdown(&step.meaning.evidence, evidence_index, labels)
+            },
+            if answer.schema == ANSWER_SCHEMA_V1_2 {
+                String::new()
+            } else {
+                markdown_step_metadata(step, labels)
+            },
             render_preparation_links_markdown(&step.preparation_refs, preparation_titles, labels)
         ));
+        let mut glossary_refs = step.glossary_refs.clone();
+        glossary_refs.extend(step.meaning.glossary_refs.iter().cloned());
+        glossary_refs.sort();
+        glossary_refs.dedup();
+        let term_links = render_glossary_links_markdown(&glossary_refs, &answer.glossary, labels);
+        if !term_links.is_empty() {
+            output.push_str(&format!("{}- {}\n", indent, term_links.trim()));
+        }
         if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
             output.push_str(&format!(
                 "{}  - **{}:** {}\n",
@@ -2259,6 +3706,7 @@ fn render_markdown_steps(
             ));
             output.push_str(&render_markdown_steps(
                 &step.children,
+                answer,
                 evidence_index,
                 depth + 1,
                 false,
@@ -2275,6 +3723,7 @@ fn render_markdown_steps(
             ));
             output.push_str(&render_markdown_steps(
                 &step.otherwise,
+                answer,
                 evidence_index,
                 depth + 1,
                 false,
@@ -2318,12 +3767,14 @@ fn markdown_step_metadata(step: &OperationStep, labels: ReaderLabels) -> String 
 fn render_claim_markdown(
     claim: &Claim,
     evidence_index: &BTreeMap<String, usize>,
+    glossary: &[GlossaryTerm],
     labels: ReaderLabels,
 ) -> String {
     let mut output = format!(
-        "{}{}",
+        "{}{}{}",
         markdown_escape(&claim.text),
-        render_evidence_markdown(&claim.evidence, evidence_index, labels)
+        render_evidence_markdown(&claim.evidence, evidence_index, labels),
+        render_glossary_links_markdown(&claim.glossary_refs, glossary, labels)
     );
     if let Some(uncertainty) = claim.uncertainty.as_deref() {
         output.push_str(&format!(
@@ -2337,6 +3788,35 @@ fn render_claim_markdown(
         ));
     }
     output
+}
+
+fn render_summary_details_markdown(
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
+    labels: ReaderLabels,
+) -> String {
+    let mut body = vec![markdown_code_block(&answer.summary.text)];
+    let evidence = render_evidence_markdown(&answer.summary.evidence, evidence_index, labels);
+    if !evidence.is_empty() {
+        body.push(evidence);
+    }
+    let glossary_links =
+        render_glossary_links_markdown(&answer.summary.glossary_refs, &answer.glossary, labels);
+    if !glossary_links.is_empty() {
+        body.push(glossary_links);
+    }
+    if let Some(uncertainty) = answer.summary.uncertainty.as_deref() {
+        body.push(format!(
+            "**{}:** {}",
+            markdown_escape(labels.uncertainty()),
+            markdown_escape(uncertainty)
+        ));
+    }
+    format!(
+        "<details id=\"summary\" class=\"full-summary\">\n<summary>{}</summary>\n\n{}\n\n</details>\n\n",
+        markdown_escape(labels.summary()),
+        body.join("\n\n")
+    )
 }
 
 fn render_evidence_markdown(
@@ -2356,12 +3836,9 @@ fn render_evidence_markdown(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "  _({}: {links})_ ",
-        if labels.russian {
-            "Свидетельства"
-        } else {
-            "Evidence"
-        }
+        "<details class=\"citations\"><summary>{} ({})</summary><span class=\"citation-list\">{links}</span></details>",
+        markdown_escape(labels.evidence()),
+        evidence.len()
     )
 }
 
@@ -2458,6 +3935,7 @@ fn branch_summary(steps: &[OperationStep]) -> Option<(&OperationStep, String)> {
 
 fn table_outcome_markdown(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
     path_prefix: &str,
     evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
@@ -2466,20 +3944,25 @@ fn table_outcome_markdown(
     let Some((first, summary)) = branch_summary(steps) else {
         return "—".into();
     };
-    let target = step_path(path_prefix, 1);
+    let target = step_anchor(first, &step_path(path_prefix, 1));
     format!(
-        "**{}:** {} [ {} ](#step-{target}){}{}{}",
+        "**{}:** {} [ {} ](#{target}){}{}{}",
         markdown_escape(&first.kind),
         markdown_escape(&summary),
         markdown_escape(labels.details_link()),
         render_evidence_markdown(&first.meaning.evidence, evidence_index, labels),
-        markdown_step_metadata(first, labels),
+        if answer.schema == ANSWER_SCHEMA_V1_2 {
+            String::new()
+        } else {
+            markdown_step_metadata(first, labels)
+        },
         render_preparation_links_markdown(&first.preparation_refs, preparation_titles, labels)
     )
 }
 
 fn render_decision_tables_markdown(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
     evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
     labels: ReaderLabels,
@@ -2490,7 +3973,7 @@ fn render_decision_tables_markdown(
         return String::new();
     }
     let mut output = format!(
-        "<a id=\"first-match-decisions\"></a>\n## {}\n\n",
+        "<a id=\"first-match-decisions\"></a>\n### {}\n\n",
         markdown_escape(labels.first_match())
     );
     for table in tables {
@@ -2500,12 +3983,26 @@ fn render_decision_tables_markdown(
             markdown_escape(labels.outcome())
         ));
         for branch in &table.branches {
+            let condition = predicate_for_step(branch.decision, &answer.predicates)
+                .map(|predicate| {
+                    format!(
+                        "[{}](#predicate-{})",
+                        markdown_table_cell(&predicate.label),
+                        predicate.id
+                    )
+                })
+                .unwrap_or_else(|| markdown_table_cell(&branch.decision.meaning.text));
+            let mut glossary_refs = branch.decision.glossary_refs.clone();
+            glossary_refs.extend(branch.decision.meaning.glossary_refs.iter().cloned());
+            glossary_refs.sort();
+            glossary_refs.dedup();
             output.push_str(&format!(
                 "| {}{} | {} |\n",
-                markdown_table_cell(&branch.decision.meaning.text),
-                render_evidence_markdown(&branch.decision.meaning.evidence, evidence_index, labels),
+                condition,
+                render_glossary_links_markdown(&glossary_refs, &answer.glossary, labels),
                 table_outcome_markdown(
                     &branch.decision.children,
+                    answer,
                     &format!("{}-then", branch.path),
                     evidence_index,
                     preparation_titles,
@@ -2523,11 +4020,18 @@ fn render_decision_tables_markdown(
                 }),
                 table_outcome_markdown(
                     &table.otherwise,
+                    answer,
                     &table.otherwise_path,
                     evidence_index,
                     preparation_titles,
                     labels
                 )
+            ));
+        } else if answer.schema == ANSWER_SCHEMA_V1_2 {
+            output.push_str(&format!(
+                "| {} | {} |\n",
+                markdown_escape(labels.no_match()),
+                markdown_escape(labels.no_match_outcome())
             ));
         }
         output.push_str(&format!(
@@ -2557,6 +4061,7 @@ fn render_packet_fact_tables_html(
     );
     for dto in types {
         let fields = dto["fields"].as_array().cloned().unwrap_or_default();
+        output.push_str(&table_scroll_start(labels, labels.facts(false)));
         output.push_str(&format!(
             "<table><caption>{} {} · {} {}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
             html_escape(labels.type_name()),
@@ -2577,7 +4082,7 @@ fn render_packet_fact_tables_html(
             ));
         }
         for field in fields {
-            let labels = combined_labels(&dto["evidence"], &field["evidence"]);
+            let evidence_labels = combined_labels(&dto["evidence"], &field["evidence"]);
             output.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
                 html_escape(&value_text(&field["name"])),
@@ -2585,12 +4090,13 @@ fn render_packet_fact_tables_html(
                 html_escape(&value_text(&field["modifiers"])),
                 html_escape(&value_text(&field["annotations"])),
                 html_escape(&tokens_text(&field["sourceTokens"])),
-                render_evidence_html(&labels, evidence_index)
+                render_evidence_html(&evidence_labels, evidence_index, labels)
             ));
         }
-        output.push_str("</tbody></table>");
+        output.push_str("</tbody></table></div>");
     }
     if !constants.is_empty() {
+        output.push_str(&table_scroll_start(labels, labels.facts(false)));
         output.push_str(&format!(
             "<table><caption>{}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
             html_escape(if labels.russian { "Сохранённые константы" } else { "Retained constant declarations" }),
@@ -2611,10 +4117,10 @@ fn render_packet_fact_tables_html(
                 html_escape(&value_text(&constant["modifiers"])),
                 html_escape(&value_text(&constant["annotations"])),
                 html_escape(&tokens_text(&constant["sourceTokens"])),
-                render_evidence_html(&strings(&constant["evidence"]), evidence_index)
+                render_evidence_html(&strings(&constant["evidence"]), evidence_index, labels)
             ));
         }
-        output.push_str("</tbody></table>");
+        output.push_str("</tbody></table></div>");
     }
     output.push_str("</section>");
     output
@@ -2713,6 +4219,7 @@ fn render_process_fact_tables_html(
         html_escape(labels.facts(true))
     );
     if !types.is_empty() {
+        output.push_str(&table_scroll_start(labels, labels.facts(true)));
         output.push_str(&format!(
             "<table><caption>{}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
             html_escape(if labels.russian { "Сохранённые типы" } else { "Retained types" }),
@@ -2733,9 +4240,10 @@ fn render_process_fact_tables_html(
                 html_escape(&value_text(&type_row["interfaces"]))
             ));
         }
-        output.push_str("</tbody></table>");
+        output.push_str("</tbody></table></div>");
     }
     if !fields.is_empty() {
+        output.push_str(&table_scroll_start(labels, labels.facts(true)));
         output.push_str(&format!(
             "<table><caption>{}</caption><thead><tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr></thead><tbody>",
             html_escape(if labels.russian { "Сохранённые поля" } else { "Retained fields" }),
@@ -2756,10 +4264,10 @@ fn render_process_fact_tables_html(
                 html_escape(&value_text(&field["modifiers"])),
                 html_escape(&value_text(&field["annotations"])),
                 html_escape(&tokens_text(&field["sourceTokens"])),
-                render_evidence_html(&strings(&field["evidence"]), evidence_index)
+                render_evidence_html(&strings(&field["evidence"]), evidence_index, labels)
             ));
         }
-        output.push_str("</tbody></table>");
+        output.push_str("</tbody></table></div>");
     }
     output.push_str("</section>");
     output
@@ -3607,6 +5115,166 @@ mod tests {
         })
     }
 
+    fn semantic_answer(packet: &Value) -> Value {
+        let claim = |text: &str, uncertainty: Option<&str>, glossary_refs: Value| {
+            let mut value = json!({
+                "text":text,
+                "evidence":["d1"],
+                "glossaryRefs":glossary_refs
+            });
+            if let Some(uncertainty) = uncertainty {
+                value["uncertainty"] = json!(uncertainty);
+            }
+            value
+        };
+        json!({
+            "schema":ANSWER_SCHEMA_V1_2,
+            "packetDigest":packet["packetDigest"],
+            "title":"Transfer request handling",
+            "summary":claim("The captured handler checks the request count before returning.",None,json!(["request","count"])),
+            "glossary":[
+                {
+                    "id":"request",
+                    "label":"Transfer request",
+                    "kind":"request",
+                    "definition":claim("The captured request type carries an integer count field.",Some("The packet does not identify the business entity, if any, represented by this request."),json!(["count"])),
+                    "subjectRefs":["api.TransferRequest"],
+                    "technicalNames":["api.TransferRequest","<script>probe</script>"]
+                },
+                {
+                    "id":"count",
+                    "label":"Count value",
+                    "kind":"term",
+                    "definition":claim("The request declares count as an integer; its runtime value is not captured.",None,json!(["request"])),
+                    "subjectRefs":["api.TransferRequest"],
+                    "technicalNames":["count"]
+                }
+            ],
+            "predicates":[
+                {
+                    "id":"details",
+                    "label":"The request has a positive count",
+                    "meaning":claim("The handler accepts the request only when its count is positive.",Some("The packet does not capture the runtime count."),json!(["request","count"])),
+                    "sourceCheck":claim("request != null && request.count > 0",None,json!(["request","count"])),
+                    "evaluation":claim("The AND checks run left to right. If request is null, short-circuiting prevents reading count; otherwise count must be greater than zero. The packet does not establish any additional null behavior.",Some("No retained source states whether count can be null."),json!(["request","count"]))
+                },
+                {
+                    "id":"retry",
+                    "label":"The request is retryable or retries are exhausted",
+                    "meaning":claim("This condition selects the retained retry outcome.",None,json!(["request"])),
+                    "sourceCheck":claim("!retryable || retryCount >= maxRetries",None,json!(["request"])),
+                    "evaluation":claim("The negation applies to retryable. The OR short-circuits when retryable is false; otherwise the retry count comparison decides. Null handling is not established by this expression as captured.",None,json!(["request"]))
+                },
+                {
+                    "id":"missing",
+                    "label":"The request count is unavailable",
+                    "meaning":claim("The remaining branch represents an unavailable count.",None,json!(["request","count"])),
+                    "sourceCheck":claim("request.count == null",None,json!(["request","count"])),
+                    "evaluation":claim("This check runs only after the previous conditions fail.",None,json!(["request","count"]))
+                }
+            ],
+            "steps":[
+                {
+                    "id":"valid-branch",
+                    "kind":"decision",
+                    "predicateRef":"details",
+                    "glossaryRefs":["request"],
+                    "meaning":claim("Check request acceptance.",Some("The runtime request value is not present in the packet."),json!(["request"])),
+                    "from":"source-from-hidden",
+                    "to":"target-to-hidden",
+                    "interaction":"interaction-hidden",
+                    "children":[{
+                        "id":"accept",
+                        "kind":"action",
+                        "glossaryRefs":["request","count"],
+                        "meaning":claim("Continue with the accepted request.",None,json!(["request"])),
+                        "preparationRefs":["shared"]
+                    }],
+                    "otherwise":[{
+                        "id":"retry-branch",
+                        "kind":"decision",
+                        "predicateRef":"retry",
+                        "glossaryRefs":["request"],
+                        "meaning":claim("Check the retry outcome.",None,json!(["request"])),
+                        "children":[{
+                            "id":"retry-outcome",
+                            "kind":"return",
+                            "glossaryRefs":[],
+                            "meaning":claim("Return the retained retry response.",None,json!([])),
+                            "preparationRefs":["shared"]
+                        }],
+                        "otherwise":[{
+                            "id":"missing-branch",
+                            "kind":"decision",
+                            "predicateRef":"missing",
+                            "glossaryRefs":["count"],
+                            "meaning":claim("Check for an unavailable count.",None,json!(["count"])),
+                            "children":[{
+                                "id":"missing-outcome",
+                                "kind":"throw",
+                                "glossaryRefs":[],
+                                "meaning":claim("Raise for an unavailable count.",None,json!([]))
+                            }]
+                        }]
+                    }]
+                }
+            ],
+            "preparations":[{
+                "id":"shared",
+                "title":"Shared count preparation",
+                "subjectReference":"api.TransferRequest",
+                "summary":claim("The same captured preparation is referenced by two outcomes.",Some("The exact helper declaration is not retained."),json!(["count"])),
+                "steps":[{
+                    "id":"prepare-count",
+                    "kind":"action",
+                    "glossaryRefs":["count"],
+                    "meaning":claim("Keep the supported count preparation.",None,json!(["count"])),
+                    "from":"request.count",
+                    "to":"prepared.count",
+                    "interaction":"helper-interaction-hidden"
+                }]
+            }],
+            "uncertainties":["The packet does not establish runtime values or an unretained no-match outcome."]
+        })
+    }
+
+    fn field_subject_packet(source_contexts: Value) -> Value {
+        let mut packet = packet();
+        packet["fields"] = json!([{
+            "reference":"field-ref",
+            "ownerIdentity":"class:orders.Order",
+            "name":"count",
+            "typeDescriptor":"int",
+            "scope":":main"
+        }]);
+        packet["sourceContexts"] = source_contexts;
+        seal(&mut packet);
+        packet
+    }
+
+    fn field_subject_answer(packet: &Value) -> Value {
+        let mut answer = semantic_answer(packet);
+        answer["glossary"][0]["subjectRefs"] = json!(["field-ref"]);
+        answer
+    }
+
+    fn validate_field_subject(packet: &Value) -> Result<RenderedAnswer, crate::error::ClewError> {
+        validate_and_render_draft(packet, &audit(packet), field_subject_answer(packet))
+    }
+
+    fn html_ids(document: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut remaining = document;
+        while let Some((_, after_key)) = remaining.split_once("id=\"") {
+            let Some((id, after_id)) = after_key.split_once('"') else {
+                break;
+            };
+            ids.push(id.to_owned());
+            remaining = after_id;
+        }
+        ids
+    }
+
     #[test]
     fn version_1_0_answer_still_renders_offline_without_rewriting_its_value() {
         let packet = packet();
@@ -3624,6 +5292,386 @@ mod tests {
         let mut unsupported = original.clone();
         unsupported["preparations"] = json!([]);
         assert!(validate_and_render(&packet, &audit(&packet), unsupported).is_err());
+    }
+
+    #[test]
+    fn version_1_2_projects_glossary_predicates_and_block_evidence_with_technical_details_drilled_down()
+     {
+        let packet = packet();
+        let authored = semantic_answer(&packet);
+        let original = authored.clone();
+
+        let rendered = validate_and_render_draft(&packet, &audit(&packet), authored).unwrap();
+
+        assert_eq!(rendered.answer, original);
+        assert!(rendered.html.contains("Glossary"));
+        assert!(rendered.html.contains("Transfer request"));
+        assert!(
+            rendered
+                .html
+                .contains("The packet does not identify the business entity")
+        );
+        assert!(rendered.html.contains("href=\"#glossary-request\""));
+        assert!(rendered.html.contains("The request has a positive count"));
+        assert!(
+            rendered
+                .html
+                .contains("request != null &amp;&amp; request.count &gt; 0")
+        );
+        assert!(rendered.html.contains("The AND checks run left to right"));
+        assert!(rendered.html.contains("The OR short-circuits"));
+        assert!(rendered.html.contains("The first matching row wins"));
+        assert!(
+            rendered
+                .html
+                .contains("Otherwise (none of the conditions above matched)")
+        );
+        assert!(
+            rendered
+                .html
+                .contains("No outcome for this case is retained.")
+        );
+        assert_eq!(
+            rendered.html.matches("id=\"preparation-shared\"").count(),
+            1
+        );
+        assert!(rendered.html.contains("href=\"#preparation-shared\""));
+        assert!(rendered.html.contains("Evidence by block"));
+        assert!(rendered.html.contains("predicate-details-source-check"));
+        assert!(rendered.html.contains("id=\"semantic-predicates\""));
+        assert!(rendered.html.contains("id=\"predicate-details\""));
+        assert!(!rendered.html.contains("<section id=\"predicate-details\""));
+        assert!(rendered.html.contains("id=\"block-valid-branch\""));
+        assert_eq!(
+            rendered.html.matches("id=\"block-valid-branch\"").count(),
+            1
+        );
+        let ids = html_ids(&rendered.html);
+        let unique_ids: BTreeSet<_> = ids.iter().collect();
+        assert_eq!(ids.len(), unique_ids.len(), "duplicate HTML ids");
+        assert!(rendered.html.contains("source-from-hidden"));
+        assert!(rendered.html.contains("&lt;script&gt;probe&lt;/script&gt;"));
+        assert!(!rendered.html.contains("<script>probe</script>"));
+        let technical_offset = rendered.html.find("class=\"technical-details\"").unwrap();
+        let primary_html = rendered
+            .html
+            .split("class=\"technical-details\"")
+            .next()
+            .unwrap();
+        assert!(!primary_html.contains("source-from-hidden"));
+        assert!(!primary_html.contains("target-to-hidden"));
+        assert!(!primary_html.contains("interaction-hidden"));
+        assert!(!primary_html.contains("helper-interaction-hidden"));
+        let source_metadata_offset = rendered.html.find("source-from-hidden").unwrap();
+        assert!(source_metadata_offset > technical_offset);
+        let preparation_metadata_offset = rendered
+            .html
+            .find("class=\"preparation-technical-reference\"")
+            .unwrap();
+        assert!(preparation_metadata_offset > technical_offset);
+        assert!(rendered.html.contains("helper-interaction-hidden"));
+        assert!(rendered.html.contains("api.TransferRequest"));
+        assert!(rendered.html.contains("@media(max-width:720px)"));
+        assert!(rendered.html.contains(".claim-uncertainty{color:#704400}"));
+        assert!(rendered.html.contains("decodeURIComponent"));
+        assert!(rendered.html.contains("hashchange"));
+        assert!(
+            rendered.markdown.find("id=\"glossary\"").unwrap()
+                < rendered.markdown.find("id=\"ordered-behavior\"").unwrap()
+        );
+        assert!(
+            rendered
+                .markdown
+                .contains("[The request has a positive count](#predicate-details)")
+        );
+        assert!(rendered.markdown.contains("Evidence by block"));
+        assert!(rendered.markdown.contains("retryCount &gt;= maxRetries"));
+        assert!(rendered.markdown.contains("helper\\-interaction\\-hidden"));
+        assert!(rendered.markdown.contains("api.TransferRequest"));
+
+        for href in rendered
+            .html
+            .split("href=\"#")
+            .skip(1)
+            .filter_map(|tail| tail.split('"').next())
+        {
+            assert!(
+                rendered.html.contains(&format!("id=\"{href}\"")),
+                "broken internal link #{href}"
+            );
+        }
+    }
+
+    #[test]
+    fn reader_summary_is_complete_escaped_and_closed_after_primary_sections() {
+        let packet = packet();
+        let summary_text = "First line\n</code></pre><script>alert(1)</script>\n```\n<component> &";
+        let mut authored = semantic_answer(&packet);
+        authored["summary"]["text"] = json!(summary_text);
+        authored["summary"]["uncertainty"] = json!("The local condition remains unresolved.");
+        authored["uncertainties"] = json!(["The global scope remains uncertain."]);
+        let original = authored.clone();
+
+        let rendered = validate_and_render_draft(&packet, &audit(&packet), authored).unwrap();
+
+        assert_eq!(rendered.answer, original);
+        let glossary = rendered.html.find("<section id=\"glossary\">").unwrap();
+        let behavior = rendered
+            .html
+            .find("<section id=\"ordered-behavior\">")
+            .unwrap();
+        let preparations = rendered.html.find("id=\"preparations\"").unwrap();
+        let global_uncertainty = rendered
+            .html
+            .find("The global scope remains uncertain.")
+            .unwrap();
+        let summary = rendered
+            .html
+            .find("<details id=\"summary\" class=\"full-summary\">")
+            .unwrap();
+        assert!(glossary < behavior && behavior < preparations && preparations < summary);
+        assert!(global_uncertainty < summary);
+        let html_nav_end = rendered.html.find("</nav>").unwrap();
+        let html_nav = &rendered.html[..html_nav_end];
+        assert!(
+            html_nav.find("href=\"#glossary\"").unwrap()
+                < html_nav.find("href=\"#ordered-behavior\"").unwrap()
+        );
+        assert!(
+            html_nav.find("href=\"#ordered-behavior\"").unwrap()
+                < html_nav.find("href=\"#preparations\"").unwrap()
+        );
+        let html_summary = &rendered.html[summary..];
+        assert!(html_summary.starts_with(
+            "<details id=\"summary\" class=\"full-summary\"><summary>Full summary</summary>"
+        ));
+        assert!(html_summary.contains(
+            "<pre class=\"full-summary-text\"><code>First line\n&lt;/code&gt;&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;\n```\n&lt;component&gt; &amp;</code></pre>"
+        ));
+        assert!(!html_summary.contains("<script>alert(1)</script>"));
+        assert!(html_summary.contains("href=\"#evidence-1\">d1</a>"));
+        assert!(html_summary.contains("href=\"#glossary-request\">Transfer request</a>"));
+        assert!(html_summary.contains("The local condition remains unresolved."));
+
+        let markdown_glossary = rendered.markdown.find("id=\"glossary\"").unwrap();
+        let markdown_behavior = rendered.markdown.find("id=\"ordered-behavior\"").unwrap();
+        let markdown_preparations = rendered.markdown.find("id=\"preparations\"").unwrap();
+        let markdown_uncertainty = rendered
+            .markdown
+            .find("The global scope remains uncertain")
+            .unwrap();
+        let markdown_summary = rendered
+            .markdown
+            .find("<details id=\"summary\" class=\"full-summary\">")
+            .unwrap();
+        assert!(markdown_glossary < markdown_behavior);
+        assert!(markdown_behavior < markdown_preparations);
+        assert!(markdown_preparations < markdown_summary);
+        assert!(markdown_uncertainty < markdown_summary);
+        let markdown_nav_end = rendered.markdown.find("</nav>").unwrap();
+        let markdown_nav = &rendered.markdown[..markdown_nav_end];
+        assert!(
+            markdown_nav.find("(#glossary)").unwrap()
+                < markdown_nav.find("(#ordered-behavior)").unwrap()
+        );
+        assert!(
+            markdown_nav.find("(#ordered-behavior)").unwrap()
+                < markdown_nav.find("(#preparations)").unwrap()
+        );
+        let markdown_summary = &rendered.markdown[markdown_summary..];
+        let code_start = markdown_summary.find("````text\n").unwrap() + "````text\n".len();
+        let code_end = markdown_summary[code_start..].find("\n````").unwrap() + code_start;
+        assert_eq!(&markdown_summary[code_start..code_end], summary_text);
+        let after_code = &markdown_summary[code_end..];
+        assert!(after_code.contains("Evidence (1)"));
+        assert!(after_code.contains("[Transfer request](#glossary-request)"));
+        assert!(after_code.contains("**Uncertainty:** The local condition remains unresolved\\."));
+
+        let table_count = rendered.html.matches("<table").count();
+        let scroll_region_count = rendered
+            .html
+            .matches("<div class=\"table-scroll\" tabindex=\"0\" role=\"region\"")
+            .count();
+        assert_eq!(scroll_region_count, table_count);
+        assert_eq!(
+            rendered.html.matches("class=\"table-scroll-hint\"").count(),
+            table_count
+        );
+        assert!(
+            rendered
+                .html
+                .contains("aria-label=\"First matching condition\"")
+        );
+        assert!(
+            rendered
+                .html
+                .contains("Focus this table and scroll horizontally to view all columns.")
+        );
+        for href in rendered
+            .html
+            .split("href=\"#")
+            .skip(1)
+            .filter_map(|tail| tail.split('\"').next())
+        {
+            assert!(
+                rendered.html.contains(&format!("id=\"{href}\"")),
+                "broken internal link #{href}"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_contract_rejects_schema_mismatches_and_legacy_field_injection() {
+        let packet = packet();
+        let valid = semantic_answer(&packet);
+
+        let mut missing_claim_refs = valid.clone();
+        missing_claim_refs["summary"]
+            .as_object_mut()
+            .unwrap()
+            .remove("glossaryRefs");
+        assert!(validate_and_render_draft(&packet, &audit(&packet), missing_claim_refs).is_err());
+
+        let mut duplicate_subject_refs = valid.clone();
+        duplicate_subject_refs["glossary"][0]["subjectRefs"] =
+            json!(["api.TransferRequest", "api.TransferRequest"]);
+        assert!(
+            validate_and_render_draft(&packet, &audit(&packet), duplicate_subject_refs).is_err()
+        );
+
+        let mut duplicate_technical_names = valid.clone();
+        duplicate_technical_names["glossary"][0]["technicalNames"] =
+            json!(["api.TransferRequest", "api.TransferRequest"]);
+        assert!(
+            validate_and_render_draft(&packet, &audit(&packet), duplicate_technical_names).is_err()
+        );
+
+        let mut predicate_on_action = valid.clone();
+        predicate_on_action["steps"][0]["children"][0]["predicateRef"] = json!("details");
+        assert!(validate_and_render_draft(&packet, &audit(&packet), predicate_on_action).is_err());
+
+        let mut null_predicate_on_action = valid.clone();
+        null_predicate_on_action["steps"][0]["children"][0]["predicateRef"] = Value::Null;
+        assert!(
+            validate_and_render_draft(&packet, &audit(&packet), null_predicate_on_action).is_err()
+        );
+
+        let mut unsafe_step_id = valid.clone();
+        unsafe_step_id["steps"][0]["id"] = json!("valid\" onclick=\"alert(1)");
+        assert!(validate_and_render_draft(&packet, &audit(&packet), unsafe_step_id).is_err());
+
+        let mut legacy_with_new_id = simple_answer(&packet, "d1");
+        legacy_with_new_id["steps"][0]["id"] = json!("step\" onclick=\"alert(1)");
+        assert!(validate_and_render(&packet, &audit(&packet), legacy_with_new_id).is_err());
+    }
+
+    #[test]
+    fn packet_field_subjects_merge_by_compiler_identity_and_explicit_metadata() {
+        let mut packet = field_subject_packet(json!([{
+            "declarationReference":"field-ref",
+            "symbolIdentity":"field:class:orders.Order#count:int",
+            "ownerIdentity":"class:orders.Order",
+            "scope":":main"
+        }]));
+        packet["fields"][0]["scope"] = Value::Null;
+        seal(&mut packet);
+        let subject = packet_subject_references(&packet);
+        assert!(subject.contains_key("field-ref"));
+        assert!(subject["field-ref"].ends_with(":main"));
+        assert!(validate_field_subject(&packet).is_ok());
+
+        let conflicts = [
+            (
+                "owner",
+                json!({
+                    "symbolIdentity":"field:class:orders.Order#count:int",
+                    "ownerIdentity":"class:other.Order",
+                    "scope":":main"
+                }),
+            ),
+            (
+                "name",
+                json!({
+                    "symbolIdentity":"field:class:orders.Order#total:int",
+                    "ownerIdentity":"class:orders.Order",
+                    "scope":":main"
+                }),
+            ),
+            (
+                "descriptor",
+                json!({
+                    "symbolIdentity":"field:class:orders.Order#count:long",
+                    "ownerIdentity":"class:orders.Order",
+                    "scope":":main"
+                }),
+            ),
+            (
+                "scope",
+                json!({
+                    "symbolIdentity":"field:class:orders.Order#count:int",
+                    "ownerIdentity":"class:orders.Order",
+                    "scope":":other"
+                }),
+            ),
+        ];
+        for (case, context) in conflicts {
+            let packet = field_subject_packet(json!([{
+                "declarationReference":"field-ref",
+                "symbolIdentity":context["symbolIdentity"],
+                "ownerIdentity":context["ownerIdentity"],
+                "scope":context["scope"]
+            }]));
+            assert!(
+                !packet_subject_references(&packet).contains_key("field-ref"),
+                "{case} conflict must invalidate the field reference"
+            );
+            assert!(
+                validate_field_subject(&packet).is_err(),
+                "{case} conflict must reject glossary use"
+            );
+        }
+
+        let sticky_conflict = field_subject_packet(json!([
+            {
+                "declarationReference":"field-ref",
+                "symbolIdentity":"field:class:orders.Order#count:int",
+                "ownerIdentity":"class:orders.Order",
+                "scope":":other"
+            },
+            {
+                "declarationReference":"field-ref",
+                "symbolIdentity":"field:class:orders.Order#count:int",
+                "ownerIdentity":"class:orders.Order",
+                "scope":":main"
+            }
+        ]));
+        assert!(!packet_subject_references(&sticky_conflict).contains_key("field-ref"));
+        assert!(validate_field_subject(&sticky_conflict).is_err());
+    }
+
+    #[test]
+    fn descriptorless_field_reference_remains_standalone_but_cannot_merge_with_full_identity() {
+        let mut packet = field_subject_packet(json!([]));
+        packet["fields"][0]["typeDescriptor"] = Value::Null;
+        packet["fields"][0]["scope"] = Value::Null;
+        seal(&mut packet);
+        assert_eq!(
+            packet_subject_references(&packet)["field-ref"],
+            "field-ref · class:orders.Order#count"
+        );
+        assert!(validate_field_subject(&packet).is_ok());
+
+        let mut unsupported_merge = field_subject_packet(json!([{
+            "declarationReference":"field-ref",
+            "symbolIdentity":"field:class:orders.Order#count:int",
+            "ownerIdentity":"class:orders.Order",
+            "scope":":main"
+        }]));
+        unsupported_merge["fields"][0]["typeDescriptor"] = Value::Null;
+        unsupported_merge["fields"][0]["scope"] = Value::Null;
+        seal(&mut unsupported_merge);
+        assert!(!packet_subject_references(&unsupported_merge).contains_key("field-ref"));
+        assert!(validate_field_subject(&unsupported_merge).is_err());
     }
 
     #[test]
@@ -3901,7 +5949,7 @@ mod tests {
                 .count(),
             0
         );
-        assert!(rendered.html.contains("Technical details"));
+        assert!(rendered.html.contains("Technical reference"));
         assert!(rendered.html.contains("#summary"));
     }
 
@@ -4117,7 +6165,8 @@ mod tests {
         assert_eq!(rendered.answer, original_answer);
         assert!(rendered.html.contains("ЧЕРНОВИК / НЕ ПРОВЕРЕНО"));
         assert!(rendered.html.contains("Навигация по документу"));
-        assert!(rendered.html.contains("Порядок внутреннего процесса"));
+        assert!(rendered.html.contains("<summary>Полное резюме</summary>"));
+        assert!(rendered.html.contains("Пояснение внутреннего процесса"));
         assert!(rendered.html.contains("OrderRules"));
         assert!(rendered.html.contains("class:orders.OrderRules"));
         assert!(rendered.html.contains("retryLimit"));
@@ -4129,6 +6178,11 @@ mod tests {
                 .contains("Captured DTO and annotation facts")
         );
         assert!(rendered.markdown.contains("## Типы и поля процесса"));
+        assert!(
+            rendered
+                .markdown
+                .contains("<summary>Полное резюме</summary>")
+        );
         let inventory = rendered
             .markdown
             .find("<summary>Полный список свидетельств</summary>")
@@ -4251,7 +6305,9 @@ mod tests {
         answer["summary"]["text"] = json!("Use <b>captured</b> evidence.");
         let rendered = validate_and_render(&packet, &audit(&packet), answer).unwrap();
 
-        assert!(!rendered.html.contains("<script>"));
+        assert_eq!(rendered.html.matches("<script>").count(), 1);
+        assert_eq!(rendered.html.matches("</script>").count(), 1);
+        assert!(!rendered.html.contains("<script>alert(1)</script>"));
         assert!(!rendered.html.contains("<img src=x"));
         assert!(
             rendered
