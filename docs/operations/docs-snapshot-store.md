@@ -482,9 +482,17 @@ and evidence labels, then atomically replaces each of `answer.json`,
 New `docs work run --draft` executions require answer 1.2; offline rendering of
 saved 1.0 and 1.1 answers remains supported. New operation Work records the
 versioned `authoringContract` value
-`codeclew-operation-draft-authoring/1.3`, which binds the current answer schema
-and generic author policy. A material change to either requires a new identity and new Work
-prepared from the same saved snapshot; old Work identity is never rewritten.
+`codeclew-operation-draft-authoring/1.4`, which binds the current answer schema,
+generic author policy, and packet projection. Endpoint packets include selected
+referenced owner FIELD declarations in `fields`; `constants` remains the
+static-and-final subset. Initializer tokens preserve declaration syntax but do
+not establish runtime values or initialization timing, and `final` does not
+establish deep immutability. A material change to the schema, policy, or packet
+requires a new identity and new Work prepared from the same saved snapshot; old
+Work identity is never rewritten.
+Existing 1.3 Work keeps its prior packet and may only replay a validated saved
+answer, including after an interrupted output write; a fresh author attempt
+requires new 1.4 Work prepared from the same saved snapshot.
 The output directory is not replaced as one transaction. If a command fails
 between file replacements, rerun it with the same saved Work and answer to
 finish the draft; this performs no index capture. The result remains a local

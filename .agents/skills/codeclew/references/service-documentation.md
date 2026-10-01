@@ -574,11 +574,19 @@ match; this makes no new driver dispatch, and an answer that still fails
 validation remains invalid. A dispatch without a saved response is
 marked uncertain with its maximum reservation retained; rerunning that Work does
 not dispatch another call. New operation Work persists the centrally selected
-`authoringContract` value `codeclew-operation-draft-authoring/1.3`, covering both
-the answer schema and generic author policy. Material changes to either require
-a new identity; prepare new Work from the same saved snapshot to use it. The
-operator does not edit old Work records or set an identity to reuse completed
-results. This recipe covers the HTTP endpoint
+`authoringContract` value `codeclew-operation-draft-authoring/1.4`, covering the
+answer schema, generic author policy, and endpoint field projection. For this
+profile, `packet.fields` lists selected referenced owner FIELD declarations
+with their exact type, modifiers, annotations, source tokens, and evidence;
+`packet.constants` keeps its existing static-and-final subset. Initializer
+tokens document declaration syntax, not runtime values or initialization
+timing, and `final` does not establish deep immutability. Material changes to
+the schema, policy, or packet require a new identity; prepare new Work from the
+same saved snapshot to use it. The operator does not edit old Work records or
+set an identity to reuse completed results. Existing 1.3 Work keeps its prior
+packet and may only replay a validated saved answer, including after an
+interrupted output write; a fresh author attempt requires new 1.4 Work prepared
+from the same saved snapshot. This recipe covers the HTTP endpoint
 profile. Use the next recipe for an internal callable whose behavior is not
 entered through an HTTP endpoint.
 

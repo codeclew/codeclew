@@ -5119,7 +5119,7 @@ pub(super) mod api_contract_tests {
     }
 
     #[test]
-    fn operation_authoring_identity_separates_contract_1_3_and_preserves_prior_work_bytes() {
+    fn operation_authoring_identity_separates_contract_1_4_and_preserves_legacy_work_bytes() {
         let mut old = endpoint_context_fixture();
         old.snapshot = Some("sha256:saved-operation-snapshot/1".into());
         assert!(old.request.authoring_contract.is_none());
@@ -5138,25 +5138,45 @@ pub(super) mod api_contract_tests {
         );
         assert_eq!(bytes(&loaded_old).unwrap(), old_bytes);
 
-        let mut previous_contract = old.clone();
-        previous_contract.request.authoring_contract =
+        let mut contract_1_2 = old.clone();
+        contract_1_2.request.authoring_contract =
             Some("codeclew-operation-draft-authoring/1.2".into());
-        let mut previous_stored = StoredWork::from_runtime(
-            &previous_contract,
-            previous_contract.snapshot.clone().unwrap(),
-        )
-        .unwrap();
-        previous_stored.id = digest(&previous_stored).unwrap()[7..].into();
-        let previous_id = previous_stored.id.clone();
-        let previous_bytes = bytes(&previous_stored).unwrap();
-        let loaded_previous: StoredWork = serde_json::from_slice(&previous_bytes).unwrap();
-        loaded_previous.validate_identity(&previous_id).unwrap();
+        let mut contract_1_2_stored =
+            StoredWork::from_runtime(&contract_1_2, contract_1_2.snapshot.clone().unwrap())
+                .unwrap();
+        contract_1_2_stored.id = digest(&contract_1_2_stored).unwrap()[7..].into();
+        let contract_1_2_id = contract_1_2_stored.id.clone();
+        let contract_1_2_bytes = bytes(&contract_1_2_stored).unwrap();
+        let loaded_contract_1_2: StoredWork = serde_json::from_slice(&contract_1_2_bytes).unwrap();
+        loaded_contract_1_2
+            .validate_identity(&contract_1_2_id)
+            .unwrap();
         assert_eq!(
-            loaded_previous.request.authoring_contract.as_deref(),
+            loaded_contract_1_2.request.authoring_contract.as_deref(),
             Some("codeclew-operation-draft-authoring/1.2")
         );
-        assert_eq!(bytes(&loaded_previous).unwrap(), previous_bytes);
-        assert_eq!(loaded_previous.id, previous_id);
+        assert_eq!(bytes(&loaded_contract_1_2).unwrap(), contract_1_2_bytes);
+        assert_eq!(loaded_contract_1_2.id, contract_1_2_id);
+
+        let mut contract_1_3 = old.clone();
+        contract_1_3.request.authoring_contract =
+            Some(super::super::operation_answer::PREVIOUS_AUTHORING_CONTRACT.into());
+        let mut contract_1_3_stored =
+            StoredWork::from_runtime(&contract_1_3, contract_1_3.snapshot.clone().unwrap())
+                .unwrap();
+        contract_1_3_stored.id = digest(&contract_1_3_stored).unwrap()[7..].into();
+        let contract_1_3_id = contract_1_3_stored.id.clone();
+        let contract_1_3_bytes = bytes(&contract_1_3_stored).unwrap();
+        let loaded_contract_1_3: StoredWork = serde_json::from_slice(&contract_1_3_bytes).unwrap();
+        loaded_contract_1_3
+            .validate_identity(&contract_1_3_id)
+            .unwrap();
+        assert_eq!(
+            loaded_contract_1_3.request.authoring_contract.as_deref(),
+            Some(super::super::operation_answer::PREVIOUS_AUTHORING_CONTRACT)
+        );
+        assert_eq!(bytes(&loaded_contract_1_3).unwrap(), contract_1_3_bytes);
+        assert_eq!(loaded_contract_1_3.id, contract_1_3_id);
 
         let mut current = old.clone();
         normalize_operation_authoring_contract(&mut current.request).unwrap();
@@ -5168,7 +5188,8 @@ pub(super) mod api_contract_tests {
             StoredWork::from_runtime(&current, current.snapshot.clone().unwrap()).unwrap();
         current_stored.id = digest(&current_stored).unwrap()[7..].into();
         assert_ne!(current_stored.id, old_id);
-        assert_ne!(current_stored.id, previous_id);
+        assert_ne!(current_stored.id, contract_1_2_id);
+        assert_ne!(current_stored.id, contract_1_3_id);
         assert_eq!(current_stored.snapshot, old_stored.snapshot);
         assert_eq!(
             current_stored.evidence_snapshot,
@@ -5176,34 +5197,61 @@ pub(super) mod api_contract_tests {
         );
         assert_eq!(current_stored.handles_ref, old_stored.handles_ref);
         assert_eq!(current_stored.influence_ref, old_stored.influence_ref);
-        assert_eq!(current_stored.snapshot, previous_stored.snapshot);
+        assert_eq!(current_stored.snapshot, contract_1_2_stored.snapshot);
         assert_eq!(
             current_stored.evidence_snapshot,
-            previous_stored.evidence_snapshot
+            contract_1_2_stored.evidence_snapshot
         );
-        assert_eq!(current_stored.handles_ref, previous_stored.handles_ref);
-        assert_eq!(current_stored.influence_ref, previous_stored.influence_ref);
+        assert_eq!(current_stored.handles_ref, contract_1_2_stored.handles_ref);
+        assert_eq!(
+            current_stored.influence_ref,
+            contract_1_2_stored.influence_ref
+        );
+        assert_eq!(current_stored.snapshot, contract_1_3_stored.snapshot);
+        assert_eq!(
+            current_stored.evidence_snapshot,
+            contract_1_3_stored.evidence_snapshot
+        );
+        assert_eq!(current_stored.handles_ref, contract_1_3_stored.handles_ref);
+        assert_eq!(
+            current_stored.influence_ref,
+            contract_1_3_stored.influence_ref
+        );
 
-        let mut previous_packet_work = previous_contract;
-        previous_packet_work.id = previous_id.clone();
-        let (previous_packet, previous_audit) =
-            super::super::operation_packet::build(&previous_packet_work).unwrap();
+        let mut old_packet_work = old.clone();
+        old_packet_work.id = old_id;
+        let (old_packet, old_audit) =
+            super::super::operation_packet::build(&old_packet_work).unwrap();
+        let mut contract_1_2_packet_work = contract_1_2;
+        contract_1_2_packet_work.id = contract_1_2_id;
+        let (contract_1_2_packet, _) =
+            super::super::operation_packet::build(&contract_1_2_packet_work).unwrap();
+
+        let mut contract_1_3_packet_work = contract_1_3;
+        contract_1_3_packet_work.id = contract_1_3_id.clone();
+        let (contract_1_3_packet, contract_1_3_audit) =
+            super::super::operation_packet::build(&contract_1_3_packet_work).unwrap();
         let mut current_packet_work = current.clone();
         current_packet_work.id = current_stored.id.clone();
         let (current_packet, current_audit) =
             super::super::operation_packet::build(&current_packet_work).unwrap();
-        assert_eq!(previous_packet, current_packet);
+        assert_eq!(old_packet, contract_1_2_packet);
+        assert_eq!(old_packet, contract_1_3_packet);
+        assert!(old_packet.get("fields").is_none());
+        assert!(contract_1_3_packet.get("fields").is_none());
+        assert!(current_packet["fields"].is_array());
+        assert_ne!(old_packet, current_packet);
         assert_eq!(
-            previous_packet["packetDigest"],
-            current_packet["packetDigest"]
+            old_packet["packetDigest"],
+            contract_1_3_packet["packetDigest"]
         );
         assert_eq!(
-            previous_audit["packetDigest"],
-            current_audit["packetDigest"]
+            old_audit["packetDigest"],
+            contract_1_3_audit["packetDigest"]
         );
-        assert_ne!(previous_audit["workId"], current_audit["workId"]);
+        assert_ne!(contract_1_3_audit["workId"], current_audit["workId"]);
         assert_ne!(
-            previous_audit["bindingDigest"],
+            contract_1_3_audit["bindingDigest"],
             current_audit["bindingDigest"]
         );
 

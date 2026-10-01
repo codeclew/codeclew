@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -517,6 +518,54 @@ class DocumentationSelectionContractTest(unittest.TestCase):
                 READER_PACKET_SCHEMA["$defs"],
             ),
             [],
+        )
+        field_packet = json.loads(json.dumps(service_packet))
+        field_packet["fields"] = [
+            {
+                "reference": "d-owner-guard",
+                "ownerIdentity": "class:orders.Service",
+                "name": "guardCodes",
+                "scope": ":main",
+                "typeDescriptor": "Ljava/util/Set;",
+                "modifiers": ["PRIVATE", "FINAL"],
+                "annotations": [],
+                "sourceTokens": ["private", "final", "Set", "guardCodes", ";"],
+                "evidence": ["d-owner-guard"],
+            }
+        ]
+        field_packet["citations"]["d-owner-guard"] = "captured owner field declaration"
+        self.assertEqual(
+            definition_errors(
+                field_packet,
+                reader_packet_schema,
+                READER_PACKET_SCHEMA["$defs"],
+            ),
+            [],
+        )
+        generated_packet_path = os.environ.get("CODECLEW_TEST_ENDPOINT_PACKET_PATH")
+        if generated_packet_path:
+            generated_packet = json.loads(
+                Path(generated_packet_path).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                definition_errors(
+                    generated_packet,
+                    reader_packet_schema,
+                    READER_PACKET_SCHEMA["$defs"],
+                ),
+                [],
+                "the built 1.4 endpoint packet must conform to the public schema",
+            )
+        missing_field_scope = json.loads(json.dumps(field_packet))
+        del missing_field_scope["fields"][0]["scope"]
+        self.assertNotEqual(
+            definition_errors(
+                missing_field_scope,
+                reader_packet_schema,
+                READER_PACKET_SCHEMA["$defs"],
+            ),
+            [],
+            "endpoint owner fields keep their required declaration scope",
         )
         self.assertNotEqual(
             definition_errors(

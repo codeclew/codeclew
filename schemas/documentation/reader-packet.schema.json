@@ -203,6 +203,7 @@
         "callMap": { "$ref": "#/$defs/callMap" },
         "methodSources": { "type": "array", "items": { "$ref": "#/$defs/methodSource" } },
         "methodBodies": { "type": "array", "items": { "$ref": "#/$defs/methodBody" } },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/ownerField" } },
         "constants": { "type": "array", "items": { "$ref": "#/$defs/constant" } },
         "coverage": { "$ref": "#/$defs/coverage" },
         "limitations": { "type": "array", "items": { "$ref": "#/$defs/limitation" } },
@@ -323,6 +324,22 @@
         "evidence": { "$ref": "#/$defs/evidence" }
       },
       "required": ["reference", "ownerIdentity", "name", "typeDescriptor", "modifiers", "annotations", "sourceTokens", "evidence"]
+    },
+    "ownerField": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reference": { "$ref": "#/$defs/label" },
+        "ownerIdentity": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "scope": { "type": "string" },
+        "typeDescriptor": {},
+        "modifiers": { "type": "array" },
+        "annotations": { "type": "array" },
+        "sourceTokens": { "type": "array" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "required": ["reference", "ownerIdentity", "name", "scope", "typeDescriptor", "modifiers", "annotations", "sourceTokens", "evidence"]
     },
     "processType": {
       "type": "object",

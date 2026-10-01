@@ -19,7 +19,8 @@ pub(super) const PROCESS_DIAGRAM_MARKDOWN_MARKER: &str = "<!--CODECLEW_PROCESS_D
 const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "loop"];
 // Bump when the answer schema or generic author instruction changes materially;
 // this identity is persisted on newly prepared operation Work.
-pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.3";
+pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.4";
+pub(super) const PREVIOUS_AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.3";
 
 pub(super) fn output_schema() -> Value {
     serde_json::from_str(include_str!(

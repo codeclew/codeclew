@@ -404,6 +404,62 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
     }
     constants.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
 
+    let owner_fields = if work.request.authoring_contract.as_deref()
+        == Some(super::operation_answer::AUTHORING_CONTRACT)
+    {
+        let mut field_references = BTreeSet::<String>::new();
+        for group in packet_record["referencedOwnerFields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            field_references.extend(
+                group["fieldReferences"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned),
+            );
+        }
+        let mut fields = Vec::with_capacity(field_references.len());
+        for reference in field_references {
+            let (label, row) = selected_by_reference
+                .get(&reference)
+                .ok_or_else(|| invalid("reader packet owner field reference is not selected"))?;
+            let record = &row["record"];
+            let normalized = &record["normalized"];
+            if record["kind"] != "SYMBOL" || normalized["declarationKind"] != "FIELD" {
+                return Err(invalid(
+                    "reader packet owner field reference is not a FIELD declaration",
+                ));
+            }
+            cite(&mut citations, label, "captured owner field declaration");
+            fields.push(json!({
+                "reference":reference,
+                "ownerIdentity":normalized["ownerIdentity"],
+                "name":normalized["name"],
+                "scope":normalized["scope"],
+                "typeDescriptor":retained_declared_type_descriptor(normalized),
+                "modifiers":array_or_empty(&normalized["modifiers"]),
+                "annotations":array_or_empty(&normalized["annotations"]),
+                "sourceTokens":array_or_empty(&normalized["sourceTokens"]),
+                "evidence":[label]
+            }));
+        }
+        fields.sort_by(|left, right| {
+            left["ownerIdentity"]
+                .as_str()
+                .cmp(&right["ownerIdentity"].as_str())
+                .then_with(|| left["scope"].as_str().cmp(&right["scope"].as_str()))
+                .then_with(|| left["name"].as_str().cmp(&right["name"].as_str()))
+                .then_with(|| left["reference"].as_str().cmp(&right["reference"].as_str()))
+        });
+        Some(fields)
+    } else {
+        None
+    };
+
     let limitations: Vec<Value> = packet_record["gaps"]
         .as_array()
         .into_iter()
@@ -414,6 +470,22 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
         .and_then(|record| record["symbol"].as_str())
         .unwrap_or(entrypoint_id);
     let title = format!("{} · {}", work.subject, endpoint_symbol);
+    let mut interpretation_limits = vec![
+        "Annotation names and source tokens are copied from saved declarations; annotation argument semantics are not inferred.",
+        "@NotNull indicates declared nullability; it does not establish a nonzero numeric value.",
+        "A Java null value does not establish that its JSON property may be omitted.",
+        "Method names do not establish runtime behavior or side effects.",
+        "A REFERENCES edge identifies a compiler-resolved callback target; it does not establish invocation, timing, or execution order.",
+        "A FIELD_RECEIVER_CALL candidate uses a declared field type and a unique captured same-scope method; it does not resolve injection, inheritance, overrides, or runtime dispatch.",
+    ];
+    if owner_fields
+        .as_ref()
+        .is_some_and(|fields| !fields.is_empty())
+    {
+        interpretation_limits.push(
+            "Owner field sourceTokens preserve declaration and initializer syntax; they do not establish runtime values or initialization timing, and final does not establish deep immutability.",
+        );
+    }
     let mut packet = json!({
         "schema":PACKET_SCHEMA,
         "profile":endpoint_context::PROFILE,
@@ -447,17 +519,13 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
             "evidence":[coverage_label]
         },
         "limitations":limitations,
-        "interpretationLimits":[
-            "Annotation names and source tokens are copied from saved declarations; annotation argument semantics are not inferred.",
-            "@NotNull indicates declared nullability; it does not establish a nonzero numeric value.",
-            "A Java null value does not establish that its JSON property may be omitted.",
-            "Method names do not establish runtime behavior or side effects.",
-            "A REFERENCES edge identifies a compiler-resolved callback target; it does not establish invocation, timing, or execution order.",
-            "A FIELD_RECEIVER_CALL candidate uses a declared field type and a unique captured same-scope method; it does not resolve injection, inheritance, overrides, or runtime dispatch."
-        ],
+        "interpretationLimits":interpretation_limits,
         "runtimeAndSerialization":"UNKNOWN_FROM_THIS_PACKET",
         "citations":citations
     });
+    if let Some(fields) = owner_fields {
+        packet["fields"] = json!(fields);
+    }
 
     let packet_digest = digest(&packet)?;
     packet["packetDigest"] = json!(packet_digest);
@@ -1451,8 +1519,15 @@ mod tests {
     use super::*;
     use crate::canonical;
 
-    fn add_field_receiver_field(work: &mut Work, id: &str, name: &str, descriptor: &str) {
-        let owner = "class:orders.Service";
+    fn add_owner_field(
+        work: &mut Work,
+        id: &str,
+        owner: &str,
+        name: &str,
+        descriptor: &str,
+        modifiers: &[&str],
+        source_tokens: &[&str],
+    ) {
         let identity = format!("field:{owner}#{name}:{descriptor}");
         let normalized = json!({
             "schema":"codeclew-java-compiler-fact/1.0",
@@ -1462,9 +1537,9 @@ mod tests {
             "name":name,
             "scope":":main",
             "jvmDescriptor":descriptor,
-            "modifiers":[],
+            "modifiers":modifiers,
             "annotations":[],
-            "sourceTokens":["private", "Field", name, ";"]
+            "sourceTokens":source_tokens
         });
         let fact_digest = digest(&normalized).unwrap();
         let observation = crate::documentation::model::Observation {
@@ -1490,6 +1565,19 @@ mod tests {
                 kind: "DEPENDENCY".into(),
                 id: id.into(),
             },
+        );
+    }
+
+    fn add_field_receiver_field(work: &mut Work, id: &str, name: &str, descriptor: &str) {
+        let owner = "class:orders.Service";
+        add_owner_field(
+            work,
+            id,
+            owner,
+            name,
+            descriptor,
+            &[],
+            &["private", "Field", name, ";"],
         );
     }
 
@@ -2752,6 +2840,181 @@ mod tests {
                 "sourceTokens":["int", "status"]
             }))
             .is_null()
+        );
+    }
+
+    #[test]
+    fn authoring_contract_1_4_delivers_selected_owner_field_declarations_separately_from_constants()
+    {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        work.request.authoring_contract =
+            Some(super::super::operation_answer::AUTHORING_CONTRACT.into());
+        {
+            let service = work.checked.services.get_mut("orders").unwrap();
+            let source = service.sources.get_mut("service-source").unwrap();
+            source.text = source.text.replace(
+                "    try {\n",
+                "    Object guardSnapshot = this.guardCodes;\n    int timeoutSnapshot = timeoutMillis;\n    try {\n",
+            );
+            let class_end = source.text.rfind('}').unwrap();
+            source.text.insert_str(
+                class_end,
+                "  private final Set<String> guardCodes = new HashSet<String>();\n  private static int timeoutMillis = 250;\n",
+            );
+            source
+                .text
+                .push_str("class OtherService { static int timeoutMillis = 900; }\n");
+            source.text_digest = canonical::hash_bytes(source.text.as_bytes());
+        }
+        add_owner_field(
+            &mut work,
+            "guard-field",
+            "class:orders.Service",
+            "guardCodes",
+            "Ljava/util/Set;",
+            &["PRIVATE", "FINAL"],
+            &[
+                "private",
+                "final",
+                "Set",
+                "<",
+                "String",
+                ">",
+                "guardCodes",
+                "=",
+                "new",
+                "HashSet",
+                "<",
+                "String",
+                ">",
+                "(",
+                ")",
+                ";",
+            ],
+        );
+        add_owner_field(
+            &mut work,
+            "timeout-field",
+            "class:orders.Service",
+            "timeoutMillis",
+            "I",
+            &["PRIVATE", "STATIC"],
+            &["private", "static", "int", "timeoutMillis", "=", "250", ";"],
+        );
+        add_owner_field(
+            &mut work,
+            "other-timeout",
+            "class:orders.OtherService",
+            "timeoutMillis",
+            "I",
+            &["STATIC"],
+            &["static", "int", "timeoutMillis", "=", "900", ";"],
+        );
+
+        let (packet, audit) = build(&work).unwrap();
+        if let Some(path) = std::env::var_os("CODECLEW_TEST_ENDPOINT_PACKET_PATH") {
+            std::fs::write(path, serde_json::to_vec_pretty(&packet).unwrap()).unwrap();
+        }
+        let (repeat_packet, repeat_audit) = build(&work).unwrap();
+        assert_eq!(packet, repeat_packet);
+        assert_eq!(audit, repeat_audit);
+        let fields = packet["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 3);
+        let field = |name: &str| fields.iter().find(|field| field["name"] == name).unwrap();
+
+        let guard = field("guardCodes");
+        assert_eq!(guard["ownerIdentity"], "class:orders.Service");
+        assert_eq!(guard["typeDescriptor"], "Ljava/util/Set;");
+        assert_eq!(guard["modifiers"], json!(["PRIVATE", "FINAL"]));
+        assert_eq!(
+            guard["sourceTokens"],
+            json!([
+                "private",
+                "final",
+                "Set",
+                "<",
+                "String",
+                ">",
+                "guardCodes",
+                "=",
+                "new",
+                "HashSet",
+                "<",
+                "String",
+                ">",
+                "(",
+                ")",
+                ";"
+            ])
+        );
+        assert_eq!(guard["evidence"], json!(["dependency-guard-field"]));
+
+        let timeout = field("timeoutMillis");
+        assert_eq!(timeout["ownerIdentity"], "class:orders.Service");
+        assert_eq!(timeout["typeDescriptor"], "I");
+        assert_eq!(timeout["modifiers"], json!(["PRIVATE", "STATIC"]));
+        assert_eq!(
+            timeout["sourceTokens"],
+            json!(["private", "static", "int", "timeoutMillis", "=", "250", ";"])
+        );
+        assert_eq!(timeout["evidence"], json!(["dependency-timeout-field"]));
+        assert!(
+            !fields
+                .iter()
+                .any(|field| field["ownerIdentity"] == "class:orders.OtherService")
+        );
+
+        for (id, field) in [("guard-field", guard), ("timeout-field", timeout)] {
+            let evidence = field["evidence"][0].as_str().unwrap();
+            let record = audit["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|record| record["id"] == id)
+                .unwrap();
+            assert_eq!(record["label"], evidence);
+            assert_eq!(record["deliveredToAuthor"], false);
+            assert_eq!(
+                record["row"]["record"]["normalized"]["sourceTokens"],
+                field["sourceTokens"]
+            );
+            assert_eq!(
+                packet["citations"][evidence],
+                "captured owner field declaration"
+            );
+        }
+        assert_eq!(audit["packetDigest"], packet["packetDigest"]);
+
+        let constants = packet["constants"].as_array().unwrap();
+        assert_eq!(constants.len(), 1);
+        assert_eq!(constants[0]["name"], "DEFAULT_CODE");
+        assert_eq!(constants[0]["modifiers"], json!(["STATIC", "FINAL"]));
+        assert!(
+            packet["interpretationLimits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|limit| {
+                    limit.as_str().is_some_and(|text| {
+                        text.contains("final does not establish deep immutability")
+                    })
+                })
+        );
+        assert_eq!(
+            packet["citations"]["dependency-guard-field"],
+            "captured owner field declaration"
+        );
+        assert_eq!(
+            packet["citations"]["dependency-timeout-field"],
+            "captured owner field declaration"
+        );
+        assert!(work.checked.dependencies.contains_key("other-timeout"));
+        assert!(
+            audit["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|record| record["id"] != "other-timeout")
         );
     }
 
