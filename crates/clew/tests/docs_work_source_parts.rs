@@ -17,6 +17,11 @@ use support::{Fixture, read};
 
 const SOURCE_PART_REQUEST_SCHEMA: &str = "codeclew-documentation-source-part-request/1.0";
 
+fn hydrated_work(f: &Fixture, id: &str) -> Value {
+    let repo = Repository::open(&f.docs).unwrap();
+    serde_json::to_value(work::load(&repo, id).unwrap()).unwrap()
+}
+
 fn prepare_work_for(
     f: &Fixture,
     max_bytes: usize,
@@ -57,8 +62,8 @@ fn prepare_work_for_source(
     }
     let prepared = f.ok(&args);
     let work = prepared["work"].as_str().unwrap().to_owned();
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
-    let reference = frozen["handles"]
+    let hydrated = hydrated_work(f, &work);
+    let reference = hydrated["handles"]
         .as_object()
         .unwrap()
         .iter()
@@ -311,7 +316,8 @@ fn retained_source_part_cli_returns_bounded_recorded_utf8_bytes_without_acquisit
     let (work, reference) = prepare_work(&f, 2_048);
     assert_eq!(fs::read(&latest_path).unwrap(), latest_before);
     let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
-    let source_id = frozen["handles"][&reference]["id"].as_str().unwrap();
+    let hydrated = hydrated_work(&f, &work);
+    let source_id = hydrated["handles"][&reference]["id"].as_str().unwrap();
     let source = checked
         .services
         .values()
@@ -534,7 +540,7 @@ fn source_part_requests_are_strict_work_scoped_retryable_and_concurrency_safe() 
     assert!(!schema_error.status.success());
     assert_eq!(fs::read(&state_a_path).unwrap(), first_receipt_bytes);
 
-    let frozen_a = read(f.docs.join(format!(".codeclew/work/{work_a}/work.json")));
+    let frozen_a = hydrated_work(&f, &work_a);
     let dependency_reference = frozen_a["handles"]
         .as_object()
         .unwrap()
@@ -1379,7 +1385,7 @@ fn proposal_accepts_only_complete_parts_after_default_pages_and_keeps_reads_stic
         Some(&snapshot),
         Some(&source_id),
     );
-    let frozen = read(f.docs.join(format!(".codeclew/work/{work_id}/work.json")));
+    let frozen = hydrated_work(&f, &work_id);
     let entrypoint_reference = frozen["handles"]
         .as_object()
         .unwrap()
