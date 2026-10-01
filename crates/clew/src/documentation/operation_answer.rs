@@ -3356,14 +3356,7 @@ fn render_html(
         } else {
             "Structure and branch order follow the supplied answer steps."
         }),
-        render_tree_html(
-            &answer.steps,
-            answer,
-            evidence_index,
-            &preparation_titles,
-            "",
-            labels
-        )
+        render_pseudocode_html(&answer.steps, answer, labels)
     ));
     if let Some(diagram) = process_diagram {
         html.push_str(&render_process_diagram_html(
@@ -3528,15 +3521,7 @@ fn render_markdown(
             "Structure and branch order follow the supplied answer steps."
         }
     ));
-    markdown.push_str(&render_tree_markdown(
-        &answer.steps,
-        answer,
-        evidence_index,
-        &preparation_titles,
-        "",
-        0,
-        labels,
-    ));
+    markdown.push_str(&render_pseudocode_markdown(&answer.steps, answer, labels));
     markdown.push('\n');
     if let Some(diagram) = process_diagram {
         markdown.push_str(&render_process_diagram_markdown(
@@ -3616,18 +3601,17 @@ const OFFLINE_STYLE: &str = r#"
 main>*,main section,main details,.document-nav,.claim{max-width:100%;min-width:0}.document-nav{display:flex;flex-wrap:wrap;align-items:baseline;gap:.25rem .65rem}.document-nav a{min-width:0;overflow-wrap:anywhere;word-break:break-word}
 h1,h2,h3{line-height:1.2}h2{margin-top:2.2rem;border-bottom:1px solid #394252;padding-bottom:.45rem}
 a{color:var(--accent);overflow-wrap:anywhere;word-break:break-word}code{overflow-wrap:anywhere;word-break:break-word}.review-status{padding:.85rem 1rem;border-left:4px solid #d99e45;background:#29231a;overflow-wrap:anywhere}
-.packet-digest{color:#bac4d3}.claim,.step-node,.tree-node{border:1px solid #394252;border-radius:.55rem;padding:.8rem 1rem;margin:.55rem 0;background:var(--panel)}
+.packet-digest{color:#bac4d3}.claim,.step-node{border:1px solid #394252;border-radius:.55rem;padding:.8rem 1rem;margin:.55rem 0;background:var(--panel)}
 .claim-text,.step-text{white-space:pre-wrap;overflow-wrap:anywhere}.full-summary-text{width:100%;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.claim-uncertainty{color:#ffd08a}.citations{display:inline-flex;gap:.45rem;flex-wrap:wrap;margin-left:.45rem;font-size:.9em;min-width:0;max-width:100%}
 .citation{border:1px solid #52627a;border-radius:1rem;padding:.05rem .5rem;text-decoration:none}.step-kind{font-size:.75em;text-transform:uppercase;letter-spacing:.06em;color:#9ed0ff;margin-right:.55rem}
 .step-meta{color:#b7c1d0;font-size:.9em}.ordered-steps,.nested-steps{padding-left:1.5rem}.path-group{margin:.5rem 0 .75rem 1rem;padding-left:.8rem;border-left:2px solid #52627a}.path-label{font-weight:650;color:#bdc9dc}
-.step-tree ul{list-style:none;margin:.25rem 0 .25rem 1rem;padding-left:1rem;border-left:2px solid var(--line)}.step-tree li{position:relative;padding:.25rem 0 .25rem .4rem}.step-tree li::before{content:"";position:absolute;left:-1rem;top:1.25rem;width:.8rem;border-top:2px solid var(--line)}
-.tree-node{display:inline-block;max-width:100%}.tree-branch-label{margin:.35rem 0 0 1rem;color:#bdc9dc;font-size:.9em}
+.pseudocode{list-style:none;margin:0;padding:0;min-width:0;max-width:100%}.pseudocode-row{margin:.2rem 0;min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}.pseudocode-depth-0{padding-left:0}.pseudocode-depth-1{padding-left:.8rem}.pseudocode-depth-2{padding-left:1.6rem}.pseudocode-link{display:inline;white-space:normal;overflow-wrap:anywhere;word-break:break-word;min-width:0;max-width:100%}.pseudocode-structure,.pseudocode-scope{color:#bdc9dc;font-size:.9em}.pseudocode-uncertainty{font-size:.8em;white-space:normal;overflow-wrap:anywhere}
 table{border-collapse:collapse;width:100%;margin:1rem 0 1.5rem}caption{text-align:left;font-weight:700;margin:.5rem 0}th,td{border:1px solid #596273;padding:.5rem .65rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#242b36}
 .table-scroll{width:100%;min-width:0;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.table-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.table-scroll table{min-width:34rem}.table-scroll-hint{margin:.2rem 0 .45rem;font-size:.85em;color:#bac4d3}.decision-outcome>summary{cursor:pointer;font-weight:600}
 pre{width:100%;min-width:0;max-width:100%;overflow:auto;white-space:pre}.source-locations pre{white-space:pre}.technical-details,.packet-facts-reference,.evidence-reference{width:100%;min-width:0;max-width:100%}.technical-details{contain:layout}.source-locations,.source-locations li,.source-locations li>* ,.source-locations strong,.evidence-index,.evidence-index li{max-width:100%;min-width:0;overflow-wrap:anywhere;word-break:break-word}
 .evidence-index,.limitations,.uncertainties{padding-left:1.4rem}.muted{color:#bac4d3}figure{margin:0}figcaption{font-weight:650}
 @media(max-width:720px){main{padding:1rem}}
-@media(prefers-color-scheme:light){body{background:#fff;color:#18202b}a{color:#005ea8}.claim,.step-node,.tree-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted,.table-scroll-hint{color:#49586d}.claim-uncertainty{color:#704400}th{background:#edf1f7}}
+@media(prefers-color-scheme:light){body{background:#fff;color:#18202b}a{color:#005ea8}.claim,.step-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted,.table-scroll-hint,.pseudocode-structure,.pseudocode-scope{color:#49586d}.claim-uncertainty{color:#704400}th{background:#edf1f7}}
 "#;
 
 fn render_claim_html(
@@ -4109,162 +4093,395 @@ fn render_step_metadata_html(step: &OperationStep, labels: ReaderLabels) -> Stri
     }
 }
 
-fn render_tree_html(
-    steps: &[OperationStep],
-    answer: &OperationAnswer,
-    evidence_index: &BTreeMap<String, usize>,
-    preparation_titles: &BTreeMap<String, String>,
+enum PseudocodeRow<'a> {
+    Step {
+        step: &'a OperationStep,
+        path: String,
+        depth: usize,
+        scope: Option<usize>,
+    },
+    BranchStart {
+        scope: usize,
+        label: String,
+        depth: usize,
+    },
+    BranchEnd {
+        scope: usize,
+        depth: usize,
+    },
+    ChainStart {
+        scope: usize,
+        depth: usize,
+    },
+    ElseIf {
+        scope: usize,
+        depth: usize,
+    },
+    ChainEnd {
+        scope: usize,
+        depth: usize,
+    },
+}
+
+fn next_pseudocode_scope(next_scope: &mut usize) -> usize {
+    *next_scope += 1;
+    *next_scope
+}
+
+fn collect_pseudocode_rows<'a>(
+    steps: &'a [OperationStep],
     path_prefix: &str,
+    depth: usize,
+    enclosing_scope: Option<usize>,
+    next_scope: &mut usize,
+    output: &mut Vec<PseudocodeRow<'a>>,
     labels: ReaderLabels,
-) -> String {
-    if steps.is_empty() {
-        return String::from("<p class=\"muted\">No steps supplied.</p>");
-    }
-    let mut output = String::from("<ul class=\"tree-root\">");
+) {
     for (index, step) in steps.iter().enumerate() {
         let path = step_path(path_prefix, index + 1);
-        let anchor = step_anchor(step, &path);
-        output.push_str(&format!(
-            "<li><div class=\"tree-node\"><a class=\"pseudocode-link\" href=\"#{}\"><span class=\"step-kind\">{}</span> {}</a>",
-            html_escape(&anchor),
-            html_escape(&step.kind),
-            html_escape(&step.meaning.text)
-        ));
-        output.push_str(&render_evidence_html(
-            &step.meaning.evidence,
-            evidence_index,
-            labels,
-        ));
-        let mut glossary_refs = step.glossary_refs.clone();
-        glossary_refs.extend(step.meaning.glossary_refs.iter().cloned());
-        glossary_refs.sort();
-        glossary_refs.dedup();
-        output.push_str(&render_glossary_links_html(
-            &glossary_refs,
-            &answer.glossary,
-            labels,
-        ));
-        if answer.schema != ANSWER_SCHEMA_V1_2 {
-            output.push_str(&render_step_metadata_html(step, labels));
+        if let Some(table) = (step.kind == "decision")
+            .then(|| first_match_table(step, path.clone()))
+            .flatten()
+        {
+            let chain_scope = next_pseudocode_scope(next_scope);
+            output.push(PseudocodeRow::ChainStart {
+                scope: chain_scope,
+                depth,
+            });
+            for (branch_index, branch) in table.branches.iter().enumerate() {
+                if branch_index > 0 {
+                    output.push(PseudocodeRow::ElseIf {
+                        scope: chain_scope,
+                        depth,
+                    });
+                }
+                output.push(PseudocodeRow::Step {
+                    step: branch.decision,
+                    path: branch.path.clone(),
+                    depth,
+                    scope: enclosing_scope,
+                });
+                if !branch.decision.children.is_empty() {
+                    let branch_scope = next_pseudocode_scope(next_scope);
+                    output.push(PseudocodeRow::BranchStart {
+                        scope: branch_scope,
+                        label: labels.children_label("decision").to_owned(),
+                        depth: depth + 1,
+                    });
+                    collect_pseudocode_rows(
+                        &branch.decision.children,
+                        &format!("{}-then", branch.path),
+                        depth + 2,
+                        Some(branch_scope),
+                        next_scope,
+                        output,
+                        labels,
+                    );
+                    output.push(PseudocodeRow::BranchEnd {
+                        scope: branch_scope,
+                        depth: depth + 1,
+                    });
+                }
+            }
+            if !table.otherwise.is_empty() {
+                let fallback_scope = next_pseudocode_scope(next_scope);
+                output.push(PseudocodeRow::BranchStart {
+                    scope: fallback_scope,
+                    label: labels.no_match().to_owned(),
+                    depth: depth + 1,
+                });
+                collect_pseudocode_rows(
+                    table.otherwise,
+                    &table.otherwise_path,
+                    depth + 2,
+                    Some(fallback_scope),
+                    next_scope,
+                    output,
+                    labels,
+                );
+                output.push(PseudocodeRow::BranchEnd {
+                    scope: fallback_scope,
+                    depth: depth + 1,
+                });
+            }
+            output.push(PseudocodeRow::ChainEnd {
+                scope: chain_scope,
+                depth,
+            });
+            continue;
         }
-        output.push_str(&render_preparation_links_html(
-            &step.preparation_refs,
-            preparation_titles,
-            labels,
-        ));
-        if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
-            output.push_str(&format!(
-                "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
-                html_escape(labels.uncertainty()),
-                html_escape(uncertainty)
-            ));
-        }
+
+        output.push(PseudocodeRow::Step {
+            step,
+            path: path.clone(),
+            depth,
+            scope: enclosing_scope,
+        });
         if !step.children.is_empty() {
-            output.push_str(&format!(
-                "</div><div class=\"tree-branch-label\">{}</div>{}",
-                html_escape(labels.children_label(&step.kind)),
-                render_tree_html(
-                    &step.children,
-                    answer,
-                    evidence_index,
-                    preparation_titles,
-                    &format!("{path}-then"),
-                    labels
-                )
-            ));
-        } else {
-            output.push_str("</div>");
+            let branch_scope = next_pseudocode_scope(next_scope);
+            output.push(PseudocodeRow::BranchStart {
+                scope: branch_scope,
+                label: labels.children_label(&step.kind).to_owned(),
+                depth: depth + 1,
+            });
+            collect_pseudocode_rows(
+                &step.children,
+                &format!("{path}-then"),
+                depth + 2,
+                Some(branch_scope),
+                next_scope,
+                output,
+                labels,
+            );
+            output.push(PseudocodeRow::BranchEnd {
+                scope: branch_scope,
+                depth: depth + 1,
+            });
         }
         if !step.otherwise.is_empty() {
-            output.push_str(&format!(
-                "<div class=\"tree-branch-label\">{}</div>{}",
-                html_escape(labels.otherwise_label(&step.kind)),
-                render_tree_html(
-                    &step.otherwise,
-                    answer,
-                    evidence_index,
-                    preparation_titles,
-                    &format!("{path}-else"),
-                    labels
-                )
-            ));
+            let branch_scope = next_pseudocode_scope(next_scope);
+            output.push(PseudocodeRow::BranchStart {
+                scope: branch_scope,
+                label: labels.otherwise_label(&step.kind).to_owned(),
+                depth: depth + 1,
+            });
+            collect_pseudocode_rows(
+                &step.otherwise,
+                &format!("{path}-else"),
+                depth + 2,
+                Some(branch_scope),
+                next_scope,
+                output,
+                labels,
+            );
+            output.push(PseudocodeRow::BranchEnd {
+                scope: branch_scope,
+                depth: depth + 1,
+            });
         }
-        output.push_str("</li>");
+    }
+}
+
+fn pseudocode_rows<'a>(steps: &'a [OperationStep], labels: ReaderLabels) -> Vec<PseudocodeRow<'a>> {
+    let mut output = Vec::new();
+    let mut next_scope = 0;
+    collect_pseudocode_rows(steps, "", 0, None, &mut next_scope, &mut output, labels);
+    output
+}
+
+fn pseudocode_step_label(step: &OperationStep, answer: &OperationAnswer) -> String {
+    if step.kind == "decision"
+        && let Some(predicate) = predicate_for_step(step, &answer.predicates)
+    {
+        return predicate.label.clone();
+    }
+    let normalized = step
+        .meaning
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    const MAX_CHARS: usize = 96;
+    if normalized.chars().count() <= MAX_CHARS {
+        normalized
+    } else {
+        let mut excerpt = normalized.chars().take(MAX_CHARS - 1).collect::<String>();
+        excerpt.truncate(excerpt.trim_end().len());
+        excerpt.push('…');
+        excerpt
+    }
+}
+
+fn pseudocode_depth_class(depth: usize) -> &'static str {
+    match depth.min(2) {
+        0 => "pseudocode-depth-0",
+        1 => "pseudocode-depth-1",
+        _ => "pseudocode-depth-2",
+    }
+}
+
+fn pseudocode_scope_html(scope: usize, labels: ReaderLabels) -> String {
+    format!(
+        "{} {scope}",
+        if labels.russian {
+            "Область"
+        } else {
+            "Scope"
+        }
+    )
+}
+
+fn render_pseudocode_html(
+    steps: &[OperationStep],
+    answer: &OperationAnswer,
+    labels: ReaderLabels,
+) -> String {
+    let mut output = String::from("<ul class=\"pseudocode\">");
+    for row in pseudocode_rows(steps, labels) {
+        match row {
+            PseudocodeRow::Step {
+                step,
+                path,
+                depth,
+                scope,
+            } => {
+                let anchor = step_anchor(step, &path);
+                output.push_str(&format!(
+                    "<li class=\"pseudocode-row {}\"><a class=\"pseudocode-link\" href=\"#{}\"><span class=\"step-kind\">{}</span> {}</a>",
+                    pseudocode_depth_class(depth),
+                    html_escape(&anchor),
+                    html_escape(&step.kind),
+                    html_escape(&pseudocode_step_label(step, answer))
+                ));
+                if depth > 2
+                    && let Some(scope) = scope
+                {
+                    output.push_str(&format!(
+                        " <span class=\"pseudocode-scope\">{}</span>",
+                        html_escape(&pseudocode_scope_html(scope, labels))
+                    ));
+                }
+                if step.meaning.uncertainty.is_some() {
+                    let detail_label = if labels.russian {
+                        "Открыть шаг с пояснением неопределённости"
+                    } else {
+                        "Open step details for uncertainty"
+                    };
+                    output.push_str(&format!(
+                        " <a class=\"pseudocode-uncertainty\" href=\"#{}\" aria-label=\"{}\" title=\"{}\">ⓘ</a>",
+                        html_escape(&anchor),
+                        html_escape(labels.uncertainty()),
+                        html_escape(detail_label)
+                    ));
+                }
+                output.push_str("</li>");
+            }
+            PseudocodeRow::BranchStart {
+                scope,
+                label,
+                depth,
+            } => output.push_str(&format!(
+                "<li class=\"pseudocode-row pseudocode-structure {}\">{} — {}</li>",
+                pseudocode_depth_class(depth),
+                html_escape(&pseudocode_scope_html(scope, labels)),
+                html_escape(&label)
+            )),
+            PseudocodeRow::BranchEnd { scope, depth } => output.push_str(&format!(
+                "<li class=\"pseudocode-row pseudocode-structure {}\">{} {}</li>",
+                pseudocode_depth_class(depth),
+                if labels.russian { "Конец" } else { "End" },
+                html_escape(&pseudocode_scope_html(scope, labels))
+            )),
+            PseudocodeRow::ChainStart { scope, depth } => output.push_str(&format!(
+                "<li class=\"pseudocode-row pseudocode-structure {}\">{} — {}</li>",
+                pseudocode_depth_class(depth),
+                if labels.russian {
+                    "Цепочка решений"
+                } else {
+                    "Decision chain"
+                },
+                html_escape(&pseudocode_scope_html(scope, labels))
+            )),
+            PseudocodeRow::ElseIf { scope, depth } => output.push_str(&format!(
+                "<li class=\"pseudocode-row pseudocode-structure {}\">{} ({})</li>",
+                pseudocode_depth_class(depth),
+                if labels.russian {
+                    "Иначе если"
+                } else {
+                    "Else if"
+                },
+                html_escape(&pseudocode_scope_html(scope, labels))
+            )),
+            PseudocodeRow::ChainEnd { scope, depth } => output.push_str(&format!(
+                "<li class=\"pseudocode-row pseudocode-structure {}\">{} {}</li>",
+                pseudocode_depth_class(depth),
+                if labels.russian {
+                    "Конец цепочки решений"
+                } else {
+                    "End decision chain"
+                },
+                html_escape(&pseudocode_scope_html(scope, labels))
+            )),
+        }
     }
     output.push_str("</ul>");
     output
 }
 
-fn render_tree_markdown(
+fn render_pseudocode_markdown(
     steps: &[OperationStep],
     answer: &OperationAnswer,
-    evidence_index: &BTreeMap<String, usize>,
-    preparation_titles: &BTreeMap<String, String>,
-    path_prefix: &str,
-    depth: usize,
     labels: ReaderLabels,
 ) -> String {
     let mut output = String::new();
-    let indent = "   ".repeat(depth);
-    for (index, step) in steps.iter().enumerate() {
-        let path = step_path(path_prefix, index + 1);
-        let anchor = step_anchor(step, &path);
-        let mut glossary_refs = step.glossary_refs.clone();
-        glossary_refs.extend(step.meaning.glossary_refs.iter().cloned());
-        glossary_refs.sort();
-        glossary_refs.dedup();
-        output.push_str(&format!(
-            "{indent}- [**{}:** {}](#{}){}{}{}{}\n",
-            markdown_escape(&step.kind),
-            markdown_escape(&step.meaning.text),
-            anchor,
-            render_evidence_markdown(&step.meaning.evidence, evidence_index, labels),
-            render_glossary_links_markdown(&glossary_refs, &answer.glossary, labels),
-            render_preparation_links_markdown(&step.preparation_refs, preparation_titles, labels),
-            if answer.schema != ANSWER_SCHEMA_V1_2
-                && (step.from.is_some() || step.to.is_some() || step.interaction.is_some())
-            {
-                format!("  {}", markdown_step_metadata(step, labels))
-            } else {
-                String::new()
+    for row in pseudocode_rows(steps, labels) {
+        match row {
+            PseudocodeRow::Step {
+                step,
+                path,
+                depth,
+                scope,
+            } => {
+                let anchor = step_anchor(step, &path);
+                output.push_str(&format!(
+                    "- [**{}:** {}](#{})",
+                    markdown_escape(&step.kind),
+                    markdown_escape(&pseudocode_step_label(step, answer)),
+                    anchor
+                ));
+                if depth > 2
+                    && let Some(scope) = scope
+                {
+                    output.push_str(&format!(
+                        " _{}_",
+                        markdown_escape(&pseudocode_scope_html(scope, labels))
+                    ));
+                }
+                if step.meaning.uncertainty.is_some() {
+                    output.push_str(&format!(
+                        " [ⓘ](#{anchor} \"{}\")",
+                        markdown_escape(labels.uncertainty())
+                    ));
+                }
+                output.push('\n');
             }
-        ));
-        if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
-            output.push_str(&format!(
-                "{indent}  - **{}:** {}\n",
-                markdown_escape(labels.uncertainty()),
-                markdown_escape(uncertainty)
-            ));
-        }
-        if !step.children.is_empty() {
-            output.push_str(&format!(
-                "{indent}  **{}:**\n",
-                markdown_escape(labels.children_label(&step.kind))
-            ));
-            output.push_str(&render_tree_markdown(
-                &step.children,
-                answer,
-                evidence_index,
-                preparation_titles,
-                &format!("{path}-then"),
-                depth + 1,
-                labels,
-            ));
-        }
-        if !step.otherwise.is_empty() {
-            output.push_str(&format!(
-                "{indent}  **{}:**\n",
-                markdown_escape(labels.otherwise_label(&step.kind))
-            ));
-            output.push_str(&render_tree_markdown(
-                &step.otherwise,
-                answer,
-                evidence_index,
-                preparation_titles,
-                &format!("{path}-else"),
-                depth + 1,
-                labels,
-            ));
+            PseudocodeRow::BranchStart { scope, label, .. } => output.push_str(&format!(
+                "- _{} — {}_\n",
+                markdown_escape(&pseudocode_scope_html(scope, labels)),
+                markdown_escape(&label)
+            )),
+            PseudocodeRow::BranchEnd { scope, .. } => output.push_str(&format!(
+                "- _{} {}_\n",
+                if labels.russian { "Конец" } else { "End" },
+                markdown_escape(&pseudocode_scope_html(scope, labels))
+            )),
+            PseudocodeRow::ChainStart { scope, .. } => output.push_str(&format!(
+                "- _{} — {}_\n",
+                if labels.russian {
+                    "Цепочка решений"
+                } else {
+                    "Decision chain"
+                },
+                markdown_escape(&pseudocode_scope_html(scope, labels))
+            )),
+            PseudocodeRow::ElseIf { scope, .. } => output.push_str(&format!(
+                "- _{} ({})_\n",
+                if labels.russian {
+                    "Иначе если"
+                } else {
+                    "Else if"
+                },
+                markdown_escape(&pseudocode_scope_html(scope, labels))
+            )),
+            PseudocodeRow::ChainEnd { scope, .. } => output.push_str(&format!(
+                "- _{} {}_\n",
+                if labels.russian {
+                    "Конец цепочки решений"
+                } else {
+                    "End decision chain"
+                },
+                markdown_escape(&pseudocode_scope_html(scope, labels))
+            )),
         }
     }
     output
@@ -7088,6 +7305,411 @@ mod tests {
             "preparation-shared",
         ] {
             assert!(rendered.html.contains(&format!("<a href=\"#{anchor}\"")));
+        }
+    }
+
+    #[test]
+    fn pseudocode_flattens_long_first_match_chains_and_keeps_authored_targets_unique() {
+        fn collect_ids(steps: &Value, output: &mut Vec<String>) {
+            let Some(steps) = steps.as_array() else {
+                return;
+            };
+            for step in steps {
+                output.push(step["id"].as_str().unwrap().to_owned());
+                collect_ids(&step["children"], output);
+                collect_ids(&step["otherwise"], output);
+            }
+        }
+
+        fn strip_v1_2_fields(value: &mut Value) {
+            match value {
+                Value::Object(fields) => {
+                    for key in ["id", "predicateRef", "glossaryRefs", "preparationRefs"] {
+                        fields.remove(key);
+                    }
+                    for value in fields.values_mut() {
+                        strip_v1_2_fields(value);
+                    }
+                }
+                Value::Array(values) => {
+                    for value in values {
+                        strip_v1_2_fields(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let packet = packet();
+        let mut authored = semantic_answer(&packet);
+        let make_action = |id: &str, text: String, shared: bool| {
+            let preparation_refs = if shared { json!(["shared"]) } else { json!([]) };
+            json!({
+                "id":id,
+                "kind":"action",
+                "glossaryRefs":["request"],
+                "meaning":{
+                    "text":text,
+                    "evidence":["d1"],
+                    "glossaryRefs":["request"]
+                },
+                "preparationRefs":preparation_refs
+            })
+        };
+        let make_terminal = |id: &str, kind: &str, text: &str| {
+            json!({
+                "id":id,
+                "kind":kind,
+                "glossaryRefs":["request"],
+                "meaning":{
+                    "text":text,
+                    "evidence":["d1"],
+                    "glossaryRefs":["request"]
+                }
+            })
+        };
+
+        let mut nested_otherwise = json!([make_action(
+            "nested-chain-fallback",
+            "Use the nested chain fallback.".into(),
+            true
+        )]);
+        for branch_number in (1..=3).rev() {
+            nested_otherwise = json!([{
+                "id":format!("nested-chain-condition-{branch_number}"),
+                "kind":"decision",
+                "predicateRef":"retry",
+                "glossaryRefs":["request"],
+                "meaning":{
+                    "text":format!("Check nested condition {branch_number}."),
+                    "evidence":["d1"],
+                    "glossaryRefs":["request"]
+                },
+                "children":[make_action(
+                    &format!("nested-chain-action-{branch_number}"),
+                    format!("Apply nested branch {branch_number}."),
+                    true
+                )],
+                "otherwise":nested_otherwise
+            }]);
+        }
+        let nested_chain_root = nested_otherwise.as_array().unwrap()[0].clone();
+        let mut otherwise = json!([make_action(
+            "chain-fallback",
+            "Use the final fallback action.".into(),
+            true
+        )]);
+        for condition_number in (1..=18).rev() {
+            let condition_id = format!("chain-condition-{condition_number}");
+            let condition_meaning = if condition_number == 9 {
+                json!({
+                    "text":format!("Condition {condition_number} meaning."),
+                    "evidence":["d1"],
+                    "glossaryRefs":["request"],
+                    "uncertainty":"The runtime condition value is not captured."
+                })
+            } else {
+                json!({
+                    "text":format!("Condition {condition_number} meaning."),
+                    "evidence":["d1"],
+                    "glossaryRefs":["request"]
+                })
+            };
+            let condition_children = if condition_number == 7 {
+                json!([
+                    make_action(
+                        "chain-action-7",
+                        "Apply the selected seventh branch.".into(),
+                        true
+                    ),
+                    {
+                        "id":"nested-decision",
+                        "kind":"decision",
+                        "predicateRef":"retry",
+                        "glossaryRefs":["request"],
+                        "meaning":{
+                            "text":"Check the nested outcome.",
+                            "evidence":["d1"],
+                            "glossaryRefs":["request"]
+                        },
+                        "children":[{
+                            "id":"nested-try",
+                            "kind":"try",
+                            "glossaryRefs":["request"],
+                            "meaning":{
+                                "text":"Try the nested operation.",
+                                "evidence":["d1"],
+                                "glossaryRefs":["request"]
+                            },
+                            "children":[
+                                make_action(
+                                    "nested-action-before-loop",
+                                    "Apply the nested action before the loop.".into(),
+                                    true
+                                ),
+                                {
+                                    "id":"nested-loop",
+                                    "kind":"loop",
+                                    "glossaryRefs":["request"],
+                                    "meaning":{
+                                        "text":"Repeat the nested operation.",
+                                        "evidence":["d1"],
+                                        "glossaryRefs":["request"]
+                                    },
+                                    "children":[make_terminal(
+                                        "nested-loop-return",
+                                        "return",
+                                        "Return from the nested loop."
+                                    )]
+                                },
+                                nested_chain_root
+                            ]
+                        }],
+                        "otherwise":[make_terminal(
+                            "nested-throw",
+                            "throw",
+                            "Raise for the nested fallback."
+                        )]
+                    }
+                ])
+            } else {
+                let text = if condition_number == 11 {
+                    format!("🧪 café e\u{301} {}", "branch action text ".repeat(12))
+                } else {
+                    format!("Apply the selected branch {condition_number}.")
+                };
+                json!([make_action(
+                    &format!("chain-action-{condition_number}"),
+                    text,
+                    true
+                )])
+            };
+            otherwise = json!([{
+                "id":condition_id,
+                "kind":"decision",
+                "predicateRef":"details",
+                "glossaryRefs":["request"],
+                "meaning":condition_meaning,
+                "children":condition_children,
+                "otherwise":otherwise
+            }]);
+        }
+        authored["steps"] = json!([
+            make_action(
+                "before-chain",
+                "Run before the decision chain.".into(),
+                false
+            ),
+            otherwise.as_array().unwrap()[0].clone(),
+            make_action("after-chain", "Run after the decision chain.".into(), false)
+        ]);
+        authored["predicates"] = json!([
+            authored["predicates"][0].clone(),
+            authored["predicates"][1].clone()
+        ]);
+        let original_answer = authored.clone();
+        let expected_ids = {
+            let mut ids = Vec::new();
+            collect_ids(&authored["steps"], &mut ids);
+            ids
+        };
+        let decoded = serde_json::from_value::<OperationAnswer>(original_answer.clone()).unwrap();
+        let rows = pseudocode_rows(&decoded.steps, ReaderLabels::new(&packet));
+        let mut chain_starts = BTreeMap::new();
+        let mut chain_ends = BTreeMap::new();
+        for (position, row) in rows.iter().enumerate() {
+            match row {
+                PseudocodeRow::ChainStart { scope, .. } => {
+                    assert!(chain_starts.insert(*scope, position).is_none());
+                }
+                PseudocodeRow::ElseIf { scope, .. } => {
+                    assert!(
+                        chain_starts
+                            .get(scope)
+                            .is_some_and(|start| *start < position),
+                        "else-if scope {scope} must have exactly one preceding chain start"
+                    );
+                }
+                PseudocodeRow::ChainEnd { scope, .. } => {
+                    assert!(
+                        chain_starts
+                            .get(scope)
+                            .is_some_and(|start| *start < position),
+                        "chain-end scope {scope} must have exactly one preceding chain start"
+                    );
+                    assert!(chain_ends.insert(*scope, position).is_none());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(chain_starts.len(), 2);
+        assert_eq!(chain_ends.len(), chain_starts.len());
+        for (scope, start) in &chain_starts {
+            assert!(start < chain_ends.get(scope).unwrap());
+        }
+
+        let rendered = validate_and_render_draft(&packet, &audit(&packet), authored).unwrap();
+        assert_eq!(rendered.answer, original_answer);
+
+        let html_start = rendered
+            .html
+            .find("<section id=\"authored-pseudocode\">")
+            .unwrap();
+        let html_end = rendered.html[html_start..]
+            .find("<section id=\"ordered-behavior\">")
+            .map(|offset| html_start + offset)
+            .unwrap();
+        let pseudocode_html = &rendered.html[html_start..html_end];
+        assert_eq!(pseudocode_html.matches("<ul").count(), 1);
+        assert_eq!(
+            pseudocode_html
+                .matches("class=\"pseudocode-row pseudocode-depth-")
+                .count(),
+            expected_ids.len()
+        );
+        assert_eq!(pseudocode_html.matches("Else if (").count(), 19);
+        assert_eq!(pseudocode_html.matches("Decision chain — Scope").count(), 2);
+        assert!(pseudocode_html.contains("pseudocode-depth-2"));
+        assert!(!pseudocode_html.contains("pseudocode-depth-3"));
+        assert!(pseudocode_html.contains("Scope "));
+        assert!(pseudocode_html.contains("End decision chain Scope"));
+        assert!(pseudocode_html.contains("Otherwise (none of the conditions above matched)"));
+        assert!(pseudocode_html.contains("🧪 café e\u{301}"));
+        assert!(pseudocode_html.contains("…</a>"));
+        assert!(
+            pseudocode_html
+                .contains("class=\"pseudocode-uncertainty\" href=\"#block-chain-condition-9\"")
+        );
+        for omitted_detail in [
+            "Shared count preparation",
+            "href=\"#preparation-shared\"",
+            "href=\"#glossary-request\"",
+            "class=\"citations\"",
+            "class=\"claim\"",
+            "From:",
+            "To:",
+        ] {
+            assert!(
+                !pseudocode_html.contains(omitted_detail),
+                "pseudocode leaked detail {omitted_detail}"
+            );
+        }
+
+        let condition_positions = (1..=18)
+            .map(|number| {
+                pseudocode_html
+                    .find(&format!("href=\"#block-chain-condition-{number}\""))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(condition_positions.windows(2).all(|pair| pair[0] < pair[1]));
+        let last_condition = *condition_positions.last().unwrap();
+        let fallback_label = pseudocode_html[last_condition..]
+            .find("Otherwise (none of the conditions above matched)")
+            .map(|offset| last_condition + offset)
+            .unwrap();
+        let fallback_action = pseudocode_html
+            .find("href=\"#block-chain-fallback\"")
+            .unwrap();
+        let chain_end = pseudocode_html[fallback_action..]
+            .find("End decision chain Scope")
+            .map(|offset| fallback_action + offset)
+            .unwrap();
+        let following_action = pseudocode_html.find("href=\"#block-after-chain\"").unwrap();
+        assert!(last_condition < fallback_label);
+        assert!(fallback_label < fallback_action);
+        assert!(fallback_action < chain_end && chain_end < following_action);
+        let selected_branch = pseudocode_html
+            .find("href=\"#block-chain-action-7\"")
+            .unwrap();
+        let nested_decision = pseudocode_html
+            .find("href=\"#block-nested-decision\"")
+            .unwrap();
+        let nested_action = pseudocode_html
+            .find("href=\"#block-nested-action-before-loop\"")
+            .unwrap();
+        let nested_loop = pseudocode_html.find("href=\"#block-nested-loop\"").unwrap();
+        assert!(selected_branch < nested_decision);
+        assert!(nested_decision < nested_action && nested_action < nested_loop);
+        assert!(pseudocode_html.contains("Protected try path"));
+        assert!(pseudocode_html.contains("Loop body"));
+        assert!(pseudocode_html.contains("End Scope"));
+        for id in &expected_ids {
+            assert_eq!(
+                pseudocode_html
+                    .matches(&format!("class=\"pseudocode-link\" href=\"#block-{id}\""))
+                    .count(),
+                1,
+                "authored step {id} must have one pseudocode link"
+            );
+        }
+
+        let markdown_start = rendered
+            .markdown
+            .find("<a id=\"authored-pseudocode\"></a>")
+            .unwrap();
+        let markdown_end = rendered.markdown[markdown_start..]
+            .find("<a id=\"ordered-behavior\"></a>")
+            .map(|offset| markdown_start + offset)
+            .unwrap();
+        let pseudocode_markdown = &rendered.markdown[markdown_start..markdown_end];
+        assert!(!pseudocode_markdown.contains("   - "));
+        assert!(pseudocode_markdown.contains("End decision chain Scope"));
+        assert_eq!(
+            pseudocode_markdown
+                .matches("Decision chain — Scope")
+                .count(),
+            2
+        );
+        for id in &expected_ids {
+            assert_eq!(
+                pseudocode_markdown
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("- [**") && line.contains(&format!("](#block-{id})"))
+                    })
+                    .count(),
+                1,
+                "authored step {id} must have one Markdown pseudocode link"
+            );
+        }
+        let ids = html_ids(&rendered.html);
+        for id in &ids {
+            assert_eq!(ids.iter().filter(|candidate| *candidate == id).count(), 1);
+        }
+        for target in html_fragment_links(&rendered.html) {
+            assert_eq!(
+                ids.iter().filter(|id| *id == &target).count(),
+                1,
+                "fragment link #{target} must resolve exactly once"
+            );
+        }
+
+        let mut legacy = original_answer.clone();
+        legacy["schema"] = json!(ANSWER_SCHEMA_V1_0);
+        for field in ["glossary", "predicates", "preparations"] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        strip_v1_2_fields(&mut legacy);
+        let original_legacy = legacy.clone();
+        let legacy_rendered = validate_and_render(&packet, &audit(&packet), legacy).unwrap();
+        assert_eq!(legacy_rendered.answer, original_legacy);
+        let legacy_ids = html_ids(&legacy_rendered.html);
+        for id in &legacy_ids {
+            assert_eq!(
+                legacy_ids
+                    .iter()
+                    .filter(|candidate| *candidate == id)
+                    .count(),
+                1
+            );
+        }
+        for target in html_fragment_links(&legacy_rendered.html) {
+            assert_eq!(
+                legacy_ids.iter().filter(|id| *id == &target).count(),
+                1,
+                "legacy fragment link #{target} must resolve exactly once"
+            );
         }
     }
 
