@@ -4858,7 +4858,7 @@ pub(super) mod api_contract_tests {
     }
 
     #[test]
-    fn operation_authoring_identity_separates_new_work_and_preserves_legacy_record_bytes() {
+    fn operation_authoring_identity_separates_contract_1_3_and_preserves_prior_work_bytes() {
         let mut old = endpoint_context_fixture();
         old.snapshot = Some("sha256:saved-operation-snapshot/1".into());
         assert!(old.request.authoring_contract.is_none());
@@ -4879,7 +4879,7 @@ pub(super) mod api_contract_tests {
 
         let mut previous_contract = old.clone();
         previous_contract.request.authoring_contract =
-            Some("codeclew-operation-draft-authoring/1.1".into());
+            Some("codeclew-operation-draft-authoring/1.2".into());
         let mut previous_stored = StoredWork::from_runtime(
             &previous_contract,
             previous_contract.snapshot.clone().unwrap(),
@@ -4892,9 +4892,10 @@ pub(super) mod api_contract_tests {
         loaded_previous.validate_identity(&previous_id).unwrap();
         assert_eq!(
             loaded_previous.request.authoring_contract.as_deref(),
-            Some("codeclew-operation-draft-authoring/1.1")
+            Some("codeclew-operation-draft-authoring/1.2")
         );
         assert_eq!(bytes(&loaded_previous).unwrap(), previous_bytes);
+        assert_eq!(loaded_previous.id, previous_id);
 
         let mut current = old.clone();
         normalize_operation_authoring_contract(&mut current.request).unwrap();
@@ -4914,6 +4915,36 @@ pub(super) mod api_contract_tests {
         );
         assert_eq!(current_stored.handles_ref, old_stored.handles_ref);
         assert_eq!(current_stored.influence_ref, old_stored.influence_ref);
+        assert_eq!(current_stored.snapshot, previous_stored.snapshot);
+        assert_eq!(
+            current_stored.evidence_snapshot,
+            previous_stored.evidence_snapshot
+        );
+        assert_eq!(current_stored.handles_ref, previous_stored.handles_ref);
+        assert_eq!(current_stored.influence_ref, previous_stored.influence_ref);
+
+        let mut previous_packet_work = previous_contract;
+        previous_packet_work.id = previous_id.clone();
+        let (previous_packet, previous_audit) =
+            super::super::operation_packet::build(&previous_packet_work).unwrap();
+        let mut current_packet_work = current.clone();
+        current_packet_work.id = current_stored.id.clone();
+        let (current_packet, current_audit) =
+            super::super::operation_packet::build(&current_packet_work).unwrap();
+        assert_eq!(previous_packet, current_packet);
+        assert_eq!(
+            previous_packet["packetDigest"],
+            current_packet["packetDigest"]
+        );
+        assert_eq!(
+            previous_audit["packetDigest"],
+            current_audit["packetDigest"]
+        );
+        assert_ne!(previous_audit["workId"], current_audit["workId"]);
+        assert_ne!(
+            previous_audit["bindingDigest"],
+            current_audit["bindingDigest"]
+        );
 
         let mut repeated = current.clone();
         normalize_operation_authoring_contract(&mut repeated.request).unwrap();
