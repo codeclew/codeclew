@@ -421,7 +421,6 @@ pub(crate) fn render_validated(
         return None;
     }
     let mut tree = format!("Entry: {}\n", projection.entry);
-    let mut steps_puml = String::new();
     let causal = projection
         .steps
         .iter()
@@ -431,38 +430,30 @@ pub(crate) fn render_validated(
         let indent = "  ".repeat(depth);
         match step {
             ProjectionStep::Action {
-                diagram,
                 tree: label,
                 category,
+                ..
             } => {
                 let label = flatten_tree_text(label);
                 tree.push_str(&format!(
                     "{indent}{}{label}\n",
                     category.map(|c| format!("[{c}] ")).unwrap_or_default()
                 ));
-                steps_puml.push_str(&format!(":{};\n", super::plantuml::escape(diagram)));
             }
             ProjectionStep::If(condition) => {
-                let display = truncate_chars(condition, 72, 69);
                 tree.push_str(&format!(
                     "{indent}[D] if ({}) then\n",
                     flatten_tree_text(condition)
-                ));
-                steps_puml.push_str(&format!(
-                    "if ({}) then (yes)\n",
-                    super::plantuml::escape(&display)
                 ));
                 depth += 1;
             }
             ProjectionStep::Else => {
                 depth = depth.saturating_sub(1);
                 tree.push_str(&format!("{}else\n", "  ".repeat(depth)));
-                steps_puml.push_str("else (no)\n");
                 depth += 1;
             }
             ProjectionStep::End => {
                 depth = depth.saturating_sub(1);
-                steps_puml.push_str("endif\n");
             }
             ProjectionStep::MethodReturn(value) => {
                 let line = if value.is_empty() {
@@ -471,23 +462,22 @@ pub(crate) fn render_validated(
                     format!("return {value}")
                 };
                 tree.push_str(&format!("{indent}{}\n", flatten_tree_text(&line)));
-                let display = truncate_chars(&line, 120, 117);
-                steps_puml.push_str(&format!(":{};\nstop\n", super::plantuml::escape(&display)));
             }
             ProjectionStep::Gap(reason) => {
                 let reason = flatten_tree_text(reason);
                 tree.push_str(&format!("{indent}... (not established: {reason})\n"));
-                steps_puml.push_str(&format!(
-                    "note right\n  {} (not established)\nend note\n",
-                    super::plantuml::escape(&reason)
-                ));
             }
         }
     }
+    let steps_puml = if causal {
+        render_puml_steps(&projection.steps)
+    } else {
+        String::new()
+    };
     // A terminal final return already contains its branch-local `stop`.
     let all_reachable_paths_return = sequence_terminates(&projection.steps);
     let mut puml = format!(
-        "@startuml\n!theme plain\n!pragma layout smetana\ntitle {}\n",
+        "@startuml\n!theme plain\n!pragma layout smetana\n!pragma useVerticalIf on\ntitle {}\n",
         super::plantuml::escape(title)
     );
     if causal {
@@ -522,6 +512,203 @@ pub(crate) fn render_validated(
         tree,
         origin: projection.origin,
     })
+}
+
+fn render_puml_steps(steps: &[ProjectionStep]) -> String {
+    let mut output = String::new();
+    let mut next_guard = 0usize;
+    render_puml_range(steps, 0, steps.len(), &mut next_guard, &mut output);
+    output
+}
+
+fn render_puml_range(
+    steps: &[ProjectionStep],
+    start: usize,
+    end: usize,
+    next_guard: &mut usize,
+    output: &mut String,
+) {
+    let mut index = start;
+    while index < end {
+        match &steps[index] {
+            ProjectionStep::Action { diagram, .. } => {
+                output.push_str(&format!(":{};\n", super::plantuml::escape(diagram)));
+                index += 1;
+            }
+            ProjectionStep::If(_) => {
+                let Some((then_start, then_end, else_range, after)) = if_regions(steps, index)
+                else {
+                    index += 1;
+                    continue;
+                };
+                render_puml_if_chain(
+                    steps, index, then_start, then_end, else_range, next_guard, output,
+                );
+                index = after;
+            }
+            ProjectionStep::Else => {
+                output.push_str("else (no)\n");
+                index += 1;
+            }
+            ProjectionStep::End => {
+                output.push_str("endif\n");
+                index += 1;
+            }
+            ProjectionStep::MethodReturn(value) => {
+                let line = if value.is_empty() {
+                    "return".to_string()
+                } else {
+                    format!("return {value}")
+                };
+                let display = truncate_chars(&line, 120, 117);
+                output.push_str(&format!(":{};\nstop\n", super::plantuml::escape(&display)));
+                index += 1;
+            }
+            ProjectionStep::Gap(reason) => {
+                output.push_str(&format!(
+                    "note right\n  {} (not established)\nend note\n",
+                    super::plantuml::escape(reason)
+                ));
+                index += 1;
+            }
+        }
+    }
+}
+
+fn render_puml_if_chain(
+    steps: &[ProjectionStep],
+    start: usize,
+    first_then_start: usize,
+    first_then_end: usize,
+    first_else: Option<(usize, usize)>,
+    next_guard: &mut usize,
+    output: &mut String,
+) {
+    let ProjectionStep::If(condition) = &steps[start] else {
+        return;
+    };
+    let guard = next_guard_number(next_guard);
+    output.push_str(&format_guard_branch(condition, guard));
+    render_puml_range(steps, first_then_start, first_then_end, next_guard, output);
+
+    let mut next_else = first_else;
+    while let Some((else_start, else_end)) = next_else {
+        if let ProjectionStep::If(condition) = &steps[else_start]
+            && let Some((then_start, then_end, else_range, after)) = if_regions(steps, else_start)
+            && after == else_end
+        {
+            let guard = next_guard_number(next_guard);
+            output.push_str(&format_else_if_branch(condition, guard));
+            render_puml_range(steps, then_start, then_end, next_guard, output);
+            next_else = else_range;
+        } else {
+            output.push_str("else (no)\n");
+            render_puml_range(steps, else_start, else_end, next_guard, output);
+            next_else = None;
+        }
+    }
+    output.push_str("endif\n");
+}
+
+fn next_guard_number(next_guard: &mut usize) -> usize {
+    *next_guard += 1;
+    *next_guard
+}
+
+fn format_guard_branch(condition: &str, guard: usize) -> String {
+    format!("if ({}) then (C{guard:02})\n", guard_literal(condition))
+}
+
+fn format_else_if_branch(condition: &str, guard: usize) -> String {
+    format!(
+        "else if ({}) then (C{guard:02})\n",
+        guard_literal(condition)
+    )
+}
+
+fn guard_literal(condition: &str) -> String {
+    wrap_guard_expression(condition, 60)
+        .split('\n')
+        .map(escape_guard_line)
+        .collect::<Vec<_>>()
+        .join("\\n")
+}
+
+fn wrap_guard_expression(expression: &str, width: usize) -> String {
+    let chars: Vec<_> = expression
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '\u{0085}' | '\u{2028}' | '\u{2029}' => ' ',
+            ch if ch.is_control() => ' ',
+            ch => ch,
+        })
+        .collect();
+    if chars.is_empty() || width == 0 {
+        return chars.into_iter().collect();
+    }
+
+    let mut output = String::new();
+    let mut start = 0usize;
+    while start < chars.len() {
+        let limit = (start + width).min(chars.len());
+        let end = if limit == chars.len() {
+            limit
+        } else {
+            (start + 1..=limit)
+                .rev()
+                .find(|position| guard_wrap_boundary(&chars, *position))
+                .unwrap_or(limit)
+        };
+        output.extend(chars[start..end].iter());
+        if end < chars.len() {
+            output.push('\n');
+        }
+        start = end;
+    }
+    output
+}
+
+fn guard_wrap_boundary(chars: &[char], position: usize) -> bool {
+    if position == 0 || position >= chars.len() {
+        return false;
+    }
+    let previous = chars[position - 1];
+    if previous.is_whitespace() {
+        return true;
+    }
+    if matches!(previous, '&' | '|' | '=' | '!' | '<' | '>') {
+        let next = chars[position];
+        if matches!(
+            (previous, next),
+            ('&', '&')
+                | ('|', '|')
+                | ('=', '=')
+                | ('!', '=')
+                | ('<', '=')
+                | ('>', '=')
+                | ('=', '>')
+                | ('-', '>')
+                | (':', ':')
+        ) {
+            return false;
+        }
+        return true;
+    }
+    matches!(previous, ',' | '?' | ':' | '+' | '-' | '*' | '/' | '%')
+}
+
+fn escape_guard_line(line: &str) -> String {
+    let mut escaped = String::with_capacity(line.len());
+    for ch in line.chars() {
+        match ch {
+            '&' | '<' | '>' | '"' | '\'' | '\\' | '~' | '*' | '/' | '_' | '-' | '[' | ']' | '{'
+            | '}' | '(' | ')' | ';' | ':' | '#' | '%' | '$' | '|' | '=' | '!' | ',' | '?' | '+'
+            | '^' | '@' | '`' => escaped.push_str(&format!("<U+{:04X}>", ch as u32)),
+            c if c.is_control() => escaped.push(' '),
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 fn flatten_tree_text(text: &str) -> String {
@@ -748,7 +935,7 @@ mod tests {
         assert!(
             rendered
                 .puml
-                .contains("if (!hasPositiveQuantity（request）) then (yes)"),
+                .contains("if (<U+0021>hasPositiveQuantity<U+0028>request<U+0029>) then (C01)"),
             "{}",
             rendered.puml
         );
@@ -942,8 +1129,11 @@ mod tests {
     }
 
     #[test]
-    fn if_guard_is_retained_fully_but_only_shortened_for_display() {
-        let full = format!("guard_{}", "x".repeat(100));
+    fn if_guard_is_retained_fully_and_wrapped_for_display() {
+        let full = format!(
+            "{}用户路径 && request.quantity > 0 && uniqueSuffix",
+            "订单状态 ".repeat(8)
+        );
         let events = json!([
             {"kind":"IF","condition":full},
             {"kind":"RETURN"},
@@ -956,6 +1146,259 @@ mod tests {
         }
         let rendered = super::render_validated(validated, "Long guard").unwrap();
         assert!(rendered.tree.contains(&full), "{}", rendered.tree);
-        assert!(rendered.puml.contains("..."), "{}", rendered.puml);
+        assert!(rendered.puml.contains("uniqueSuffix"), "{}", rendered.puml);
+        assert!(rendered.puml.contains("用户路径"), "{}", rendered.puml);
+        assert_eq!(
+            rendered.puml.matches("<U+0026><U+0026>").count(),
+            2,
+            "{}",
+            rendered.puml
+        );
+        assert!(!rendered.puml.contains("..."), "{}", rendered.puml);
+        let displayed_guard = rendered
+            .puml
+            .split_once("if (")
+            .unwrap()
+            .1
+            .split_once(") then")
+            .unwrap()
+            .0;
+        assert!(displayed_guard.contains("\\n"), "{}", rendered.puml);
+        assert_eq!(
+            super::wrap_guard_expression(&full, 60)
+                .chars()
+                .filter(|ch| *ch != '\n')
+                .collect::<String>(),
+            full
+        );
+    }
+
+    #[test]
+    fn else_if_chain_is_flattened_and_keeps_all_ordered_guard_labels() {
+        let mut events = Vec::new();
+        let conditions = (0..17)
+            .map(|index| format!("common prefix common prefix uniqueSuffix{index:02}"))
+            .collect::<Vec<_>>();
+        for (index, condition) in conditions.iter().enumerate() {
+            if index == 0 {
+                events.push(json!({"kind":"IF","condition":condition}));
+            } else {
+                events.push(json!({"kind":"ELSEIF","condition":condition}));
+            }
+            events.push(json!({
+                "kind":"CALL",
+                "target":format!("method:class:svc.Branches#saveCase{index}()V")
+            }));
+        }
+        for _ in 0..conditions.len() {
+            events.push(json!({"kind":"END"}));
+        }
+
+        let validated = qualified(Value::Array(events), json!([]));
+        assert!(validated.source_eligible());
+        let rendered = super::render_validated(validated, "Many branches").unwrap();
+        assert_eq!(
+            rendered.puml.matches("\nif (").count(),
+            1,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("else if (").count(),
+            16,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("endif\n").count(),
+            1,
+            "{}",
+            rendered.puml
+        );
+        let mut previous = 0;
+        for (index, condition) in conditions.iter().enumerate() {
+            let guard_id = format!("then (C{:02})", index + 1);
+            let guard_id_at = rendered
+                .puml
+                .find(&guard_id)
+                .unwrap_or_else(|| panic!("missing guard {guard_id} in {}", rendered.puml));
+            assert!(guard_id_at > previous, "{}", rendered.puml);
+            previous = guard_id_at;
+            let suffix = format!("uniqueSuffix{index:02}");
+            let suffix_at = rendered.puml.find(&suffix).unwrap_or_else(|| {
+                panic!(
+                    "missing {suffix} for condition {condition:?} in {}",
+                    rendered.puml
+                )
+            });
+            assert!(suffix_at < guard_id_at, "{}", rendered.puml);
+            assert!(rendered.tree.contains(condition), "{}", rendered.tree);
+        }
+
+        // The output of the tree pass remains the structured projection; the
+        // activity-diagram layout changes must not alter its source text.
+        let expected_tree = format!(
+            "Entry: Checkout#checkout\n[D] if ({}) then\n  [W] Branches#saveCase0\nelse\n  [D] if ({}) then\n    [W] Branches#saveCase1\n  else\n    [D] if ({}) then\n      [W] Branches#saveCase2\n",
+            conditions[0], conditions[1], conditions[2]
+        );
+        assert!(
+            rendered.tree.starts_with(&expected_tree),
+            "{}",
+            rendered.tree
+        );
+    }
+
+    #[test]
+    fn nested_else_with_trailing_action_stays_nested_and_outer_following_action_stays_outside() {
+        let events = json!([
+            {"kind":"IF","condition":"outerReady"},
+            {"kind":"CALL","target":"method:class:svc.Work#before()V"},
+            {"kind":"ELSE"},
+            {"kind":"IF","condition":"innerReady"},
+            {"kind":"RETURN"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:svc.Work#elseTail()V"},
+            {"kind":"END"},
+            {"kind":"CALL","target":"method:class:svc.Work#after()V"}
+        ]);
+        let rendered =
+            super::render_validated(qualified(events, json!([])), "Nested else").unwrap();
+        let outer_else = rendered.puml.find("else (no)\n").unwrap();
+        let nested_if = rendered.puml.find("if (innerReady) then (C02)").unwrap();
+        let nested_stop = rendered.puml.find(":return;\nstop\n").unwrap();
+        let else_tail = rendered.puml.find(":Work#elseTail;\n").unwrap();
+        let outer_end = rendered.puml[else_tail..].find("endif\n").unwrap() + else_tail;
+        let after = rendered.puml.find(":Work#after;\n").unwrap();
+        assert!(
+            outer_else < nested_if
+                && nested_if < nested_stop
+                && nested_stop < else_tail
+                && else_tail < outer_end
+                && outer_end < after,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("endif\n").count(),
+            2,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("stop\n").count(),
+            2,
+            "{}",
+            rendered.puml
+        );
+    }
+
+    #[test]
+    fn guard_literals_escape_markup_quotes_backslashes_newlines_and_directive_text() {
+        let guard = "value == \"<&>\" && text.contains(\\\"\\n @enduml\\n!pragma useVerticalIf off\\\") ~* / _ - [brackets] {braces}\\nreal\n@enduml\n!pragma layout smetana";
+        let rendered = super::render_validated(
+            qualified(
+                json!([
+                    {"kind":"IF","condition":guard},
+                    {"kind":"CALL","target":"method:class:svc.Work#run()V"},
+                    {"kind":"END"}
+                ]),
+                json!([]),
+            ),
+            "Guard escaping",
+        )
+        .unwrap();
+        assert!(
+            rendered.tree.contains(&super::flatten_tree_text(guard)),
+            "{}",
+            rendered.tree
+        );
+        assert!(
+            rendered.puml.contains("<U+0026><U+0026>"),
+            "{}",
+            rendered.puml
+        );
+        assert!(rendered.puml.contains("<U+0022>"), "{}", rendered.puml);
+        assert!(rendered.puml.contains("<U+005C>"), "{}", rendered.puml);
+        assert!(
+            rendered.puml.contains("<U+003C><U+0026><U+003E>"),
+            "{}",
+            rendered.puml
+        );
+        assert!(
+            rendered.puml.contains("<U+0040>enduml"),
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("@enduml\n").count(),
+            1,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered.puml.matches("!pragma useVerticalIf on").count(),
+            1,
+            "{}",
+            rendered.puml
+        );
+        assert!(
+            !rendered
+                .puml
+                .lines()
+                .any(|line| line == "!pragma useVerticalIf off")
+        );
+    }
+
+    #[test]
+    fn very_long_guard_keeps_wrapped_display_breaks_inside_one_control_line() {
+        let full = format!(
+            "{}request.quantity > 0 && finalSuffix",
+            "request.isEnabled() && ".repeat(170)
+        );
+        assert!(full.chars().count() > 3_000);
+
+        let rendered = super::render_validated(
+            qualified(
+                json!([
+                    {"kind":"IF","condition":full},
+                    {"kind":"CALL","target":"method:class:svc.Work#run()V"},
+                    {"kind":"END"}
+                ]),
+                json!([]),
+            ),
+            "Long guard",
+        )
+        .unwrap();
+        let guard_line = rendered
+            .puml
+            .lines()
+            .find(|line| line.starts_with("if ("))
+            .unwrap();
+        assert!(guard_line.contains("finalSuffix"), "{}", rendered.puml);
+        assert!(guard_line.contains(") then (C01)"), "{}", rendered.puml);
+        assert!(guard_line.matches("\\n").count() > 50, "{}", rendered.puml);
+        assert_eq!(
+            guard_line.matches("<U+0026><U+0026>").count(),
+            171,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            rendered
+                .puml
+                .lines()
+                .filter(|line| line.starts_with("if (") || line.starts_with("else if ("))
+                .count(),
+            1,
+            "{}",
+            rendered.puml
+        );
+        assert_eq!(
+            super::wrap_guard_expression(&full, 60)
+                .chars()
+                .filter(|ch| *ch != '\n')
+                .collect::<String>(),
+            full
+        );
     }
 }
