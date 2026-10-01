@@ -438,3 +438,242 @@ fn saved_scenario_question_prepares_full_graph_work_from_frozen_selection() {
         "handoff"
     );
 }
+
+#[test]
+fn source_update_preserves_saved_scope_protected_note_and_old_work() {
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    let source_s0 = "public class Orders {\n  public int reserve(int quantity) { return normalize(quantity); }\n  private int normalize(int quantity) { return quantity; }\n}\n";
+    std::fs::write(source_repo.join("Orders.java"), source_s0).unwrap();
+    support::commit(&source_repo);
+
+    let process = f.input(
+        "quantity-process.json",
+        &json!({
+            "schema":"codeclew-documentation-process/1.0",
+            "id":"quantity",
+            "title":"Quantity flow",
+            "summary":"Explain the manually selected quantity operation.",
+            "root":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}},
+            "interactions":[],
+            "maxDepth":1,
+            "maxNodes":1,
+            "process":{"scope":"Manual scope: one reservation quantity through normalization","participants":["orders"],"objects":[],"trigger":"A caller supplies one quantity.","outcomes":["The selected operation returns a quantity."],"linkedSubviews":[]}
+        }),
+    );
+    let expected_input = f.ok(&["docs", "process", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "process",
+        "put",
+        "--input",
+        process.to_str().unwrap(),
+        "--expected-input-digest",
+        &expected_input,
+    ]);
+
+    let note_text = "# Historical quantity note\n\n| Period | Reported behavior | Historical source URL | Maintainer context |\n| --- | --- | --- | --- |\n| Earlier implementation | The quantity was normalized before return. | https://history.example.invalid/orders/quantity | fixture-maintainer: preserve this imported human context; it remains unverified. |\n";
+    let note_source = f.temp.path().join("quantity-history.md");
+    std::fs::write(&note_source, note_text.as_bytes()).unwrap();
+    let note_association = f.input(
+        "quantity-note.json",
+        &json!({
+            "schema":"codeclew-documentation-note-association/1.0",
+            "id":"quantity-history",
+            "title":"Historical quantity context",
+            "service":"orders",
+            "path":"notes/quantity-history.md",
+            "targets":["scenario:quantity"],
+            "classification":"historical-context",
+            "period":"Historical behavior; date not independently verified",
+            "tags":["history","quantity"],
+            "metadata":{"author":"fixture-maintainer","authority":"HUMAN_OR_IMPORTED_UNVERIFIED"}
+        }),
+    );
+    let expected_input = f.ok(&["docs", "note", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "note",
+        "import",
+        "--source",
+        note_source.to_str().unwrap(),
+        "--input",
+        note_association.to_str().unwrap(),
+        "--expected-input-digest",
+        &expected_input,
+    ]);
+
+    let process_path = f.docs.join("scenarios/quantity.yaml");
+    let association_path = f.docs.join("catalog/notes/quantity-history.json");
+    let protected_process = std::fs::read(&process_path).unwrap();
+    let protected_association = std::fs::read(&association_path).unwrap();
+    let protected_note = std::fs::read(f.docs.join("notes/quantity-history.md")).unwrap();
+
+    let (check_code, check_report) = f.run(&["docs", "check"]);
+    assert!(matches!(check_code, 0 | 3 | 4), "{check_report}");
+    let snapshot_s0 = check_report["snapshot"].as_str().unwrap().to_owned();
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    let s0 = clew::documentation::check::Check::load_snapshot(&repo, &snapshot_s0).unwrap();
+    assert!(
+        s0.services["orders"]
+            .sources
+            .values()
+            .any(|source| source.text.contains("return normalize(quantity);"))
+    );
+
+    let prepare = [
+        "docs",
+        "process",
+        "prepare",
+        "--id",
+        "quantity",
+        "--overview",
+        "--snapshot",
+        &snapshot_s0,
+    ];
+    let first = f.ok(&prepare);
+    assert_eq!(first["contextProfile"], "process-v1");
+    let work0_id = first["work"].as_str().unwrap().to_owned();
+    let work0_path = f.docs.join(format!(".codeclew/work/{work0_id}/work.json"));
+    let work0_bytes = std::fs::read(&work0_path).unwrap();
+    let work0 = clew::documentation::work::load(&repo, &work0_id).unwrap();
+    assert_eq!(
+        serde_json::to_value(&work0.checked).unwrap(),
+        serde_json::to_value(&s0).unwrap()
+    );
+
+    let saved = &work0.checked.dependencies["process:quantity"].normalized["definition"];
+    assert_eq!(saved["title"], "Quantity flow");
+    assert_eq!(
+        saved["summary"],
+        "Explain the manually selected quantity operation."
+    );
+    assert_eq!(saved["root"]["service"], "orders");
+    assert_eq!(saved["root"]["selector"]["language"], "java");
+    assert_eq!(saved["root"]["selector"]["owner"], "Orders");
+    assert_eq!(saved["root"]["selector"]["name"], "reserve");
+    assert_eq!(saved["root"]["selector"]["parameterTypes"], json!(["int"]));
+    assert!(saved["root"]["selector"].get("scope").is_none());
+    assert_eq!(
+        saved["process"]["scope"],
+        "Manual scope: one reservation quantity through normalization"
+    );
+    let note0 = &work0.checked.dependencies["note:quantity-history"];
+    assert_eq!(note0.kind, "NOTE_ASSOCIATION");
+    assert_eq!(
+        note0.normalized["authority"],
+        "HUMAN_OR_IMPORTED_UNVERIFIED"
+    );
+    assert_eq!(
+        note0.normalized["association"]["metadata"]["author"],
+        "fixture-maintainer"
+    );
+    assert_eq!(
+        note0.normalized["association"]["metadata"]["authority"],
+        "HUMAN_OR_IMPORTED_UNVERIFIED"
+    );
+    assert_eq!(note0.normalized["original"]["text"], note_text);
+    assert!(
+        note0.normalized["original"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("https://history.example.invalid/orders/quantity")
+    );
+    assert!(
+        note0.normalized["original"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("| Historical source URL | Maintainer context |")
+    );
+    assert!(
+        note0.source_ids.is_empty(),
+        "a protected human note has no source authority"
+    );
+
+    let source_s1 = "public class Orders {\n  public int reserve(int quantity) { return normalize(quantity) + 1; }\n  private int normalize(int quantity) { return quantity; }\n}\n";
+    std::fs::write(source_repo.join("Orders.java"), source_s1).unwrap();
+    support::commit(&source_repo);
+    let (check_code, check_report) = f.run(&["docs", "check"]);
+    assert!(matches!(check_code, 0 | 3 | 4), "{check_report}");
+    let snapshot_s1 = check_report["snapshot"].as_str().unwrap().to_owned();
+    assert_ne!(snapshot_s1, snapshot_s0);
+    assert_eq!(std::fs::read(&process_path).unwrap(), protected_process);
+    assert_eq!(
+        std::fs::read(&association_path).unwrap(),
+        protected_association
+    );
+    assert_eq!(
+        std::fs::read(f.docs.join("notes/quantity-history.md")).unwrap(),
+        protected_note
+    );
+
+    let s1 = clew::documentation::check::Check::load_snapshot(&repo, &snapshot_s1).unwrap();
+    let source0 = s0.services["orders"]
+        .sources
+        .values()
+        .find(|source| source.text.contains("return normalize(quantity);"))
+        .unwrap();
+    let source1 = s1.services["orders"]
+        .sources
+        .values()
+        .find(|source| source.text.contains("return normalize(quantity) + 1;"))
+        .unwrap();
+    assert_ne!(source0.revision, source1.revision);
+    assert_ne!(source0.text, source1.text);
+    assert!(source1.text.contains("return normalize(quantity) + 1;"));
+
+    let prepare_s1 = [
+        "docs",
+        "process",
+        "prepare",
+        "--id",
+        "quantity",
+        "--overview",
+        "--snapshot",
+        &snapshot_s1,
+    ];
+    let second = f.ok(&prepare_s1);
+    assert_eq!(second["contextProfile"], "process-v1");
+    let work1_id = second["work"].as_str().unwrap();
+    assert_ne!(work1_id, work0_id);
+    let work1 = clew::documentation::work::load(&repo, work1_id).unwrap();
+    assert_eq!(
+        work1.checked.services["orders"].revision,
+        s1.services["orders"].revision
+    );
+    assert!(
+        work1.checked.services["orders"]
+            .sources
+            .values()
+            .any(|source| source.text.contains("return normalize(quantity) + 1;"))
+    );
+    assert_eq!(
+        work1.checked.dependencies["process:quantity"].normalized["definition"],
+        work0.checked.dependencies["process:quantity"].normalized["definition"]
+    );
+    let note1 = &work1.checked.dependencies["note:quantity-history"];
+    assert_eq!(
+        serde_json::to_value(note1).unwrap(),
+        serde_json::to_value(note0).unwrap()
+    );
+    assert_eq!(
+        note1.normalized["authority"],
+        "HUMAN_OR_IMPORTED_UNVERIFIED"
+    );
+    assert!(note1.source_ids.is_empty());
+
+    let repeated = f.ok(&prepare_s1);
+    assert_eq!(repeated["work"], work1_id);
+    assert_eq!(std::fs::read(&work0_path).unwrap(), work0_bytes);
+    let old_work_after = clew::documentation::work::load(&repo, &work0_id).unwrap();
+    assert_eq!(
+        serde_json::to_value(&old_work_after.checked).unwrap(),
+        serde_json::to_value(&s0).unwrap()
+    );
+}
