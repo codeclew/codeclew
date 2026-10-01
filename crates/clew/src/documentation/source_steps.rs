@@ -676,6 +676,52 @@ fn statement_kind(stmt: &str) -> String {
     String::new()
 }
 
+#[derive(Default)]
+struct SourceIfFrame {
+    logical_closures: usize,
+    final_else_seen: bool,
+}
+
+/// Accept only an `if` header whose condition is complete and whose only
+/// trailing token is the opening brace retained by `split_statements`.
+fn strict_braced_if_condition(header: &str) -> Option<String> {
+    let header = header.trim().strip_suffix('{')?.trim_end();
+    let rest = header.strip_prefix("if")?;
+    if !rest.is_empty()
+        && !rest.starts_with('(')
+        && !rest.chars().next().is_some_and(char::is_whitespace)
+    {
+        return None;
+    }
+    let open = first_code_byte(header, b'(')?;
+    if header[..open].trim() != "if" {
+        return None;
+    }
+    let (code, _) = lexical_masks(header);
+    let close = matching_delimiter(header, &code, open, b'(', b')')?;
+    if !header[close + 1..].trim().is_empty() {
+        return None;
+    }
+    let condition = header[open + 1..close].trim();
+    (!condition.is_empty()).then(|| condition.to_owned())
+}
+
+fn strict_else_if_condition(statement: &str) -> Option<String> {
+    let continuation = statement.strip_prefix('}')?.trim_start();
+    let after_else = continuation.strip_prefix("else")?;
+    if !after_else.chars().next().is_some_and(char::is_whitespace) {
+        return None;
+    }
+    strict_braced_if_condition(after_else.trim_start())
+}
+
+fn is_strict_else_continuation(statement: &str) -> bool {
+    statement
+        .strip_prefix('}')
+        .and_then(|continuation| continuation.trim_start().strip_suffix('{'))
+        .is_some_and(|header| header.trim() == "else")
+}
+
 /// Parse a source method into the shared method-local vocabulary. Unsupported
 /// or malformed source becomes one named evidence gap, never a partial tree
 /// that silently closes or skips its control blocks.
@@ -702,6 +748,8 @@ pub(crate) fn projection(source: &str, symbol: &str) -> Option<super::process_fl
     }
 
     let mut steps = Vec::new();
+    let mut if_frames = Vec::<SourceIfFrame>::new();
+    let mut logical_if_depth = 0usize;
     let mut unsupported = None;
     for raw in &statements {
         let line = raw.trim();
@@ -709,6 +757,10 @@ pub(crate) fn projection(source: &str, symbol: &str) -> Option<super::process_fl
             continue;
         }
         if let Some((condition, branch)) = inline_if_return(line) {
+            if logical_if_depth >= MAX_BLOCK_DEPTH {
+                unsupported = Some("SOURCE_BLOCK_DEPTH_EXCEEDED".to_string());
+                break;
+            }
             let return_value = branch.strip_prefix("return").unwrap_or("").trim();
             steps.push(ProjectionStep::If(condition));
             steps.push(ProjectionStep::MethodReturn(source_expression(
@@ -717,28 +769,84 @@ pub(crate) fn projection(source: &str, symbol: &str) -> Option<super::process_fl
             steps.push(ProjectionStep::End);
             continue;
         }
-        if line.starts_with("} else if (") || line.starts_with("} elseif (") {
-            unsupported = Some("SOURCE_ELSE_IF_UNSUPPORTED".to_string());
-            break;
-        }
-        if line.starts_with("} else") || line == "else {" {
-            steps.push(ProjectionStep::Else);
-            continue;
-        }
         if line.starts_with('}') {
             let rest = line.trim_start_matches('}').trim();
-            if !rest.is_empty() {
-                unsupported = Some(format!(
-                    "SOURCE_CONTROL_UNSUPPORTED:{}",
-                    rest.split_whitespace().next().unwrap_or("continuation")
+            if rest.is_empty() {
+                let Some(frame) = if_frames.pop() else {
+                    unsupported = Some("SOURCE_END_WITHOUT_OPEN_IF".to_string());
+                    break;
+                };
+                let Some(depth_after_close) = logical_if_depth.checked_sub(frame.logical_closures)
+                else {
+                    unsupported = Some("SOURCE_CONTROL_DEPTH_INVALID".to_string());
+                    break;
+                };
+                logical_if_depth = depth_after_close;
+                steps.extend(std::iter::repeat_n(
+                    ProjectionStep::End,
+                    frame.logical_closures,
                 ));
-                break;
+                continue;
             }
-            steps.push(ProjectionStep::End);
-            continue;
+            if let Some(condition) = strict_else_if_condition(line) {
+                let Some(frame) = if_frames.last_mut() else {
+                    unsupported = Some("SOURCE_ELSE_IF_WITHOUT_OPEN_IF".to_string());
+                    break;
+                };
+                if frame.final_else_seen {
+                    unsupported = Some("SOURCE_ELSE_IF_AFTER_FINAL_ELSE".to_string());
+                    break;
+                }
+                if logical_if_depth >= MAX_BLOCK_DEPTH {
+                    unsupported = Some("SOURCE_BLOCK_DEPTH_EXCEEDED".to_string());
+                    break;
+                }
+                frame.logical_closures += 1;
+                logical_if_depth += 1;
+                steps.push(ProjectionStep::Else);
+                steps.push(ProjectionStep::If(condition));
+                continue;
+            }
+            if is_strict_else_continuation(line) {
+                let Some(frame) = if_frames.last_mut() else {
+                    unsupported = Some("SOURCE_ELSE_WITHOUT_OPEN_IF".to_string());
+                    break;
+                };
+                if frame.final_else_seen {
+                    unsupported = Some("SOURCE_DUPLICATE_ELSE".to_string());
+                    break;
+                }
+                frame.final_else_seen = true;
+                steps.push(ProjectionStep::Else);
+                continue;
+            }
+            let keyword = rest.split_whitespace().next().unwrap_or("continuation");
+            unsupported = Some(if keyword == "elseif" || keyword == "else" {
+                "SOURCE_ELSE_IF_UNSUPPORTED".to_string()
+            } else {
+                format!("SOURCE_CONTROL_UNSUPPORTED:{keyword}")
+            });
+            break;
+        }
+        if has_keyword_prefix(line, "else") || has_keyword_prefix(line, "elseif") {
+            unsupported = Some("SOURCE_ELSE_IF_WITHOUT_OPEN_IF".to_string());
+            break;
         }
         if has_keyword_prefix(line, "if") && line.ends_with('{') {
-            steps.push(ProjectionStep::If(condition(line)));
+            let Some(condition) = strict_braced_if_condition(line) else {
+                unsupported = Some("SOURCE_IF_HEADER_UNSUPPORTED".to_string());
+                break;
+            };
+            if logical_if_depth >= MAX_BLOCK_DEPTH {
+                unsupported = Some("SOURCE_BLOCK_DEPTH_EXCEEDED".to_string());
+                break;
+            }
+            logical_if_depth += 1;
+            if_frames.push(SourceIfFrame {
+                logical_closures: 1,
+                final_else_seen: false,
+            });
+            steps.push(ProjectionStep::If(condition));
             continue;
         }
         if has_keyword_prefix(line, "if") {
@@ -799,6 +907,9 @@ pub(crate) fn projection(source: &str, symbol: &str) -> Option<super::process_fl
             });
         }
     }
+    if unsupported.is_none() && (!if_frames.is_empty() || logical_if_depth != 0) {
+        unsupported = Some("SOURCE_CONTROL_BLOCK_UNBALANCED".to_string());
+    }
 
     let mut projection = Projection::source(symbol, entry, steps);
     projection.noncausal = unsupported;
@@ -814,19 +925,6 @@ pub fn tree(source: &str, symbol: &str) -> Option<String> {
         "Method flow",
     )
     .map(|rendered| rendered.tree)
-}
-
-/// Extract the parenthesised condition from `keyword (cond) ...`, matching the
-/// outer parenthesis (conditions may contain nested calls).
-fn condition(line: &str) -> String {
-    let Some(open) = first_code_byte(line, b'(') else {
-        return String::new();
-    };
-    let (code, _) = lexical_masks(line);
-    let Some(close) = matching_delimiter(line, &code, open, b'(', b')') else {
-        return String::new();
-    };
-    line[open + 1..close].trim().to_string()
 }
 
 /// Parse a method source into a full PlantUML activity document, or `None`
@@ -876,6 +974,306 @@ public ChangeTaskStatusResponse changeTaskStatus(Long taskId, ChangeTaskStatusRe
     return createResponse(ResponseCodes.OK, taskId, null, ChangeTaskStatusResponse.builder().build());
 }
 "#;
+
+    const RUN_SYMBOL: &str = "method:class:svc.Service#run()V";
+
+    fn source_projection(source: &str) -> super::super::process_flow::Projection {
+        projection(source, RUN_SYMBOL).unwrap()
+    }
+
+    fn assert_gap_only(source: &str, absent_actions: &[&str]) {
+        let rendered = tree(source, RUN_SYMBOL).unwrap();
+        assert!(rendered.contains("SOURCE_"), "{rendered}");
+        for action in absent_actions {
+            assert!(
+                !rendered.contains(action),
+                "unexpected {action} in:\n{rendered}"
+            );
+        }
+    }
+
+    fn step_count(
+        projection: &super::super::process_flow::Projection,
+        matches_step: impl Fn(&super::super::process_flow::ProjectionStep) -> bool,
+    ) -> usize {
+        projection
+            .steps
+            .iter()
+            .filter(|step| matches_step(step))
+            .count()
+    }
+
+    #[test]
+    fn braced_else_if_chains_lower_to_nested_branches_and_keep_following_action() {
+        use super::super::process_flow::ProjectionStep;
+
+        for (source, expected_else_count) in [
+            (
+                "void run(){ if(first()){firstAction();} else if(second()){secondAction();} else if(third()){thirdAction();} afterAction(); }",
+                2,
+            ),
+            (
+                "void run(){ if(first()){firstAction();} else if(second()){secondAction();} else if(third()){thirdAction();} else{fallbackAction();} afterAction(); }",
+                3,
+            ),
+        ] {
+            let projection = source_projection(source);
+            assert!(projection.noncausal.is_none(), "{projection:?}");
+            let conditions: Vec<_> = projection
+                .steps
+                .iter()
+                .filter_map(|step| match step {
+                    ProjectionStep::If(condition) => Some(condition.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(conditions, ["first()", "second()", "third()"]);
+            assert_eq!(
+                step_count(&projection, |step| matches!(step, ProjectionStep::Else)),
+                expected_else_count
+            );
+            assert_eq!(
+                step_count(&projection, |step| matches!(step, ProjectionStep::End)),
+                3
+            );
+
+            let rendered = tree(source, RUN_SYMBOL).unwrap();
+            let first = rendered.find("firstAction()").unwrap();
+            let second = rendered.find("secondAction()").unwrap();
+            let third = rendered.find("thirdAction()").unwrap();
+            let after = rendered.find("afterAction()").unwrap();
+            assert!(
+                first < second && second < third && third < after,
+                "{rendered}"
+            );
+            if expected_else_count == 3 {
+                assert!(rendered.contains("fallbackAction()"), "{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn nested_chains_close_their_own_frames_before_outer_and_independent_ifs() {
+        use super::super::process_flow::ProjectionStep;
+
+        let source = "void run(){ if(outer()){ if(inner()){innerAction();} else if(nested()){nestedAction();} else{innerFallback();} } else if(outerAlt()){outerAction();} if(independent()){independentAction();} afterAction(); }";
+        let projection = source_projection(source);
+        assert!(projection.noncausal.is_none(), "{projection:?}");
+        let conditions: Vec<_> = projection
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                ProjectionStep::If(condition) => Some(condition.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            conditions,
+            [
+                "outer()",
+                "inner()",
+                "nested()",
+                "outerAlt()",
+                "independent()"
+            ]
+        );
+        assert_eq!(
+            step_count(&projection, |step| matches!(step, ProjectionStep::End)),
+            5
+        );
+        let rendered = tree(source, RUN_SYMBOL).unwrap();
+        let inner = rendered.find("innerAction()").unwrap();
+        let nested = rendered.find("nestedAction()").unwrap();
+        let inner_fallback = rendered.find("innerFallback()").unwrap();
+        let outer_alt = rendered.find("outerAction()").unwrap();
+        let independent = rendered.find("independentAction()").unwrap();
+        let after = rendered.find("afterAction()").unwrap();
+        assert!(
+            inner < nested
+                && nested < inner_fallback
+                && inner_fallback < outer_alt
+                && outer_alt < independent
+                && independent < after,
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn else_if_conditions_keep_multiline_comments_literals_calls_boolean_ops_and_ternaries() {
+        use super::super::process_flow::ProjectionStep;
+
+        let source = r#"
+void run() {
+    if (
+        request != null && nested(check(request, "a && b"))
+        /* ignored close ) and fake } else if ( */
+        || flag ? choose(left(), right()) : fallback()
+    ) {
+        apply();
+    } /* continuation comment */ else if (secondary(/* comment */ nestedCall("x||y"))) {
+        recover();
+    }
+}
+"#;
+        let projection = source_projection(source);
+        assert!(projection.noncausal.is_none(), "{projection:?}");
+        let conditions: Vec<_> = projection
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                ProjectionStep::If(condition) => Some(condition.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(conditions.len(), 2);
+        assert!(
+            conditions[0].contains("request != null && nested(check(request, \"a && b\"))"),
+            "{}",
+            conditions[0]
+        );
+        assert!(
+            conditions[0].contains("flag ? choose(left(), right()) : fallback()"),
+            "{}",
+            conditions[0]
+        );
+        assert!(conditions[1].starts_with("secondary("), "{}", conditions[1]);
+        assert!(
+            conditions[1].contains("nestedCall(\"x||y\")"),
+            "{}",
+            conditions[1]
+        );
+        let rendered = tree(source, RUN_SYMBOL).unwrap();
+        assert!(rendered.contains(conditions[0]), "{rendered}");
+        assert!(rendered.contains(conditions[1]), "{rendered}");
+        assert!(rendered.find("apply()").unwrap() < rendered.find("recover()").unwrap());
+    }
+
+    #[test]
+    fn malformed_else_if_forms_make_the_whole_method_a_gap() {
+        let malformed = [
+            "void run(){ beforeAction(); else { badAction(); } }",
+            "void run(){ beforeAction(); else if(b){badAction();} }",
+            "void run(){ beforeAction(); if(a){firstAction();} else{secondAction();} else{badAction();} }",
+            "void run(){ beforeAction(); if(a){firstAction();} elseif(b){badAction();} }",
+            "void run(){ beforeAction(); if(a){firstAction();} else if(b) strayToken {badAction();} }",
+            "void run(){ beforeAction(); if(a) return early(); else {badAction();} }",
+            "void run(){ beforeAction(); if(a) return early(); else if(b) return badAction(); }",
+            "void run(){ beforeAction(); if(a){firstAction();} else if(b){badAction(); else {truncatedAction();}} }",
+            "void run(){ beforeAction(); if(a) strayToken {badAction();} }",
+        ];
+        for source in malformed {
+            assert_gap_only(
+                source,
+                &[
+                    "beforeAction()",
+                    "firstAction()",
+                    "secondAction()",
+                    "badAction()",
+                    "truncatedAction()",
+                    "early()",
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_transfers_loops_and_exception_control_inside_a_chain_veto_all_steps() {
+        let unsupported = [
+            (
+                "void run(){ beforeAction(); if(a){branchAction(); throw failure();} else if(b){otherAction();} }",
+                "branchAction()",
+            ),
+            (
+                "void run(){ beforeAction(); if(a){branchAction(); while(ready()){tick();}} else if(b){otherAction();} }",
+                "branchAction()",
+            ),
+            (
+                "void run(){ beforeAction(); if(a){branchAction(); try { call(); } catch(E e) { recover(); }} else if(b){otherAction();} }",
+                "branchAction()",
+            ),
+        ];
+        for (source, branch) in unsupported {
+            assert_gap_only(source, &["beforeAction()", branch, "otherAction()"]);
+        }
+    }
+
+    #[test]
+    fn branch_returns_keep_stops_and_all_return_chains_close_every_if() {
+        use super::super::process_flow::ProjectionStep;
+
+        let early = "void run(){ if(reject()){return invalid();} else if(retry()){recover();} else{finish();} afterAction(); }";
+        let early_projection = source_projection(early);
+        assert!(early_projection.noncausal.is_none(), "{early_projection:?}");
+        let early_diagram = document(early, RUN_SYMBOL, "Early return").unwrap();
+        assert!(early_diagram.contains("return invalid"), "{early_diagram}");
+        assert!(early_diagram.contains("stop\n"), "{early_diagram}");
+        let early_tree = tree(early, RUN_SYMBOL).unwrap();
+        assert!(
+            early_tree.find("return invalid()").unwrap()
+                < early_tree.find("afterAction()").unwrap(),
+            "{early_tree}"
+        );
+
+        let all_return = "void run(){ if(first()){return firstResult();} else if(second()){return secondResult();} else{return fallbackResult();} }";
+        let all_return_projection = source_projection(all_return);
+        assert!(
+            all_return_projection.noncausal.is_none(),
+            "{all_return_projection:?}"
+        );
+        assert_eq!(
+            step_count(&all_return_projection, |step| matches!(
+                step,
+                ProjectionStep::End
+            )),
+            2
+        );
+        let all_return_diagram = document(all_return, RUN_SYMBOL, "All return").unwrap();
+        assert_eq!(
+            all_return_diagram.matches("stop\n").count(),
+            3,
+            "{all_return_diagram}"
+        );
+        assert!(all_return_diagram.contains("return fallbackResult"));
+    }
+
+    #[test]
+    fn seventeen_else_if_arms_are_supported_and_logical_depth_stays_bounded() {
+        use super::super::process_flow::ProjectionStep;
+
+        fn chain(arms: usize) -> String {
+            let mut source = String::from("void run(){ if(condition0()){} ");
+            for index in 1..arms {
+                source.push_str(&format!("else if(condition{index}()){{}} "));
+            }
+            source.push_str("else{} afterAction(); }");
+            source
+        }
+
+        let supported = chain(17);
+        let projection = source_projection(&supported);
+        assert!(projection.noncausal.is_none(), "{projection:?}");
+        assert_eq!(
+            step_count(&projection, |step| matches!(step, ProjectionStep::If(_))),
+            17
+        );
+        assert_eq!(
+            step_count(&projection, |step| matches!(step, ProjectionStep::End)),
+            17
+        );
+        assert!(
+            tree(&supported, RUN_SYMBOL)
+                .unwrap()
+                .contains("afterAction()")
+        );
+
+        let over_bound = chain(MAX_BLOCK_DEPTH + 1);
+        assert_gap_only(&over_bound, &["afterAction()"]);
+        assert!(
+            tree(&over_bound, RUN_SYMBOL)
+                .unwrap()
+                .contains("SOURCE_BLOCK_DEPTH_EXCEEDED")
+        );
+    }
 
     #[test]
     fn unsupported_exception_source_becomes_a_noncausal_gap() {
