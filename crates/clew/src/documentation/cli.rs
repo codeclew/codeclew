@@ -1256,10 +1256,7 @@ pub(super) fn context_items(
                                 Some("REFERENCE_RELATION_RESOLUTION_UNVERIFIED")
                             } else if source["sourceStatus"] != "SOURCE_RETAINED" || !source_bound {
                                 Some("REFERENCE_SITE_SOURCE_UNAVAILABLE")
-                            } else if target.is_none() {
-                                Some("REFERENCE_TARGET_IDENTITY_UNAVAILABLE")
-                            } else {
-                                let target = target.unwrap();
+                            } else if let Some(target) = target {
                                 let target_scope = (target.to_owned(), owner_scope.1.clone());
                                 let candidates = declarations_by_symbol_scope
                                     .get(&target_scope)
@@ -1278,6 +1275,8 @@ pub(super) fn context_items(
                                         _ => Some("REFERENCE_TARGET_SOURCE_AMBIGUOUS"),
                                     }
                                 }
+                            } else {
+                                Some("REFERENCE_TARGET_IDENTITY_UNAVAILABLE")
                             };
                             if let Some(reason) = gap {
                                 report_reference_gap(relation, reason);

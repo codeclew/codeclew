@@ -1327,7 +1327,7 @@ fn coalesce_process_method_sources(
     method_sources.retain(|entry| {
         entry["reference"]
             .as_str()
-            .map_or(true, |reference| !aliases.contains_key(reference))
+            .is_none_or(|reference| !aliases.contains_key(reference))
     });
     Ok(())
 }

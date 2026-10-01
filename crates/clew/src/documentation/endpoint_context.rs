@@ -1509,10 +1509,10 @@ fn profile_rows_with_root(
                     ),
                 }
             }
-            if let Some(superclass) = type_row.normalized["superclass"].as_str() {
-                if !superclass.trim().is_empty() {
-                    type_queue.push_back(superclass.to_owned());
-                }
+            if let Some(superclass) = type_row.normalized["superclass"].as_str()
+                && !superclass.trim().is_empty()
+            {
+                type_queue.push_back(superclass.to_owned());
             }
             for interface in type_row.normalized["interfaces"]
                 .as_array()
@@ -1723,10 +1723,10 @@ fn finish_rows(input: FinishRows<'_>) -> Result<Vec<Value>, ClewError> {
             if let Some(reference) = source_reference {
                 evidence.push(reference.to_owned());
             }
-            if let Some(reference) = referenced_from_source_reference {
-                if !evidence.iter().any(|item| item == reference) {
-                    evidence.push(reference.to_owned());
-                }
+            if let Some(reference) = referenced_from_source_reference
+                && !evidence.iter().any(|item| item == reference)
+            {
+                evidence.push(reference.to_owned());
             }
             source_context_rows.push(json!({
                 "kind":candidate.kind,
@@ -2200,6 +2200,8 @@ fn constructor_target_owner_identity(target: &str) -> Option<String> {
     owner.starts_with("class:").then(|| owner.to_owned())
 }
 
+// Each retention destination is explicit because the helper updates them independently.
+#[allow(clippy::too_many_arguments)]
 fn retain_process_type_context<'a>(
     evidence: &'a ServiceEvidence,
     service: &str,
@@ -2293,6 +2295,8 @@ fn process_context_method_body_source<'a>(
     Err("SOURCE_CONTEXT_METHOD_BODY_UNAVAILABLE")
 }
 
+// Keep the queue and retention inputs explicit at this single traversal boundary.
+#[allow(clippy::too_many_arguments)]
 fn enqueue_process_context_method<'a>(
     evidence: &'a ServiceEvidence,
     service: &str,
@@ -3222,7 +3226,7 @@ fn field_receiver_calls(
         if method.start <= body_range.0
             || method.start >= body_range.1
             || !is_identifier(&method.text)
-            || !tokens.get(index + 1).is_some_and(|next| next.text == "(")
+            || tokens.get(index + 1).is_none_or(|next| next.text != "(")
             || index < 2
             || tokens[index - 1].text != "."
         {
@@ -3294,7 +3298,7 @@ fn bounded_call_argument_count(
     let mut braces = 0usize;
     let mut commas = 0usize;
     let mut segment_has_value = false;
-    for index in open_end..close_start {
+    for (index, byte) in bytes.iter().enumerate().take(close_start).skip(open_end) {
         if comments.get(index).copied().unwrap_or(false) {
             continue;
         }
@@ -3303,7 +3307,6 @@ fn bounded_call_argument_count(
             segment_has_value = true;
             continue;
         }
-        let byte = bytes[index];
         match byte {
             b'(' => parens += 1,
             b')' => parens = parens.checked_sub(1)?,
@@ -3393,9 +3396,9 @@ fn looks_like_multi_declarator_binding(tokens: &[Token], index: usize) -> bool {
 fn is_variable_declarator_end(tokens: &[Token], index: usize) -> bool {
     let mut following = index + 1;
     while tokens.get(following).is_some_and(|token| token.text == "[") {
-        if !tokens
+        if tokens
             .get(following + 1)
-            .is_some_and(|token| token.text == "]")
+            .is_none_or(|token| token.text != "]")
         {
             return false;
         }

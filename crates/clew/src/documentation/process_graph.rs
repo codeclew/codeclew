@@ -211,14 +211,14 @@ pub(super) fn resolve_work_root<'a>(
             serde_json::to_string(&resolution.details).unwrap_or_else(|_| "[]".into()),
         )));
     }
-    if let Some(explicit) = request.root_declaration.as_deref() {
-        if explicit.trim().is_empty() || explicit != declaration.id {
-            return Err(invalid(format!(
-                "PROCESS_GRAPH_SCENARIO_ROOT_OVERRIDE_CONFLICT: frozen process selector for {subject} resolves to {}; rootDeclaration cannot switch it (candidates={}); edit the saved definition and recompose to select another root",
-                declaration.id,
-                serde_json::to_string(&resolution.candidates).unwrap_or_else(|_| "[]".into()),
-            )));
-        }
+    if let Some(explicit) = request.root_declaration.as_deref()
+        && (explicit.trim().is_empty() || explicit != declaration.id)
+    {
+        return Err(invalid(format!(
+            "PROCESS_GRAPH_SCENARIO_ROOT_OVERRIDE_CONFLICT: frozen process selector for {subject} resolves to {}; rootDeclaration cannot switch it (candidates={}); edit the saved definition and recompose to select another root",
+            declaration.id,
+            serde_json::to_string(&resolution.candidates).unwrap_or_else(|_| "[]".into()),
+        )));
     }
     Ok(ResolvedRoot {
         service,
@@ -572,9 +572,9 @@ fn collect(
                     .unwrap_or_default()
                 {
                     [candidate]
-                        if !unscoped_methods_by_symbol
+                        if unscoped_methods_by_symbol
                             .get(target)
-                            .is_some_and(|methods| !methods.is_empty()) =>
+                            .is_none_or(|methods| methods.is_empty()) =>
                     {
                         ("SAME_SCOPE_UNIQUE", Some(*candidate))
                     }
@@ -779,7 +779,6 @@ fn prove_accessor<'a>(
     let source = evidence.sources.get(source_id)?;
     let (open, close) = super::source_steps::method_body(&source.text, &method.symbol)?;
     let body = comments_as_spaces(&source.text)[open + 1..close]
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");

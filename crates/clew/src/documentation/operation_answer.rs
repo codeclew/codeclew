@@ -2502,12 +2502,11 @@ fn render_data_movement_markdown(
             .join(" → ");
         let path = step_anchor(row.step, &row.path);
         output.push_str(&format!(
-            "| {} | {} | {} | [{}]({}) — {} | {} | {} |\n",
+            "| {} | {} | {} | [{}](#{path}) — {} | {} | {} |\n",
             context,
             markdown_table_cell(row.step.from.as_deref().unwrap_or(labels.unknown())),
             markdown_table_cell(row.step.to.as_deref().unwrap_or(labels.unknown())),
             markdown_table_cell(&row.step.kind),
-            format!("#{path}"),
             markdown_table_cell(&row.step.meaning.text),
             markdown_evidence_cell(&row.step.meaning.evidence, evidence_index),
             row.step
@@ -3264,6 +3263,8 @@ const HASH_NAVIGATION_SCRIPT: &str = r##"(()=>{
   revealHashTarget();
 })();"##;
 
+// Keep separate inputs visible because each renderer consumes distinct source sections.
+#[allow(clippy::too_many_arguments)]
 fn render_html(
     packet: &Value,
     answer: &OperationAnswer,
@@ -3429,6 +3430,8 @@ fn render_html(
     html
 }
 
+// Keep separate inputs visible because each renderer consumes distinct source sections.
+#[allow(clippy::too_many_arguments)]
 fn render_markdown(
     packet: &Value,
     answer: &OperationAnswer,
@@ -4487,6 +4490,8 @@ fn render_pseudocode_markdown(
     output
 }
 
+// Recursive rendering uses each option directly to preserve branch formatting.
+#[allow(clippy::too_many_arguments)]
 fn render_markdown_steps(
     steps: &[OperationStep],
     answer: &OperationAnswer,
@@ -4760,7 +4765,7 @@ fn collect_first_match_tables<'a>(
                     output,
                 );
             }
-            collect_first_match_tables(&table.otherwise, &table.otherwise_path, output);
+            collect_first_match_tables(table.otherwise, &table.otherwise_path, output);
             output.push(table);
             continue;
         }
@@ -4874,7 +4879,7 @@ fn render_decision_tables_markdown(
                     "Otherwise"
                 }),
                 table_outcome_markdown(
-                    &table.otherwise,
+                    table.otherwise,
                     answer,
                     &table.otherwise_path,
                     evidence_index,
@@ -7729,7 +7734,7 @@ mod tests {
         let tree_return = diagram.tree.find("return").unwrap();
         let tree_action = diagram.tree.find("finish").unwrap();
         assert!(tree_return < tree_action);
-        assert!(diagram.puml.contains("if (done) then (yes)"));
+        assert!(diagram.puml.contains("if (done) then (C01)"));
         let puml_return = diagram.puml.find("return").unwrap();
         let puml_action = diagram.puml.find("finish").unwrap();
         assert!(puml_return < puml_action);

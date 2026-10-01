@@ -427,6 +427,8 @@ struct StoredWork {
     evidence_snapshot: String,
 }
 
+type WorkTables = (BTreeMap<String, Handle>, BTreeMap<String, String>);
+
 impl StoredWork {
     fn from_runtime(work: &Work, evidence_snapshot: String) -> Result<Self, ClewError> {
         Ok(Self {
@@ -577,10 +579,7 @@ fn persist_work_tables(
     Ok(())
 }
 
-fn load_work_tables(
-    repo: &Repository,
-    stored: &StoredWork,
-) -> Result<(BTreeMap<String, Handle>, BTreeMap<String, String>), ClewError> {
+fn load_work_tables(repo: &Repository, stored: &StoredWork) -> Result<WorkTables, ClewError> {
     Ok((
         read_work_table(
             repo,
@@ -800,6 +799,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     }
 }
 
+// Keep artifact inputs explicit so output provenance remains visible at each call site.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_explanation_outputs(
     output_dir: &std::path::Path,
     work: &str,
@@ -823,6 +824,8 @@ pub(super) fn write_explanation_outputs(
     )
 }
 
+// The renderer is an injected seam; other explicit inputs are serialized artifacts.
+#[allow(clippy::too_many_arguments)]
 fn write_explanation_outputs_with_svg_renderer<F>(
     output_dir: &std::path::Path,
     work: &str,
@@ -1527,7 +1530,7 @@ fn validate_context_profile(subject: &str, request: &Request) -> Result<(), Clew
         Some("process-graph-v1")
             if subject
                 .strip_prefix("scenario:")
-                .is_some_and(|id| super::store::valid_id(id))
+                .is_some_and(super::store::valid_id)
                 && request.entrypoint.is_none()
                 && request
                     .root_declaration
@@ -5074,7 +5077,17 @@ pub(super) mod api_contract_tests {
         validate_context_profile(&work.subject, &work.request).unwrap();
         validate_process_graph_root(&work.subject, &work.request, &work.checked).unwrap();
 
-        assert!(validate_context_profile("scenario:orders", &work.request).is_err());
+        assert!(validate_context_profile("scenario:orders", &work.request).is_ok());
+        let scenario_error =
+            validate_process_graph_root("scenario:orders", &work.request, &work.checked)
+                .unwrap_err();
+        assert!(
+            scenario_error
+                .message
+                .contains("PROCESS_GRAPH_SCENARIO_SELECTION_UNAVAILABLE"),
+            "{}",
+            scenario_error.message
+        );
         let mut wrong_root = work.request.clone();
         wrong_root.root_declaration = Some("missing-root".into());
         assert!(validate_process_graph_root(&work.subject, &wrong_root, &work.checked).is_err());
