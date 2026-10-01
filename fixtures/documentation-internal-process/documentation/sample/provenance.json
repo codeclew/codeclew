@@ -1,0 +1,50 @@
+{
+  "schema": "codeclew-public-draft-example/1.0",
+  "scope": "One source-local TaskStateTransitions.promote invocation; runtime activation and persistence are not established.",
+  "captureProfile": "java-17plus-maven-read-only",
+  "compilation": ":/main",
+  "sourceFixtureRevision": "67cad16d03cc36e6abc732f7a5a5a8bae0b1a64f",
+  "sourceRevisionMeaning": "Commit of an isolated copy of the public fixture; synthetic example.invalid origin, not a remote provenance claim.",
+  "nativeValidationCommit": "b848ef0cf1a3a3d3a8ccdd7540e1f1cb15a21bb0",
+  "authorModel": "gpt-6.1-sol",
+  "authorReasoningEffort": "high",
+  "authorCliElapsedSeconds": 164.078152,
+  "authorAttemptCount": 1,
+  "answerModifiedAfterAuthor": false,
+  "nativeDraftStatus": "DRAFT",
+  "nativeReviewStatus": "UNREVIEWED",
+  "publication": "NOT_PUBLISHED",
+  "packetDigest": "sha256:1db6fa2df4d8d9c2e9498341a2984fe224b499d89d86412c5c3569a40d4956a2",
+  "rawAnswerDigest": "sha256:f2da1e906847e059328675541cea5ea469cceb76c48779a4214133b54b040d05",
+  "supportedReplay": "Same saved Work, run, invocation, raw answer and accounting; no new driver dispatch.",
+  "fileSha256": {
+    "answer.json": "f2da1e906847e059328675541cea5ea469cceb76c48779a4214133b54b040d05",
+    "index.html": "4111733a6f590cd29295b335461814f311d5f93685bf18a727e457053e3e4e8a",
+    "operation.md": "fe96cfe56cbf60ff52d9ba5f03afd22e28774081cab16793386d4e8bb4fa4d47",
+    "process-flow.puml": "df4fc1831ba50301d3ba4310bbcfba271f1e87781815d0b0b6305c616f377e99",
+    "process-flow.svg": "16787e31edcf90451411001208738b17b7509771cd4ce7c3e12fac471425ffe9",
+    "reader-packet.json": "b21bb88851e5e55a4f4dbef62a75dbea3f954cbc744868d811f3eee311c49152",
+    "reader-packet-audit.json": "ffea8418c42a2d6b88568a4e39015d99fc714ded295164303d17d41da5680021"
+  },
+  "independentSourceFitness": {
+    "verdict": "POSITIVE_FIT",
+    "reviewerModel": "gpt-6.1-sol",
+    "reasoningEffort": "high",
+    "reviewedOn": "2026-10-01",
+    "scope": "The original retained source-local promote explanation only; native UNREVIEWED status is unchanged.",
+    "materialCorrectionsRequired": false
+  },
+  "browserReview": {
+    "disposition": "ACCEPT",
+    "browser": "Chrome",
+    "viewportWidthsPx": [
+      1365,
+      390
+    ],
+    "localFragmentLinksChecked": 210,
+    "uniqueFragmentTargets": 48,
+    "missingFragmentTargets": 0,
+    "duplicateFragmentTargets": 0,
+    "scope": "Actual HTML reader and its citation/source route; standalone 536px SVG is not claimed responsive on phones."
+  }
+}

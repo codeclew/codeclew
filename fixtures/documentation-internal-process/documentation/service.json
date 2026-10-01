@@ -1,0 +1,11 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "dispatch",
+  "title": "Task dispatch fixture",
+  "repositoryId": "dispatch-fixture",
+  "repository": "https://example.invalid/dispatch-fixture",
+  "language": "java",
+  "profile": "java-17plus-maven-read-only",
+  "compilations": [":/main"],
+  "targetRef": "main"
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "codeclew-documentation-process/1.0",
+  "id": "task-promotion",
+  "title": "Task promotion decision",
+  "summary": "Source-local decision requested for TaskStateTransitions.promote.",
+  "root": {
+    "service": "dispatch",
+    "selector": {
+      "language": "java",
+      "owner": "class:example.dispatch.TaskStateTransitions",
+      "name": "promote",
+      "parameterTypes": [
+        "example.dispatch.Task",
+        "java.time.Instant"
+      ],
+      "scope": ":/main"
+    }
+  },
+  "interactions": [],
+  "maxDepth": 4,
+  "maxNodes": 32,
+  "process": {
+    "scope": "The source-local state decision performed by TaskStateTransitions.promote.",
+    "participants": ["dispatch"],
+    "objects": [],
+    "trigger": "A caller supplies one Task and a current Instant.",
+    "outcomes": [
+      "Explain the conditional branches, return values, and repository-call boundary from retained source.",
+      "Distinguish requested state changes from persistence and runtime effects that the source does not establish."
+    ],
+    "linkedSubviews": []
+  }
+}
