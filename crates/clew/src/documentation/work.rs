@@ -92,6 +92,133 @@ pub enum Command {
         output_dir: PathBuf,
     },
 }
+
+#[cfg(test)]
+mod explanation_output_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn process_diagram() -> super::super::operation_answer::ProcessDiagram {
+        super::super::operation_answer::ProcessDiagram {
+            puml: "@startuml\nstart\n:Run;\nstop\n@enduml\n".into(),
+            tree: "Entry: run\nRun\n".into(),
+            source_reference: Some("source-root".into()),
+            source_anchor: Some("source-1".into()),
+            has_causal_projection: true,
+        }
+    }
+
+    #[test]
+    fn explanation_writer_preserves_plantuml_and_records_svg_availability_and_draft_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let diagram = process_diagram();
+        let output = write_explanation_outputs(
+            temporary.path(),
+            "work-test",
+            &json!({"packetDigest":"sha256:packet"}),
+            &json!({"auditDigest":"sha256:audit"}),
+            &json!({"schema":"codeclew-operation-answer/1.2"}),
+            "# Draft\n<!--CODECLEW_PROCESS_DIAGRAM_SVG-->\n",
+            "<h1>DRAFT</h1><!--CODECLEW_PROCESS_DIAGRAM_SVG-->",
+            Some(&diagram),
+        )
+        .unwrap();
+
+        assert_eq!(output["status"], "DRAFT");
+        assert_eq!(output["reviewStatus"], "UNREVIEWED");
+        assert_eq!(output["publication"], "NOT_PUBLISHED");
+        assert_eq!(output["processDiagram"]["status"], "SOURCE_LOCAL");
+        assert_eq!(
+            output["processDiagram"]["sourceExcerpt"],
+            "index.html#source-1"
+        );
+        let puml_path = temporary.path().join("process-flow.puml");
+        assert_eq!(fs::read_to_string(puml_path).unwrap(), diagram.puml);
+        let html = fs::read_to_string(temporary.path().join("index.html")).unwrap();
+        let markdown = fs::read_to_string(temporary.path().join("operation.md")).unwrap();
+        assert!(!html.contains("CODECLEW_PROCESS_DIAGRAM_SVG"));
+        assert!(!markdown.contains("CODECLEW_PROCESS_DIAGRAM_SVG"));
+
+        if output["processDiagram"]["svg"]["status"] == "RENDERED" {
+            assert!(output["files"].get("process-flow.svg").is_some());
+            assert!(temporary.path().join("process-flow.svg").is_file());
+            assert!(html.contains("href=\"process-flow.svg\""));
+            assert!(markdown.contains("](process-flow.svg)"));
+        } else {
+            assert_eq!(output["processDiagram"]["svg"]["status"], "UNAVAILABLE");
+            assert!(output["processDiagram"]["svg"]["reason"].is_string());
+            assert!(output["files"].get("process-flow.svg").is_none());
+            assert!(!temporary.path().join("process-flow.svg").exists());
+            assert!(html.contains("SVG unavailable"));
+            assert!(markdown.contains("SVG unavailable"));
+            assert!(!html.contains("href=\"process-flow.svg\""));
+            assert!(!markdown.contains("](process-flow.svg)"));
+        }
+    }
+
+    #[test]
+    fn explanation_writer_removes_stale_diagrams_when_svg_is_unavailable_or_not_applicable() {
+        let temporary = tempfile::tempdir().unwrap();
+        let output_dir = temporary.path();
+        let puml_path = output_dir.join(super::super::operation_answer::PROCESS_DIAGRAM_PUML_FILE);
+        let svg_path = output_dir.join(super::super::operation_answer::PROCESS_DIAGRAM_SVG_FILE);
+        let other_path = output_dir.join("keep.txt");
+        fs::write(&puml_path, "stale PlantUML").unwrap();
+        fs::write(&svg_path, "stale SVG").unwrap();
+        fs::write(&other_path, "keep this user file").unwrap();
+        let diagram = process_diagram();
+
+        let unavailable = write_explanation_outputs_with_svg_renderer(
+            output_dir,
+            "work-test",
+            &json!({"packetDigest":"sha256:packet"}),
+            &json!({"auditDigest":"sha256:audit"}),
+            &json!({"schema":"codeclew-operation-answer/1.2"}),
+            "# Draft\n<!--CODECLEW_PROCESS_DIAGRAM_SVG-->\n",
+            "<h1>DRAFT</h1><!--CODECLEW_PROCESS_DIAGRAM_SVG-->",
+            Some(&diagram),
+            |_| Ok(None),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&puml_path).unwrap(), diagram.puml);
+        assert!(!svg_path.exists());
+        assert_eq!(
+            unavailable["processDiagram"]["svg"]["status"],
+            "UNAVAILABLE"
+        );
+        assert!(unavailable["processDiagram"]["svg"]["reason"].is_string());
+        assert!(unavailable["files"].get("process-flow.svg").is_none());
+        assert_eq!(
+            fs::read_to_string(&other_path).unwrap(),
+            "keep this user file"
+        );
+
+        fs::write(&svg_path, "stale SVG again").unwrap();
+        let not_applicable = write_explanation_outputs_with_svg_renderer(
+            output_dir,
+            "work-test",
+            &json!({"packetDigest":"sha256:packet"}),
+            &json!({"auditDigest":"sha256:audit"}),
+            &json!({"schema":"codeclew-operation-answer/1.2"}),
+            "# Draft\n",
+            "<h1>DRAFT</h1>",
+            None,
+            |_| panic!("renderer must not run without a process diagram"),
+        )
+        .unwrap();
+
+        assert!(!puml_path.exists());
+        assert!(!svg_path.exists());
+        assert_eq!(not_applicable["processDiagram"]["status"], "NOT_APPLICABLE");
+        assert!(not_applicable["files"].get("process-flow.puml").is_none());
+        assert!(not_applicable["files"].get("process-flow.svg").is_none());
+        assert_eq!(
+            fs::read_to_string(&other_path).unwrap(),
+            "keep this user file"
+        );
+    }
+}
 #[derive(Debug, Args)]
 pub struct ReadArgs {
     #[arg(long)]
@@ -667,6 +794,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 &rendered.answer,
                 &rendered.markdown,
                 &rendered.html,
+                rendered.process_diagram.as_ref(),
             )
         }
     }
@@ -680,21 +808,132 @@ pub(super) fn write_explanation_outputs(
     answer: &Value,
     markdown: &str,
     html: &str,
+    process_diagram: Option<&super::operation_answer::ProcessDiagram>,
 ) -> Result<Value, ClewError> {
+    write_explanation_outputs_with_svg_renderer(
+        output_dir,
+        work,
+        packet,
+        audit,
+        answer,
+        markdown,
+        html,
+        process_diagram,
+        |sources| super::plantuml::batch_render_svg(sources, None),
+    )
+}
+
+fn write_explanation_outputs_with_svg_renderer<F>(
+    output_dir: &std::path::Path,
+    work: &str,
+    packet: &Value,
+    audit: &Value,
+    answer: &Value,
+    markdown: &str,
+    html: &str,
+    process_diagram: Option<&super::operation_answer::ProcessDiagram>,
+    render_svg: F,
+) -> Result<Value, ClewError>
+where
+    F: FnOnce(&[(String, String)]) -> Result<Option<Vec<(String, Vec<u8>)>>, String>,
+{
     fs::create_dir_all(output_dir).map_err(io_error)?;
     let output_dir = fs::canonicalize(output_dir).map_err(io_error)?;
+    let mut paths = BTreeMap::new();
+    let mut output_html = html.to_owned();
+    let mut output_markdown = markdown.to_owned();
+    let mut process_diagram_record = json!({
+        "status":"NOT_APPLICABLE",
+        "reason":"the packet has no selected internal process root"
+    });
+    if let Some(diagram) = process_diagram {
+        let puml_path = output_dir.join(super::operation_answer::PROCESS_DIAGRAM_PUML_FILE);
+        write_atomic_file(&puml_path, diagram.puml.as_bytes())?;
+        paths.insert(
+            super::operation_answer::PROCESS_DIAGRAM_PUML_FILE.to_owned(),
+            puml_path.to_string_lossy().into_owned(),
+        );
+
+        let base = "process-flow".to_owned();
+        let batch = render_svg(&[(base.clone(), diagram.puml.clone())]);
+        let (svg, svg_reason) = match batch {
+            Ok(Some(artifacts)) => match artifacts.into_iter().find(|(name, _)| name == &base) {
+                Some((_, svg)) => (Some(svg), None),
+                None => (
+                    None,
+                    Some("PlantUML did not produce an SVG file.".to_owned()),
+                ),
+            },
+            Ok(None) => (
+                None,
+                Some("No PlantUML executable was found on PATH.".to_owned()),
+            ),
+            Err(reason) => (
+                None,
+                Some(format!(
+                    "PlantUML rendering failed: {}",
+                    reason.chars().take(512).collect::<String>()
+                )),
+            ),
+        };
+        if let Some(svg) = svg.as_deref() {
+            let svg_path = output_dir.join(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE);
+            write_atomic_file(&svg_path, svg)?;
+            paths.insert(
+                super::operation_answer::PROCESS_DIAGRAM_SVG_FILE.to_owned(),
+                svg_path.to_string_lossy().into_owned(),
+            );
+        } else {
+            remove_owned_diagram_file(
+                &output_dir.join(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE),
+            )?;
+        }
+        let svg_status =
+            super::operation_answer::diagram_svg_status_html(svg.is_some(), svg_reason.as_deref());
+        let markdown_svg_status = super::operation_answer::diagram_svg_status_markdown(
+            svg.is_some(),
+            svg_reason.as_deref(),
+        );
+        output_html = output_html.replace(
+            super::operation_answer::PROCESS_DIAGRAM_HTML_MARKER,
+            &svg_status,
+        );
+        output_markdown = output_markdown.replace(
+            super::operation_answer::PROCESS_DIAGRAM_MARKDOWN_MARKER,
+            &markdown_svg_status,
+        );
+        process_diagram_record = json!({
+            "status":"SOURCE_LOCAL",
+            "projectionStatus":if diagram.has_causal_projection {"CAUSAL_SOURCE_PROJECTION"} else {"EVIDENCE_GAP_ONLY"},
+            "sourceReference":diagram.source_reference,
+            "sourceExcerpt":diagram.source_anchor.as_ref().map(|anchor|format!("index.html#{anchor}")),
+            "plantumlFile":super::operation_answer::PROCESS_DIAGRAM_PUML_FILE,
+            "svg":{
+                "status":if svg.is_some() {"RENDERED"} else {"UNAVAILABLE"},
+                "file":if svg.is_some() {Some(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE)} else {None::<&str>},
+                "reason":svg_reason
+            },
+            "executionEvidence":"NOT_ESTABLISHED"
+        });
+    } else {
+        remove_owned_diagram_file(
+            &output_dir.join(super::operation_answer::PROCESS_DIAGRAM_PUML_FILE),
+        )?;
+        remove_owned_diagram_file(
+            &output_dir.join(super::operation_answer::PROCESS_DIAGRAM_SVG_FILE),
+        )?;
+    }
     let files = [
         ("answer.json", bytes(answer)?),
-        ("operation.md", markdown.as_bytes().to_vec()),
-        ("index.html", html.as_bytes().to_vec()),
+        ("operation.md", output_markdown.as_bytes().to_vec()),
+        ("index.html", output_html.as_bytes().to_vec()),
         ("reader-packet.json", bytes(packet)?),
         ("reader-packet-audit.json", bytes(audit)?),
     ];
-    let mut paths = BTreeMap::new();
     for (name, contents) in files {
         let path = output_dir.join(name);
         write_atomic_file(&path, &contents)?;
-        paths.insert(name, path.to_string_lossy().into_owned());
+        paths.insert(name.to_owned(), path.to_string_lossy().into_owned());
     }
     Ok(json!({
         "schema":"codeclew-documentation-operation-answer-draft/1.0",
@@ -702,10 +941,19 @@ pub(super) fn write_explanation_outputs(
         "status":"DRAFT",
         "reviewStatus":"UNREVIEWED",
         "publication":"NOT_PUBLISHED",
+        "processDiagram":process_diagram_record,
         "packetDigest":packet["packetDigest"],
         "outputDirectory":output_dir.to_string_lossy(),
         "files":paths
     }))
+}
+
+fn remove_owned_diagram_file(path: &std::path::Path) -> Result<(), ClewError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 pub(super) fn write_atomic_file(path: &std::path::Path, contents: &[u8]) -> Result<(), ClewError> {

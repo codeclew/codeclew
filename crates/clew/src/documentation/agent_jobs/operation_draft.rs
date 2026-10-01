@@ -219,6 +219,7 @@ fn run_loaded(
         &rendered.answer,
         &rendered.markdown,
         &rendered.html,
+        rendered.process_diagram.as_ref(),
     )?;
     report.status = "DRAFT".into();
     report.publication = Some(json!({"status":"NOT_PUBLISHED"}));
@@ -230,7 +231,8 @@ fn run_loaded(
         "publication":"NOT_PUBLISHED",
         "packetDigest":packet_digest,
         "rawAnswerDigest":report.attempts.last().and_then(|attempt|attempt.result_digest.clone()),
-        "outputDirectory":output["outputDirectory"]
+        "outputDirectory":output["outputDirectory"],
+        "processDiagram":output["processDiagram"]
     }));
     finish_state(repo, &config, &mut report, &mut checkpoint)?;
     Ok(run_summary(&report))

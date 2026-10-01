@@ -12,6 +12,10 @@ const ANSWER_SCHEMA_V1_0: &str = "codeclew-operation-answer/1.0";
 const ANSWER_SCHEMA_V1_1: &str = "codeclew-operation-answer/1.1";
 const ANSWER_SCHEMA_V1_2: &str = "codeclew-operation-answer/1.2";
 const PACKET_SCHEMA: &str = "codeclew-documentation-reader-packet/1.0";
+pub(super) const PROCESS_DIAGRAM_PUML_FILE: &str = "process-flow.puml";
+pub(super) const PROCESS_DIAGRAM_SVG_FILE: &str = "process-flow.svg";
+pub(super) const PROCESS_DIAGRAM_HTML_MARKER: &str = "<!--CODECLEW_PROCESS_DIAGRAM_SVG-->";
+pub(super) const PROCESS_DIAGRAM_MARKDOWN_MARKER: &str = "<!--CODECLEW_PROCESS_DIAGRAM_SVG-->";
 const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "loop"];
 // Bump when the answer schema or generic author instruction changes materially;
 // this identity is persisted on newly prepared operation Work.
@@ -140,6 +144,15 @@ pub(super) struct RenderedAnswer {
     pub(super) html: String,
     pub(super) markdown: String,
     pub(super) answer: Value,
+    pub(super) process_diagram: Option<ProcessDiagram>,
+}
+
+pub(super) struct ProcessDiagram {
+    pub(super) puml: String,
+    pub(super) tree: String,
+    pub(super) source_reference: Option<String>,
+    pub(super) source_anchor: Option<String>,
+    pub(super) has_causal_projection: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -156,9 +169,9 @@ impl ReaderLabels {
 
     fn status(self) -> &'static str {
         if self.russian {
-            "ЧЕРНОВИК / НЕ ПРОВЕРЕНО"
+            "ЧЕРНОВИК / НЕ ПРОВЕРЕНО / НЕ ОПУБЛИКОВАНО"
         } else {
-            "DRAFT / UNREVIEWED"
+            "DRAFT / UNREVIEWED / NOT PUBLISHED"
         }
     }
 
@@ -353,9 +366,49 @@ impl ReaderLabels {
 
     fn tree_reference(self) -> &'static str {
         if self.russian {
-            "Дерево шагов операции"
+            "Псевдокод по шагам ответа"
         } else {
-            "Operation step tree"
+            "Authored pseudocode"
+        }
+    }
+
+    fn process_outline(self) -> &'static str {
+        if self.russian {
+            "Краткий план процесса"
+        } else {
+            "Process outline"
+        }
+    }
+
+    fn process_projection(self) -> &'static str {
+        if self.russian {
+            "Локальная проекция исходного кода"
+        } else {
+            "Source-local process projection"
+        }
+    }
+
+    fn editable_plantuml(self) -> &'static str {
+        if self.russian {
+            "Редактируемый PlantUML"
+        } else {
+            "Editable PlantUML"
+        }
+    }
+
+    fn source_local_notice(self) -> &'static str {
+        if self.russian {
+            "Построено по сохранённому синтаксису исходного кода; это не свидетельство выполнения."
+        } else {
+            "Built from retained source syntax; this is not execution evidence."
+        }
+    }
+
+    fn cited_by_process(self) -> &'static str {
+        if self.russian {
+            "На этот фрагмент ссылаются блоки процесса"
+        } else {
+            "Process blocks citing this excerpt"
         }
     }
 
@@ -692,7 +745,15 @@ pub(super) fn validate_and_render(
     let labels = ReaderLabels::new(packet);
     let evidence_index = evidence_index(citations);
     let used_labels = answer_evidence_labels(&parsed);
-    let source_navigation = source_navigation(packet, audit, &used_labels);
+    let root_source_references = selected_root_source_references(packet);
+    let source_navigation = source_navigation(
+        packet,
+        audit,
+        &used_labels,
+        &root_source_references,
+        &parsed,
+    );
+    let process_diagram = root_process_diagram(packet, &parsed, &source_navigation);
     let html = render_html(
         packet,
         &parsed,
@@ -700,6 +761,7 @@ pub(super) fn validate_and_render(
         &evidence_index,
         &used_labels,
         &source_navigation,
+        process_diagram.as_ref(),
         labels,
     );
     let markdown = render_markdown(
@@ -709,12 +771,14 @@ pub(super) fn validate_and_render(
         &evidence_index,
         &used_labels,
         &source_navigation,
+        process_diagram.as_ref(),
         labels,
     );
     Ok(RenderedAnswer {
         html,
         markdown,
         answer,
+        process_diagram,
     })
 }
 
@@ -1560,36 +1624,46 @@ fn answer_evidence_labels(answer: &OperationAnswer) -> BTreeSet<String> {
 
 struct BlockEvidence<'a> {
     id: String,
+    anchor: String,
     label: String,
     evidence: &'a [String],
 }
 
 fn block_evidence(answer: &OperationAnswer) -> Vec<BlockEvidence<'_>> {
-    fn visit_steps<'a>(steps: &'a [OperationStep], rows: &mut Vec<BlockEvidence<'a>>) {
+    fn visit_steps<'a>(
+        steps: &'a [OperationStep],
+        path_prefix: &str,
+        rows: &mut Vec<BlockEvidence<'a>>,
+    ) {
         for (index, step) in steps.iter().enumerate() {
+            let path = step_path(path_prefix, index + 1);
             let id = step
                 .id
                 .as_deref()
                 .map(str::to_owned)
-                .unwrap_or_else(|| format!("step-{}", index + 1));
+                .map(|id| format!("step-{id}"))
+                .unwrap_or_else(|| format!("step-{path}"));
             rows.push(BlockEvidence {
-                id: format!("step-{id}"),
+                anchor: step_anchor(step, &path),
+                id,
                 label: step.meaning.text.clone(),
                 evidence: &step.meaning.evidence,
             });
-            visit_steps(&step.children, rows);
-            visit_steps(&step.otherwise, rows);
+            visit_steps(&step.children, &format!("{path}-then"), rows);
+            visit_steps(&step.otherwise, &format!("{path}-else"), rows);
         }
     }
 
     let mut rows = vec![BlockEvidence {
         id: "summary".into(),
+        anchor: "summary".into(),
         label: "Summary".into(),
         evidence: &answer.summary.evidence,
     }];
     for term in &answer.glossary {
         rows.push(BlockEvidence {
             id: format!("glossary-{}", term.id),
+            anchor: format!("glossary-{}", term.id),
             label: term.label.clone(),
             evidence: &term.definition.evidence,
         });
@@ -1597,28 +1671,36 @@ fn block_evidence(answer: &OperationAnswer) -> Vec<BlockEvidence<'_>> {
     for predicate in &answer.predicates {
         rows.push(BlockEvidence {
             id: format!("predicate-{}-meaning", predicate.id),
+            anchor: format!("predicate-{}", predicate.id),
             label: format!("{} · {}", predicate.label, "meaning"),
             evidence: &predicate.meaning.evidence,
         });
         rows.push(BlockEvidence {
             id: format!("predicate-{}-source-check", predicate.id),
+            anchor: format!("predicate-{}", predicate.id),
             label: format!("{} · exact source check", predicate.label),
             evidence: &predicate.source_check.evidence,
         });
         rows.push(BlockEvidence {
             id: format!("predicate-{}-evaluation", predicate.id),
+            anchor: format!("predicate-{}", predicate.id),
             label: format!("{} · evaluation", predicate.label),
             evidence: &predicate.evaluation.evidence,
         });
     }
-    visit_steps(&answer.steps, &mut rows);
+    visit_steps(&answer.steps, "", &mut rows);
     for preparation in &answer.preparations {
         rows.push(BlockEvidence {
             id: format!("preparation-{}", preparation.id),
+            anchor: format!("preparation-{}", preparation.id),
             label: preparation.title.clone(),
             evidence: &preparation.summary.evidence,
         });
-        visit_steps(&preparation.steps, &mut rows);
+        visit_steps(
+            &preparation.steps,
+            &preparation_step_prefix(&preparation.id),
+            &mut rows,
+        );
     }
     rows
 }
@@ -1658,8 +1740,9 @@ fn render_block_evidence_html(
     );
     for row in rows {
         output.push_str(&format!(
-            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+            "<tr><td>{}</td><td><a href=\"#{}\"><code>{}</code></a></td><td>{}</td></tr>",
             html_escape(&row.label),
+            html_escape(&row.anchor),
             html_escape(&row.id),
             render_evidence_html(row.evidence, evidence_index, labels)
         ));
@@ -1693,9 +1776,10 @@ fn render_block_evidence_markdown(
     );
     for row in block_evidence(answer) {
         output.push_str(&format!(
-            "| {} | `{}` | {} |\n",
+            "| {} | [`{}`](#{}) | {} |\n",
             markdown_table_cell(&row.label),
             markdown_code_cell(&row.id),
+            row.anchor,
             markdown_evidence_cell(row.evidence, evidence_index)
         ));
     }
@@ -2452,9 +2536,57 @@ struct SourceLocation {
 struct SourceNavigation {
     locations: Vec<SourceLocation>,
     evidence_locations: BTreeMap<String, Vec<usize>>,
+    citing_blocks: BTreeMap<usize, Vec<CitedBlock>>,
 }
 
-fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> SourceNavigation {
+#[derive(Clone)]
+struct CitedBlock {
+    anchor: String,
+    label: String,
+}
+
+fn selected_root_source_references(packet: &Value) -> Vec<String> {
+    if packet["profile"] != "process-graph-v1" {
+        return Vec::new();
+    }
+    let Some(root_id) = packet["root"]["methodId"].as_str() else {
+        return Vec::new();
+    };
+    let matches: Vec<_> = packet["methods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|method| method["id"].as_str() == Some(root_id))
+        .collect();
+    if matches.len() != 1 {
+        return Vec::new();
+    }
+    let Some(reference) = matches[0]["body"]["sourceReference"].as_str() else {
+        return Vec::new();
+    };
+    let mut references = BTreeSet::from([reference.to_owned()]);
+    for source in packet["methodSources"].as_array().into_iter().flatten() {
+        if source["reference"].as_str() != Some(reference) {
+            continue;
+        }
+        references.extend(strings(&source["evidence"]));
+        for alias in source["sourceAliases"].as_array().into_iter().flatten() {
+            if let Some(alias_reference) = alias["reference"].as_str() {
+                references.insert(alias_reference.to_owned());
+            }
+            references.extend(strings(&alias["evidence"]));
+        }
+    }
+    references.into_iter().collect()
+}
+
+fn source_navigation(
+    packet: &Value,
+    audit: &Value,
+    used: &BTreeSet<String>,
+    root_references: &[String],
+    answer: &OperationAnswer,
+) -> SourceNavigation {
     if audit["packetDigest"] != packet["packetDigest"]
         || audit["schema"] != "codeclew-documentation-reader-packet-audit/1.0"
         || !audit_digest_matches(audit)
@@ -2495,8 +2627,13 @@ fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> 
         }
     }
 
+    let navigation_labels: BTreeSet<_> = used
+        .iter()
+        .cloned()
+        .chain(root_references.iter().cloned())
+        .collect();
     let mut locations_by_evidence = BTreeMap::<String, BTreeSet<SourceLocation>>::new();
-    for label in used {
+    for label in &navigation_labels {
         if let Some(source_ids) = evidence_source_ids.get(label) {
             for source_id in source_ids {
                 if let Some(location) = source_by_id.get(source_id) {
@@ -2540,7 +2677,7 @@ fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> 
             for label in std::iter::once(alias_reference)
                 .chain(strings(&alias["evidence"]).iter().map(String::as_str))
             {
-                if used.contains(label) {
+                if navigation_labels.contains(label) {
                     locations_by_evidence
                         .entry(label.to_owned())
                         .or_default()
@@ -2563,7 +2700,10 @@ fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> 
             else {
                 return;
             };
-            for label in evidence.into_iter().filter(|label| used.contains(label)) {
+            for label in evidence
+                .into_iter()
+                .filter(|label| navigation_labels.contains(label))
+            {
                 locations_by_evidence
                     .entry(label)
                     .or_default()
@@ -2612,7 +2752,7 @@ fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> 
     }
 
     let mut locations = BTreeSet::new();
-    for label in used {
+    for label in &navigation_labels {
         if let Some(candidates) = locations_by_evidence.get(label) {
             locations.extend(candidates.iter().cloned());
         }
@@ -2625,7 +2765,7 @@ fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> 
         .collect();
     let evidence_locations = locations_by_evidence
         .into_iter()
-        .filter(|(label, _)| used.contains(label))
+        .filter(|(label, _)| navigation_labels.contains(label))
         .map(|(label, candidates)| {
             let indices = candidates
                 .iter()
@@ -2634,10 +2774,412 @@ fn source_navigation(packet: &Value, audit: &Value, used: &BTreeSet<String>) -> 
             (label, indices)
         })
         .collect();
-    SourceNavigation {
+    let mut navigation = SourceNavigation {
         locations,
         evidence_locations,
+        citing_blocks: BTreeMap::new(),
+    };
+    navigation.citing_blocks = source_citing_blocks(answer, &navigation);
+    navigation
+}
+
+fn source_citing_blocks(
+    answer: &OperationAnswer,
+    navigation: &SourceNavigation,
+) -> BTreeMap<usize, Vec<CitedBlock>> {
+    fn add_claim(
+        anchor: String,
+        label: String,
+        evidence: &[String],
+        navigation: &SourceNavigation,
+        cited: &mut BTreeMap<usize, BTreeMap<String, CitedBlock>>,
+    ) {
+        let block = CitedBlock { anchor, label };
+        for reference in evidence {
+            if let Some(locations) = navigation.evidence_locations.get(reference) {
+                for location in locations {
+                    cited
+                        .entry(*location)
+                        .or_default()
+                        .entry(block.anchor.clone())
+                        .or_insert_with(|| block.clone());
+                }
+            }
+        }
     }
+
+    fn add_steps(
+        steps: &[OperationStep],
+        path_prefix: &str,
+        navigation: &SourceNavigation,
+        cited: &mut BTreeMap<usize, BTreeMap<String, CitedBlock>>,
+    ) {
+        for (index, step) in steps.iter().enumerate() {
+            let path = step_path(path_prefix, index + 1);
+            add_claim(
+                step_anchor(step, &path),
+                format!("{}: {}", step.kind, step.meaning.text),
+                &step.meaning.evidence,
+                navigation,
+                cited,
+            );
+            add_steps(&step.children, &format!("{path}-then"), navigation, cited);
+            add_steps(&step.otherwise, &format!("{path}-else"), navigation, cited);
+        }
+    }
+
+    let mut cited = BTreeMap::<usize, BTreeMap<String, CitedBlock>>::new();
+    add_claim(
+        "summary".into(),
+        "Summary".into(),
+        &answer.summary.evidence,
+        navigation,
+        &mut cited,
+    );
+    add_steps(&answer.steps, "", navigation, &mut cited);
+    for predicate in &answer.predicates {
+        for claim in [
+            &predicate.meaning,
+            &predicate.source_check,
+            &predicate.evaluation,
+        ] {
+            add_claim(
+                format!("predicate-{}", predicate.id),
+                predicate.label.clone(),
+                &claim.evidence,
+                navigation,
+                &mut cited,
+            );
+        }
+    }
+    for preparation in &answer.preparations {
+        add_claim(
+            format!("preparation-{}", preparation.id),
+            preparation.title.clone(),
+            &preparation.summary.evidence,
+            navigation,
+            &mut cited,
+        );
+        add_steps(
+            &preparation.steps,
+            &preparation_step_prefix(&preparation.id),
+            navigation,
+            &mut cited,
+        );
+    }
+    cited
+        .into_iter()
+        .map(|(index, blocks)| (index, blocks.into_values().collect()))
+        .collect()
+}
+
+fn root_process_diagram(
+    packet: &Value,
+    answer: &OperationAnswer,
+    navigation: &SourceNavigation,
+) -> Option<ProcessDiagram> {
+    if packet["profile"] != "process-graph-v1" {
+        return None;
+    }
+
+    use super::process_flow::{Projection, ProjectionStep};
+
+    let root_id = packet["root"]["methodId"].as_str();
+    let root_symbol = packet["root"]["symbolIdentity"]
+        .as_str()
+        .unwrap_or("selected process root");
+    let mut source_reference = None;
+    let mut range = None;
+    let mut source_text = None;
+    let mut gap = None;
+
+    let root_methods: Vec<_> = packet["methods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|method| root_id.is_some_and(|root_id| method["id"].as_str() == Some(root_id)))
+        .collect();
+    let method = match root_id {
+        None | Some("") => {
+            gap = Some("ROOT_METHOD_ID_MISSING".to_owned());
+            None
+        }
+        Some(_) if root_methods.is_empty() => {
+            gap = Some("ROOT_METHOD_MATCH_MISSING".to_owned());
+            None
+        }
+        Some(_) if root_methods.len() > 1 => {
+            gap = Some("ROOT_METHOD_MATCH_AMBIGUOUS".to_owned());
+            None
+        }
+        Some(_) => root_methods.first().copied(),
+    };
+
+    if let Some(method) = method {
+        let method_symbol = method["symbolIdentity"].as_str();
+        if method_symbol != Some(root_symbol) {
+            gap = Some("ROOT_METHOD_IDENTITY_MISMATCH".into());
+        } else {
+            source_reference = method["body"]["sourceReference"]
+                .as_str()
+                .map(str::to_owned);
+            range = method["body"]["startByte"]
+                .as_u64()
+                .and_then(|start| usize::try_from(start).ok())
+                .zip(
+                    method["body"]["endByte"]
+                        .as_u64()
+                        .and_then(|end| usize::try_from(end).ok()),
+                );
+            if source_reference.is_none() {
+                gap = Some("ROOT_SOURCE_REFERENCE_MISSING".into());
+            } else if range.is_none() {
+                gap = Some("ROOT_SOURCE_BODY_RANGE_MISSING".into());
+            }
+        }
+    }
+
+    if gap.is_none()
+        && let Some(reference) = source_reference.as_deref()
+    {
+        let sources: Vec<_> = packet["methodSources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|source| source["reference"].as_str() == Some(reference))
+            .collect();
+        match sources.as_slice() {
+            [] => gap = Some("ROOT_SOURCE_METHOD_RECORD_MISSING".into()),
+            [source] => match source["text"].as_str() {
+                Some(text) => source_text = Some(text),
+                None => gap = Some("ROOT_SOURCE_TEXT_MISSING".into()),
+            },
+            _ => gap = Some("ROOT_SOURCE_METHOD_RECORD_AMBIGUOUS".into()),
+        }
+    }
+
+    let source_excerpt = source_text
+        .zip(range)
+        .and_then(|(text, (start, end))| text.get(start..end).map(str::to_owned));
+    if gap.is_none() && source_excerpt.is_none() {
+        gap = Some("ROOT_SOURCE_BODY_RANGE_INVALID".into());
+    }
+
+    let source_location_index = source_reference
+        .as_deref()
+        .zip(source_excerpt.as_deref())
+        .and_then(|(reference, excerpt)| {
+            let matches: Vec<_> = navigation
+                .evidence_locations
+                .get(reference)?
+                .iter()
+                .copied()
+                .filter(|index| navigation.locations[*index].excerpt == excerpt)
+                .collect();
+            if matches.len() == 1 {
+                Some(matches[0])
+            } else {
+                None
+            }
+        });
+    if gap.is_none() && source_location_index.is_none() {
+        gap = Some("ROOT_SOURCE_AUDIT_BINDING_UNAVAILABLE".into());
+    }
+
+    let projection = if let Some(reason) = gap {
+        let mut projection = Projection::source(root_symbol, root_symbol.to_owned(), Vec::new());
+        projection.noncausal = Some(reason);
+        projection
+    } else {
+        let text = source_text.expect("a successful source binding has retained text");
+        let expected_range = range.expect("a successful source binding has a body range");
+        match super::source_steps::method_body(text, root_symbol) {
+            Some(found_range) if found_range == expected_range => {
+                super::source_steps::projection(text, root_symbol).unwrap_or_else(|| {
+                    let mut projection =
+                        Projection::source(root_symbol, root_symbol.to_owned(), Vec::new());
+                    projection.noncausal = Some("SOURCE_ROOT_PROJECTION_UNSUPPORTED".into());
+                    projection
+                })
+            }
+            Some(_) => {
+                let mut projection =
+                    Projection::source(root_symbol, root_symbol.to_owned(), Vec::new());
+                projection.noncausal = Some("ROOT_SOURCE_RANGE_MISMATCH".into());
+                projection
+            }
+            None => {
+                let mut projection =
+                    Projection::source(root_symbol, root_symbol.to_owned(), Vec::new());
+                projection.noncausal =
+                    Some("ROOT_SOURCE_METHOD_SIGNATURE_UNMATCHED_OR_AMBIGUOUS".into());
+                projection
+            }
+        }
+    };
+    let title = format!("Source-local projection · {}", answer.title);
+    let validated = super::process_flow::validate_projection(projection);
+    let has_causal_projection = validated
+        .projection
+        .steps
+        .iter()
+        .any(|step| !matches!(step, ProjectionStep::Gap(_)));
+    let rendered = super::process_flow::render_validated(validated, &title)
+        .expect("source root projection always contains a causal step or explicit gap");
+
+    let source_anchor = source_location_index.map(|index| format!("source-{}", index + 1));
+    let provenance = format!(
+        "' CODECLEW_STATUS=DRAFT/UNREVIEWED/NOT_PUBLISHED\n' ORIGIN=SOURCE_LOCAL_NOT_EXECUTION_EVIDENCE\n' PACKET_DIGEST={}\n' ROOT_METHOD_ID={}\n' ROOT_SOURCE_REFERENCE={}\n' ROOT_SOURCE_EXCERPT={}\n",
+        packet["packetDigest"].as_str().unwrap_or("unavailable"),
+        plantuml_comment_text(root_id.unwrap_or("unavailable")),
+        plantuml_comment_text(source_reference.as_deref().unwrap_or("unavailable")),
+        plantuml_comment_text(
+            source_anchor
+                .as_deref()
+                .map(|anchor| format!("index.html#{anchor}"))
+                .as_deref()
+                .unwrap_or("unavailable")
+        )
+    );
+    Some(ProcessDiagram {
+        puml: format!("{provenance}{}", rendered.puml),
+        tree: rendered.tree,
+        source_reference,
+        source_anchor,
+        has_causal_projection,
+    })
+}
+
+fn render_process_diagram_html(
+    diagram: &ProcessDiagram,
+    _navigation: &SourceNavigation,
+    labels: ReaderLabels,
+) -> String {
+    let source_link = match (
+        diagram.source_reference.as_deref(),
+        diagram.source_anchor.as_deref(),
+    ) {
+        (Some(reference), Some(anchor)) => format!(
+            "<p><strong>{}:</strong> <a href=\"#{}\"><code>{}</code></a></p>",
+            html_escape(labels.source_link()),
+            html_escape(anchor),
+            html_escape(reference)
+        ),
+        (Some(reference), None) => format!(
+            "<p><strong>{}:</strong> <code>{}</code></p>",
+            html_escape(labels.source_link()),
+            html_escape(reference)
+        ),
+        _ => String::new(),
+    };
+    let causal_note = if diagram.has_causal_projection {
+        String::new()
+    } else if labels.russian {
+        "<p class=\"muted\">Причинный путь не подтверждён; диаграмма содержит только пробел свидетельств.</p>"
+            .to_owned()
+    } else {
+        "<p class=\"muted\">A causal path was not established; the diagram contains an evidence gap only.</p>"
+            .to_owned()
+    };
+    format!(
+        "<section id=\"source-process-projection\"><h2>{}</h2><p class=\"muted\">{}</p>{}<details><summary>{}</summary><pre><code>{}</code></pre></details><p><a href=\"{}\">{}</a></p>{}{}</section>",
+        html_escape(labels.process_projection()),
+        html_escape(labels.source_local_notice()),
+        causal_note,
+        html_escape(if labels.russian {
+            "Проекция исходного кода"
+        } else {
+            "Parsed source outline"
+        }),
+        html_escape(&diagram.tree),
+        PROCESS_DIAGRAM_PUML_FILE,
+        html_escape(labels.editable_plantuml()),
+        source_link,
+        PROCESS_DIAGRAM_HTML_MARKER
+    )
+}
+
+fn render_process_diagram_markdown(
+    diagram: &ProcessDiagram,
+    _navigation: &SourceNavigation,
+    labels: ReaderLabels,
+) -> String {
+    let mut output = format!(
+        "<a id=\"source-process-projection\"></a>\n## {}\n\n{}\n\n",
+        markdown_escape(labels.process_projection()),
+        markdown_escape(labels.source_local_notice())
+    );
+    output.push_str(&format!(
+        "### {}\n\n{}\n\n[{}]({})\n\n",
+        markdown_escape(if labels.russian {
+            "Проекция исходного кода"
+        } else {
+            "Parsed source outline"
+        }),
+        markdown_code_block(&diagram.tree),
+        markdown_escape(labels.editable_plantuml()),
+        PROCESS_DIAGRAM_PUML_FILE
+    ));
+    if let (Some(reference), Some(anchor)) = (
+        diagram.source_reference.as_deref(),
+        diagram.source_anchor.as_deref(),
+    ) {
+        output.push_str(&format!(
+            "**{}:** [`{}`](#{anchor})\n\n",
+            markdown_escape(labels.source_link()),
+            markdown_code_cell(reference)
+        ));
+    }
+    if !diagram.has_causal_projection {
+        output.push_str(&format!(
+            "_{}_\n\n",
+            markdown_escape(if labels.russian {
+                "Причинный путь не подтверждён; диаграмма содержит только пробел свидетельств."
+            } else {
+                "A causal path was not established; the diagram contains an evidence gap only."
+            })
+        ));
+    }
+    output.push_str(PROCESS_DIAGRAM_MARKDOWN_MARKER);
+    output.push_str("\n\n");
+    output
+}
+
+pub(super) fn diagram_svg_status_html(available: bool, reason: Option<&str>) -> String {
+    if available {
+        format!(
+            "<p><a href=\"{}\">Rendered SVG</a></p>",
+            PROCESS_DIAGRAM_SVG_FILE
+        )
+    } else {
+        format!(
+            "<p class=\"muted\">SVG unavailable: {}</p>",
+            html_escape(reason.unwrap_or("PlantUML did not produce an SVG."))
+        )
+    }
+}
+
+pub(super) fn diagram_svg_status_markdown(available: bool, reason: Option<&str>) -> String {
+    if available {
+        format!("[Rendered SVG]({})", PROCESS_DIAGRAM_SVG_FILE)
+    } else {
+        format!(
+            "_{}: {}_",
+            markdown_escape("SVG unavailable"),
+            markdown_escape(reason.unwrap_or("PlantUML did not produce an SVG."))
+        )
+    }
+}
+
+fn plantuml_comment_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '\u{0085}' | '\u{2028}' | '\u{2029}' => ' ',
+            ch if ch.is_control() => ' ',
+            ch => ch,
+        })
+        .collect()
 }
 
 fn audit_digest_matches(audit: &Value) -> bool {
@@ -2729,6 +3271,7 @@ fn render_html(
     evidence_index: &BTreeMap<String, usize>,
     used_labels: &BTreeSet<String>,
     source_navigation: &SourceNavigation,
+    process_diagram: Option<&ProcessDiagram>,
     labels: ReaderLabels,
 ) -> String {
     let language = packet["documentationLanguage"].as_str().unwrap_or("en");
@@ -2769,6 +3312,11 @@ fn render_html(
         "ordered-behavior",
         labels.ordered(packet["profile"] == "process-graph-v1"),
     ));
+    nav.push(("process-outline", labels.process_outline()));
+    nav.push(("authored-pseudocode", labels.tree_reference()));
+    if process_diagram.is_some() {
+        nav.push(("source-process-projection", labels.process_projection()));
+    }
     if !preparations.is_empty() {
         nav.push(("preparations", labels.preparations()));
     }
@@ -2793,12 +3341,37 @@ fn render_html(
             .join(" · ")
     ));
     html.push_str(&render_uncertainties_html(answer, labels));
+    html.push_str(&render_process_outline_html(answer, labels));
     html.push_str(&render_glossary_html(
         answer,
         packet,
         evidence_index,
         labels,
     ));
+    html.push_str(&format!(
+        "<section id=\"authored-pseudocode\"><h2>{}</h2><p class=\"muted\">{}</p><figure class=\"step-tree\">{}</figure></section>",
+        html_escape(labels.tree_reference()),
+        html_escape(if labels.russian {
+            "Структура и порядок ветвей повторяют переданные шаги ответа."
+        } else {
+            "Structure and branch order follow the supplied answer steps."
+        }),
+        render_tree_html(
+            &answer.steps,
+            answer,
+            evidence_index,
+            &preparation_titles,
+            "",
+            labels
+        )
+    ));
+    if let Some(diagram) = process_diagram {
+        html.push_str(&render_process_diagram_html(
+            diagram,
+            source_navigation,
+            labels,
+        ));
+    }
     html.push_str("<section id=\"ordered-behavior\"><h2>");
     html.push_str(&html_escape(
         labels.ordered(packet["profile"] == "process-graph-v1"),
@@ -2853,12 +3426,6 @@ fn render_html(
         ));
     }
     html.push_str(&format!(
-        "<details class=\"step-tree-reference\"><summary>{}</summary><figure class=\"step-tree\"><figcaption>{}</figcaption>{}</figure></details>",
-        html_escape(labels.tree_reference()),
-        html_escape(if labels.russian { "Построено из переданных шагов ответа" } else { "Derived from the supplied answer steps" }),
-        render_tree_html(&answer.steps, answer, evidence_index, &preparation_titles, labels)
-    ));
-    html.push_str(&format!(
         "<details class=\"packet-limits-reference\"><summary>{}</summary>{}</details>",
         html_escape(labels.packet_limits_reference()),
         render_packet_limits_html(packet, labels)
@@ -2876,6 +3443,7 @@ fn render_markdown(
     evidence_index: &BTreeMap<String, usize>,
     used_labels: &BTreeSet<String>,
     source_navigation: &SourceNavigation,
+    process_diagram: Option<&ProcessDiagram>,
     labels: ReaderLabels,
 ) -> String {
     let preparation_titles = preparation_titles(answer);
@@ -2901,6 +3469,20 @@ fn render_markdown(
         "[ {} ](#ordered-behavior)",
         markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1"))
     ));
+    nav.push(format!(
+        "[ {} ](#process-outline)",
+        markdown_escape(labels.process_outline())
+    ));
+    nav.push(format!(
+        "[ {} ](#authored-pseudocode)",
+        markdown_escape(labels.tree_reference())
+    ));
+    if process_diagram.is_some() {
+        nav.push(format!(
+            "[ {} ](#source-process-projection)",
+            markdown_escape(labels.process_projection())
+        ));
+    }
     if !preparations.is_empty() {
         nav.push(format!(
             "[ {} ](#preparations)",
@@ -2930,12 +3512,39 @@ fn render_markdown(
         nav.join(" · ")
     );
     markdown.push_str(&render_uncertainties_markdown(answer, labels));
+    markdown.push_str(&render_process_outline_markdown(answer, labels));
     markdown.push_str(&render_glossary_markdown(
         answer,
         packet,
         evidence_index,
         labels,
     ));
+    markdown.push_str(&format!(
+        "<a id=\"authored-pseudocode\"></a>\n## {}\n\n{}\n\n",
+        markdown_escape(labels.tree_reference()),
+        if labels.russian {
+            "Структура и порядок ветвей повторяют переданные шаги ответа."
+        } else {
+            "Structure and branch order follow the supplied answer steps."
+        }
+    ));
+    markdown.push_str(&render_tree_markdown(
+        &answer.steps,
+        answer,
+        evidence_index,
+        &preparation_titles,
+        "",
+        0,
+        labels,
+    ));
+    markdown.push('\n');
+    if let Some(diagram) = process_diagram {
+        markdown.push_str(&render_process_diagram_markdown(
+            diagram,
+            source_navigation,
+            labels,
+        ));
+    }
     markdown.push_str(&format!(
         "<a id=\"ordered-behavior\"></a>\n## {}\n\n",
         markdown_escape(labels.ordered(packet["profile"] == "process-graph-v1"))
@@ -2997,11 +3606,7 @@ fn render_markdown(
         used_labels,
         labels,
     ));
-    markdown.push_str(&format!(
-        "### {}\n\n{}\n\n</details>\n",
-        markdown_escape(labels.tree_reference()),
-        markdown_tree_block(&answer.steps, &preparation_titles, labels)
-    ));
+    markdown.push_str("</details>\n");
     markdown
 }
 
@@ -3425,6 +4030,43 @@ fn step_anchor(step: &OperationStep, path: &str) -> String {
         .unwrap_or_else(|| format!("step-{path}"))
 }
 
+fn render_process_outline_html(answer: &OperationAnswer, labels: ReaderLabels) -> String {
+    let mut output = format!(
+        "<section id=\"process-outline\"><h2>{}</h2><ol class=\"process-outline\">",
+        html_escape(labels.process_outline())
+    );
+    for (index, step) in answer.steps.iter().enumerate() {
+        let path = step_path("", index + 1);
+        output.push_str(&format!(
+            "<li><a href=\"#{}\"><span class=\"step-kind\">{}</span> {}</a></li>",
+            html_escape(&step_anchor(step, &path)),
+            html_escape(&step.kind),
+            html_escape(&step.meaning.text)
+        ));
+    }
+    output.push_str("</ol></section>");
+    output
+}
+
+fn render_process_outline_markdown(answer: &OperationAnswer, labels: ReaderLabels) -> String {
+    let mut output = format!(
+        "<a id=\"process-outline\"></a>\n## {}\n\n",
+        markdown_escape(labels.process_outline())
+    );
+    for (index, step) in answer.steps.iter().enumerate() {
+        let path = step_path("", index + 1);
+        output.push_str(&format!(
+            "{}. [**{}:** {}](#{})\n",
+            index + 1,
+            markdown_escape(&step.kind),
+            markdown_escape(&step.meaning.text),
+            step_anchor(step, &path)
+        ));
+    }
+    output.push('\n');
+    output
+}
+
 fn predicate_for_step<'a>(
     step: &OperationStep,
     predicates: &'a [Predicate],
@@ -3472,17 +4114,22 @@ fn render_tree_html(
     answer: &OperationAnswer,
     evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
+    path_prefix: &str,
     labels: ReaderLabels,
 ) -> String {
     if steps.is_empty() {
         return String::from("<p class=\"muted\">No steps supplied.</p>");
     }
     let mut output = String::from("<ul class=\"tree-root\">");
-    for step in steps {
-        output.push_str("<li><div class=\"tree-node\"><span class=\"step-kind\">");
-        output.push_str(&html_escape(&step.kind));
-        output.push_str("</span> ");
-        output.push_str(&html_escape(&step.meaning.text));
+    for (index, step) in steps.iter().enumerate() {
+        let path = step_path(path_prefix, index + 1);
+        let anchor = step_anchor(step, &path);
+        output.push_str(&format!(
+            "<li><div class=\"tree-node\"><a class=\"pseudocode-link\" href=\"#{}\"><span class=\"step-kind\">{}</span> {}</a>",
+            html_escape(&anchor),
+            html_escape(&step.kind),
+            html_escape(&step.meaning.text)
+        ));
         output.push_str(&render_evidence_html(
             &step.meaning.evidence,
             evidence_index,
@@ -3497,12 +4144,21 @@ fn render_tree_html(
             &answer.glossary,
             labels,
         ));
-        output.push_str(&render_step_metadata_html(step, labels));
+        if answer.schema != ANSWER_SCHEMA_V1_2 {
+            output.push_str(&render_step_metadata_html(step, labels));
+        }
         output.push_str(&render_preparation_links_html(
             &step.preparation_refs,
             preparation_titles,
             labels,
         ));
+        if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
+            output.push_str(&format!(
+                "<p class=\"claim-uncertainty\"><strong>{}:</strong> {}</p>",
+                html_escape(labels.uncertainty()),
+                html_escape(uncertainty)
+            ));
+        }
         if !step.children.is_empty() {
             output.push_str(&format!(
                 "</div><div class=\"tree-branch-label\">{}</div>{}",
@@ -3512,6 +4168,7 @@ fn render_tree_html(
                     answer,
                     evidence_index,
                     preparation_titles,
+                    &format!("{path}-then"),
                     labels
                 )
             ));
@@ -3527,6 +4184,7 @@ fn render_tree_html(
                     answer,
                     evidence_index,
                     preparation_titles,
+                    &format!("{path}-else"),
                     labels
                 )
             ));
@@ -3537,99 +4195,79 @@ fn render_tree_html(
     output
 }
 
-fn render_tree_text(
+fn render_tree_markdown(
     steps: &[OperationStep],
+    answer: &OperationAnswer,
+    evidence_index: &BTreeMap<String, usize>,
     preparation_titles: &BTreeMap<String, String>,
+    path_prefix: &str,
+    depth: usize,
     labels: ReaderLabels,
 ) -> String {
-    fn append(
-        steps: &[OperationStep],
-        depth: usize,
-        label: Option<&str>,
-        lines: &mut Vec<String>,
-        preparation_titles: &BTreeMap<String, String>,
-        labels: ReaderLabels,
-    ) {
-        if let Some(label) = label {
-            lines.push(format!("{}[{}]", "  ".repeat(depth), label));
-        }
-        for (index, step) in steps.iter().enumerate() {
-            let branch = if index + 1 == steps.len() {
-                "└─"
+    let mut output = String::new();
+    let indent = "   ".repeat(depth);
+    for (index, step) in steps.iter().enumerate() {
+        let path = step_path(path_prefix, index + 1);
+        let anchor = step_anchor(step, &path);
+        let mut glossary_refs = step.glossary_refs.clone();
+        glossary_refs.extend(step.meaning.glossary_refs.iter().cloned());
+        glossary_refs.sort();
+        glossary_refs.dedup();
+        output.push_str(&format!(
+            "{indent}- [**{}:** {}](#{}){}{}{}{}\n",
+            markdown_escape(&step.kind),
+            markdown_escape(&step.meaning.text),
+            anchor,
+            render_evidence_markdown(&step.meaning.evidence, evidence_index, labels),
+            render_glossary_links_markdown(&glossary_refs, &answer.glossary, labels),
+            render_preparation_links_markdown(&step.preparation_refs, preparation_titles, labels),
+            if answer.schema != ANSWER_SCHEMA_V1_2
+                && (step.from.is_some() || step.to.is_some() || step.interaction.is_some())
+            {
+                format!("  {}", markdown_step_metadata(step, labels))
             } else {
-                "├─"
-            };
-            let preparation_links = step
-                .preparation_refs
-                .iter()
-                .filter_map(|reference| preparation_titles.get(reference))
-                .map(|title| format!("{}: {}", labels.preparation_reference(), title))
-                .collect::<Vec<_>>();
-            let preparation_suffix = if preparation_links.is_empty() {
                 String::new()
-            } else {
-                format!(" [{}]", preparation_links.join("; "))
-            };
-            lines.push(format!(
-                "{}{} {}: {}{}",
-                "  ".repeat(depth),
-                branch,
-                step.kind,
-                tree_plain_text(&step.meaning.text)
-                    .replace('\n', " ")
-                    .trim(),
-                format!("{}{}", tree_metadata(step), preparation_suffix)
+            }
+        ));
+        if let Some(uncertainty) = step.meaning.uncertainty.as_deref() {
+            output.push_str(&format!(
+                "{indent}  - **{}:** {}\n",
+                markdown_escape(labels.uncertainty()),
+                markdown_escape(uncertainty)
             ));
-            if !step.children.is_empty() {
-                append(
-                    &step.children,
-                    depth + 1,
-                    Some(labels.children_label(&step.kind)),
-                    lines,
-                    preparation_titles,
-                    labels,
-                );
-            }
-            if !step.otherwise.is_empty() {
-                append(
-                    &step.otherwise,
-                    depth + 1,
-                    Some(labels.otherwise_label(&step.kind)),
-                    lines,
-                    preparation_titles,
-                    labels,
-                );
-            }
         }
-    }
-    let mut lines = Vec::new();
-    append(steps, 0, None, &mut lines, preparation_titles, labels);
-    lines.join("\n")
-}
-
-fn tree_plain_text(value: &str) -> String {
-    value.replace("\r", " ").replace('\t', " ")
-}
-
-fn tree_metadata(step: &OperationStep) -> String {
-    let mut values = Vec::new();
-    for (name, value) in [
-        ("from", step.from.as_deref()),
-        ("to", step.to.as_deref()),
-        ("interaction", step.interaction.as_deref()),
-    ] {
-        if let Some(value) = value {
-            values.push(format!(
-                "{name}={}",
-                tree_plain_text(value).replace('\n', " ")
+        if !step.children.is_empty() {
+            output.push_str(&format!(
+                "{indent}  **{}:**\n",
+                markdown_escape(labels.children_label(&step.kind))
+            ));
+            output.push_str(&render_tree_markdown(
+                &step.children,
+                answer,
+                evidence_index,
+                preparation_titles,
+                &format!("{path}-then"),
+                depth + 1,
+                labels,
+            ));
+        }
+        if !step.otherwise.is_empty() {
+            output.push_str(&format!(
+                "{indent}  **{}:**\n",
+                markdown_escape(labels.otherwise_label(&step.kind))
+            ));
+            output.push_str(&render_tree_markdown(
+                &step.otherwise,
+                answer,
+                evidence_index,
+                preparation_titles,
+                &format!("{path}-else"),
+                depth + 1,
+                labels,
             ));
         }
     }
-    if values.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", values.join(", "))
-    }
+    output
 }
 
 fn render_markdown_steps(
@@ -4805,6 +5443,23 @@ fn render_source_locations_html(navigation: &SourceNavigation, labels: ReaderLab
                 html_escape(&location.excerpt)
             ));
         }
+        if let Some(blocks) = navigation.citing_blocks.get(&index)
+            && !blocks.is_empty()
+        {
+            output.push_str(&format!(
+                "<p class=\"source-citations\"><strong>{}:</strong> {}</p>",
+                html_escape(labels.cited_by_process()),
+                blocks
+                    .iter()
+                    .map(|block| format!(
+                        "<a href=\"#{}\">{}</a>",
+                        html_escape(&block.anchor),
+                        html_escape(&block.label)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            ));
+        }
         output.push_str("</li>");
     }
     output.push_str("</ol></section>");
@@ -4837,6 +5492,20 @@ fn render_source_locations_markdown(navigation: &SourceNavigation, labels: Reade
                     "View retained excerpt"
                 }),
                 markdown_code_block(&location.excerpt)
+            ));
+        }
+        if let Some(blocks) = navigation.citing_blocks.get(&index)
+            && !blocks.is_empty()
+        {
+            let links = blocks
+                .iter()
+                .map(|block| format!("[{}](#{})", markdown_escape(&block.label), block.anchor))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            output.push_str(&format!(
+                "\n**{}:** {}\n",
+                markdown_escape(labels.cited_by_process()),
+                links
             ));
         }
     }
@@ -4875,15 +5544,6 @@ fn value_text(value: &Value) -> String {
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[unavailable]".into())
-}
-
-fn markdown_tree_block(
-    steps: &[OperationStep],
-    preparation_titles: &BTreeMap<String, String>,
-    labels: ReaderLabels,
-) -> String {
-    let tree = render_tree_text(steps, preparation_titles, labels);
-    markdown_code_block(&tree)
 }
 
 fn markdown_code_block(text: &str) -> String {
@@ -5057,6 +5717,51 @@ mod tests {
         packet.as_object_mut().unwrap().remove("packetDigest");
         let packet_digest = crate::documentation::digest(packet).unwrap();
         packet["packetDigest"] = json!(packet_digest);
+    }
+
+    fn process_packet(source: &str, symbol: &str) -> (Value, Value) {
+        let (start, end) = super::super::source_steps::method_body(source, symbol).unwrap();
+        let mut packet = packet();
+        packet["profile"] = json!("process-graph-v1");
+        packet["citations"]["source-root"] = json!("retained source for selected root");
+        packet["root"] = json!({"methodId":"root-method","symbolIdentity":symbol});
+        packet["methods"] = json!([{
+            "id":"root-method",
+            "symbolIdentity":symbol,
+            "body":{
+                "sourceReference":"source-root",
+                "startByte":start,
+                "endByte":end,
+                "evidence":["source-root"]
+            }
+        }]);
+        packet["methodSources"] = json!([{
+            "reference":"source-root",
+            "authority":"TRANSFORMED_SOURCE",
+            "text":source,
+            "evidence":["source-root"]
+        }]);
+        seal(&mut packet);
+
+        let mut audit = audit(&packet);
+        audit["records"] = json!([{
+            "label":"source-root",
+            "kind":"SOURCE",
+            "id":"source-root-id",
+            "row":{"record":{
+                "file":"Demo.java",
+                "startLine":1,
+                "endLine":source.lines().count(),
+                "text":source
+            }}
+        }]);
+        seal_audit(&mut audit);
+        (packet, audit)
+    }
+
+    fn rebind_audit(packet: &Value, audit: &mut Value) {
+        audit["packetDigest"] = packet["packetDigest"].clone();
+        seal_audit(audit);
     }
 
     fn simple_answer(packet: &Value, evidence: &str) -> Value {
@@ -5273,6 +5978,19 @@ mod tests {
             remaining = after_id;
         }
         ids
+    }
+
+    fn html_fragment_links(document: &str) -> Vec<String> {
+        let mut links = Vec::new();
+        let mut remaining = document;
+        while let Some((_, after_key)) = remaining.split_once("href=\"#") {
+            let Some((id, after_id)) = after_key.split_once('"') else {
+                break;
+            };
+            links.push(id.to_owned());
+            remaining = after_id;
+        }
+        links
     }
 
     #[test]
@@ -6086,11 +6804,16 @@ mod tests {
         );
         let primary_end = rendered.html.find("class=\"technical-details\"").unwrap();
         let primary = &rendered.html[..primary_end];
-        let before = primary.find("Before selection.").unwrap();
-        let alpha = primary.find("Condition alpha holds.").unwrap();
-        let beta = primary.find("Condition beta holds.").unwrap();
-        let gamma = primary.find("Condition gamma holds.").unwrap();
-        let after = primary.find("After the selection boundary.").unwrap();
+        let pseudocode_start = primary
+            .find("<section id=\"authored-pseudocode\">")
+            .unwrap();
+        let ordered_start = primary.find("<section id=\"ordered-behavior\">").unwrap();
+        let pseudocode = &primary[pseudocode_start..ordered_start];
+        let before = pseudocode_start + pseudocode.find("Before selection.").unwrap();
+        let alpha = pseudocode_start + pseudocode.find("Condition alpha holds.").unwrap();
+        let beta = pseudocode_start + pseudocode.find("Condition beta holds.").unwrap();
+        let gamma = pseudocode_start + pseudocode.find("Condition gamma holds.").unwrap();
+        let after = pseudocode_start + pseudocode.find("After the selection boundary.").unwrap();
         assert!(before < alpha && alpha < beta && beta < gamma && gamma < after);
         assert!(
             primary
@@ -6124,7 +6847,7 @@ mod tests {
         assert!(rendered.html.contains("Catch / otherwise path"));
         assert!(rendered.html.contains("Otherwise / exit path"));
         assert!(rendered.markdown.contains("#step-2-else-1-then-1"));
-        assert!(rendered.markdown.contains("Record alpha failure."));
+        assert!(rendered.markdown.contains("Record alpha failure\\."));
     }
 
     #[test]
@@ -6315,5 +7038,128 @@ mod tests {
                 .contains("&lt;script&gt;alert(1)&lt;/script&gt;")
         );
         assert!(rendered.html.contains("&lt;img src=x onerror=alert(1)&gt;"));
+    }
+
+    #[test]
+    fn version_1_2_process_outline_pseudocode_and_evidence_links_preserve_authored_bytes() {
+        let packet = packet();
+        let authored = semantic_answer(&packet);
+        let original_bytes = crate::documentation::bytes(&authored).unwrap();
+        let rendered = validate_and_render_draft(&packet, &audit(&packet), authored).unwrap();
+
+        assert_eq!(
+            crate::documentation::bytes(&rendered.answer).unwrap(),
+            original_bytes
+        );
+        assert!(rendered.html.contains("DRAFT / UNREVIEWED / NOT PUBLISHED"));
+        let glossary = rendered.html.find("id=\"glossary\"").unwrap();
+        let pseudocode = rendered.html.find("id=\"authored-pseudocode\"").unwrap();
+        assert!(pseudocode > glossary);
+        assert!(rendered.html.contains("id=\"process-outline\""));
+        assert!(rendered.html.contains("href=\"#block-valid-branch\""));
+        assert!(rendered.html.contains("href=\"#preparation-shared\""));
+        assert!(
+            rendered
+                .html
+                .contains("The runtime request value is not present in the packet.")
+        );
+        let pseudocode_text = &rendered.html[pseudocode..];
+        let accepted = pseudocode_text
+            .find("Continue with the accepted request.")
+            .unwrap();
+        let alternate = pseudocode_text.find("Check the retry outcome.").unwrap();
+        assert!(
+            accepted < alternate,
+            "then branch must precede otherwise branch"
+        );
+
+        let ids = html_ids(&rendered.html);
+        for target in html_fragment_links(&rendered.html) {
+            assert_eq!(
+                ids.iter().filter(|id| *id == &target).count(),
+                1,
+                "fragment link #{target} must resolve exactly once"
+            );
+        }
+        for anchor in [
+            "summary",
+            "block-valid-branch",
+            "predicate-details",
+            "preparation-shared",
+        ] {
+            assert!(rendered.html.contains(&format!("<a href=\"#{anchor}\"")));
+        }
+    }
+
+    #[test]
+    fn selected_root_source_projection_uses_one_validated_tree_for_early_return_and_following_action()
+     {
+        let source = "class Demo {\n  void run() {\n    if (done) {\n      return;\n    }\n    this.finish();\n  }\n}\n";
+        let symbol = "method:class:demo.Handler#run()V";
+        let (packet, audit) = process_packet(source, symbol);
+        let mut answer = simple_answer(&packet, "source-root");
+        answer["summary"]["text"] = json!("The selected root has a guarded early return.");
+        let rendered = validate_and_render(&packet, &audit, answer).unwrap();
+        let diagram = rendered.process_diagram.as_ref().unwrap();
+
+        assert!(diagram.has_causal_projection);
+        assert!(diagram.tree.contains("[D] if (done) then"));
+        let tree_return = diagram.tree.find("return").unwrap();
+        let tree_action = diagram.tree.find("finish").unwrap();
+        assert!(tree_return < tree_action);
+        assert!(diagram.puml.contains("if (done) then (yes)"));
+        let puml_return = diagram.puml.find("return").unwrap();
+        let puml_action = diagram.puml.find("finish").unwrap();
+        assert!(puml_return < puml_action);
+        assert!(
+            diagram
+                .puml
+                .contains("ORIGIN=SOURCE_LOCAL_NOT_EXECUTION_EVIDENCE")
+        );
+        assert!(rendered.html.contains("Parsed source outline"));
+        assert!(rendered.html.contains("Process blocks citing this excerpt"));
+        assert!(rendered.html.contains("href=\"#summary\""));
+        assert!(rendered.html.contains("href=\"#step-1\""));
+        assert!(rendered.html.contains("href=\"#source-"));
+    }
+
+    #[test]
+    fn missing_ambiguous_and_unsupported_root_projection_emit_gap_only_diagrams() {
+        let symbol = "method:class:demo.Handler#run()V";
+        let source = "class Demo {\n  void run() {\n    this.finish();\n  }\n}\n";
+        let (valid_packet, valid_audit) = process_packet(source, symbol);
+        let mut cases = Vec::new();
+
+        let mut missing = valid_packet.clone();
+        missing["methods"] = json!([]);
+        seal(&mut missing);
+        let mut missing_audit = valid_audit.clone();
+        rebind_audit(&missing, &mut missing_audit);
+        cases.push((missing, missing_audit, "ROOT_METHOD_MATCH_MISSING"));
+
+        let mut ambiguous = valid_packet.clone();
+        ambiguous["methods"] = json!([valid_packet["methods"][0], valid_packet["methods"][0]]);
+        seal(&mut ambiguous);
+        let mut ambiguous_audit = valid_audit.clone();
+        rebind_audit(&ambiguous, &mut ambiguous_audit);
+        cases.push((ambiguous, ambiguous_audit, "ROOT_METHOD_MATCH_AMBIGUOUS"));
+
+        let unsupported = "class Demo {\n  void run() {\n    try {\n      this.finish();\n    } catch (Exception error) {\n      return;\n    }\n  }\n}\n";
+        let (unsupported_packet, unsupported_audit) = process_packet(unsupported, symbol);
+        cases.push((
+            unsupported_packet,
+            unsupported_audit,
+            "SOURCE_CONTROL_UNSUPPORTED:try",
+        ));
+
+        for (packet, audit, reason) in cases {
+            let rendered =
+                validate_and_render(&packet, &audit, simple_answer(&packet, "source-root"))
+                    .unwrap();
+            let diagram = rendered.process_diagram.as_ref().unwrap();
+            assert!(!diagram.has_causal_projection, "{reason}");
+            assert!(diagram.puml.contains(reason), "{}", diagram.puml);
+            assert!(!diagram.puml.contains("start\n:Entry:"), "{}", diagram.puml);
+        }
     }
 }
