@@ -8,7 +8,7 @@ use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const RULE_VERSION: &str = "local-calls-control/2";
+pub const RULE_VERSION: &str = "local-calls-control/3";
 fn preview_text(value: &str, maximum_bytes: usize) -> String {
     if value.len() <= maximum_bytes {
         return value.to_owned();
@@ -31,34 +31,6 @@ pub fn public_boundary(entry: &Entrypoint) -> bool {
             .get("frameworkDeclarations")
             .and_then(Value::as_array)
             .is_some_and(|v| !v.is_empty())
-}
-fn accessor_or_synthetic(symbol: &str) -> bool {
-    let s = symbol;
-    let accessor_prefix = |prefix: &str| {
-        s.len() > prefix.len()
-            && s.starts_with(prefix)
-            && s[prefix.len()..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase())
-    };
-    matches!(
-        s,
-        "equals"
-            | "hashCode"
-            | "toString"
-            | "clone"
-            | "getClass"
-            | "compareTo"
-            | "compare"
-            | "builder"
-            | "build"
-            | "toBuilder"
-    ) || accessor_prefix("get")
-        || accessor_prefix("set")
-        || accessor_prefix("is")
-        || accessor_prefix("has")
-        || accessor_prefix("with")
 }
 fn scope(observation: &Observation) -> &str {
     observation.normalized["scope"].as_str().unwrap_or("")
@@ -144,7 +116,6 @@ pub fn catalog(
     let mut records = Vec::new();
     let mut unavailable = 0;
     let mut suppressed = 0;
-    let mut accessor_filtered = 0;
     let mut unavailable_scopes = BTreeSet::new();
     for declaration in &declarations {
         let id = declaration["id"].as_str().unwrap();
@@ -222,7 +193,6 @@ pub fn catalog(
             }
         }
         let mut reasons = Vec::new();
-        let accessor = accessor_or_synthetic(declaration["name"].as_str().unwrap_or(""));
         if declaration["dependencyIds"]
             .as_array()
             .unwrap()
@@ -248,10 +218,10 @@ pub fn catalog(
         if !trigger_ids.is_empty() {
             reasons.push("DISCOVERED_TRIGGER");
         }
-        if !accessor && targets.len() >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
+        if targets.len() >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
             reasons.push("INTERNAL_ORCHESTRATION_CANDIDATE");
         }
-        if !accessor && lexical_calls >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
+        if lexical_calls >= 2 && controls > 0 && declaration["status"] != "AMBIGUOUS" {
             reasons.push("LEXICAL_ORCHESTRATION_CANDIDATE");
             gaps.insert("LEXICAL_CALL_TARGETS_UNRESOLVED".into());
         }
@@ -260,9 +230,6 @@ pub fn catalog(
             unavailable_scopes.insert(scope.to_owned());
         }
         if reasons.is_empty() {
-            if accessor {
-                accessor_filtered += 1;
-            }
             continue;
         }
         if suppress.contains(&format!("{}@{}", scope, observation.symbol)) {
@@ -314,7 +281,7 @@ pub fn catalog(
         "consideredCallableCount":declarations.len(),"candidateCount":records.len(),
         "triggerCandidateCount":triggers,"internalCandidateCount":internal,
         "suppressedCount":suppressed,
-        "accessorFilteredCount":accessor_filtered,
+        "accessorFilteredCount":0,
         "flowUnavailableCount":unavailable,
         "unavailableScopeCount":unavailable_scopes.len(),
         "unavailableScopes":unavailable_scopes.iter().take(8).map(|scope|preview_text(scope,128)).collect::<Vec<_>>(),
@@ -609,31 +576,8 @@ mod tests {
         );
     }
     #[test]
-    fn accessor_symbols_are_not_nominated_as_orchestration_candidates() {
+    fn generic_get_set_is_methods_with_distinct_local_targets_are_candidates() {
         let mut e = evidence();
-        add_method(
-            &mut e,
-            "obj-equals",
-            ":obj",
-            "equals",
-            Some(orchestration()),
-        );
-        add_method(
-            &mut e,
-            "obj-getname",
-            ":obj",
-            "getName",
-            Some(orchestration()),
-        );
-        add_method(
-            &mut e,
-            "worker-run",
-            ":worker",
-            "run",
-            Some(orchestration()),
-        );
-        // orchestration() CALL targets find/dispatch must be declared callables so
-        // "run" resolves 2 local targets and is nominated as an orchestration candidate.
         add_method(&mut e, "worker-find", ":worker", "find", Some(vec![]));
         add_method(
             &mut e,
@@ -642,29 +586,120 @@ mod tests {
             "dispatch",
             Some(vec![]),
         );
-        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
-        let ids: Vec<_> = result
-            .records
-            .iter()
-            .map(|r| r["id"].as_str().unwrap())
-            .collect();
-        assert_eq!(ids, vec!["worker-run"]);
-        assert_eq!(result.summary["accessorFilteredCount"], 2);
-    }
-    #[test]
-    fn accessor_is_preserved_when_declared_as_explicit_root() {
-        let mut e = evidence();
+        let events = Some(orchestration());
+        add_method_named(
+            &mut e,
+            "worker-get-state",
+            ":worker",
+            "method:class:Worker#getState()Ljava/lang/String;",
+            "getState",
+            events.clone(),
+        );
         add_method(
             &mut e,
-            "obj-equals",
-            ":obj",
-            "equals",
-            Some(orchestration()),
+            "worker-set-state",
+            ":worker",
+            "setState",
+            events.clone(),
         );
-        let declared =
-            catalog(&e, &BTreeSet::from(["obj-equals".into()]), &BTreeSet::new()).unwrap();
+        add_method(&mut e, "worker-is-active", ":worker", "isActive", events);
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        let ids: BTreeSet<_> = result
+            .records
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                "worker-get-state".to_owned(),
+                "worker-is-active".to_owned(),
+                "worker-set-state".to_owned(),
+            ])
+        );
+        assert!(result.records.iter().all(|record| {
+            record["localCallTargetCount"] == 2
+                && record["reasons"] == json!(["INTERNAL_ORCHESTRATION_CANDIDATE"])
+        }));
+        assert_eq!(result.summary["accessorFilteredCount"], 0);
+    }
+    #[test]
+    fn lexical_getter_with_loop_and_unresolved_calls_keeps_evidence_gap() {
+        let mut e = evidence();
+        add_method_named(
+            &mut e,
+            "worker-get-from",
+            ":worker",
+            "method:class:Worker#getFrom()Ljava/lang/Object;",
+            "getFrom",
+            Some(vec![
+                json!({"kind":"LOOP","authority":"SYNTAX"}),
+                json!({"kind":"CALL","authority":"SYNTAX","targetStatus":"UNRESOLVED"}),
+                json!({"kind":"CALL","authority":"SYNTAX","targetStatus":"UNRESOLVED"}),
+            ]),
+        );
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        assert_eq!(result.records.len(), 1);
+        assert_eq!(result.records[0]["id"], "worker-get-from");
+        assert_eq!(
+            result.records[0]["reasons"],
+            json!(["LEXICAL_ORCHESTRATION_CANDIDATE"])
+        );
+        assert_eq!(result.records[0]["lexicalCallSiteCount"], 2);
+        assert_eq!(result.records[0]["localCallTargetCount"], 0);
+        assert_eq!(result.records[0]["status"], "NEEDS_EVIDENCE");
+        assert!(
+            result.records[0]["gaps"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("LEXICAL_CALL_TARGETS_UNRESOLVED"))
+        );
+        assert_eq!(result.summary["accessorFilteredCount"], 0);
+    }
+    #[test]
+    fn trivial_and_single_target_accessors_remain_below_threshold() {
+        let mut e = evidence();
+        add_method(&mut e, "worker-find", ":worker", "find", Some(vec![]));
+        add_method(&mut e, "worker-get", ":worker", "getFlag", Some(vec![]));
+        add_method(
+            &mut e,
+            "worker-set",
+            ":worker",
+            "setFlag",
+            Some(vec![
+                json!({"kind":"IF"}),
+                json!({"kind":"CALL","target":"find"}),
+            ]),
+        );
+        add_method(
+            &mut e,
+            "worker-is",
+            ":worker",
+            "isReady",
+            Some(vec![
+                json!({"kind":"IF"}),
+                json!({"kind":"CALL","target":"find"}),
+                json!({"kind":"CALL","target":"find"}),
+            ]),
+        );
+        let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        assert!(result.records.is_empty());
+        assert_eq!(result.summary["candidateCount"], 0);
+        assert_eq!(result.summary["accessorFilteredCount"], 0);
+    }
+    #[test]
+    fn explicit_trivial_accessor_root_is_accepted_and_suppressible() {
+        let mut e = evidence();
+        add_method(&mut e, "worker-get", ":worker", "getName", Some(vec![]));
+        let explicit = BTreeSet::from(["worker-get".into()]);
+        let declared = catalog(&e, &explicit, &BTreeSet::new()).unwrap();
         assert_eq!(declared.records[0]["reasons"], json!(["EXPLICIT_ROOT"]));
         assert_eq!(declared.summary["accessorFilteredCount"], 0);
+        let suppress = BTreeSet::from([":worker@getName".to_owned()]);
+        let suppressed = catalog(&e, &explicit, &suppress).unwrap();
+        assert!(suppressed.records.is_empty());
+        assert_eq!(suppressed.summary["suppressedCount"], 1);
+        assert_eq!(suppressed.summary["accessorFilteredCount"], 0);
     }
     #[test]
     fn suppressed_scope_symbol_is_excluded_and_counted() {
@@ -701,9 +736,8 @@ mod tests {
         assert_eq!(ids, vec!["worker-helper"]);
         assert_eq!(result.summary["suppressedCount"], 1);
     }
-    // Real evidence stores a full JVM descriptor in the observation symbol while
-    // the method name lives in `normalized.name`. The accessor filter must key on
-    // the NAME, not the symbol descriptor, or equals/getters are never filtered.
+    // Compiler-backed evidence stores the callable descriptor in `symbol` and its
+    // source-level method name separately in `normalized.name`.
     fn add_method_named(
         e: &mut ServiceEvidence,
         id: &str,
@@ -747,40 +781,62 @@ mod tests {
         );
     }
     #[test]
-    fn accessor_filter_uses_method_name_not_full_symbol_descriptor() {
+    fn accessor_named_methods_qualify_equally_to_build_methods_and_remain_suppressible() {
         let mut e = evidence();
-        add_method(&mut e, "obj-a", ":obj", "a", Some(vec![]));
-        add_method(&mut e, "obj-b", ":obj", "b", Some(vec![]));
+        add_method(&mut e, "worker-find", ":worker", "find", Some(vec![]));
+        add_method(
+            &mut e,
+            "worker-dispatch",
+            ":worker",
+            "dispatch",
+            Some(vec![]),
+        );
         add_method_named(
             &mut e,
-            "obj-equals",
-            ":obj",
-            "method:class:X#equals(Ljava/lang/Object;)Z",
-            "equals",
-            Some(vec![
-                json!({"kind":"IF"}),
-                json!({"kind":"CALL","target":"a"}),
-                json!({"kind":"CALL","target":"b"}),
-            ]),
+            "worker-get-name",
+            ":worker",
+            "method:class:Worker#getName()Ljava/lang/String;",
+            "getName",
+            Some(orchestration()),
         );
         add_method(
             &mut e,
-            "obj-transform",
-            ":obj",
-            "transform",
-            Some(vec![
-                json!({"kind":"IF"}),
-                json!({"kind":"CALL","target":"a"}),
-                json!({"kind":"CALL","target":"b"}),
-            ]),
+            "worker-build",
+            ":worker",
+            "build",
+            Some(orchestration()),
         );
         let result = catalog(&e, &BTreeSet::new(), &BTreeSet::new()).unwrap();
-        let ids: Vec<_> = result
+        assert_eq!(result.records.len(), 2);
+        let get_name = result
             .records
             .iter()
-            .map(|r| r["id"].as_str().unwrap())
-            .collect();
-        assert_eq!(ids, vec!["obj-transform"]);
-        assert_eq!(result.summary["accessorFilteredCount"], 1);
+            .find(|record| record["id"] == "worker-get-name")
+            .unwrap();
+        let build = result
+            .records
+            .iter()
+            .find(|record| record["id"] == "worker-build")
+            .unwrap();
+        for field in [
+            "reasons",
+            "lane",
+            "status",
+            "localCallTargets",
+            "localCallTargetCount",
+            "controlEventCount",
+            "lexicalCallSiteCount",
+            "gaps",
+        ] {
+            assert_eq!(get_name[field], build[field], "field {field}");
+        }
+        assert_eq!(result.summary["accessorFilteredCount"], 0);
+
+        let suppress =
+            BTreeSet::from([":worker@method:class:Worker#getName()Ljava/lang/String;".to_owned()]);
+        let suppressed = catalog(&e, &BTreeSet::new(), &suppress).unwrap();
+        assert_eq!(suppressed.records.len(), 1);
+        assert_eq!(suppressed.records[0]["id"], "worker-build");
+        assert_eq!(suppressed.summary["suppressedCount"], 1);
     }
 }
