@@ -2,6 +2,8 @@
 use crate::error::ClewError;
 use serde::Serialize;
 use std::cell::Cell;
+#[cfg(test)]
+use std::cell::RefCell;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -9,12 +11,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INTERVAL: Duration = Duration::from_secs(5);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 thread_local! { static CURRENT_SPAN: Cell<Option<u64>> = const { Cell::new(None) }; }
 type Sink = Arc<dyn Fn(&Event) + Send + Sync>;
+#[cfg(test)]
+thread_local! { static TEST_SINK: RefCell<Option<Sink>> = const { RefCell::new(None) }; }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +30,7 @@ struct Event {
     phase: &'static str,
     event: &'static str,
     elapsed_ms: u128,
+    timestamp_unix_ms: u128,
 }
 
 /// Use fixed, public phase names, never source text, paths, or user identifiers.
@@ -44,19 +49,7 @@ pub struct Phase {
 
 impl Phase {
     pub fn start(phase: &'static str) -> Self {
-        let enabled = !matches!(
-            std::env::var("CODECLEW_DOCS_PROGRESS").as_deref(),
-            Ok("off" | "0")
-        );
-        let sink: Option<Sink> = enabled.then(|| {
-            Arc::new(|event: &Event| {
-                if let Ok(mut line) = serde_json::to_vec(event) {
-                    line.push(b'\n');
-                    // Closed diagnostic pipes must not abort documentation work.
-                    let _ = std::io::stderr().lock().write_all(&line);
-                }
-            }) as Sink
-        });
+        let sink = configured_sink();
         Self::with_sink(phase, sink, INTERVAL)
     }
 
@@ -151,7 +144,61 @@ fn event(
         phase,
         event: status,
         elapsed_ms: started.elapsed().as_millis(),
+        timestamp_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
     }
+}
+
+fn configured_sink() -> Option<Sink> {
+    #[cfg(test)]
+    if let Some(sink) = TEST_SINK.with(|current| current.borrow().clone()) {
+        return Some(sink);
+    }
+
+    let enabled = !matches!(
+        std::env::var("CODECLEW_DOCS_PROGRESS").as_deref(),
+        Ok("off" | "0")
+    );
+    enabled.then(|| {
+        Arc::new(|event: &Event| {
+            if let Ok(mut line) = serde_json::to_vec(event) {
+                line.push(b'\n');
+                // Closed diagnostic pipes must not abort documentation work.
+                let _ = std::io::stderr().lock().write_all(&line);
+            }
+        }) as Sink
+    })
+}
+
+#[cfg(test)]
+struct TestSinkRestore(Option<Sink>);
+
+#[cfg(test)]
+impl Drop for TestSinkRestore {
+    fn drop(&mut self) {
+        TEST_SINK.with(|current| {
+            current.replace(self.0.take());
+        });
+    }
+}
+
+/// Route diagnostic events to a test callback on this thread, restoring the
+/// previous sink even when the action unwinds.
+#[cfg(test)]
+pub(crate) fn with_test_sink<T>(
+    callback: impl Fn(&serde_json::Value) + Send + Sync + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    let sink: Sink = Arc::new(move |event| {
+        if let Ok(value) = serde_json::to_value(event) {
+            callback(&value);
+        }
+    });
+    let previous = TEST_SINK.with(|current| current.replace(Some(sink)));
+    let _restore = TestSinkRestore(previous);
+    action()
 }
 
 pub fn run<T>(
@@ -201,7 +248,8 @@ mod tests {
         );
         assert!(!remaining.iter().any(|row| row["event"] == "FAILED"));
         // The allowlisted schema cannot accidentally include source or error text.
-        assert_eq!(start.as_object().unwrap().len(), 7);
+        assert_eq!(start.as_object().unwrap().len(), 8);
+        assert!(start["timestampUnixMs"].as_u64().is_some());
     }
 
     #[test]
@@ -221,5 +269,31 @@ mod tests {
         assert!(span.worker.is_none());
         assert!(span.stop.is_none());
         span.complete();
+    }
+
+    #[test]
+    fn nested_spans_keep_order_and_failed_child_does_not_complete() {
+        let (sender, receiver) = mpsc::channel();
+        with_test_sink(
+            move |event| sender.send(event.clone()).unwrap(),
+            || {
+                let parent = Phase::start("AUTHOR_OPERATION_DRAFT");
+                let parent_started = receiver.recv().unwrap();
+                let child = Phase::start("WAIT_AGENT_DRIVER_RESPONSE");
+                let child_started = receiver.recv().unwrap();
+                drop(child);
+                parent.complete();
+
+                let child_failed = receiver.recv().unwrap();
+                let parent_completed = receiver.recv().unwrap();
+                assert_eq!(parent_started["phase"], "AUTHOR_OPERATION_DRAFT");
+                assert_eq!(child_started["phase"], "WAIT_AGENT_DRIVER_RESPONSE");
+                assert_eq!(child_started["parentSpanId"], parent_started["spanId"]);
+                assert_eq!(child_failed["event"], "FAILED");
+                assert_eq!(child_failed["spanId"], child_started["spanId"]);
+                assert_eq!(parent_completed["event"], "COMPLETED");
+                assert_eq!(parent_completed["spanId"], parent_started["spanId"]);
+            },
+        );
     }
 }

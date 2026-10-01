@@ -1,6 +1,7 @@
 //! A narrow stdio adapter backed by the existing macOS Seatbelt facility.
 //! A normal child process is never an admitted fallback.
 use super::{agent_jobs::Role, analysis, bytes, digest, invalid, io_error, store::Repository};
+use crate::documentation::progress::{self, Phase};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::{
@@ -241,7 +242,7 @@ pub fn execute(
     cancel: &Path,
 ) -> Result<Execution, ClewError> {
     use std::os::{fd::AsRawFd, unix::process::CommandExt};
-    let admission = admit(repo, role)?;
+    let admission = progress::run("ADMIT_AGENT_DRIVER", || admit(repo, role))?;
     let data = bytes(input)?;
     if (data.len() as u64)
         .checked_add(role.cap.overhead_input_tokens)
@@ -282,11 +283,12 @@ pub fn execute(
             Ok(())
         });
     }
-    let mut child = RunningChild(
+    let mut child = progress::run("START_AGENT_DRIVER", || {
         command
             .spawn()
-            .map_err(|_| invalid("ISOLATED_DRIVER_START_FAILED"))?,
-    );
+            .map(RunningChild)
+            .map_err(|_| invalid("ISOLATED_DRIVER_START_FAILED"))
+    })?;
     let mut stdin = Some(child.stdin.take().ok_or_else(|| io_error("stdin"))?);
     let mut stdout = child.stdout.take().ok_or_else(|| io_error("stdout"))?;
     let mut stderr = child.stderr.take().ok_or_else(|| io_error("stderr"))?;
@@ -298,6 +300,12 @@ pub fn execute(
     let mut errors = Vec::new();
     let start = Instant::now();
     let mut failure = None;
+    let mut send_phase = Some(Phase::start("SEND_AGENT_REQUEST"));
+    let mut wait_phase = None;
+    if sent == data.len() {
+        send_phase.take().unwrap().complete();
+        wait_phase = Some(Phase::start("WAIT_AGENT_DRIVER_RESPONSE"));
+    }
     loop {
         if cancel.exists() {
             failure = Some("CANCELLED".into());
@@ -317,11 +325,14 @@ pub fn execute(
                     ) => {}
                 Err(_) => {
                     stdin = None;
+                    drop(send_phase.take());
                 }
             }
         }
-        if sent == data.len() {
+        if sent == data.len() && send_phase.is_some() {
             stdin = None;
+            send_phase.take().unwrap().complete();
+            wait_phase = Some(Phase::start("WAIT_AGENT_DRIVER_RESPONSE"));
         }
         if let Err(error) = drain(&mut stdout, &mut output, role.cap.output_bytes)
             .and_then(|_| drain(&mut stderr, &mut errors, role.cap.output_bytes))
@@ -356,6 +367,14 @@ pub fn execute(
     } else {
         None
     };
+    drop(send_phase.take());
+    if failure.is_none() {
+        if let Some(wait_phase) = wait_phase.take() {
+            wait_phase.complete();
+        }
+    } else {
+        drop(wait_phase.take());
+    }
     Ok(Execution {
         output: parsed,
         failure,

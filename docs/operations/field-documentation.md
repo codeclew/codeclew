@@ -132,6 +132,23 @@ snapshot.
 
 `proposal publish` and an accepted generic `work run` without `--draft` create an immutable internal bundle and update the working `docs/index.html` pointer (the frozen publication). The operation draft path does not. This does not automatically release a version. Open the bundle returned by a publishing command to read the new explanation. Do not immediately render the pre-author snapshot: an exact snapshot also retains its captured authored baseline, so that render can reproduce the earlier gaps instead of the newly accepted prose.
 
+### Diagnose a draft run
+
+Documentation commands write JSON progress events to stderr and keep their result
+JSON on stdout. Save stderr to inspect the current stage and its duration. Each
+event contains `timestampUnixMs`, monotonic `elapsedMs`, a `spanId` and its
+`parentSpanId`. Long stages emit a heartbeat every five seconds.
+
+Operation drafts distinguish packet preparation, author execution, driver
+admission and startup, request delivery, response waiting, answer validation and
+rendering, and output writes. `SEND_AGENT_REQUEST` completes when the full input
+has been delivered; `WAIT_AGENT_DRIVER_RESPONSE` measures the subsequent wait
+for the isolated driver, including any bridge, CLI and provider work. It does not
+identify a provider queue or inference stage. Failed author stages emit `FAILED`
+even when the command successfully saves a `DRAFT_UNCERTAIN` report. The logs
+contain fixed stage names and timings, without source text or model reasoning.
+Set `CODECLEW_DOCS_PROGRESS=off` to suppress these progress events.
+
 ### Recover a Work run
 
 For a generic author/reviewer `docs work run`, retry the **same Work with the same execution configuration**. Intact, validated saved role results are reused. A dispatched call with no saved result may be retried within that run's original finite allowance; when provider usage is unknown, accounting keeps the maximum reservation. This is recovery behavior, not an exactly-once or provider-billing guarantee.

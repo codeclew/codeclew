@@ -6,6 +6,7 @@ use super::{
     save_report, save_run_checkpoint,
     store::{self, Repository},
 };
+use crate::documentation::progress::{self, Phase};
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -48,11 +49,13 @@ fn run_loaded(
     let draft_config: DraftConfig = store::read(config_path, store::MAX_RECORD)?;
     validate_config(&draft_config)?;
 
-    let (packet, audit) = super::super::operation_packet::build(work).map_err(|error| {
-        invalid(format!(
-            "OPERATION_DRAFT_PREPARE_REQUIRED: this saved Work cannot produce the selected operation packet; prepare new Work with the required profile and root fields, then run `docs work run --draft`: {}",
-            error.message,
-        ))
+    let (packet, audit) = progress::run("BUILD_OPERATION_PACKET", || {
+        super::super::operation_packet::build(work).map_err(|error| {
+            invalid(format!(
+                "OPERATION_DRAFT_PREPARE_REQUIRED: this saved Work cannot produce the selected operation packet; prepare new Work with the required profile and root fields, then run `docs work run --draft`: {}",
+                error.message,
+            ))
+        })
     })?;
     let packet_digest = packet["packetDigest"]
         .as_str()
@@ -150,7 +153,8 @@ fn run_loaded(
     }
 
     let payload = author_payload(&packet, work.request.documentation_language());
-    let (answer, _, _) = match call(
+    let author_phase = Phase::start("AUTHOR_OPERATION_DRAFT");
+    let author_result = call(
         repo,
         &config,
         &mut report,
@@ -161,7 +165,18 @@ fn run_loaded(
         None,
         false,
         false,
-    ) {
+    );
+    let author_result = match author_result {
+        Ok(result) => {
+            author_phase.complete();
+            Ok(result)
+        }
+        Err(error) => {
+            drop(author_phase);
+            Err(error)
+        }
+    };
+    let (answer, _, _) = match author_result {
         Ok(result) => result,
         Err(error) if error.message.starts_with("RECOVERY_") => return Err(error),
         Err(error) => {
@@ -184,13 +199,16 @@ fn run_loaded(
         }
     };
 
-    let rendered = match super::super::operation_answer::validate_and_render_draft(
-        &packet,
-        &audit,
-        answer.clone(),
-    ) {
-        Ok(rendered) => rendered,
+    let validation_phase = Phase::start("VALIDATE_AND_RENDER_OPERATION_DRAFT");
+    let validation_result =
+        super::super::operation_answer::validate_and_render_draft(&packet, &audit, answer.clone());
+    let rendered = match validation_result {
+        Ok(rendered) => {
+            validation_phase.complete();
+            rendered
+        }
         Err(error) => {
+            drop(validation_phase);
             report.status = "DRAFT_INVALID_ANSWER".into();
             report.publication = Some(json!({"status":"NOT_PUBLISHED"}));
             report.gap = Some(json!({
@@ -211,16 +229,18 @@ fn run_loaded(
     };
 
     let output_dir = repo.path(&format!(".codeclew/drafts/{}", work.id))?;
-    let output = super::super::work::write_explanation_outputs(
-        &output_dir,
-        &work.id,
-        &packet,
-        &audit,
-        &rendered.answer,
-        &rendered.markdown,
-        &rendered.html,
-        rendered.process_diagram.as_ref(),
-    )?;
+    let output = progress::run("WRITE_OPERATION_DRAFT_OUTPUTS", || {
+        super::super::work::write_explanation_outputs(
+            &output_dir,
+            &work.id,
+            &packet,
+            &audit,
+            &rendered.answer,
+            &rendered.markdown,
+            &rendered.html,
+            rendered.process_diagram.as_ref(),
+        )
+    })?;
     report.status = "DRAFT".into();
     report.publication = Some(json!({"status":"NOT_PUBLISHED"}));
     report.gap = None;
@@ -768,7 +788,7 @@ fn run_summary(report: &RunReport) -> Value {
 mod tests {
     use super::*;
     use crate::documentation::agent_jobs::Amount;
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, sync::mpsc};
     use tempfile::TempDir;
 
     const ANSWER_DRIVER: &str = r#"
@@ -862,6 +882,41 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         )
         .unwrap();
         (temporary, repo, work, config_path)
+    }
+
+    fn collect_progress<T>(action: impl FnOnce() -> T) -> (T, Vec<Value>) {
+        let (sender, receiver) = mpsc::channel();
+        let result = progress::with_test_sink(
+            move |event| {
+                let _ = sender.send(event.clone());
+            },
+            action,
+        );
+        (result, receiver.try_iter().collect())
+    }
+
+    fn assert_started_phases(events: &[Value], expected: &[&str]) {
+        let phases: Vec<_> = events
+            .iter()
+            .filter(|event| event["event"] == "STARTED")
+            .filter_map(|event| event["phase"].as_str())
+            .collect();
+        assert_eq!(phases, expected);
+    }
+
+    fn assert_terminal_phase(events: &[Value], phase: &str, status: &str) {
+        let started = events
+            .iter()
+            .find(|event| event["phase"] == phase && event["event"] == "STARTED")
+            .unwrap_or_else(|| panic!("missing start for {phase}: {events:?}"));
+        let terminal = events
+            .iter()
+            .find(|event| {
+                event["spanId"] == started["spanId"]
+                    && matches!(event["event"].as_str(), Some("COMPLETED" | "FAILED"))
+            })
+            .unwrap_or_else(|| panic!("missing terminal event for {phase}: {events:?}"));
+        assert_eq!(terminal["event"], status, "{phase}: {events:?}");
     }
 
     fn draft_config(mode: &str) -> DraftConfig {
@@ -1107,10 +1162,53 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             return;
         }
         let (_temporary, repo, work, config_path) = setup("success");
-        let first = run_loaded(&repo, &work, Some(&config_path), false).unwrap();
+        let (first, progress_events) =
+            collect_progress(|| run_loaded(&repo, &work, Some(&config_path), false).unwrap());
         assert_eq!(first["status"], "DRAFT");
         assert_eq!(first["draft"]["reviewStatus"], "UNREVIEWED");
         assert_eq!(first["draft"]["publication"], "NOT_PUBLISHED");
+        assert_started_phases(
+            &progress_events,
+            &[
+                "BUILD_OPERATION_PACKET",
+                "AUTHOR_OPERATION_DRAFT",
+                "ADMIT_AGENT_DRIVER",
+                "START_AGENT_DRIVER",
+                "SEND_AGENT_REQUEST",
+                "WAIT_AGENT_DRIVER_RESPONSE",
+                "VALIDATE_AND_RENDER_OPERATION_DRAFT",
+                "WRITE_OPERATION_DRAFT_OUTPUTS",
+            ],
+        );
+        for phase in [
+            "BUILD_OPERATION_PACKET",
+            "AUTHOR_OPERATION_DRAFT",
+            "ADMIT_AGENT_DRIVER",
+            "START_AGENT_DRIVER",
+            "SEND_AGENT_REQUEST",
+            "WAIT_AGENT_DRIVER_RESPONSE",
+            "VALIDATE_AND_RENDER_OPERATION_DRAFT",
+            "WRITE_OPERATION_DRAFT_OUTPUTS",
+        ] {
+            assert_terminal_phase(&progress_events, phase, "COMPLETED");
+        }
+        let author_span = progress_events
+            .iter()
+            .find(|event| event["phase"] == "AUTHOR_OPERATION_DRAFT" && event["event"] == "STARTED")
+            .unwrap()["spanId"]
+            .clone();
+        for phase in [
+            "ADMIT_AGENT_DRIVER",
+            "START_AGENT_DRIVER",
+            "SEND_AGENT_REQUEST",
+            "WAIT_AGENT_DRIVER_RESPONSE",
+        ] {
+            let started = progress_events
+                .iter()
+                .find(|event| event["phase"] == phase && event["event"] == "STARTED")
+                .unwrap();
+            assert_eq!(started["parentSpanId"], author_span, "{phase}");
+        }
 
         let mut report = latest_report(&repo, &work.id).unwrap().unwrap();
         assert_eq!(report.execution_mode.as_deref(), Some(MODE));
@@ -1415,9 +1513,23 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             return;
         }
         let (_temporary, repo, work, config_path) = setup("uncertain");
-        let first = run_loaded(&repo, &work, Some(&config_path), false).unwrap();
+        let (first, progress_events) =
+            collect_progress(|| run_loaded(&repo, &work, Some(&config_path), false).unwrap());
         assert_eq!(first["status"], "DRAFT_UNCERTAIN");
         assert!(first["draft"]["state"] == "DISPATCH_UNCERTAIN");
+        assert_started_phases(
+            &progress_events,
+            &[
+                "BUILD_OPERATION_PACKET",
+                "AUTHOR_OPERATION_DRAFT",
+                "ADMIT_AGENT_DRIVER",
+                "START_AGENT_DRIVER",
+                "SEND_AGENT_REQUEST",
+                "WAIT_AGENT_DRIVER_RESPONSE",
+            ],
+        );
+        assert_terminal_phase(&progress_events, "WAIT_AGENT_DRIVER_RESPONSE", "FAILED");
+        assert_terminal_phase(&progress_events, "AUTHOR_OPERATION_DRAFT", "FAILED");
         assert_eq!(
             first["attempts"][0]["status"],
             "DISPATCH_UNCERTAIN_MAXIMUM_RETAINED"
