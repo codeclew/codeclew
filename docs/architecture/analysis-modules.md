@@ -83,3 +83,26 @@ operations. Do not infer support solely from a version label.
 
 Independent installation of arbitrary modules, a plugin marketplace, dynamic
 native libraries and a Kotlin 1.9 compiler pack are outside this iteration.
+
+## Current Rust registration seam in the source tree
+
+The Rust source path already builds a Cargo-authorized syntax index before it
+registers `RustAdapterV2` with `AdapterRegistry`. The registered handshake
+provides the adapter id and digest, Rust language and fact capability, and an
+exact toolchain authority. Registry selection checks that language, capability
+and toolchain; the adapter checks the compilation identity and emits a
+conformant fact stream. Its attempt receipt remains attached to the generated
+fact run and marks coverage `PARTIAL`, certainty `UNSURE`, and the Rust name
+resolution and cfg/macro verification obligations. This is syntax authority;
+it does not claim semantic compiler analysis.
+
+The focused parity test in `crates/clew/src/rust_adapter_v2.rs`
+(`registered_rust_adapter_preserves_facts_authority_and_cache_identity`)
+exercises that real adapter through the registry. It checks ordered facts and
+CAS payloads against direct translation, toolchain rejection before sink
+events, scope digest changes, and the compiler-store key derived from the
+registered handshake. The existing fake-language registry test in
+`crates/clew/src/adapter_v2.rs` covers the generic extension path. This
+registration seam does not make Rust parsing or index construction pluggable,
+define a public adapter ABI, or change the static module installation limits
+described above.

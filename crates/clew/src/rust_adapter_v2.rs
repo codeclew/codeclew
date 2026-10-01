@@ -1643,18 +1643,245 @@ fn poisoned<T>(error: std::sync::PoisonError<T>) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreparedFactBatch, RUST_INDEX_SCHEMA, RustSyntaxAuthority, build_syntax_index,
-        translate_facts,
+        PreparedFactBatch, RUST_INDEX_SCHEMA, RUST_LANGUAGE, RUST_SYNTAX_FACTS_CAPABILITY,
+        RustAdapterV2, RustSyntaxAuthority, build_syntax_index, rust_adapter_digest,
+        rust_scope_digest, translate_facts,
     };
-    use crate::cas::CasStore;
+    use crate::adapter_v2::{
+        ANALYSIS_REQUEST_SCHEMA, AdapterRegistry, AnalysisEvent, AnalysisSink,
+        AnalyzeGenerationRequest, COMPILATION_SCHEMA, CapabilityUri, CompilationDescriptor,
+        DescriptorCompleteness, DescriptorOrigin, LanguageUri, SourceRootDescriptor,
+    };
+    use crate::cas::{CasObject, CasStore};
+    use crate::incremental_v2::CompilerStoreKey;
     use crate::repository_snapshot;
     use crate::state::StateAuthority;
     use serde_json::{Value, json};
     use std::fs;
     use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     fn digest(character: char) -> String {
         format!("sha256:{}", character.to_string().repeat(64))
+    }
+
+    #[derive(Default)]
+    struct RecordingSink(Vec<AnalysisEvent>);
+
+    impl AnalysisSink for RecordingSink {
+        fn accept(&mut self, event: AnalysisEvent) -> Result<(), crate::error::ClewError> {
+            self.0.push(event);
+            Ok(())
+        }
+    }
+
+    struct OwnedGitSyntaxAuthority {
+        repo: std::path::PathBuf,
+        store: CasStore,
+        snapshot_object: CasObject,
+        index: Value,
+        _temporary: tempfile::TempDir,
+    }
+
+    impl OwnedGitSyntaxAuthority {
+        fn new(source: &str) -> Self {
+            let temporary = tempfile::tempdir().unwrap();
+            let repo = temporary.path().join("repo");
+            fs::create_dir_all(repo.join("src")).unwrap();
+            fs::write(repo.join("src/lib.rs"), source).unwrap();
+            git(&repo, &["init", "-q"]);
+            git(&repo, &["add", "."]);
+            let state = StateAuthority::open(temporary.path().join("state-v2")).unwrap();
+            let store = CasStore::open(&state).unwrap();
+            let (snapshot, snapshot_object) = repository_snapshot::capture(&repo, &store).unwrap();
+            let model_digest = digest('1');
+            let index =
+                build_syntax_index(&store, &snapshot, &syntax_authority(&model_digest)).unwrap();
+            Self {
+                repo,
+                store,
+                snapshot_object,
+                index,
+                _temporary: temporary,
+            }
+        }
+
+        fn capture_index(&self) -> (CasObject, Value) {
+            let (snapshot, snapshot_object) =
+                repository_snapshot::capture(&self.repo, &self.store).unwrap();
+            let model_digest = digest('1');
+            let index =
+                build_syntax_index(&self.store, &snapshot, &syntax_authority(&model_digest))
+                    .unwrap();
+            (snapshot_object, index)
+        }
+    }
+
+    #[test]
+    fn registered_rust_adapter_preserves_facts_authority_and_cache_identity() {
+        let fixture = OwnedGitSyntaxAuthority::new(
+            "pub fn visible() {}\nmacro_rules! generated { () => {} }\n#[cfg(test)] pub fn conditional() {}\n",
+        );
+        let toolchain = fixture
+            .store
+            .put(
+                "codeclew-rust-toolchain-authority/1.0",
+                b"cargo and rustc authority",
+            )
+            .unwrap();
+        let options = fixture
+            .store
+            .put("codeclew-cargo-target-options/1.0", b"target options")
+            .unwrap();
+        let compilation = CompilationDescriptor {
+            schema: COMPILATION_SCHEMA.into(),
+            compilation_id: "cargo-Cargo.toml-demo-lib-demo".into(),
+            language_uri: LanguageUri::parse(RUST_LANGUAGE).unwrap(),
+            source_roots: vec![SourceRootDescriptor {
+                logical_name: "project".into(),
+                tree: fixture.snapshot_object.clone(),
+            }],
+            generated_source_roots: Vec::new(),
+            classpath: Vec::new(),
+            toolchain: toolchain.clone(),
+            plugins: Vec::new(),
+            canonical_options: options,
+            dependency_compilation_ids: Vec::new(),
+            operations: Vec::new(),
+            origin: DescriptorOrigin::ProjectNative,
+            completeness: DescriptorCompleteness::Unknown,
+        };
+        let adapter_digest = rust_adapter_digest().unwrap();
+        let adapter = RustAdapterV2::new(
+            adapter_digest.clone(),
+            toolchain.digest.clone(),
+            fixture.store.clone(),
+            fixture.index.clone(),
+        )
+        .unwrap();
+        let mut registry = AdapterRegistry::default();
+        registry.register_adapter(Arc::new(adapter)).unwrap();
+        let handshake = registry.adapter_handshakes().next().unwrap().clone();
+        assert_eq!(handshake.adapter_id, "rust-syntax-1");
+        assert_eq!(handshake.adapter_digest, adapter_digest);
+
+        let registered_key = CompilerStoreKey::create(
+            handshake.adapter_id.clone(),
+            handshake.adapter_digest.clone(),
+            &compilation,
+        )
+        .unwrap();
+        let direct_key = CompilerStoreKey::create(
+            "rust-syntax-1",
+            rust_adapter_digest().unwrap(),
+            &compilation,
+        )
+        .unwrap();
+        assert_eq!(registered_key, direct_key);
+
+        let expected_facts = translate_facts(&fixture.store, &fixture.index).unwrap();
+        let expected_payloads = expected_facts
+            .iter()
+            .map(|fact| fixture.store.read(&fact.payload, 64 * 1024).unwrap())
+            .map(|lease| lease.bytes().to_vec())
+            .collect::<Vec<_>>();
+        let request = AnalyzeGenerationRequest {
+            schema: ANALYSIS_REQUEST_SCHEMA.into(),
+            attempt_id: "attempt-rust-registered".into(),
+            generation_key: digest('8'),
+            capability: CapabilityUri::parse(RUST_SYNTAX_FACTS_CAPABILITY).unwrap(),
+            compilation: compilation.clone(),
+            derived_input_manifest: fixture
+                .store
+                .put(
+                    "codeclew-derived-analysis-input-manifest/1.0",
+                    b"derived inputs",
+                )
+                .unwrap(),
+            parent_generation: None,
+        };
+        let mut sink = RecordingSink::default();
+        registry
+            .analyze_generation_into(&request, &mut sink, &AtomicBool::new(false))
+            .unwrap();
+        let mut streamed_facts = Vec::new();
+        let mut shard_sequences = Vec::new();
+        for event in &sink.0 {
+            if let AnalysisEvent::FactShard(shard) = event {
+                shard_sequences.push(shard.sequence);
+                streamed_facts.extend(shard.facts.iter().cloned());
+            }
+        }
+        assert_eq!(streamed_facts, expected_facts);
+        assert_eq!(
+            shard_sequences,
+            (0..shard_sequences.len() as u32).collect::<Vec<_>>()
+        );
+        for (fact, expected_payload) in streamed_facts.iter().zip(expected_payloads) {
+            let payload = fixture.store.read(&fact.payload, 64 * 1024).unwrap();
+            assert_eq!(payload.bytes(), expected_payload);
+        }
+        let completion = match sink.0.last().unwrap() {
+            AnalysisEvent::AttemptComplete(completion) => completion,
+            AnalysisEvent::FactShard(_) => panic!("registered Rust stream has no completion"),
+        };
+        let scope_digest = rust_scope_digest(&fixture.index).unwrap();
+        assert_eq!(completion.scope_digest, scope_digest);
+        assert_eq!(completion.fact_count as usize, expected_facts.len());
+        let receipt_lease = fixture
+            .store
+            .read(&completion.completeness_receipt, 4096)
+            .unwrap();
+        let receipt: Value = serde_json::from_slice(receipt_lease.bytes()).unwrap();
+        assert_eq!(receipt["scopeDigest"], scope_digest);
+        assert_eq!(receipt["coverage"], "PARTIAL");
+        assert_eq!(receipt["certainty"], "UNSURE");
+        assert_eq!(
+            receipt["obligations"],
+            json!([
+                "VERIFY_RUST_NAME_RESOLUTION",
+                "VERIFY_CFG_AND_MACRO_EXPANSION"
+            ])
+        );
+        let boundary_codes = fixture.index["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|boundary| boundary["code"].as_str())
+            .collect::<Vec<_>>();
+        assert!(boundary_codes.contains(&"RUST_CFG_NOT_EVALUATED"));
+        assert!(boundary_codes.contains(&"RUST_MACRO_ITEM_NOT_EXPANDED"));
+
+        let mismatched_toolchain = fixture
+            .store
+            .put(
+                "codeclew-rust-toolchain-authority/1.0",
+                b"different rustc authority",
+            )
+            .unwrap();
+        let mut mismatch_request = request;
+        mismatch_request.compilation.toolchain = mismatched_toolchain;
+        let mut rejected_sink = RecordingSink::default();
+        assert!(
+            registry
+                .analyze_generation_into(
+                    &mismatch_request,
+                    &mut rejected_sink,
+                    &AtomicBool::new(false),
+                )
+                .is_err()
+        );
+        assert!(rejected_sink.0.is_empty());
+
+        assert_eq!(scope_digest, rust_scope_digest(&fixture.index).unwrap());
+        fs::write(
+            fixture.repo.join("src/lib.rs"),
+            "pub fn changed() {}\nmacro_rules! generated { () => {} }\n#[cfg(test)] pub fn conditional() {}\n",
+        )
+        .unwrap();
+        let (_, changed_index) = fixture.capture_index();
+        assert_ne!(scope_digest, rust_scope_digest(&changed_index).unwrap());
     }
 
     #[test]
