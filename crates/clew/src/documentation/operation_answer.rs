@@ -690,7 +690,7 @@ pub(super) fn validate_and_render(
         .as_object()
         .ok_or_else(|| invalid("reader packet has no citation-label map"))?;
     let known_labels: BTreeSet<_> = citations.keys().cloned().collect();
-    if packet_evidence_labels(packet)? != known_labels {
+    if packet_displayed_citation_labels(packet)? != known_labels {
         return Err(invalid(
             "reader packet citation labels do not match its displayed evidence labels",
         ));
@@ -1437,7 +1437,9 @@ fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn packet_evidence_labels(packet: &Value) -> Result<BTreeSet<String>, crate::error::ClewError> {
+fn packet_displayed_citation_labels(
+    packet: &Value,
+) -> Result<BTreeSet<String>, crate::error::ClewError> {
     fn visit(value: &Value, labels: &mut BTreeSet<String>) -> Result<(), crate::error::ClewError> {
         match value {
             Value::Array(values) => {
@@ -1473,6 +1475,39 @@ fn packet_evidence_labels(packet: &Value) -> Result<BTreeSet<String>, crate::err
 
     let mut labels = BTreeSet::new();
     visit(packet, &mut labels)?;
+    if let Some(process_intent) = packet.get("processIntent") {
+        let process_intent = process_intent
+            .as_object()
+            .ok_or_else(|| invalid("reader packet processIntent must be an object"))?;
+        let definition_reference = process_intent
+            .get("definitionReference")
+            .and_then(Value::as_str)
+            .filter(|reference| !reference.trim().is_empty())
+            .ok_or_else(|| {
+                invalid("reader packet processIntent.definitionReference must be a nonempty string")
+            })?;
+        labels.insert(definition_reference.to_owned());
+
+        let continuations = process_intent
+            .get("declaredContinuations")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                invalid("reader packet processIntent.declaredContinuations must be an array")
+            })?;
+        for continuation in continuations {
+            let reference = continuation
+                .as_object()
+                .and_then(|continuation| continuation.get("reference"))
+                .and_then(Value::as_str)
+                .filter(|reference| !reference.trim().is_empty())
+                .ok_or_else(|| {
+                    invalid(
+                        "reader packet processIntent.declaredContinuations references must be nonempty strings",
+                    )
+                })?;
+            labels.insert(reference.to_owned());
+        }
+    }
     Ok(labels)
 }
 
@@ -6919,6 +6954,85 @@ mod tests {
             "expected":"handle"
         }]);
         assert!(validate_and_render(&packet, &audit, authored_check).is_err());
+    }
+
+    #[test]
+    fn process_intent_references_are_displayed_citations_with_exact_packet_binding() {
+        let mut packet = packet();
+        packet["profile"] = json!("process-graph-v1");
+        packet["citations"]["intent"] = json!("user-authored process definition");
+        packet["citations"]["continuation"] = json!("declared continuation definition");
+        packet["processIntent"] = json!({
+            "authority":"USER_INTENTION_NOT_SOURCE_EVIDENCE",
+            "definitionReference":"intent",
+            "declaredContinuations":[{"reference":"continuation"}],
+            "linkedSubviews":[{"id":"unresolved","authority":"USER_INTENTION_ONLY_NOT_RESOLVED_AS_A_CONTINUATION"}]
+        });
+        seal(&mut packet);
+        let packet_before_validation = packet.clone();
+        let original_audit = audit(&packet);
+        let rendered =
+            validate_and_render(&packet, &original_audit, simple_answer(&packet, "d1")).unwrap();
+
+        assert_eq!(rendered.answer["packetDigest"], packet["packetDigest"]);
+        assert_eq!(packet, packet_before_validation);
+        let mut packet_without_digest = packet.clone();
+        packet_without_digest
+            .as_object_mut()
+            .unwrap()
+            .remove("packetDigest");
+        assert_eq!(
+            packet["packetDigest"],
+            json!(digest(&packet_without_digest).unwrap())
+        );
+
+        let mut unknown_reference = packet.clone();
+        unknown_reference["processIntent"]["definitionReference"] = json!("missing");
+        seal(&mut unknown_reference);
+        assert!(
+            validate_and_render(
+                &unknown_reference,
+                &audit(&unknown_reference),
+                simple_answer(&unknown_reference, "d1"),
+            )
+            .is_err()
+        );
+
+        let mut empty_reference = packet.clone();
+        empty_reference["processIntent"]["declaredContinuations"][0]["reference"] = json!("  ");
+        seal(&mut empty_reference);
+        assert!(
+            validate_and_render(
+                &empty_reference,
+                &audit(&empty_reference),
+                simple_answer(&empty_reference, "d1"),
+            )
+            .is_err()
+        );
+
+        let mut malformed_references = packet.clone();
+        malformed_references["processIntent"]["declaredContinuations"] = json!("not-an-array");
+        seal(&mut malformed_references);
+        assert!(
+            validate_and_render(
+                &malformed_references,
+                &audit(&malformed_references),
+                simple_answer(&malformed_references, "d1"),
+            )
+            .is_err()
+        );
+
+        let mut extra_citation = packet.clone();
+        extra_citation["citations"]["unused"] = json!("not displayed by the packet");
+        seal(&mut extra_citation);
+        assert!(
+            validate_and_render(
+                &extra_citation,
+                &audit(&extra_citation),
+                simple_answer(&extra_citation, "d1"),
+            )
+            .is_err()
+        );
     }
 
     #[test]

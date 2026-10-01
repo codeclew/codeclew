@@ -143,12 +143,16 @@ fn run_loaded(
     };
 
     ensure_reserved(repo, &config, &report.run)?;
-    if report.draft.as_ref().is_some_and(|draft| {
+    let terminal_failure = matches!(
+        report.status.as_str(),
+        "DRAFT_INVALID_ANSWER" | "DRAFT_UNCERTAIN" | "DRAFT_CANCELLED" | "DRAFT_FAILED"
+    ) || report.draft.as_ref().is_some_and(|draft| {
         matches!(
             draft["state"].as_str(),
             Some("ANSWER_INVALID" | "DISPATCH_UNCERTAIN" | "CANCELLED" | "FAILED")
         )
-    }) {
+    });
+    if terminal_failure && !has_replayable_invalid_answer(repo, &report, &checkpoint)? {
         return Ok(run_summary(&report));
     }
 
@@ -256,6 +260,69 @@ fn run_loaded(
     }));
     finish_state(repo, &config, &mut report, &mut checkpoint)?;
     Ok(run_summary(&report))
+}
+
+fn has_replayable_invalid_answer(
+    repo: &Repository,
+    report: &RunReport,
+    checkpoint: &RunCheckpoint,
+) -> Result<bool, ClewError> {
+    if report.status != "DRAFT_INVALID_ANSWER"
+        || report
+            .draft
+            .as_ref()
+            .and_then(|draft| draft["state"].as_str())
+            != Some("ANSWER_INVALID")
+        || checkpoint.phase != "TERMINAL"
+    {
+        return Ok(false);
+    }
+    let Some(pending) = checkpoint.pending_call.as_ref() else {
+        return Ok(false);
+    };
+    if pending.status != "RESULT_SAVED" {
+        return Ok(false);
+    }
+    let mut attempts = report
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.invocation == pending.identity.invocation);
+    let Some(attempt) = attempts.next() else {
+        return Err(invalid(
+            "RECOVERY_REPORT_MISMATCH: invalid-answer checkpoint has no matching saved attempt",
+        ));
+    };
+    if attempts.next().is_some() {
+        return Err(invalid(
+            "RECOVERY_REPORT_MISMATCH: invalid-answer checkpoint has duplicate saved attempts",
+        ));
+    }
+    let Some(result_digest) = attempt
+        .result_digest
+        .as_deref()
+        .filter(|digest| !digest.is_empty())
+    else {
+        return Ok(false);
+    };
+    if report
+        .draft
+        .as_ref()
+        .and_then(|draft| draft["rawAnswerDigest"].as_str())
+        != Some(result_digest)
+    {
+        return Err(invalid(
+            "RECOVERY_RESULT_MISMATCH: retained invalid-answer digest does not match its saved attempt",
+        ));
+    }
+
+    let input = super::recovery::load_input(repo, &pending.identity)?;
+    let saved = super::recovery::load_result(repo, &input)?;
+    if saved.result_digest != result_digest {
+        return Err(invalid(
+            "RECOVERY_RESULT_MISMATCH: saved author result does not match the retained invalid-answer digest",
+        ));
+    }
+    Ok(true)
 }
 
 fn validate_fresh_run_source(
@@ -1347,6 +1414,90 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                 .message
                 .contains("RECOVERY_INPUT_BINDING_MISMATCH")
         );
+    }
+
+    #[test]
+    fn answer_invalid_with_saved_valid_result_revalidates_without_redispatch() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (_temporary, repo, work, config_path) = setup("success");
+        let first = run_loaded(&repo, &work, Some(&config_path), false).unwrap();
+        assert_eq!(first["status"], "DRAFT");
+
+        let mut report = latest_report(&repo, &work.id).unwrap().unwrap();
+        let invocation = report.attempts[0].invocation.clone();
+        let result_digest = report.attempts[0].result_digest.clone().unwrap();
+        report.status = "DRAFT_INVALID_ANSWER".into();
+        report.publication = Some(json!({"status":"NOT_PUBLISHED"}));
+        report.gap = Some(json!({"reason":"simulated pre-fix citation-label rejection"}));
+        report.draft = Some(json!({
+            "state":"ANSWER_INVALID",
+            "status":"DRAFT",
+            "reviewStatus":"UNREVIEWED",
+            "publication":"NOT_PUBLISHED",
+            "packetDigest":first["draft"]["packetDigest"],
+            "rawAnswerDigest":result_digest
+        }));
+        save_report(&repo, &report).unwrap();
+
+        for (status, state) in [
+            ("DRAFT_FAILED", "FAILED"),
+            ("DRAFT_CANCELLED", "CANCELLED"),
+            ("DRAFT_UNCERTAIN", "DISPATCH_UNCERTAIN"),
+        ] {
+            let mut other_terminal_state = report.clone();
+            other_terminal_state.status = status.into();
+            other_terminal_state.draft.as_mut().unwrap()["state"] = json!(state);
+            save_report(&repo, &other_terminal_state).unwrap();
+            let (replay, progress_events) =
+                collect_progress(|| run_loaded(&repo, &work, Some(&config_path), false).unwrap());
+            assert_eq!(replay["status"], status);
+            assert!(progress_events.iter().all(|event| {
+                !(event["phase"] == "AUTHOR_OPERATION_DRAFT" && event["event"] == "STARTED")
+            }));
+        }
+        save_report(&repo, &report).unwrap();
+
+        let config: DraftConfig = store::read(&config_path, store::MAX_RECORD).unwrap();
+        let reservations_before =
+            serde_json::to_value(&account(&repo, &config.budget).unwrap().reservations).unwrap();
+        let (replay, progress_events) =
+            collect_progress(|| run_loaded(&repo, &work, Some(&config_path), false).unwrap());
+        assert_eq!(replay["status"], "DRAFT");
+        assert!(progress_events.iter().all(|event| {
+            !(event["phase"] == "SEND_AGENT_REQUEST" && event["event"] == "STARTED")
+        }));
+
+        let replayed_report = latest_report(&repo, &work.id).unwrap().unwrap();
+        assert_eq!(replayed_report.attempts.len(), 1);
+        assert_eq!(replayed_report.attempts[0].invocation, invocation);
+        assert_eq!(
+            replayed_report.attempts[0].result_digest.as_deref(),
+            Some(result_digest.as_str())
+        );
+        let reservations_after =
+            serde_json::to_value(&account(&repo, &config.budget).unwrap().reservations).unwrap();
+        assert_eq!(reservations_after, reservations_before);
+
+        let mut inconsistent_report = latest_report(&repo, &work.id).unwrap().unwrap();
+        inconsistent_report.status = "DRAFT_INVALID_ANSWER".into();
+        inconsistent_report.attempts[0].result_digest = Some("sha256:tampered".into());
+        inconsistent_report.draft.as_mut().unwrap()["state"] = json!("ANSWER_INVALID");
+        inconsistent_report.draft.as_mut().unwrap()["rawAnswerDigest"] = json!("sha256:tampered");
+        save_report(&repo, &inconsistent_report).unwrap();
+        let (recovery_error, progress_events) = collect_progress(|| {
+            run_loaded(&repo, &work, Some(&config_path), false)
+                .unwrap_err()
+                .message
+        });
+        assert!(recovery_error.contains("RECOVERY_RESULT_MISMATCH"));
+        assert!(progress_events.iter().all(|event| {
+            !(event["phase"] == "AUTHOR_OPERATION_DRAFT" && event["event"] == "STARTED")
+        }));
+        let reservations_after_mismatch =
+            serde_json::to_value(&account(&repo, &config.budget).unwrap().reservations).unwrap();
+        assert_eq!(reservations_after_mismatch, reservations_after);
     }
 
     #[test]
