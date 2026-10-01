@@ -573,7 +573,11 @@ selected invocation identity, immutable input, checkpoint and report bindings
 match; this makes no new driver dispatch, and an answer that still fails
 validation remains invalid. A dispatch without a saved response is
 marked uncertain with its maximum reservation retained; rerunning that Work does
-not dispatch another call. New operation Work persists the centrally selected
+not dispatch another call. For a latest terminal invalid answer, an operator
+may run `docs work run --draft --repair-from-run RUN_ID` to make one explicit
+repair call from the unchanged saved packet, previous answer, and fresh native
+validator error. Repeating that command or plain `--draft` resumes the same
+repair run; repairs do not chain. New operation Work persists the centrally selected
 `authoringContract` value `codeclew-operation-draft-authoring/1.4`, covering the
 answer schema, generic author policy, and endpoint field projection. For this
 profile, `packet.fields` lists selected referenced owner FIELD declarations
@@ -584,9 +588,10 @@ timing, and `final` does not establish deep immutability. Material changes to
 the schema, policy, or packet require a new identity; prepare new Work from the
 same saved snapshot to use it. The operator does not edit old Work records or
 set an identity to reuse completed results. Existing 1.3 Work keeps its prior
-packet and may only replay a validated saved answer, including after an
-interrupted output write; a fresh author attempt requires new 1.4 Work prepared
-from the same saved snapshot. This recipe covers the HTTP endpoint
+packet and may replay a validated saved answer, including after an interrupted
+output write. An explicit repair of a retained invalid answer is the only
+additional 1.3 author-call path; ordinary initial generation and `--new-run`
+remain blocked. This recipe covers the HTTP endpoint
 profile. Use the next recipe for an internal callable whose behavior is not
 entered through an HTTP endpoint.
 

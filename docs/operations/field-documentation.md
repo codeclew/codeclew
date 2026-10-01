@@ -177,6 +177,14 @@ drafts and nonterminal runs are not eligible. Without `--new-run`, normal replay
 still reuses the selected run and refuses config or driver mismatches; a generic
 run cannot be resumed in draft mode or the reverse.
 
+For a terminal `DRAFT_INVALID_ANSWER` only, an operator may select that latest
+retained run with `--repair-from-run <run-id>`. The new run reuses its exact
+saved packet and answer, adds the fresh native validator error, and makes one
+author call. Repeating the same repair command or plain `--draft` resumes that
+repair run without another reservation or dispatch. A repair run cannot be
+selected for another repair. This explicit path supports retained authoring
+contract 1.3 Work; ordinary 1.3 generation and `--new-run` remain blocked.
+
 Configuration, driver, evidence, read-ledger or publication mismatches return an explicit `RECOVERY_*` refusal. Inspect the retained report and current documentation state; do not delete saved run data, change configuration to force a retry, or repeat capture as a recovery shortcut. An accepted retry whose intended publication is still current can finish without another model call, bundle or history entry. If a later unrelated publication has changed the current output, recovery refuses conservatively and does not roll it back. Cancellation applies to its run only. A terminal run with recorded attempts is not an implicit fresh run or reviewer-only retry; retain and inspect its report and results before deciding what work to prepare next.
 
 When another projection is needed, run `docs recompose` from the original source-capture snapshot after publication, then render its newly returned snapshot. Both operations use saved evidence without capture. Keep the frozen publication ID/path. Pin the source parent with `clew docs snapshot pin --root /work/architecture --name orders-source-first --snapshot SOURCE_SNAPSHOT` before changing service configuration.

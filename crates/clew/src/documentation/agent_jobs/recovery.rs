@@ -198,6 +198,10 @@ impl InputRecord {
         }
         Ok(())
     }
+
+    pub(super) fn bounded_encoding(&self) -> Result<Vec<u8>, crate::error::ClewError> {
+        bounded_bytes(self, "agent input")
+    }
 }
 
 fn record_without_input_digest(record: &InputRecord) -> InputRecord {
@@ -214,7 +218,7 @@ pub(super) fn save_input(
     record: &InputRecord,
 ) -> Result<(), crate::error::ClewError> {
     record.validate()?;
-    let encoded = bounded_bytes(record, "agent input")?;
+    let encoded = record.bounded_encoding()?;
     persist_immutable(
         repo,
         &input_path(&record.identity.invocation)?,

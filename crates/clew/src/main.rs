@@ -3890,6 +3890,44 @@ mod tests {
     }
 
     #[test]
+    fn work_draft_repair_flag_is_scoped_and_validates_source_identity() {
+        let base = vec![
+            "clew",
+            "docs",
+            "work",
+            "run",
+            "--root",
+            "/tmp",
+            "--work",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        let mut without_draft = base.clone();
+        without_draft.extend(["--repair-from-run", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
+        assert!(Cli::try_parse_from(without_draft).is_err());
+
+        let mut invalid_source = base.clone();
+        invalid_source.extend(["--draft", "--repair-from-run", "not-a-run"]);
+        assert!(Cli::try_parse_from(invalid_source).is_err());
+
+        let mut conflicting = base.clone();
+        conflicting.extend([
+            "--draft",
+            "--new-run",
+            "--repair-from-run",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ]);
+        assert!(Cli::try_parse_from(conflicting).is_err());
+
+        let mut valid = base;
+        valid.extend([
+            "--draft",
+            "--repair-from-run",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ]);
+        assert!(Cli::try_parse_from(valid).is_ok());
+    }
+
+    #[test]
     fn removed_entrypoints_are_unparseable() {
         for removed in ["project", "index", "resolve", "thread", "task-apply"] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());

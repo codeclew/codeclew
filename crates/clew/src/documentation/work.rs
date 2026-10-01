@@ -51,6 +51,9 @@ pub enum Command {
         /// Start a fresh attempt after a terminal unsuccessful draft; retains the prior report and accounting.
         #[arg(long, requires = "draft")]
         new_run: bool,
+        /// Repair one explicitly selected retained invalid draft answer.
+        #[arg(long, requires = "draft", conflicts_with = "new_run", value_parser = parse_run_identity)]
+        repair_from_run: Option<String>,
     },
     Status {
         #[arg(long)]
@@ -726,6 +729,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             config,
             draft,
             new_run,
+            repair_from_run,
         } => {
             let repository = Repository::open(&root)?;
             if draft {
@@ -734,6 +738,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     &work,
                     config.as_deref(),
                     new_run,
+                    repair_from_run.as_deref(),
                 )
             } else {
                 super::agent_jobs::run(&repository, &work, config.as_deref())
@@ -796,6 +801,14 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 rendered.process_diagram.as_ref(),
             )
         }
+    }
+}
+
+fn parse_run_identity(value: &str) -> Result<String, String> {
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(value.to_owned())
+    } else {
+        Err("run ID must contain exactly 32 hexadecimal characters".into())
     }
 }
 

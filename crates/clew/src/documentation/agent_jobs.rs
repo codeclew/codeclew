@@ -550,7 +550,24 @@ pub struct RunReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) draft_repair: Option<DraftRepairOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<recovery::CheckpointRef>,
+}
+
+const DRAFT_REPAIR_SCHEMA: &str = "codeclew-operation-draft-repair/1.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DraftRepairOrigin {
+    pub(super) schema: String,
+    pub(super) source_run: String,
+    pub(in crate::documentation::agent_jobs) source_checkpoint: recovery::CheckpointRef,
+    pub(super) source_invocation: String,
+    pub(super) source_input_digest: String,
+    pub(super) source_result_digest: String,
+    pub(super) packet_digest: String,
+    pub(super) source_authoring_contract: String,
 }
 
 const RUN_CHECKPOINT_SCHEMA: &str = "codeclew-documentation-agent-run-checkpoint/1.0";
@@ -573,6 +590,8 @@ struct RunCheckpoint {
     config_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     execution_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_repair: Option<DraftRepairOrigin>,
     driver_digests: BTreeMap<String, String>,
     phase: String,
     pages: Vec<Value>,
@@ -654,6 +673,7 @@ impl RunCheckpoint {
             snapshot,
             config_digest,
             execution_mode: report.execution_mode.clone(),
+            draft_repair: report.draft_repair.clone(),
             driver_digests,
             phase: "AUTHOR".into(),
             pages: Vec::new(),
@@ -702,6 +722,11 @@ impl RunCheckpoint {
         if self.execution_mode != report.execution_mode {
             return Err(invalid(
                 "RECOVERY_MODE_MISMATCH: saved phase belongs to a different execution mode",
+            ));
+        }
+        if self.draft_repair != report.draft_repair {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_MISMATCH: saved draft repair origin differs from the run report",
             ));
         }
         if !matches!(
@@ -794,6 +819,14 @@ fn latest_report(repo: &Repository, work: &str) -> Result<Option<RunReport>, Cle
     let run = pointer["run"]
         .as_str()
         .ok_or_else(|| invalid("RECOVERY_REPORT_CORRUPT: latest run pointer is invalid"))?;
+    load_report_by_id(repo, work, run).map(Some)
+}
+
+pub(super) fn load_report_by_id(
+    repo: &Repository,
+    work: &str,
+    run: &str,
+) -> Result<RunReport, ClewError> {
     let report: RunReport =
         store::read(&repo.path(&report_path(run)?)?, 4 * 1024 * 1024).map_err(|error| {
             invalid(format!(
@@ -806,10 +839,10 @@ fn latest_report(repo: &Repository, work: &str) -> Result<Option<RunReport>, Cle
         || report.run != run
     {
         return Err(invalid(
-            "RECOVERY_REPORT_MISMATCH: latest report belongs to another Work or run",
+            "RECOVERY_REPORT_MISMATCH: selected report belongs to another Work or run",
         ));
     }
-    Ok(Some(report))
+    Ok(report)
 }
 fn save_report(repo: &Repository, report: &RunReport) -> Result<(), ClewError> {
     let guard = repo.lock()?;
@@ -881,7 +914,7 @@ pub fn status(
         rows,
         cursor,
         limit,
-        serde_json::json!({"reportSchema":report.schema,"run":report.run,"work":report.work,"status":report.status,"executionMode":report.execution_mode,"draft":report.draft,"configDigest":report.config_digest,"proposal":report.proposal,"publication":report.publication,"gap":report.gap,"contextBudget":report.context_budget}),
+        serde_json::json!({"reportSchema":report.schema,"run":report.run,"work":report.work,"status":report.status,"executionMode":report.execution_mode,"draft":report.draft,"draftRepair":report.draft_repair,"configDigest":report.config_digest,"proposal":report.proposal,"publication":report.publication,"gap":report.gap,"contextBudget":report.context_budget}),
     )
 }
 pub fn cancel(repo: &Repository, work: &str) -> Result<Value, ClewError> {
@@ -4509,6 +4542,7 @@ pub fn run(
             context_budget: None,
             execution_mode: None,
             draft: None,
+            draft_repair: None,
             checkpoint: None,
         };
         let mut checkpoint = None;
@@ -4584,8 +4618,9 @@ pub fn run_operation_draft(
     id: &str,
     config_path: Option<&std::path::Path>,
     new_run: bool,
+    repair_from_run: Option<&str>,
 ) -> Result<Value, ClewError> {
-    operation_draft::run(repo, id, config_path, new_run)
+    operation_draft::run(repo, id, config_path, new_run, repair_from_run)
 }
 
 fn finalize_failed_run(
@@ -4837,6 +4872,7 @@ mod input_cap_tests {
             context_budget: None,
             execution_mode: None,
             draft: None,
+            draft_repair: None,
             checkpoint: None,
         };
         let mut remaining = 2;
@@ -5305,6 +5341,7 @@ mod input_cap_tests {
             context_budget: None,
             execution_mode: None,
             draft: None,
+            draft_repair: None,
             checkpoint: None,
         };
         let checkpoint = RunCheckpoint::new(
@@ -5398,6 +5435,7 @@ mod input_cap_tests {
             context_budget: None,
             execution_mode: None,
             draft: None,
+            draft_repair: None,
             checkpoint: Some(recovery::CheckpointRef {
                 schema: "codeclew-documentation-recovery-checkpoint-ref/1.0".into(),
                 run: run.clone(),
@@ -7070,6 +7108,7 @@ mod input_cap_tests {
             context_budget: None,
             execution_mode: None,
             draft: None,
+            draft_repair: None,
             checkpoint: None,
         };
         let mut driver = Role {
@@ -7227,6 +7266,7 @@ mod input_cap_tests {
             context_budget: None,
             execution_mode: None,
             draft: None,
+            draft_repair: None,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(
