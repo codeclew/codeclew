@@ -554,25 +554,31 @@ clew docs work status --root /work/architecture --work WORK_ID
 
 The author receives only the compact operation packet, common language and
 source-as-untrusted-data instructions, and
-`schemas/documentation/operation-answer-1.1.schema.json`. New draft answers use
-`codeclew-operation-answer/1.1`; the prior 1.0 answer remains available for
-offline rendering. Version 1.1 adds shared `preparations` that describe
-evidence-supported input transformations, checks, and failures. Steps link to
-shared explanations with `preparationRefs`; links do not assert execution or
-order. The rendered data-movement view uses only explicit step `from` and `to`
-values and leaves missing endpoints unknown.
+`schemas/documentation/operation-answer-1.2.schema.json`. New draft answers use
+`codeclew-operation-answer/1.2`; saved 1.0 and 1.1 answers remain available for
+offline rendering. Version 1.2 adds required `glossaryRefs` on claims and steps.
+Version 1.1 added shared `preparations` that describe evidence-supported input
+transformations, checks, and failures; they remain in 1.2. Steps link to shared
+explanations with `preparationRefs`; links do not assert execution or order. The
+rendered data-movement view uses only explicit step `from` and `to` values and
+leaves missing endpoints unknown.
 Codeclew validates the returned packet digest and citation labels, then saves
 `answer.json`, `operation.md`, `index.html`, the packet and its separate
 operator-only audit under `.codeclew/drafts/WORK_ID`. Status is `DRAFT` /
 `UNREVIEWED`; the command does not publish or create a proposal. One author call
 is admitted. A saved answer is reused to restore missing draft files. An invalid
-answer is retained without an author repair, and a dispatch without a saved
-response is marked uncertain with its maximum reservation retained; rerunning
-that Work does not dispatch another call. New operation Work persists a
-centrally selected `authoringContract` covering both the answer schema and
-generic author policy. Material changes to either require a new identity; prepare
-new Work from the same saved snapshot to use it. The operator does not edit old
-Work records or set an identity to reuse completed results. This recipe covers the HTTP endpoint
+answer is retained without an author repair. A terminal `ANSWER_INVALID` result
+may be revalidated only from its digest-bound saved author result after the
+selected invocation identity, immutable input, checkpoint and report bindings
+match; this makes no new driver dispatch, and an answer that still fails
+validation remains invalid. A dispatch without a saved response is
+marked uncertain with its maximum reservation retained; rerunning that Work does
+not dispatch another call. New operation Work persists the centrally selected
+`authoringContract` value `codeclew-operation-draft-authoring/1.3`, covering both
+the answer schema and generic author policy. Material changes to either require
+a new identity; prepare new Work from the same saved snapshot to use it. The
+operator does not edit old Work records or set an identity to reuse completed
+results. This recipe covers the HTTP endpoint
 profile. Use the next recipe for an internal callable whose behavior is not
 entered through an HTTP endpoint.
 

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Compare saved Kotlin and Rust edits against HEAD, inspect retained source and direct consequences, and keep coverage separate from freshness."><link rel="icon" href="./favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./nav-query.css"><title>Explain saved edits — Codeclew</title><link rel="stylesheet" href="./theme.css">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Compare saved Kotlin and Rust edits against HEAD, inspect retained source and direct consequences, and keep coverage separate from freshness."><link rel="icon" href="./favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./nav-query.css"><title>Explain saved edits — Codeclew</title><link rel="stylesheet" href="./theme.css?v=31b2348de0b2">
 </head>
 <body><!-- SITE_HEADER -->
 <a class="skip-link" href="#main-content">Skip to content</a>
@@ -11,50 +11,60 @@
 <a href="./index.html#install">Installation</a>
 <a href="./index.html#support">Language support</a>
 </div>
-<div class="nav-group"><p>Documentation</p>
-<a href="./architecture.html">Architecture</a>
+<div class="nav-group"><p>Guides</p>
 <a href="./nav-query.html">Navigation walkthrough</a>
 <a href="./documentation.html">Service documentation</a>
 <a href="./working-tree.html" aria-current="page">Saved edits guide</a>
 <a href="./working-tree-example.html">Saved edits example</a>
+<a href="./documentation.html#process-draft">Internal process draft</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./evidence.html">Release evidence</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
 <a href="./extend.html">Extend Codeclew</a>
 </div>
-<div class="nav-group"><p>Research</p>
-<a href="./evidence.html">Evidence &amp; studies</a>
-<a href="./pilot.html">Spring case study</a>
+<div class="nav-group"><p>Archive</p>
+<a href="./pilot.html">Historical Spring case</a>
 </div></div></details>
-    <a href="./documentation.html">Documentation</a>
-    <a href="./evidence.html">Evidence</a>
+    <a href="./documentation.html">Service docs</a>
+    <a href="./evidence.html">Release evidence</a>
     <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
   </nav>
   <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>
 <!-- /SITE_HEADER -->
 <main class="shell navdoc" id="main-content"><section class="navdoc-hero"><div class="hero-copy"><div class="kicker">Saved-edit analysis · available since v0.4.0</div><h1>Review edits.<br><em>Inspect their consequences.</em></h1><p class="lede">Compare the files you have saved against pinned HEAD. Open changed declarations, direct consumers and the exact code supporting each finding.</p><p>Available for Kotlin and Rust. Kotlin can include supported direct consumers; Rust retains syntax-level evidence. <a href="./index.html#support">See language boundaries →</a></p><p><a class="button primary" href="./working-tree-example.html">Explore the retained example ↗</a></p></div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
 <!-- SITE_BREADCRUMB -->
-<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Documentation</span><span aria-hidden="true">/</span><span aria-current="page">Saved edits guide</span></nav>
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Guides</span><span aria-hidden="true">/</span><span aria-current="page">Saved edits guide</span></nav>
 <!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
 <aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
 <a href="./index.html">Home</a>
 <a href="./index.html#install">Installation</a>
 <a href="./index.html#support">Language support</a>
 </div>
-<div class="nav-group"><p>Documentation</p>
-<a href="./architecture.html">Architecture</a>
+<div class="nav-group"><p>Guides</p>
 <a href="./nav-query.html">Navigation walkthrough</a>
 <a href="./documentation.html">Service documentation</a>
 <a href="./working-tree.html" aria-current="page">Saved edits guide</a>
 <a href="./working-tree-example.html">Saved edits example</a>
+<a href="./documentation.html#process-draft">Internal process draft</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./evidence.html">Release evidence</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
 <a href="./extend.html">Extend Codeclew</a>
 </div>
-<div class="nav-group"><p>Research</p>
-<a href="./evidence.html">Evidence &amp; studies</a>
-<a href="./pilot.html">Spring case study</a>
+<div class="nav-group"><p>Archive</p>
+<a href="./pilot.html">Historical Spring case</a>
 </div></nav></details>
 <a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
 <!-- /SITE_SIDEBAR --><div class="page-content">
@@ -77,16 +87,21 @@ clew change forget --comparison &lt;returned-id&gt;</code></pre><p>Use repositor
 <a href="./index.html#install">Installation</a>
 <a href="./index.html#support">Language support</a>
 </div>
-<div class="nav-group"><p>Documentation</p>
-<a href="./architecture.html">Architecture</a>
+<div class="nav-group"><p>Guides</p>
 <a href="./nav-query.html">Navigation walkthrough</a>
 <a href="./documentation.html">Service documentation</a>
 <a href="./working-tree.html" aria-current="page">Saved edits guide</a>
 <a href="./working-tree-example.html">Saved edits example</a>
+<a href="./documentation.html#process-draft">Internal process draft</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./evidence.html">Release evidence</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
 <a href="./extend.html">Extend Codeclew</a>
 </div>
-<div class="nav-group"><p>Research</p>
-<a href="./evidence.html">Evidence &amp; studies</a>
-<a href="./pilot.html">Spring case study</a>
+<div class="nav-group"><p>Archive</p>
+<a href="./pilot.html">Historical Spring case</a>
 </div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
-<!-- /SITE_FOOTER --><script src="./app.js" defer></script></body></html>
+<!-- /SITE_FOOTER --><script src="./app.js?v=0a41a6285413" defer></script></body></html>

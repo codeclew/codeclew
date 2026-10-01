@@ -1,14 +1,15 @@
 # Documentation cache lifecycle
 
-Version 0.10 requires fresh SQLite-only documentation roots. Old loose objects,
-inline Check/Work and older narrative/binding formats are unsupported. Reindex
-into a new root; the product does not migrate or delete old state.
+Historical note: this describes the first docs-cache normalization slice
+implemented under `20260916-docs-cache-normalization-v2`; it is not the current
+storage contract. At that point, Version 0.10 required fresh SQLite-only
+documentation roots, and old loose objects, inline Check/Work and older
+narrative/binding formats were unsupported. For current storage behavior, see
+the [docs snapshot data-plane contract](docs-snapshot-store.md#current-format-object-storage).
 
-Operational design and runbook for the normalized docs-local cache. This
-documents the first storage slice implemented under
-`20260916-docs-cache-normalization-v2` and separates implemented scope from
-explicitly deferred scope. It is an operational reference, not an authorization
-to delete or migrate user data.
+This historical operational design separates implemented scope from explicitly
+deferred scope for that first storage slice. It is not an authorization to delete
+or migrate user data.
 
 ## Implemented: immutable content-addressed object store
 

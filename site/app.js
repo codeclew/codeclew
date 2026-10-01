@@ -96,7 +96,7 @@ if (button && command) {
   }
   trigger.addEventListener("click", openSearch);
   dialog.querySelector("[data-close-search]").addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", () => trigger.focus());
+  dialog.addEventListener("close", () => trigger.focus({ preventScroll: true }));
   dialog.addEventListener("click", event => {
     const box = dialog.getBoundingClientRect();
     if (event.target === dialog && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) dialog.close();

@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Maintain service explanations and source-linked diagrams, check freshness and render an offline site with Codeclew.">
+    <meta name="description" content="Maintain service documentation, explore an experimental internal-process draft, and understand what publication changes with Codeclew v0.13.1.">
     <meta name="theme-color" content="#fdfaf2">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
     <title>Service documentation — Codeclew</title>
-  <link rel="stylesheet" href="./theme.css">
+  <link rel="stylesheet" href="./theme.css?v=31b2348de0b2">
 </head>
   <body>
     <!-- SITE_HEADER -->
@@ -21,134 +21,76 @@
 <a href="./index.html#install">Installation</a>
 <a href="./index.html#support">Language support</a>
 </div>
-<div class="nav-group"><p>Documentation</p>
-<a href="./architecture.html">Architecture</a>
+<div class="nav-group"><p>Guides</p>
 <a href="./nav-query.html">Navigation walkthrough</a>
 <a href="./documentation.html" aria-current="page">Service documentation</a>
 <a href="./working-tree.html">Saved edits guide</a>
 <a href="./working-tree-example.html">Saved edits example</a>
+<a href="./documentation.html#process-draft">Internal process draft</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./evidence.html">Release evidence</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
 <a href="./extend.html">Extend Codeclew</a>
 </div>
-<div class="nav-group"><p>Research</p>
-<a href="./evidence.html">Evidence &amp; studies</a>
-<a href="./pilot.html">Spring case study</a>
+<div class="nav-group"><p>Archive</p>
+<a href="./pilot.html">Historical Spring case</a>
 </div></div></details>
-    <a href="./documentation.html" aria-current="page">Documentation</a>
-    <a href="./evidence.html">Evidence</a>
+    <a href="./documentation.html" aria-current="page">Service docs</a>
+    <a href="./evidence.html">Release evidence</a>
     <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
   </nav>
   <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>
 <!-- /SITE_HEADER -->
 
     <main class="docs-page shell" id="main-content">
       <section class="docs-hero"><div class="hero-copy">
-<div class="kicker">Service documentation · v0.11.0</div><h1>Keep the explanation.<br><em>Keep the source close.</em></h1><p class="lede">Give your team service explanations, internal-flow diagrams and linked decision tables, with supporting source close at hand. When the code changes, see which parts need another look.</p><div class="hero-links"><a class="primary" href="https://github.com/codeclew/codeclew/blob/v0.11.0/docs/operations/field-documentation.md">Start the documentation walkthrough ↗</a><a class="secondary" href="#source-example">Inspect a source-linked example ↓</a></div>
+<div class="kicker">Documentation paths · v0.13.1</div><h1>Keep the explanation.<br><em>Keep the source close.</em></h1><p class="lede">Maintain service knowledge, draft one explanation for an internal Java method, or record an explicit release-history entry. Each path keeps its evidence and status visible.</p><div class="hero-links"><a class="primary" href="#task-paths">Choose a documentation path ↓</a><a class="secondary" href="#process-draft">Inspect the internal-process draft ↘</a></div>
 </div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
 <!-- SITE_BREADCRUMB -->
-<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Documentation</span><span aria-hidden="true">/</span><span aria-current="page">Service documentation</span></nav>
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Guides</span><span aria-hidden="true">/</span><span aria-current="page">Service documentation</span></nav>
 <!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
 <aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
 <a href="./index.html">Home</a>
 <a href="./index.html#install">Installation</a>
 <a href="./index.html#support">Language support</a>
 </div>
-<div class="nav-group"><p>Documentation</p>
-<a href="./architecture.html">Architecture</a>
+<div class="nav-group"><p>Guides</p>
 <a href="./nav-query.html">Navigation walkthrough</a>
 <a href="./documentation.html" aria-current="page">Service documentation</a>
 <a href="./working-tree.html">Saved edits guide</a>
 <a href="./working-tree-example.html">Saved edits example</a>
+<a href="./documentation.html#process-draft">Internal process draft</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./evidence.html">Release evidence</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
 <a href="./extend.html">Extend Codeclew</a>
 </div>
-<div class="nav-group"><p>Research</p>
-<a href="./evidence.html">Evidence &amp; studies</a>
-<a href="./pilot.html">Spring case study</a>
+<div class="nav-group"><p>Archive</p>
+<a href="./pilot.html">Historical Spring case</a>
 </div></nav></details>
 <a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
 <!-- /SITE_SIDEBAR --><div class="page-content">
 
 
+<section class="architecture-section" id="task-paths"><div class="kicker">Choose the documentation task</div><h2>One service, one method, or release history.</h2><p>These routes use the same retained evidence at different stages. A local method draft remains separate from the service documentation and release-history workflows.</p><div class="architecture-cards"><article><h3>Maintain service documentation</h3><p>Use <code>clew docs</code> to register services, capture source, author explanations and update working pages. Default <code>docs render</code>, proposal publication and accepted Work jobs update the working pages and <code>docs/index.html</code> pointer to the current internal bundle.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/operations/field-documentation.md">Open the service-documentation guide ↗</a></p></article><article><h3>Draft one internal process explanation</h3><p>The experimental v0.13.1 path prepares one source-local Java method explanation under <code>.codeclew/drafts/WORK_ID</code>. It writes a structured answer, Markdown view and HTML reader; this draft creates no proposal.</p><p><a href="#process-draft">Inspect the current sample ↓</a></p></article><article><h3>Record a released reader version</h3><p>Only <code>clew docs render --publish</code> records a reader in released history. It is separate from updating working <code>docs/index.html</code> and from the local-only method-draft command.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/operations/source-documentation.md#coordinated-updates-and-history">Read about publication and history ↗</a></p></article></div></section>
 <section class="architecture-section" id="service-docs"><div class="kicker">An explanation you can come back to</div><h2>From service map to source code.</h2><p><code>clew docs</code> maintains a separate documentation repository: a service overview, a page per service and named interaction scenarios. Your agent authors the narrative; Codeclew keeps it connected to the selected source.</p><div class="architecture-cards"><article><h3>Read the story</h3><p>Follow an operation through a plain-language explanation, a sequence diagram and its contract details.</p></article><article><h3>Open the evidence</h3><p>Select a diagram step to inspect retained source. Declared service connections stay distinguishable from compiler facts.</p></article><article><h3>Check what changed</h3><p>Freshness checks flag changes to registered source and contracts. Conservative source profiles can also flag formatting-only edits.</p></article></div><p>Render an offline HTML site or use the JSON, Markdown and Mermaid output. Keep manual notes outside generated output; refresh affected explanations after review.</p></section>
-<section class="architecture-section" id="documentation-scope"><div class="kicker">Released scope · v0.11.0</div><h2>Start locally with one service.</h2><p>Document committed Python, Java or Kotlin source even when the application cannot build. Register its source scope, capture evidence, and ask your agent to explain responsibilities, entities, inputs, outputs and failure cases. Optional compiler facts enrich the same documentation.</p><p>Keep services, scenarios and entity dataflows in a separate documentation repository. The offline reader includes source references, interface cards, declared OpenAPI contracts, protected notes, publication history and visible gaps. Source freshness and meaning review are separate: local publication can remain UNASSESSED.</p><p><a href="https://github.com/codeclew/codeclew/releases/tag/v0.11.0">Download v0.11.0 ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/v0.11.0/docs/operations/field-documentation.md">Local setup and authoring guide ↗</a></p><div class="docs-note">The local workflow needs no model gateway or GitLab runner. Your chosen agent's model and data settings still apply. Declared relationships do not prove deployed connections. GitLab integration and the 40-service workload remain deferred.</div></section>
-<section class="architecture-section" id="native-visuals"><div class="kicker">Native visuals · v0.11.0</div><h2>Show what happens inside the service.</h2><p>Ask your agent to explain a selected internal process from retained evidence. Publish its flow and decision tables alongside the service's responsibilities or an operation's explanation. The generated reader renders these local assets directly; no separate atlas or diagram CDN is required.</p><div class="architecture-cards"><article><h3>Follow the flow</h3><p>Source-linked nodes and arrows explain supported action order and branch conditions. A dependency map shows structural relationships and does not imply execution order.</p></article><article><h3>Understand a decision</h3><p>A table links to the flow node it explains. FIRST means the first matching row wins. Unsupported links and unknown rule policies remain explicit instead of becoming invented connections.</p></article><article><h3>Retain the evidence</h3><p>Visuals share their containing explanation's saved version, freshness and meaning review. A source change can flag them for another look without automatically rerunning a model.</p></article></div><p>This is an authoring workflow over saved evidence, not automatic discovery of every business process. Selected flows do not establish complete service coverage or runtime behavior. Decision tables document source interpretation; they are not executable DMN.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.11.0/docs/operations/field-documentation.md#publish-internal-flows-and-decisions-in-service-pages">Author a flow and linked decision table ↗</a> · <a href="./evidence.html#release-0-11-0">Release scope and qualification status →</a></p></section>
+<section class="architecture-section" id="documentation-scope"><div class="kicker">Current service scope · v0.13.1</div><h2>Start locally with one service.</h2><p>Document committed Python, Java or Kotlin source even when the application cannot build. Register its source scope, capture evidence, and ask your agent to explain responsibilities, entities, inputs, outputs and failure cases. Optional compiler facts enrich the same documentation.</p><p>Keep services, scenarios and entity dataflows in a separate documentation repository. The offline reader includes source references, interface cards, declared OpenAPI contracts, protected notes, publication history and visible gaps. Source freshness and meaning review are separate: local publication can remain UNASSESSED.</p><p><a href="https://github.com/codeclew/codeclew/releases/tag/v0.13.1">Download v0.13.1 ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/operations/field-documentation.md">Local setup and authoring guide ↗</a></p><div class="docs-note">The local workflow needs no model gateway or GitLab runner. Your chosen agent's model and data settings still apply. Declared relationships do not prove deployed connections. GitLab integration and the 40-service workload remain deferred.</div></section>
+<section class="architecture-section" id="native-visuals"><div class="kicker">Service-documentation visuals · v0.13.1</div><h2>Describe a selected internal flow.</h2><p>Ask your agent to explain a selected internal process from retained evidence. Publish its flow and decision tables alongside the service's responsibilities or an operation's explanation. The generated reader renders these local assets directly; no separate atlas or diagram CDN is required.</p><div class="architecture-cards"><article><h3>Follow the flow</h3><p>Source-linked nodes and arrows explain supported action order and branch conditions. A dependency map shows structural relationships and does not imply execution order.</p></article><article><h3>Understand a decision</h3><p>A table links to the flow node it explains. FIRST means the first matching row wins. Unsupported links and unknown rule policies remain explicit instead of becoming invented connections.</p></article><article><h3>Retain the evidence</h3><p>Visuals share their containing explanation's saved version, freshness and meaning review. A source change can flag them for another look without automatically rerunning a model.</p></article></div><p>This is an authoring workflow over saved evidence, not automatic discovery of every business process. Selected flows do not establish complete service coverage or runtime behavior. Decision tables document source interpretation; they are not executable DMN. The experimental method draft below is a separate local-only artifact.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/operations/field-documentation.md#publish-internal-flows-and-decisions-in-service-pages">Author a flow and linked decision table ↗</a></p></section>
 <section class="architecture-section" id="offline-help"><div class="kicker">Included from the first command</div><h2>A fresh repository already has help.</h2><p>Run <code>clew docs init --root ./architecture --title "Service documentation"</code>. Open <code>architecture/docs/help.html</code> for Codeclew setup, agent prompts, notes, scenarios and dataflows, or <code>architecture/docs/runbooks.html</code> for Codeclew operational procedures. Both guides work offline and exist before you register the first service.</p><p>New publications share navigation, the Codeclew favicon and the blue and cream reader theme. Service-specific runbooks come from your source and owner knowledge. Older publication URLs retain their original immutable pages.</p><p>The top-level <code>clew --help</code> now lists <code>skill</code>; use <code>clew skill install --agent codex</code> to install the bundled agent instructions. To move existing documentation, preserve its current-format saved state and first inspect the retained snapshot. Bind source checkouts with <code>clew docs bind</code> when a source check is needed; use <code>clew docs check --service SERVICE_ID</code> for the selected service. Reading or publishing saved evidence does not require a new capture.</p><div class="docs-note"><code>RETURNED_INPUT_DIGEST</code> in command examples means the complete <code>inputDigest</code> returned by the preceding list or show command, including <code>sha256:</code>. It protects a catalogue update against concurrent changes.</div><h3>See what compiler analysis added</h3><p>In a service page, open <strong>Coverage and evidence → Analysis evidence</strong>. Inspect the provider status, mapped declaration count and example semantic facts. For Kotlin 2.3 projects, install the optional <code>kotlin23</code> pack and configure an admitted semantic profile. K2 can add resolved identities, types, nullability and JVM signatures; syntax-only pages explicitly show that the provider was not requested. Compiler facts do not establish deployed connections or reviewed business meaning.</p></section>
-<section class="architecture-section" id="notes-and-comments"><div class="kicker">Keep what your team knows</div><h2>Add a note to the thing it explains.</h2><p>Ask your agent to attach your original Markdown note to a service, one of its standard sections, a scenario, an entity definition or a dataflow. One note can address several objects. Preserve the original wording and keep the evidence-based answer separate.</p><div class="architecture-table-wrap"><table class="architecture-table"><caption>Example note targets</caption><thead><tr><th>Scope</th><th>Target</th></tr></thead><tbody><tr><td>Whole service</td><td><code>service:orders</code></td></tr><tr><td>Inputs and entry points</td><td><code>service:orders/section-ingress</code></td></tr><tr><td>Scenario</td><td><code>scenario:reservation-lifecycle</code></td></tr><tr><td>Entity definition</td><td><code>entity:reservation</code></td></tr><tr><td>Dataflow</td><td><code>view:stock-quantity</code></td></tr></tbody></table></div><p>For example: “Attach this question to entity:reservation: Does TTL still apply after confirmation? Preserve my wording, investigate the registered source, and document the answer with evidence and remaining uncertainties.”</p><p>Notes use Markdown and typed associations; the reader has no comment composer or discussion threads in 0.11.0. For a specific method or paragraph, use a section target and identify the exact subject in the note. That text is a focus hint, not a validated source anchor.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.11.0/skills/codeclew/references/service-documentation.md#complete-local-authoring-without-an-external-runner">Agent prompts, detail preferences and examples ↗</a></p></section>
-<section class="architecture-section" id="source-example"><div class="kicker">Historical interactive example</div><h2>Try following a claim to its source.</h2><p>The example below documents Codeclew's own change workflow at revision <code>6281138</code>. Select a step, then switch to Evidence for the supporting fragment. It illustrates source-linked reading; it is an earlier hand-built example, not output from the v0.5.0 service-documentation renderer.</p></section>
-      <section class="docs-controls" aria-label="Documentation detail level">
-        <div>
-          <span class="control-label">Detail level</span>
-          <div class="segmented" role="group" aria-label="Choose documentation detail">
-            <button type="button" data-doc-level="overview" aria-pressed="true">Overview</button>
-            <button type="button" data-doc-level="engineering" aria-pressed="false">Engineering</button>
-            <button type="button" data-doc-level="evidence" aria-pressed="false">Evidence</button>
-          </div>
-        </div>
-        <a class="machine-link" href="./evidence/codeclew-self-documentation.json">Machine-readable claims <span>→</span></a>
-      </section>
-
-      <section class="docs-workbench" data-doc-detail="overview">
-        <div class="thread-panel">
-          <div class="panel-heading"><span>Scenario</span><b>From intent to a safely published change</b></div>
-          <div class="thread-graph" aria-label="Codeclew change lifecycle graph">
-            <button class="thread-node is-active" type="button" data-doc-node="admit"><small>01 · Authority</small><b>Admit</b><span>Bind release, repo, ref, language and compilation.</span></button>
-            <span class="thread-arrow" aria-hidden="true">→</span>
-            <button class="thread-node" type="button" data-doc-node="navigate"><small>02 · Discover</small><b>Navigate</b><span>Return bounded fact-bound decision cards.</span></button>
-            <span class="thread-arrow" aria-hidden="true">→</span>
-            <button class="thread-node" type="button" data-doc-node="select"><small>03 · Decide</small><b>Select exact source</b><span>Resolve one declaration or fail with a typed result.</span></button>
-            <span class="thread-arrow" aria-hidden="true">→</span>
-            <button class="thread-node" type="button" data-doc-node="document"><small>04 · Explain</small><b>Record evidence</b><span>Keep proven facts separate from obligations.</span></button>
-            <span class="thread-arrow" aria-hidden="true">→</span>
-            <button class="thread-node" type="button" data-doc-node="prepare"><small>05 · Isolate</small><b>Prepare</b><span>Validate a closed plan in a candidate worktree.</span></button>
-            <span class="thread-arrow" aria-hidden="true">→</span>
-            <button class="thread-node" type="button" data-doc-node="publish"><small>06 · Mutate</small><b>Publish</b><span>Recheck freshness and require explicit approval.</span></button>
-            <div class="thread-branch" aria-hidden="true"><span>↘</span></div>
-            <button class="thread-node recovery-node" type="button" data-doc-node="recover"><small>07 · Exception</small><b>Recover or stop</b><span>Preserve developer work when authority changes.</span></button>
-          </div>
-          <div class="dot-source" aria-label="DOT representation">
-            <div><span>DOT view</span><button type="button" id="toggle-dot" aria-expanded="false">Show</button></div>
-            <pre id="dot-code" hidden>digraph safe_change {
-  Admit -&gt; Navigate -&gt; SelectExactSource -&gt; RecordEvidence;
-  RecordEvidence -&gt; Prepare -&gt; Publish;
-  Publish -&gt; RecoverOrStop [label="authority changed"];
-}</pre>
-          </div>
-        </div>
-
-        <aside class="evidence-inspector" aria-live="polite">
-          <div class="inspector-topline"><span id="node-step">01 · Authority</span><span class="authority-badge" id="node-authority">Released contract</span></div>
-          <h2 id="node-title">Admit the exact task authority</h2>
-          <p class="node-summary" id="node-summary">Codeclew starts from one installed release, repository, target ref, language and compilation instead of inferring a convenient project boundary.</p>
-          <div class="engineering-detail">
-            <h3>Mechanism</h3>
-            <p id="node-mechanism">The admission result must report RELEASE runtime authority, the installed launcher and no source fallback.</p>
-            <pre><code id="node-command">clew context open --repo … --target-ref … --language … --compilation …</code></pre>
-          </div>
-          <div class="evidence-detail">
-            <h3>Bound fact</h3>
-            <blockquote id="node-excerpt">Require runtimeMode=RELEASE, launcherAuthority=INSTALLED_RELEASE, and sourceFallbackAllowed=false.</blockquote>
-            <h3>Source fragment</h3>
-            <pre class="evidence-code"><code id="node-code">{
-  "runtimeMode": "RELEASE",
-  "launcherAuthority": "INSTALLED_RELEASE",
-  "sourceFallbackAllowed": false
-}</code></pre>
-            <div class="evidence-meta"><span id="node-kind">Public agent contract</span><span id="node-certainty">DECLARED · EXACT REVISION</span></div>
-            <a id="node-source" href="https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/.agents/skills/codeclew/SKILL.md#L20-L43">Open supporting fragment <span>↗</span></a>
-          </div>
-          <div class="node-limit"><b>Boundary</b><p id="node-limit">This proves the released task-admission contract. It does not prove that every repository is supported or that a later analysis is complete.</p></div>
-        </aside>
-      </section>
-
-      <section class="docs-takeaway">
-        <div><div class="kicker">Why this format matters</div><h2>Documentation remains useful when confidence is local.</h2></div>
-        <div><p>A reader can inspect each statement independently. A released contract, a syntax observation, a compiler fact and an unresolved obligation do not inherit one another's confidence merely because they appear in the same graph.</p><a href="./evidence.html">Explore the historical studies <span>→</span></a><br><a href="https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf">Read the PDF study <span>→</span></a></div>
-      </section>
+<section class="architecture-section" id="notes-and-comments"><div class="kicker">Keep what your team knows</div><h2>Add a note to the thing it explains.</h2><p>Ask your agent to attach your original Markdown note to a service, one of its standard sections, a scenario, an entity definition or a dataflow. One note can address several objects. Preserve the original wording and keep the evidence-based answer separate.</p><div class="architecture-table-wrap"><table class="architecture-table"><caption>Example note targets</caption><thead><tr><th>Scope</th><th>Target</th></tr></thead><tbody><tr><td>Whole service</td><td><code>service:orders</code></td></tr><tr><td>Inputs and entry points</td><td><code>service:orders/section-ingress</code></td></tr><tr><td>Scenario</td><td><code>scenario:reservation-lifecycle</code></td></tr><tr><td>Entity definition</td><td><code>entity:reservation</code></td></tr><tr><td>Dataflow</td><td><code>view:stock-quantity</code></td></tr></tbody></table></div><p>For example: “Attach this question to entity:reservation: Does TTL still apply after confirmation? Preserve my wording, investigate the registered source, and document the answer with evidence and remaining uncertainties.”</p><p>Notes use Markdown and typed associations; the reader has no comment composer or discussion threads in v0.13.1. For a specific method or paragraph, use a section target and identify the exact subject in the note. That text is a focus hint, not a validated source anchor.</p></section>
+<section class="architecture-section" id="process-draft"><div class="kicker">Experimental internal-process draft · v0.13.1</div><h2 id="source-example">Internal process draft: follow one Java method.</h2><p>The public sample selects <code>TaskStateTransitions.promote(Task, Instant)</code> in the Maven <code>:/main</code> compilation. It explains that method's local decision and repository-call boundaries. The authored decision tree is displayed as pseudocode; the separate <code>process-flow.svg</code> is projected from retained source syntax. Neither view is a runtime trace.</p><div class="architecture-cards"><article><h3>Open the sample</h3><p>Browse the reader and its saved answer, operation note, source-flow image and provenance from this checked-in public fixture.</p><p><a href="./examples/task-promotion/index.html">Open the rendered sample ↗</a><br><a href="./examples/task-promotion/answer.json">Structured answer</a> · <a href="./examples/task-promotion/operation.md">Markdown output</a> · <a href="./examples/task-promotion/process-flow.svg">Source-flow SVG</a> · <a href="./examples/task-promotion/provenance.json">Run provenance</a></p></article><article><h3>Reproduce the scenario</h3><p>The pinned recipe prepares a clean fixture checkout, captures one Maven compilation, selects the exact callable and runs one configured author draft. New draft answers use <code>codeclew-operation-answer/1.2</code>.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/operations/task-promotion-draft.md">Open the v0.13.1 recipe ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/main/skills/codeclew/references/service-documentation.md#draft-one-internal-service-process-explanation">Current author schema and draft limits ↗</a></p></article><article><h3>Keep its limits visible</h3><p>The example does not establish a runtime caller, runtime execution order, later dispatch, external effects, database persistence or deployed behavior. It is one source-local scenario, not complete workflow qualification.</p><p>Native status remains <code>DRAFT</code> / <code>UNREVIEWED</code> and publication is <code>NOT_PUBLISHED</code>.</p></article></div><p class="docs-note">The configured author path in this recipe requires macOS Seatbelt. Linux supports source capture and external structured-answer rendering; this example does not qualify author execution on Linux. Hosting the checked-in reader here makes the sample viewable, but it does not change its native draft, review or publication status.</p><p>Sample provenance records one configured author call of 164.078 seconds and a saved-result replay that made no new author dispatch. Separate source-FIT and browser reviews accepted this scenario at desktop and mobile widths; native review status stayed <code>UNREVIEWED</code>. The timing is diagnostic for this run, not a latency claim.</p></section>
     </div></div></main>
 
     <!-- SITE_FOOTER -->
@@ -158,20 +100,24 @@
 <a href="./index.html#install">Installation</a>
 <a href="./index.html#support">Language support</a>
 </div>
-<div class="nav-group"><p>Documentation</p>
-<a href="./architecture.html">Architecture</a>
+<div class="nav-group"><p>Guides</p>
 <a href="./nav-query.html">Navigation walkthrough</a>
 <a href="./documentation.html" aria-current="page">Service documentation</a>
 <a href="./working-tree.html">Saved edits guide</a>
 <a href="./working-tree-example.html">Saved edits example</a>
+<a href="./documentation.html#process-draft">Internal process draft</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./evidence.html">Release evidence</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
 <a href="./extend.html">Extend Codeclew</a>
 </div>
-<div class="nav-group"><p>Research</p>
-<a href="./evidence.html">Evidence &amp; studies</a>
-<a href="./pilot.html">Spring case study</a>
+<div class="nav-group"><p>Archive</p>
+<a href="./pilot.html">Historical Spring case</a>
 </div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
 <!-- /SITE_FOOTER -->
-    <script src="./app.js" defer></script>
-    <script src="./documentation.js" defer></script>
+    <script src="./app.js?v=0a41a6285413" defer></script>
   </body>
 </html>

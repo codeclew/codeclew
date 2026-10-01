@@ -7,7 +7,7 @@
   },
   {
     "title": "A clearer path through your code.",
-    "url": "./index.html#explore-title",
+    "url": "./index.html#top",
     "description": "Home",
     "group": "Start here"
   },
@@ -36,327 +36,273 @@
     "group": "Start here"
   },
   {
-    "title": "Architecture",
-    "url": "./architecture.html",
-    "description": "How source snapshots, language facts and bounded context support an explanation.",
-    "group": "Documentation"
-  },
-  {
-    "title": "Each stage adds information and keeps its limits visible.",
-    "url": "./architecture.html#pipeline",
-    "description": "Architecture",
-    "group": "Documentation"
-  },
-  {
-    "title": "Start with the trigger, then follow the callable.",
-    "url": "./architecture.html#spring",
-    "description": "Architecture",
-    "group": "Documentation"
-  },
-  {
-    "title": "Select the committed snapshot. Keep local edits in place.",
-    "url": "./architecture.html#committed",
-    "description": "Architecture",
-    "group": "Documentation"
-  },
-  {
-    "title": "Recover at the stage that reported the problem.",
-    "url": "./architecture.html#recovery",
-    "description": "Architecture",
-    "group": "Documentation"
-  },
-  {
-    "title": "Source facts have different strengths.",
-    "url": "./architecture.html#compatibility",
-    "description": "Architecture",
-    "group": "Documentation"
-  },
-  {
-    "title": "Have another thread to follow?",
-    "url": "./architecture.html#extend",
-    "description": "Architecture",
-    "group": "Documentation"
-  },
-  {
     "title": "Navigation walkthrough",
     "url": "./nav-query.html",
-    "description": "Follow nav query from a scoped question to exact source evidence.",
-    "group": "Documentation"
+    "description": "Find an exact declaration and inspect its retained source evidence.",
+    "group": "Guides"
   },
   {
     "title": "Start with a precise question",
     "url": "./nav-query.html#claim-entry",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Check that this task can run",
     "url": "./nav-query.html#claim-admit",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Open a session and retain context",
     "url": "./nav-query.html#claim-context",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Return an error; attempt cleanup",
     "url": "./nav-query.html#claim-failure",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Separate ranking from a supported decision",
     "url": "./nav-query.html#claim-decision",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "One exact, fully covered identifier",
     "url": "./nav-query.html#claim-supported",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Keep candidates; explain what is missing",
     "url": "./nav-query.html#claim-abstain",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Return a bounded result you can continue",
     "url": "./nav-query.html#claim-result",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Optional: follow retained names",
     "url": "./nav-query.html#claim-references",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "A real result, with its limits intact.",
     "url": "./nav-query.html#reproduce",
     "description": "Navigation walkthrough",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Service documentation",
     "url": "./documentation.html",
-    "description": "Maintain source-linked service explanations, diagrams and freshness checks.",
-    "group": "Documentation"
+    "description": "Maintain service explanations or draft one internal process with source, pseudocode and visible limits.",
+    "group": "Guides"
+  },
+  {
+    "title": "One service, one method, or release history.",
+    "url": "./documentation.html#task-paths",
+    "description": "Service documentation",
+    "group": "Guides"
   },
   {
     "title": "From service map to source code.",
     "url": "./documentation.html#service-docs",
     "description": "Service documentation",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Start locally with one service.",
     "url": "./documentation.html#documentation-scope",
     "description": "Service documentation",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
-    "title": "Show what happens inside the service.",
+    "title": "Describe a selected internal flow.",
     "url": "./documentation.html#native-visuals",
     "description": "Service documentation",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "A fresh repository already has help.",
     "url": "./documentation.html#offline-help",
     "description": "Service documentation",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Add a note to the thing it explains.",
     "url": "./documentation.html#notes-and-comments",
     "description": "Service documentation",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
-    "title": "Try following a claim to its source.",
-    "url": "./documentation.html#source-example",
+    "title": "Internal process draft: follow one Java method.",
+    "url": "./documentation.html#process-draft",
     "description": "Service documentation",
-    "group": "Documentation"
-  },
-  {
-    "title": "Admit the exact task authority",
-    "url": "./documentation.html#node-title",
-    "description": "Service documentation",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Saved edits guide",
     "url": "./working-tree.html",
     "description": "Compare saved changes against HEAD and inspect their consequences.",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Inspect the method behind the example",
     "url": "./working-tree.html#report-evidence",
     "description": "Saved edits guide",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Saved edits example",
     "url": "./working-tree-example.html",
     "description": "An interactive retained report with before and after source.",
-    "group": "Documentation"
+    "group": "Guides"
   },
   {
     "title": "Select a declaration",
     "url": "./working-tree-example.html#selectionTitle",
     "description": "Saved edits example",
-    "group": "Documentation"
+    "group": "Guides"
+  },
+  {
+    "title": "Architecture",
+    "url": "./architecture.html",
+    "description": "How source snapshots, language facts and bounded context support an explanation.",
+    "group": "Reference"
+  },
+  {
+    "title": "Each stage adds information and keeps its limits visible.",
+    "url": "./architecture.html#pipeline",
+    "description": "Architecture",
+    "group": "Reference"
+  },
+  {
+    "title": "Start with the trigger, then follow the callable.",
+    "url": "./architecture.html#spring",
+    "description": "Architecture",
+    "group": "Reference"
+  },
+  {
+    "title": "Select the committed snapshot. Keep local edits in place.",
+    "url": "./architecture.html#committed",
+    "description": "Architecture",
+    "group": "Reference"
+  },
+  {
+    "title": "Recover at the stage that reported the problem.",
+    "url": "./architecture.html#recovery",
+    "description": "Architecture",
+    "group": "Reference"
+  },
+  {
+    "title": "Source facts have different strengths.",
+    "url": "./architecture.html#compatibility",
+    "description": "Architecture",
+    "group": "Reference"
+  },
+  {
+    "title": "Have another thread to follow?",
+    "url": "./architecture.html#extend",
+    "description": "Architecture",
+    "group": "Reference"
+  },
+  {
+    "title": "Release evidence",
+    "url": "./evidence.html",
+    "description": "Current release checks, the public process draft sample and qualification limits.",
+    "group": "Reference"
+  },
+  {
+    "title": "One source-local Java method draft.",
+    "url": "./evidence.html#release-0-13-1",
+    "description": "Release evidence",
+    "group": "Reference"
   },
   {
     "title": "Extend Codeclew",
     "url": "./extend.html",
     "description": "Contributor guide: add a capability, language adapter, build provider, framework rule or CLI workflow.",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
     "title": "Pick a small knot to untangle.",
     "url": "./extend.html#start",
     "description": "Extend Codeclew",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
     "title": "Where does your capability fit?",
     "url": "./extend.html#extension-points",
     "description": "Extend Codeclew",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
     "title": "Define what the result means.",
     "url": "./extend.html#contract",
     "description": "Extend Codeclew",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
     "title": "Add support for a scheduling annotation.",
     "url": "./extend.html#example",
     "description": "Extend Codeclew",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
     "title": "Follow the new path all the way through.",
     "url": "./extend.html#verify",
     "description": "Extend Codeclew",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
     "title": "Bring the capability and its proof.",
     "url": "./extend.html#contribute",
     "description": "Extend Codeclew",
-    "group": "Documentation"
+    "group": "Contribute"
   },
   {
-    "title": "Evidence & studies",
-    "url": "./evidence.html",
-    "description": "Release references and historical studies, with methods and limitations.",
-    "group": "Research"
-  },
-  {
-    "title": "Faster saved reads, visible phases.",
-    "url": "./evidence.html#release-0-11-1",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "Internal flows in the generated documentation.",
-    "url": "./evidence.html#release-0-11-0",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "Local documentation you can inspect.",
-    "url": "./evidence.html#release-evidence",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "Retained reports and measurements.",
-    "url": "./evidence.html#saved-edits",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "31 Spring entry points across two services.",
-    "url": "./evidence.html#spring-study",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "16/16 focused checks passed",
-    "url": "./evidence.html#kotlin-checks",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "3 of 9 candidates, 115 exact source lines",
-    "url": "./evidence.html#kotlin-navigation",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "3.795× fewer effective tokens",
-    "url": "./evidence.html#q1-effective-tokens",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "40.28× less tool output",
-    "url": "./evidence.html#q1-tool-output",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "Results on the site. Method and limitations in the PDF.",
-    "url": "./evidence.html#strict-gate",
-    "description": "Evidence & studies",
-    "group": "Research"
-  },
-  {
-    "title": "Spring case study",
+    "title": "Historical Spring case",
     "url": "./pilot.html",
     "description": "A historical two-service pilot: 31 Spring roots checked against committed source.",
-    "group": "Research"
+    "group": "Archive"
   },
   {
     "title": "Three trigger families. One missing documentation entry.",
     "url": "./pilot.html#result",
-    "description": "Spring case study",
-    "group": "Research"
+    "description": "Historical Spring case",
+    "group": "Archive"
   },
   {
     "title": "Bind the scope. Compare the complete inventory.",
     "url": "./pilot.html#method",
-    "description": "Spring case study",
-    "group": "Research"
+    "description": "Historical Spring case",
+    "group": "Archive"
   },
   {
     "title": "Inspect the send. Keep the handoff conditional.",
     "url": "./pilot.html#source-findings",
-    "description": "Spring case study",
-    "group": "Research"
+    "description": "Historical Spring case",
+    "group": "Archive"
   },
   {
     "title": "A declared trigger is a place to start investigating.",
     "url": "./pilot.html#limits",
-    "description": "Spring case study",
-    "group": "Research"
+    "description": "Historical Spring case",
+    "group": "Archive"
   },
   {
     "title": "Read the implementation. Keep distinct studies distinct.",
     "url": "./pilot.html#provenance",
-    "description": "Spring case study",
-    "group": "Research"
+    "description": "Historical Spring case",
+    "group": "Archive"
   }
 ]

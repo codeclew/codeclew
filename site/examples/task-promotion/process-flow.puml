@@ -1,0 +1,25 @@
+' CODECLEW_STATUS=DRAFT/UNREVIEWED/NOT_PUBLISHED
+' ORIGIN=SOURCE_LOCAL_NOT_EXECUTION_EVIDENCE
+' PACKET_DIGEST=sha256:1db6fa2df4d8d9c2e9498341a2984fe224b499d89d86412c5c3569a40d4956a2
+' ROOT_METHOD_ID=m0
+' ROOT_SOURCE_REFERENCE=s30
+' ROOT_SOURCE_EXCERPT=index.html#source-4
+@startuml
+!theme plain
+!pragma layout smetana
+!pragma useVerticalIf on
+title Source-local projection · Task promotion
+start
+:Entry: promote（task, now）;
+' evidence: method:class:example.dispatch.TaskStateTransitions#promote(Lexample/dispatch/Task;Ljava/time/Instant;)Z
+if (task.state <U+003D><U+003D> Task.State.READY) then (C01)
+:repository.changeState（...）;
+:return true;
+stop
+endif
+if (task.state <U+003D><U+003D> Task.State.WAITING<U+005F>RESPONSE <U+0026><U+0026> \ntask.deadline.isBefore<U+0028>now<U+0029>) then (C02)
+:repository.recordError（...）;
+endif
+:return false;
+stop
+@enduml

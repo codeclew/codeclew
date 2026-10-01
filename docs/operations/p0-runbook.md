@@ -6,9 +6,10 @@ handling changes in target repositories safely, and collecting investigation
 material without disclosing source code.
 
 P0 is a pilot operating model, not a general-availability commitment. Use the
-installed `clew` command for the public macOS release and `./clew` from a pinned
-checkout for source development. Running the binary directly from a runtime
-capsule and editing `CODECLEW_HOME` contents manually are unsupported.
+installed `clew` command for the public macOS and Linux release, and `./clew`
+from a pinned checkout for source development. Running the binary directly
+from a runtime capsule and editing `CODECLEW_HOME` contents manually are
+unsupported.
 
 ## 1. Supported scope
 
@@ -24,7 +25,12 @@ compiled package version. Use it together with `runtimeMode` and
 `supportMatrixDigest` when recording pilot admission; do not infer a version
 from a runtime path.
 
-P0 support:
+Selected mutation and pilot subset:
+
+This table lists the mutation and pilot contours covered by this runbook; it is
+not the full set of available read-only profiles. Check the installed
+capabilities and [README code-navigation guide](../../README.md#practical-code-navigation)
+for current language and profile entry points.
 
 | Profile | Read | Change and publish |
 |---|---:|---:|
@@ -62,14 +68,14 @@ updates the launcher. Codeclew is not compiled on the user's machine.
 
 Files are installed to these locations by default:
 
-- `~/.local/share/codeclew/releases/<version>-macos-<arch>-<profile>`;
+- `~/.local/share/codeclew/releases/<version>-<os>-<arch>-<profile>`;
 - `~/.local/bin/clew`, an atomic link to the selected release.
 
 Pin a version or override the directories with command-local variables:
 
 ```bash
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | \
-  CODECLEW_VERSION=v0.1.0 \
+  CODECLEW_VERSION=v0.13.1 \
   CODECLEW_INSTALL_ROOT=/absolute/private/path/releases \
   CODECLEW_BIN_DIR=/absolute/private/path/bin sh
 ```

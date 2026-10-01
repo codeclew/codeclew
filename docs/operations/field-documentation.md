@@ -155,9 +155,13 @@ For a generic author/reviewer `docs work run`, retry the **same Work with the sa
 
 For `docs work run --draft`, a saved raw answer is reused to render or restore
 the local draft without another author call. An invalid answer is retained with
-its usage and receives no hidden repair call. A dispatch with no durable result
-is reported as `DRAFT_UNCERTAIN`, retaining the maximum reservation; repeating
-the command does not redrive it. Inspect the retained report and provider state;
+its usage and receives no hidden repair call. A terminal `ANSWER_INVALID` result
+may be revalidated only from its digest-bound saved author result after the
+selected invocation identity, immutable input, checkpoint and report bindings
+match; this makes no new driver dispatch, and an answer that still fails
+validation remains invalid. A dispatch with no durable result is
+reported as `DRAFT_UNCERTAIN`, retaining the maximum reservation; repeating the
+command does not redrive it. Inspect the retained report and provider state;
 then, when another attempt is intended, run
 `clew docs work run --root <docs-root> --work <work-id> --config <draft.json> --draft --new-run`.
 This creates one fresh run on the same saved Work and accepts only a terminal

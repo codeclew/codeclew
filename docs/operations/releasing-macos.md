@@ -48,12 +48,14 @@ native host; the same launcher and updater work on both macOS and Linux.
 1. Merge only a clean, fully verified default branch.
 2. Run `python3 -I -S scripts/language_mutation_pilot.py` and require 6/6,
    3/3 per language, with `runtimeMode: RELEASE`.
-3. Confirm the workspace version matches the intended tag.
+3. Confirm the workspace version matches the intended package version. Replace
+   `vNEXT` below with that version, including its leading `v`.
 4. Create and push an annotated semantic version tag:
 
    ```bash
-   git tag -a v0.1.0 -m 'Codeclew v0.1.0 macOS pilot'
-   git push origin v0.1.0
+   TASK_RELEASE_VERSION='vNEXT'
+   git tag -a "$TASK_RELEASE_VERSION" -m "Codeclew $TASK_RELEASE_VERSION release"
+   git push origin "$TASK_RELEASE_VERSION"
    ```
 
 5. Wait for qualification, all three platform jobs and the release publication
@@ -62,7 +64,8 @@ native host; the same launcher and updater work on both macOS and Linux.
    job, dispatch the same immutable tag manually:
 
    ```bash
-   gh workflow run release-macos.yml --ref main -f version=v0.1.0
+   TASK_RELEASE_VERSION='vNEXT'
+   gh workflow run release-macos.yml --ref main -f "version=$TASK_RELEASE_VERSION"
    ```
 
    The workflow checks out that exact tag, and the release builder still
@@ -105,8 +108,10 @@ The installer keeps versioned release directories. Rolling back is a pinned
 installation:
 
 ```bash
+# Choose a previously published tag that is not the current release.
+PREVIOUS_RELEASE_VERSION='vPREVIOUS'
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | \
-  CODECLEW_VERSION=v0.1.0 sh
+  CODECLEW_VERSION="$PREVIOUS_RELEASE_VERSION" sh
 ```
 
 Do not replace an existing version directory with different bytes. The pilot
@@ -140,7 +145,7 @@ shasum -a 256 -c install.sh.sha256
 Install the exact version without any network access:
 
 ```bash
-CODECLEW_VERSION=v0.2.19 \
+CODECLEW_VERSION=v0.13.1 \
 CODECLEW_ASSET_DIR="$PWD" \
 /bin/sh ./install.sh
 ```

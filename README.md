@@ -1,34 +1,56 @@
 # Codeclew — managed semantic context and changes
 
-Codeclew prepares bounded source and compiler context for agents. Use it to
-explain code, maintain source-linked service documentation, trace interactions
-across repositories, or validate an edit plan in an isolated candidate worktree
-before explicitly publishing its commit.
+Codeclew prepares bounded source and compiler context for agents to explain
+code, maintain source-linked service documentation, trace interactions across
+repositories, compare saved edits, and prepare managed changes for explicit
+publication.
 Use the installed `clew` launcher for public releases or `./clew` from a pinned
 checkout for source development; direct capsule binaries are unsupported.
 
-Language extraction is separate from framework interpretation.
-`clew capabilities` lists installed analysis modules and their compiler/JVM
-requirements. Java 17+ and the installed Kotlin engines emit portable annotation
-facts; one Rust Spring module derives entrypoints with separate input and policy
-provenance. No Kotlin 1.9 engine is added.
+## Choose a task
 
-Kotlin workers run on JDK 21 while project Maven/Gradle builds retain their own
-JDK. Set `CODECLEW_WORKER_JAVA_HOME` to select the analyzer JDK explicitly;
-`JAVA_HOME` continues to select the project build environment. Maven's reported
-build JVM and Gradle's selected toolchain determine the analysis JDK classes.
-Unknown cross-engine semantic flags are rejected with their option names and
-compiler context. For Kotlin 1.9 projects, analysis explicitly ignores
-`-Xannotation-default-target=param-property`; native project arguments are kept.
+| If you want to… | Start here |
+| --- | --- |
+| Install Codeclew and connect an agent | [Install](#install-on-macos-linux-or-windows-through-wsl2) and [install the agent skill](#install-the-agent-skill) |
+| Navigate code and check repository support | [Practical code navigation](#practical-code-navigation) and [operational admission](#operational-admission) |
+| Create or refresh service documentation | [Durable service documentation](#durable-service-documentation) and the [service workflow](skills/codeclew/references/service-documentation.md) |
+| Try the internal Java process draft | [v0.13.1 example and limits](#current-release-v0131), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
+| Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
+| Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
+
+## Current release: v0.13.1
+
+This release adds an experimental draft path that makes one configured author
+call for one compiler-backed internal Java method. The public example explains
+`TaskStateTransitions.promote(Task, Instant)` in the `:/main` Maven compilation.
+The configured stdio author path requires macOS Seatbelt isolation; Linux keeps
+source capture and the external structured-answer renderer, but does not qualify
+author execution for this example. See the [release notes](docs/releases/v0.13.1.md)
+and [reproduction recipe](docs/operations/task-promotion-draft.md).
+
+The draft writes local `answer.json`, `operation.md`, and `index.html` views.
+Its authored decision tree can render as pseudocode, while a separate source-local
+process-flow SVG is projected from retained source syntax. Neither view is a
+runtime trace. The Work remains `DRAFT` / `UNREVIEWED`; this path creates
+no proposal and publishes nothing. The checked-in
+[sample reader](fixtures/documentation-internal-process/documentation/sample/index.html)
+is also available as a [live page](https://codeclew.github.io/codeclew/examples/task-promotion/index.html).
+It received a positive source-fitness review and browser acceptance for this one
+method and rendered sample. That does not qualify the full workflow or establish
+runtime dispatch, persistence, or deployed behavior. GitHub's file view does not
+render the checked-in HTML; its exact scope is recorded in [sample provenance](fixtures/documentation-internal-process/documentation/sample/provenance.json).
 
 ## Install on macOS, Linux, or Windows through WSL2
 
-The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs, and
+The current public release ships prebuilt bundles for Apple Silicon and Intel Macs, and
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.1 sh
 ```
+
+This pins the version documented above. Omit `CODECLEW_VERSION` to install the
+latest published release.
 
 On Windows, run this command in your WSL2 Linux shell. Native Windows shells
 (PowerShell, Git Bash, and MSYS2) are not supported. Linux requires glibc 2.35+
@@ -45,9 +67,7 @@ GitHub Release asset and checksum, verifies SHA-256, installs it below
 never compiles Codeclew on the target machine. Run
 `clew doctor attach --human` after installation and `clew upgrade` to install a
 newer release. The source launcher `./clew` remains the supported development
-entrypoint and is updated through Git, not `clew upgrade`. Existing
-installations older than v0.1.3 need the one-line installer once more to acquire
-the updater; their later updates use `clew upgrade`.
+entrypoint and is updated through Git, not `clew upgrade`.
 
 If GitHub downloads return 403, manually download `install.sh`,
 `install.sh.sha256`, the archive for your operating system and architecture, and its matching
@@ -55,7 +75,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.3.1 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.1 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -124,6 +144,18 @@ enable mutation. See the support contract below for qualified capabilities and
 [the architecture guide](https://codeclew.github.io/codeclew/architecture.html)
 for the data flow and extension boundaries.
 
+Language extraction is separate from framework interpretation.
+`clew capabilities` lists installed analysis modules and their compiler/JVM
+requirements. Java 17+ and the installed Kotlin engines emit portable annotation
+facts; one Rust Spring module derives entrypoints with separate input and policy
+provenance. Kotlin workers run on JDK 21 while project Maven/Gradle builds retain
+their own JDK. Set `CODECLEW_WORKER_JAVA_HOME` to select the analyzer JDK;
+`JAVA_HOME` continues to select the project build environment. Maven's reported
+build JVM and Gradle's selected toolchain determine the analysis JDK classes.
+Unknown cross-engine semantic flags are rejected with their option names and
+compiler context. For Kotlin 1.9 projects, analysis explicitly ignores
+`-Xannotation-default-target=param-property`; native project arguments are kept.
+
 ## Durable service documentation
 
 `clew docs` maintains documentation in a separate architecture repository. The
@@ -139,7 +171,7 @@ optimistic-baseline checks.
 
 ### Internal flows and decisions
 
-Version 0.11.0 adds typed visuals to ordinary service pages:
+Service pages support typed visuals:
 
 - Execution-flow diagrams explain selected actions, ordering and branch guards.
 - Dependency maps show structural relationships without implying execution order.
@@ -219,7 +251,7 @@ The default render, proposal publication and successful Work jobs update working
 documentation and the stable `docs/index.html` entry point. Add `--publish` to
 `docs render` only when the render should also add an entry to released history.
 Internal immutable bundles remain retained for evidence and optimistic-baseline
-checks; this release does not add automatic cleanup of those bundles.
+checks; cleanup is not automatic.
 
 Publications share identical retained influence maps while keeping the evidence
 needed by older accepted versions. An HTML reader upgrade alone does not require
@@ -263,8 +295,8 @@ process boundaries and interpreting source still require an author. Local agents
 can submit proposals and publish with `--unassessed`; a model API is optional,
 and meaning review is separate from source freshness. Source citations and
 structural validation do not prove that a model's explanation is correct.
-Complete business-flow discovery, deployed behavior and a universal generator
-plugin SDK are not guaranteed by this release.
+Codeclew does not guarantee complete business-flow discovery, deployed behavior,
+or a universal generator plugin SDK.
 
 Offline help and product runbooks are available at `docs/help.html` and
 `docs/runbooks.html`; service-specific procedures must come from service sources
@@ -272,29 +304,9 @@ and notes. The [two-service fixture](fixtures/durable-docs/README.md) demonstrat
 guards, contracts and recovery, and the
 [Kotlin fixture](fixtures/durable-docs-kotlin/README.md) exercises compiler-backed
 HTTP/Kafka extraction. Project builds still depend on the target environment's
-configured caches and mirrors. See the
-[v0.11.0 release notes](docs/releases/v0.11.0.md) for scope and limitations.
-Version 0.11.1 speeds up retained snapshot reads, adds phase and heartbeat logs
-on stderr, and fixes disconnected proposal overviews. See the
-[v0.11.1 fix notes](docs/releases/v0.11.1.md) and
-[debugging instructions](docs/operations/docs-snapshot-store.md#watching-a-documentation-command).
-Version 0.11.2 adds retained process-flow trees and evidence-bound declarative
-state diagrams, snapshot-only recomposition of state declarations, and explicit
-working-render versus release-history behavior. See the
-[v0.11.2 release notes](docs/releases/v0.11.2.md).
-Version 0.12.1 adds an experimental endpoint-context-v3 reader packet and an
-offline draft renderer for one external structured answer; it does not replace
-the ordinary authoring or publication flow. See the
-[v0.12.1 public-pilot notes](docs/releases/v0.12.1.md).
-
-The current source also supports an explicit `clew docs work run --draft` path
-for new Java endpoint Work prepared with `contextProfile: "endpoint-context-v3"`
-and internal callable Work prepared with `contextProfile: "process-graph-v1"`,
-an exact `rootDeclaration`, and a persisted `question`. It calls one configured
-author and saves local `DRAFT` / `UNREVIEWED` views; it does not create a
-proposal or publish. See the
-[service documentation workflow](skills/codeclew/references/service-documentation.md#draft-one-internal-service-process-explanation)
-and [field runbook](docs/operations/field-documentation.md).
+configured caches and mirrors. For the current internal-method draft, see the
+[v0.13.1 release notes](docs/releases/v0.13.1.md), [reproduction recipe](docs/operations/task-promotion-draft.md),
+and [sample reader](fixtures/documentation-internal-process/documentation/sample/index.html).
 
 ## Source-build requirements
 

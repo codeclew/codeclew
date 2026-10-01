@@ -473,15 +473,17 @@ calls. The full process graph remains in the operator-only audit. Use the same
 endpoint-context Work for this profile.
 
 To render a saved structured answer conforming to
-`codeclew-operation-answer/1.0` or `codeclew-operation-answer/1.1`, run
+`codeclew-operation-answer/1.0`, `codeclew-operation-answer/1.1`, or
+`codeclew-operation-answer/1.2`, run
 `clew docs work explain --root docs --work WORK_ID --input answer.json --output-dir .codeclew/drafts/WORK_ID`.
 The command rebuilds the packet from that saved Work, checks the packet digest
 and evidence labels, then atomically replaces each of `answer.json`,
 `operation.md`, `index.html` and the packet/audit reference files individually.
-New `docs work run --draft` executions require answer 1.1; offline rendering of
-an existing 1.0 answer remains supported. New operation Work records the
-versioned `authoringContract` that binds the current answer schema and generic
-author policy. A material change to either requires a new identity and new Work
+New `docs work run --draft` executions require answer 1.2; offline rendering of
+saved 1.0 and 1.1 answers remains supported. New operation Work records the
+versioned `authoringContract` value
+`codeclew-operation-draft-authoring/1.3`, which binds the current answer schema
+and generic author policy. A material change to either requires a new identity and new Work
 prepared from the same saved snapshot; old Work identity is never rewritten.
 The output directory is not replaced as one transaction. If a command fails
 between file replacements, rerun it with the same saved Work and answer to

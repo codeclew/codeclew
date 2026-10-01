@@ -4,6 +4,7 @@
 Run after adding a page or changing a heading; --check detects stale output.
 """
 import argparse
+import hashlib
 import html
 from html.parser import HTMLParser
 import json
@@ -14,14 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 PAGES = [
     ("index.html", "Home", "Start here", "Install Codeclew, supported languages and the everyday analysis flow."),
-    ("architecture.html", "Architecture", "Documentation", "How source snapshots, language facts and bounded context support an explanation."),
-    ("nav-query.html", "Navigation walkthrough", "Documentation", "Follow nav query from a scoped question to exact source evidence."),
-    ("documentation.html", "Service documentation", "Documentation", "Maintain source-linked service explanations, diagrams and freshness checks."),
-    ("working-tree.html", "Saved edits guide", "Documentation", "Compare saved changes against HEAD and inspect their consequences."),
-    ("working-tree-example.html", "Saved edits example", "Documentation", "An interactive retained report with before and after source."),
-    ("extend.html", "Extend Codeclew", "Documentation", "Contributor guide: add a capability, language adapter, build provider, framework rule or CLI workflow."),
-    ("evidence.html", "Evidence & studies", "Research", "Release references and historical studies, with methods and limitations."),
-    ("pilot.html", "Spring case study", "Research", "A historical two-service pilot: 31 Spring roots checked against committed source."),
+    ("nav-query.html", "Navigation walkthrough", "Guides", "Find an exact declaration and inspect its retained source evidence."),
+    ("documentation.html", "Service documentation", "Guides", "Maintain service explanations or draft one internal process with source, pseudocode and visible limits."),
+    ("working-tree.html", "Saved edits guide", "Guides", "Compare saved changes against HEAD and inspect their consequences."),
+    ("working-tree-example.html", "Saved edits example", "Guides", "An interactive retained report with before and after source."),
+    ("architecture.html", "Architecture", "Reference", "How source snapshots, language facts and bounded context support an explanation."),
+    ("evidence.html", "Release evidence", "Reference", "Current release checks, the public process draft sample and qualification limits."),
+    ("extend.html", "Extend Codeclew", "Contribute", "Contributor guide: add a capability, language adapter, build provider, framework rule or CLI workflow."),
+    ("pilot.html", "Historical Spring case", "Archive", "A historical two-service pilot: 31 Spring roots checked against committed source."),
 ]
 
 
@@ -39,6 +40,8 @@ def grouped(current):
         result.extend(link(file, label, current) for file, label, category, _ in PAGES if category == group)
         if group == "Start here":
             result.extend([link("index.html#install", "Installation", current), link("index.html#support", "Language support", current)])
+        if group == "Guides":
+            result.append(link("documentation.html#process-draft", "Internal process draft", current))
         result.append('</div>')
     return '\n'.join(result)
 
@@ -50,15 +53,15 @@ def blocks(file, label, group):
   <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
   <nav class="primary-nav" aria-label="Primary navigation">
     <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel">{menu}</div></details>
-    {link('documentation.html', 'Documentation', file)}
-    {link('evidence.html', 'Evidence', file)}
+    {link('documentation.html', 'Service docs', file)}
+    {link('evidence.html', 'Release evidence', file)}
     <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
   </nav>
   <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>'''
     sidebar = f'''<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation">{menu}</nav></details>
@@ -81,7 +84,7 @@ class Sections(HTMLParser):
         attrs = dict(attrs)
         if tag == 'main':
             self.in_main = True
-        if self.in_main and tag in ('section', 'article', 'h2') and attrs.get('id'):
+        if self.in_main and tag in ('section', 'article', 'h2') and attrs.get('id') and (tag != 'h2' or not self.anchor):
             self.anchor = attrs['id']
         if self.in_main and tag == 'h2':
             self.heading = []
@@ -117,6 +120,10 @@ def main():
             if name in ('HEADER', 'FOOTER') or file != 'index.html':
                 assert re.search(pattern, content, flags=re.S), f'{file}: missing {name} slot'
             content = re.sub(pattern, f'<!-- SITE_{name} -->\n{block}\n<!-- /SITE_{name} -->', content, flags=re.S)
+        for asset in ('theme.css', 'app.js'):
+            version = hashlib.sha256((SITE / asset).read_bytes()).hexdigest()[:12]
+            pattern = rf'((?:href|src)=["\']\./{re.escape(asset)})(?:\?v=[^"\']*)?(["\'])'
+            content = re.sub(pattern, rf'\1?v={version}\2', content)
         if content != original:
             stale.append(file)
             if not args.check:
