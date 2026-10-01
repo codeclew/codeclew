@@ -61,6 +61,18 @@ fn run_loaded(
         .as_str()
         .ok_or_else(|| invalid("reader packet has no digest"))?
         .to_owned();
+    let selected_prior = latest_report(repo, &work.id)?;
+    if selected_prior
+        .as_ref()
+        .is_some_and(|report| report.execution_mode.as_deref() != Some(MODE))
+    {
+        let message = if new_run {
+            "RECOVERY_MODE_MISMATCH: this Work already has a generic author/reviewer run; --new-run applies only to an operation draft"
+        } else {
+            "RECOVERY_MODE_MISMATCH: this Work already has a generic author/reviewer run; prepare new Work for an operation draft"
+        };
+        return Err(invalid(message));
+    }
     let author_admission = super::super::agent_adapter::admit(repo, &draft_config.author)?;
     let driver_digest = author_admission["driverDigest"]
         .as_str()
@@ -71,7 +83,6 @@ fn run_loaded(
     let config = coordinator_config(&draft_config);
     let _account: Account = account(repo, &draft_config.budget)?;
 
-    let selected_prior = latest_report(repo, &work.id)?;
     if new_run {
         let report = selected_prior.as_ref().ok_or_else(|| {
             invalid("NEW_DRAFT_RUN_REQUIRES_TERMINAL_FAILURE: no prior draft report exists")
@@ -2012,9 +2023,32 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             checkpoint: None,
         };
         save_report(&repo, &report).unwrap();
+        let config: DraftConfig = store::read(&config_path, store::MAX_RECORD).unwrap();
+
         let error = run_loaded(&repo, &work, Some(&config_path), false).unwrap_err();
         assert!(error.message.contains("RECOVERY_MODE_MISMATCH"));
         let new_run_error = run_loaded(&repo, &work, Some(&config_path), true).unwrap_err();
         assert!(new_run_error.message.contains("RECOVERY_MODE_MISMATCH"));
+
+        let latest = latest_report(&repo, &work.id).unwrap().unwrap();
+        assert_eq!(latest.run, report.run);
+        assert_eq!(latest.status, "PREPARED");
+        assert!(latest.attempts.is_empty());
+        assert!(latest.accounting.is_none());
+        assert!(
+            account(&repo, &config.budget)
+                .unwrap()
+                .reservations
+                .is_empty()
+        );
+        assert!(
+            !repo
+                .path(&format!(
+                    "execution/accounts/{}.json",
+                    config.budget.account
+                ))
+                .unwrap()
+                .exists()
+        );
     }
 }

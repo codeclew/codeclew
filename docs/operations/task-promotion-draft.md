@@ -13,22 +13,25 @@ are fixture metadata, not a real service or remote.
 
 ## Prepare isolated checkouts
 
-Install the public release and confirm `clew --version` reports `0.13.0`. This
+Install the public release and confirm `clew --version` reports `0.13.1`. This
 recipe needs Git, JDK 21, Maven and a configured author driver. The fixture's
 Maven compiler target is Java 17; JDK 21 is the analysis host requirement.
+The configured author driver uses the macOS Seatbelt isolation adapter, so the
+`docs work run --draft` author step in this recipe requires macOS. Source capture
+and the saved structured-answer renderer can be used separately on Linux.
 
 Copy the fixture from the release tag into a new Git repository with a clean
 `main` branch. Give that local repository the fixture's synthetic remote; do
 not push to it.
 
 ```sh
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.0 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.1 sh
 clew --version
 
 mkdir -p /tmp/task-promotion-example
-git clone --branch v0.13.0 --single-branch https://github.com/codeclew/codeclew.git /tmp/task-promotion-example/codeclew-v0.13.0
+git clone --branch v0.13.1 --single-branch https://github.com/codeclew/codeclew.git /tmp/task-promotion-example/codeclew-v0.13.1
 mkdir -p /tmp/task-promotion-example/dispatch
-cp -R /tmp/task-promotion-example/codeclew-v0.13.0/fixtures/documentation-internal-process/. /tmp/task-promotion-example/dispatch/
+cp -R /tmp/task-promotion-example/codeclew-v0.13.1/fixtures/documentation-internal-process/. /tmp/task-promotion-example/dispatch/
 cd /tmp/task-promotion-example/dispatch
 git init --initial-branch=main
 git remote add origin https://example.invalid/dispatch-fixture
@@ -51,7 +54,7 @@ Copy the service input digest from the first `service list` response.
 ```sh
 clew docs init --root /tmp/task-promotion-example/docs --title 'Task promotion draft'
 clew docs service list --root /tmp/task-promotion-example/docs
-clew docs service add --root /tmp/task-promotion-example/docs --input /tmp/task-promotion-example/codeclew-v0.13.0/fixtures/documentation-internal-process/documentation/service.json --expected-input-digest SERVICE_INPUT_DIGEST
+clew docs service add --root /tmp/task-promotion-example/docs --input /tmp/task-promotion-example/codeclew-v0.13.1/fixtures/documentation-internal-process/documentation/service.json --expected-input-digest SERVICE_INPUT_DIGEST
 clew docs bind --root /tmp/task-promotion-example/docs --service dispatch --repo /tmp/task-promotion-example/dispatch
 clew docs check --root /tmp/task-promotion-example/docs --service dispatch
 ```
@@ -91,9 +94,9 @@ with that exact digest, and recompose from the original capture. Use the new
 snapshot returned by recomposition for preparation.
 
 ```sh
-clew docs process inspect --root /tmp/task-promotion-example/docs --input /tmp/task-promotion-example/codeclew-v0.13.0/fixtures/documentation-internal-process/documentation/process.json --snapshot ORIGINAL_CAPTURE
+clew docs process inspect --root /tmp/task-promotion-example/docs --input /tmp/task-promotion-example/codeclew-v0.13.1/fixtures/documentation-internal-process/documentation/process.json --snapshot ORIGINAL_CAPTURE
 clew docs process list --root /tmp/task-promotion-example/docs --limit 100
-clew docs process put --root /tmp/task-promotion-example/docs --input /tmp/task-promotion-example/codeclew-v0.13.0/fixtures/documentation-internal-process/documentation/process.json --expected-input-digest PROCESS_INPUT_DIGEST
+clew docs process put --root /tmp/task-promotion-example/docs --input /tmp/task-promotion-example/codeclew-v0.13.1/fixtures/documentation-internal-process/documentation/process.json --expected-input-digest PROCESS_INPUT_DIGEST
 clew docs recompose --root /tmp/task-promotion-example/docs --snapshot ORIGINAL_CAPTURE
 clew docs process prepare --root /tmp/task-promotion-example/docs --id task-promotion --question 'Explain the decision and data flow in TaskStateTransitions.promote, its repository-call boundaries, and what retained source cannot establish about persistence or runtime behavior.' --language en --snapshot RECOMPOSED_SNAPSHOT
 ```
