@@ -211,7 +211,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
         _ => return Err(invalid("unsupported narrative subject")),
     };
     let mut covered = BTreeSet::new();
-    for o in &n.operations {
+    for (operation_index, o) in n.operations.iter().enumerate() {
         super::language::validate(o.documentation_language.as_deref())?;
         if !expected.contains(&o.id) || !covered.insert(o.id.clone()) || o.title.trim().is_empty() {
             return Err(invalid("duplicate or out-of-scope operation"));
@@ -479,21 +479,50 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
         if o.explanation.len() > 128 {
             return Err(invalid("operation explanation exceeds 128 paragraphs"));
         }
-        for paragraph in &o.explanation {
-            if !store::valid_id(&paragraph.id)
-                || !ids.insert(paragraph.id.clone())
-                || paragraph.text.trim().is_empty()
-                || paragraph.text.len() > 8192
-                || paragraph.text.contains(['`', '<'])
-                || paragraph.event_ids.is_empty()
-                || paragraph
-                    .event_ids
-                    .iter()
-                    .any(|id| !o.events.iter().any(|e| &e.id == id && e.kind != "end"))
+        for (paragraph_index, paragraph) in o.explanation.iter().enumerate() {
+            let diagnostic_prefix = format!(
+                "operation {}, explanation paragraph {}",
+                operation_index + 1,
+                paragraph_index + 1
+            );
+            if !store::valid_id(&paragraph.id) {
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: explanation paragraph ID has invalid syntax"
+                )));
+            }
+            if !ids.insert(paragraph.id.clone()) {
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: explanation paragraph ID is already used in this operation"
+                )));
+            }
+            if paragraph.text.trim().is_empty() {
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: explanation text must not be empty"
+                )));
+            }
+            if paragraph.text.len() > 8192 {
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: explanation text exceeds the 8192-byte limit"
+                )));
+            }
+            if paragraph.text.contains(['`', '<']) {
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: use plain domain prose; less-than signs and backticks are not allowed"
+                )));
+            }
+            if paragraph.event_ids.is_empty() {
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: reference at least one diagram step"
+                )));
+            }
+            if paragraph
+                .event_ids
+                .iter()
+                .any(|id| !o.events.iter().any(|e| &e.id == id && e.kind != "end"))
             {
-                return Err(invalid(
-                    "explanation requires unique IDs, plain domain prose and existing diagram steps",
-                ));
+                return Err(invalid(format!(
+                    "{diagnostic_prefix}: references a missing or end-marker diagram step"
+                )));
             }
             supported_refs(
                 &paragraph.dependency_ids,
@@ -3889,6 +3918,181 @@ mod process_catalog_tests {
             "../scenarios/worker.html#process-overview"
         );
         assert_eq!(data["savedProcesses"][0]["status"], "AWAITING_AUTHORING");
+    }
+}
+
+#[cfg(test)]
+mod explanation_diagnostic_tests {
+    use super::*;
+
+    fn narrative_and_check() -> (Narrative, Check) {
+        let evidence: ServiceEvidence = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service-evidence/1.0",
+            "service":"svc","revision":"rev","serviceDigest":"digest",
+            "extractor":"test","runtimeMode":"TEST","coverage":"PARTIAL",
+            "boundaries":[],
+            "entrypoints":[{
+                "id":"operation-one","service":"svc","symbol":"SyntheticOperation",
+                "kind":"ENTRYPOINT","trigger":{},"sourceIds":["source-one"],
+                "dependencyIds":["dependency-one"],"boundaries":[]
+            }],
+            "observations":{},
+            "sources":{
+                "source-one":{
+                    "id":"source-one","service":"svc","revision":"rev",
+                    "file":"Example.java","startLine":1,"endLine":1,
+                    "text":"void operation() {}","textDigest":"digest",
+                    "evidenceDigest":"digest","authority":"TEST"
+                }
+            },
+            "contracts":{}
+        }))
+        .unwrap();
+        let dependency = Observation {
+            id: "dependency-one".into(),
+            kind: "SYMBOL".into(),
+            service: "svc".into(),
+            symbol: "SyntheticOperation".into(),
+            normalized: json!({}),
+            digest: "digest".into(),
+            source_ids: vec!["source-one".into()],
+        };
+        let checked = Check {
+            schema: "test".into(),
+            input_digest: "digest".into(),
+            context_digest: "digest".into(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: BTreeMap::from([("dependency-one".into(), dependency)]),
+            source_inputs: None,
+            composition: None,
+        };
+        let operation = Operation {
+            documentation_language: None,
+            visuals: vec![],
+            dataflow: None,
+            id: "operation-one".into(),
+            title: "Synthetic operation".into(),
+            summary: Fragment {
+                id: "summary-one".into(),
+                text: "A synthetic operation summary.".into(),
+                dependency_ids: vec!["dependency-one".into()],
+                source_ids: vec!["source-one".into()],
+            },
+            assessment: None,
+            explanation: (1..=4)
+                .map(|index| Explanation {
+                    id: format!("paragraph-{index}"),
+                    text: "The note records the operation decision.".into(),
+                    event_ids: vec!["note-step".into()],
+                    dependency_ids: vec!["dependency-one".into()],
+                    source_ids: vec!["source-one".into()],
+                    detail: false,
+                })
+                .collect(),
+            interface_contracts: vec![],
+            overview_diagram: None,
+            participants: vec![
+                Participant {
+                    id: "caller".into(),
+                    label: "Caller".into(),
+                    service: Some("svc".into()),
+                },
+                Participant {
+                    id: "worker".into(),
+                    label: "Worker".into(),
+                    service: Some("svc".into()),
+                },
+            ],
+            events: vec![Event {
+                id: "note-step".into(),
+                kind: "note".into(),
+                text: "Record the operation decision".into(),
+                from: Some("caller".into()),
+                to: None,
+                dependency_ids: vec!["dependency-one".into()],
+                source_ids: vec!["source-one".into()],
+                interaction: None,
+            }],
+            findings: vec![],
+            boundaries: vec![],
+        };
+        let narrative = Narrative {
+            schema: "codeclew-documentation-narrative/1.3".into(),
+            subject: "service:svc".into(),
+            context_digest: "digest".into(),
+            operations: vec![operation],
+            gaps: super::super::sections::ids()
+                .map(|id| (id, "Outside this focused synthetic fixture.".into()))
+                .collect(),
+        };
+        (narrative, checked)
+    }
+
+    fn assert_paragraph_error(narrative: &Narrative, checked: &Check, reason: &str) {
+        let error = validate(narrative, checked).unwrap_err();
+        assert_eq!(error.code, crate::error::ErrorCode::InvalidInput);
+        assert_eq!(
+            error.message,
+            format!("operation 1, explanation paragraph 4: {reason}")
+        );
+    }
+
+    #[test]
+    fn explanation_errors_identify_the_specific_failed_check() {
+        let (narrative, checked) = narrative_and_check();
+        assert!(validate(&narrative, &checked).is_ok());
+
+        let mut invalid_id = narrative.clone();
+        invalid_id.operations[0].explanation[3].id = "bad/id".into();
+        assert_paragraph_error(
+            &invalid_id,
+            &checked,
+            "explanation paragraph ID has invalid syntax",
+        );
+
+        let mut duplicate_id = narrative.clone();
+        duplicate_id.operations[0].explanation[3].id = "summary-one".into();
+        assert_paragraph_error(
+            &duplicate_id,
+            &checked,
+            "explanation paragraph ID is already used in this operation",
+        );
+
+        let mut empty_text = narrative.clone();
+        empty_text.operations[0].explanation[3].text = " \n ".into();
+        assert_paragraph_error(&empty_text, &checked, "explanation text must not be empty");
+
+        let mut long_text = narrative.clone();
+        long_text.operations[0].explanation[3].text = "x".repeat(8193);
+        assert_paragraph_error(
+            &long_text,
+            &checked,
+            "explanation text exceeds the 8192-byte limit",
+        );
+
+        let mut nonplain_text = narrative.clone();
+        nonplain_text.operations[0].explanation[3].text = "Read get<T>(id)".into();
+        let error = validate(&nonplain_text, &checked).unwrap_err();
+        assert_eq!(
+            error.message,
+            "operation 1, explanation paragraph 4: use plain domain prose; less-than signs and backticks are not allowed"
+        );
+        assert!(!error.message.contains("get<T>(id)"));
+
+        let mut no_step = narrative.clone();
+        no_step.operations[0].explanation[3].event_ids.clear();
+        assert_paragraph_error(&no_step, &checked, "reference at least one diagram step");
+
+        let mut missing_step = narrative;
+        missing_step.operations[0].explanation[3].event_ids = vec!["missing-step".into()];
+        assert_paragraph_error(
+            &missing_step,
+            &checked,
+            "references a missing or end-marker diagram step",
+        );
     }
 }
 
