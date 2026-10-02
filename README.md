@@ -14,18 +14,26 @@ checkout for source development; direct capsule binaries are unsupported.
 | Install Codeclew and connect an agent | [Install](#install-on-macos-linux-or-windows-through-wsl2) and [install the agent skill](#install-the-agent-skill) |
 | Navigate code and check repository support | [Practical code navigation](#practical-code-navigation) and [operational admission](#operational-admission) |
 | Create or refresh service documentation | [Durable service documentation](#durable-service-documentation) and the [service workflow](skills/codeclew/references/service-documentation.md) |
-| Try the internal Java process draft | [v0.13.1 example and limits](#current-release-v0131), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
+| Try the internal Java process draft | [historical v0.13.1 example and limits](#historical-v0131-example-and-limits), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.1
+## Current release: v0.13.2
 
-This release adds an experimental draft path that makes one configured author
-call for one compiler-backed internal Java method. The public example explains
-`TaskStateTransitions.promote(Task, Instant)` in the `:/main` Maven compilation.
+This release adds selected endpoint owner-field declarations to endpoint-context
+documentation packets and an explicit repair call for a retained invalid draft.
+Repair reuses the saved packet and answer with fresh native validation feedback.
+See the [v0.13.2 release notes](docs/releases/v0.13.2.md).
+
+### Historical v0.13.1 example and limits
+
+The v0.13.1 release introduced an experimental draft path that makes one
+configured author call for one compiler-backed internal Java method. The public
+example explains `TaskStateTransitions.promote(Task, Instant)` in the `:/main`
+Maven compilation.
 The configured stdio author path requires macOS Seatbelt isolation; Linux keeps
 source capture and the external structured-answer renderer, but does not qualify
-author execution for this example. See the [release notes](docs/releases/v0.13.1.md)
+author execution for this example. See the [v0.13.1 release notes](docs/releases/v0.13.1.md)
 and [reproduction recipe](docs/operations/task-promotion-draft.md).
 
 The draft writes local `answer.json`, `operation.md`, and `index.html` views.
@@ -46,7 +54,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.1 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.2 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -75,7 +83,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.1 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.2 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -304,8 +312,8 @@ and notes. The [two-service fixture](fixtures/durable-docs/README.md) demonstrat
 guards, contracts and recovery, and the
 [Kotlin fixture](fixtures/durable-docs-kotlin/README.md) exercises compiler-backed
 HTTP/Kafka extraction. Project builds still depend on the target environment's
-configured caches and mirrors. For the current internal-method draft, see the
-[v0.13.1 release notes](docs/releases/v0.13.1.md), [reproduction recipe](docs/operations/task-promotion-draft.md),
+configured caches and mirrors. For the internal-method draft introduced in
+v0.13.1, see its [release notes](docs/releases/v0.13.1.md), [reproduction recipe](docs/operations/task-promotion-draft.md),
 and [sample reader](fixtures/documentation-internal-process/documentation/sample/index.html).
 
 ## Source-build requirements
