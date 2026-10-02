@@ -705,6 +705,12 @@ fn attach_verified_index_failure(
     facts: Option<&Value>,
 ) -> ClewError {
     let stage = verified_index_failure_stage(&error, default_stage);
+    let retryable = error.retryable;
+    let private_worker_diagnostic = error.evidence.iter().find_map(|entry| {
+        let encoded = entry.strip_prefix("worker-process-diagnostic:")?;
+        let diagnostic: Value = serde_json::from_str(encoded).ok()?;
+        (diagnostic["schema"] == "codeclew-worker-process-diagnostic/1.0").then(|| entry.clone())
+    });
     let relation_graph = facts.and_then(|value| value.get("declarationRelations"));
     let descriptor_graph = facts.and_then(|value| value.get("declarationDescriptors"));
     let relation_provenance = relation_graph.and_then(|value| value.get("provenance"));
@@ -751,7 +757,11 @@ fn attach_verified_index_failure(
             "Codeclew could not verify compiler evidence at the internal {stage} stage. No verified analysis result was produced. Report the Codeclew version, this error code, stage and attached hash-only diagnostic to Codeclew maintainers; do not include source code or raw compiler logs."
         ),
     );
+    error.retryable = retryable;
     if let Ok(encoded) = serde_json::to_string(&diagnostic) {
+        error.evidence.push(encoded);
+    }
+    if let Some(encoded) = private_worker_diagnostic {
         error.evidence.push(encoded);
     }
     error
@@ -4199,6 +4209,77 @@ mod tests {
         assert!(!encoded.contains("/private/service"));
         assert!(!encoded.contains("sentinel-token"));
         assert!(!encoded.contains("Secret.kt"));
+    }
+
+    #[test]
+    fn verified_index_failure_preserves_only_private_worker_diagnostic_and_retryability() {
+        let oversized_header = [0x04, 0x00, 0x00, 0x01];
+        let mut frame = &oversized_header[..];
+        let mut error = read_message_profiled(&mut frame).unwrap_err();
+        assert_eq!(error.code, ErrorCode::WorkerProtocolMismatch);
+        assert_eq!(error.message, "worker frame exceeds 64MiB");
+        error.message.push_str(
+            "; worker stage=INDEX_FILES, process=EXITED, exitCode=3, signal=null; inspect private worker-process-diagnostic evidence",
+        );
+        error.retryable = true;
+        let private_diagnostic = json!({
+            "schema":"codeclew-worker-process-diagnostic/1.0",
+            "stage":"INDEX_FILES",
+            "identity":{"session":"private-session-marker"},
+            "process":{"status":"EXITED","exitCode":3,"signal":null},
+            "stderr":{"path":"/synthetic-private-root/stderr","text":"secret-stderr-marker"}
+        });
+        error
+            .evidence
+            .push(format!("worker-process-diagnostic:{private_diagnostic}"));
+        error
+            .evidence
+            .push("unrelated-private-evidence-marker".into());
+        let original_message_hash = crate::canonical::hash_bytes(error.message.as_bytes());
+
+        let result = attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None);
+
+        assert_eq!(result.code, ErrorCode::WorkerProtocolMismatch);
+        assert!(result.retryable);
+        assert!(result.message.contains("internal RAW_SCHEMA_HASH stage"));
+        assert!(!result.message.contains("worker frame exceeds"));
+        assert!(!result.message.contains("private-session-marker"));
+        assert!(!result.message.contains("secret-stderr-marker"));
+        assert!(!result.message.contains("/synthetic-private-root"));
+        assert_eq!(result.evidence.len(), 2);
+
+        let verifier_diagnostic: Value = serde_json::from_str(&result.evidence[0]).unwrap();
+        assert_eq!(verifier_diagnostic["stage"], "RAW_SCHEMA_HASH");
+        assert_eq!(
+            verifier_diagnostic["validationMessageHash"],
+            original_message_hash
+        );
+        let verifier_encoded = serde_json::to_string(&verifier_diagnostic).unwrap();
+        assert!(!verifier_encoded.contains("worker frame exceeds"));
+        assert!(!verifier_encoded.contains("private-session-marker"));
+        assert!(!verifier_encoded.contains("secret-stderr-marker"));
+        assert!(!verifier_encoded.contains("/synthetic-private-root"));
+
+        let preserved = result.evidence[1]
+            .strip_prefix("worker-process-diagnostic:")
+            .unwrap();
+        let preserved: Value = serde_json::from_str(preserved).unwrap();
+        assert_eq!(preserved, private_diagnostic);
+        let shareable = worker_diagnostics::safe_summary(&preserved).unwrap();
+        assert_eq!(
+            shareable,
+            json!({"stage":"INDEX_FILES","processStatus":"EXITED","exitCode":3,"signal":null})
+        );
+        let shareable = serde_json::to_string(&shareable).unwrap();
+        assert!(!shareable.contains("private-session-marker"));
+        assert!(!shareable.contains("secret-stderr-marker"));
+        assert!(!shareable.contains("/synthetic-private-root"));
+        assert!(
+            result
+                .evidence
+                .iter()
+                .all(|evidence| !evidence.contains("unrelated-private-evidence-marker"))
+        );
     }
 
     #[test]
