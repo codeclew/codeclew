@@ -210,3 +210,63 @@ say explicitly selected context instead of originally linked context. A later
 source update can make this selected context `STALE`; current context does not
 establish semantic review. Historical native exports and publication bundles
 retain their previous bytes and pins.
+
+## Opt-in linked source-call context
+
+Set `"expandSourceCalls": true` on every selected process participating in linked
+context. Include Parent A, Parent B and Child as three ordinary exact selections;
+both parents then navigate to the same Child page only when retained compiler
+call occurrences target that selected endpoint in the same service and compilation
+scope. Method names, equal field names and selector proximity do not create links.
+Omitted or false flags preserve the ordinary projection, selector identity and
+output bytes. Notes and frozen authored paragraphs keep their existing contracts.
+
+Opt-in output adds `source-calls.html`/`source-calls.mdx`. Worker call occurrences
+link directly to their canonical retained target bodies. The overview and worker
+views also link to selected child processes and show incoming caller occurrences.
+`sourceCallGraph` keeps one body per scoped compiler symbol, distinct structural
+call paths and ordinals, exact arguments and receiver syntax, conditions,
+reachability, original relation/source identities and digests. A child helper such
+as `prepare(task)` remains a separate body with its own null default, transformation
+and return expression. This is no argument substitution or receiver/field lineage
+analysis. A guard after a gateway call is not a condition preventing that call.
+
+Expansion follows repository method calls to depth two from selected roots, with
+at most 64 additional bodies and 1 MiB of additional retained source text. Limits,
+cycles, ambiguous or wrong-scope targets, absent bodies and dependency boundaries
+remain explicit local frontiers. Interfaces do not select a runtime implementation.
+Source-selected shared queue wiring remains separate from the source-call graph:
+links do not establish successful submission, child-worker scheduling, runtime
+activation, delivery or the identity of the parent receiver object.
+
+`examinedSources` uses `codeclew-native-examined-source/1.0`. Its separately named
+`examinedSourceDigest` hashes local examined text and call semantics, including
+stable within-body paths and call ordinals. It excludes global revision, snapshot,
+URLs, absolute coordinates and compiler receipt provenance, which remain in full
+records. Pre-retained callee declarations behind a frontier remain provenance;
+their unexamined bodies do not contribute to this digest. Membership records
+distinguish selected declarations, `SELECTED_HANDOFF_CONSTRUCTOR` bodies cited by
+the existing queue proof, `SOURCE_CALL_BODY` and `LINKED_PROCESS_CONTEXT`.
+`handoffContextDigests` includes selected handoff status, fields and gap codes for
+this process and linked children. Linked context includes a selected child worker as
+**documentation context**, without asserting that the parent invokes that worker.
+The projection supplies reverse examined-process membership and the manifest
+supplies `reverseExaminedPages` with existing overview page IDs and reasons.
+These are bounded review candidates, not runtime impact or whole-program safety.
+
+Existing `contentDigest` still hashes the whole bundle projection plus the page
+slug; every content file still has its raw byte digest. An unrelated source commit
+can therefore change these publication identities while leaving a local
+`examinedSourceDigest` equal. Incoming navigation can change without changing a
+child's examined source meaning. No existing hash is redefined as a local impact
+fingerprint, and immutable output directories are never rewritten.
+
+The actual linked fixture regression is
+`cargo test --locked -p clew --test docs_static_linked_processes -- --ignored --test-threads=1`.
+It uses the owned [real Maven Java fixture](../../fixtures/native-linked-processes/README.md)
+and requires JDK 21 and Maven. Fresh committed captures compare a child transform
+change affecting both parents' examined context, an A-only guard change, and B's
+exact retargeting to a same-named alternative. Cycle/interface frontiers, relative
+links, file hashes, inert HTML/MDX parity and old-snapshot offline bytes are checked.
+These source checks do not qualify customer delivery, people tasks or corporate
+usefulness.

@@ -1,5 +1,6 @@
 //! Offline native-source pages over explicit immutable documentation snapshots.
 mod authored;
+mod linked;
 pub mod model;
 mod project;
 mod publish;
