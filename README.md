@@ -18,14 +18,15 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.4
+## Current release: v0.13.5
 
-This release adds linked HTML and inert MDX pages from an exact retained Java
-snapshot. Select callable roots to inspect conditions, transformations, local
-state, external call boundaries and source-derived diagnostic alternatives.
-The projector needs no pre-authored answer or DSL effect labels; unsupported
-constructs and runtime facts remain explicit gaps.
-See the [v0.13.4 release notes](docs/releases/v0.13.4.md).
+This release supports bounded edits of retained operation titles and attributed
+explanation paragraphs, preserving their original linked context and immutable
+history. Native HTML and inert MDX exports can include explicitly selected
+operational notes from the saved source snapshot. Manual edits remain UNASSESSED;
+linked code does not verify their meaning. Source-derived conditions and
+transformations remain separate from maintained user documentation.
+See the [v0.13.5 release notes](docs/releases/v0.13.5.md).
 
 ### Historical v0.13.1 example and limits
 
@@ -56,7 +57,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.4 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.5 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -85,7 +86,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.4 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.5 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
