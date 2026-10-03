@@ -480,6 +480,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             return Err(invalid("operation explanation exceeds 128 paragraphs"));
         }
         for (paragraph_index, paragraph) in o.explanation.iter().enumerate() {
+            super::explanation_authorship::validate(paragraph, checked)?;
             let diagnostic_prefix = format!(
                 "operation {}, explanation paragraph {}",
                 operation_index + 1,
@@ -2282,10 +2283,17 @@ pub(super) fn markdown(
         ));
         let mut shown = BTreeSet::new();
         for paragraph in o.explanation.iter().filter(|p| !p.detail) {
-            if !shown.insert(&paragraph.text) {
+            if !shown.insert((
+                &paragraph.text,
+                paragraph.authorship.as_ref().map(|a| &a.edit_digest),
+            )) {
                 continue;
             }
             out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
+            if let Some(authorship) = &paragraph.authorship {
+                out.push_str(&format!("User documentation by {}. Meaning review: UNASSESSED. Originally linked code is retained unverified context (source snapshot {}).\n\n",
+                    escape(&authorship.author), escape(&authorship.source_snapshot)));
+            }
         }
         for contract in &o.interface_contracts {
             out.push_str(&format!("### {}\n\nSource-derived {} interface description.\n\n| Element | Value / behavior |\n|---|---|\n", escape(&contract.title), escape(&contract.kind)));
@@ -2309,10 +2317,17 @@ pub(super) fn markdown(
         ));
         let mut shown = BTreeSet::new();
         for paragraph in o.explanation.iter().filter(|p| p.detail) {
-            if !shown.insert(&paragraph.text) {
+            if !shown.insert((
+                &paragraph.text,
+                paragraph.authorship.as_ref().map(|a| &a.edit_digest),
+            )) {
                 continue;
             }
             out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
+            if let Some(authorship) = &paragraph.authorship {
+                out.push_str(&format!("User documentation by {}. Meaning review: UNASSESSED. Originally linked code is retained unverified context (source snapshot {}).\n\n",
+                    escape(&authorship.author), escape(&authorship.source_snapshot)));
+            }
         }
         out.push_str("</details>\n\n");
         for f in &o.findings {
@@ -2783,7 +2798,15 @@ fn publish_internal_phases(
             let validation = if duplicate_ids.contains(&operation.id) {
                 Err(invalid("duplicate operation proposal"))
             } else {
-                validate(&candidate, &checked)
+                super::explanation_authorship::admit(
+                    repo,
+                    previous.as_ref().map(|(_, b)| b),
+                    &n.subject,
+                    operation,
+                    &checked,
+                    versions.get(&key),
+                )
+                .and_then(|()| validate(&candidate, &checked))
             };
             match validation {
                 Ok(()) => {
@@ -2897,7 +2920,14 @@ fn publish_internal_phases(
             }
         }
         for (id, state) in &old.section_states {
-            if !accepted.contains(id)
+            let edited_user_operation = versions.contains_key(id)
+                && narratives.values().any(|n| {
+                    n.operations.iter().any(|o| {
+                        format!("{}/{}", n.subject, o.id) == *id
+                            && o.explanation.iter().any(|p| p.authorship.is_some())
+                    })
+                });
+            if (!accepted.contains(id) || edited_user_operation)
                 && (id.contains('/')
                     || id
                         .strip_prefix("service:")
@@ -3990,6 +4020,7 @@ mod explanation_diagnostic_tests {
                     dependency_ids: vec!["dependency-one".into()],
                     source_ids: vec!["source-one".into()],
                     detail: false,
+                    authorship: None,
                 })
                 .collect(),
             interface_contracts: vec![],

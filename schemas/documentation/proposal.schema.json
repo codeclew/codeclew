@@ -808,7 +808,8 @@
         },
         "target": {
           "enum": [
-            "operationTitle"
+            "operationTitle",
+            "explanationText"
           ]
         },
         "expectedOldValue": {
@@ -817,8 +818,18 @@
         "replacement": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 512,
-          "description": "Nonblank title, at most 512 UTF-8 bytes, without control characters."
+          "maxLength": 8192,
+          "description": "Nonblank plain prose, at most 8192 UTF-8 bytes; operationTitle at most 512 UTF-8 bytes."
+        },
+        "fragmentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Declared author, not authenticated identity."
         }
       },
       "required": [
@@ -828,6 +839,44 @@
         "target",
         "expectedOldValue",
         "replacement"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "target": {
+                "const": "explanationText"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fragmentId",
+              "author"
+            ]
+          },
+          "else": {
+            "properties": {
+              "replacement": {
+                "maxLength": 512
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "fragmentId"
+                  ]
+                },
+                {
+                  "required": [
+                    "author"
+                  ]
+                }
+              ]
+            }
+          }
+        }
       ]
     }
   }

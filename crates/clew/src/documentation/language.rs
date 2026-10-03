@@ -173,6 +173,10 @@ pub(super) fn markdown(
         }
         for paragraph in &op.explanation {
             out.push_str(&format!("{}\n\n", render::escape(&paragraph.text)));
+            if let Some(authorship) = &paragraph.authorship {
+                out.push_str(&format!("Пользовательская документация. Указанный автор: {}. Проверка смысла: UNASSESSED. Исходно связанный код — сохранённый непроверенный контекст (снимок {}).\n\n",
+                    render::escape(&authorship.author), render::escape(&authorship.source_snapshot)));
+            }
         }
         for visual in &op.visuals {
             out.push_str(&format!(

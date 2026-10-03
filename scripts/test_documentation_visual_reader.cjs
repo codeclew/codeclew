@@ -508,3 +508,22 @@ test('shared catalogue localizes chrome and retains neutral filtering keys and a
   assert.match(nodes['catalog-status'].textContent,language==='ru'?/Совпадений нет/:/No matching results/);
  }
 });
+
+test('user-authored paragraph exposes unverified original code after a source update',()=>{
+ const data=fixture(),op=data.operations[0];
+ op.explanation=[{id:'human-paragraph',text:'The editor maintains this explanation.',sourceIds:['same-source'],detail:false,authorship:{authority:'USER_DOCUMENTATION',author:'Fixture <editor>',meaningReview:'UNASSESSED',contextRole:'RETAINED_UNVERIFIED_CONTEXT',sourceSnapshot:'snapshot-original',editDigest:'edit-original',sourceRefs:{'same-source':'original-record'},dependencyRefs:{dep:'original-observation'}}}];
+ const r=load(data),html=r.run('explanation(D.operations[0])');
+ assert.match(html,/User documentation by Fixture &lt;editor&gt;/);
+ assert.match(html,/Meaning review: UNASSESSED/);
+ assert.match(html,/Originally linked code \(unverified context\)/);
+ assert.doesNotMatch(html,/Supporting code/);
+ assert.match(html,/data-source-operation="section-responsibilities"/);
+ r.click({sources:'same-source',sourceOperation:op.id});
+ assert.match(r.e('source-code').innerHTML,/ACCEPTED SOURCE/);
+ assert.doesNotMatch(r.e('source-code').innerHTML,/CURRENT SOURCE/);
+ assert.match(r.e('source-foot').innerHTML,/Linked code does not verify the narrative meaning/);
+ op.explanation[0].sourceIds=[];
+ const empty=load(data).run('explanation(D.operations[0])');
+ assert.doesNotMatch(empty,/data-sources=/);
+ assert.match(empty,/User documentation by/);
+});

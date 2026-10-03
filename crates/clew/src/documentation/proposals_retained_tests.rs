@@ -116,6 +116,7 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
                 dependency_ids: vec![observation.id.clone()],
                 source_ids: vec![source.id.clone()],
                 detail: index % 2 == 0,
+                authorship: None,
             })
             .collect(),
         interface_contracts: vec![InterfaceContract {
@@ -579,4 +580,94 @@ fn empty_retained_edits_preserve_legacy_proposal_serialization() {
     let legacy = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"gaps":{},"uncertainties":[]});
     let proposal: Proposal = serde_json::from_value(legacy.clone()).unwrap();
     assert_eq!(serde_json::to_value(proposal).unwrap(), legacy);
+}
+
+#[test]
+fn paragraph_edit_preserves_canonical_fields_and_declares_unverified_context() {
+    let (_temp, repo, mut work, narrative) = fixture();
+    work.retained = Some(narrative.clone());
+    work.request.entrypoint = Some("reserve".into());
+    let original = &narrative.operations[0];
+    let mut proposal: Proposal = serde_json::from_value(json!({
+        "schema":"codeclew-documentation-proposal/1.0", "operations":[],
+        "retainedEdits":[{"kind":"RETAINED_OPERATION", "id":"reserve",
+            "recordDigest":digest(original).unwrap(), "target":"explanationText",
+            "fragmentId":"paragraph-1", "author":"Fixture editor",
+            "expectedOldValue":original.explanation[1].text,
+            "replacement":"The caller chooses the requested quantity. This is the editor's explanation."}]
+    })).unwrap();
+    let state = parts(&repo, &work);
+    let (edited, claims, diagnostics) = materialize(&work, &proposal, &state).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let paragraph = &edited.operations[0].explanation[1];
+    let authorship = paragraph.authorship.as_ref().unwrap();
+    assert_eq!(authorship.author, "Fixture editor");
+    assert_eq!(
+        serde_json::to_value(authorship).unwrap()["meaningReview"],
+        "UNASSESSED"
+    );
+    assert_eq!(
+        authorship.source_snapshot,
+        work.snapshot.as_ref().unwrap().as_str()
+    );
+    assert_eq!(
+        authorship.source_refs["source-reserve"],
+        digest(&work.checked.sources()["source-reserve"]).unwrap()
+    );
+    let mut expected = original.clone();
+    expected.explanation[1] = paragraph.clone();
+    assert_eq!(
+        bytes(&edited.operations[0]).unwrap(),
+        bytes(&expected).unwrap()
+    );
+    let claim = claims.values().next().unwrap();
+    assert_eq!(claim["authority"], "USER_DOCUMENTATION");
+    assert!(claim.get("sourceIds").is_none());
+    assert!(claim.get("evidence").is_none());
+    // A distinct title edit may share the same immutable record, while duplicate
+    // paragraph targets and undeclared authors cannot pass deterministic checks.
+    proposal
+        .retained_edits
+        .push(input(&work).retained_edits.remove(0));
+    assert!(materialize(&work, &proposal, &state).unwrap().2.is_empty());
+    proposal
+        .retained_edits
+        .push(proposal.retained_edits[0].clone());
+    assert!(
+        materialize(&work, &proposal, &state)
+            .unwrap_err()
+            .message
+            .contains("duplicate")
+    );
+    proposal.retained_edits.truncate(1);
+    proposal.retained_edits[0].author = None;
+    assert!(
+        materialize(&work, &proposal, &state)
+            .unwrap_err()
+            .message
+            .contains("declared author")
+    );
+    let mut forged_refs = paragraph.clone();
+    forged_refs.authorship.as_mut().unwrap().source_refs.insert(
+        "source-reserve".into(),
+        format!("sha256:{}", "0".repeat(64)),
+    );
+    assert!(
+        super::super::explanation_authorship::validate(&forged_refs, &work.checked)
+            .unwrap_err()
+            .message
+            .contains("linked context changed")
+    );
+    let protected = &edited.operations[0];
+    let mut regenerated = protected.clone();
+    regenerated.explanation[1].authorship = None;
+    assert!(
+        super::super::explanation_authorship::preserve(protected, &regenerated, &BTreeSet::new())
+            .is_err()
+    );
+    let encoded = serde_json::to_value(&original.explanation[1]).unwrap();
+    assert!(
+        encoded.get("authorship").is_none(),
+        "historic serialization must stay unchanged"
+    );
 }

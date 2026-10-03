@@ -15,6 +15,7 @@ pub mod dataflow;
 mod endpoint_context;
 pub mod entities;
 pub mod evidence_package;
+mod explanation_authorship;
 pub mod fact_index;
 pub mod flow_dsl;
 pub mod history;

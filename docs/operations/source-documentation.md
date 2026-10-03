@@ -548,12 +548,45 @@ exact operation `id` and canonical `recordDigest`, `target: "operationTitle"`,
 `docs work read-retained-part` first, using the same immutable Work and exact
 kind/id until `nextCursor` is null. The host clones the entire retained operation
 and changes only its title, preserving explanation, evidence, notes and visuals.
-Stale digests or old values, duplicate edits, replacement/gap collisions and other
+Stale digests or old values, duplicate edits, replacement/gap collisions and unsupported
 targets are rejected. The edit is a presentation proposal requiring the existing
 meaning review and operation coverage; recorded reads alone do not establish
 that an automatic author or reviewer received the complete content. Automatic
 authoring rejects `retainedEdits` until full retained-operation delivery is
 supported for each role. Publication uses the normal conflict check, atomic merge and retained history.
+
+For a paragraph correction in the same retained operation, use
+`target: "explanationText"` with the exact `fragmentId`, a nonblank declared
+`author` (at most 256 UTF-8 bytes), and the exact `expectedOldValue` and
+`replacement`. Replacement is plain prose of at most 8,192 UTF-8 bytes. Read the
+whole retained record first; its total size may exceed one Work response. The
+host changes only that paragraph's text and authorship metadata, preserving its
+step links, source/dependency IDs, detail flag, and every unrelated field.
+Different paragraph edits and a title correction may share one proposal;
+duplicate targets are rejected.
+
+Submit with `docs proposal submit --root DOCS --work WORK --input proposal.json`,
+then publish the ready result with
+`docs proposal publish --root DOCS --proposal PROPOSAL --unassessed`. This manual
+path records `USER_DOCUMENTATION` with a declared author, an edit digest, the
+immutable source snapshot, and exact source/observation record digests. The author
+name is a declaration, not an authenticated identity. JSON, HTML and Markdown
+show UNASSESSED authorship; originally linked code is retained unverified context
+and does not become proof for the new wording. The normal machine-ready proposal,
+read completeness, input freshness, baseline conflict and atomic publication
+checks still apply. This is manual publication, not separate meaning review or
+automatic-role qualification.
+
+A paragraph edit against a Work snapshot whose linked context differs from the
+published operation is refused instead of rebinding the existing explanation to
+new bytes. A status-only source update keeps authored text, provenance and the
+original source bytes while marking their source freshness stale. Ordinary
+regeneration must preserve the complete authored paragraph, including provenance,
+or its conflicting operation replacement is rejected and the prior publication
+is retained. A direct narrative input cannot forge new authorship or remove it.
+This slice does not implement rebasing authored text onto changed source or a
+separate semantic-verification workflow for user documentation. Snapshot editing
+remains historical; observing current target freshness is a separate status check.
 
 Portable bindings 1.3 share identical evidence within a snapshot and derive
 duplicate dependency digest maps from the same retained observations. A fragment

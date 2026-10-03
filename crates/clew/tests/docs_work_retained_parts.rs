@@ -399,3 +399,313 @@ fn oversized_authored_operation_is_part_readable_and_title_edit_is_machine_ready
     // author/reviewer or publishes the edit, so it does not assert reviewed UX-01
     // publication acceptance or bypass it using --unassessed.
 }
+
+fn complete_retained(f: &Fixture, work: &str, id: &str) {
+    read_pages(f, work);
+    let mut cursor = None;
+    loop {
+        let response = successful_json(part(f, work, id, "RETAINED_OPERATION", cursor.as_deref()));
+        cursor = response["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+}
+
+#[test]
+fn manual_paragraph_edit_preserves_history_authorship_and_original_code_on_source_update() {
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    let (_, result) = f.run(&["docs", "check"]);
+    let snapshot = result["snapshot"].as_str().unwrap();
+    let repo = Repository::open(&f.docs).unwrap();
+    let checked = Check::load_snapshot(&repo, snapshot).unwrap();
+    let mut narrative = read(f.author("orders", &checked));
+    narrative["operations"][0]["documentationLanguage"] = json!("en");
+    let template = narrative["operations"][0]["explanation"][0].clone();
+    for index in 0..14 {
+        let mut paragraph = template.clone();
+        paragraph["id"] = json!(format!("retained-detail-{index}"));
+        paragraph["text"] = json!(format!(
+            "Retained explanation {index}. {}",
+            "The fixture keeps its unrelated explanation intact. ".repeat(100)
+        ));
+        paragraph["detail"] = json!(true);
+        narrative["operations"][0]["explanation"]
+            .as_array_mut()
+            .unwrap()
+            .push(paragraph);
+    }
+    let original: Operation = serde_json::from_value(narrative["operations"][0].clone()).unwrap();
+    assert!(canonical::bytes(&original).unwrap().len() > MAX_BYTES);
+    let id = original.id.as_str();
+    let input = f.input("paragraph-baseline.json", &narrative);
+    let baseline = f.ok(&[
+        "docs",
+        "render",
+        "--snapshot",
+        snapshot,
+        "--input",
+        input.to_str().unwrap(),
+        "--publish",
+    ]);
+    assert_eq!(baseline["updateFailures"], json!({}));
+    let old_bundle = baseline["bundle"].as_str().unwrap();
+    let old_bytes = bundle_files(&f.bundle(old_bundle, ""));
+    let old_data = read(f.bundle(old_bundle, "services/orders.json"));
+    let work = prepare(&f, snapshot, id, "Manual paragraph correction");
+    let concurrent = prepare(&f, snapshot, id, "Concurrent manual paragraph correction");
+    complete_retained(&f, &work, id);
+    complete_retained(&f, &concurrent, id);
+    let replacement = "The caller supplies a quantity. This explanation is maintained by the documentation editor, and the linked code is context rather than proof.";
+    let proposal = json!({"schema":"codeclew-documentation-proposal/1.0", "operations":[],
+        "retainedEdits":[{"kind":"RETAINED_OPERATION", "id":id, "recordDigest":canonical::hash(&original).unwrap(),
+            "target":"explanationText", "fragmentId":original.explanation[0].id, "author":"Fixture editor",
+            "expectedOldValue":original.explanation[0].text, "replacement":replacement}]});
+    let submitted = submit(&f, &work, &proposal);
+    assert!(
+        submitted["status"].as_str().unwrap().starts_with("READY_"),
+        "{submitted}"
+    );
+    let concurrent_proposal = submit(&f, &concurrent, &proposal);
+    assert!(
+        concurrent_proposal["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_"),
+        "{concurrent_proposal}"
+    );
+    let publication = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        submitted["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(publication["meaningReview"], "UNASSESSED");
+    assert_eq!(publication["updateFailures"], json!({}), "{publication}");
+    let new_bundle = publication["bundle"].as_str().unwrap();
+    let data = read(f.bundle(new_bundle, "services/orders.json"));
+    let actual: Operation = serde_json::from_value(data["operations"][0].clone()).unwrap();
+    let mut expected = original.clone();
+    expected.explanation[0].text = replacement.into();
+    expected.explanation[0].authorship = actual.explanation[0].authorship.clone();
+    assert_eq!(
+        actual, expected,
+        "only text and declared authorship may change"
+    );
+    let authorship = actual.explanation[0].authorship.as_ref().unwrap();
+    assert_eq!(authorship.author, "Fixture editor");
+    let serialized = serde_json::to_value(authorship).unwrap();
+    assert_eq!(serialized["authority"], "USER_DOCUMENTATION");
+    assert_eq!(serialized["meaningReview"], "UNASSESSED");
+    assert_eq!(serialized["contextRole"], "RETAINED_UNVERIFIED_CONTEXT");
+    assert_eq!(authorship.source_snapshot, snapshot);
+    assert_eq!(data["sources"], old_data["sources"]);
+    assert_eq!(data["operationSources"], old_data["operationSources"]);
+    assert_eq!(data["operationStates"][id]["verification"], "UNASSESSED");
+    let markdown = fs::read_to_string(f.bundle(new_bundle, "services/orders.md")).unwrap();
+    assert!(markdown.contains("User documentation by Fixture editor. Meaning review: UNASSESSED."));
+    let html = fs::read_to_string(f.bundle(new_bundle, "services/orders.html")).unwrap();
+    assert!(html.contains("Originally linked code (unverified context)"));
+    assert!(html.contains("Linked code does not verify the narrative meaning."));
+    assert_eq!(bundle_files(&f.bundle(old_bundle, "")), old_bytes);
+    assert_eq!(
+        f.ok(&["docs", "history", "show", "--id", old_bundle])["status"],
+        "FROZEN_SNAPSHOT"
+    );
+    let current_index = fs::read(f.docs.join("docs/index.html")).unwrap();
+    let (code, conflict) = f.run(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        concurrent_proposal["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_ne!(code, 0);
+    assert!(
+        conflict
+            .to_string()
+            .contains("published content changed after work preparation"),
+        "{conflict}"
+    );
+    assert_eq!(
+        fs::read(f.docs.join("docs/index.html")).unwrap(),
+        current_index
+    );
+    // Direct narrative input uses the current publication context, including its
+    // registered-input scope, so rejection exercises authored-text protection.
+    narrative["contextDigest"] = publication["contextDigest"].clone();
+    let input = f.input("paragraph-overwrite.json", &narrative);
+    let overwritten = f.ok(&[
+        "docs",
+        "render",
+        "--snapshot",
+        snapshot,
+        "--input",
+        input.to_str().unwrap(),
+        "--publish",
+    ]);
+    assert!(
+        overwritten["updateFailures"]
+            .to_string()
+            .contains("protected user-authored explanation"),
+        "{overwritten}"
+    );
+    let preserved = read(f.bundle(
+        overwritten["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    assert_eq!(preserved["operations"], data["operations"]);
+    let mut forged = narrative.clone();
+    forged["operations"][0] = serde_json::to_value(&actual).unwrap();
+    forged["operations"][0]["explanation"][0]["text"] =
+        json!("An unsupported direct narrative edit.");
+    forged["operations"][0]["explanation"][0]["authorship"]["author"] =
+        json!("Forged fixture identity");
+    let forged_input = f.input("forged-authorship.json", &forged);
+    let rejected = f.ok(&[
+        "docs",
+        "render",
+        "--snapshot",
+        snapshot,
+        "--input",
+        forged_input.to_str().unwrap(),
+        "--publish",
+    ]);
+    assert!(
+        rejected["updateFailures"]
+            .to_string()
+            .contains("bound manual UNASSESSED proposal"),
+        "{rejected}"
+    );
+    let forged_rejection = rejected.clone();
+    // The supported status update observes changed source without changing authored
+    // text, its declared identity, or the original linked bytes.
+    let source = source_repo.join("Orders.java");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("return quantity;", "return quantity + 1;"),
+    )
+    .unwrap();
+    support::commit(&source_repo);
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    assert_eq!(refreshed["agentInvocations"], 0);
+    let stale = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    assert_eq!(stale["operations"], data["operations"]);
+    assert_eq!(stale["sources"], data["sources"]);
+    assert_eq!(stale["operationSources"], data["operationSources"]);
+    assert_eq!(stale["operationStates"][id]["freshness"], "STALE");
+    assert_eq!(stale["operationStates"][id]["verification"], "UNASSESSED");
+    let (_, recaptured) = f.run(&["docs", "check"]);
+    let changed_snapshot = recaptured["snapshot"].as_str().unwrap();
+    assert_ne!(changed_snapshot, snapshot);
+    let changed_work = prepare(
+        &f,
+        changed_snapshot,
+        id,
+        "Refuse silent paragraph source rebinding",
+    );
+    complete_retained(&f, &changed_work, id);
+    let mut changed_proposal = proposal.clone();
+    changed_proposal["retainedEdits"][0]["recordDigest"] = json!(canonical::hash(&actual).unwrap());
+    changed_proposal["retainedEdits"][0]["expectedOldValue"] = json!(replacement);
+    changed_proposal["retainedEdits"][0]["replacement"] =
+        json!("A new editor correction against changed source.");
+    let refused = submit(&f, &changed_work, &changed_proposal);
+    assert_eq!(refused["status"], "NEEDS_REPAIR", "{refused}");
+    assert!(
+        refused.to_string().contains("linked dependencies changed")
+            || refused.to_string().contains("linked source bytes changed"),
+        "{refused}"
+    );
+    let new_check = Check::load_snapshot(&repo, changed_snapshot).unwrap();
+    let regenerated = f.author("orders", &new_check);
+    let current_context = f.ok(&[
+        "docs",
+        "render",
+        "--snapshot",
+        changed_snapshot,
+        "--publish",
+    ]);
+    let mut regenerated_value = read(&regenerated);
+    regenerated_value["contextDigest"] = current_context["contextDigest"].clone();
+    let regenerated = f.input("paragraph-regeneration.json", &regenerated_value);
+    let rejected = f.ok(&[
+        "docs",
+        "render",
+        "--snapshot",
+        changed_snapshot,
+        "--input",
+        regenerated.to_str().unwrap(),
+        "--publish",
+    ]);
+    assert!(
+        rejected["updateFailures"]
+            .to_string()
+            .contains("protected user-authored explanation"),
+        "{rejected}"
+    );
+    let final_data = read(f.bundle(rejected["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(final_data["operations"], data["operations"]);
+    assert_eq!(final_data["operationSources"], data["operationSources"]);
+    assert_eq!(final_data["operationStates"][id]["freshness"], "STALE");
+    assert_eq!(bundle_files(&f.bundle(old_bundle, "")), old_bytes);
+    if let Some(destination) = std::env::var_os("CODECLEW_PARAGRAPH_TEST_ARTIFACTS") {
+        fn copy_tree(source: &Path, target: &Path) {
+            fs::create_dir_all(target).unwrap();
+            for entry in fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                let output = target.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &output);
+                } else {
+                    assert!(entry.file_type().unwrap().is_file());
+                    fs::copy(entry.path(), output).unwrap();
+                }
+            }
+        }
+        let destination = Path::new(&destination);
+        assert!(
+            !destination.exists(),
+            "artifact sink must be a new directory"
+        );
+        copy_tree(&f.docs, &destination.join("docs-root"));
+        for entry in fs::read_dir(f.temp.path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+            }
+        }
+        fs::write(destination.join("journey.json"), serde_json::to_vec_pretty(&json!({
+            "schema":"codeclew-synthetic-paragraph-journey/1.0",
+            "authority":"PUBLIC_MANUAL_CLI_UNASSESSED_NOT_MEANING_REVIEW_QUALIFICATION",
+            "baselineSnapshot":snapshot, "changedSnapshot":changed_snapshot,
+            "operation":id, "fragment":original.explanation[0].id,
+            "baselinePublication":baseline, "paragraphSubmission":submitted,
+            "paragraphPublication":publication, "concurrentPublicationConflict":conflict,
+            "directOverwriteRejection":overwritten, "forgedAuthorshipRejection":forged_rejection,
+            "sourceStatusUpdate":refreshed, "changedContextSubmission":refused,
+            "finalRegenerationRejection":rejected,
+            "commands":["docs render --snapshot BASELINE --input paragraph-baseline.json --publish",
+                "docs work prepare --subject service:orders --snapshot BASELINE --input retained-work-request.json",
+                "docs work read --work WORK --input retained-work-selection.json (all pages)",
+                "docs work read-retained-part --work WORK --input retained-part-request.json (all parts)",
+                "docs proposal submit --work WORK --input retained-title-proposal.json",
+                "docs proposal publish --proposal PROPOSAL --unassessed",
+                "docs refresh --status-only", "docs check",
+                "docs render --snapshot CHANGED --input paragraph-regeneration.json --publish"]
+        })).unwrap()).unwrap();
+    }
+}

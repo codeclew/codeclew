@@ -3934,6 +3934,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                 dependency_ids: event.dependency_ids.clone(),
                 source_ids: event.source_ids.clone(),
                 detail: false,
+                authorship: None,
             })
             .collect()
     };

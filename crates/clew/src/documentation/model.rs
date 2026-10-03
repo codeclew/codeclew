@@ -295,6 +295,37 @@ pub struct Explanation {
     /// Implementation commentary, hidden behind the detailed evidence view.
     #[serde(default)]
     pub detail: bool,
+    /// Declared human authorship; linked code is retained context, not proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorship: Option<ExplanationAuthorship>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExplanationAuthorship {
+    pub authority: ExplanationAuthority,
+    pub author: String,
+    pub meaning_review: AuthoredMeaningReview,
+    pub context_role: AuthoredContextRole,
+    pub edit_digest: String,
+    pub source_snapshot: String,
+    pub source_refs: BTreeMap<String, String>,
+    pub dependency_refs: BTreeMap<String, String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExplanationAuthority {
+    UserDocumentation,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AuthoredMeaningReview {
+    Unassessed,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AuthoredContextRole {
+    RetainedUnverifiedContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

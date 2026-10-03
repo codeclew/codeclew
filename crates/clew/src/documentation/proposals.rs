@@ -57,7 +57,7 @@ pub struct Proposal {
     #[serde(default)]
     pub uncertainties: Vec<String>,
 }
-/// A presentation change against one exact canonical retained record. This is
+/// A bounded edit against one exact canonical retained record. This is
 /// deliberately not a generic JSON patch or a new evidence-bound source claim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -68,6 +68,10 @@ pub struct RetainedEdit {
     pub target: RetainedTarget,
     pub expected_old_value: String,
     pub replacement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -78,6 +82,7 @@ pub enum RetainedKind {
 #[serde(rename_all = "camelCase")]
 pub enum RetainedTarget {
     OperationTitle,
+    ExplanationText,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -675,6 +680,7 @@ impl Builder<'_> {
                 dependency_ids: fragment.dependency_ids,
                 source_ids: fragment.source_ids,
                 detail: false,
+                authorship: None,
             });
             if let Some(uncertainty) = &step.meaning.uncertainty {
                 op.boundaries.push(uncertainty.clone());
@@ -710,6 +716,7 @@ impl Builder<'_> {
                         dependency_ids: other.dependency_ids.clone(),
                         source_ids: other.source_ids.clone(),
                         detail: false,
+                        authorship: None,
                     });
                     op.events.push(other);
                     self.steps(
@@ -1034,6 +1041,7 @@ pub(super) fn materialize(
                     dependency_ids: fragment.dependency_ids,
                     source_ids: fragment.source_ids,
                     detail: false,
+                    authorship: None,
                 });
             }
         }
@@ -1090,16 +1098,19 @@ pub(super) fn materialize(
             builder.diagnostics.push(json!({"code":"STRUCTURE_OR_COVERAGE_INVALID","operation":index,"nextAction":error.message}));
         }
     }
+    let replacements = operation_targets.clone();
     let mut edit_targets = BTreeSet::new();
+    let mut edited = BTreeMap::new();
     for edit in &input.retained_edits {
-        if !edit_targets.insert((&edit.id, edit.target)) {
-            return Err(invalid("duplicate retained presentation edit target"));
+        if !edit_targets.insert((&edit.id, edit.target, &edit.fragment_id)) {
+            return Err(invalid("duplicate retained edit target"));
         }
-        if !operation_targets.insert(edit.id.clone()) {
+        if replacements.contains(&edit.id) {
             return Err(invalid(
                 "retained edit conflicts with an operation replacement",
             ));
         }
+        operation_targets.insert(edit.id.clone());
         let retained = super::work_retained_parts::retained_operation(work, &edit.id)?;
         if super::work_retained_parts::retained_record_digest(work, &edit.id)? != edit.record_digest
         {
@@ -1110,33 +1121,108 @@ pub(super) fn materialize(
                 "read every exact retained operation part before editing its presentation",
             ));
         }
-        if edit.replacement.trim().is_empty()
-            || edit.replacement.len() > 512
-            || edit.replacement.chars().any(char::is_control)
-        {
-            return Err(invalid(
-                "retained operation title must be nonblank, at most 512 UTF-8 bytes and contain no control characters",
-            ));
-        }
-        let mut operation = retained.clone();
-        match edit.target {
+        let operation = edited
+            .entry(edit.id.clone())
+            .or_insert_with(|| retained.clone());
+        let (slot, authority, description) = match edit.target {
             RetainedTarget::OperationTitle => {
-                if operation.title != edit.expected_old_value {
+                if edit.fragment_id.is_some() || edit.author.is_some() {
+                    return Err(invalid(
+                        "operationTitle does not accept fragmentId or author",
+                    ));
+                }
+                if edit.replacement.trim().is_empty()
+                    || edit.replacement.len() > 512
+                    || edit.replacement.chars().any(char::is_control)
+                {
+                    return Err(invalid(
+                        "retained operation title must be nonblank, at most 512 UTF-8 bytes and contain no control characters",
+                    ));
+                }
+                if retained.title != edit.expected_old_value {
                     return Err(invalid("retained edit expected old value is stale"));
                 }
                 operation.title = edit.replacement.clone();
+                (
+                    "retainedEdit/operationTitle".to_owned(),
+                    "PRESENTATION_PROPOSAL",
+                    format!(
+                        "Change operation title from {:?} to {:?}.",
+                        edit.expected_old_value, edit.replacement
+                    ),
+                )
+            }
+            RetainedTarget::ExplanationText => {
+                let id = edit
+                    .fragment_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("explanationText requires fragmentId"))?;
+                let original = retained
+                    .explanation
+                    .iter()
+                    .find(|p| p.id == id)
+                    .ok_or_else(|| invalid("retained explanation fragment is unavailable"))?;
+                if original.text != edit.expected_old_value {
+                    return Err(invalid("retained edit expected old value is stale"));
+                }
+                if edit.replacement.trim().is_empty()
+                    || edit.replacement.len() > 8192
+                    || edit.replacement.contains(['`', '<'])
+                    || edit
+                        .replacement
+                        .chars()
+                        .any(|c| c.is_control() && c != '\n' && c != '\t')
+                {
+                    return Err(invalid(
+                        "retained explanation must be nonblank plain prose of at most 8192 UTF-8 bytes",
+                    ));
+                }
+                let authorship = super::explanation_authorship::from_edit(work, original, edit)?;
+                let paragraph = operation
+                    .explanation
+                    .iter_mut()
+                    .find(|p| p.id == id)
+                    .unwrap();
+                paragraph.text = edit.replacement.clone();
+                paragraph.authorship = Some(authorship);
+                (
+                    format!("retainedEdit/explanationText/{id}"),
+                    "USER_DOCUMENTATION",
+                    format!(
+                        "{} changes explanation {:?} from {:?} to {:?}; linked code remains unverified context.",
+                        edit.author.as_deref().unwrap(),
+                        id,
+                        edit.expected_old_value,
+                        edit.replacement
+                    ),
+                )
+            }
+        };
+        let scope = format!("{}/{}", work.subject, edit.id);
+        let claim_id = stable(&scope, &slot)?;
+        builder.claims.insert(
+            claim_id,
+            json!({
+                "kind":if edit.target == RetainedTarget::ExplanationText { "RETAINED_DOCUMENTATION_EDIT" } else { "RETAINED_PRESENTATION_EDIT" }, "authority":authority,
+                "slot":slot, "version":digest(edit)?, "text":description,
+                "work":work.id, "snapshot":work.snapshot, "edit":edit,
+                "meaning":"UNASSESSED", "uncertainty":null
+            }),
+        );
+    }
+    n.operations.extend(edited.into_values());
+    if let Some(retained) = &work.retained {
+        for operation in &n.operations {
+            if let Some(old) = retained.operations.iter().find(|o| o.id == operation.id) {
+                let allowed: BTreeSet<_> = input
+                    .retained_edits
+                    .iter()
+                    .filter(|e| e.id == operation.id && e.target == RetainedTarget::ExplanationText)
+                    .filter_map(|e| e.fragment_id.as_deref())
+                    .collect();
+                super::explanation_authorship::preserve(old, operation, &allowed)?;
             }
         }
-        let scope = format!("{}/{}", work.subject, edit.id);
-        let claim_id = stable(&scope, "retainedEdit/operationTitle")?;
-        builder.claims.insert(claim_id, json!({
-            "kind":"RETAINED_PRESENTATION_EDIT", "authority":"PRESENTATION_PROPOSAL",
-            "slot":"retainedEdit/operationTitle", "version":digest(edit)?,
-            "text":format!("Change operation title from {:?} to {:?}.", edit.expected_old_value, edit.replacement),
-            "work":work.id, "snapshot":work.snapshot, "edit":edit,
-            "meaning":"UNASSESSED", "uncertainty":null
-        }));
-        n.operations.push(operation);
     }
     for (reference, reason) in &input.gaps {
         let id = if let Some(h) = work.handles.get(reference) {
@@ -1193,7 +1279,9 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
     current(repo, &work)?;
     let state = work::read_state(repo, id)?;
     let read_digest = digest(&state)?;
-    let (narrative, claims, mut diagnostics) = match materialize(&work, &input, &state) {
+    let result = super::explanation_authorship::check_edit_context(repo, &work, &input)
+        .and_then(|()| materialize(&work, &input, &state));
+    let (narrative, claims, mut diagnostics) = match result {
         Ok((n, c, d)) => (Some(n), c, d),
         Err(error) => (
             None,
