@@ -138,6 +138,12 @@
     "group": "Guides"
   },
   {
+    "title": "Follow a selected process from retained source.",
+    "url": "./documentation.html#native-source-pages",
+    "description": "Service documentation",
+    "group": "Guides"
+  },
+  {
     "title": "Export a selected flow with its source.",
     "url": "./documentation.html#static-flow-pages",
     "description": "Service documentation",
