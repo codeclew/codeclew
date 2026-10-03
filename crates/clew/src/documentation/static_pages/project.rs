@@ -87,15 +87,19 @@ pub(super) fn project_unresolved(
             limitations,
             human_instructions,
             authored_paragraphs: vec![],
+            examined_sources: None,
         });
     }
-    Ok(BundleProjection {
+    let mut projection = BundleProjection {
         schema: SCHEMA.into(),
         input_digest: checked.input_digest.clone(),
         context_digest: checked.context_digest.clone(),
         selection_digest: digest(&selections)?,
         pages,
-    })
+        source_call_graph: None,
+    };
+    super::linked::attach(checked, &mut projection)?;
+    Ok(projection)
 }
 
 fn note_target(inputs: &RepositoryInputs, target: &str, service: &str) -> (bool, bool) {
@@ -199,7 +203,7 @@ fn gap(code: &str, detail: impl Into<String>, citation_id: Option<String>) -> Ga
     }
 }
 
-fn compiler(o: &Observation) -> bool {
+pub(super) fn compiler(o: &Observation) -> bool {
     o.kind == "SYMBOL"
         && o.normalized["schema"] == JAVA_SCHEMA
         && matches!(
@@ -308,11 +312,11 @@ impl Parsed {
     }
 }
 
-struct Context<'a> {
-    evidence: &'a ServiceEvidence,
-    citations: BTreeMap<String, Citation>,
-    observations: BTreeMap<String, Observation>,
-    sources: BTreeMap<String, Source>,
+pub(super) struct Context<'a> {
+    pub(super) evidence: &'a ServiceEvidence,
+    pub(super) citations: BTreeMap<String, Citation>,
+    pub(super) observations: BTreeMap<String, Observation>,
+    pub(super) sources: BTreeMap<String, Source>,
 }
 
 impl Context<'_> {
@@ -802,7 +806,7 @@ impl Context<'_> {
         });
         id
     }
-    fn callable(&mut self, id: &str) -> Result<CallableProjection, ClewError> {
+    pub(super) fn callable(&mut self, id: &str) -> Result<CallableProjection, ClewError> {
         let o = self
             .evidence
             .observations
@@ -1280,6 +1284,7 @@ impl Context<'_> {
             .into(),
             external_boundary: None,
             gaps: vec![],
+            expanded_node: None,
         };
         match relations.as_slice() {
             [relation] => {

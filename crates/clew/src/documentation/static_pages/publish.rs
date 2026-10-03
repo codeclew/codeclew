@@ -81,6 +81,15 @@ fn statement(s: &Statement, ext: &str) -> String {
     for call in &s.calls {
         out += &paragraph(&format!("Call phase: {}.", call.phase));
         out += &format!("<p>{}</p>\n", cite(&call.citation_id, ext));
+        if let Some(node) = &call.expanded_node {
+            out += &format!(
+                "<p>{}</p>\n",
+                link(
+                    &format!("source-calls.{ext}#{}", anchor(node)),
+                    "Read the retained target body (runtime dispatch unobserved)"
+                )
+            );
+        }
         out += &format!(
             "<details><summary>Exact call identity</summary>{}</details>\n",
             paragraph(&format!(
@@ -321,7 +330,158 @@ fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
     out += "</section>\n";
     out
 }
-fn page(p: &PageContent, view: &str, title: &str, snapshot: &str, ext: &str) -> String {
+fn process_calls(p: &PageContent, graph: &SourceCallGraph, ext: &str) -> String {
+    let mut out = "<section id=\"source-call-navigation\"><h2>Linked process source context</h2>\n"
+        .to_owned();
+    out += &paragraph(
+        "Links identify retained source calls to selected endpoints. Child workers are selected context; receiver identity, scheduling, runtime dispatch and delivery are unobserved.",
+    );
+    for relation in graph
+        .process_links
+        .iter()
+        .filter(|l| l.from_process == p.id)
+    {
+        let node = &graph.nodes[&relation.caller_node];
+        let edge = node
+            .calls
+            .iter()
+            .find(|e| e.occurrence_path == relation.occurrence_path)
+            .unwrap();
+        out += &format!(
+            "<article><h3>{}</h3><pre>{}</pre><p>{} · {}</p><ul>{}</ul>\n",
+            link(
+                &format!("{}-overview.{ext}", relation.to_process),
+                &format!("Selected process {}", relation.to_process)
+            ),
+            escape(&edge.call.expression),
+            cite(&relation.citation_id, ext),
+            link(
+                &format!("source-calls.{ext}#{}", anchor(&relation.caller_node)),
+                "Caller body and exact occurrence"
+            ),
+            conditions(&edge.conditions, ext)
+        );
+        out += &paragraph(&format!(
+            "Arguments: {}. Target: {}. Scope: {}. Source occurrence: {}. Structurally reachable: {}. Receiver lineage: {}. Runtime dispatch: {}.",
+            edge.call.arguments.join(", "),
+            edge.call.target.as_deref().unwrap_or("unresolved"),
+            edge.target_scope,
+            edge.occurrence_path,
+            edge.reachable,
+            edge.receiver_lineage,
+            edge.runtime_dispatch
+        ));
+        out += &paragraph(&relation.limitation);
+        out += "</article>\n";
+    }
+    for relation in graph.process_links.iter().filter(|l| l.to_process == p.id) {
+        out += &format!(
+            "<p>Source caller: {} · {}</p>\n",
+            link(
+                &format!("{}-worker.{ext}", relation.from_process),
+                &relation.from_process
+            ),
+            cite(&relation.citation_id, ext)
+        );
+    }
+    if let Some(examined) = &p.examined_sources {
+        out += &paragraph(&format!(
+            "Examined source digest: {}. Schema: {}. This is a documentation review fingerprint, not a file digest or runtime impact claim.",
+            examined.examined_source_digest, examined.schema
+        ));
+        out += &format!(
+            "<p>{}</p>\n",
+            link(
+                &format!("source-calls.{ext}"),
+                "Expanded source bodies, frontiers and reverse examined context"
+            )
+        );
+    }
+    out += "</section>\n";
+    out
+}
+
+fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
+    let mut out = "<main><h1>Retained source-call bodies</h1>\n".to_owned();
+    out += &format!(
+        "<p>{} · {}</p>\n",
+        link(&format!("index.{ext}"), "All processes"),
+        link(&format!("sources.{ext}"), "Exact retained source appendix")
+    );
+    out += &paragraph(&format!(
+        "Expansion: at most {} source-call edges from a selected root, {} additional bodies and {} additional retained-source bytes. Cached body links and frontiers do not prove execution or instance lineage.",
+        graph.max_depth, graph.max_additional_bodies, graph.max_additional_source_bytes
+    ));
+    for node in graph.nodes.values() {
+        out += &format!(
+            "<section id=\"{}\"><h2>{}</h2>\n",
+            anchor(&node.id),
+            escape(&callable_label(&node.callable.symbol))
+        );
+        out += &paragraph(&format!(
+            "Service: {}. Compiler scope: {}. Examined source digest: {}.",
+            node.service, node.scope, node.examined_source_digest
+        ));
+        out += &callable(&node.callable, ext);
+        for edge in &node.calls {
+            out += &format!(
+                "<details><summary>Source call {}</summary><pre>{}</pre><ul>{}</ul>\n",
+                escape(&edge.occurrence_path),
+                escape(&edge.call.expression),
+                conditions(&edge.conditions, ext)
+            );
+            out += &paragraph(&format!(
+                "Status: {}. Source identity: {}. Target scope: {}. Target declaration: {}. Relation digest: {}. Receiver lineage: {}. Runtime dispatch: {}.",
+                edge.status,
+                edge.source_identity,
+                edge.target_scope,
+                edge.target_declaration.as_deref().unwrap_or("unavailable"),
+                edge.relation_digest.as_deref().unwrap_or("unavailable"),
+                edge.receiver_lineage,
+                edge.runtime_dispatch
+            ));
+            out += &format!("<ul>{}</ul></details>\n", gaps(&edge.frontiers, ext));
+        }
+        out += "<h3>Examined documentation context</h3><ul>\n";
+        if let Some(rows) = graph.reverse_examined_processes.get(&node.id) {
+            for row in rows {
+                out += &format!(
+                    "<li>{}: {}</li>\n",
+                    link(
+                        &format!("{}-overview.{ext}", row.process_id),
+                        &row.process_id
+                    ),
+                    escape(
+                        &row.reasons
+                            .iter()
+                            .map(|r| format!(
+                                "{}{}",
+                                r.reason,
+                                r.via_process
+                                    .as_ref()
+                                    .map(|p| format!(" via {p}"))
+                                    .unwrap_or_default()
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                );
+            }
+        }
+        out += "</ul></section>\n";
+    }
+    out += "</main>\n";
+    out
+}
+
+fn page(
+    p: &PageContent,
+    view: &str,
+    title: &str,
+    snapshot: &str,
+    ext: &str,
+    graph: Option<&SourceCallGraph>,
+) -> String {
     let mut out = format!(
         "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
         escape(&process_label(p)),
@@ -429,6 +589,21 @@ fn page(p: &PageContent, view: &str, title: &str, snapshot: &str, ext: &str) -> 
         }
         _ => unreachable!(),
     }
+    if p.selection.expand_source_calls
+        && let Some(graph) = graph
+    {
+        if matches!(view, "overview" | "worker") {
+            out += &process_calls(p, graph, ext);
+        } else {
+            out += &format!(
+                "<p>{}</p>\n",
+                link(
+                    &format!("{}-overview.{ext}#source-call-navigation", p.id),
+                    "Linked process source context and examined-source identity"
+                )
+            );
+        }
+    }
     if !p.human_instructions.is_empty() {
         if view == "overview" {
             out += &operational_instructions(&p.human_instructions);
@@ -485,10 +660,17 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
     let mut citations = BTreeMap::new();
     for page in &p.pages {
         for (id, c) in &page.citations {
-            citations.entry(id).or_insert((page, c));
+            citations.entry(id).or_insert((&page.sources, c));
         }
     }
-    for (id, (page, c)) in citations {
+    if let Some(graph) = &p.source_call_graph {
+        for node in graph.nodes.values() {
+            for (id, c) in &node.citations {
+                citations.entry(id).or_insert((&node.sources, c));
+            }
+        }
+    }
+    for (id, (source_records, c)) in citations {
         out += &format!(
             "<section id=\"{}\"><h2>{}:{}–{}</h2>\n",
             anchor(id),
@@ -519,7 +701,7 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
                 "Original source URL unavailable; retained source anchor is local to this appendix.",
             );
         }
-        if let Some(source) = page.sources.get(&c.source_id) {
+        if let Some(source) = source_records.get(&c.source_id) {
             // UTF-8 bounds are checked by the projector; use a checked slice here too.
             if let Some(text) = source.text.get(c.start_byte..c.end_byte) {
                 out += &format!("<pre>{}</pre>\n", escape(text));
@@ -534,6 +716,15 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
             sources
                 .entry((&source.service, &source.id))
                 .or_insert(source);
+        }
+    }
+    if let Some(graph) = &p.source_call_graph {
+        for node in graph.nodes.values() {
+            for source in node.sources.values() {
+                sources
+                    .entry((&source.service, &source.id))
+                    .or_insert(source);
+            }
         }
     }
     for source in sources.values() {
@@ -625,7 +816,14 @@ pub(super) fn write(
                     format!("{}-{slug}", page_content.id),
                     (
                         title.to_string(),
-                        page(page_content, slug, title, snapshot, ext),
+                        page(
+                            page_content,
+                            slug,
+                            title,
+                            snapshot,
+                            ext,
+                            p.source_call_graph.as_ref(),
+                        ),
                     ),
                 );
             }
@@ -650,12 +848,31 @@ pub(super) fn write(
             "sources".into(),
             ("Retained source appendix".into(), appendix(p, ext)),
         );
+        if let Some(graph) = &p.source_call_graph {
+            bodies.insert(
+                "source-calls".into(),
+                (
+                    "Retained source-call bodies".into(),
+                    expanded_sources(graph, ext),
+                ),
+            );
+        }
         for (slug, (title, body)) in bodies {
             // Scalar and source newlines are already escaped. These remaining
             // newlines only format native JSX and must not start MDX paragraphs.
             let body = body.replace('\n', "");
             if ext == "html" {
-                page_rows.push(json!({"id":slug,"contentDigest":digest(&(p, &slug))?,"html":format!("{slug}.html"),"mdx":format!("{slug}.mdx")}));
+                let mut row = json!({"id":slug,"contentDigest":digest(&(p, &slug))?,"html":format!("{slug}.html"),"mdx":format!("{slug}.mdx")});
+                for process in &p.pages {
+                    if VIEWS
+                        .iter()
+                        .any(|(view, _)| slug == format!("{}-{view}", process.id))
+                        && let Some(examined) = &process.examined_sources
+                    {
+                        row["examinedSourceDigest"] = json!(examined.examined_source_digest);
+                    }
+                }
+                page_rows.push(row);
             }
             let bytes = if ext == "html" {
                 html(&title, &body).into_bytes()
@@ -701,6 +918,17 @@ pub(super) fn write(
     }).collect();
     if !selected_authored.is_empty() {
         manifest["selectedAuthoredParagraphs"] = json!(selected_authored);
+    }
+    if let Some(graph) = &p.source_call_graph {
+        manifest["examinedSourceSchema"] = json!("codeclew-native-examined-source/1.0");
+        manifest["examinedSourceAuthority"] = json!(graph.authority);
+        manifest["reverseExaminedPages"] = json!(graph.reverse_examined_processes.iter().map(|(node, rows)| {
+            (node, rows.iter().map(|row| json!({
+                "pageId":format!("{}-overview", row.process_id),"processId":row.process_id,
+                "html":format!("{}-overview.html", row.process_id),"mdx":format!("{}-overview.mdx", row.process_id),
+                "reasons":row.reasons
+            })).collect::<Vec<_>>())
+        }).collect::<BTreeMap<_, _>>());
     }
     files.insert(
         "manifest.json".into(),
@@ -754,6 +982,7 @@ mod tests {
             context_digest: "context".into(),
             selection_digest: "selection".into(),
             pages: vec![],
+            source_call_graph: None,
         };
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path().join("bundle");
@@ -822,6 +1051,7 @@ mod tests {
                 question: None,
                 note_ids: vec![],
                 authored_paragraphs: vec![],
+                expand_source_calls: false,
             },
             service_revision: "revision".into(),
             service_digest: "digest".into(),
@@ -844,6 +1074,7 @@ mod tests {
             limitations: vec![],
             human_instructions: vec![],
             authored_paragraphs: vec![],
+            examined_sources: None,
         };
         let p = BundleProjection {
             schema: SCHEMA.into(),
@@ -851,6 +1082,7 @@ mod tests {
             context_digest: "context".into(),
             selection_digest: "selection".into(),
             pages: vec![make("alpha-flow"), make("Alpha-flow")],
+            source_call_graph: None,
         };
         let temp = tempfile::tempdir().unwrap();
         let absent = temp.path().join("new");

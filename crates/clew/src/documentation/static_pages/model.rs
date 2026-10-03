@@ -23,6 +23,13 @@ pub struct Selection {
     /// Ordinary user documentation selected from an exact frozen publication.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authored_paragraphs: Vec<AuthoredParagraphSelection>,
+    /// Bounded source-call bodies and selected-process navigation, never runtime activation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub expand_source_calls: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,6 +63,8 @@ pub struct BundleProjection {
     pub context_digest: String,
     pub selection_digest: String,
     pub pages: Vec<PageContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_call_graph: Option<SourceCallGraph>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,6 +91,97 @@ pub struct PageContent {
     pub human_instructions: Vec<HumanInstruction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authored_paragraphs: Vec<AuthoredParagraph>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub examined_sources: Option<ExaminedSources>,
+}
+
+/// Each body is cached once by service, compilation scope and compiler symbol.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCallGraph {
+    pub schema: String,
+    pub authority: String,
+    pub max_depth: usize,
+    pub max_additional_bodies: usize,
+    pub max_additional_source_bytes: usize,
+    pub nodes: BTreeMap<String, SourceCallNode>,
+    pub process_links: Vec<ProcessCallLink>,
+    pub reverse_examined_processes: BTreeMap<String, Vec<ExaminedProcessReason>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCallNode {
+    pub id: String,
+    pub service: String,
+    pub scope: String,
+    pub callable: CallableProjection,
+    pub calls: Vec<SourceCallEdge>,
+    pub citations: BTreeMap<String, Citation>,
+    pub observations: BTreeMap<String, Observation>,
+    pub sources: BTreeMap<String, Source>,
+    /// Local examined text and call semantics; excludes global capture provenance.
+    pub examined_source_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCallEdge {
+    /// Stable structural path within the caller body, including call ordinal.
+    pub occurrence_path: String,
+    pub statement_id: String,
+    pub source_identity: String,
+    pub target_scope: String,
+    pub call_source_ids: Vec<String>,
+    pub relation_digest: Option<String>,
+    pub call: CallProjection,
+    pub conditions: Vec<PathCondition>,
+    pub reachable: bool,
+    pub target_declaration: Option<String>,
+    pub target_node: Option<String>,
+    pub status: String,
+    pub receiver_lineage: String,
+    pub runtime_dispatch: String,
+    pub frontiers: Vec<Gap>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessCallLink {
+    pub from_process: String,
+    pub to_process: String,
+    pub caller_node: String,
+    pub occurrence_path: String,
+    pub relation_id: String,
+    pub citation_id: String,
+    pub authority: String,
+    pub limitation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct ExaminedMembership {
+    pub node: String,
+    pub reason: String,
+    pub via_process: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExaminedSources {
+    pub schema: String,
+    pub authority: String,
+    pub examined_source_digest: String,
+    pub memberships: Vec<ExaminedMembership>,
+    /// Selected handoff status/field/gap semantics for this and linked processes.
+    pub handoff_context_digests: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExaminedProcessReason {
+    pub process_id: String,
+    pub reasons: Vec<ExaminedMembership>,
 }
 
 /// Captured human/imported material is displayed unchanged, never interpreted as source truth.
@@ -206,6 +306,8 @@ pub struct CallProjection {
     pub phase: String,
     pub external_boundary: Option<ExternalBoundary>,
     pub gaps: Vec<Gap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanded_node: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
