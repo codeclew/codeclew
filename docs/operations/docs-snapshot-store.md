@@ -552,6 +552,53 @@ between file replacements, rerun it with the same saved Work and answer to
 finish the draft; this performs no index capture. The result remains a local
 `DRAFT` / `UNREVIEWED`; it does not publish or create a release version.
 
+To review one successful original operation draft without another author call, use:
+
+```sh
+clew docs work review-draft --root docs --work WORK_ID \
+  --source-run AUTHOR_RUN_ID --config review-execution.json
+clew docs work status --root docs --work WORK_ID
+clew docs work cancel --root docs --work WORK_ID
+```
+
+The closed configuration uses
+`codeclew-documentation-operation-draft-review-execution/1.0`, with `reviewer`
+and `budget` fields. The reviewer role has the same isolated driver and finite
+per-call cap structure as an author role. Use a separate budget account; this
+command reserves exactly one reviewer call and zero author, repair, fallback or
+expansion calls. Configured token and local cost-unit maxima are coordinator
+reservations, not enforced provider billing or monetary cost limits. Missing
+usage dimensions retain their maximum reservation and remain unknown.
+
+The command selects the immutable author input and result through the exact
+saved report, checkpoint and invocation. It checks the Work snapshot, original
+packet and answer digests, and passes the saved author instruction and guide as
+untrusted review material. Editable exported `answer.json` is not authoritative.
+The first review slice accepts successful original author runs with answer 1.2
+and authoring contract 1.4 or 1.3; invalid answers and repaired author runs are
+rejected before a reviewer reservation. No author driver is needed for review.
+
+The reviewer returns the closed
+`codeclew-operation-draft-meaning-review/1.0` result. The host derives unique JSON
+paths covering the title, summary, glossary definitions, all three predicate
+claims, recursive steps, preparation summaries and steps, and uncertainties.
+The result must acknowledge every exact path and used packet evidence key once.
+Those acknowledgments check coverage and identity; they do not establish that
+semantic assessment was correct. `APPROVE`, `REJECT` and `NEEDS_EVIDENCE` remain
+local, unpublished outcomes. Approval does not create a narrative proposal,
+release, publication, or source authority claim.
+
+The review owns a new run report, checkpoint and reservations. Its latest-run
+pointer supports the existing progress, status and cancellation commands; the
+original author's report, immutable input/result, rendered files and account are
+not rewritten. Rerun the exact same command/configuration to replay a saved
+result or recover an interrupted result write without a second call. A changed
+review configuration is rejected. A dispatched reviewer with no durable response
+is never automatically dispatched again; inspect its retained invocation and
+maximum accounting. Cancellation and timeout stop the local adapter process;
+they do not prove provider cancellation or absence of billing. Invalid reviewer
+output is retained without automatic repair, replacement review or publication.
+
 The endpoint selector changed in v3, so saved `endpoint-context-v1` and
 `endpoint-context-v2` Work fail closed and must be prepared again from their
 retained snapshot; source acquisition is not repeated.

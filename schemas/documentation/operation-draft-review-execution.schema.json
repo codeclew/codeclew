@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/operation-draft-review-execution.schema.json",
+  "title": "Codeclew saved operation draft review execution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "reviewer",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-operation-draft-review-execution/1.0"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account",
+        "costUnit",
+        "ceiling",
+        "stopLoss"
+      ],
+      "properties": {
+        "account": {
+          "type": "string",
+          "minLength": 1
+        },
+        "costUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "ceiling": {
+          "$ref": "agent-job.schema.json#/$defs/amount"
+        },
+        "stopLoss": {
+          "$ref": "agent-job.schema.json#/$defs/amount"
+        }
+      }
+    },
+    "reviewer": {
+      "$ref": "agent-job.schema.json#/$defs/role"
+    }
+  }
+}

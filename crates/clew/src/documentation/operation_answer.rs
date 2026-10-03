@@ -1658,6 +1658,71 @@ fn answer_evidence_labels(answer: &OperationAnswer) -> BTreeSet<String> {
     labels
 }
 
+/// JSON paths are host identities; authored IDs and labels cannot collide with them.
+pub(super) fn review_blocks(answer: &Value) -> Result<Vec<Value>, crate::error::ClewError> {
+    let answer: OperationAnswer = serde_json::from_value(answer.clone())
+        .map_err(|e| invalid(format!("invalid operation answer review input: {e}")))?;
+    fn row(rows: &mut Vec<Value>, id: String, claim: &Claim) {
+        rows.push(serde_json::json!({"id":id,"claim":{"text":claim.text,"checks":claim.checks,"uncertainty":claim.uncertainty,"glossaryRefs":claim.glossary_refs},"evidence":claim.evidence}));
+    }
+    fn visit(rows: &mut Vec<Value>, steps: &[OperationStep], prefix: &str) {
+        for (i, step) in steps.iter().enumerate() {
+            let path = format!("{prefix}/{i}");
+            row(rows, format!("{path}/meaning"), &step.meaning);
+            visit(rows, &step.children, &format!("{path}/children"));
+            visit(rows, &step.otherwise, &format!("{path}/otherwise"));
+        }
+    }
+    let mut rows = vec![
+        serde_json::json!({"id":"/title","claim":answer.title,"evidence":[]}),
+        serde_json::json!({"id":"/uncertainties","claim":answer.uncertainties,"evidence":[]}),
+    ];
+    row(&mut rows, "/summary".into(), &answer.summary);
+    for (i, term) in answer.glossary.iter().enumerate() {
+        row(
+            &mut rows,
+            format!("/glossary/{i}/definition"),
+            &term.definition,
+        );
+    }
+    for (i, predicate) in answer.predicates.iter().enumerate() {
+        row(
+            &mut rows,
+            format!("/predicates/{i}/meaning"),
+            &predicate.meaning,
+        );
+        row(
+            &mut rows,
+            format!("/predicates/{i}/sourceCheck"),
+            &predicate.source_check,
+        );
+        row(
+            &mut rows,
+            format!("/predicates/{i}/evaluation"),
+            &predicate.evaluation,
+        );
+    }
+    visit(&mut rows, &answer.steps, "/steps");
+    for (i, preparation) in answer.preparations.iter().enumerate() {
+        row(
+            &mut rows,
+            format!("/preparations/{i}/summary"),
+            &preparation.summary,
+        );
+        visit(
+            &mut rows,
+            &preparation.steps,
+            &format!("/preparations/{i}/steps"),
+        );
+    }
+    if rows.len() > 4096 {
+        return Err(invalid(
+            "DRAFT_REVIEW_COVERAGE_LIMIT: answer has more than 4096 review blocks",
+        ));
+    }
+    Ok(rows)
+}
+
 struct BlockEvidence<'a> {
     id: String,
     anchor: String,

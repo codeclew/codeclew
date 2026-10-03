@@ -36,7 +36,7 @@ pub(super) fn run(
 }
 
 #[cfg(test)]
-fn run_loaded(
+pub(super) fn run_loaded(
     repo: &Repository,
     work: &super::super::work::Work,
     config_path: Option<&Path>,
@@ -220,6 +220,7 @@ fn run_loaded_action(
             execution_mode: Some(MODE.into()),
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         if fresh_repair {
@@ -528,6 +529,136 @@ fn validate_run_id(run: &str) -> Result<(), ClewError> {
         ));
     }
     Ok(())
+}
+
+/// Select the durable author input/result, never the exported editable answer file.
+pub(super) fn review_source(
+    repo: &Repository,
+    work: &super::super::work::Work,
+    report: &RunReport,
+    packet: &Value,
+    audit: &Value,
+) -> Result<(super::operation_draft_review::Origin, Value, Value), ClewError> {
+    validate_run_id(&report.run)?;
+    if report.draft_repair.is_some() {
+        return Err(invalid(
+            "DRAFT_REVIEW_REPAIRED_SOURCE_UNSUPPORTED: this first review slice accepts original successful author runs only",
+        ));
+    }
+    if report.execution_mode.as_deref() != Some(MODE)
+        || report.status != "DRAFT"
+        || report
+            .draft
+            .as_ref()
+            .and_then(|v| v["reviewStatus"].as_str())
+            != Some("UNREVIEWED")
+        || report.attempts.len() != 1
+        || report.attempts[0].role != "author"
+        || report.proposal.is_some()
+        || report.review.is_some()
+        || report.publication.as_ref() != Some(&json!({"status":"NOT_PUBLISHED"}))
+        || report.draft.as_ref().and_then(|v| v["state"].as_str()) != Some("DRAFT")
+    {
+        return Err(invalid(
+            "DRAFT_REVIEW_SOURCE_INELIGIBLE: select one successful unreviewed operation draft",
+        ));
+    }
+    let snapshot = work
+        .snapshot
+        .as_deref()
+        .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISMATCH: Work has no saved snapshot"))?;
+    let packet_digest = packet["packetDigest"]
+        .as_str()
+        .ok_or_else(|| invalid("RECOVERY_INPUT_BINDING_MISMATCH: packet has no digest"))?;
+    let source_checkpoint = report
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISSING: source has no selected checkpoint"))?;
+    let checkpoint: RunCheckpoint = super::recovery::load_checkpoint(repo, source_checkpoint)?;
+    let config_digest = report
+        .config_digest
+        .as_deref()
+        .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISMATCH: source has no config digest"))?;
+    checkpoint.validate(report, config_digest, &checkpoint.driver_digests)?;
+    if checkpoint.phase != "TERMINAL"
+        || checkpoint.snapshot != snapshot
+        || report.work != work.id
+        || report
+            .draft
+            .as_ref()
+            .and_then(|v| v["packetDigest"].as_str())
+            != Some(packet_digest)
+    {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: source Work, snapshot, packet, or terminal checkpoint differs",
+        ));
+    }
+    let pending = checkpoint
+        .pending_call
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: source has no author invocation"))?;
+    let identity = &pending.identity;
+    let attempt = &report.attempts[0];
+    if pending.status != "RESULT_SAVED"
+        || identity.run != report.run
+        || identity.work != work.id
+        || identity.snapshot != snapshot
+        || identity.role != "author"
+        || identity.config_digest != config_digest
+        || checkpoint.driver_digests.get("author") != Some(&identity.driver_digest)
+        || attempt.invocation != identity.invocation
+        || attempt.reservation != identity.reservation
+        || attempt.model != identity.model
+        || attempt.input_digest != identity.input_digest
+        || attempt.status != "COMPLETED"
+        || attempt.admission["driverDigest"] != identity.driver_digest
+    {
+        return Err(invalid(
+            "RECOVERY_REPORT_MISMATCH: source attempt differs from its admitted durable author invocation",
+        ));
+    }
+    let input = super::recovery::load_input(repo, identity)?;
+    let saved = super::recovery::load_result(repo, &input)?;
+    if Some(saved.result_digest.as_str()) != attempt.result_digest.as_deref()
+        || report
+            .draft
+            .as_ref()
+            .and_then(|v| v["rawAnswerDigest"].as_str())
+            != Some(saved.result_digest.as_str())
+        || input.request["payload"]["packet"] != *packet
+        || input.request["payload"]["instruction"]
+            .as_str()
+            .is_none_or(|s| s.trim().is_empty())
+        || !input.request["payload"]["packetGuide"].is_object()
+        || input.request["payload"]["outputSchema"]
+            != super::super::operation_answer::output_schema()
+    {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: immutable author request/result does not bind this exact supported packet and answer schema",
+        ));
+    }
+    if !input.request["payload"]["repair"].is_null() {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: original author input contains an unbound repair instruction",
+        ));
+    }
+    super::super::operation_answer::validate_and_render_draft(packet, audit, saved.result.clone())?;
+    Ok((
+        super::operation_draft_review::Origin {
+            schema: super::operation_draft_review::ORIGIN_SCHEMA.into(),
+            source_run: report.run.clone(),
+            source_checkpoint: source_checkpoint.clone(),
+            source_invocation: identity.invocation.clone(),
+            source_input_digest: identity.input_digest.clone(),
+            source_result_digest: saved.result_digest,
+            snapshot: snapshot.into(),
+            packet_digest: packet_digest.into(),
+            answer_digest: digest(&saved.result)?,
+            source_authoring_contract: work.request.authoring_contract.clone().unwrap_or_default(),
+        },
+        saved.result,
+        json!({"instruction":input.request["payload"]["instruction"],"packetGuide":input.request["payload"]["packetGuide"],"outputSchema":input.request["payload"]["outputSchema"]}),
+    ))
 }
 
 fn load_repair_source(
@@ -922,7 +1053,7 @@ fn validate_fresh_run_source(
     Ok(())
 }
 
-fn validate_work(work: &super::super::work::Work) -> Result<(), ClewError> {
+pub(super) fn validate_work(work: &super::super::work::Work) -> Result<(), ClewError> {
     if work.snapshot.is_none() {
         return Err(invalid(
             "OPERATION_DRAFT_SNAPSHOT_REQUIRED: prepare new Work from a saved snapshot before running a draft; this command never captures source",
@@ -1370,7 +1501,7 @@ fn record_failed_draft(
     finish_state(repo, config, report, checkpoint)
 }
 
-fn finish_state(
+pub(super) fn finish_state(
     repo: &Repository,
     config: &Config,
     report: &mut RunReport,
@@ -1405,7 +1536,7 @@ fn run_summary(report: &RunReport) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::documentation::agent_jobs::Amount;
     use std::{fs, path::PathBuf, sync::mpsc};
@@ -1480,7 +1611,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                     "result" => answer})
 "#;
 
-    fn setup(
+    pub(in crate::documentation::agent_jobs) fn setup(
         mode: &str,
     ) -> (
         TempDir,
@@ -1623,6 +1754,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             execution_mode: Some(MODE.into()),
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(
@@ -2921,6 +3053,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             execution_mode: Some(MODE.into()),
             draft: None,
             draft_repair: Some(material.origin.clone()),
+            draft_review: None,
             checkpoint: None,
         };
         let read_digest =
@@ -3616,6 +3749,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         save_report(&repo, &report).unwrap();

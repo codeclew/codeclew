@@ -58,6 +58,17 @@ pub enum Command {
         #[arg(long, requires = "draft", conflicts_with = "new_run", value_parser = parse_run_identity)]
         repair_from_run: Option<String>,
     },
+    /// Review one immutable saved operation answer without authoring or publication.
+    ReviewDraft {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long, value_parser = parse_run_identity)]
+        source_run: String,
+        #[arg(long)]
+        config: PathBuf,
+    },
     Status {
         #[arg(long)]
         root: PathBuf,
@@ -751,6 +762,17 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 super::agent_jobs::run(&repository, &work, config.as_deref())
             }
         }
+        Command::ReviewDraft {
+            root,
+            work,
+            source_run,
+            config,
+        } => super::agent_jobs::review_operation_draft(
+            &Repository::open(&root)?,
+            &work,
+            &source_run,
+            &config,
+        ),
         Command::Status {
             root,
             work,
@@ -4353,6 +4375,46 @@ pub(super) mod api_contract_tests {
         let (_, obligation) = http_api_contract_preparation(&work).unwrap();
         work.obligations.push(obligation);
         work
+    }
+
+    /// Persist the synthetic compiler fixture through native immutable stores.
+    pub(in crate::documentation) fn persist_operation_fixture(repo: &Repository, work: &mut Work) {
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"orders",
+            "title":"Synthetic operation review fixture", "repositoryId":"synthetic-orders",
+            "repository":"https://example.invalid/synthetic-orders", "language":"java",
+            "profile":"java-17plus-maven-read-only", "compilations":[":/main"], "targetRef":"main"
+        }))
+        .unwrap();
+        repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let inputs = repo.inputs().unwrap();
+        work.checked.input_digest = digest(&inputs).unwrap();
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .service_digest = digest(&service).unwrap();
+        work.checked.source_inputs = Some(super::super::check::SourceInputs {
+            schema: super::super::check::SOURCE_INPUTS_SCHEMA.into(),
+            input_digest: work.checked.input_digest.clone(),
+            inputs,
+            selected_services: BTreeSet::from(["orders".into()]),
+            retained_services: BTreeSet::new(),
+        });
+        work.checked.refresh_digest().unwrap();
+        let snapshot = work.checked.save_snapshot(repo).unwrap();
+        work.snapshot = Some(snapshot.clone());
+        let mut stored = StoredWork::from_runtime(work, snapshot).unwrap();
+        stored.id = digest(&stored).unwrap()[7..].into();
+        work.id = stored.id.clone();
+        publish_new_work(repo, work, &stored, &bytes(&stored).unwrap()).unwrap();
+        let restored = load(repo, &work.id).unwrap();
+        assert_eq!(restored.snapshot, work.snapshot);
+        assert_eq!(
+            digest(&restored.checked).unwrap(),
+            digest(&work.checked).unwrap()
+        );
     }
 
     pub(in crate::documentation) fn endpoint_context_fixture() -> Work {

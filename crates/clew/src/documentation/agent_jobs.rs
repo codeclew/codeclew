@@ -16,6 +16,8 @@ use std::{
 
 #[path = "agent_jobs/operation_draft.rs"]
 mod operation_draft;
+#[path = "agent_jobs/operation_draft_review.rs"]
+mod operation_draft_review;
 #[path = "agent_jobs/recovery.rs"]
 mod recovery;
 
@@ -552,6 +554,8 @@ pub struct RunReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) draft_repair: Option<DraftRepairOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_review: Option<operation_draft_review::Origin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<recovery::CheckpointRef>,
 }
 
@@ -592,6 +596,8 @@ struct RunCheckpoint {
     execution_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     draft_repair: Option<DraftRepairOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_review: Option<operation_draft_review::Origin>,
     driver_digests: BTreeMap<String, String>,
     phase: String,
     pages: Vec<Value>,
@@ -674,6 +680,7 @@ impl RunCheckpoint {
             config_digest,
             execution_mode: report.execution_mode.clone(),
             draft_repair: report.draft_repair.clone(),
+            draft_review: report.draft_review.clone(),
             driver_digests,
             phase: "AUTHOR".into(),
             pages: Vec::new(),
@@ -722,6 +729,11 @@ impl RunCheckpoint {
         if self.execution_mode != report.execution_mode {
             return Err(invalid(
                 "RECOVERY_MODE_MISMATCH: saved phase belongs to a different execution mode",
+            ));
+        }
+        if self.draft_review != report.draft_review {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_MISMATCH: saved draft review origin differs from the run report",
             ));
         }
         if self.draft_repair != report.draft_repair {
@@ -909,13 +921,12 @@ pub fn status(
         4 * 1024 * 1024,
     )?;
     let rows=report.attempts.iter().map(|a|serde_json::json!({"kind":"ATTEMPT","id":a.invocation,"record":a})).chain(report.accounting.as_ref().and_then(|v|v.as_array()).into_iter().flatten().enumerate().map(|(index,a)|serde_json::json!({"kind":"ACCOUNTING","id":format!("accounting-{index}"),"record":a}))).collect();
-    super::cli::page(
-        &digest(&report)?,
-        rows,
-        cursor,
-        limit,
-        serde_json::json!({"reportSchema":report.schema,"run":report.run,"work":report.work,"status":report.status,"executionMode":report.execution_mode,"draft":report.draft,"draftRepair":report.draft_repair,"configDigest":report.config_digest,"proposal":report.proposal,"publication":report.publication,"gap":report.gap,"contextBudget":report.context_budget}),
-    )
+    let mut metadata = serde_json::json!({"reportSchema":report.schema,"run":report.run,"work":report.work,"status":report.status,"executionMode":report.execution_mode,"draft":report.draft,"draftRepair":report.draft_repair,"configDigest":report.config_digest,"proposal":report.proposal,"publication":report.publication,"gap":report.gap,"contextBudget":report.context_budget});
+    if let Some(origin) = report.draft_review.as_ref() {
+        metadata["draftReview"] = serde_json::json!(origin);
+        metadata["review"] = serde_json::json!(report.review);
+    }
+    super::cli::page(&digest(&report)?, rows, cursor, limit, metadata)
 }
 pub fn cancel(repo: &Repository, work: &str) -> Result<Value, ClewError> {
     super::work::load(repo, work)?;
@@ -2068,7 +2079,11 @@ fn call(
             )?;
         }
         if !retry_uncertain_dispatch {
-            let reason = "DRAFT_DISPATCH_UNCERTAIN: the author may have received the request, no durable response exists, and the maximum reservation is retained; inspect the provider before preparing new Work";
+            let reason = if role_name == "reviewer" {
+                "DRAFT_REVIEW_DISPATCH_UNCERTAIN: the reviewer may have received the request, no durable response exists, and the maximum reservation is retained; inspect the provider before any new review"
+            } else {
+                "DRAFT_DISPATCH_UNCERTAIN: the author may have received the request, no durable response exists, and the maximum reservation is retained; inspect the provider before preparing new Work"
+            };
             report.attempts[attempt_index].status = "DISPATCH_UNCERTAIN_MAXIMUM_RETAINED".into();
             report.attempts[attempt_index].failure = Some(reason.into());
             if let Some(pending) = checkpoint.pending_call.as_mut() {
@@ -4573,6 +4588,7 @@ pub fn run(
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         let mut checkpoint = None;
@@ -4651,6 +4667,15 @@ pub fn run_operation_draft(
     repair_from_run: Option<&str>,
 ) -> Result<Value, ClewError> {
     operation_draft::run(repo, id, config_path, new_run, repair_from_run)
+}
+
+pub fn review_operation_draft(
+    repo: &Repository,
+    id: &str,
+    source_run: &str,
+    config_path: &std::path::Path,
+) -> Result<Value, ClewError> {
+    operation_draft_review::run(repo, id, source_run, config_path)
 }
 
 fn finalize_failed_run(
@@ -4903,6 +4928,7 @@ mod input_cap_tests {
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         let mut remaining = 2;
@@ -5372,6 +5398,7 @@ mod input_cap_tests {
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         let checkpoint = RunCheckpoint::new(
@@ -5466,6 +5493,7 @@ mod input_cap_tests {
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: Some(recovery::CheckpointRef {
                 schema: "codeclew-documentation-recovery-checkpoint-ref/1.0".into(),
                 run: run.clone(),
@@ -7164,6 +7192,7 @@ mod input_cap_tests {
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         let mut driver = Role {
@@ -7322,6 +7351,7 @@ mod input_cap_tests {
             execution_mode: None,
             draft: None,
             draft_repair: None,
+            draft_review: None,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(
