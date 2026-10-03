@@ -445,6 +445,7 @@ pub(super) fn adapt_with_parts(
     Ok(Proposal {
         schema: "codeclew-documentation-proposal/1.0".into(),
         operations: vec![operation],
+        retained_edits: Vec::new(),
         gaps: Default::default(),
         uncertainties: action.section.uncertainties,
     })

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/retained-part-receipt.schema.json",
+  "title": "Recorded retained-operation fragment identity and byte range",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "work": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "snapshot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "const": "RETAINED_OPERATION"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "recordDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "startByte": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "endByte": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "totalRecordBytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fragmentDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256,
+      "pattern": "^retained-part-v1:[1-9][0-9]*:[0-9a-f]{64}$"
+    },
+    "receiptDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "schema": {
+      "const": "codeclew-documentation-retained-part-receipt/1.0"
+    }
+  },
+  "required": [
+    "work",
+    "snapshot",
+    "kind",
+    "id",
+    "recordDigest",
+    "startByte",
+    "endByte",
+    "totalRecordBytes",
+    "fragmentDigest",
+    "nextCursor",
+    "receiptDigest",
+    "schema"
+  ]
+}

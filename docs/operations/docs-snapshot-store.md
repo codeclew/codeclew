@@ -238,6 +238,60 @@ chunks. A ledger with `sourcePartReceipts` requires a part-aware reader; the
 existing serialized ledger shape. The Work loader still hydrates the full
 retained Check; parts do not claim memory use proportional to one response.
 
+### Read one retained operation in bounded parts
+
+When a Work page omits `RETAINED_OPERATION` with
+`ITEM_EXCEEDS_WORK_BYTE_BUDGET`, use its exact `kind` and `id` with
+`docs work read-retained-part`. Retained operation rows have no SOURCE handle.
+The reader uses only the full operation saved in that immutable Work; it never
+follows the latest publication, recaptures source, or treats retained prose as
+newly verified evidence.
+
+```json
+{
+  "schema": "codeclew-documentation-retained-part-request/1.0",
+  "kind": "RETAINED_OPERATION",
+  "id": "reserve"
+}
+```
+
+```sh
+clew docs work read-retained-part --root docs --work "$work" --input retained-part.json
+```
+
+The response's `text` is a fragment of the canonical JSON encoding of the
+complete retained operation. Concatenate these fragments in `startByte` order
+and parse the resulting JSON to obtain every field. Byte ranges are UTF-8
+boundaries in that canonical JSON, not offsets into an individual prose field
+or the original Work file. Each response binds Work, snapshot, record kind and
+ID, complete `recordDigest`, range, `totalRecordBytes`, fragment digest and
+receipt digest. The complete serialized response, including its output newline,
+fits the Work's fixed `maxBytes`.
+
+Continue with the same schema, kind and ID plus the returned `nextCursor` until
+it is `null`. Interrupted reads can resume from their last cursor. Reading an
+identical part again retains one receipt and cannot fill missing ranges. The
+read ledger stores `retainedPartReceipts` without copied fragment text; this
+field is absent when empty, preserving earlier ledgers' serialized shape.
+Older readers that do not recognize this additive field cannot read a ledger
+after retained-part reads have been recorded.
+
+Only exact validated, contiguous, nonoverlapping coverage resolves the matching
+retained-operation omission for manual proposal submission. Every initial Work
+page and every other required record remains necessary; oversized declarations
+and external inputs still block completeness. A terminal part alone does not
+prove earlier delivery. Invalid identities, stale/cross-Work cursors, corrupt
+receipts and no-progress ranges are rejected. If even one UTF-8 record byte and
+the receipt envelope cannot fit, `RETAINED_PART_NO_PROGRESS` writes no receipt
+and advises preparing Work from the same saved snapshot with a larger
+`maxBytes`, up to 49,152.
+
+These reads do not establish delivery to automatic author or reviewer model
+requests. Their existing packet gates still require actual delivered context
+within the model's input cap. Retained operation parts remain authored context,
+not SOURCE citations. The Work loader and reader still hydrate the complete
+saved operation; bounded output does not imply bounded total memory use.
+
 ### Recorded source-selection inputs
 
 New checks retain a versioned `sourceInputs` contract. Its captured Service,

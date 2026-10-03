@@ -21,6 +21,9 @@ pub use super::work_parts::{SourcePartReceipt, SourcePartRequest, read_part};
 pub(super) use super::work_parts::{
     completed_source_references, initial_context_complete_with_parts,
 };
+pub use super::work_retained_parts::{
+    RetainedPartReceipt, RetainedPartRequest, read_retained_part,
+};
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -74,6 +77,8 @@ pub enum Command {
     Read(ReadArgs),
     Expand(ReadArgs),
     ReadPart(ReadPartArgs),
+    /// Read canonical JSON of one retained operation in bounded recorded parts.
+    ReadRetainedPart(ReadPartArgs),
     Packet {
         #[arg(long)]
         root: PathBuf,
@@ -639,6 +644,8 @@ pub struct ReadState {
     pub untracked_reads: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_part_receipts: BTreeMap<String, SourcePartReceipt>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retained_part_receipts: BTreeMap<String, RetainedPartReceipt>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -764,6 +771,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             store::read(&args.input, store::MAX_RECORD)?,
         ),
         Command::ReadPart(args) => read_part(
+            &Repository::open(&args.root)?,
+            &args.work,
+            store::read(&args.input, store::MAX_RECORD)?,
+        ),
+        Command::ReadRetainedPart(args) => read_retained_part(
             &Repository::open(&args.root)?,
             &args.work,
             store::read(&args.input, store::MAX_RECORD)?,

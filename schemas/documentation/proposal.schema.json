@@ -28,6 +28,14 @@
         "minLength": 1,
         "maxLength": 2048
       }
+    },
+    "retainedEdits": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/retainedEdit"
+      },
+      "description": "Exact presentation edits preserve the entire immutable retained operation. Complete docs work read-retained-part reads and existing meaning review are required; this does not establish automatic role delivery."
     }
   },
   "required": [
@@ -781,6 +789,45 @@
       "required": [
         "text",
         "evidence"
+      ]
+    },
+    "retainedEdit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "RETAINED_OPERATION"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recordDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "target": {
+          "enum": [
+            "operationTitle"
+          ]
+        },
+        "expectedOldValue": {
+          "type": "string"
+        },
+        "replacement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Nonblank title, at most 512 UTF-8 bytes, without control characters."
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "recordDigest",
+        "target",
+        "expectedOldValue",
+        "replacement"
       ]
     }
   }

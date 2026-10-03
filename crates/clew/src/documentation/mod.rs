@@ -52,6 +52,7 @@ pub mod updates;
 pub mod visuals;
 pub mod work;
 mod work_parts;
+mod work_retained_parts;
 
 use crate::error::{ClewError, ErrorCode};
 use serde::Serialize;

@@ -523,6 +523,8 @@ pub(super) fn initial_context_complete_with_parts(
         return Ok(false);
     }
     let completed = completed_source_references(work, state)?;
+    let retained_completed =
+        super::work_retained_parts::completed_retained_operation_ids(work, state)?;
     let mut cursor: Option<String> = None;
     let mut membership: Option<String> = None;
     for _ in 0..=state.receipts.len() {
@@ -541,6 +543,11 @@ pub(super) fn initial_context_complete_with_parts(
             return Ok(false);
         }
         if receipt.omitted.iter().any(|omitted| {
+            if omitted["kind"] == super::work_retained_parts::RECORD_KIND {
+                return !omitted["id"]
+                    .as_str()
+                    .is_some_and(|id| retained_completed.contains(id));
+            }
             if omitted["kind"] != "SOURCE" {
                 return true;
             }
@@ -1074,6 +1081,7 @@ mod tests {
                 .into_iter()
                 .map(|receipt| (receipt.receipt_digest.clone(), receipt))
                 .collect(),
+            ..Default::default()
         }
     }
 

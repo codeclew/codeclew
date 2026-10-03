@@ -50,10 +50,34 @@ pub enum Command {
 pub struct Proposal {
     pub schema: String,
     pub operations: Vec<ProposedOperation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_edits: Vec<RetainedEdit>,
     #[serde(default)]
     pub gaps: BTreeMap<String, String>,
     #[serde(default)]
     pub uncertainties: Vec<String>,
+}
+/// A presentation change against one exact canonical retained record. This is
+/// deliberately not a generic JSON patch or a new evidence-bound source claim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedEdit {
+    pub kind: RetainedKind,
+    pub id: String,
+    pub record_digest: String,
+    pub target: RetainedTarget,
+    pub expected_old_value: String,
+    pub replacement: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RetainedKind {
+    RetainedOperation,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum RetainedTarget {
+    OperationTitle,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -758,7 +782,7 @@ pub(super) fn materialize(
     state: &work::ReadState,
 ) -> Result<MaterializedProposal, ClewError> {
     if input.schema != "codeclew-documentation-proposal/1.0"
-        || input.operations.len() > 100
+        || input.operations.len() + input.retained_edits.len() > 100
         || input.gaps.len() > 1024
         || input.uncertainties.len() > 64
         || input
@@ -817,11 +841,15 @@ pub(super) fn materialize(
         operation_target_id(work, reference, Some(handle))
             .ok_or_else(|| invalid("operation is outside the requested entrypoint"))
     };
+    let mut operation_targets = BTreeSet::new();
     for (index, proposed) in input.operations.iter().enumerate() {
         if proposed.title.len() > 512 {
             return Err(invalid("operation title exceeds 512 bytes"));
         }
         let id = operation_id(&builder, &proposed.entrypoint)?;
+        if !operation_targets.insert(id.clone()) {
+            return Err(invalid("duplicate proposed operation target"));
+        }
         validate_specialized_fields(work, &id, proposed)?;
         if proposed.visuals.is_none()
             && work.retained.as_ref().is_some_and(|retained| {
@@ -1062,6 +1090,54 @@ pub(super) fn materialize(
             builder.diagnostics.push(json!({"code":"STRUCTURE_OR_COVERAGE_INVALID","operation":index,"nextAction":error.message}));
         }
     }
+    let mut edit_targets = BTreeSet::new();
+    for edit in &input.retained_edits {
+        if !edit_targets.insert((&edit.id, edit.target)) {
+            return Err(invalid("duplicate retained presentation edit target"));
+        }
+        if !operation_targets.insert(edit.id.clone()) {
+            return Err(invalid(
+                "retained edit conflicts with an operation replacement",
+            ));
+        }
+        let retained = super::work_retained_parts::retained_operation(work, &edit.id)?;
+        if super::work_retained_parts::retained_record_digest(work, &edit.id)? != edit.record_digest
+        {
+            return Err(invalid("retained edit record digest is stale"));
+        }
+        if !super::work_retained_parts::retained_part_complete(work, state, &edit.id)? {
+            return Err(invalid(
+                "read every exact retained operation part before editing its presentation",
+            ));
+        }
+        if edit.replacement.trim().is_empty()
+            || edit.replacement.len() > 512
+            || edit.replacement.chars().any(char::is_control)
+        {
+            return Err(invalid(
+                "retained operation title must be nonblank, at most 512 UTF-8 bytes and contain no control characters",
+            ));
+        }
+        let mut operation = retained.clone();
+        match edit.target {
+            RetainedTarget::OperationTitle => {
+                if operation.title != edit.expected_old_value {
+                    return Err(invalid("retained edit expected old value is stale"));
+                }
+                operation.title = edit.replacement.clone();
+            }
+        }
+        let scope = format!("{}/{}", work.subject, edit.id);
+        let claim_id = stable(&scope, "retainedEdit/operationTitle")?;
+        builder.claims.insert(claim_id, json!({
+            "kind":"RETAINED_PRESENTATION_EDIT", "authority":"PRESENTATION_PROPOSAL",
+            "slot":"retainedEdit/operationTitle", "version":digest(edit)?,
+            "text":format!("Change operation title from {:?} to {:?}.", edit.expected_old_value, edit.replacement),
+            "work":work.id, "snapshot":work.snapshot, "edit":edit,
+            "meaning":"UNASSESSED", "uncertainty":null
+        }));
+        n.operations.push(operation);
+    }
     for (reference, reason) in &input.gaps {
         let id = if let Some(h) = work.handles.get(reference) {
             gap_target_id(h).ok_or_else(|| {
@@ -1076,6 +1152,11 @@ pub(super) fn materialize(
                 "gap requires an entrypoint reference or its scenario subject",
             ));
         };
+        if operation_targets.contains(&id) {
+            return Err(invalid(
+                "proposal gap conflicts with a proposed operation or retained edit",
+            ));
+        }
         n.gaps.insert(id, reason.clone());
     }
     if work.subject.starts_with("service:") {
@@ -1121,7 +1202,7 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
         ),
     };
     if !work::initial_context_complete_with_parts(&work, &state)? {
-        diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial Work page. For an oversized required SOURCE, use docs work read-part with its SOURCE reference and continue until nextCursor is null; automatic authoring still requires the complete context to fit in its actual request."}));
+        diagnostics.push(json!({"code":"REQUIRED_CONTEXT_NOT_READ","nextAction":"Read every initial Work page. For an oversized required SOURCE, use docs work read-part with its SOURCE reference; for required retained content, use docs work read-retained-part with its exact kind/id. Continue until nextCursor is null; automatic authoring still requires the complete context to fit in its actual request."}));
     }
     for obligation in work.obligations.iter().filter(|o| {
         matches!(
@@ -1145,6 +1226,19 @@ pub fn submit(repo: &Repository, id: &str, input: Proposal) -> Result<Value, Cle
                 .iter()
                 .flatten()
                 .any(|visual| !visual.limitations.is_empty())
+        })
+        || narrative.as_ref().is_some_and(|narrative| {
+            narrative.operations.iter().any(|operation| {
+                input
+                    .retained_edits
+                    .iter()
+                    .any(|edit| edit.id == operation.id)
+                    && (!operation.boundaries.is_empty()
+                        || operation
+                            .visuals
+                            .iter()
+                            .any(|visual| !visual.limitations.is_empty()))
+            })
         })
         || claims.values().any(|c| !c["uncertainty"].is_null())
     {
@@ -1254,6 +1348,7 @@ mod storage_tests {
             input: Proposal {
                 schema: "codeclew-documentation-proposal/1.0".into(),
                 operations: vec![],
+                retained_edits: Vec::new(),
                 gaps: BTreeMap::new(),
                 uncertainties: vec![],
             },
@@ -1396,6 +1491,7 @@ mod operation_input_tests {
                 explanation,
                 visuals: None,
             }],
+            retained_edits: Vec::new(),
             gaps: BTreeMap::new(),
             uncertainties: Vec::new(),
         }
@@ -1433,3 +1529,7 @@ mod operation_input_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "proposals_retained_tests.rs"]
+mod retained_edit_tests;

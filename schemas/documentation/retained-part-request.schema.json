@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/retained-part-request.schema.json",
+  "title": "Bounded retained-operation part request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-retained-part-request/1.0"
+    },
+    "kind": {
+      "const": "RETAINED_OPERATION"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256,
+      "pattern": "^retained-part-v1:[1-9][0-9]*:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "id"
+  ]
+}

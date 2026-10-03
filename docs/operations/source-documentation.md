@@ -541,6 +541,20 @@ not invent a reviewer. Unauthored callables require explicit proposal gaps.
 Standard section summaries are limited to 2,048 bytes; detailed sequences belong
 to operation narratives.
 
+For a title correction, a proposal may use an optional `retainedEdits` array
+with `operations: []`. Each closed edit names `kind: "RETAINED_OPERATION"`, the
+exact operation `id` and canonical `recordDigest`, `target: "operationTitle"`,
+`expectedOldValue`, and `replacement`. Read all parts through
+`docs work read-retained-part` first, using the same immutable Work and exact
+kind/id until `nextCursor` is null. The host clones the entire retained operation
+and changes only its title, preserving explanation, evidence, notes and visuals.
+Stale digests or old values, duplicate edits, replacement/gap collisions and other
+targets are rejected. The edit is a presentation proposal requiring the existing
+meaning review and operation coverage; recorded reads alone do not establish
+that an automatic author or reviewer received the complete content. Automatic
+authoring rejects `retainedEdits` until full retained-operation delivery is
+supported for each role. Publication uses the normal conflict check, atomic merge and retained history.
+
 Portable bindings 1.3 share identical evidence within a snapshot and derive
 duplicate dependency digest maps from the same retained observations. A fragment
 that retains an older observation or source occurrence keeps that exact version;

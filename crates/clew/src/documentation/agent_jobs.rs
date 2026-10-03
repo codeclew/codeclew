@@ -1368,6 +1368,17 @@ fn author_output_schema(
     gap_references: &BTreeSet<String>,
     work: &super::work::Work,
 ) -> Result<Value, ClewError> {
+    // Retained edits currently have only manual read receipts. Automatic roles
+    // have no retained-part delivery contract, so their closed schema excludes
+    // this capability even when the Work ledger already contains manual reads.
+    proposal["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("retainedEdits");
+    proposal["$defs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("retainedEdit");
     // Summary is a claim with tighter rendering bounds than other claim text.
     // JSON Schema counts characters; the host additionally checks UTF-8 bytes.
     proposal["$defs"]["operation"]["properties"]["summary"]["properties"] = serde_json::json!({
@@ -1511,6 +1522,7 @@ fn reviewer_payload_with_parts(
     section_contract: bool,
     state: &super::work::ReadState,
 ) -> Result<Value, ClewError> {
+    validate_automatic_proposal(&proposal.input)?;
     let state_evidence = packet_evidence_references(work, pages, source_parts, state)?;
     let (operation_references, _) = proposal_target_references(work, pages, state);
     let sequence_guidance = sequence_guidance(
@@ -1738,6 +1750,7 @@ fn reviewer_preflight(
         input: super::proposals::Proposal {
             schema: "codeclew-documentation-proposal/1.0".into(),
             operations: Vec::new(),
+            retained_edits: Vec::new(),
             gaps: Default::default(),
             uncertainties: Vec::new(),
         },
@@ -2461,6 +2474,19 @@ pub(super) fn sequence_guidance(
         },
         "mandatoryFlowCoverage":coverage
     }))
+}
+
+/// Manual retained reads cannot admit an automatic edit: role delivery of the
+/// entire canonical retained operation is not yet a registered capability.
+pub(super) fn validate_automatic_proposal(
+    proposal: &super::proposals::Proposal,
+) -> Result<(), ClewError> {
+    if !proposal.retained_edits.is_empty() {
+        return Err(invalid(
+            "AUTOMATIC_RETAINED_EDIT_UNSUPPORTED: retained presentation edits require complete manual reads and review; automatic roles have no full retained-operation delivery contract",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_proposal_packet_evidence(
@@ -3245,6 +3271,7 @@ fn reviewed_publication(
     }
     let proposal = super::proposals::load(repo, proposal_id)
         .map_err(|error| recovery_refusal("RECOVERY_PUBLICATION_PROPOSAL_CORRUPT", error))?;
+    validate_automatic_proposal(&proposal.input)?;
     if proposal.work != work.id || !proposal.status.starts_with("READY_") {
         return Err(invalid(
             "RECOVERY_PUBLICATION_PROPOSAL_MISMATCH: proposal is not machine-ready for this Work",
@@ -4321,6 +4348,9 @@ fn execute_run(
             }
         };
         if let Some(input) = input {
+            // Enforce this independently of provider-side output-schema checks,
+            // after every ordinary or adapted proposal path and before storage.
+            validate_automatic_proposal(&input)?;
             let submitted = super::proposals::submit(repo, &work.id, input)?;
             let proposal_id = submitted["proposal"]
                 .as_str()
@@ -6041,6 +6071,7 @@ mod input_cap_tests {
             input: super::super::proposals::Proposal {
                 schema: "codeclew-documentation-proposal/1.0".into(),
                 operations: Vec::new(),
+                retained_edits: Vec::new(),
                 gaps: Default::default(),
                 uncertainties: Vec::new(),
             },
@@ -6651,6 +6682,30 @@ mod input_cap_tests {
             output["$defs"]["expandAction"]["properties"]["action"]["const"],
             "expand"
         );
+    }
+
+    #[test]
+    fn automatic_author_schema_excludes_manual_retained_edit_capability() {
+        let generic: Value = serde_json::from_str(include_str!(
+            "../../../../schemas/documentation/proposal.schema.json"
+        ))
+        .unwrap();
+        assert!(generic["properties"].get("retainedEdits").is_some());
+        assert!(generic["$defs"].get("retainedEdit").is_some());
+        let work = overview_work();
+        for feedback in [Value::Null, json!({"reason":"retry"})] {
+            let payload = author_payload(&work, &[], &feedback, &Value::Null).unwrap();
+            let definitions = &payload["outputSchema"]["$defs"];
+            let proposal = &definitions["proposalSchema"];
+            assert_eq!(proposal["additionalProperties"], false);
+            assert!(proposal["properties"].get("retainedEdits").is_none());
+            assert!(definitions.get("retainedEdit").is_none());
+        }
+        let empty: super::super::proposals::Proposal = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-proposal/1.0", "operations":[]
+        }))
+        .unwrap();
+        validate_automatic_proposal(&empty).unwrap();
     }
 
     #[test]
