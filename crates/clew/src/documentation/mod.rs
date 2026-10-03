@@ -44,6 +44,7 @@ pub mod snapshot_pins;
 mod source_inputs;
 pub mod source_steps;
 pub(crate) mod sqlite_objects;
+pub mod static_pages;
 pub mod status;
 pub mod store;
 mod syntax;

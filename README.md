@@ -234,6 +234,12 @@ source-bound visual proposal, follow
 Generic Work/proposal authoring and configured process-overview jobs support
 these visuals. The narrow `section-author-v1` contract remains summary-only.
 
+For linked offline HTML and MDX pages derived directly from retained Java
+endpoint, worker and wiring declarations, use
+[native source documentation pages](docs/guides/native-static-pages.md).
+The selector supplies exact roots; conditions, source expressions and local
+uncertainty come from the saved evidence.
+
 Use `docs check` when source acquisition or freshness checking is needed.
 Ordinary context, Work and rendering consume compatible saved evidence; adding
 an explanation or diagram does not require another indexing pass. Editing a

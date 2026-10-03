@@ -33,6 +33,11 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Project selected retained native declarations into linked static documentation.
+    Pages {
+        #[command(subcommand)]
+        command: super::static_pages::Command,
+    },
     /// Render a declared flow DSL from retained evidence as static MDX and HTML.
     Dsl {
         #[command(subcommand)]
@@ -328,6 +333,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 
 fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Pages { command } => super::static_pages::run(command),
         Command::Dsl { command } => super::flow_dsl::run(command),
         Command::Snapshot { command } => super::snapshot_pins::run(command),
         Command::View { command } => super::dataflow::run(command),
