@@ -1,0 +1,11 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "linked",
+  "title": "Owned linked-process fixture",
+  "repositoryId": "native-linked-processes",
+  "repository": "https://example.invalid/native-linked-processes",
+  "language": "java",
+  "profile": "java-17plus-maven-read-only",
+  "compilations": [":/main"],
+  "targetRef": "main"
+}
