@@ -144,6 +144,12 @@
     "group": "Guides"
   },
   {
+    "title": "Keep an explanation and its original context.",
+    "url": "./documentation.html#maintained-explanations",
+    "description": "Service documentation",
+    "group": "Guides"
+  },
+  {
     "title": "Export a selected flow with its source.",
     "url": "./documentation.html#static-flow-pages",
     "description": "Service documentation",
