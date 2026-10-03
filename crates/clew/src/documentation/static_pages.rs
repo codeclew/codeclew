@@ -1,4 +1,5 @@
 //! Offline native-source pages over explicit immutable documentation snapshots.
+mod authored;
 pub mod model;
 mod project;
 mod publish;
@@ -49,7 +50,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     "native pages require 1 to 128 exact declaration selections",
                 ));
             }
-            let projection = project(&checked, &selections)?;
+            let mut projection = project::project_unresolved(&checked, &selections)?;
+            authored::attach(&repo, &checked, &mut projection)?;
             let manifest = publish::write(&output, &snapshot, &projection)?;
             Ok(
                 json!({"schema":"codeclew-native-pages-render/1.0", "status":"RENDERED",

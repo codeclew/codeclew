@@ -600,3 +600,499 @@ fn fresh_native_capture_mutation_and_offline_snapshot_produce_linked_pages() {
     assert_ne!(code, 0);
     assert_eq!(original, files(&out1));
 }
+
+fn public_work(f: &Fixture, snapshot: &str, entrypoint: &str, audience: &str) -> String {
+    let input = f.input(
+        "native-authored-work.json",
+        &json!({
+            "schema":"codeclew-documentation-work-request/1.0","audience":audience,
+            "entrypoint":entrypoint,"maxItems":100,"maxBytes":49152
+        }),
+    );
+    f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:alpha",
+        "--snapshot",
+        snapshot,
+        "--input",
+        input.to_str().unwrap(),
+    ])["work"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+fn complete_work(f: &Fixture, id: &str, operation: Option<&str>) -> Option<String> {
+    let mut omitted = false;
+    let mut cursor = None;
+    loop {
+        let input = f.input(
+            "native-authored-read.json",
+            &cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |c| json!({"cursor":c})),
+        );
+        let output = f.run_raw(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            id,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(output.stdout.len() <= 49152);
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if let Some(operation) = operation {
+            omitted |= response["omitted"].as_array().unwrap().iter().any(|row| {
+                row["kind"] == "RETAINED_OPERATION"
+                    && row["id"] == operation
+                    && row["reason"] == "ITEM_EXCEEDS_WORK_BYTE_BUDGET"
+            });
+        }
+        cursor = response["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    if let Some(operation) = operation {
+        assert!(
+            omitted,
+            "oversized retained operation must be declared omitted"
+        );
+        let mut text = String::new();
+        loop {
+            let mut request = json!({"schema":"codeclew-documentation-retained-part-request/1.0","kind":"RETAINED_OPERATION","id":operation});
+            if let Some(c) = &cursor {
+                request["cursor"] = json!(c);
+            }
+            let input = f.input("native-authored-part.json", &request);
+            let output = f.run_raw(&[
+                "docs",
+                "work",
+                "read-retained-part",
+                "--work",
+                id,
+                "--input",
+                input.to_str().unwrap(),
+            ]);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(output.stdout.len() <= 49152);
+            let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(response["work"], id);
+            assert_eq!(response["startByte"].as_u64().unwrap() as usize, text.len());
+            let fragment = response["text"].as_str().unwrap();
+            assert_eq!(
+                response["fragmentDigest"],
+                canonical::hash_bytes(fragment.as_bytes())
+            );
+            text.push_str(fragment);
+            assert_eq!(response["endByte"].as_u64().unwrap() as usize, text.len());
+            cursor = response["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Some(text)
+    } else {
+        None
+    }
+}
+fn submit_and_publish(f: &Fixture, work: &str, proposal: &Value) -> Value {
+    let input = f.input("native-authored-proposal.json", proposal);
+    let submitted = f.ok(&[
+        "docs",
+        "proposal",
+        "submit",
+        "--work",
+        work,
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert!(
+        submitted["status"].as_str().unwrap().starts_with("READY_"),
+        "{submitted}"
+    );
+    let publication = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        submitted["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(publication["meaningReview"], "UNASSESSED");
+    assert_eq!(publication["updateFailures"], json!({}), "{publication}");
+    publication
+}
+fn frozen_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &entry.path(), out);
+            } else {
+                assert!(entry.file_type().unwrap().is_file());
+                out.insert(
+                    entry.path().strip_prefix(root).unwrap().into(),
+                    fs::read(entry.path()).unwrap(),
+                );
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    visit(root, root, &mut out);
+    out
+}
+
+#[test]
+#[ignore = "runs public manual Work and real native Maven/javac capture; requires repository JDK"]
+fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_page_offline() {
+    use clew::documentation::{model::Operation, work};
+    let f = Fixture::new();
+    let alpha = setup(&f, "alpha", true);
+    // Compiler-resolved Spring annotations create a public discovered endpoint;
+    // these are ordinary synthetic fixture sources, not answer annotations.
+    write(
+        &alpha,
+        "src/main/java/org/springframework/stereotype/Controller.java",
+        "package org.springframework.stereotype; public @interface Controller {}\n",
+    );
+    write(
+        &alpha,
+        "src/main/java/org/springframework/web/bind/annotation/RestController.java",
+        "package org.springframework.web.bind.annotation; @org.springframework.stereotype.Controller public @interface RestController {}\n",
+    );
+    write(
+        &alpha,
+        "src/main/java/org/springframework/web/bind/annotation/RequestMapping.java",
+        "package org.springframework.web.bind.annotation; public @interface RequestMapping { String[] path() default {}; String[] value() default {}; }\n",
+    );
+    let path = alpha.join("src/main/java/Pipeline.java");
+    fs::write(
+        &path,
+        fs::read_to_string(&path)
+            .unwrap()
+            .replace("class DispatchEndpoint {", "@org.springframework.web.bind.annotation.RestController\nclass DispatchEndpoint {")
+            .replace("    boolean submit(", "    @org.springframework.web.bind.annotation.RequestMapping(path=\"/submit\")\n    public boolean submit("),
+    )
+    .unwrap();
+    commit(&alpha);
+    let (v1, c1) = capture(&f);
+    let service = &c1.services["alpha"];
+    let declaration_v1 = declaration(service, "alpha.DispatchEndpoint", "submit");
+    let symbol = &service.observations[&declaration_v1].symbol;
+    let entry = service
+        .entrypoints
+        .iter()
+        .find(|e| &e.symbol == symbol)
+        .expect("public submit discovered entrypoint");
+    let initial = public_work(
+        &f,
+        &v1,
+        &entry.id,
+        "Synthetic native authored paragraph baseline",
+    );
+    complete_work(&f, &initial, None);
+    let repo = Repository::open(&f.docs).unwrap();
+    let saved = work::load(&repo, &initial).unwrap();
+    let reference = saved
+        .handles
+        .iter()
+        .find(|(_, h)| h.kind == "ENTRYPOINT" && h.id == entry.id)
+        .unwrap()
+        .0;
+    let flows: Vec<_> = saved
+        .handles
+        .iter()
+        .filter(|(_, h)| {
+            h.kind == "DEPENDENCY"
+                && saved
+                    .checked
+                    .dependencies
+                    .get(&h.id)
+                    .is_some_and(|d| d.kind == "FLOW" && d.symbol == entry.symbol)
+        })
+        .map(|(r, _)| r)
+        .collect();
+    assert!(!flows.is_empty());
+    let seed = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{
+        "entrypoint":reference,"title":"Submit a task","summary":{"text":"The endpoint submits a task to its declared queue.","evidence":[reference]},
+        "steps":flows.iter().enumerate().map(|(i,r)|json!({"kind":"note","meaning":{"text":format!("Captured source event {i}."),"evidence":[reference,r]}})).collect::<Vec<_>>(),
+        "explanation":(0..14).map(|i|json!({"text":format!("Unrelated retained paragraph {i}. {}","Synthetic maintained explanation λ☕. ".repeat(120)),"evidence":[reference]})).collect::<Vec<_>>()
+    }]});
+    let seeded = submit_and_publish(&f, &initial, &seed);
+    let seeded_data =
+        support::read(f.bundle(seeded["bundle"].as_str().unwrap(), "services/alpha.json"));
+    let original: Operation = serde_json::from_value(seeded_data["operations"][0].clone()).unwrap();
+    assert!(canonical::bytes(&original).unwrap().len() > 49152);
+    let paragraph = &original.explanation[0];
+    let human = public_work(
+        &f,
+        &v1,
+        &entry.id,
+        "Declare maintained endpoint explanation",
+    );
+    let reconstructed = complete_work(&f, &human, Some(&entry.id)).unwrap();
+    assert_eq!(
+        reconstructed.as_bytes(),
+        canonical::bytes(&original).unwrap()
+    );
+    let text = "Maintained λ☕ instruction: inspect {queue} and [policy](local). This is user documentation, not a source-verified assertion.\nKeep the original context.";
+    let authored = submit_and_publish(
+        &f,
+        &human,
+        &json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{
+            "kind":"RETAINED_OPERATION","id":entry.id,"recordDigest":canonical::hash(&original).unwrap(),"target":"explanationText",
+            "fragmentId":paragraph.id,"author":"Fixture <maintainer>","expectedOldValue":paragraph.text,"replacement":text
+        }]}),
+    );
+    let bundle = authored["bundle"].as_str().unwrap();
+    let old_bundle = frozen_tree(&f.bundle(bundle, ""));
+    let old_data = support::read(f.bundle(bundle, "services/alpha.json"));
+    let maintained: Operation = serde_json::from_value(old_data["operations"][0].clone()).unwrap();
+    let protected = maintained
+        .explanation
+        .iter()
+        .find(|p| p.id == paragraph.id)
+        .unwrap();
+    let mut selected = json!([{"id":"alpha-flow","service":"alpha","endpointDeclaration":declaration_v1,
+        "workerDeclaration":declaration(service,"alpha.ProcessingLoop","runOnce"),"wiringDeclaration":declaration(service,"alpha.Composition","assemble"),
+        "authoredParagraphs":[{"bundle":bundle,"operation":entry.id,"fragment":paragraph.id}]}]);
+    let old_selection = f.input("native-authored-v1-selection.json", &selected);
+    let before = f.temp.path().join("native-authored-v1");
+    render(&f, &v1, &old_selection, &before);
+    assert_eq!(
+        support::read(before.join("projection.json"))["pages"][0]["authoredParagraphs"][0]["contextFreshness"],
+        "CURRENT"
+    );
+    let changed = fs::read_to_string(&path)
+        .unwrap()
+        .replace(
+            "body.name, body.eligible",
+            "body.name.toUpperCase(), body.eligible",
+        )
+        .replace(
+            "if (!current.enabled)",
+            "if (!current.enabled || current.prefix == null)",
+        )
+        .replace("chosen.trim()", "chosen.toUpperCase()");
+    fs::write(&path, changed).unwrap();
+    commit(&alpha);
+    let (v2, c2) = capture(&f);
+    assert_ne!(v1, v2);
+    selected[0]["endpointDeclaration"] = json!(declaration(
+        &c2.services["alpha"],
+        "alpha.DispatchEndpoint",
+        "submit"
+    ));
+    selected[0]["workerDeclaration"] = json!(declaration(
+        &c2.services["alpha"],
+        "alpha.ProcessingLoop",
+        "runOnce"
+    ));
+    selected[0]["wiringDeclaration"] = json!(declaration(
+        &c2.services["alpha"],
+        "alpha.Composition",
+        "assemble"
+    ));
+    // A supported publication moves the live index. The exact original bundle is
+    // deliberately retained in the native selection; no latest fallback is allowed.
+    let moved = f.ok(&["docs", "render", "--snapshot", &v2, "--publish"]);
+    assert_ne!(moved["bundle"], bundle);
+    let input = f.input("native-authored-current-selection.json", &selected);
+    let current = f.temp.path().join("native-authored-current");
+    render(&f, &v2, &input, &current);
+    verify_bundle(&current);
+    let projection = support::read(current.join("projection.json"));
+    let page = &projection["pages"][0];
+    let row = &page["authoredParagraphs"][0];
+    assert_eq!(row["selection"], selected[0]["authoredParagraphs"][0]);
+    assert_eq!(row["paragraph"], serde_json::to_value(protected).unwrap());
+    assert_eq!(row["contextFreshness"], "STALE");
+    assert_eq!(
+        row["paragraph"]["authorship"]["meaningReview"],
+        "UNASSESSED"
+    );
+    assert_eq!(row["paragraph"]["authorship"]["sourceSnapshot"], v1);
+    let source_id = protected
+        .source_ids
+        .iter()
+        .find(|id| {
+            page["sources"][*id].is_object()
+                && row["sourceRecords"][*id]["text"] != page["sources"][*id]["text"]
+        })
+        .expect("same logical SOURCE id has changed bytes");
+    assert_eq!(
+        row["sourceRecords"][source_id]["text"],
+        c1.sources()[source_id].text
+    );
+    assert_eq!(
+        page["sources"][source_id]["text"],
+        c2.sources()[source_id].text
+    );
+    let current_worker = page["worker"].to_string();
+    assert!(
+        current_worker.contains("!current.enabled || current.prefix == null")
+            && current_worker.contains("chosen.toUpperCase()")
+    );
+    let manifest = support::read(current.join("manifest.json"));
+    assert_eq!(manifest["selectedAuthoredParagraphs"][0]["bundle"], bundle);
+    assert_eq!(
+        manifest["selectedAuthoredParagraphs"][0]["sourceSnapshot"],
+        v1
+    );
+    let html = fs::read_to_string(current.join("alpha-flow-overview.html")).unwrap();
+    let mdx = fs::read_to_string(current.join("alpha-flow-overview.mdx")).unwrap();
+    assert!(
+        html.contains("Fixture &lt;maintainer&gt;") && html.contains("Meaning review: UNASSESSED")
+    );
+    assert!(mdx.contains("&#123;queue&#125;") && mdx.contains("&#91;policy&#93;"));
+    let appendix = fs::read_to_string(current.join("sources.html")).unwrap();
+    assert!(
+        appendix.contains("Original authored paragraph context")
+            && appendix.contains("Logical SOURCE ID:")
+    );
+    let expected_files = files(&current);
+    let reject = |selection: &Value, name: &str, expected: &str| {
+        let input = f.input(&format!("reject-{name}.json"), selection);
+        let out = f.temp.path().join(format!("reject-{name}"));
+        let (code, response) = f.run(&[
+            "docs",
+            "pages",
+            "render",
+            "--snapshot",
+            &v2,
+            "--input",
+            input.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ]);
+        assert_ne!(code, 0, "{response}");
+        assert!(response.to_string().contains(expected), "{response}");
+        assert!(!out.exists());
+    };
+    let mut invalid = selected.clone();
+    invalid[0]["authoredParagraphs"][0]["fragment"] = json!("missing");
+    reject(&invalid, "missing-fragment", "missing or ambiguous");
+    invalid = selected.clone();
+    invalid[0]["endpointDeclaration"] = invalid[0]["workerDeclaration"].clone();
+    reject(&invalid, "unrelated-endpoint", "endpoint compiler symbol");
+    invalid = selected.clone();
+    invalid[0]["authoredParagraphs"][0]["fragment"] = json!(original.explanation[1].id);
+    reject(&invalid, "unauthored", "no declared user authorship");
+    invalid = selected.clone();
+    invalid[0]["authoredParagraphs"]
+        .as_array_mut()
+        .unwrap()
+        .push(selected[0]["authoredParagraphs"][0].clone());
+    reject(&invalid, "duplicate", "duplicate native authored");
+    invalid = selected.clone();
+    invalid[0]["authoredParagraphs"][0]["bundle"] = json!("0".repeat(64));
+    reject(&invalid, "missing-bundle", "publication");
+    // Tampering with public frozen output bytes is detected by its manifest.
+    let binding_file = f.bundle(bundle, "bindings.json");
+    let binding_bytes = fs::read(&binding_file).unwrap();
+    fs::write(&binding_file, b"{}").unwrap();
+    reject(&selected, "damaged-bindings", "damaged or incomplete");
+    fs::write(&binding_file, &binding_bytes).unwrap();
+    // A manifest-consistent forged map still cannot borrow another source digest.
+    let fake = "f".repeat(64);
+    copy_tree(&f.bundle(bundle, ""), &f.bundle(&fake, ""));
+    let mut binding: Value = serde_json::from_slice(&binding_bytes).unwrap();
+    let forged = {
+        let p = &mut binding["narratives"]["service:alpha"]["operations"][0]["explanation"];
+        let forged = p
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|p| p["id"] == paragraph.id)
+            .unwrap();
+        forged["authorship"]["sourceRefs"][source_id] = json!(format!("sha256:{}", "0".repeat(64)));
+        forged.clone()
+    };
+    let key = format!("service:alpha/{}/{}", entry.id, paragraph.id);
+    binding["fragments"][&key]["content"] = forged.clone();
+    binding["fragments"][&key]["contentDigest"] =
+        json!(canonical::hash(&binding["fragments"][&key]["content"]).unwrap());
+    let forged_bytes = canonical::bytes(&binding).unwrap();
+    fs::write(f.bundle(&fake, "bindings.json"), &forged_bytes).unwrap();
+    let mut publication = support::read(f.bundle(&fake, "publication.json"));
+    publication["id"] = json!(fake);
+    publication["files"]["bindings.json"] = json!(canonical::hash_bytes(&forged_bytes));
+    publication["explanationVersions"][format!("service:alpha/{}", entry.id)] =
+        json!(canonical::hash(&binding["narratives"]["service:alpha"]["operations"][0]).unwrap());
+    fs::write(
+        f.bundle(&fake, "publication.json"),
+        canonical::bytes(&publication).unwrap(),
+    )
+    .unwrap();
+    invalid = selected.clone();
+    invalid[0]["authoredParagraphs"][0]["bundle"] = json!(fake);
+    reject(&invalid, "forged-refs", "pinned provenance");
+    // Unselected paragraphs still count toward the original-Check budget. These
+    // deliberately unavailable snapshots must reject before any Check is loaded.
+    let budget_bundle = "e".repeat(64);
+    copy_tree(&f.bundle(bundle, ""), &f.bundle(&budget_bundle, ""));
+    let mut many: Value = serde_json::from_slice(&binding_bytes).unwrap();
+    for i in 1..=9 {
+        let mut fragment = many["fragments"][&key].clone();
+        fragment["content"]["authorship"]["sourceSnapshot"] = json!(format!("{:064x}", i));
+        many["fragments"][format!("unselected/op/fragment{i}")] = fragment;
+    }
+    let many_bytes = canonical::bytes(&many).unwrap();
+    fs::write(f.bundle(&budget_bundle, "bindings.json"), &many_bytes).unwrap();
+    let mut budget_manifest = support::read(f.bundle(&budget_bundle, "publication.json"));
+    budget_manifest["id"] = json!(budget_bundle);
+    budget_manifest["files"]["bindings.json"] = json!(canonical::hash_bytes(&many_bytes));
+    fs::write(
+        f.bundle(&budget_bundle, "publication.json"),
+        canonical::bytes(&budget_manifest).unwrap(),
+    )
+    .unwrap();
+    invalid = selected.clone();
+    invalid[0]["authoredParagraphs"][0]["bundle"] = json!(budget_bundle);
+    reject(
+        &invalid,
+        "unselected-context-budget",
+        "eight original source contexts",
+    );
+    // A sparse oversized frozen file is rejected by metadata preflight, before
+    // hashing its intentionally unusable content or resolving original contexts.
+    let oversized = f.bundle(&budget_bundle, "oversized.txt");
+    fs::File::create(&oversized)
+        .unwrap()
+        .set_len(65 * 1024 * 1024)
+        .unwrap();
+    budget_manifest["files"]["oversized.txt"] = json!("sha256:not-read");
+    fs::write(
+        f.bundle(&budget_bundle, "publication.json"),
+        canonical::bytes(&budget_manifest).unwrap(),
+    )
+    .unwrap();
+    reject(&invalid, "frozen-input-budget", "input exceeds 64 MiB");
+    fs::remove_dir_all(&alpha).unwrap();
+    let offline = f.temp.path().join("native-authored-offline");
+    render(&f, &v2, &input, &offline);
+    assert_eq!(files(&offline), expected_files);
+    assert_eq!(frozen_tree(&f.bundle(bundle, "")), old_bundle);
+    if let Some(destination) = std::env::var_os("CODECLEW_NATIVE_AUTHORED_TEST_ARTIFACTS") {
+        let destination = Path::new(&destination);
+        assert!(!destination.exists());
+        fs::create_dir(destination).unwrap();
+        copy_tree(&current, &destination.join("current"));
+        copy_tree(&offline, &destination.join("offline"));
+        fs::write(destination.join("journey.json"),serde_json::to_vec_pretty(&json!({"schema":"codeclew-native-authored-journey/1.0","authority":"PUBLIC_MANUAL_UNASSESSED_NOT_SEMANTIC_REVIEW","originalSnapshot":v1,"currentSnapshot":v2,"authoredPublication":authored,"livePointerMovedPublication":moved,"selection":selected,"checkoutAndArchivesRemoved":true,"byteIdenticalOffline":true})).unwrap()).unwrap();
+    }
+}

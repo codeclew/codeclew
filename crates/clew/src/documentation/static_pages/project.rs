@@ -15,6 +15,17 @@ const JAVA_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const WRAP: &str = "class __Projection {\n";
 
 pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjection, ClewError> {
+    if selections.iter().any(|s| !s.authored_paragraphs.is_empty()) {
+        return Err(invalid(
+            "frozen authored paragraphs require repository-aware docs pages render",
+        ));
+    }
+    project_unresolved(checked, selections)
+}
+pub(super) fn project_unresolved(
+    checked: &Check,
+    selections: &[Selection],
+) -> Result<BundleProjection, ClewError> {
     let note_inputs = if selections
         .iter()
         .any(|selection| !selection.note_ids.is_empty())
@@ -75,6 +86,7 @@ pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjec
             sources: ctx.sources,
             limitations,
             human_instructions,
+            authored_paragraphs: vec![],
         });
     }
     Ok(BundleProjection {

@@ -1,5 +1,5 @@
 //! Inert, source-bound content shared by the static HTML and MDX publishers.
-use crate::documentation::model::{Observation, Source};
+use crate::documentation::model::{Explanation, Observation, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +20,32 @@ pub struct Selection {
     /// Explicit protected note IDs resolved only from the selected Check inputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
+    /// Ordinary user documentation selected from an exact frozen publication.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authored_paragraphs: Vec<AuthoredParagraphSelection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthoredParagraphSelection {
+    pub bundle: String,
+    pub operation: String,
+    pub fragment: String,
+}
+
+/// Frozen authored prose owns its original source versions, separately from the
+/// native page's current captured sources. Authorship remains declared/unassessed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthoredParagraph {
+    pub selection: AuthoredParagraphSelection,
+    pub publication_digest: String,
+    pub bindings_digest: String,
+    pub operation_digest: String,
+    pub paragraph_digest: String,
+    pub paragraph: Explanation,
+    pub context_freshness: String,
+    pub source_records: BTreeMap<String, Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -54,6 +80,8 @@ pub struct PageContent {
     pub limitations: Vec<Gap>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub human_instructions: Vec<HumanInstruction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authored_paragraphs: Vec<AuthoredParagraph>,
 }
 
 /// Captured human/imported material is displayed unchanged, never interpreted as source truth.

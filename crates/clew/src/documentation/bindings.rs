@@ -418,13 +418,42 @@ pub(super) fn capture_baseline(
             "documentation bindings grew beyond their record budget",
         ));
     }
-    let mut binding: Bindings = serde_yaml_ng::from_slice(&raw).map_err(|error| invalid(format!(
-        "DOCS_REINDEX_REQUIRED: unsupported documentation bindings ({error}); initialize a fresh documentation root and run docs check")))?;
+    let binding = validate_retained_bindings(repo, &raw)?;
     let receipt = BaselineReceipt {
         bundle: id.into(),
         index_digest: canonical::hash_bytes(index_text.as_bytes()),
         bindings_digest: canonical::hash_bytes(&raw),
     };
+    let root_matches = binding.output_hashes.get("root-overview.html")
+        == Some(&canonical::hash_bytes(index_text.as_bytes()));
+    if !root_matches {
+        return Err(ClewError::new(
+            ErrorCode::WwConflict,
+            "generated overview was edited; preserve the edit as manual prose before regeneration",
+        ));
+    }
+    Ok(Some((receipt, binding)))
+}
+
+/// Validate exact retained bytes independently of the mutable publication pointer.
+/// Both live baselines and explicitly selected frozen bundles use this contract.
+pub(super) fn validate_retained_bindings(
+    repo: &Repository,
+    raw: &[u8],
+) -> Result<Bindings, ClewError> {
+    validate_retained_bindings_with_contexts(repo, raw, &mut BTreeMap::new())
+}
+
+pub(super) fn validate_retained_bindings_with_contexts(
+    repo: &Repository,
+    raw: &[u8],
+    authored_contexts: &mut BTreeMap<String, Check>,
+) -> Result<Bindings, ClewError> {
+    if raw.len() as u64 > super::check::PORTABLE_CACHE_MAX_BYTES {
+        return Err(invalid("documentation bindings exceed their record budget"));
+    }
+    let mut binding: Bindings = serde_yaml_ng::from_slice(raw).map_err(|error| invalid(format!(
+        "DOCS_REINDEX_REQUIRED: unsupported documentation bindings ({error}); initialize a fresh documentation root and run docs check")))?;
     if binding.schema != "codeclew-documentation-bindings/1.4" {
         return Err(invalid(
             "DOCS_REINDEX_REQUIRED: unsupported documentation bindings schema; initialize a fresh documentation root and run docs check",
@@ -463,7 +492,6 @@ pub(super) fn capture_baseline(
             return Err(invalid("retained source digest is invalid"));
         }
     }
-    let mut authored_contexts = BTreeMap::new();
     for key in binding.fragments.keys() {
         if super::explanation_authorship::authored_binding(&binding, key)? {
             let snapshot = binding.fragments[key].content["authorship"]["sourceSnapshot"]
@@ -526,15 +554,7 @@ pub(super) fn capture_baseline(
             "documentation renderer provenance identity is invalid",
         ));
     }
-    let root_matches = binding.output_hashes.get("root-overview.html")
-        == Some(&canonical::hash_bytes(index_text.as_bytes()));
-    if !root_matches {
-        return Err(ClewError::new(
-            ErrorCode::WwConflict,
-            "generated overview was edited; preserve the edit as manual prose before regeneration",
-        ));
-    }
-    Ok(Some((receipt, binding)))
+    Ok(binding)
 }
 
 pub fn verify_outputs(repo: &Repository, id: &str, binding: &Bindings) -> Result<(), ClewError> {

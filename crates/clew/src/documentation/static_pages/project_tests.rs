@@ -253,6 +253,7 @@ fn scenario(
             wiring_declaration: Some("wiring".into()),
             question: None,
             note_ids: vec![],
+            authored_paragraphs: vec![],
         },
     )
 }
@@ -490,6 +491,7 @@ fn negation_else_early_returns_and_unsupported_expressions_remain_ordered() {
             wiring_declaration: None,
             question: None,
             note_ids: vec![],
+            authored_paragraphs: vec![],
         },
     );
     assert_eq!(p.worker.steps[2].conditions[0].expression, "(!ready)");
@@ -597,6 +599,7 @@ fn one_same_line_relation_cannot_be_borrowed_by_a_different_call() {
             wiring_declaration: None,
             question: None,
             note_ids: vec![],
+            authored_paragraphs: vec![],
         },
     );
     assert!(
@@ -709,6 +712,7 @@ fn nested_early_return_guards_restrict_the_following_call() {
             wiring_declaration: None,
             question: None,
             note_ids: vec![],
+            authored_paragraphs: vec![],
         },
     );
     let call = p.worker.steps.last().unwrap();
@@ -766,6 +770,7 @@ fn switch_expression_arms_are_retained_without_unconditional_calls() {
             wiring_declaration: None,
             question: None,
             note_ids: vec![],
+            authored_paragraphs: vec![],
         },
     );
     assert!(p.worker.steps[0].calls.is_empty());

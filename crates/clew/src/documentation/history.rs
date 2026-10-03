@@ -121,6 +121,105 @@ fn integrity(repo: &Repository, p: &Publication) -> Result<Vec<String>, ClewErro
     }
     Ok(missing)
 }
+/// Native-only cumulative verification budget; ordinary history admission is unchanged.
+pub(super) struct FrozenInputBudget {
+    pub remaining_bytes: u64,
+}
+/// Read the exact immutable publication without loading any original Check.
+pub(super) fn read_frozen_bindings(
+    repo: &Repository,
+    id: &str,
+    budget: &mut FrozenInputBudget,
+) -> Result<(Publication, Vec<u8>), ClewError> {
+    use std::io::Read;
+    let manifest = repo.path(&path(id)?)?;
+    let size = fs::metadata(&manifest)
+        .map_err(|_| invalid("selected frozen publication is unavailable"))?
+        .len();
+    if size > budget.remaining_bytes {
+        return Err(invalid(
+            "native frozen publication input exceeds 64 MiB; narrow the selection",
+        ));
+    }
+    budget.remaining_bytes -= size;
+    let publication = load(repo, id)?;
+    // Preflight every file before hashing or allocating any content file.
+    let mut total = 0u64;
+    for name in publication.files.keys() {
+        let metadata = fs::metadata(repo.path(&format!("docs/generated/{id}/{name}"))?)
+            .map_err(|_| invalid("selected frozen publication is damaged or incomplete"))?;
+        if !metadata.is_file() {
+            return Err(invalid(
+                "selected frozen publication is damaged or incomplete",
+            ));
+        }
+        total = total
+            .checked_add(metadata.len())
+            .ok_or_else(|| invalid("native frozen input size overflow"))?;
+        if total > budget.remaining_bytes {
+            return Err(invalid(
+                "native frozen publication input exceeds 64 MiB; narrow the selection",
+            ));
+        }
+    }
+    let mut raw = None;
+    for (name, expected) in &publication.files {
+        let mut bytes = Vec::new();
+        fs::File::open(repo.path(&format!("docs/generated/{id}/{name}"))?)
+            .map_err(io_error)?
+            .take(budget.remaining_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        if bytes.len() as u64 > budget.remaining_bytes {
+            return Err(invalid(
+                "native frozen publication input exceeds 64 MiB; narrow the selection",
+            ));
+        }
+        budget.remaining_bytes -= bytes.len() as u64;
+        if canonical::hash_bytes(&bytes) != *expected {
+            return Err(invalid(
+                "selected frozen publication is damaged or incomplete",
+            ));
+        }
+        if name == "bindings.json" {
+            raw = Some(bytes);
+        }
+    }
+    Ok((
+        publication,
+        raw.ok_or_else(|| invalid("selected publication has no frozen bindings hash"))?,
+    ))
+}
+/// Validation runs only after native preflight has bounded all original contexts.
+pub(super) fn validate_frozen_bindings(
+    repo: &Repository,
+    publication: Publication,
+    raw: &[u8],
+    contexts: &mut BTreeMap<String, super::check::Check>,
+) -> Result<(Publication, Bindings), ClewError> {
+    let binding = bindings::validate_retained_bindings_with_contexts(repo, raw, contexts)?;
+    if publication.input_digest != binding.input_digest
+        || publication.documentation_language != binding.documentation_language
+    {
+        return Err(invalid(
+            "selected publication metadata does not match its frozen bindings",
+        ));
+    }
+    for (subject, narrative) in &binding.narratives {
+        for operation in &narrative.operations {
+            if publication
+                .explanation_versions
+                .get(&format!("{subject}/{}", operation.id))
+                != Some(&digest(operation)?)
+            {
+                return Err(invalid(
+                    "selected publication operation digest does not match its frozen bindings",
+                ));
+            }
+        }
+    }
+    Ok((publication, binding))
+}
 fn missing_packages(repo: &Repository, p: &Publication) -> Result<Vec<String>, ClewError> {
     p.evidence_packages
         .iter()

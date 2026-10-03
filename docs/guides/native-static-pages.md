@@ -141,8 +141,58 @@ render to a new directory. Old snapshots still render offline from retained
 source after the checkout or latest pointer becomes unavailable. Selected notes
 also retain their captured text and association after the live association is
 edited or removed. Render a newer capture explicitly to adopt newer note inputs;
-existing bundle files are never rewritten. Maintained authored-content editing
-is a separate consumer.
+existing bundle files are never rewritten.
+
+To include an ordinary maintained operation explanation, add an exact frozen
+publication selector to the process selection:
+
+```json
+"authoredParagraphs": [
+  {"bundle": "<64-character publication ID>", "operation": "<operation ID>", "fragment": "<explanation ID>"}
+]
+```
+
+Create this paragraph through the public manual documentation route: prepare
+`docs work prepare`, read all required pages with `docs work read`, and reconstruct
+an omitted retained operation with `docs work read-retained-part`. Submit a typed
+`RETAINED_OPERATION` edit targeting `explanationText` with its exact record digest,
+fragment ID, old value, replacement and declared author. Publish the prepared
+proposal using `docs proposal publish --proposal <proposal-id> --unassessed`. Use the resulting immutable
+bundle ID in the selector above, then run the existing `docs pages render`
+command with the current saved Check and selection file. See the
+[retained operation editing guide](../operations/docs-snapshot-store.md) for request
+contracts. This manual route declares `USER_DOCUMENTATION` and `UNASSESSED`;
+it does not establish semantic review or verified source behavior.
+
+Native export validates the exact publication manifest, bindings and operation
+hashes, the paragraph's original source pins, and its endpoint association.
+The original endpoint must reference the selected scoped compiler declaration
+in the same service configuration. A section, note or unrelated endpoint cannot
+supply this paragraph. Export never resolves a live documentation index or a
+latest publication. Missing, damaged, forged or unrelated selections reject
+before an output directory is written.
+
+The paragraph remains separate from current source-derived content and captured
+notes. `Page.sources` contains current snapshot source records;
+`authoredParagraphs[].sourceRecords` contains the original paragraph context.
+`contextFreshness` reports local `CURRENT` or `STALE` context while declared
+meaning review stays `UNASSESSED`. The source appendix gives original contexts
+separate local anchors, so the same logical SOURCE ID can retain different old
+and current bytes without acquiring a new source identity. HTML and MDX show
+literal paragraph text, declared attribution and original-context links.
+`selectedAuthoredParagraphs` in the manifest binds each included bundle,
+operation, fragment, paragraph digest, operation digest, bindings digest,
+publication digest and original source snapshot.
+
+A native export accepts at most 64 selected paragraphs across four frozen
+bundles, eight original authored source snapshots across those bindings, 64 MiB
+of cumulative frozen publication inputs and 8 MiB of projected paragraph data.
+The input and context limits apply before original Checks are loaded, including
+unselected authored paragraphs in each selected bundle. Narrow the selection if
+these limits are exceeded. The original and current saved Checks must remain
+available; live checkouts, dependency archives and the latest pointer are not
+required for offline re-export. Empty authored selections preserve ordinary
+native projection and note behavior.
 
 The compiler-backed fixture check is
 `cargo test --locked -p clew --test docs_static_pages -- --ignored --test-threads=1`.

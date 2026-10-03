@@ -272,6 +272,55 @@ const VIEWS: &[(&str, &str)] = &[
     ("fields-state", "Fields and state"),
     ("diagnostic", "Diagnostic matrix"),
 ];
+fn authored_source_anchor(paragraph: &AuthoredParagraph, id: &str) -> String {
+    // Presentation anchors name the existing frozen tuple, not a new SOURCE ID.
+    anchor(
+        &serde_json::json!([
+            "authored-source",
+            paragraph.selection,
+            paragraph.paragraph_digest,
+            id
+        ])
+        .to_string(),
+    )
+}
+fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
+    let mut out =
+        "<section id=\"authored-paragraphs\"><h2>Maintained user documentation</h2>\n".to_owned();
+    for row in rows {
+        let authorship = row.paragraph.authorship.as_ref().unwrap();
+        out += &format!("<article><pre>{}</pre>\n", escape(&row.paragraph.text));
+        out += &paragraph(&format!(
+            "Declared author: {}. Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Originally linked code is retained unverified context. Source context freshness: {}.",
+            authorship.author, row.context_freshness
+        ));
+        out += "<ul>\n";
+        for id in &row.paragraph.source_ids {
+            out += &format!(
+                "<li>{}</li>\n",
+                link(
+                    &format!("sources.{ext}#{}", authored_source_anchor(row, id)),
+                    &format!("Originally linked source {id}")
+                )
+            );
+        }
+        out += "</ul><details><summary>Frozen paragraph identity</summary>\n";
+        out += &paragraph(&format!(
+            "Bundle: {}. Operation: {}. Fragment: {}. Paragraph digest: {}. Operation digest: {}. Bindings digest: {}. Publication digest: {}. Original source snapshot: {}. Context role: RETAINED_UNVERIFIED_CONTEXT.",
+            row.selection.bundle,
+            row.selection.operation,
+            row.selection.fragment,
+            row.paragraph_digest,
+            row.operation_digest,
+            row.bindings_digest,
+            row.publication_digest,
+            authorship.source_snapshot
+        ));
+        out += "</details></article>\n";
+    }
+    out += "</section>\n";
+    out
+}
 fn page(p: &PageContent, view: &str, title: &str, snapshot: &str, ext: &str) -> String {
     let mut out = format!(
         "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
@@ -393,6 +442,19 @@ fn page(p: &PageContent, view: &str, title: &str, snapshot: &str, ext: &str) -> 
             );
         }
     }
+    if !p.authored_paragraphs.is_empty() {
+        if view == "overview" {
+            out += &authored_paragraphs(&p.authored_paragraphs, ext);
+        } else {
+            out += &format!(
+                "<p>{}</p>\n",
+                link(
+                    &format!("{}-overview.{ext}#authored-paragraphs", p.id),
+                    "Maintained user documentation and original source context"
+                )
+            );
+        }
+    }
     out += &format!(
         "<details><summary>Sources and version</summary>{}</details>\n",
         paragraph(&format!(
@@ -487,6 +549,36 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
             )),
             escape(&source.text)
         );
+    }
+    let mut shown = BTreeSet::new();
+    for page in &p.pages {
+        for paragraph in &page.authored_paragraphs {
+            for (id, source) in &paragraph.source_records {
+                let local_anchor = authored_source_anchor(paragraph, id);
+                if !shown.insert(local_anchor.clone()) {
+                    continue;
+                }
+                out += &format!(
+                    "<section id=\"{}\"><h2>Original authored paragraph context: {}:{}–{}</h2>\n",
+                    local_anchor,
+                    escape(&source.file),
+                    source.start_line,
+                    source.end_line
+                );
+                out += &self::paragraph(&format!(
+                    "Logical SOURCE ID: {}. Bundle: {}. Operation: {}. Fragment: {}. Revision: {}. Source authority: {}. Text digest: {}. Evidence digest: {}. This source context does not verify the authored prose.",
+                    id,
+                    paragraph.selection.bundle,
+                    paragraph.selection.operation,
+                    paragraph.selection.fragment,
+                    source.revision,
+                    source.authority,
+                    source.text_digest,
+                    source.evidence_digest
+                ));
+                out += &format!("<pre>{}</pre></section>\n", escape(&source.text));
+            }
+        }
     }
     out += "</main>\n";
     out
@@ -597,6 +689,18 @@ pub(super) fn write(
         .collect();
     if !selected_notes.is_empty() {
         manifest["selectedNotes"] = json!(selected_notes);
+    }
+    let selected_authored: Vec<_> = p.pages.iter().flat_map(|page| {
+        page.authored_paragraphs.iter().map(move |row| json!({
+            "processId":page.id, "html":format!("{}-overview.html", page.id), "mdx":format!("{}-overview.mdx", page.id),
+            "bundle":row.selection.bundle, "operation":row.selection.operation, "fragment":row.selection.fragment,
+            "paragraphDigest":row.paragraph_digest, "bindingsDigest":row.bindings_digest,
+            "publicationDigest":row.publication_digest, "operationDigest":row.operation_digest,
+            "sourceSnapshot":row.paragraph.authorship.as_ref().unwrap().source_snapshot
+        }))
+    }).collect();
+    if !selected_authored.is_empty() {
+        manifest["selectedAuthoredParagraphs"] = json!(selected_authored);
     }
     files.insert(
         "manifest.json".into(),
@@ -717,6 +821,7 @@ mod tests {
                 wiring_declaration: None,
                 question: None,
                 note_ids: vec![],
+                authored_paragraphs: vec![],
             },
             service_revision: "revision".into(),
             service_digest: "digest".into(),
@@ -738,6 +843,7 @@ mod tests {
             sources: BTreeMap::new(),
             limitations: vec![],
             human_instructions: vec![],
+            authored_paragraphs: vec![],
         };
         let p = BundleProjection {
             schema: SCHEMA.into(),
