@@ -4678,6 +4678,15 @@ pub fn review_operation_draft(
     operation_draft_review::run(repo, id, source_run, config_path)
 }
 
+pub(super) fn export_reviewed_operation_answer(
+    repo: &Repository,
+    id: &str,
+    review_run: &str,
+    output: &std::path::Path,
+) -> Result<Value, ClewError> {
+    operation_draft_review::export_approved_answer(repo, id, review_run, output)
+}
+
 fn finalize_failed_run(
     repo: &Repository,
     work: &super::work::Work,

@@ -105,8 +105,15 @@ pub enum Command {
         root: PathBuf,
         #[arg(long)]
         work: String,
-        #[arg(long)]
-        input: PathBuf,
+        #[arg(
+            long,
+            required_unless_present = "review_run",
+            conflicts_with = "review_run"
+        )]
+        input: Option<PathBuf>,
+        /// Export one exact approved saved review without a config or model call.
+        #[arg(long, required_unless_present = "input", conflicts_with = "input", value_parser = parse_run_identity)]
+        review_run: Option<String>,
         #[arg(long)]
         output_dir: PathBuf,
     },
@@ -818,9 +825,23 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             root,
             work: id,
             input,
+            review_run,
             output_dir,
         } => {
-            let loaded = load(&Repository::open(&root)?, &id)?;
+            let repo = Repository::open(&root)?;
+            if let Some(review_run) = review_run {
+                if input.is_some() {
+                    return Err(invalid("explain accepts input or review-run, not both"));
+                }
+                return super::agent_jobs::export_reviewed_operation_answer(
+                    &repo,
+                    &id,
+                    &review_run,
+                    &output_dir,
+                );
+            }
+            let input = input.ok_or_else(|| invalid("explain requires input or review-run"))?;
+            let loaded = load(&repo, &id)?;
             let (packet, audit) = super::operation_packet::build(&loaded)?;
             let answer: Value = store::read(&input, store::MAX_RECORD)?;
             let rendered = super::operation_answer::validate_and_render(&packet, &audit, answer)?;
@@ -996,6 +1017,82 @@ where
         "outputDirectory":output_dir.to_string_lossy(),
         "files":paths
     }))
+}
+
+/// Reviewed exports use a fresh staging directory and never overwrite an
+/// original author export. Publication and all repository records are untouched.
+pub(super) fn write_reviewed_explanation_outputs(
+    output_dir: &std::path::Path,
+    work: &str,
+    packet: &Value,
+    audit: &Value,
+    rendered: super::operation_answer::RenderedAnswer,
+    review: &Value,
+    provenance: &Value,
+) -> Result<Value, ClewError> {
+    if output_dir.exists()
+        && (!output_dir.is_dir() || fs::read_dir(output_dir).map_err(io_error)?.next().is_some())
+    {
+        return Err(invalid(
+            "REVIEWED_EXPORT_OUTPUT_NOT_EMPTY: choose a new or empty output directory",
+        ));
+    }
+    let parent = output_dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    fs::create_dir_all(parent).map_err(io_error)?;
+    let parent = fs::canonicalize(parent).map_err(io_error)?;
+    let name = output_dir
+        .file_name()
+        .ok_or_else(|| invalid("reviewed export requires a named output directory"))?;
+    let destination = parent.join(name);
+    let staging = tempfile::Builder::new()
+        .prefix(".codeclew-reviewed-answer-")
+        .tempdir_in(&parent)
+        .map_err(io_error)?;
+    let mut result = write_explanation_outputs(
+        staging.path(),
+        work,
+        packet,
+        audit,
+        &rendered.answer,
+        &rendered.markdown,
+        &rendered.html,
+        rendered.process_diagram.as_ref(),
+    )?;
+    for (name, value) in [
+        ("meaning-review.json", review),
+        ("review-provenance.json", provenance),
+    ] {
+        write_atomic_file(&staging.path().join(name), &bytes(value)?)?;
+        result["files"][name] = json!(destination.join(name).to_string_lossy());
+    }
+    if destination.exists() {
+        // Removal succeeds only for an empty directory, including after a race.
+        fs::remove_dir(&destination).map_err(io_error)?;
+    }
+    fs::rename(staging.path(), &destination).map_err(io_error)?;
+    for (_, value) in result["files"]
+        .as_object_mut()
+        .ok_or_else(|| invalid("export files are missing"))?
+    {
+        let file = std::path::Path::new(
+            value
+                .as_str()
+                .ok_or_else(|| invalid("export path is invalid"))?,
+        )
+        .file_name()
+        .ok_or_else(|| invalid("export filename is missing"))?;
+        *value = json!(destination.join(file).to_string_lossy());
+    }
+    result["schema"] = json!("codeclew-documentation-reviewed-operation-answer-export/1.0");
+    result["reviewStatus"] = json!("MODEL_APPROVED");
+    result["reviewRun"] = provenance["reviewRun"].clone();
+    result["snapshot"] = provenance["snapshot"].clone();
+    result["provenanceDigest"] = json!(digest(provenance)?);
+    result["outputDirectory"] = json!(destination.to_string_lossy());
+    Ok(result)
 }
 
 fn remove_owned_diagram_file(path: &std::path::Path) -> Result<(), ClewError> {

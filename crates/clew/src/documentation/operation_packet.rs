@@ -560,6 +560,90 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
     Ok((packet, audit))
 }
 
+/// Rebuild only the source audit from the immutable Work, preserving the exact
+/// packet saved in an author invocation. No current source or latest Check is used.
+pub(super) fn audit_saved_packet(work: &Work, packet: &Value) -> Result<Value, ClewError> {
+    let profile = work.request.context_profile.as_deref().unwrap_or_default();
+    if packet["schema"] != PACKET_SCHEMA || packet["profile"] != profile {
+        return Err(invalid(
+            "saved reader packet profile differs from immutable Work",
+        ));
+    }
+    let packet_digest = packet["packetDigest"]
+        .as_str()
+        .ok_or_else(|| invalid("saved reader packet has no digest"))?;
+    let mut unsigned = packet.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or_else(|| invalid("saved packet is not an object"))?
+        .remove("packetDigest");
+    if digest(&unsigned)? != packet_digest {
+        return Err(invalid("saved reader packet content digest differs"));
+    }
+    let rows = match profile {
+        endpoint_context::PROFILE => endpoint_context::profile_rows(work)?,
+        "process-graph-v1" => endpoint_context::process_profile_rows(work)?,
+        _ => return Err(invalid("unsupported saved reader packet profile")),
+    };
+    let mut counts = BTreeMap::new();
+    let mut labels = BTreeSet::new();
+    let mut records = Vec::new();
+    let mut selected = Vec::new();
+    for row in rows {
+        let kind = row["kind"]
+            .as_str()
+            .ok_or_else(|| invalid("audit row has no kind"))?;
+        let id = row["id"]
+            .as_str()
+            .ok_or_else(|| invalid("audit row has no identity"))?;
+        let reference = work
+            .handles
+            .iter()
+            .find(|(_, handle)| handle.kind == kind && handle.id == id)
+            .map(|(reference, _)| reference.clone());
+        let label = reference
+            .clone()
+            .unwrap_or_else(|| synthetic_label(kind, &mut counts));
+        if !labels.insert(label.clone()) {
+            return Err(invalid("saved audit labels are ambiguous"));
+        }
+        let record_digest = digest(&row)?;
+        selected.push(json!({"label":label,"recordDigest":record_digest}));
+        records.push(
+            json!({"label":label,"kind":kind,"id":id,"workReference":reference,
+            "recordDigest":record_digest,"deliveredToAuthor":false,"row":row}),
+        );
+    }
+    let citations = packet["citations"]
+        .as_object()
+        .ok_or_else(|| invalid("saved packet has no citations"))?;
+    if citations.keys().any(|label| !labels.contains(label)) {
+        return Err(invalid(
+            "saved packet citation is absent from immutable Work",
+        ));
+    }
+    let selected_rows_digest = digest(&selected)?;
+    let binding_digest = digest(&(
+        work.id.as_str(),
+        work.snapshot.as_deref(),
+        profile,
+        work.checked.context_digest.as_str(),
+        work.checked.input_digest.as_str(),
+        selected_rows_digest.as_str(),
+        packet_digest,
+    ))?;
+    let mut audit = json!({"schema":AUDIT_SCHEMA,"purpose":"VERIFICATION_ONLY_NOT_DELIVERED_TO_AUTHOR",
+        "workId":work.id,"snapshot":work.snapshot,"profile":profile,
+        "contextDigest":work.checked.context_digest,"inputDigest":work.checked.input_digest,
+        "packetDigest":packet_digest,"selectedRowsDigest":selected_rows_digest,
+        "bindingDigest":binding_digest,"records":records});
+    if profile == "process-graph-v1" {
+        audit["processGraph"] = super::process_graph::collect_from_work(work)?;
+    }
+    audit["auditDigest"] = json!(digest(&audit)?);
+    Ok(audit)
+}
+
 fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
     let rows = endpoint_context::process_profile_rows(work)?;
     let graph = super::process_graph::collect_from_work(work)?;

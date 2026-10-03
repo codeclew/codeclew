@@ -3869,6 +3869,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn work_explain_requires_exactly_one_input_or_review_run() {
+        let base = vec![
+            "clew",
+            "docs",
+            "work",
+            "explain",
+            "--root",
+            "/tmp",
+            "--work",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--output-dir",
+            "/tmp/review-export",
+        ];
+        assert!(Cli::try_parse_from(base.clone()).is_err());
+        let mut legacy = base.clone();
+        legacy.extend(["--input", "answer.json"]);
+        assert!(Cli::try_parse_from(legacy).is_ok());
+        let mut reviewed = base.clone();
+        reviewed.extend(["--review-run", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+        assert!(Cli::try_parse_from(reviewed.clone()).is_ok());
+        reviewed.extend(["--input", "answer.json"]);
+        assert!(Cli::try_parse_from(reviewed).is_err());
+        let mut malformed = base;
+        malformed.extend(["--review-run", "not-a-run"]);
+        assert!(Cli::try_parse_from(malformed).is_err());
+    }
+
+    #[test]
     fn work_draft_new_run_flag_requires_draft_and_is_accepted_with_it() {
         let base = vec![
             "clew",

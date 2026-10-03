@@ -552,6 +552,31 @@ between file replacements, rerun it with the same saved Work and answer to
 finish the draft; this performs no index capture. The result remains a local
 `DRAFT` / `UNREVIEWED`; it does not publish or create a release version.
 
+To export an approved saved review without a configuration or another model call:
+
+```sh
+clew docs work explain --root docs --work WORK_ID \
+  --review-run REVIEW_RUN_ID --output-dir reviewed-answer
+```
+
+Select exactly one of `--input` and `--review-run`. Reviewed exports require a
+new or empty output directory and preserve the original author export. The host
+loads the exact author and reviewer invocation records, selected checkpoints,
+complete saved packet and immutable Work snapshot. It rejects missing or corrupt
+records, mismatched coverage and forged approval. Mutable exported answers and
+latest-run pointers are not authority; this command does not read a driver
+configuration, dispatch a model, update reservations, or switch the live index.
+
+The HTML and Markdown show `MODEL REVIEW: APPROVED` and `NOT PUBLISHED`, retain
+all reviewer limitations and findings, and include declared models and exact
+source, packet, answer and invocation digests in supporting provenance. The
+export includes `meaning-review.json` and `review-provenance.json` beside the
+answer, packet and source audit. Model approval covers meaning against the saved
+packet only. It is not compiler proof, current-source verification or execution
+evidence. A missing retained snapshot rejects export even if current source is
+available. Saving this local reader does not admit it to the documentation
+catalogue or publication history.
+
 To review one successful original operation draft without another author call, use:
 
 ```sh

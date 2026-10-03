@@ -102,6 +102,179 @@ pub(super) fn run(
     run_loaded(repo, &work, source_run, config)
 }
 
+/// Read-only material selected by an exact approved review run. The stored
+/// invocation records, not mutable exports or latest pointers, are authoritative.
+#[derive(Debug)]
+struct ReviewedAnswer {
+    packet: Value,
+    audit: Value,
+    answer: Value,
+    review: Value,
+    provenance: Value,
+}
+
+fn load_approved_answer(
+    repo: &Repository,
+    work: &Work,
+    review_run: &str,
+) -> Result<ReviewedAnswer, ClewError> {
+    super::operation_draft::validate_work(work)?;
+    let report = super::load_report_by_id(repo, &work.id, review_run)?;
+    let origin = report.draft_review.as_ref().ok_or_else(|| {
+        invalid("REVIEWED_EXPORT_INELIGIBLE: selected run is not an operation draft review")
+    })?;
+    let config_digest = report
+        .config_digest
+        .as_deref()
+        .ok_or_else(|| invalid("RECOVERY_CONFIG_MISMATCH: review has no bound config digest"))?;
+    let reference = report
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISSING: review has no selected checkpoint"))?;
+    let checkpoint: RunCheckpoint = super::recovery::load_checkpoint(repo, reference)?;
+    checkpoint.validate(&report, config_digest, &checkpoint.driver_digests)?;
+    if report.execution_mode.as_deref() != Some(MODE)
+        || report.status != "DRAFT_REVIEW_APPROVED"
+        || checkpoint.phase != "TERMINAL"
+        || report.proposal.is_some()
+        || checkpoint.proposal_id.is_some()
+        || report.publication.as_ref() != Some(&json!({"status":"NOT_PUBLISHED"}))
+        || checkpoint.publication_baseline.is_some()
+        || checkpoint.publication_receipt.is_some()
+        || origin.schema != ORIGIN_SCHEMA
+        || work.snapshot.as_deref() != Some(origin.snapshot.as_str())
+        || checkpoint.snapshot != origin.snapshot
+    {
+        return Err(invalid(
+            "REVIEWED_EXPORT_INELIGIBLE: select one durable approved unpublished operation answer",
+        ));
+    }
+    let source = super::load_report_by_id(repo, &work.id, &origin.source_run)?;
+    // Read the exact author packet before deriving a source audit. No packet
+    // regeneration and no current-source or latest-Check selection occurs here.
+    let source_reference = source
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISSING: author has no selected checkpoint"))?;
+    let source_checkpoint: RunCheckpoint =
+        super::recovery::load_checkpoint(repo, source_reference)?;
+    let source_identity = &source_checkpoint
+        .pending_call
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: author invocation is missing"))?
+        .identity;
+    let author_input = super::recovery::load_input(repo, source_identity)?;
+    let packet = author_input.request["payload"]["packet"].clone();
+    let audit = super::super::operation_packet::audit_saved_packet(work, &packet)?;
+    let (validated_origin, answer, author_contract) =
+        super::operation_draft::review_source(repo, work, &source, &packet, &audit)?;
+    if &validated_origin != origin || checkpoint.previous != answer {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: review origin differs from exact saved author invocation",
+        ));
+    }
+    let blocks = super::super::operation_answer::review_blocks(&answer)?;
+    let reviewer_identity = &checkpoint
+        .pending_call
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: review invocation is missing"))?
+        .identity;
+    let reviewer_input = super::recovery::load_input(repo, reviewer_identity)?;
+    let saved_payload = &reviewer_input.request["payload"];
+    let labels: Vec<_> = packet["citations"]
+        .as_object()
+        .ok_or_else(|| invalid("saved packet citations are missing"))?
+        .keys()
+        .cloned()
+        .collect();
+    let required: BTreeSet<_> = [
+        "instruction",
+        "language",
+        "savedAuthorContract",
+        "source",
+        "packet",
+        "answer",
+        "blocks",
+        "evidenceKeys",
+        "outputSchema",
+    ]
+    .into_iter()
+    .collect();
+    if saved_payload
+        .as_object()
+        .is_none_or(|p| p.keys().map(String::as_str).collect::<BTreeSet<_>>() != required)
+        || saved_payload["instruction"]
+            .as_str()
+            .is_none_or(|s| s.trim().is_empty())
+        || saved_payload["language"] != work.request.documentation_language()
+        || saved_payload["savedAuthorContract"] != author_contract
+        || saved_payload["source"] != json!(origin)
+        || saved_payload["packet"] != packet
+        || saved_payload["answer"] != answer
+        || saved_payload["blocks"] != json!(blocks)
+        || saved_payload["evidenceKeys"] != json!(labels)
+        || saved_payload["outputSchema"] != schema(work, origin, &blocks, &labels)?
+    {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: durable review did not receive this exact saved answer, packet and host coverage",
+        ));
+    }
+    let value = validate_saved_review(repo, &report, &checkpoint, saved_payload)?;
+    let validated = validate_review(value.clone(), work, origin, &packet, &blocks)?;
+    if validated.verdict != Verdict::Approve
+        || report.review.as_ref() != Some(&value)
+        || checkpoint.review.as_ref() != Some(&value)
+    {
+        return Err(invalid(
+            "RECOVERY_RESULT_MISMATCH: approval differs from its durable reviewer result",
+        ));
+    }
+    let provenance = json!({"schema":"codeclew-operation-answer-review-provenance/1.0",
+        "work":work.id,"sourceRun":source.run,"reviewRun":report.run,
+        "sourceCheckpoint":source_reference,"reviewCheckpoint":reference,
+        "snapshot":origin.snapshot,"packetDigest":origin.packet_digest,"answerDigest":origin.answer_digest,
+        "coverageDigest":validated.coverage_digest,"sourceAuthoringContract":origin.source_authoring_contract,
+        "meaningReview":"MODEL_APPROVED","publication":"NOT_PUBLISHED",
+        "sourceContext":"SAVED_SNAPSHOT_NOT_REVERIFIED","runtime":"UNKNOWN",
+        "author":{"invocation":origin.source_invocation,"model":source_identity.model,
+            "inputDigest":origin.source_input_digest,"inputRecordDigest":author_input.record_digest,"resultDigest":origin.source_result_digest},
+        "reviewer":{"invocation":reviewer_identity.invocation,"model":reviewer_identity.model,
+            "inputDigest":reviewer_identity.input_digest,"inputRecordDigest":reviewer_input.record_digest,"resultDigest":digest(&value)?},
+        "limitations":validated.limitations,"issues":validated.issues});
+    Ok(ReviewedAnswer {
+        packet,
+        audit,
+        answer,
+        review: value,
+        provenance,
+    })
+}
+
+pub(super) fn export_approved_answer(
+    repo: &Repository,
+    id: &str,
+    review_run: &str,
+    output: &Path,
+) -> Result<Value, ClewError> {
+    let work = super::super::work::load(repo, id)?;
+    let selected = load_approved_answer(repo, &work, review_run)?;
+    let rendered = super::super::operation_answer::validate_and_render_reviewed(
+        &selected.packet,
+        &selected.audit,
+        selected.answer,
+        &selected.provenance,
+    )?;
+    super::super::work::write_reviewed_explanation_outputs(
+        output,
+        &work.id,
+        &selected.packet,
+        &selected.audit,
+        rendered,
+        &selected.review,
+        &selected.provenance,
+    )
+}
+
 fn run_loaded(
     repo: &Repository,
     work: &Work,
@@ -1008,5 +1181,203 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
                 .contains("RECOVERY_RESULT_MISMATCH")
         );
         assert_eq!(account(&repo, &cfg.budget).unwrap().reservations.len(), 1);
+    }
+
+    #[test]
+    fn approved_export_uses_explicit_immutable_selection_without_configs_or_writes() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, work, author_config, source_run) = authored();
+        let path = temp.path().join("review-export.json");
+        config(&path, &author_config, "approve");
+        let result = run_loaded(&repo, &work, &source_run, &path).unwrap();
+        let review_run = result["run"].as_str().unwrap();
+        let selected = load_approved_answer(&repo, &work, review_run).unwrap();
+        let (packet, audit) = super::super::super::operation_packet::build(&work).unwrap();
+        assert_eq!(selected.packet, packet);
+        assert_eq!(selected.audit, audit);
+        // Config removal and a different latest pointer cannot cause a call
+        // or change this explicitly selected frozen export.
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&author_config).unwrap();
+        repo.atomic(
+            &format!(".codeclew/work/{}/latest-run.json", work.id),
+            &serde_json::to_vec(&json!({"run":"f".repeat(32)})).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            repo.path(&format!(".codeclew/drafts/{}/answer.json", work.id))
+                .unwrap(),
+            b"mutable export is not authority",
+        )
+        .unwrap();
+        let original_input = repo.input_digest().unwrap();
+        let mut current_service = repo.services().unwrap().remove("orders").unwrap();
+        current_service.title = "Changed current service declaration".into();
+        repo.service_add(current_service, Some(&original_input))
+            .unwrap();
+        assert_ne!(repo.input_digest().unwrap(), work.checked.input_digest);
+        let mut before = BTreeMap::new();
+        files(&repo.root, &mut before);
+        let exports = tempfile::tempdir().unwrap();
+        let output = exports.path().join("approved-export");
+        let exported =
+            super::super::super::work::run(super::super::super::work::Command::Explain {
+                root: repo.root.clone(),
+                work: work.id.clone(),
+                input: None,
+                review_run: Some(review_run.into()),
+                output_dir: output.clone(),
+            })
+            .unwrap();
+        assert_eq!(exported["reviewStatus"], "MODEL_APPROVED");
+        assert_eq!(exported["publication"], "NOT_PUBLISHED");
+        assert_eq!(exported["snapshot"], work.snapshot.clone().unwrap());
+        let answer: Value = store::read(&output.join("answer.json"), store::MAX_RECORD).unwrap();
+        let review: Value =
+            store::read(&output.join("meaning-review.json"), store::MAX_RECORD).unwrap();
+        let provenance: Value =
+            store::read(&output.join("review-provenance.json"), store::MAX_RECORD).unwrap();
+        assert_eq!(answer, selected.answer);
+        assert_eq!(review, selected.review);
+        assert_eq!(provenance, selected.provenance);
+        let html = fs::read_to_string(output.join("index.html")).unwrap();
+        let md = fs::read_to_string(output.join("operation.md")).unwrap();
+        assert!(html.contains("MODEL REVIEW: APPROVED"));
+        assert!(html.contains("<details><summary>Saved model review"));
+        assert!(
+            html.contains("not compiler proof, current-source verification, or execution evidence")
+        );
+        assert!(html.contains("Synthetic local review; no deployment claim."));
+        assert!(md.contains("MODEL REVIEW: APPROVED"));
+        assert!(md.contains(r"Synthetic local review; no deployment claim\."));
+        assert!(html.contains(work.snapshot.as_deref().unwrap()));
+        let mut after = BTreeMap::new();
+        files(&repo.root, &mut after);
+        assert_eq!(before, after);
+        assert!(
+            export_approved_answer(&repo, &work.id, review_run, &output)
+                .unwrap_err()
+                .message
+                .contains("OUTPUT_NOT_EMPTY")
+        );
+        let again = exports.path().join("approved-export-again");
+        export_approved_answer(&repo, &work.id, review_run, &again).unwrap();
+        for name in [
+            "answer.json",
+            "reader-packet.json",
+            "reader-packet-audit.json",
+            "meaning-review.json",
+            "review-provenance.json",
+            "index.html",
+            "operation.md",
+        ] {
+            assert_eq!(
+                fs::read(output.join(name)).unwrap(),
+                fs::read(again.join(name)).unwrap(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_export_rejects_unapproved_and_forged_terminal_metadata() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        for mode in ["reject", "needs-evidence", "missing-block", "uncertain"] {
+            let (temp, repo, work, author_config, source_run) = authored();
+            let path = temp.path().join("review-export-negative.json");
+            config(&path, &author_config, mode);
+            let result = run_loaded(&repo, &work, &source_run, &path).unwrap();
+            let run = result["run"].as_str().unwrap();
+            assert!(load_approved_answer(&repo, &work, run).is_err(), "{mode}");
+            let output = temp.path().join("must-not-exist");
+            assert!(export_approved_answer(&repo, &work.id, run, &output).is_err());
+            assert!(!output.exists());
+            let mut report = super::super::load_report_by_id(&repo, &work.id, run).unwrap();
+            report.status = "DRAFT_REVIEW_APPROVED".into();
+            super::super::save_report(&repo, &report).unwrap();
+            assert!(
+                load_approved_answer(&repo, &work, run).is_err(),
+                "forged {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_export_rejects_missing_corrupt_mismatched_invocations_and_review() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, work, author_config, source_run) = authored();
+        let path = temp.path().join("review-export-corrupt.json");
+        config(&path, &author_config, "approve");
+        let result = run_loaded(&repo, &work, &source_run, &path).unwrap();
+        let run = result["run"].as_str().unwrap();
+        let selected = load_approved_answer(&repo, &work, run).unwrap();
+        for role in ["author", "reviewer"] {
+            let invocation = selected.provenance[role]["invocation"].as_str().unwrap();
+            for directory in ["job-inputs", "job-results"] {
+                let record = repo
+                    .path(&format!(".codeclew/{directory}/{invocation}.json"))
+                    .unwrap();
+                let original = fs::read(&record).unwrap();
+                fs::remove_file(&record).unwrap();
+                assert!(load_approved_answer(&repo, &work, run).is_err());
+                fs::write(&record, b"{corrupt").unwrap();
+                assert!(load_approved_answer(&repo, &work, run).is_err());
+                let mut changed: Value = serde_json::from_slice(&original).unwrap();
+                changed["identity"]["work"] = json!("f".repeat(64));
+                fs::write(&record, serde_json::to_vec(&changed).unwrap()).unwrap();
+                assert!(load_approved_answer(&repo, &work, run).is_err());
+                fs::write(&record, original).unwrap();
+            }
+        }
+        let mut report = super::super::load_report_by_id(&repo, &work.id, run).unwrap();
+        let original_report = report.clone();
+        report.review.as_mut().unwrap()["limitations"] = json!([]);
+        super::super::save_report(&repo, &report).unwrap();
+        assert!(
+            load_approved_answer(&repo, &work, run)
+                .unwrap_err()
+                .message
+                .contains("RECOVERY_RESULT_MISMATCH")
+        );
+        super::super::save_report(&repo, &original_report).unwrap();
+        // Corrupt only this owned synthetic fixture's selected snapshot object.
+        // Keep Work tables and all current declarations available: there must
+        // be no fallback to them when the exact saved snapshot is absent.
+        let layout: Value = store::read(
+            &repo.path(".codeclew/cache/object-layout.json").unwrap(),
+            4096,
+        )
+        .unwrap();
+        let database = repo.path(layout["database"].as_str().unwrap()).unwrap();
+        let connection = rusqlite::Connection::open(database).unwrap();
+        let snapshot_digest = work
+            .snapshot
+            .as_deref()
+            .unwrap()
+            .rsplit_once('/')
+            .unwrap()
+            .0;
+        assert_eq!(
+            connection
+                .execute("DELETE FROM objects WHERE digest = ?1", [snapshot_digest])
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        let output = temp.path().join("missing-snapshot-export");
+        let error = export_approved_answer(&repo, &work.id, run, &output).unwrap_err();
+        assert!(
+            error.message.contains("snapshot") || error.message.contains("object"),
+            "{}",
+            error.message
+        );
+        assert!(!output.exists());
+        assert!(!repo.path("docs/generated").unwrap().exists());
     }
 }

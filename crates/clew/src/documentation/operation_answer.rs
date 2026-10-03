@@ -159,16 +159,25 @@ pub(super) struct ProcessDiagram {
 #[derive(Clone, Copy)]
 struct ReaderLabels {
     russian: bool,
+    reviewed: bool,
 }
 
 impl ReaderLabels {
     fn new(packet: &Value) -> Self {
         Self {
             russian: packet["documentationLanguage"].as_str() == Some("ru"),
+            reviewed: false,
         }
     }
 
     fn status(self) -> &'static str {
+        if self.reviewed {
+            return if self.russian {
+                "ЧЕРНОВИК / ОДОБРЕНО МОДЕЛЬЮ / НЕ ОПУБЛИКОВАНО"
+            } else {
+                "DRAFT / MODEL REVIEW: APPROVED / NOT PUBLISHED"
+            };
+        }
         if self.russian {
             "ЧЕРНОВИК / НЕ ПРОВЕРЕНО / НЕ ОПУБЛИКОВАНО"
         } else {
@@ -177,6 +186,13 @@ impl ReaderLabels {
     }
 
     fn status_note(self) -> &'static str {
+        if self.reviewed {
+            return if self.russian {
+                "Модель проверила смысл по сохранённому снимку. Это не доказательство компилятора, актуальности исходников или исполнения."
+            } else {
+                "A model reviewed meaning against the saved snapshot. This is not compiler proof, current-source verification, or execution evidence."
+            };
+        }
         if self.russian {
             "Проверены структура и привязка меток к свидетельствам. Семантическая корректность не проверялась."
         } else {
@@ -676,6 +692,24 @@ pub(super) fn validate_and_render(
     audit: &Value,
     answer: Value,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
+    validate_and_render_with_review(packet, audit, answer, None)
+}
+
+pub(super) fn validate_and_render_reviewed(
+    packet: &Value,
+    audit: &Value,
+    answer: Value,
+    provenance: &Value,
+) -> Result<RenderedAnswer, crate::error::ClewError> {
+    validate_and_render_with_review(packet, audit, answer, Some(provenance))
+}
+
+fn validate_and_render_with_review(
+    packet: &Value,
+    audit: &Value,
+    answer: Value,
+    provenance: Option<&Value>,
+) -> Result<RenderedAnswer, crate::error::ClewError> {
     if packet["schema"] != PACKET_SCHEMA
         || !matches!(
             packet["profile"].as_str(),
@@ -743,7 +777,8 @@ pub(super) fn validate_and_render(
         return Err(invalid("operation answer uncertainties must not be empty"));
     }
 
-    let labels = ReaderLabels::new(packet);
+    let mut labels = ReaderLabels::new(packet);
+    labels.reviewed = provenance.is_some();
     let evidence_index = evidence_index(citations);
     let used_labels = answer_evidence_labels(&parsed);
     let root_source_references = selected_root_source_references(packet);
@@ -754,7 +789,23 @@ pub(super) fn validate_and_render(
         &root_source_references,
         &parsed,
     );
-    let process_diagram = root_process_diagram(packet, &parsed, &source_navigation);
+    let mut process_diagram = root_process_diagram(packet, &parsed, &source_navigation);
+    if let (Some(diagram), Some(provenance)) = (process_diagram.as_mut(), provenance) {
+        diagram.puml = diagram.puml.replacen(
+            "CODECLEW_STATUS=DRAFT/UNREVIEWED/NOT_PUBLISHED",
+            "CODECLEW_STATUS=DRAFT/MODEL_REVIEW_APPROVED/NOT_PUBLISHED",
+            1,
+        );
+        diagram.puml.push_str(&format!(
+            "\n' REVIEW_RESULT_DIGEST={}\n' REVIEW_SNAPSHOT={}\n",
+            plantuml_comment_text(
+                provenance["reviewer"]["resultDigest"]
+                    .as_str()
+                    .unwrap_or_default()
+            ),
+            plantuml_comment_text(provenance["snapshot"].as_str().unwrap_or_default())
+        ));
+    }
     let html = render_html(
         packet,
         &parsed,
@@ -764,6 +815,7 @@ pub(super) fn validate_and_render(
         &source_navigation,
         process_diagram.as_ref(),
         labels,
+        provenance,
     );
     let markdown = render_markdown(
         packet,
@@ -774,6 +826,7 @@ pub(super) fn validate_and_render(
         &source_navigation,
         process_diagram.as_ref(),
         labels,
+        provenance,
     );
     Ok(RenderedAnswer {
         html,
@@ -3384,6 +3437,101 @@ const HASH_NAVIGATION_SCRIPT: &str = r##"(()=>{
 })();"##;
 
 // Keep separate inputs visible because each renderer consumes distinct source sections.
+fn render_review_provenance(provenance: &Value, html: bool) -> String {
+    let mut rows = vec![
+        ("Saved source snapshot", provenance["snapshot"].clone()),
+        ("Author run", provenance["sourceRun"].clone()),
+        ("Reviewer run", provenance["reviewRun"].clone()),
+        ("Packet digest", provenance["packetDigest"].clone()),
+        ("Answer digest", provenance["answerDigest"].clone()),
+        ("Coverage digest", provenance["coverageDigest"].clone()),
+    ];
+    for (role, caption) in [
+        ("author", "Declared author model"),
+        ("reviewer", "Declared reviewer model"),
+    ] {
+        rows.push((caption, provenance[role]["model"].clone()));
+        rows.push((
+            if role == "author" {
+                "Author input digest"
+            } else {
+                "Reviewer input digest"
+            },
+            provenance[role]["inputDigest"].clone(),
+        ));
+        rows.push((
+            if role == "author" {
+                "Author result digest"
+            } else {
+                "Reviewer result digest"
+            },
+            provenance[role]["resultDigest"].clone(),
+        ));
+    }
+    let mut output: String = if html {
+        "<section id=\"meaning-review\"><details><summary>Saved model review: provenance and limitations</summary><dl>".into()
+    } else {
+        "## Saved model review\n\n".into()
+    };
+    for (caption, value) in rows {
+        let value = value.as_str().unwrap_or_default();
+        if html {
+            output.push_str(&format!(
+                "<dt>{}</dt><dd><code>{}</code></dd>",
+                html_escape(caption),
+                html_escape(value)
+            ));
+        } else {
+            output.push_str(&format!(
+                "- **{}:** {}\n",
+                markdown_escape(caption),
+                markdown_escape(value)
+            ));
+        }
+    }
+    if html {
+        output.push_str("</dl><h3>Reviewer limitations</h3><ul>");
+    } else {
+        output.push_str("\n### Reviewer limitations\n\n");
+    }
+    for limitation in provenance["limitations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if html {
+            output.push_str(&format!("<li>{}</li>", html_escape(limitation)));
+        } else {
+            output.push_str(&format!("- {}\n", markdown_escape(limitation)));
+        }
+    }
+    if html {
+        output.push_str("</ul><h3>Reviewer findings</h3><ul>");
+    } else {
+        output.push_str("\n### Reviewer findings\n\n");
+    }
+    for issue in provenance["issues"].as_array().into_iter().flatten() {
+        let text = format!(
+            "{}: {} ({})",
+            issue["severity"].as_str().unwrap_or_default(),
+            issue["reason"].as_str().unwrap_or_default(),
+            issue["block"].as_str().unwrap_or_default()
+        );
+        if html {
+            output.push_str(&format!("<li>{}</li>", html_escape(&text)));
+        } else {
+            output.push_str(&format!("- {}\n", markdown_escape(&text)));
+        }
+    }
+    if html {
+        output.push_str("</ul></details></section>");
+    } else {
+        output.push('\n');
+    }
+    output
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_html(
     packet: &Value,
@@ -3394,6 +3542,7 @@ fn render_html(
     source_navigation: &SourceNavigation,
     process_diagram: Option<&ProcessDiagram>,
     labels: ReaderLabels,
+    provenance: Option<&Value>,
 ) -> String {
     let language = packet["documentationLanguage"].as_str().unwrap_or("en");
     let preparation_titles = preparation_titles(answer);
@@ -3425,6 +3574,9 @@ fn render_html(
         html_escape(labels.status()),
         html_escape(labels.status_note())
     ));
+    if let Some(provenance) = provenance {
+        html.push_str(&render_review_provenance(provenance, true));
+    }
     let mut nav = Vec::new();
     if !answer.glossary.is_empty() {
         nav.push(("glossary", labels.glossary()));
@@ -3561,6 +3713,7 @@ fn render_markdown(
     source_navigation: &SourceNavigation,
     process_diagram: Option<&ProcessDiagram>,
     labels: ReaderLabels,
+    provenance: Option<&Value>,
 ) -> String {
     let preparation_titles = preparation_titles(answer);
     let decision_tables = render_decision_tables_markdown(
@@ -3715,6 +3868,9 @@ fn render_markdown(
         labels,
     ));
     markdown.push_str("</details>\n");
+    if let Some(provenance) = provenance {
+        markdown.push_str(&render_review_provenance(provenance, false));
+    }
     markdown
 }
 
