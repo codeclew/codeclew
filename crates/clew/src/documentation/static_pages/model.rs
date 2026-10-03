@@ -17,6 +17,9 @@ pub struct Selection {
     pub wiring_declaration: Option<String>,
     #[serde(default)]
     pub question: Option<String>,
+    /// Explicit protected note IDs resolved only from the selected Check inputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,6 +52,28 @@ pub struct PageContent {
     pub observations: BTreeMap<String, Observation>,
     pub sources: BTreeMap<String, Source>,
     pub limitations: Vec<Gap>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub human_instructions: Vec<HumanInstruction>,
+}
+
+/// Captured human/imported material is displayed unchanged, never interpreted as source truth.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanInstruction {
+    pub id: String,
+    pub title: String,
+    pub declared_author: String,
+    pub classification: String,
+    pub period: String,
+    pub version_digest: String,
+    /// Digest of the canonical serialized original text, matching docs note capture.
+    pub content_digest: String,
+    pub association_digest: String,
+    pub text: String,
+    pub authority: String,
+    pub source_claim_status: String,
+    /// Full captured association, including targets, tags and declared metadata.
+    pub association: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

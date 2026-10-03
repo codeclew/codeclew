@@ -24,7 +24,7 @@ pub enum Command {
         /// Exact immutable handle returned by docs check. No capture or latest fallback.
         #[arg(long)]
         snapshot: String,
-        /// JSON array of exact endpoint, worker and optional wiring declaration selectors.
+        /// JSON array of exact declaration selectors and optional captured note IDs.
         #[arg(long)]
         input: PathBuf,
         /// New or empty directory; generated files are never overwritten.

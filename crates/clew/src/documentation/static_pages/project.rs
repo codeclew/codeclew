@@ -4,6 +4,8 @@ use crate::documentation::{
     check::Check,
     digest, invalid,
     model::{Observation, ServiceEvidence, Source},
+    notes::Association,
+    store::RepositoryInputs,
 };
 use crate::error::ClewError;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +15,14 @@ const JAVA_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const WRAP: &str = "class __Projection {\n";
 
 pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjection, ClewError> {
+    let note_inputs = if selections
+        .iter()
+        .any(|selection| !selection.note_ids.is_empty())
+    {
+        Some(pinned_note_inputs(checked)?)
+    } else {
+        None
+    };
     let mut ids = BTreeSet::new();
     let mut pages = Vec::new();
     for selection in selections {
@@ -21,6 +31,7 @@ pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjec
                 "native page selection IDs must be nonempty and unique",
             ));
         }
+        let human_instructions = human_instructions(note_inputs, selection)?;
         let evidence = checked
             .services
             .get(&selection.service)
@@ -63,6 +74,7 @@ pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjec
             observations: ctx.observations,
             sources: ctx.sources,
             limitations,
+            human_instructions,
         });
     }
     Ok(BundleProjection {
@@ -72,6 +84,99 @@ pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjec
         selection_digest: digest(&selections)?,
         pages,
     })
+}
+
+fn note_target(inputs: &RepositoryInputs, target: &str, service: &str) -> (bool, bool) {
+    if let Some(target) = target.strip_prefix("service:") {
+        let (id, section) = target
+            .split_once('/')
+            .map(|(id, section)| (id, Some(section)))
+            .unwrap_or((target, None));
+        let exists = inputs.services.contains_key(id)
+            && section.is_none_or(crate::documentation::sections::contains);
+        return (exists, exists && id == service);
+    }
+    (false, false)
+}
+
+fn pinned_note_inputs(checked: &Check) -> Result<&RepositoryInputs, ClewError> {
+    let pinned = checked
+        .source_inputs
+        .as_ref()
+        .ok_or_else(|| invalid("native page notes require pinned captured source inputs"))?;
+    crate::documentation::source_inputs::validate(pinned)?;
+    if pinned.input_digest != checked.input_digest {
+        return Err(invalid(
+            "native page note input identity does not match Check",
+        ));
+    }
+    Ok(&pinned.inputs)
+}
+
+fn human_instructions(
+    inputs: Option<&RepositoryInputs>,
+    selection: &Selection,
+) -> Result<Vec<HumanInstruction>, ClewError> {
+    if selection.note_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if selection.note_ids.len() > 128 {
+        return Err(invalid("native page note selection exceeds 128 IDs"));
+    }
+    let inputs =
+        inputs.ok_or_else(|| invalid("native page notes require pinned captured source inputs"))?;
+    let mut ids = BTreeSet::new();
+    selection.note_ids.iter().map(|id| {
+        if !crate::documentation::store::valid_id(id) || !ids.insert(id) {
+            return Err(invalid("native page note IDs must be valid and unique"));
+        }
+        let captured = inputs.notes.get(id)
+            .ok_or_else(|| invalid("native page selected note is not captured in Check"))?;
+        let association: Association = serde_json::from_value(captured["association"].clone())
+            .map_err(|_| invalid("native page captured note association is invalid"))?;
+        let association_digest = digest(&association)?;
+        if association.id != *id
+            || association.schema != "codeclew-documentation-note-association/1.0"
+            || captured["associationDigest"] != association_digest
+            || captured["authority"] != "HUMAN_OR_IMPORTED_UNVERIFIED"
+        {
+            return Err(invalid("native page captured note identity or association digest is inconsistent"));
+        }
+        let author = association.metadata.get("author").and_then(serde_json::Value::as_str)
+            .filter(|author| !author.trim().is_empty() && author.len() <= 512)
+            .ok_or_else(|| invalid("native page selected note requires a nonblank metadata.author string of at most 512 bytes"))?;
+        let targets: Vec<_> = association.targets.iter()
+            .map(|target| note_target(inputs, target, &selection.service)).collect();
+        if targets.is_empty() || targets.iter().any(|(exists, _)| !exists) {
+            return Err(invalid("native page selected note has unavailable or unsupported captured targets"));
+        }
+        if !targets.iter().any(|(_, related)| *related) {
+            return Err(invalid("native page selected note is unrelated to the selected service"));
+        }
+        let text = captured["original"]["text"].as_str()
+            .filter(|text| text.len() <= 256 * 1024)
+            .ok_or_else(|| invalid("native page selected note original text is unavailable"))?;
+        let content_digest = digest(&text)?;
+        if captured["original"]["status"] != "CAPTURED"
+            || captured["original"]["digest"] != content_digest
+        {
+            return Err(invalid("native page selected note original capture or digest is inconsistent"));
+        }
+        Ok(HumanInstruction {
+            id: id.clone(),
+            title: association.title.clone(),
+            declared_author: author.into(),
+            classification: association.classification.clone(),
+            period: association.period.clone(),
+            version_digest: digest(&(&association_digest, &content_digest))?,
+            content_digest,
+            association_digest,
+            text: text.into(),
+            authority: "HUMAN_OR_IMPORTED_UNVERIFIED".into(),
+            source_claim_status: "UNASSESSED".into(),
+            association: captured["association"].clone(),
+        })
+    }).collect()
 }
 
 fn gap(code: &str, detail: impl Into<String>, citation_id: Option<String>) -> Gap {

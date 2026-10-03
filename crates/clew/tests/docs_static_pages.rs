@@ -186,8 +186,37 @@ fn declaration(e: &ServiceEvidence, owner: &str, method: &str) -> String {
     );
     matches[0].id.clone()
 }
+const NOTE_TEXT: &str = "Before retrying, inspect the gateway response and consult the on-call guide.\r\nKeep café☕ available. <Panel>{probe()}</Panel> <script> `quoted`\r\n";
+fn import_operational_note(f: &Fixture) -> (PathBuf, Value) {
+    let source = f.temp.path().join("on-call-original.md");
+    fs::write(&source, NOTE_TEXT.as_bytes()).unwrap();
+    let association = json!({
+        "schema":"codeclew-documentation-note-association/1.0","id":"on-call",
+        "title":"Gateway retry instructions","service":"alpha","path":"notes/on-call.md",
+        "targets":["service:alpha/section-egress"],"classification":"policy",
+        "period":"2026-10 onward; maintainer review required","tags":["operations"],
+        "metadata":{"author":"Example on-call maintainer","origin":"fixture import"}
+    });
+    let input = f.input("on-call-association.json", &association);
+    let digest = f.ok(&["docs", "note", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "note",
+        "import",
+        "--input",
+        input.to_str().unwrap(),
+        "--source",
+        source.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ]);
+    (input, association)
+}
 fn selections(check: &Check) -> Value {
-    json!([{"id":"alpha-flow","service":"alpha","endpointDeclaration":declaration(&check.services["alpha"],"alpha.DispatchEndpoint","submit"),"workerDeclaration":declaration(&check.services["alpha"],"alpha.ProcessingLoop","runOnce"),"wiringDeclaration":declaration(&check.services["alpha"],"alpha.Composition","assemble"),"question":"Why might the gateway call remain unreached?"},
+    json!([{"id":"alpha-flow","service":"alpha","endpointDeclaration":declaration(&check.services["alpha"],"alpha.DispatchEndpoint","submit"),"workerDeclaration":declaration(&check.services["alpha"],"alpha.ProcessingLoop","runOnce"),"wiringDeclaration":declaration(&check.services["alpha"],"alpha.Composition","assemble"),"question":"Why might the gateway call remain unreached?","noteIds":["on-call"]},
     {"id":"beta-flow","service":"beta","endpointDeclaration":declaration(&check.services["beta"],"beta.IntakeEndpoint","enqueue"),"workerDeclaration":declaration(&check.services["beta"],"beta.DeliveryLoop","consume"),"wiringDeclaration":declaration(&check.services["beta"],"beta.Assembly","wire"),"question":"What should be inspected when no delivery call is reached?"}])
 }
 fn render(f: &Fixture, snapshot: &str, input: &Path, out: &Path) -> Value {
@@ -285,6 +314,9 @@ fn fresh_native_capture_mutation_and_offline_snapshot_produce_linked_pages() {
     let f = Fixture::new();
     let alpha = setup(&f, "alpha", true);
     let beta = setup(&f, "beta", false);
+    let (_note_input, note_association) = import_operational_note(&f);
+    let original_note = fs::read(f.docs.join("notes/on-call.md")).unwrap();
+    let original_association = fs::read(f.docs.join("catalog/notes/on-call.json")).unwrap();
     let capture_started = Instant::now();
     let (v1, c1) = capture(&f);
     let capture_v1_ms = capture_started.elapsed().as_millis();
@@ -296,6 +328,72 @@ fn fresh_native_capture_mutation_and_offline_snapshot_produce_linked_pages() {
     verify_bundle(&out1);
     let original = files(&out1);
     let p1: Value = serde_json::from_slice(&original["projection.json"]).unwrap();
+    let instruction1 = &p1["pages"][0]["humanInstructions"][0];
+    assert_eq!(instruction1["id"], "on-call");
+    assert_eq!(instruction1["declaredAuthor"], "Example on-call maintainer");
+    assert_eq!(instruction1["text"], NOTE_TEXT);
+    assert_eq!(instruction1["classification"], "policy");
+    assert_eq!(instruction1["period"], note_association["period"]);
+    assert_eq!(instruction1["authority"], "HUMAN_OR_IMPORTED_UNVERIFIED");
+    assert_eq!(instruction1["sourceClaimStatus"], "UNASSESSED");
+    assert_eq!(
+        instruction1["contentDigest"],
+        canonical::hash(&NOTE_TEXT).unwrap()
+    );
+    assert!(p1["pages"][1].get("humanInstructions").is_none());
+    let manifest1: Value = serde_json::from_slice(&original["manifest.json"]).unwrap();
+    assert_eq!(manifest1["selectedNotes"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest1["selectedNotes"][0]["noteId"], "on-call");
+    assert_eq!(
+        manifest1["selectedNotes"][0]["versionDigest"],
+        instruction1["versionDigest"]
+    );
+    let inclusion = &manifest1["selectedNotes"][0];
+    assert_eq!(inclusion["pageId"], "alpha-flow-overview");
+    assert_eq!(inclusion["processId"], "alpha-flow");
+    let included_page = manifest1["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|page| page["id"] == inclusion["pageId"])
+        .expect("selected note inclusion must name a manifest page");
+    assert_eq!(inclusion["html"], included_page["html"]);
+    assert_eq!(inclusion["mdx"], included_page["mdx"]);
+    for ext in ["html", "mdx"] {
+        let overview = fs::read_to_string(out1.join(format!("alpha-flow-overview.{ext}"))).unwrap();
+        assert!(
+            overview.contains("Operational instructions")
+                && overview.contains("Declared author: Example on-call maintainer")
+        );
+        assert!(overview.contains(
+            "café☕ available. &lt;Panel&gt;&#123;probe()&#125;&lt;/Panel&gt; &lt;script&gt;"
+        ));
+        assert!(overview.contains("&#13;&#10;"));
+        for view in ["endpoint", "worker", "fields-state", "diagnostic"] {
+            let text = fs::read_to_string(out1.join(format!("alpha-flow-{view}.{ext}"))).unwrap();
+            assert!(text.contains(&format!(
+                "alpha-flow-overview.{ext}#operational-instructions"
+            )));
+        }
+    }
+    // Unavailable opted-in material refuses before creating the bundle directory.
+    let mut missing = selections(&c1);
+    missing[0]["noteIds"] = json!(["missing-note"]);
+    let missing = f.input("missing-note-selection.json", &missing);
+    let refused = f.temp.path().join("refused-note-bundle");
+    let (code, _) = f.run(&[
+        "docs",
+        "pages",
+        "render",
+        "--snapshot",
+        &v1,
+        "--input",
+        missing.to_str().unwrap(),
+        "--output",
+        refused.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0);
+    assert!(!refused.exists());
     assert_eq!(
         p1["pages"][0]["handoff"]["status"],
         "SOURCE_DECLARED_SHARED_QUEUE"
@@ -393,6 +491,23 @@ fn fresh_native_capture_mutation_and_offline_snapshot_produce_linked_pages() {
     assert_ne!(result1["projectionDigest"], result2["projectionDigest"]);
     let p2: Value =
         serde_json::from_slice(&fs::read(out2.join("projection.json")).unwrap()).unwrap();
+    assert_eq!(
+        p1["pages"][0]["humanInstructions"],
+        p2["pages"][0]["humanInstructions"]
+    );
+    assert_eq!(
+        fs::read(f.docs.join("notes/on-call.md")).unwrap(),
+        original_note
+    );
+    assert_eq!(
+        fs::read(f.docs.join("catalog/notes/on-call.json")).unwrap(),
+        original_association
+    );
+    let saved_v1 = Check::load_snapshot(&Repository::open(&f.docs).unwrap(), &v1).unwrap();
+    assert_eq!(
+        saved_v1.source_inputs.as_ref().unwrap().inputs.notes["on-call"],
+        c1.source_inputs.as_ref().unwrap().inputs.notes["on-call"]
+    );
     assert_ne!(p1["pages"][0]["diagnostics"], p2["pages"][0]["diagnostics"]);
     assert!(
         serde_json::to_string(&p2["pages"][0]["diagnostics"])
@@ -406,6 +521,38 @@ fn fresh_native_capture_mutation_and_offline_snapshot_produce_linked_pages() {
             .contains("chosen.toUpperCase()")
     );
     assert_eq!(original, files(&out1));
+    // Change the live association through the public lifecycle, then remove it.
+    // Neither operation changes the protected original or the selected old capture.
+    let inspected = f.ok(&["docs", "note", "inspect", "--path", "notes/on-call.md"]);
+    let mut changed_association = note_association;
+    changed_association["title"] = json!("Changed live instruction title");
+    changed_association["metadata"]["author"] = json!("Another declared maintainer");
+    let changed_association = f.input("changed-note-association.json", &changed_association);
+    let associated = f.ok(&[
+        "docs",
+        "note",
+        "associate",
+        "--input",
+        changed_association.to_str().unwrap(),
+        "--expected-input-digest",
+        inspected["inputDigest"].as_str().unwrap(),
+        "--expected-note-digest",
+        inspected["original"]["digest"].as_str().unwrap(),
+    ]);
+    f.ok(&[
+        "docs",
+        "note",
+        "remove",
+        "--id",
+        "on-call",
+        "--expected-input-digest",
+        associated["inputDigest"].as_str().unwrap(),
+    ]);
+    assert!(!f.docs.join("catalog/notes/on-call.json").exists());
+    assert_eq!(
+        fs::read(f.docs.join("notes/on-call.md")).unwrap(),
+        original_note
+    );
     // Source checkouts and latest pointer become unavailable. Rendering v1 stays exact.
     fs::remove_dir_all(alpha).unwrap();
     fs::remove_dir_all(beta).unwrap();

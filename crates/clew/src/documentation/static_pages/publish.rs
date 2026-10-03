@@ -236,6 +236,35 @@ fn state(c: &CallableProjection, ext: &str) -> String {
     out += "</tbody></table>\n";
     out
 }
+fn operational_instructions(rows: &[HumanInstruction]) -> String {
+    let mut out =
+        "<section id=\"operational-instructions\"><h2>Operational instructions</h2>\n".to_string();
+    out += &paragraph(
+        "Captured human/imported instructions are unverified. Source-claim status: UNASSESSED; their content does not establish source or runtime behavior.",
+    );
+    for note in rows {
+        out += &format!("<article><h3>{}</h3>\n", escape(&note.title));
+        out += &paragraph(&format!(
+            "Declared author: {}. Classification: {}. Period: {}. Authority: {}. Source-claim status: {}.",
+            note.declared_author,
+            note.classification,
+            note.period,
+            note.authority,
+            note.source_claim_status
+        ));
+        out += &format!("<pre>{}</pre>\n", escape(&note.text));
+        out += &format!(
+            "<details><summary>Captured note identity</summary>{}</details></article>\n",
+            paragraph(&format!(
+                "Note ID: {}. Version digest: {}. Content digest: {}. Association digest: {}.",
+                note.id, note.version_digest, note.content_digest, note.association_digest
+            ))
+        );
+    }
+    out += "</section>\n";
+    out
+}
+
 const VIEWS: &[(&str, &str)] = &[
     ("overview", "Process overview"),
     ("endpoint", "Endpoint path"),
@@ -350,6 +379,19 @@ fn page(p: &PageContent, view: &str, title: &str, snapshot: &str, ext: &str) -> 
             out += "</tbody></table>\n";
         }
         _ => unreachable!(),
+    }
+    if !p.human_instructions.is_empty() {
+        if view == "overview" {
+            out += &operational_instructions(&p.human_instructions);
+        } else {
+            out += &format!(
+                "<p>{}</p>\n",
+                link(
+                    &format!("{}-overview.{ext}#operational-instructions", p.id),
+                    "Operational instructions and captured note identities"
+                )
+            );
+        }
     }
     out += &format!(
         "<details><summary>Sources and version</summary>{}</details>\n",
@@ -536,11 +578,26 @@ pub(super) fn write(
         "projection.json".into(),
         serde_json::to_vec_pretty(p).map_err(io_error)?,
     );
-    let manifest = json!({"schema":"codeclew-native-pages-static-manifest/1.0", "snapshot":snapshot,
+    let mut manifest = json!({"schema":"codeclew-native-pages-static-manifest/1.0", "snapshot":snapshot,
         "inputDigest":p.input_digest, "contextDigest":p.context_digest, "selectionDigest":p.selection_digest,
         "projectionDigest":digest(p)?, "mdxProfile":"MDX 3; inert native JSX; no imports, executable expressions, scripts or network dependencies",
         "pages":page_rows,
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    let selected_notes: Vec<_> = p
+        .pages
+        .iter()
+        .flat_map(|page| {
+            page.human_instructions.iter().map(move |note| json!({
+            "pageId":format!("{}-overview", page.id),"processId":page.id,
+            "html":format!("{}-overview.html", page.id),"mdx":format!("{}-overview.mdx", page.id),
+            "noteId":note.id,"versionDigest":note.version_digest,
+            "contentDigest":note.content_digest,"associationDigest":note.association_digest
+        }))
+        })
+        .collect();
+    if !selected_notes.is_empty() {
+        manifest["selectedNotes"] = json!(selected_notes);
+    }
     files.insert(
         "manifest.json".into(),
         serde_json::to_vec_pretty(&manifest).map_err(io_error)?,
@@ -610,6 +667,35 @@ mod tests {
         assert_eq!(fs::read_to_string(out.join("index.mdx")).unwrap(), mdx);
     }
     #[test]
+    fn operational_note_text_and_metadata_are_inert_without_rewriting_crlf() {
+        let input = "café☕\r\n<Panel>{probe()}</Panel> `code`\r\n";
+        let note = HumanInstruction {
+            id: "operations".into(),
+            title: "<Title>{x}".into(),
+            declared_author: "<Author>{y}".into(),
+            classification: "policy".into(),
+            period: "2026".into(),
+            version_digest: "version".into(),
+            content_digest: "content".into(),
+            association_digest: "association".into(),
+            text: input.into(),
+            authority: "HUMAN_OR_IMPORTED_UNVERIFIED".into(),
+            source_claim_status: "UNASSESSED".into(),
+            association: json!({}),
+        };
+        let body = operational_instructions(&[note]);
+        assert!(body.contains("café☕&#13;&#10;&lt;Panel&gt;&#123;probe()&#125;&lt;/Panel&gt;"));
+        assert!(body.contains("Declared author: &lt;Author&gt;&#123;y&#125;"));
+        assert!(
+            body.contains("Note ID: operations. Version digest: version. Content digest: content.")
+        );
+        assert!(
+            body.contains("HUMAN&#95;OR&#95;IMPORTED&#95;UNVERIFIED")
+                && body.contains("UNASSESSED")
+        );
+        assert!(!body.contains("<Panel>") && !body.contains('{') && !body.contains('`'));
+    }
+    #[test]
     fn case_colliding_page_ids_refuse_before_touching_output() {
         let callable = CallableProjection {
             declaration_id: "decl".into(),
@@ -630,6 +716,7 @@ mod tests {
                 worker_declaration: "worker".into(),
                 wiring_declaration: None,
                 question: None,
+                note_ids: vec![],
             },
             service_revision: "revision".into(),
             service_digest: "digest".into(),
@@ -650,6 +737,7 @@ mod tests {
             observations: BTreeMap::new(),
             sources: BTreeMap::new(),
             limitations: vec![],
+            human_instructions: vec![],
         };
         let p = BundleProjection {
             schema: SCHEMA.into(),

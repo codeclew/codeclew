@@ -252,6 +252,7 @@ fn scenario(
             worker_declaration: "worker".into(),
             wiring_declaration: Some("wiring".into()),
             question: None,
+            note_ids: vec![],
         },
     )
 }
@@ -488,6 +489,7 @@ fn negation_else_early_returns_and_unsupported_expressions_remain_ordered() {
             worker_declaration: "endpoint".into(),
             wiring_declaration: None,
             question: None,
+            note_ids: vec![],
         },
     );
     assert_eq!(p.worker.steps[2].conditions[0].expression, "(!ready)");
@@ -594,6 +596,7 @@ fn one_same_line_relation_cannot_be_borrowed_by_a_different_call() {
             worker_declaration: "endpoint".into(),
             wiring_declaration: None,
             question: None,
+            note_ids: vec![],
         },
     );
     assert!(
@@ -705,6 +708,7 @@ fn nested_early_return_guards_restrict_the_following_call() {
             worker_declaration: "endpoint".into(),
             wiring_declaration: None,
             question: None,
+            note_ids: vec![],
         },
     );
     let call = p.worker.steps.last().unwrap();
@@ -761,6 +765,7 @@ fn switch_expression_arms_are_retained_without_unconditional_calls() {
             worker_declaration: "endpoint".into(),
             wiring_declaration: None,
             question: None,
+            note_ids: vec![],
         },
     );
     assert!(p.worker.steps[0].calls.is_empty());
@@ -774,5 +779,203 @@ fn switch_expression_arms_are_retained_without_unconditional_calls() {
         p.observations
             .values()
             .any(|o| o.normalized["targetIdentity"] == "method:class:Choices#first()I")
+    );
+}
+
+fn pin_note(checked: &mut Check, targets: &[&str]) {
+    let temporary = tempfile::tempdir().unwrap();
+    crate::documentation::store::Repository::init(temporary.path(), "Notes").unwrap();
+    let repo = crate::documentation::store::Repository::open(temporary.path()).unwrap();
+    let mut inputs = repo.inputs().unwrap();
+    for id in ["sample", "other"] {
+        let service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0","id":id,"title":id,
+            "repositoryId":id,"repository":format!("https://example.invalid/{id}"),
+            "language":"java","profile":"java-17plus-maven-read-only",
+            "compilations":[":/main"],"targetRef":"main"
+        }))
+        .unwrap();
+        inputs.services.insert(id.into(), service);
+    }
+    let association = json!({
+        "schema":"codeclew-documentation-note-association/1.0","id":"operations",
+        "title":"On-call instructions","service":"sample","path":"notes/operations.md",
+        "targets":targets,"classification":"policy","period":"2026",
+        "tags":["on-call"],"metadata":{"author":"Example maintainer","origin":"imported"}
+    });
+    let text = "Keep café☕ ready.\r\n<Panel>{danger()}</Panel>\r\n";
+    inputs.notes.insert(
+        "operations".into(),
+        json!({
+            "associationDigest":digest(&association).unwrap(),"association":association,
+            "original":{"status":"CAPTURED","digest":digest(&text).unwrap(),"text":text},
+            "authority":"HUMAN_OR_IMPORTED_UNVERIFIED"
+        }),
+    );
+    checked.source_inputs = Some(check::SourceInputs {
+        schema: check::SOURCE_INPUTS_SCHEMA.into(),
+        input_digest: digest(&inputs).unwrap(),
+        inputs,
+        selected_services: BTreeSet::from(["sample".into()]),
+        retained_services: BTreeSet::new(),
+    });
+    refresh_note_input_identity(checked);
+}
+
+fn refresh_note_input_identity(checked: &mut Check) {
+    let pinned = checked.source_inputs.as_mut().unwrap();
+    pinned.input_digest = digest(&pinned.inputs).unwrap();
+    checked.input_digest = pinned.input_digest.clone();
+}
+
+#[test]
+fn selected_notes_preserve_captured_text_attribution_and_legacy_selector_identity() {
+    let (mut checked, mut selection) = scenario(
+        "Ingress",
+        "Consumer",
+        "pending",
+        "task.sku",
+        "!task.eligible()",
+        false,
+    );
+    let legacy = serde_json::to_value(&selection).unwrap();
+    assert!(legacy.get("noteIds").is_none());
+    let mut explicit_empty = legacy.clone();
+    explicit_empty["noteIds"] = json!([]);
+    let explicit_empty: Selection = serde_json::from_value(explicit_empty).unwrap();
+    assert_eq!(
+        digest(&[selection.clone()]).unwrap(),
+        digest(&[explicit_empty]).unwrap()
+    );
+    assert!(
+        serde_json::to_value(page(&checked, selection.clone()))
+            .unwrap()
+            .get("humanInstructions")
+            .is_none()
+    );
+    pin_note(&mut checked, &["service:sample/section-egress"]);
+    selection.note_ids.push("operations".into());
+    let note = &page(&checked, selection.clone()).human_instructions[0];
+    assert_eq!(
+        note.text,
+        "Keep café☕ ready.\r\n<Panel>{danger()}</Panel>\r\n"
+    );
+    assert_eq!(note.declared_author, "Example maintainer");
+    assert_eq!(note.classification, "policy");
+    assert_eq!(note.period, "2026");
+    assert_eq!(note.content_digest, digest(&note.text).unwrap());
+    assert_eq!(
+        note.version_digest,
+        digest(&(&note.association_digest, &note.content_digest)).unwrap()
+    );
+    assert_eq!(note.authority, "HUMAN_OR_IMPORTED_UNVERIFIED");
+    assert_eq!(note.source_claim_status, "UNASSESSED");
+    assert_eq!(note.association["metadata"]["origin"], "imported");
+    // Observation membership cannot substitute for pinned original material.
+    checked.source_inputs = None;
+    assert!(
+        project(&checked, &[selection])
+            .unwrap_err()
+            .message
+            .contains("pinned")
+    );
+}
+
+#[test]
+fn note_selection_rejects_unavailable_unattributed_unrelated_and_inconsistent_material() {
+    let (mut checked, mut selection) = scenario(
+        "Ingress",
+        "Consumer",
+        "pending",
+        "task.sku",
+        "!task.eligible()",
+        false,
+    );
+    pin_note(&mut checked, &["service:sample"]);
+    selection.note_ids = vec!["operations".into()];
+    for author in [json!(null), json!(7), json!(" \t"), json!("x".repeat(513))] {
+        let mut invalid = checked.clone();
+        let captured = invalid
+            .source_inputs
+            .as_mut()
+            .unwrap()
+            .inputs
+            .notes
+            .get_mut("operations")
+            .unwrap();
+        captured["association"]["metadata"]["author"] = author;
+        captured["associationDigest"] = json!(digest(&captured["association"]).unwrap());
+        refresh_note_input_identity(&mut invalid);
+        assert!(
+            project(&invalid, &[selection.clone()])
+                .unwrap_err()
+                .message
+                .contains("metadata.author")
+        );
+    }
+    for targets in [
+        vec!["service:other"],
+        vec!["service:sample/not-a-section"],
+        vec!["entity:operations"],
+    ] {
+        let mut invalid = checked.clone();
+        pin_note(&mut invalid, &targets);
+        assert!(project(&invalid, &[selection.clone()]).is_err());
+    }
+    for (field, value) in [
+        ("status", json!("UNAVAILABLE")),
+        ("digest", json!("sha256:wrong")),
+        ("text", json!(null)),
+    ] {
+        let mut invalid = checked.clone();
+        invalid
+            .source_inputs
+            .as_mut()
+            .unwrap()
+            .inputs
+            .notes
+            .get_mut("operations")
+            .unwrap()["original"][field] = value;
+        refresh_note_input_identity(&mut invalid);
+        assert!(project(&invalid, &[selection.clone()]).is_err());
+    }
+    for (field, value) in [
+        ("associationDigest", json!("sha256:wrong")),
+        ("authority", json!("SOURCE")),
+    ] {
+        let mut invalid = checked.clone();
+        invalid
+            .source_inputs
+            .as_mut()
+            .unwrap()
+            .inputs
+            .notes
+            .get_mut("operations")
+            .unwrap()[field] = value;
+        refresh_note_input_identity(&mut invalid);
+        assert!(project(&invalid, &[selection.clone()]).is_err());
+    }
+    let mut invalid = checked.clone();
+    let captured = invalid
+        .source_inputs
+        .as_mut()
+        .unwrap()
+        .inputs
+        .notes
+        .get_mut("operations")
+        .unwrap();
+    captured["association"]["id"] = json!("other");
+    captured["associationDigest"] = json!(digest(&captured["association"]).unwrap());
+    refresh_note_input_identity(&mut invalid);
+    assert!(project(&invalid, &[selection.clone()]).is_err());
+    let mut missing = selection.clone();
+    missing.note_ids = vec!["missing".into()];
+    assert!(project(&checked, &[missing]).is_err());
+    selection.note_ids.push("operations".into());
+    assert!(
+        project(&checked, &[selection])
+            .unwrap_err()
+            .message
+            .contains("unique")
     );
 }
