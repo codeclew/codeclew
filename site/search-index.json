@@ -138,6 +138,12 @@
     "group": "Guides"
   },
   {
+    "title": "Export a selected flow with its source.",
+    "url": "./documentation.html#static-flow-pages",
+    "description": "Service documentation",
+    "group": "Guides"
+  },
+  {
     "title": "Add a note to the thing it explains.",
     "url": "./documentation.html#notes-and-comments",
     "description": "Service documentation",
