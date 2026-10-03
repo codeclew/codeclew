@@ -70,6 +70,15 @@ pub struct JavaClasspathAuthority {
     pub kind: String,
 }
 
+/// Available ordinary Maven source classifier bound to the selected binary.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaDependencySourceAuthority {
+    pub binary_digest: String,
+    pub coordinate: String,
+    pub source_archive: JavaClasspathAuthority,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JavaProjectModel {
@@ -79,6 +88,8 @@ pub struct JavaProjectModel {
     pub compilation: String,
     pub source_files: Vec<String>,
     pub classpath: Vec<JavaClasspathAuthority>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependency_sources: Vec<JavaDependencySourceAuthority>,
     pub release: u16,
     pub compiler_version: String,
     pub compiler_options: Vec<String>,
@@ -662,6 +673,19 @@ fn extract_maven_batch(
                 format!("Java source bytes changed after Maven cohort capture: {compilation}"),
             ));
         }
+        if available_dependency_sources(
+            JavaBuildSystem::Maven,
+            &capture.classpath_paths,
+            &capture.model.authority.classpath,
+        )? != capture.model.authority.dependency_sources
+        {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                format!(
+                    "Java dependency sources changed after Maven cohort capture: {compilation}"
+                ),
+            ));
+        }
         if classpath_authority_sequence(&capture.classpath_paths)?
             != capture.model.authority.classpath
         {
@@ -1020,6 +1044,11 @@ fn canonical_model(
         build_system,
         compilation: selector.canonical(),
         source_files,
+        dependency_sources: available_dependency_sources(
+            build_system,
+            &classpath_paths,
+            &classpath,
+        )?,
         classpath,
         release,
         compiler_version,
@@ -1047,6 +1076,19 @@ pub fn verify_model(model: &JavaProjectModel) -> Result<(), ClewError> {
         || model.source_files.len() > MAX_JAVA_SOURCES
         || model.source_files.windows(2).any(|pair| pair[0] >= pair[1])
         || model.classpath.len() > MAX_CLASSPATH_ENTRIES
+        || model.dependency_sources.len() > MAX_CLASSPATH_ENTRIES
+        || model
+            .dependency_sources
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || model.dependency_sources.iter().any(|source| {
+            source.source_archive.kind != "FILE"
+                || source_archive_name(&source.coordinate).is_none()
+                || !model
+                    .classpath
+                    .iter()
+                    .any(|binary| binary.digest == source.binary_digest)
+        })
         || model
             .annotation_processor_paths
             .windows(2)
@@ -1115,6 +1157,96 @@ fn relative_source(repository: &Path, path: &Path) -> Result<String, ClewError> 
         .to_str()
         .map(|value| value.replace('\\', "/"))
         .ok_or_else(|| unsupported("Java source path is not UTF-8"))
+}
+
+/// Only available Maven classifier artifacts are admitted; no download or ambient lookup.
+fn available_dependency_sources(
+    build_system: JavaBuildSystem,
+    paths: &[PathBuf],
+    classpath: &[JavaClasspathAuthority],
+) -> Result<Vec<JavaDependencySourceAuthority>, ClewError> {
+    if build_system != JavaBuildSystem::Maven {
+        return Ok(Vec::new());
+    }
+    let mut sources = Vec::new();
+    for (path, binary) in paths.iter().zip(classpath) {
+        let Some(coordinate) = jar_coordinate(path) else {
+            continue;
+        };
+        let Some(name) = source_archive_name(&coordinate) else {
+            continue;
+        };
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        let source = parent.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        if jar_coordinate(&source).is_some_and(|found| found != coordinate) {
+            continue;
+        }
+        sources.push(JavaDependencySourceAuthority {
+            binary_digest: binary.digest.clone(),
+            coordinate,
+            source_archive: classpath_authority(&source)?,
+        });
+    }
+    sources.sort();
+    sources.dedup();
+    Ok(sources)
+}
+
+pub(crate) fn source_archive_name(coordinate: &str) -> Option<String> {
+    let parts: Vec<_> = coordinate.split(':').collect();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || part.contains(['/', '\\', '\0', '\n', '\r'])
+                || matches!(*part, "." | "..")
+        })
+    {
+        return None;
+    }
+    Some(format!("{}-{}-sources.jar", parts[1], parts[2]))
+}
+
+fn jar_coordinate(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let mut jar = zip::ZipArchive::new(file).ok()?;
+    if jar.len() > MAX_CLASSPATH_DIRECTORY_FILES {
+        return None;
+    }
+    let mut coordinates = std::collections::BTreeSet::new();
+    for index in 0..jar.len() {
+        let mut entry = jar.by_index(index).ok()?;
+        if !entry.name().starts_with("META-INF/maven/")
+            || !entry.name().ends_with("/pom.properties")
+            || entry.size() > 16_384
+        {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        (&mut entry).take(16_385).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 16_384 {
+            return None;
+        }
+        let text = std::str::from_utf8(&bytes).ok()?;
+        let properties: BTreeMap<_, _> = text
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.trim(), value.trim()))
+            .collect();
+        let coordinate = format!(
+            "{}:{}:{}",
+            properties.get("groupId")?,
+            properties.get("artifactId")?,
+            properties.get("version")?
+        );
+        source_archive_name(&coordinate)?;
+        coordinates.insert(coordinate);
+    }
+    (coordinates.len() == 1).then(|| coordinates.into_iter().next().unwrap())
 }
 
 pub(crate) fn classpath_authority(path: &Path) -> Result<JavaClasspathAuthority, ClewError> {
@@ -1845,6 +1977,63 @@ mod tests {
                 .contains(root.path().to_str().unwrap())
         );
         verify_model(&model.authority).unwrap();
+    }
+
+    #[test]
+    fn available_source_classifier_tracks_added_changed_removed_bytes() {
+        use std::io::Write;
+        let temporary = tempfile::tempdir().unwrap();
+        let binary = temporary.path().join("inventory-2.3.4.jar");
+        let source = temporary.path().join("inventory-2.3.4-sources.jar");
+        let write_archive = |path: &Path, text: &[u8]| {
+            let mut archive = zip::ZipWriter::new(File::create(path).unwrap());
+            archive
+                .start_file(
+                    "META-INF/maven/example/inventory/pom.properties",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive
+                .write_all(b"groupId=example\nartifactId=inventory\nversion=2.3.4\n")
+                .unwrap();
+            archive
+                .start_file(
+                    "example/integration/InventoryGateway.java",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive.write_all(text).unwrap();
+            archive.finish().unwrap();
+        };
+        write_archive(&binary, b"binary fixture metadata");
+        let paths = vec![binary.clone()];
+        let classpath = vec![classpath_authority(&binary).unwrap()];
+        let capture =
+            || available_dependency_sources(JavaBuildSystem::Maven, &paths, &classpath).unwrap();
+        assert!(capture().is_empty());
+        write_archive(&source, b"interface InventoryGateway {}");
+        let first = capture();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].coordinate, "example:inventory:2.3.4");
+        assert_eq!(first[0].binary_digest, classpath[0].digest);
+        assert_eq!(
+            capture(),
+            first,
+            "unchanged attachment is reusable by content identity"
+        );
+        write_archive(&source, b"interface InventoryGateway { void changed(); }");
+        let second = capture();
+        assert_ne!(
+            first[0].source_archive.digest,
+            second[0].source_archive.digest
+        );
+        fs::remove_file(source).unwrap();
+        assert!(capture().is_empty());
+        assert!(
+            available_dependency_sources(JavaBuildSystem::Gradle, &paths, &classpath)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

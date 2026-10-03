@@ -976,6 +976,7 @@ mod tests {
                 compilation: ":/main".into(),
                 source_files: vec!["src/Main.java".into()],
                 classpath: Vec::new(),
+                dependency_sources: vec![],
                 release: 17,
                 compiler_version: "javac 17.0.20.1".into(),
                 compiler_options: vec!["--release=17".into(), "-implicit:none".into()],

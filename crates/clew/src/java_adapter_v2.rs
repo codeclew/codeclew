@@ -11,7 +11,9 @@ use crate::incremental_v2::{
     VerificationObligation,
 };
 use crate::java_analysis_inputs::PreparedJavaAnalysisInputs;
-use crate::java_project_model::{JavaOperationalModel, JavaProjectModel, verify_model};
+use crate::java_project_model::{
+    JavaClasspathAuthority, JavaOperationalModel, JavaProjectModel, verify_model,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +33,46 @@ pub const JAVA_ANALYZER_SOURCE: &str = include_str!("java_analyzer.java");
 pub(crate) const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_JAVA_FACTS: usize = 262_144;
 const MAX_FACT_BYTES: usize = 256 * 1024;
+const MAX_DEPENDENCY_SOURCE_ENTRIES: usize = 32;
+
+/// Compiler-selected binary origin; paths are never part of portable authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaBinaryOrigin {
+    pub classpath_index: usize,
+    pub class_entry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<JavaClasspathAuthority>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaBinaryMetadata {
+    pub coordinates: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_module_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub version_status: String,
+}
+
+/// Exact source declaration verified independently of the primary binary lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaDependencySourceEvidence {
+    pub source_archive: JavaClasspathAuthority,
+    pub source_entry: String,
+    pub source_content_digest: String,
+    pub text_digest: String,
+    pub text: String,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub byte_start: u64,
+    pub byte_end: u64,
+    pub matching_basis: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -128,6 +170,27 @@ pub enum JavaCompilerFact {
         required_checks: Vec<String>,
         resolution: String,
     },
+    DependencyTarget {
+        schema: String,
+        symbol_identity: String,
+        qualified_name: String,
+        owner_identity: String,
+        name: String,
+        jvm_descriptor: String,
+        declaration_kind: String,
+        modifiers: Vec<String>,
+        compiler_module: String,
+        binary_origin: JavaBinaryOrigin,
+        binary_metadata: JavaBinaryMetadata,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dependency_source: Option<Box<JavaDependencySourceEvidence>>,
+        source_status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_boundary: Option<String>,
+        body_status: String,
+        runtime_implementation_status: String,
+        resolution: String,
+    },
     AnnotationRegistry {
         schema: String,
         authority: String,
@@ -143,7 +206,8 @@ impl JavaCompilerFact {
             | Self::Declaration { schema, .. }
             | Self::Relation { schema, .. }
             | Self::Boundary { schema, .. }
-            | Self::AnnotationRegistry { schema, .. } => schema,
+            | Self::AnnotationRegistry { schema, .. }
+            | Self::DependencyTarget { schema, .. } => schema,
         }
     }
 
@@ -153,7 +217,7 @@ impl JavaCompilerFact {
             | Self::Declaration { file, .. }
             | Self::Relation { file, .. } => Some(file),
             Self::Boundary { file, .. } => file.as_deref(),
-            Self::AnnotationRegistry { .. } => None,
+            Self::AnnotationRegistry { .. } | Self::DependencyTarget { .. } => None,
         }
     }
 
@@ -306,6 +370,9 @@ fn execute_java_compiler(
     prepared: Option<&PreparedJavaAnalysisInputs>,
 ) -> Result<Vec<u8>, ClewError> {
     verify_model(&operational.authority)?;
+    if prepared.is_none() {
+        verify_operational_classpath(operational)?;
+    }
     let repository = repository.canonicalize().map_err(io_error)?;
     let temporary = tempfile::tempdir().map_err(io_error)?;
     let analyzer = temporary.path().join("CodeclewJavaAnalyzer.java");
@@ -492,7 +559,31 @@ fn execute_java_compiler(
             &stderr_tail,
         ));
     }
+    if prepared.is_none() {
+        verify_operational_classpath(operational)?;
+    }
     Ok(output.stdout)
+}
+
+fn verify_operational_classpath(operational: &JavaOperationalModel) -> Result<(), ClewError> {
+    if operational.classpath_paths.len() != operational.authority.classpath.len() {
+        return Err(corrupt(
+            "Java operational classpath membership is inconsistent",
+        ));
+    }
+    for (path, authority) in operational
+        .classpath_paths
+        .iter()
+        .zip(&operational.authority.classpath)
+    {
+        if crate::java_project_model::classpath_authority(path)? != *authority {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "Java binary artifact differs from admitted classpath authority",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Decode successful emitter output before persistence or current-model projection.
@@ -525,6 +616,22 @@ pub(crate) fn parse_java_compiler_output(raw: &[u8]) -> Result<Vec<JavaCompilerF
                 "Java raw output contains projected source membership",
             ));
         }
+        if let JavaCompilerFact::DependencyTarget {
+            binary_origin,
+            dependency_source,
+            source_status,
+            source_boundary,
+            ..
+        } = fact
+            && (binary_origin.artifact.is_some()
+                || dependency_source.is_some()
+                || source_boundary.is_some()
+                || source_status != "SOURCE_NOT_ATTACHED")
+        {
+            return Err(corrupt(
+                "Java raw output contains projected binary authority",
+            ));
+        }
         validate_fact(fact)?;
     }
     Ok(facts)
@@ -539,6 +646,19 @@ pub(crate) fn project_java_compiler_output(
     changed_files: &[(String, String, String)],
 ) -> Result<JavaCompilerIndex, ClewError> {
     let mut facts = parse_java_compiler_output(raw)?;
+    for fact in &mut facts {
+        if let JavaCompilerFact::DependencyTarget { binary_origin, .. } = fact {
+            binary_origin.artifact = Some(
+                operational
+                    .authority
+                    .classpath
+                    .get(binary_origin.classpath_index)
+                    .ok_or_else(|| corrupt("Java binary origin is outside admitted classpath"))?
+                    .clone(),
+            );
+        }
+    }
+    attach_dependency_sources(&mut facts, operational)?;
     for (path, digest) in source_content_digests {
         facts.push(JavaCompilerFact::SourceFile {
             schema: JAVA_FACT_SCHEMA.into(),
@@ -583,6 +703,225 @@ pub(crate) fn project_java_compiler_output(
     };
     validate_index(&index)?;
     Ok(index)
+}
+
+fn attach_dependency_sources(
+    facts: &mut [JavaCompilerFact],
+    operational: &JavaOperationalModel,
+) -> Result<(), ClewError> {
+    use std::io::Read;
+    let mut verified = BTreeMap::<(String, String), Option<(String, Vec<JavaCompilerFact>)>>::new();
+    for fact in facts {
+        let JavaCompilerFact::DependencyTarget {
+            symbol_identity,
+            modifiers,
+            binary_origin,
+            dependency_source,
+            source_status,
+            source_boundary,
+            body_status,
+            ..
+        } = fact
+        else {
+            continue;
+        };
+        let binary = binary_origin
+            .artifact
+            .as_ref()
+            .ok_or_else(|| corrupt("binary authority is missing"))?;
+        let Some(source) = operational
+            .authority
+            .dependency_sources
+            .iter()
+            .find(|source| source.binary_digest == binary.digest)
+        else {
+            continue;
+        };
+        let binary_path = operational
+            .classpath_paths
+            .get(binary_origin.classpath_index)
+            .ok_or_else(|| corrupt("dependency binary path is missing"))?;
+        let source_path = binary_path
+            .parent()
+            .ok_or_else(|| corrupt("dependency binary parent is missing"))?
+            .join(
+                crate::java_project_model::source_archive_name(&source.coordinate)
+                    .ok_or_else(|| corrupt("dependency source coordinate is invalid"))?,
+            );
+        if crate::java_project_model::classpath_authority(&source_path).map_err(|_| {
+            ClewError::new(
+                ErrorCode::InputMutated,
+                "admitted dependency source archive is unavailable",
+            )
+        })? != source.source_archive
+        {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "dependency source archive differs from admitted authority",
+            ));
+        }
+        let class_entry = binary_origin
+            .class_entry
+            .strip_suffix(".class")
+            .ok_or_else(|| corrupt("dependency binary class entry is invalid"))?;
+        let class_entry = class_entry.split('$').next().unwrap_or(class_entry);
+        let entry = format!("{class_entry}.java");
+        let key = (source.source_archive.digest.clone(), entry.clone());
+        if !verified.contains_key(&key) {
+            if verified.len() >= MAX_DEPENDENCY_SOURCE_ENTRIES {
+                *source_status = "SOURCE_ATTACHMENT_UNVERIFIED".into();
+                *source_boundary = Some("SOURCE_ATTACHMENT_VERIFICATION_BUDGET_EXCEEDED".into());
+                continue;
+            }
+            let file = fs::File::open(&source_path).map_err(io_error)?;
+            let mut archive = match zip::ZipArchive::new(file) {
+                Ok(archive) => archive,
+                Err(_) => {
+                    verified.insert(key, None);
+                    *source_status = "SOURCE_ATTACHMENT_UNVERIFIED".into();
+                    *source_boundary = Some("SOURCE_ARCHIVE_UNREADABLE".into());
+                    continue;
+                }
+            };
+            let result = match archive.by_name(&entry) {
+                Ok(mut member) if member.size() <= 128 * 1024 => {
+                    let mut bytes = Vec::new();
+                    let text = (&mut member)
+                        .take(128 * 1024 + 1)
+                        .read_to_end(&mut bytes)
+                        .ok()
+                        .and_then(|_| String::from_utf8(bytes).ok());
+                    match text {
+                        Some(text) if text.len() <= 128 * 1024 => {
+                            // A separate explicit source compilation confirms identity and overload.
+                            // Its SOURCE_PATH never affects the primary binary-selected compilation.
+                            let temporary = tempfile::tempdir().map_err(io_error)?;
+                            let relative = format!("src/{entry}");
+                            let path = temporary.path().join(&relative);
+                            fs::create_dir_all(path.parent().unwrap()).map_err(io_error)?;
+                            fs::write(&path, &text).map_err(io_error)?;
+                            let mut source_model = operational.clone();
+                            source_model.authority.source_files = vec![relative];
+                            source_model.authority.dependency_sources.clear();
+                            source_model.authority.annotation_processors.clear();
+                            source_model.authority.annotation_processor_paths.clear();
+                            source_model.authority.model_digest.clear();
+                            source_model.authority.model_digest =
+                                canonical::hash(&source_model.authority).map_err(internal)?;
+                            source_model.source_paths = vec![path];
+                            source_model.annotation_processor_paths.clear();
+                            match execute_java_compiler(
+                                temporary.path(),
+                                &source_model,
+                                false,
+                                None,
+                                None,
+                            ) {
+                                Ok(raw) => parse_java_compiler_output(&raw).ok().map(|facts| {
+                                    // Only declaration identity, coordinates and body presence are needed.
+                                    // Drop inherited annotations and flow expansion from the bounded memo.
+                                    let facts = facts
+                                        .into_iter()
+                                        .filter_map(|mut fact| match &mut fact {
+                                            JavaCompilerFact::Declaration {
+                                                spring,
+                                                jvm_annotations,
+                                                documentation,
+                                                ..
+                                            } => {
+                                                *spring = None;
+                                                *jvm_annotations = None;
+                                                if documentation.is_some() {
+                                                    *documentation = Some(Box::new(json!({})));
+                                                }
+                                                Some(fact)
+                                            }
+                                            JavaCompilerFact::Boundary { code, .. }
+                                                if code == "JAVA_COMPILER_DIAGNOSTIC" =>
+                                            {
+                                                Some(fact)
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    (text, facts)
+                                }),
+                                Err(error) if error.code == ErrorCode::InputMutated => {
+                                    return Err(error);
+                                }
+                                Err(_) => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            verified.insert(key.clone(), result);
+        }
+        let Some((text, source_facts)) = verified.get(&key).and_then(Option::as_ref) else {
+            *source_status = "SOURCE_ATTACHMENT_UNVERIFIED".into();
+            *source_boundary = Some("SOURCE_ENTRY_UNAVAILABLE_OR_UNVERIFIED".into());
+            continue;
+        };
+        let declaration = source_facts.iter().find(|candidate| matches!(candidate,
+            JavaCompilerFact::Declaration { symbol_identity: identity, modifiers: source_modifiers, .. }
+                if identity == symbol_identity && source_modifiers == modifiers));
+        let Some(JavaCompilerFact::Declaration {
+            byte_start: Some(start),
+            byte_end: Some(end),
+            start_line: Some(start_line),
+            end_line: Some(end_line),
+            documentation,
+            ..
+        }) = declaration
+        else {
+            *source_status = if source_facts.iter().any(|fact| {
+                matches!(fact,
+                JavaCompilerFact::Boundary { code, .. } if code == "JAVA_COMPILER_DIAGNOSTIC")
+            }) {
+                "SOURCE_ATTACHMENT_UNVERIFIED"
+            } else {
+                "SOURCE_SIGNATURE_MISMATCH"
+            }
+            .into();
+            *source_boundary = Some(source_status.clone());
+            continue;
+        };
+        let snippet = text
+            .get(*start as usize..*end as usize)
+            .ok_or_else(|| corrupt("verified dependency source coordinates are invalid"))?;
+        *dependency_source = Some(Box::new(JavaDependencySourceEvidence {
+            source_archive: source.source_archive.clone(),
+            source_entry: entry,
+            source_content_digest: canonical::hash_bytes(text.as_bytes()),
+            text_digest: canonical::hash_bytes(snippet.as_bytes()),
+            text: snippet.into(),
+            start_line: *start_line,
+            end_line: *end_line,
+            byte_start: *start,
+            byte_end: *end,
+            matching_basis: "MAVEN_CLASSIFIER_PATH_AND_COMPILER_SIGNATURE".into(),
+        }));
+        if crate::java_project_model::classpath_authority(&source_path).map_err(|_| {
+            ClewError::new(
+                ErrorCode::InputMutated,
+                "admitted dependency source archive is unavailable",
+            )
+        })? != source.source_archive
+        {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "dependency source archive changed during verification",
+            ));
+        }
+        *source_status = "SOURCE_ATTACHED".into();
+        *source_boundary = None;
+        if documentation.is_some() {
+            *body_status = "BODY_SOURCE_AVAILABLE".into();
+        }
+    }
+    Ok(())
 }
 
 /// Assemble the provenance/source_state marker for a writable-then-seal index.
@@ -840,6 +1179,89 @@ fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
     {
         return Err(corrupt("Java compiler fact authority is invalid"));
     }
+    if let JavaCompilerFact::DependencyTarget {
+        symbol_identity,
+        owner_identity,
+        name,
+        jvm_descriptor,
+        declaration_kind,
+        binary_origin,
+        binary_metadata,
+        dependency_source,
+        source_status,
+        source_boundary,
+        body_status,
+        runtime_implementation_status,
+        resolution,
+        ..
+    } = fact
+    {
+        let method = matches!(declaration_kind.as_str(), "METHOD" | "CONSTRUCTOR");
+        let type_target = matches!(
+            declaration_kind.as_str(),
+            "CLASS" | "INTERFACE" | "ENUM" | "RECORD" | "ANNOTATION"
+        );
+        let identity_valid = if method {
+            symbol_identity == &format!("method:{owner_identity}#{name}{jvm_descriptor}")
+        } else {
+            symbol_identity == owner_identity
+                && jvm_descriptor
+                    == &format!(
+                        "L{};",
+                        owner_identity
+                            .trim_start_matches("class:")
+                            .replace('.', "/")
+                    )
+        };
+        if !identity_valid
+            || !owner_identity.starts_with("class:")
+            || !(method || type_target)
+            || !safe_relative_path(&binary_origin.class_entry)
+            || !binary_origin.class_entry.ends_with(".class")
+            || !matches!(
+                binary_metadata.version_status.as_str(),
+                "METADATA_EXACT" | "METADATA_UNAVAILABLE" | "METADATA_AMBIGUOUS"
+            )
+            || (binary_metadata.version_status == "METADATA_EXACT")
+                != binary_metadata.version.is_some()
+            || !matches!(
+                source_status.as_str(),
+                "SOURCE_NOT_ATTACHED"
+                    | "SOURCE_ATTACHED"
+                    | "SOURCE_SIGNATURE_MISMATCH"
+                    | "SOURCE_ATTACHMENT_UNVERIFIED"
+            )
+            || (source_status == "SOURCE_ATTACHED") != dependency_source.is_some()
+            || (matches!(
+                source_status.as_str(),
+                "SOURCE_ATTACHED" | "SOURCE_NOT_ATTACHED"
+            ) && source_boundary.is_some())
+            || (method
+                && !matches!(
+                    body_status.as_str(),
+                    "BODY_UNAVAILABLE" | "BODY_SOURCE_AVAILABLE"
+                ))
+            || (type_target && body_status != "BODY_NOT_APPLICABLE")
+            || (body_status == "BODY_SOURCE_AVAILABLE" && dependency_source.is_none())
+            || runtime_implementation_status != "UNRESOLVED"
+            || resolution != "COMPILER_EXACT"
+        {
+            return Err(corrupt("Java dependency target authority is invalid"));
+        }
+        if let Some(source) = dependency_source
+            && (!safe_relative_path(&source.source_entry)
+                || !source.source_entry.ends_with(".java")
+                || source.source_archive.kind != "FILE"
+                || source.start_line == 0
+                || source.end_line < source.start_line
+                || source.byte_end < source.byte_start
+                || source.byte_end - source.byte_start != source.text.len() as u64
+                || source.text_digest != canonical::hash_bytes(source.text.as_bytes())
+                || source.matching_basis != "MAVEN_CLASSIFIER_PATH_AND_COMPILER_SIGNATURE")
+        {
+            return Err(corrupt("Java dependency source authority is invalid"));
+        }
+    }
     if let JavaCompilerFact::Declaration {
         spring: Some(spring),
         ..
@@ -874,6 +1296,32 @@ fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
     let mut previous = None;
     for fact in &index.facts {
         validate_fact(fact)?;
+        if let JavaCompilerFact::DependencyTarget { binary_origin, .. } = fact
+            && (binary_origin.artifact.is_none()
+                || binary_origin.artifact.as_ref()
+                    != index.model.classpath.get(binary_origin.classpath_index))
+        {
+            return Err(corrupt(
+                "Java dependency target differs from admitted binary authority",
+            ));
+        }
+        if let JavaCompilerFact::DependencyTarget {
+            dependency_source: Some(source),
+            binary_origin,
+            ..
+        } = fact
+            && !index.model.dependency_sources.iter().any(|admitted| {
+                binary_origin
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|binary| admitted.binary_digest == binary.digest)
+                    && admitted.source_archive == source.source_archive
+            })
+        {
+            return Err(corrupt(
+                "Java attached source differs from admitted authority",
+            ));
+        }
         let bytes = canonical::bytes(fact).map_err(internal)?;
         if bytes.len() > MAX_FACT_BYTES
             || previous.as_ref().is_some_and(|previous| previous >= &bytes)
@@ -1458,6 +1906,7 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                 compilation: "example".into(),
                 source_files: vec!["src/main/java/example/Service.java".into()],
                 classpath: vec![],
+                dependency_sources: vec![],
                 release: 17,
                 compiler_version: "17.0".into(),
                 compiler_options: vec![],
@@ -1511,6 +1960,7 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                 compilation: "example".into(),
                 source_files: vec![],
                 classpath: vec![],
+                dependency_sources: vec![],
                 release: 17,
                 compiler_version: "17.0".into(),
                 compiler_options: vec![],
@@ -1603,6 +2053,7 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
             compilation: ":/main".into(),
             source_files: vec!["src/Main.java".into()],
             classpath: Vec::new(),
+            dependency_sources: vec![],
             release: 17,
             compiler_version: "javac 17.0.20.1".into(),
             compiler_options: vec!["--release=17".into()],

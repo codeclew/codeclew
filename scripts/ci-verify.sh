@@ -41,6 +41,8 @@ cargo test --locked -p clew --lib documentation::check::tests::two_java_services
 cargo test --locked -p clew --test managed_cli durable_documentation_cli_recovers_and_reports_route_fragments -- --exact --test-threads=1
 cargo test --locked -p clew --test managed_cli durable_source_documentation_without_build_tools_rebinds_and_preserves_publication -- --exact --test-threads=1
 cargo test --locked -p clew --test managed_cli durable_source_documentation_java_enrichment_recovers_on_the_same_source_roots -- --exact --ignored --test-threads=1
+cargo test --locked -p clew --test managed_cli flow_dsl_static_render_uses_original_supported_snapshot -- --exact --test-threads=1
+cargo test --locked -p clew --test docs_dependency_targets -- --ignored --test-threads=1
 cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'maven::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1
@@ -51,6 +53,7 @@ cargo test --locked -p clew --lib java_project_model::tests::maven_large_logs_an
 cargo test --locked -p clew --lib 'worker_diagnostics::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib worker::tests::worker_frame_eof_keeps_exit_status_without_inline_stderr -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'java_adapter_v2::tests::' -- --test-threads=1
+cargo test --locked -p clew --test java_dependency_targets -- --test-threads=1
 cargo test --locked -p clew --lib 'java_analysis_' -- --test-threads=1
 cargo test --locked -p clew --lib java_analysis_scratch::tests::native_java_child_retains_lease_after_parent_handles_close -- --exact --ignored --test-threads=1
 cargo test --locked -p clew --lib 'java_archive_inputs::tests::' -- --test-threads=1

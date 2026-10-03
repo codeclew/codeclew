@@ -33,6 +33,8 @@ import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 import java.io.IOException;
+import java.net.URI;
+import java.util.Properties;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -215,7 +217,7 @@ final class CodeclewJavaAnalyzer {
             } else {
                 Trees trees = Trees.instance(task);
                 Analyzer analyzer = new Analyzer(
-                        root, trees, task.getElements(), task.getTypes(), facts);
+                        root, trees, task.getElements(), task.getTypes(), files, classpath, facts);
                 parsed.forEach(unit -> analyzer.scan(unit, null));
             }
         }
@@ -355,6 +357,10 @@ final class CodeclewJavaAnalyzer {
         private final Elements elements;
         private final Types types;
         private final SourcePositions positions;
+        private final StandardJavaFileManager files;
+        private final List<String> classpath;
+        private final Set<String> dependencyTargets = new TreeSet<>();
+        private final Map<Integer, Map<String, Object>> binaryMetadata = new TreeMap<>();
         private final List<Map<String, Object>> facts;
         private final Deque<String> owners = new ArrayDeque<>();
         private final Deque<String> executableOwners = new ArrayDeque<>();
@@ -365,12 +371,16 @@ final class CodeclewJavaAnalyzer {
                 Trees trees,
                 Elements elements,
                 Types types,
+                StandardJavaFileManager files,
+                List<String> classpath,
                 List<Map<String, Object>> facts) {
             this.root = root;
             this.trees = trees;
             this.elements = elements;
             this.types = types;
             this.positions = trees.getSourcePositions();
+            this.files = files;
+            this.classpath = classpath;
             this.facts = facts;
         }
 
@@ -896,6 +906,129 @@ final class CodeclewJavaAnalyzer {
             anchor(row, tree);
             row.put("resolution", "COMPILER_EXACT");
             facts.add(row);
+            dependencyTarget(executable, name, descriptor, tree);
+        }
+
+        /** A binary signature is compiler evidence, never a method body or DI implementation. */
+        private void dependencyTarget(Element executable, String name, String descriptor, Tree call) {
+            if (trees.getPath(executable) != null) return;
+            TypeElement owner = executable instanceof TypeElement type ? type
+                    : executable.getEnclosingElement() instanceof TypeElement type ? type : null;
+            if (owner == null) return;
+            // Platform source attachment is an explicit capability boundary.
+            if (!elements.getModuleOf(owner).isUnnamed()) {
+                String moduleName = elements.getModuleOf(owner).getQualifiedName().toString();
+                if (!java.lang.module.ModuleFinder.ofSystem().find(moduleName).isPresent()
+                        && dependencyTargets.add("module:" + moduleName))
+                    boundary("JAVA_NAMED_MODULE_ORIGIN_UNSUPPORTED", call);
+                return;
+            }
+            String identity = executable instanceof TypeElement ? classIdentity(owner)
+                    : "method:" + ownerOf(executable) + "#" + name + descriptor;
+            if (dependencyTargets.contains(identity)) return;
+            try {
+                // Reuse the compiler's configured file manager and binary lookup, including
+                // ordered classpath and release-aware archive selection. Never search basenames.
+                JavaFileObject binary = files.getJavaFileForInput(StandardLocation.CLASS_PATH,
+                        binaryName(owner), JavaFileObject.Kind.CLASS);
+                if (binary == null) {
+                    boundary("JAVA_DEPENDENCY_BINARY_ORIGIN_UNAVAILABLE", call);
+                    return;
+                }
+                URI uri = binary.toUri();
+                Path archive = null;
+                String entry = null;
+                if ("jar".equals(uri.getScheme())) {
+                    String value = uri.getRawSchemeSpecificPart();
+                    int separator = value.indexOf("!/");
+                    if (separator >= 0) {
+                        archive = Path.of(URI.create(value.substring(0, separator))).toRealPath();
+                        entry = value.substring(separator + 2);
+                    }
+                }
+                for (int index = 0; index < classpath.size(); index++) {
+                    Path admitted = Path.of(classpath.get(index)).toRealPath();
+                    String classEntry = entry;
+                    boolean matches = archive != null && archive.equals(admitted);
+                    if (archive == null && "file".equals(uri.getScheme()) && Files.isDirectory(admitted)) {
+                        Path file = Path.of(uri).toRealPath();
+                        // The selected class must occur at its binary-name path in this entry.
+                        // An enclosing directory may contain a later classpath directory.
+                        Path expected = admitted.resolve(binaryName(owner).replace('.', '/') + ".class");
+                        matches = file.equals(expected);
+                        if (matches) classEntry = relative(admitted, file);
+                    }
+                    if (!matches) continue;
+                    Map<String, Object> row = base("DEPENDENCY_TARGET");
+                    row.put("symbolIdentity", identity);
+                    row.put("qualifiedName", owner.getQualifiedName().toString());
+                    row.put("ownerIdentity", classIdentity(owner));
+                    row.put("name", name);
+                    row.put("jvmDescriptor", descriptor);
+                    row.put("declarationKind", executable instanceof TypeElement ? declarationKind(executable.getKind())
+                            : executable.getKind() == ElementKind.CONSTRUCTOR ? "CONSTRUCTOR" : "METHOD");
+                    row.put("modifiers", executable.getModifiers().stream().map(Modifier::name).sorted().toList());
+                    row.put("compilerModule", "module:unnamed");
+                    row.put("binaryOrigin", Map.of("classpathIndex", index, "classEntry", classEntry));
+                    row.put("binaryMetadata", binaryMetadata.computeIfAbsent(index, unused -> readBinaryMetadata(admitted)));
+                    row.put("sourceStatus", "SOURCE_NOT_ATTACHED");
+                    row.put("bodyStatus", executable instanceof TypeElement ? "BODY_NOT_APPLICABLE" : "BODY_UNAVAILABLE");
+                    row.put("runtimeImplementationStatus", "UNRESOLVED");
+                    row.put("resolution", "COMPILER_EXACT");
+                    facts.add(row);
+                    dependencyTargets.add(identity);
+                    return;
+                }
+                boundary("JAVA_DEPENDENCY_BINARY_ORIGIN_UNAVAILABLE", call);
+            } catch (IOException | RuntimeException failure) {
+                boundary("JAVA_DEPENDENCY_BINARY_ORIGIN_UNAVAILABLE", call);
+            }
+        }
+
+        private Map<String, Object> readBinaryMetadata(Path artifact) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            Set<String> coordinates = new TreeSet<>();
+            Set<String> versions = new TreeSet<>();
+            if (Files.isRegularFile(artifact)) {
+                try (JarFile jar = new JarFile(artifact.toFile(), false)) {
+                    if (jar.getManifest() != null) {
+                        for (String key : List.of("Automatic-Module-Name", "Implementation-Version")) {
+                            String value = jar.getManifest().getMainAttributes().getValue(key);
+                            if (value != null && !value.isBlank() && value.length() <= 256 && value.chars().noneMatch(Character::isISOControl)) {
+                                result.put(key.equals("Automatic-Module-Name") ? "automaticModuleName" : "implementationVersion", value);
+                                if (key.equals("Implementation-Version")) versions.add(value);
+                            }
+                        }
+                    }
+                    var entries = jar.entries();
+                    int count = 0;
+                    while (entries.hasMoreElements() && count++ < 65_536) {
+                        var entry = entries.nextElement();
+                        if (!entry.getName().startsWith("META-INF/maven/") || !entry.getName().endsWith("/pom.properties")
+                                || entry.getSize() < 0 || entry.getSize() > 16_384 || coordinates.size() >= 32) continue;
+                        Properties properties = new Properties();
+                        try (var input = jar.getInputStream(entry)) {
+                            byte[] payload = input.readNBytes(16_385);
+                            if (payload.length > 16_384) continue;
+                            properties.load(new java.io.ByteArrayInputStream(payload));
+                        }
+                        String group = properties.getProperty("groupId", "");
+                        String name = properties.getProperty("artifactId", "");
+                        String version = properties.getProperty("version", "");
+                        if (List.of(group, name, version).stream().allMatch(value -> !value.isBlank() && value.length() <= 256
+                                && value.chars().noneMatch(c -> Character.isISOControl(c) || c == ':'))) {
+                            coordinates.add(group + ":" + name + ":" + version);
+                            versions.add(version);
+                        }
+                    }
+                } catch (IOException failure) {
+                    // Unavailable metadata never weakens the exact admitted binary digest.
+                }
+            }
+            result.put("coordinates", new ArrayList<>(coordinates));
+            if (versions.size() == 1) result.put("version", versions.iterator().next());
+            result.put("versionStatus", versions.isEmpty() ? "METADATA_UNAVAILABLE" : versions.size() == 1 ? "METADATA_EXACT" : "METADATA_AMBIGUOUS");
+            return result;
         }
 
         private void typeUse(Element target, Tree tree) {
@@ -914,6 +1047,7 @@ final class CodeclewJavaAnalyzer {
             anchor(row, tree);
             row.put("resolution", "COMPILER_EXACT");
             facts.add(row);
+            dependencyTarget(type, type.getSimpleName().toString(), descriptor(type.asType()), tree);
         }
 
         private void boundary(String code, Tree tree) {

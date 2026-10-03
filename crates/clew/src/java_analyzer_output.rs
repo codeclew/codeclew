@@ -268,6 +268,14 @@ fn validate_output(store: &CasStore, input: &CasObject, bytes: &[u8]) -> Result<
         .map(|source| source.path.as_str())
         .collect::<BTreeSet<_>>();
     for fact in parse_java_compiler_output(bytes)? {
+        if let crate::java_adapter_v2::JavaCompilerFact::DependencyTarget { binary_origin, .. } =
+            &fact
+            && binary_origin.classpath_index >= authority.classpath.len()
+        {
+            return Err(corrupt(
+                "Java raw binary target is outside admitted classpath",
+            ));
+        }
         if fact.path().is_some_and(|path| !paths.contains(path)) {
             return Err(corrupt(
                 "Java raw compiler fact is outside admitted source membership",

@@ -1,0 +1,23 @@
+{
+  "schema":"codeclew-flow-dsl-profile/1.0",
+  "id":"queue-example",
+  "title":"Select and submit a synthetic notification",
+  "framework":"Example operation queue DSL",
+  "engineVersion":null,
+  "family":"operation-queue",
+  "construction":{"file":"Example.java","owner":"example.QueueFactory","method":"construct"},
+  "factory":{"file":"Example.java","owner":"example.QueueFactory","method":"getTaskType"},
+  "registry":{"file":"Example.java","owner":"example.Registry","method":"register"},
+  "context":{"file":"Example.java","owner":"example.QueueContext"},
+  "operationType":"Operation",
+  "taskType":"TaskType",
+  "queueType":"DynamicFlow",
+  "initialArgument":2,
+  "registryReceiver":"OPERATIONS_TO_CONTEXT_METHODS",
+  "selectionCalls":[{"receiver":"queue","method":"addOperations"}],
+  "decisionMethods":["decision"],
+  "effects":[
+    {"receiver":"odmClient","method":"evaluate","kind":"opaque-external-call","label":"Request an external decision"},
+    {"receiver":"notification","method":"submit","kind":"opaque-external-call","label":"Submit a notification request"}
+  ]
+}

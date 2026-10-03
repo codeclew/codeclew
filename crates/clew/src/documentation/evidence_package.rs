@@ -456,8 +456,9 @@ impl Package {
         for s in e.sources.values() {
             if !matches!(
                 s.authority.as_str(),
-                "EXACT_SNAPSHOT_TEXT" | "DECLARED_OPENAPI"
+                "EXACT_SNAPSHOT_TEXT" | "DECLARED_OPENAPI" | "EXACT_DEPENDENCY_SOURCE_ARCHIVE"
             ) || !hash(&s.evidence_digest)
+                || (s.authority == "EXACT_DEPENDENCY_SOURCE_ARCHIVE" && s.url.is_some())
                 || s.url.as_ref().is_some_and(|s| {
                     let (base, anchor) = s.split_once('#').unwrap_or((s.as_str(), ""));
                     !store::safe_url(base)

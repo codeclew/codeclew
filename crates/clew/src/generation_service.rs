@@ -5177,6 +5177,7 @@ mod tests {
                 compilation: "java:maven:module:main".into(),
                 source_files: Vec::new(),
                 classpath: vec![classpath_authority(path).unwrap()],
+                dependency_sources: Vec::new(),
                 release: 17,
                 compiler_version: "javac 17".into(),
                 compiler_options: Vec::new(),

@@ -33,6 +33,11 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Render a declared flow DSL from retained evidence as static MDX and HTML.
+    Dsl {
+        #[command(subcommand)]
+        command: super::flow_dsl::Command,
+    },
     /// Name and retain saved documentation evidence without copying or recapturing it.
     Snapshot {
         #[command(subcommand)]
@@ -323,6 +328,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 
 fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Dsl { command } => super::flow_dsl::run(command),
         Command::Snapshot { command } => super::snapshot_pins::run(command),
         Command::View { command } => super::dataflow::run(command),
         Command::Evidence { command } => super::evidence_package::run(command),

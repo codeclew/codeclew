@@ -1,7 +1,7 @@
 //! Reachable, nonduplicating author context for one captured Java HTTP endpoint.
 //!
 //! This is a deterministic selector over immutable Work evidence. The packet
-//! row is navigation only; provider declarations, FLOW, CALL_RELATION and
+//! row is navigation only; provider declarations, DEPENDENCY_TARGET, FLOW, CALL_RELATION and
 //! retained SOURCE records remain the only factual rows. Compiler REFERENCES
 //! identify callback targets without establishing invocation or timing.
 
@@ -66,6 +66,8 @@ struct Callable<'a> {
 }
 
 struct DeclarationIndexes<'a> {
+    dependency_targets_by_identity_scope: BTreeMap<MethodKey, Vec<&'a Observation>>,
+    type_relations_by_identity_scope: BTreeMap<MethodKey, Vec<&'a Observation>>,
     methods_by_identity_scope: BTreeMap<MethodKey, Vec<&'a Observation>>,
     methods_by_owner_name: BTreeMap<(String, String), Vec<&'a Observation>>,
     methods_by_owner_scope: BTreeMap<(String, String), Vec<&'a Observation>>,
@@ -577,6 +579,25 @@ fn profile_rows_with_root(
                 continue;
             }
             let target = target.unwrap();
+            if !is_reference {
+                // Join admitted dependency metadata only to an exact call in
+                // the same compilation. This does not add a traversable
+                // method body or resolve the runtime implementation.
+                if let Some(targets) = indexes
+                    .dependency_targets_by_identity_scope
+                    .get(&(target.to_owned(), callable.scope.clone()))
+                {
+                    match targets.as_slice() {
+                        [dependency_target] => {
+                            dependencies.insert(dependency_target.id.clone(), dependency_target);
+                        }
+                        _ => gaps.add(
+                            "DEPENDENCY_TARGET_AMBIGUOUS",
+                            json!({"target":target,"scope":callable.scope,"candidateCount":targets.len()}),
+                        ),
+                    }
+                }
+            }
             let source_reference = body_source_id.as_deref().and_then(|body_id| {
                 if is_reference {
                     reference_source_within_method(evidence, observation, body_id)
@@ -1565,6 +1586,93 @@ fn profile_rows_with_root(
         .map(|(owner, references)| json!({"owner":owner,"fieldReferences":references}))
         .collect();
 
+    // Type inventory is independent of call/body traversal. Keep exact uses
+    // from selected declarations, their owning types and constructors, so an
+    // injected interface or direct DTO can retain its admitted binary origin.
+    let mut type_use_sources: BTreeSet<MethodKey> = node_keys.iter().cloned().collect();
+    for observation in dependencies
+        .values()
+        .copied()
+        .chain(node_keys.iter().filter_map(|key| {
+            indexes
+                .methods_by_identity_scope
+                .get(key)
+                .and_then(|rows| match rows.as_slice() {
+                    [row] => Some(*row),
+                    _ => None,
+                })
+        }))
+    {
+        let Some(scope) = exact_scope(&observation.normalized["scope"]) else {
+            continue;
+        };
+        for identity in [
+            observation.symbol.as_str(),
+            observation.normalized["ownerIdentity"]
+                .as_str()
+                .unwrap_or_default(),
+        ] {
+            if !identity.is_empty() {
+                type_use_sources.insert((identity.to_owned(), scope.to_owned()));
+            }
+        }
+        if let Some(owner) = observation.normalized["ownerIdentity"].as_str()
+            && let Some(methods) = indexes
+                .methods_by_owner_scope
+                .get(&(owner.to_owned(), scope.to_owned()))
+        {
+            for constructor in methods
+                .iter()
+                .filter(|row| row.normalized["declarationKind"] == "CONSTRUCTOR")
+            {
+                type_use_sources.insert((constructor.symbol.clone(), scope.to_owned()));
+            }
+        }
+    }
+    for key in type_use_sources {
+        for relation in indexes
+            .type_relations_by_identity_scope
+            .get(&key)
+            .into_iter()
+            .flatten()
+        {
+            let Some(target) = relation.normalized["targetIdentity"].as_str() else {
+                continue;
+            };
+            let Some(targets) = indexes
+                .dependency_targets_by_identity_scope
+                .get(&(target.to_owned(), key.1.clone()))
+            else {
+                continue;
+            };
+            if let [target] = targets.as_slice() {
+                dependencies.insert(relation.id.clone(), relation);
+                dependencies.insert(target.id.clone(), target);
+                for source_id in &relation.source_ids {
+                    if let Some(source) = evidence.sources.get(source_id)
+                        && counted_source_ids.insert(source_id.clone())
+                    {
+                        unique_source_bytes += source.text.len();
+                        sources.insert(source_id.clone(), source);
+                    }
+                }
+            }
+        }
+    }
+    for target in dependencies
+        .values()
+        .filter(|row| row.kind == "DEPENDENCY_TARGET")
+    {
+        for source_id in &target.source_ids {
+            if let Some(source) = evidence.sources.get(source_id)
+                && counted_source_ids.insert(source_id.clone())
+            {
+                unique_source_bytes += source.text.len();
+                sources.insert(source_id.clone(), source);
+            }
+        }
+    }
+
     finish_rows(FinishRows {
         work,
         evidence,
@@ -2017,6 +2125,8 @@ fn declaration_indexes<'a>(
     service: &str,
 ) -> DeclarationIndexes<'a> {
     let mut indexes = DeclarationIndexes {
+        dependency_targets_by_identity_scope: BTreeMap::new(),
+        type_relations_by_identity_scope: BTreeMap::new(),
         methods_by_identity_scope: BTreeMap::new(),
         methods_by_owner_name: BTreeMap::new(),
         methods_by_owner_scope: BTreeMap::new(),
@@ -2032,6 +2142,36 @@ fn declaration_indexes<'a>(
     }) {
         let scope = exact_scope(&observation.normalized["scope"]).map(str::to_owned);
         match observation.kind.as_str() {
+            "TYPE_RELATION"
+                if observation.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                    && observation.normalized["relationKind"] == "TYPE_USES"
+                    && observation.normalized["resolution"] == "COMPILER_EXACT"
+                    && observation.normalized["typeSite"]["sourceStatus"] == "SOURCE_RETAINED" =>
+            {
+                if let (Some(scope), Some(identity)) =
+                    (scope, observation.normalized["sourceIdentity"].as_str())
+                {
+                    indexes
+                        .type_relations_by_identity_scope
+                        .entry((identity.to_owned(), scope))
+                        .or_default()
+                        .push(observation);
+                }
+            }
+            "DEPENDENCY_TARGET"
+                if observation.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                    && observation.normalized["resolution"] == "COMPILER_EXACT" =>
+            {
+                if let (Some(scope), Some(identity)) =
+                    (scope, observation.normalized["symbolIdentity"].as_str())
+                {
+                    indexes
+                        .dependency_targets_by_identity_scope
+                        .entry((identity.to_owned(), scope))
+                        .or_default()
+                        .push(observation);
+                }
+            }
             "FLOW" | "CALL_RELATION" => {
                 if let Some(scope) = scope {
                     let outgoing = indexes

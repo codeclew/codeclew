@@ -1,0 +1,20 @@
+{
+  "schema": "codeclew-flow-dsl-profile/1.0",
+  "id": "builder-example",
+  "title": "Prepare and submit a synthetic request",
+  "framework": "Example flow DSL",
+  "engineVersion": null,
+  "family": "builder-chain",
+  "construction": {"file":"Example.java","owner":"example.BuilderFactory","method":"construct"},
+  "factory": {"file":"Example.java","owner":"example.BuilderFactory","method":"getTaskType"},
+  "context": {"file":"Example.java","owner":"example.BuilderFactory"},
+  "operationType": "Operation",
+  "taskType": "TaskType",
+  "builder": {"receiver":"FlowBuilder","method":"build"},
+  "rootVariable": "root",
+  "effects": [
+    {"receiver":"repository","method":"save","kind":"persistence-call","label":"Request local persistence"},
+    {"receiver":"odmClient","method":"evaluate","kind":"opaque-external-call","label":"Request an external decision"}
+  ],
+  "labels": {"readHistory":"Read recorded history","mapData":"Prepare request fields","persist":"Request persistence","requestDecision":"Request an external decision"}
+}

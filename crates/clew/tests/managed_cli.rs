@@ -5154,3 +5154,147 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
     );
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), published);
 }
+
+#[test]
+#[cfg(unix)]
+fn flow_dsl_static_render_uses_original_supported_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let state = temporary.path().join("state/v2");
+    let runtime = state.join("runtimes").join("1".repeat(64));
+    fs::create_dir_all(state.join("locks")).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = fd_runtime(&runtime);
+    let lease = state
+        .join("locks")
+        .join(format!("runtime-{}.lease", "1".repeat(64)));
+    let docs = temporary.path().join("docs");
+    let root = docs.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let out = run_managed(&binary, &state, &runtime, &lease, args, None);
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        assert!(
+            out.status.success() || value["status"] == "CHECKED",
+            "{value}"
+        );
+        value
+    };
+    run(&["docs", "init", "--root", root]);
+    let repo = temporary.path().join("source");
+    fs::create_dir(&repo).unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/flow-dsl");
+    fs::copy(fixtures.join("Example.java"), repo.join("Example.java")).unwrap();
+    run_git(&repo, &["init", "-q"]);
+    run_git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/flow-dsl",
+        ],
+    );
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Synthetic flow DSL",
+        ],
+    );
+    let service = temporary.path().join("service.json");
+    fs::write(&service,serde_json::to_vec(&json!({"schema":"codeclew-documentation-service/1.0","id":"example","title":"Example flow DSL","repositoryId":"example","repository":"https://example.invalid/flow-dsl","language":"java","profile":"source-syntax","targetRef":"HEAD","source":{"roots":["."],"dialect":"21"}})).unwrap()).unwrap();
+    let catalog = run(&["docs", "service", "list", "--root", root]);
+    run(&[
+        "docs",
+        "service",
+        "add",
+        "--root",
+        root,
+        "--input",
+        service.to_str().unwrap(),
+        "--expected-input-digest",
+        catalog["inputDigest"].as_str().unwrap(),
+    ]);
+    run(&[
+        "docs",
+        "bind",
+        "--root",
+        root,
+        "--service",
+        "example",
+        "--repo",
+        repo.to_str().unwrap(),
+    ]);
+    let capture = run(&["docs", "check", "--root", root]);
+    let snapshot = capture["snapshot"].as_str().unwrap();
+    // Rendering succeeds after source checkout disappears; no recapture or compilation is possible.
+    fs::remove_dir_all(&repo).unwrap();
+    for family in ["builder", "queue"] {
+        let output = temporary.path().join(format!("output-{family}"));
+        let profile = fixtures.join(format!("{family}-profile.json"));
+        let result = run(&[
+            "docs",
+            "dsl",
+            "render",
+            "--root",
+            root,
+            "--snapshot",
+            snapshot,
+            "--service",
+            "example",
+            "--profile",
+            profile.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        let items = result["projection"]["items"].as_array().unwrap();
+        assert!(items.iter().any(|i| i["kind"]
+            == if family == "builder" {
+                "callback-group"
+            } else {
+                "initial-queue"
+            }));
+        assert!(output.join("page.mdx").is_file() && output.join("page.html").is_file());
+        if let Some(review) = std::env::var_os("CODECLEW_FLOW_DSL_TEST_OUTPUT") {
+            let review = std::path::PathBuf::from(review).join(family);
+            copy_tree(&output, &review);
+        }
+    }
+    let failure = run_managed(
+        &binary,
+        &state,
+        &runtime,
+        &lease,
+        &[
+            "docs",
+            "dsl",
+            "render",
+            "--root",
+            root,
+            "--snapshot",
+            "not-a-snapshot",
+            "--service",
+            "example",
+            "--profile",
+            fixtures.join("queue-profile.json").to_str().unwrap(),
+            "--output",
+            temporary.path().join("invalid").to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(!failure.status.success());
+    assert!(!temporary.path().join("invalid").exists());
+}

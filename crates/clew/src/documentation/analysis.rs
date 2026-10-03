@@ -934,6 +934,95 @@ pub(crate) fn project_scoped(
             );
             continue;
         }
+        // An exact dependency declaration identifies the admitted binary
+        // target. Its source/body availability is independent of the caller's
+        // retained call-site source; never manufacture a Source from metadata.
+        if fact["kind"] == "DEPENDENCY_TARGET" {
+            let symbol = fact["symbolIdentity"]
+                .as_str()
+                .filter(|identity| !identity.is_empty())
+                .ok_or_else(|| invalid("compiler dependency target lacks identity"))?;
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            let identity = scoped_identity(&scope, symbol);
+            let id = dependency_id(&service.id, "dependency-target", &identity)?;
+            let mut normalized = strip_coordinates(fact);
+            normalized["scope"] = json!(scope);
+            let mut source_ids = Vec::new();
+            if fact["sourceStatus"] == "SOURCE_ATTACHED" && !fact["dependencySource"].is_object() {
+                return Err(invalid(
+                    "attached dependency source lacks its exact payload",
+                ));
+            }
+            if let Some(attached) = fact["dependencySource"].as_object() {
+                let text = attached
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("dependency source attachment lacks exact text"))?;
+                let file = attached
+                    .get("sourceEntry")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("dependency source attachment lacks archive entry"))?;
+                store::relative(file)?;
+                let start_line = attached
+                    .get("startLine")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| invalid("dependency source attachment lacks start line"))?;
+                let end_line = attached
+                    .get("endLine")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| invalid("dependency source attachment lacks end line"))?;
+                let text_digest = canonical::hash_bytes(text.as_bytes());
+                if fact["sourceStatus"] != "SOURCE_ATTACHED"
+                    || attached.get("textDigest").and_then(Value::as_str)
+                        != Some(text_digest.as_str())
+                    || start_line == 0
+                    || end_line < start_line
+                    || end_line - start_line + 1 != text.lines().count() as u64
+                {
+                    return Err(invalid(
+                        "dependency source attachment binding is inconsistent",
+                    ));
+                }
+                let source_id = source_id(&service.id, &format!("dependency-target:{identity}"))?;
+                evidence.sources.insert(
+                    source_id.clone(),
+                    Source {
+                        id: source_id.clone(),
+                        service: service.id.clone(),
+                        revision: revision.into(),
+                        file: file.into(),
+                        start_line,
+                        end_line,
+                        text: text.into(),
+                        text_digest,
+                        evidence_digest: binding.clone(),
+                        authority: "EXACT_DEPENDENCY_SOURCE_ARCHIVE".into(),
+                        occurrence: None,
+                        url: None,
+                    },
+                );
+                // Source payloads are shared immutable records. The observation
+                // retains archive/signature provenance, never a second text copy.
+                let mut metadata = fact["dependencySource"].clone();
+                metadata.as_object_mut().unwrap().remove("text");
+                metadata["sourceId"] = json!(source_id);
+                normalized["dependencySource"] = metadata;
+                source_ids.push(source_id);
+            }
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "DEPENDENCY_TARGET".into(),
+                    service: service.id.clone(),
+                    symbol: symbol.into(),
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids,
+                },
+            );
+            continue;
+        }
         // Compiler relations have independent authority and source
         // coordinates. Retain them instead of folding them into FLOW, whose
         // source-order events have different limits and control-flow
@@ -942,11 +1031,14 @@ pub(crate) fn project_scoped(
         if fact["kind"] == "RELATION"
             && matches!(
                 fact["relationKind"].as_str(),
-                Some("CALLS" | "CONSTRUCTS" | "REFERENCES")
+                Some("CALLS" | "CONSTRUCTS" | "REFERENCES" | "TYPE_USES")
             )
         {
             let scope = resolve_scope_key(&fact["scope"], known)?;
-            let relation_prefix = if fact["relationKind"] == "REFERENCES" {
+            let is_type_use = fact["relationKind"] == "TYPE_USES";
+            let relation_prefix = if is_type_use {
+                "type-site"
+            } else if fact["relationKind"] == "REFERENCES" {
                 "reference-site"
             } else {
                 "call-site"
@@ -974,7 +1066,9 @@ pub(crate) fn project_scoped(
             });
             if fact["sourceIdentity"].as_str().is_none_or(str::is_empty) {
                 call_site["ownerStatus"] = json!("SOURCE_OWNER_UNAVAILABLE");
-                let boundary = if fact["relationKind"] == "REFERENCES" {
+                let boundary = if is_type_use {
+                    "TYPE_RELATION_OWNER_UNAVAILABLE"
+                } else if fact["relationKind"] == "REFERENCES" {
                     "REFERENCE_RELATION_OWNER_UNAVAILABLE"
                 } else {
                     "CALL_RELATION_OWNER_UNAVAILABLE"
@@ -998,13 +1092,18 @@ pub(crate) fn project_scoped(
                 call_site["evidenceDigest"] = json!(source.evidence_digest);
                 call_site["sourceStatus"] = json!("SOURCE_RETAINED");
             }
-            normalized["callSite"] = call_site;
+            normalized[if is_type_use { "typeSite" } else { "callSite" }] = call_site;
             let symbol = fact["sourceIdentity"].as_str().unwrap_or_default();
             evidence.observations.insert(
                 id.clone(),
                 Observation {
                     id,
-                    kind: "CALL_RELATION".into(),
+                    kind: if is_type_use {
+                        "TYPE_RELATION"
+                    } else {
+                        "CALL_RELATION"
+                    }
+                    .into(),
                     service: service.id.clone(),
                     symbol: symbol.into(),
                     digest: digest(&normalized)?,
@@ -1797,6 +1896,7 @@ mod tests {
             compilation: ":/main".into(),
             source_files: vec![file.into()],
             classpath: Vec::new(),
+            dependency_sources: Vec::new(),
             release: 17,
             compiler_version,
             compiler_options: Vec::new(),
