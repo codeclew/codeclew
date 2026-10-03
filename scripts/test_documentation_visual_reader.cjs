@@ -592,3 +592,21 @@ test('public mixed publication exposes original paragraph bytes and current gene
  assert.equal(r.e('source-code').innerHTML,'');
  assert.match(r.e('source-foot').textContent,/Selected fragment source context is unavailable/);
 });
+
+test('manual context selection retains text attribution and distinguishes freshness from review',()=>{
+ const data=fixture(),op=data.operations[0],key=data.subject+'/'+op.id+'/maintained';
+ op.explanation=[{id:'maintained',text:'Preserved user text.',sourceIds:['same-source'],detail:false,authorship:{authority:'USER_DOCUMENTATION',author:'Text <author>',meaningReview:'UNASSESSED',contextRole:'RETAINED_UNVERIFIED_CONTEXT',sourceSnapshot:'new-snapshot',editDigest:'original-text-edit',contextMigration:{editor:'Context <editor>',contextReview:'UNASSESSED',previousSourceSnapshot:'old-snapshot',previousContextDigest:'old-context',instructionDigest:'context-instruction'}}}];
+ data.fragmentSources={[key]:{'same-source':source('EXPLICIT CURRENT CONTEXT')}};
+ data.fragmentStates={[key]:{freshness:'CURRENT',verification:'UNASSESSED'}};
+ const r=load(data),html=r.run('explanation(D.operations[0])');
+ assert.match(html,/User documentation by Text &lt;author&gt;/);
+ assert.match(html,/Context selected by Context &lt;editor&gt;/);
+ assert.match(html,/Context review: UNASSESSED/);
+ assert.match(html,/Current freshness does not establish semantic review/);
+ assert.match(html,/Explicitly selected code \(unverified context\)/);
+ assert.doesNotMatch(html,/Originally linked code/);
+ r.click({sources:'same-source',sourceOperation:op.id,sourceFragment:key});
+ assert.match(r.e('source-code').innerHTML,/EXPLICIT CURRENT CONTEXT/);
+ data.fragmentStates[key].freshness='STALE';
+ assert.match(load(data).run('explanation(D.operations[0])'),/Source context freshness: STALE/);
+});

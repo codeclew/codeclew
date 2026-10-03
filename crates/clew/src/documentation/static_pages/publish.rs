@@ -290,23 +290,43 @@ fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
     for row in rows {
         let authorship = row.paragraph.authorship.as_ref().unwrap();
         out += &format!("<article><pre>{}</pre>\n", escape(&row.paragraph.text));
-        out += &paragraph(&format!(
-            "Declared author: {}. Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Originally linked code is retained unverified context. Source context freshness: {}.",
-            authorship.author, row.context_freshness
-        ));
+        if let Some(migration) = &authorship.context_migration {
+            out += &paragraph(&format!(
+                "Declared text author: {}. Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Context selected by {}. Context review: UNASSESSED. Explicitly selected code is unverified context. Source context freshness: {}. Current freshness does not establish semantic review.",
+                authorship.author, migration.editor, row.context_freshness
+            ));
+            out += &paragraph(&format!(
+                "Previous source snapshot: {}. Previous context digest: {}. Context instruction digest: {}.",
+                migration.previous_source_snapshot,
+                migration.previous_context_digest,
+                migration.instruction_digest
+            ));
+        } else {
+            out += &paragraph(&format!(
+                "Declared author: {}. Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Originally linked code is retained unverified context. Source context freshness: {}.",
+                authorship.author, row.context_freshness
+            ));
+        }
         out += "<ul>\n";
         for id in &row.paragraph.source_ids {
             out += &format!(
                 "<li>{}</li>\n",
                 link(
                     &format!("sources.{ext}#{}", authored_source_anchor(row, id)),
-                    &format!("Originally linked source {id}")
+                    &format!(
+                        "{} source {id}",
+                        if authorship.context_migration.is_some() {
+                            "Explicitly selected"
+                        } else {
+                            "Originally linked"
+                        }
+                    )
                 )
             );
         }
         out += "</ul><details><summary>Frozen paragraph identity</summary>\n";
         out += &paragraph(&format!(
-            "Bundle: {}. Operation: {}. Fragment: {}. Paragraph digest: {}. Operation digest: {}. Bindings digest: {}. Publication digest: {}. Original source snapshot: {}. Context role: RETAINED_UNVERIFIED_CONTEXT.",
+            "Bundle: {}. Operation: {}. Fragment: {}. Paragraph digest: {}. Operation digest: {}. Bindings digest: {}. Publication digest: {}. {} source snapshot: {}. Context role: RETAINED_UNVERIFIED_CONTEXT.",
             row.selection.bundle,
             row.selection.operation,
             row.selection.fragment,
@@ -314,6 +334,11 @@ fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
             row.operation_digest,
             row.bindings_digest,
             row.publication_digest,
+            if authorship.context_migration.is_some() {
+                "Explicitly selected"
+            } else {
+                "Original"
+            },
             authorship.source_snapshot
         ));
         out += "</details></article>\n";
@@ -559,8 +584,18 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
                     continue;
                 }
                 out += &format!(
-                    "<section id=\"{}\"><h2>Original authored paragraph context: {}:{}–{}</h2>\n",
+                    "<section id=\"{}\"><h2>{} authored paragraph context: {}:{}–{}</h2>\n",
                     local_anchor,
+                    if paragraph
+                        .paragraph
+                        .authorship
+                        .as_ref()
+                        .is_some_and(|a| a.context_migration.is_some())
+                    {
+                        "Explicitly selected"
+                    } else {
+                        "Original"
+                    },
                     escape(&source.file),
                     source.start_line,
                     source.end_line

@@ -792,90 +792,188 @@
       ]
     },
     "retainedEdit": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "const": "RETAINED_OPERATION"
-        },
-        "id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "recordDigest": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "target": {
-          "enum": [
-            "operationTitle",
-            "explanationText"
-          ]
-        },
-        "expectedOldValue": {
-          "type": "string"
-        },
-        "replacement": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 8192,
-          "description": "Nonblank plain prose, at most 8192 UTF-8 bytes; operationTitle at most 512 UTF-8 bytes."
-        },
-        "fragmentId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "author": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "description": "Declared author, not authenticated identity."
-        }
-      },
-      "required": [
-        "kind",
-        "id",
-        "recordDigest",
-        "target",
-        "expectedOldValue",
-        "replacement"
-      ],
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "target": {
-                "const": "explanationText"
-              }
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "RETAINED_OPERATION"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recordDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "target": {
+              "enum": [
+                "operationTitle",
+                "explanationText"
+              ]
+            },
+            "expectedOldValue": {
+              "type": "string"
+            },
+            "replacement": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192,
+              "description": "Nonblank plain prose, at most 8192 UTF-8 bytes; operationTitle at most 512 UTF-8 bytes."
+            },
+            "fragmentId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "author": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Declared author, not authenticated identity."
             }
           },
-          "then": {
-            "required": [
-              "fragmentId",
-              "author"
-            ]
-          },
-          "else": {
-            "properties": {
-              "replacement": {
-                "maxLength": 512
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "fragmentId"
-                  ]
+          "required": [
+            "kind",
+            "id",
+            "recordDigest",
+            "target",
+            "expectedOldValue",
+            "replacement"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "target": {
+                    "const": "explanationText"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "fragmentId",
+                  "author"
+                ]
+              },
+              "else": {
+                "properties": {
+                  "replacement": {
+                    "maxLength": 512
+                  }
                 },
-                {
-                  "required": [
-                    "author"
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "fragmentId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "author"
+                      ]
+                    }
                   ]
                 }
-              ]
+              }
             }
-          }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "RETAINED_OPERATION"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recordDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "target": {
+              "const": "explanationContext"
+            },
+            "fragmentId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedParagraphDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "expectedContextDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "contextEditor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Declared context editor; does not authenticate identity or establish semantic review."
+            },
+            "sourceReferences": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "dependencyReferences": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4096,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "anchors": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 512,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "eventId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "expectedEventDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "eventId",
+                  "expectedEventDigest"
+                ]
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "recordDigest",
+            "target",
+            "fragmentId",
+            "expectedParagraphDigest",
+            "expectedContextDigest",
+            "contextEditor",
+            "sourceReferences",
+            "dependencyReferences",
+            "anchors"
+          ]
         }
       ]
     }

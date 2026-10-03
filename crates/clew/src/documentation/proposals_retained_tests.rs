@@ -769,3 +769,159 @@ fn retained_scope_exception_requires_exact_canonical_authored_provenance_and_cov
             .contains("does not cover")
     );
 }
+
+#[test]
+fn context_migration_requires_exact_full_source_receipts_and_delivered_dependencies() {
+    use super::super::{explanation_authorship as auth, work_parts};
+    let (_temp, repo, mut work, mut narrative) = fixture();
+    work.retained = Some(narrative.clone());
+    work.request.entrypoint = Some("reserve".into());
+    let mut text = input(&work).retained_edits.remove(0);
+    text.target = RetainedTarget::ExplanationText;
+    text.author = Some("Text author".into());
+    text.fragment_id = Some(narrative.operations[0].explanation[0].id.clone());
+    let paragraph = &mut narrative.operations[0].explanation[0];
+    paragraph.authorship = Some(auth::from_edit(&work, paragraph, &text).unwrap());
+    let paragraph = paragraph.clone();
+    work.retained = Some(narrative.clone());
+    work.handles.insert(
+        "s1".into(),
+        work::Handle {
+            kind: "SOURCE".into(),
+            id: "source-reserve".into(),
+        },
+    );
+    work.handles.insert(
+        "d1".into(),
+        work::Handle {
+            kind: "DEPENDENCY".into(),
+            id: "symbol-reserve".into(),
+        },
+    );
+    work::read_loaded(
+        &repo,
+        &work,
+        work::Selection {
+            query: Some(work::Query {
+                kind: "SYMBOL".into(),
+                symbol_contains: String::new(),
+                projection: work::QueryProjection::Raw,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut state = parts(&repo, &work);
+    let proposal:Proposal=serde_json::from_value(json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{
+        "kind":"RETAINED_OPERATION","id":"reserve","recordDigest":digest(&narrative.operations[0]).unwrap(),"target":"explanationContext","fragmentId":paragraph.id,
+        "expectedParagraphDigest":digest(&paragraph).unwrap(),"expectedContextDigest":auth::context_digest(&paragraph).unwrap(),"contextEditor":"Context editor",
+        "sourceReferences":["s1"],"dependencyReferences":["d1"],"anchors":[{"eventId":"event","expectedEventDigest":digest(&narrative.operations[0].events[0]).unwrap()}]
+    }]})).unwrap();
+    let edit = &proposal.retained_edits[0];
+    assert!(
+        auth::from_context_edit(&work, &paragraph, edit, &state)
+            .unwrap_err()
+            .message
+            .contains("COMPLETE")
+    );
+    work_parts::read_part_loaded(
+        &repo,
+        &work,
+        work_parts::SourcePartRequest {
+            schema: work_parts::REQUEST_SCHEMA.into(),
+            reference: "s1".into(),
+            cursor: None,
+        },
+    )
+    .unwrap();
+    state = work::read_state(&repo, &work.id).unwrap();
+    let migrated = auth::from_context_edit(&work, &paragraph, edit, &state).unwrap();
+    assert_eq!(
+        migrated.author,
+        paragraph.authorship.as_ref().unwrap().author
+    );
+    assert_eq!(
+        migrated.edit_digest,
+        paragraph.authorship.as_ref().unwrap().edit_digest
+    );
+    assert_eq!(
+        migrated.context_migration.as_ref().unwrap().editor,
+        "Context editor"
+    );
+    for change in ["foreign", "partial", "stale-snapshot"] {
+        let mut invalid = state.clone();
+        let receipt = invalid.source_part_receipts.values_mut().next().unwrap();
+        match change {
+            "foreign" => receipt.work = "b".repeat(64),
+            "partial" => receipt.end_byte = receipt.total_text_bytes / 2,
+            _ => receipt.snapshot = "foreign-snapshot".into(),
+        }
+        assert!(
+            auth::from_context_edit(&work, &paragraph, edit, &invalid)
+                .unwrap_err()
+                .message
+                .contains("COMPLETE"),
+            "{change}"
+        );
+    }
+    let binding = render::make_bindings(
+        &work.checked,
+        BTreeMap::from([(work.subject.clone(), narrative.clone())]),
+    )
+    .unwrap();
+    for change in ["scope", "kind", "provider"] {
+        let mut incompatible = work.clone();
+        let dependency = incompatible
+            .checked
+            .dependencies
+            .get_mut("symbol-reserve")
+            .unwrap();
+        match change {
+            "scope" => dependency.normalized["scope"] = json!("other-compilation"),
+            "kind" => dependency.kind = "FLOW".into(),
+            _ => dependency.normalized["semantic"] = json!({"provider":"other-provider"}),
+        }
+        dependency.digest = digest(&dependency.normalized).unwrap();
+        incompatible
+            .influence
+            .insert(dependency.id.clone(), dependency.digest.clone());
+        assert!(
+            auth::validate_destination(
+                &binding,
+                &incompatible,
+                &paragraph,
+                edit,
+                &work.checked,
+                &state
+            )
+            .unwrap_err()
+            .message
+            .contains("provider, symbol, source association or compiler scope"),
+            "{change}"
+        );
+    }
+    let mut unread = state.clone();
+    unread.receipts.clear();
+    assert!(
+        auth::from_context_edit(&work, &paragraph, edit, &unread)
+            .unwrap_err()
+            .message
+            .contains("DEPENDENCY")
+    );
+    let mut unscoped = work.clone();
+    unscoped.influence.remove("symbol-reserve");
+    assert!(
+        auth::from_context_edit(&unscoped, &paragraph, edit, &state)
+            .unwrap_err()
+            .message
+            .contains("in-scope")
+    );
+    let mut foreign_state = state.clone();
+    foreign_state.work = "foreign-work".into();
+    assert!(
+        auth::from_context_edit(&work, &paragraph, edit, &foreign_state)
+            .unwrap_err()
+            .message
+            .contains("this Work")
+    );
+}

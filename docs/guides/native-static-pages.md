@@ -201,3 +201,12 @@ scenarios, source mutation, explicit attributed protected note inclusion,
 Unicode/CRLF and inert-text preservation, relative links, hashes, format parity
 and offline reuse after a public live association edit and removal. Its Maven
 wrapper models compiler acquisition, not a full application build.
+
+When a paragraph has an explicit manual `contextMigration`, native export uses
+its effective selected snapshot and source maps. Attribution keeps the original
+text author separate from the declared context editor, and includes the prior
+snapshot/context digest and `UNASSESSED` context review. Source appendix labels
+say explicitly selected context instead of originally linked context. A later
+source update can make this selected context `STALE`; current context does not
+establish semantic review. Historical native exports and publication bundles
+retain their previous bytes and pins.

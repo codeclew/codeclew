@@ -83,7 +83,253 @@ pub(super) fn from_edit(
         source_snapshot,
         source_refs,
         dependency_refs,
+        context_migration: paragraph
+            .authorship
+            .as_ref()
+            .and_then(|a| a.context_migration.clone()),
     })
+}
+/// Digest only the effective context, independently of text attribution.
+pub(super) fn context_digest(paragraph: &Explanation) -> Result<String, ClewError> {
+    let a = paragraph
+        .authorship
+        .as_ref()
+        .ok_or_else(|| invalid("context migration requires an authored paragraph"))?;
+    digest(&(
+        &a.source_snapshot,
+        &a.source_refs,
+        &a.dependency_refs,
+        &a.context_role,
+        &a.context_migration,
+    ))
+}
+
+pub(super) fn from_context_edit(
+    work: &Work,
+    paragraph: &Explanation,
+    edit: &RetainedEdit,
+    state: &super::work::ReadState,
+) -> Result<ExplanationAuthorship, ClewError> {
+    let instruction = edit
+        .context
+        .as_ref()
+        .ok_or_else(|| invalid("context migration instruction missing"))?;
+    author(&instruction.context_editor)?;
+    if digest(paragraph)? != instruction.expected_paragraph_digest
+        || context_digest(paragraph)? != instruction.expected_context_digest
+    {
+        return Err(invalid(
+            "context migration paragraph or context digest is stale",
+        ));
+    }
+    if state.work != work.id || state.untracked_reads {
+        return Err(invalid(
+            "context migration requires this Work's tracked reads",
+        ));
+    }
+    let received: BTreeSet<_> = state
+        .receipts
+        .values()
+        .flat_map(|r| r.supplied.iter())
+        .collect();
+    let mut selected_sources = BTreeSet::new();
+    let mut selected_dependencies = BTreeSet::new();
+    if instruction.source_references.is_empty()
+        || instruction.source_references.len() > 32
+        || instruction.dependency_references.len() > 4096
+        || instruction.anchors.len() > 512
+    {
+        return Err(invalid(
+            "context migration exceeds its evidence or anchor bounds",
+        ));
+    }
+    for reference in &instruction.source_references {
+        let handle = work
+            .handles
+            .get(reference)
+            .filter(|h| h.kind == "SOURCE")
+            .ok_or_else(|| {
+                invalid("context migration source requires a current SOURCE Work reference")
+            })?;
+        if !selected_sources.insert(handle.id.clone()) {
+            return Err(invalid("duplicate context migration SOURCE reference"));
+        }
+        if !super::work_parts::source_part_complete(work, state, reference)? {
+            return Err(invalid(
+                "read every COMPLETE current SOURCE part before context migration, including small sources",
+            ));
+        }
+    }
+    for reference in &instruction.dependency_references {
+        let handle = work
+            .handles
+            .get(reference)
+            .filter(|h| h.kind == "DEPENDENCY")
+            .ok_or_else(|| {
+                invalid("context migration dependency requires a current DEPENDENCY Work reference")
+            })?;
+        let dependency = work
+            .checked
+            .dependencies
+            .get(&handle.id)
+            .ok_or_else(|| invalid("current context dependency is unavailable"))?;
+        if !selected_dependencies.insert(handle.id.clone()) {
+            return Err(invalid("duplicate context migration DEPENDENCY reference"));
+        }
+        if !received.contains(reference)
+            || work.influence.get(&handle.id) != Some(&dependency.digest)
+        {
+            return Err(invalid(
+                "read the in-scope current DEPENDENCY before context migration",
+            ));
+        }
+    }
+    if selected_sources != paragraph.source_ids.iter().cloned().collect()
+        || selected_dependencies != paragraph.dependency_ids.iter().cloned().collect()
+    {
+        return Err(invalid(
+            "context migration must preserve the exact logical source and dependency sets",
+        ));
+    }
+    let operation = super::work_retained_parts::retained_operation(work, &edit.id)?;
+    let mut anchors = BTreeSet::new();
+    for anchor in &instruction.anchors {
+        if !anchors.insert(anchor.event_id.clone()) {
+            return Err(invalid("duplicate context migration event anchor"));
+        }
+        let event = operation
+            .events
+            .iter()
+            .find(|e| e.id == anchor.event_id && e.kind != "end")
+            .ok_or_else(|| invalid("context migration anchor is missing or an end marker"))?;
+        if digest(event)? != anchor.expected_event_digest {
+            return Err(invalid("context migration current event digest is stale"));
+        }
+        if event
+            .dependency_ids
+            .iter()
+            .any(|id| !selected_dependencies.contains(id))
+            || event
+                .source_ids
+                .iter()
+                .any(|id| !selected_sources.contains(id))
+        {
+            return Err(invalid(
+                "context migration must cover every current anchored event's evidence",
+            ));
+        }
+    }
+    if anchors.is_empty() || anchors != paragraph.event_ids.iter().cloned().collect() {
+        return Err(invalid(
+            "context migration must preserve every exact event anchor",
+        ));
+    }
+    let mut a = paragraph
+        .authorship
+        .clone()
+        .ok_or_else(|| invalid("context migration requires declared text authorship"))?;
+    let (sources, dependencies) = refs(paragraph, &work.checked)?;
+    a.context_migration = Some(ExplanationContextMigration {
+        editor: instruction.context_editor.clone(),
+        instruction_digest: digest(&(&work.id, &work.snapshot, edit))?,
+        previous_source_snapshot: a.source_snapshot.clone(),
+        previous_context_digest: context_digest(paragraph)?,
+        context_review: AuthoredMeaningReview::Unassessed,
+    });
+    a.source_snapshot = work
+        .snapshot
+        .clone()
+        .ok_or_else(|| invalid("context migration requires an immutable current snapshot"))?;
+    a.source_refs = sources;
+    a.dependency_refs = dependencies;
+    Ok(a)
+}
+pub(super) fn validate_destination(
+    baseline: &Bindings,
+    work: &Work,
+    paragraph: &Explanation,
+    edit: &RetainedEdit,
+    old: &Check,
+    state: &super::work::ReadState,
+) -> Result<(), ClewError> {
+    from_context_edit(work, paragraph, edit, state)?;
+    let operation = super::work_retained_parts::retained_operation(work, &edit.id)?;
+    for id in &paragraph.dependency_ids {
+        let previous = old
+            .dependencies
+            .get(id)
+            .ok_or_else(|| invalid("previous pinned dependency is unavailable"))?;
+        let current = work
+            .checked
+            .dependencies
+            .get(id)
+            .ok_or_else(|| invalid("current dependency is unavailable"))?;
+        if previous.kind != current.kind
+            || previous.service != current.service
+            || previous.symbol != current.symbol
+            || previous.source_ids != current.source_ids
+            || previous.normalized["scope"] != current.normalized["scope"]
+            || previous.normalized["kind"] != current.normalized["kind"]
+            || previous.normalized["semantic"]["provider"]
+                != current.normalized["semantic"]["provider"]
+        {
+            return Err(invalid(
+                "context migration changes dependency kind, provider, symbol, source association or compiler scope",
+            ));
+        }
+        if let Some(service) = old.services.get(&previous.service) {
+            let next = work
+                .checked
+                .services
+                .get(&previous.service)
+                .ok_or_else(|| invalid("current context service is unavailable"))?;
+            if service.service_digest != next.service_digest
+                || service.extractor != next.extractor
+                || service.coverage != next.coverage
+                || service.runtime_mode != next.runtime_mode
+            {
+                return Err(invalid(
+                    "context migration changes service configuration or evidence provider",
+                ));
+            }
+        }
+    }
+    let old_sources = old.sources();
+    let current_sources = work.checked.sources();
+    for id in &paragraph.source_ids {
+        let previous = old_sources
+            .get(id)
+            .ok_or_else(|| invalid("previous pinned source is unavailable"))?;
+        let current = current_sources
+            .get(id)
+            .ok_or_else(|| invalid("current source is unavailable"))?;
+        if previous.service != current.service
+            || previous.file != current.file
+            || previous.authority != current.authority
+        {
+            return Err(invalid(
+                "context migration changes source association or authority",
+            ));
+        }
+    }
+    for id in &paragraph.event_ids {
+        let event = operation.events.iter().find(|e| &e.id == id).unwrap();
+        let key = format!("{}/{}/{}", work.subject, operation.id, event.id);
+        let fragment = baseline.fragments.get(&key).ok_or_else(|| invalid("current event fragment binding is unavailable; regenerate source-derived fields first"))?;
+        if fragment.content != serde_json::to_value(event).map_err(super::io_error)?
+            || fragment.content_digest != digest(event)?
+        {
+            return Err(invalid(
+                "current event differs from its exact frozen fragment binding",
+            ));
+        }
+        fragment_context(fragment, &work.checked).map_err(|_| {
+            invalid(
+                "current event context is stale; regenerate source-derived fields before migration",
+            )
+        })?;
+    }
+    Ok(())
 }
 /// Validation checks retained identities, never the meaning of human prose.
 pub(super) fn validate_metadata(paragraph: &Explanation) -> Result<(), ClewError> {
@@ -98,6 +344,36 @@ pub(super) fn validate_metadata(paragraph: &Explanation) -> Result<(), ClewError
             .all(|b| b.is_ascii_hexdigit())
     {
         return Err(invalid("authored paragraph edit digest is invalid"));
+    }
+    if let Some(migration) = &authorship.context_migration {
+        author(&migration.editor)?;
+        for value in [
+            &migration.instruction_digest,
+            &migration.previous_context_digest,
+        ] {
+            if value.len() != 71
+                || !value.starts_with("sha256:")
+                || !value[7..].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(invalid("context migration digest is invalid"));
+            }
+        }
+        let valid_snapshot = migration
+            .previous_source_snapshot
+            .rsplit_once('/')
+            .is_some_and(|(hash, size)| {
+                hash.len() == 71
+                    && hash.starts_with("sha256:")
+                    && hash[7..].bytes().all(|b| b.is_ascii_hexdigit())
+                    && size.parse::<u64>().is_ok_and(|value| {
+                        value > 0
+                            && value <= super::check::PORTABLE_CACHE_MAX_BYTES
+                            && size == value.to_string()
+                    })
+            });
+        if !valid_snapshot {
+            return Err(invalid("context migration previous snapshot is invalid"));
+        }
     }
     Ok(())
 }
@@ -143,6 +419,7 @@ pub(super) fn same_context(old: &Explanation, new: &Explanation) -> bool {
         && a.source_snapshot == b.source_snapshot
         && a.source_refs == b.source_refs
         && a.dependency_refs == b.dependency_refs
+        && a.context_migration == b.context_migration
 }
 /// Only the exact canonical authored explanation can own a retained scope.
 /// Source IDs stay logical: different versions remain in fragment-owned evidence.
@@ -322,6 +599,31 @@ pub(super) fn check_edit_context(
     for edit in input
         .retained_edits
         .iter()
+        .filter(|e| e.target == RetainedTarget::ExplanationContext)
+    {
+        let operation = super::work_retained_parts::retained_operation(work, &edit.id)?;
+        let paragraph = operation
+            .explanation
+            .iter()
+            .find(|p| Some(p.id.as_str()) == edit.fragment_id.as_deref())
+            .ok_or_else(|| invalid("retained context paragraph is unavailable"))?;
+        let a = paragraph
+            .authorship
+            .as_ref()
+            .ok_or_else(|| invalid("context migration requires an authored paragraph"))?;
+        let state = super::work::read_state(repo, &work.id)?;
+        validate_destination(
+            &baseline,
+            work,
+            paragraph,
+            edit,
+            &pinned[&a.source_snapshot],
+            &state,
+        )?;
+    }
+    for edit in input
+        .retained_edits
+        .iter()
         .filter(|e| e.target == RetainedTarget::ExplanationText)
     {
         let operation = super::work_retained_parts::retained_operation(work, &edit.id)?;
@@ -435,14 +737,20 @@ pub(super) fn admit(
             .filter(|p| p.authorship.is_some())
         {
             if !same_context(original, paragraph) {
-                return Err(invalid(
-                    "explanationText cannot silently rebase protected paragraph context",
-                ));
+                if paragraph.authorship.as_ref().unwrap().context_migration
+                    == original.authorship.as_ref().unwrap().context_migration
+                {
+                    return Err(invalid(
+                        "explanationText cannot silently rebase protected paragraph context",
+                    ));
+                }
+                validate(paragraph, checked)?;
+            } else {
+                fragment_context(
+                    exact_fragment(baseline.unwrap(), subject, &operation.id, original)?,
+                    &pinned[snapshot],
+                )?;
             }
-            fragment_context(
-                exact_fragment(baseline.unwrap(), subject, &operation.id, original)?,
-                &pinned[snapshot],
-            )?;
         } else {
             validate(paragraph, checked)?;
         }
@@ -477,16 +785,49 @@ pub(super) fn admit(
             .iter()
             .find(|e| {
                 e.id == operation.id
-                    && e.target == RetainedTarget::ExplanationText
+                    && matches!(
+                        e.target,
+                        RetainedTarget::ExplanationText | RetainedTarget::ExplanationContext
+                    )
                     && e.fragment_id.as_deref() == Some(*id)
             })
             .ok_or_else(|| {
-                invalid("user documentation requires an exact retained explanationText instruction")
+                invalid("user documentation requires an exact retained text or context instruction")
             })?;
         let original = old
             .and_then(|o| o.explanation.iter().find(|p| p.id == *id))
             .ok_or_else(|| invalid("retained explanation original paragraph is unavailable"))?;
         let paragraph = operation.explanation.iter().find(|p| p.id == *id).unwrap();
+        if edit.target == RetainedTarget::ExplanationContext {
+            let state = super::work::read_state(repo, &work.id)?;
+            if super::work_retained_parts::retained_record_digest(&work, &operation.id)?
+                != edit.record_digest
+                || !super::work_retained_parts::retained_part_complete(
+                    &work,
+                    &state,
+                    &operation.id,
+                )?
+            {
+                return Err(invalid(
+                    "context migration requires complete exact retained-operation receipts",
+                ));
+            }
+            let old_snapshot = &original
+                .authorship
+                .as_ref()
+                .ok_or_else(|| invalid("context migration original authorship is unavailable"))?
+                .source_snapshot;
+            let previous = Check::load_snapshot(repo, old_snapshot)?;
+            validate_destination(baseline.unwrap(), &work, original, edit, &previous, &state)?;
+            let mut expected = original.clone();
+            expected.authorship = Some(from_context_edit(&work, original, edit, &state)?);
+            if expected != *paragraph {
+                return Err(invalid(
+                    "context migration differs from its exact stored manual instruction or changed text attribution",
+                ));
+            }
+            continue;
+        }
         if original.text != edit.expected_old_value
             || paragraph.text != edit.replacement
             || paragraph.authorship.as_ref() != Some(&from_edit(&work, original, edit)?)
@@ -572,10 +913,17 @@ pub(super) fn project(
                 if let Some(evidence) = evidence {
                     sources.insert(key.clone(), serde_json::json!(evidence.sources));
                 }
-                states.insert(key, serde_json::json!({"freshness":freshness, "verification":"UNASSESSED",
+                let context_digest = context_digest(paragraph).ok();
+                states.insert(key.clone(), serde_json::json!({"freshness":freshness, "verification":"UNASSESSED",
                     "authority":"USER_DOCUMENTATION", "sourceSnapshot":authorship.source_snapshot,
                     "contentRevisions":evidence.map(|e| &e.revisions), "targetRevisions":binding.target_revisions,
                     "reason":if missing { "PINNED_CONTEXT_UNAVAILABLE" } else if changed { "PINNED_CONTEXT_DIFFERS_FROM_SELECTED_SOURCE" } else { "PINNED_CONTEXT_MATCHES_SELECTED_SOURCE" }}));
+                if let Some(migration) = &authorship.context_migration {
+                    states.get_mut(&key).unwrap()["contextMigration"] =
+                        serde_json::json!(migration);
+                    states.get_mut(&key).unwrap()["contextDigest"] =
+                        serde_json::json!(context_digest);
+                }
             }
         }
     }
@@ -589,6 +937,9 @@ pub(super) fn project(
 pub(super) fn markdown(data: &serde_json::Value) -> String {
     let mut output = String::new();
     for (key, state) in data["fragmentStates"].as_object().into_iter().flatten() {
+        if let Some(migration) = state.get("contextMigration") {
+            output.push_str(&format!("Context selected by {}. Context review: UNASSESSED. Current context freshness does not establish semantic review.\n\n", super::render::escape(migration["editor"].as_str().unwrap_or("unavailable"))));
+        }
         output.push_str(&format!("User documentation paragraph {}: source context freshness {}. Meaning review: UNASSESSED. Pinned source snapshot {}.\n\n",
             super::render::escape(key), state["freshness"].as_str().unwrap_or("UNVERIFIED"),
             super::render::escape(state["sourceSnapshot"].as_str().unwrap_or("unavailable"))));

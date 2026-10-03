@@ -886,6 +886,34 @@ fn mixed_source_regeneration_preserves_oversized_user_text_and_exact_original_fr
     let concurrent_work = prepare(&f, new_snapshot, id, "Concurrent regenerated source fields");
     complete_retained(&f, &regeneration_work, id);
     complete_retained(&f, &concurrent_work, id);
+    // A current Check alone cannot migrate a paragraph whose generated anchor
+    // still has an old frozen event binding. Regenerate source fields first.
+    let stale_work = work::load(&repo, &regeneration_work).unwrap();
+    let stale_paragraph = &protected_operation.explanation[0];
+    complete_context_sources(&f, &stale_work, &stale_paragraph.source_ids);
+    let context_refs = |kind: &str, ids: &[String]| {
+        ids.iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|id| {
+                stale_work
+                    .handles
+                    .iter()
+                    .find(|(_, h)| h.kind == kind && &h.id == id)
+                    .unwrap()
+                    .0
+            })
+            .collect::<Vec<_>>()
+    };
+    let stale_context = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{"kind":"RETAINED_OPERATION","id":id,"recordDigest":canonical::hash(protected_operation).unwrap(),"target":"explanationContext","fragmentId":stale_paragraph.id,"expectedParagraphDigest":canonical::hash(stale_paragraph).unwrap(),"expectedContextDigest":paragraph_context_digest(stale_paragraph),"contextEditor":"Fixture context editor","sourceReferences":context_refs("SOURCE",&stale_paragraph.source_ids),"dependencyReferences":context_refs("DEPENDENCY",&stale_paragraph.dependency_ids),"anchors":stale_paragraph.event_ids.iter().map(|id|json!({"eventId":id,"expectedEventDigest":canonical::hash(protected_operation.events.iter().find(|e|&e.id==id).unwrap()).unwrap()})).collect::<Vec<_>>()}]});
+    let stale_rejection = submit(&f, &regeneration_work, &stale_context);
+    assert_eq!(stale_rejection["status"], "NEEDS_REPAIR");
+    assert!(
+        stale_rejection
+            .to_string()
+            .contains("current event context is stale"),
+        "{stale_rejection}"
+    );
     let current_summary = "The source adds one to the normalized requested quantity.";
     let current_step = "Return normalized quantity plus one.";
     let regenerated_input = source_operation_proposal(
@@ -1129,6 +1157,15 @@ fn mixed_source_regeneration_preserves_oversized_user_text_and_exact_original_fr
         old_binding.fragments[&paragraph_key].influence_scope
     );
     assert_eq!(bundle_files(&f.bundle(old_bundle, "")), frozen);
+    context_migration_journey(
+        &f,
+        &repo,
+        &source_repo,
+        new_snapshot,
+        id,
+        &edited_data,
+        (old_bundle, &frozen),
+    );
     if let Some(destination) = std::env::var_os("CODECLEW_MIXED_TEST_ARTIFACTS") {
         let destination = Path::new(&destination);
         assert!(
@@ -1153,5 +1190,352 @@ fn mixed_source_regeneration_preserves_oversized_user_text_and_exact_original_fr
                 "docs proposal submit --work WORK --input proposal.json", "docs proposal publish --proposal PROPOSAL --unassessed",
                 "docs refresh --status-only", "docs history show --id ORIGINAL_BUNDLE"]
         })).unwrap()).unwrap();
+    }
+}
+
+fn complete_context_sources(f: &Fixture, saved: &work::Work, ids: &[String]) {
+    for id in ids {
+        let reference = saved
+            .handles
+            .iter()
+            .find(|(_, h)| h.kind == "SOURCE" && &h.id == id)
+            .unwrap()
+            .0;
+        let mut cursor = None;
+        loop {
+            let mut request = json!({"schema":"codeclew-documentation-source-part-request/1.0","reference":reference});
+            if let Some(c) = &cursor {
+                request["cursor"] = json!(c);
+            }
+            let input = f.input("migration-source-part.json", &request);
+            let response = successful_json(f.run_raw(&[
+                "docs",
+                "work",
+                "read-part",
+                "--work",
+                &saved.id,
+                "--input",
+                input.to_str().unwrap(),
+            ]));
+            cursor = response["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+}
+fn paragraph_context_digest(p: &clew::documentation::model::Explanation) -> String {
+    let a = p.authorship.as_ref().unwrap();
+    canonical::hash(&(
+        &a.source_snapshot,
+        &a.source_refs,
+        &a.dependency_refs,
+        &a.context_role,
+        &a.context_migration,
+    ))
+    .unwrap()
+}
+fn context_migration_journey(
+    f: &Fixture,
+    repo: &Repository,
+    source_repo: &Path,
+    snapshot: &str,
+    id: &str,
+    data: &Value,
+    previous_publication: (&str, &BTreeMap<String, Vec<u8>>),
+) {
+    let (old_bundle, frozen) = previous_publication;
+    let operation: Operation = serde_json::from_value(data["operations"][0].clone()).unwrap();
+    let original = operation
+        .explanation
+        .iter()
+        .find(|p| p.authorship.is_some())
+        .unwrap();
+    let migration_work = prepare(
+        f,
+        snapshot,
+        id,
+        "Explicit manual migration of maintained paragraph context",
+    );
+    complete_retained(f, &migration_work, id);
+    let saved = work::load(repo, &migration_work).unwrap();
+    let refs = |kind: &str, ids: &[String]| {
+        ids.iter()
+            .map(|id| {
+                saved
+                    .handles
+                    .iter()
+                    .find(|(_, h)| h.kind == kind && &h.id == id)
+                    .unwrap()
+                    .0
+                    .clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    let edit = json!({"kind":"RETAINED_OPERATION","id":id,"recordDigest":canonical::hash(&operation).unwrap(),"target":"explanationContext","fragmentId":original.id,
+        "expectedParagraphDigest":canonical::hash(original).unwrap(),"expectedContextDigest":paragraph_context_digest(original),"contextEditor":"Fixture context <editor>",
+        "sourceReferences":refs("SOURCE",&original.source_ids),"dependencyReferences":refs("DEPENDENCY",&original.dependency_ids),
+        "anchors":original.event_ids.iter().map(|id|{let event=operation.events.iter().find(|e|&e.id==id).unwrap();json!({"eventId":id,"expectedEventDigest":canonical::hash(event).unwrap()})}).collect::<Vec<_>>()});
+    let input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[edit]});
+    let unread = submit(f, &migration_work, &input);
+    assert_eq!(unread["status"], "NEEDS_REPAIR");
+    assert!(
+        unread.to_string().contains("COMPLETE current SOURCE"),
+        "{unread}"
+    );
+    complete_context_sources(f, &saved, &original.source_ids);
+    let reject = |candidate: &Value, expected: &str| {
+        let result = submit(f, &migration_work, candidate);
+        assert_eq!(result["status"], "NEEDS_REPAIR", "{result}");
+        assert!(result.to_string().contains(expected), "{result}");
+    };
+    let mut bad = input.clone();
+    bad["retainedEdits"][0]["expectedParagraphDigest"] =
+        json!(format!("sha256:{}", "0".repeat(64)));
+    reject(&bad, "digest is stale");
+    bad = input.clone();
+    bad["retainedEdits"][0]["expectedContextDigest"] = json!(format!("sha256:{}", "0".repeat(64)));
+    reject(&bad, "digest is stale");
+    bad = input.clone();
+    bad["retainedEdits"][0]["anchors"][0]["expectedEventDigest"] =
+        json!(format!("sha256:{}", "0".repeat(64)));
+    reject(&bad, "event digest is stale");
+    bad = input.clone();
+    bad["retainedEdits"][0]["anchors"] = json!([]);
+    reject(&bad, "every exact event anchor");
+    bad = input.clone();
+    bad["retainedEdits"][0]["sourceReferences"][0] = json!(
+        saved
+            .handles
+            .iter()
+            .find(|(_, h)| h.kind == "ENTRYPOINT")
+            .unwrap()
+            .0
+    );
+    reject(&bad, "SOURCE Work reference");
+    bad = input.clone();
+    bad["retainedEdits"][0]["dependencyReferences"] = json!([]);
+    reject(&bad, "exact logical source and dependency sets");
+    bad = input.clone();
+    bad["retainedEdits"]
+        .as_array_mut()
+        .unwrap()
+        .push(input["retainedEdits"][0].clone());
+    reject(&bad, "same paragraph");
+    bad = input.clone();
+    bad["retainedEdits"].as_array_mut().unwrap().push(json!({"kind":"RETAINED_OPERATION","id":id,"recordDigest":canonical::hash(&operation).unwrap(),"target":"explanationText","fragmentId":original.id,"author":"Text editor","expectedOldValue":original.text,"replacement":"Conflicting text correction."}));
+    reject(&bad, "same paragraph");
+    let ready = submit(f, &migration_work, &input);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let candidate = proposals::load(repo, ready["proposal"].as_str().unwrap()).unwrap();
+    let new = candidate.narrative.as_ref().unwrap().operations[0]
+        .explanation
+        .iter()
+        .find(|p| p.id == original.id)
+        .unwrap();
+    assert_eq!(new.text, original.text);
+    let old_a = original.authorship.as_ref().unwrap();
+    let new_a = new.authorship.as_ref().unwrap();
+    assert_eq!(new_a.author, old_a.author);
+    assert_eq!(new_a.edit_digest, old_a.edit_digest);
+    assert_eq!(new_a.source_snapshot, snapshot);
+    let migration = new_a.context_migration.as_ref().unwrap();
+    assert_eq!(migration.previous_source_snapshot, old_a.source_snapshot);
+    assert_eq!(
+        migration.previous_context_digest,
+        paragraph_context_digest(original)
+    );
+    assert_eq!(migration.editor, "Fixture context <editor>");
+    let mut expected = original.clone();
+    expected.authorship = new.authorship.clone();
+    assert_eq!(&expected, new);
+    let competing_work = prepare(f, snapshot, id, "Concurrent explicit context selection");
+    complete_retained(f, &competing_work, id);
+    let competing_saved = work::load(repo, &competing_work).unwrap();
+    complete_context_sources(f, &competing_saved, &original.source_ids);
+    let competing = submit(f, &competing_work, &input);
+    assert!(
+        competing["status"].as_str().unwrap().starts_with("READY_"),
+        "{competing}"
+    );
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        ready["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(published["updateFailures"], json!({}), "{published}");
+    let bundle = published["bundle"].as_str().unwrap();
+    let migrated = read(f.bundle(bundle, "services/orders.json"));
+    let key = format!("service:orders/{id}/{}", original.id);
+    assert_eq!(migrated["fragmentStates"][&key]["freshness"], "CURRENT");
+    assert_eq!(
+        migrated["fragmentStates"][&key]["verification"],
+        "UNASSESSED"
+    );
+    assert_eq!(
+        migrated["fragmentStates"][&key]["contextMigration"]["contextReview"],
+        "UNASSESSED"
+    );
+    let current = Check::load_snapshot(repo, snapshot).unwrap();
+    for id in &original.source_ids {
+        assert_eq!(
+            migrated["fragmentSources"][&key][id],
+            serde_json::to_value(&current.sources()[id]).unwrap()
+        );
+    }
+    for p in operation
+        .explanation
+        .iter()
+        .filter(|p| p.authorship.is_some() && p.id != original.id)
+    {
+        let k = format!("service:orders/{id}/{}", p.id);
+        assert_eq!(migrated["fragmentStates"][&k]["freshness"], "STALE");
+        assert_eq!(migrated["fragmentSources"][&k], data["fragmentSources"][&k]);
+    }
+    let concurrent_index = fs::read(f.docs.join("docs/index.html")).unwrap();
+    let (code, conflict) = f.run(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        competing["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_ne!(code, 0, "{conflict}");
+    assert!(
+        conflict
+            .to_string()
+            .contains("published content changed after work preparation"),
+        "{conflict}"
+    );
+    assert_eq!(
+        fs::read(f.docs.join("docs/index.html")).unwrap(),
+        concurrent_index
+    );
+    // Direct rendered metadata cannot forge a new manual context instruction.
+    let index_before = fs::read(f.docs.join("docs/index.html")).unwrap();
+    let mut forged: Value = serde_json::to_value(candidate.narrative.as_ref().unwrap()).unwrap();
+    forged["contextDigest"] = published["contextDigest"].clone();
+    let p = forged["operations"][0]["explanation"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["id"] == original.id)
+        .unwrap();
+    p["authorship"]["contextMigration"]["editor"] = json!("Forged context editor");
+    let path = f.input("forged-context-migration.json", &forged);
+    let (code, error) = f.run(&[
+        "docs",
+        "render",
+        "--snapshot",
+        snapshot,
+        "--input",
+        path.to_str().unwrap(),
+        "--publish",
+    ]);
+    assert_eq!(code, 0, "{error}");
+    assert!(
+        error["updateFailures"]
+            .to_string()
+            .contains("manual UNASSESSED proposal"),
+        "{error}"
+    );
+    let rejected_data = read(f.bundle(error["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(
+        rejected_data["operations"], migrated["operations"],
+        "ordinary partial publication must preserve the admitted paragraph after rejecting forged context metadata"
+    );
+    assert_eq!(
+        rejected_data["fragmentSources"],
+        migrated["fragmentSources"]
+    );
+    assert_ne!(
+        fs::read(f.docs.join("docs/index.html")).unwrap(),
+        index_before,
+        "ordinary render publishes its explicit per-operation rejection report"
+    );
+    // Later text editing keeps the explicitly selected context and its editor.
+    let text_work = prepare(
+        f,
+        snapshot,
+        id,
+        "Text correction after explicit context selection",
+    );
+    complete_retained(f, &text_work, id);
+    let migrated_op: Operation = serde_json::from_value(migrated["operations"][0].clone()).unwrap();
+    let prior = migrated_op
+        .explanation
+        .iter()
+        .find(|p| p.id == original.id)
+        .unwrap();
+    let text_input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{"kind":"RETAINED_OPERATION","id":id,"recordDigest":canonical::hash(&migrated_op).unwrap(),"target":"explanationText","fragmentId":prior.id,"author":prior.authorship.as_ref().unwrap().author,"expectedOldValue":prior.text,"replacement":"Explicit text correction preserves the selected current context."}]});
+    let text_ready = submit(f, &text_work, &text_input);
+    assert!(
+        text_ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{text_ready}"
+    );
+    let text_pub = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        text_ready["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(text_pub["updateFailures"], json!({}), "{text_pub}");
+    let corrected = read(f.bundle(text_pub["bundle"].as_str().unwrap(), "services/orders.json"));
+    let corrected_p = corrected["operations"][0]["explanation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == original.id)
+        .unwrap();
+    assert_eq!(
+        corrected_p["authorship"]["contextMigration"],
+        serde_json::to_value(migration).unwrap()
+    );
+    assert_eq!(corrected_p["authorship"]["sourceSnapshot"], snapshot);
+    let stable_bundle = bundle_files(&f.bundle(bundle, ""));
+    let source = source_repo.join("Orders.java");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "return normalize(quantity) + 1;",
+            "return normalize(quantity) + 2;",
+        ),
+    )
+    .unwrap();
+    support::commit(source_repo);
+    let (_, latest) = f.run(&["docs", "check"]);
+    assert_ne!(latest["snapshot"], snapshot);
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    let stale = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    assert_eq!(stale["fragmentStates"][&key]["freshness"], "STALE");
+    assert_eq!(stale["fragmentStates"][&key]["verification"], "UNASSESSED");
+    assert_eq!(
+        stale["fragmentSources"][&key],
+        corrected["fragmentSources"][&key]
+    );
+    assert_eq!(bundle_files(&f.bundle(bundle, "")), stable_bundle);
+    assert_eq!(bundle_files(&f.bundle(old_bundle, "")), *frozen);
+    if let Some(destination) = std::env::var_os("CODECLEW_CONTEXT_MIGRATION_TEST_ARTIFACTS") {
+        let destination = Path::new(&destination);
+        assert!(!destination.exists());
+        fs::create_dir_all(destination).unwrap();
+        for (path, content) in bundle_files(&f.docs) {
+            let target = destination.join("docs-root").join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, content).unwrap();
+        }
+        fs::write(destination.join("journey.json"),serde_json::to_vec_pretty(&json!({"schema":"codeclew-manual-context-migration-journey/1.0","authority":"PUBLIC_MANUAL_UNASSESSED_NOT_SEMANTIC_REVIEW","input":input,"unreadRejection":unread,"migrationSubmission":ready,"migrationPublication":published,"textCorrectionPublication":text_pub,"subsequentSourceUpdate":refreshed,"effectiveSnapshot":snapshot,"priorSnapshot":old_a.source_snapshot,"sourceUpdatedSnapshot":latest["snapshot"],"operation":id,"paragraph":original.id})).unwrap()).unwrap();
     }
 }

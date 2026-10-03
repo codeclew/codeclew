@@ -712,3 +712,56 @@ Issue evidence uses delivered Work handles, not long source IDs. A reviewer can
 return a review or request registered expansion. The controller still validates
 closed fields, bindings, complete coverage and verdict consistency; supplying a
 schema does not make a model verdict correct or repair malformed output.
+
+### Explicitly select a new paragraph source context
+
+Text edits preserve their effective source snapshot and maps. To move an existing
+user-authored paragraph to a current saved Check, submit the separate closed
+`explanationContext` instruction through the same manual proposal route:
+
+```json
+{
+  "kind": "RETAINED_OPERATION",
+  "id": "<operation ID>",
+  "recordDigest": "<exact canonical retained Operation digest>",
+  "target": "explanationContext",
+  "fragmentId": "<paragraph ID>",
+  "expectedParagraphDigest": "<exact canonical Explanation digest>",
+  "expectedContextDigest": "<effective context digest>",
+  "contextEditor": "Declared context editor",
+  "sourceReferences": ["<current SOURCE Work reference>"],
+  "dependencyReferences": ["<current DEPENDENCY Work reference>"],
+  "anchors": [{"eventId": "<current event ID>", "expectedEventDigest": "<canonical Event digest>"}]
+}
+```
+
+The effective context digest hashes the canonical JSON array
+`[sourceSnapshot, sourceRefs, dependencyRefs, contextRole, contextMigration]`
+from the old paragraph's authorship, using `null` when migration metadata is
+absent. The paragraph digest covers the entire old Explanation. Both digests
+must match the immutable retained operation read through
+`docs work read-retained-part`. Read every selected current SOURCE with
+`docs work read-part`, including small sources, until `nextCursor` is null.
+Read all selected current DEPENDENCY handles through recorded Work reads.
+An inline SOURCE preview or an ENTRYPOINT handle does not establish a full
+source read for this instruction.
+
+This first migration route preserves the exact logical source and dependency
+sets. It checks compatible source association, dependency kind, provider and
+compiler scope. Anchors must cover every existing paragraph event, match its
+exact current Event digest, and include all anchored evidence. Current event
+fragment bindings must match the Work Check; regenerate stale source-derived
+fields before requesting migration. ID remapping, changed scopes, missing
+anchors and arbitrary source records are unsupported.
+
+The instruction preserves paragraph text, ID, anchors, detailed-view setting,
+text author and original text edit digest. It changes only effective source
+snapshot/maps and adds `contextMigration` with a declared editor, instruction
+digest, previous snapshot/context digest and `contextReview: UNASSESSED`.
+Publish the prepared proposal with `docs proposal publish --proposal ID
+--unassessed`. Exact stored manual instructions are required; direct narrative
+metadata cannot forge a migration. A text edit and context selection cannot
+share a paragraph in one proposal. Later text edits preserve migration metadata
+and effective context. Subsequent source changes make that context stale without
+silently moving it again. Current context freshness establishes neither semantic
+review of text nor review of the selected context.

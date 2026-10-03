@@ -59,8 +59,7 @@ pub struct Proposal {
 }
 /// A bounded edit against one exact canonical retained record. This is
 /// deliberately not a generic JSON patch or a new evidence-bound source claim.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct RetainedEdit {
     pub kind: RetainedKind,
     pub id: String,
@@ -68,10 +67,9 @@ pub struct RetainedEdit {
     pub target: RetainedTarget,
     pub expected_old_value: String,
     pub replacement: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    pub context: Option<ContextInstruction>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -83,6 +81,24 @@ pub enum RetainedKind {
 pub enum RetainedTarget {
     OperationTitle,
     ExplanationText,
+    ExplanationContext,
+}
+mod retained_wire;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextInstruction {
+    pub expected_paragraph_digest: String,
+    pub expected_context_digest: String,
+    pub context_editor: String,
+    pub source_references: Vec<String>,
+    pub dependency_references: Vec<String>,
+    pub anchors: Vec<ContextAnchor>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextAnchor {
+    pub event_id: String,
+    pub expected_event_digest: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1108,8 +1124,18 @@ pub(super) fn materialize(
     }
     let replacements = operation_targets.clone();
     let mut edit_targets = BTreeSet::new();
+    let mut paragraph_targets = BTreeSet::new();
     let mut edited = BTreeMap::new();
     for edit in &input.retained_edits {
+        if matches!(
+            edit.target,
+            RetainedTarget::ExplanationText | RetainedTarget::ExplanationContext
+        ) && !paragraph_targets.insert((&edit.id, &edit.fragment_id))
+        {
+            return Err(invalid(
+                "duplicate retained paragraph target: text and context edits cannot target the same paragraph",
+            ));
+        }
         if !edit_targets.insert((&edit.id, edit.target, &edit.fragment_id)) {
             return Err(invalid("duplicate retained edit target"));
         }
@@ -1157,6 +1183,34 @@ pub(super) fn materialize(
                     format!(
                         "Change operation title from {:?} to {:?}.",
                         edit.expected_old_value, edit.replacement
+                    ),
+                )
+            }
+            RetainedTarget::ExplanationContext => {
+                let id = edit
+                    .fragment_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("explanationContext requires fragmentId"))?;
+                let original = retained
+                    .explanation
+                    .iter()
+                    .find(|p| p.id == id)
+                    .ok_or_else(|| invalid("retained context paragraph is unavailable"))?;
+                let authorship =
+                    super::explanation_authorship::from_context_edit(work, original, edit, state)?;
+                operation
+                    .explanation
+                    .iter_mut()
+                    .find(|p| p.id == id)
+                    .unwrap()
+                    .authorship = Some(authorship);
+                (
+                    format!("retainedEdit/explanationContext/{id}"),
+                    "USER_DOCUMENTATION_CONTEXT",
+                    format!(
+                        "{} explicitly selects the current source context for paragraph {:?}; its text and text attribution remain unchanged and context review is UNASSESSED.",
+                        edit.context.as_ref().unwrap().context_editor,
+                        id
                     ),
                 )
             }
@@ -1211,7 +1265,7 @@ pub(super) fn materialize(
         builder.claims.insert(
             claim_id,
             json!({
-                "kind":if edit.target == RetainedTarget::ExplanationText { "RETAINED_DOCUMENTATION_EDIT" } else { "RETAINED_PRESENTATION_EDIT" }, "authority":authority,
+                "kind":match edit.target {RetainedTarget::ExplanationContext=>"RETAINED_CONTEXT_MIGRATION", RetainedTarget::ExplanationText=>"RETAINED_DOCUMENTATION_EDIT", _=>"RETAINED_PRESENTATION_EDIT"}, "authority":authority,
                 "slot":slot, "version":digest(edit)?, "text":description,
                 "work":work.id, "snapshot":work.snapshot, "edit":edit,
                 "meaning":"UNASSESSED", "uncertainty":null
@@ -1225,7 +1279,14 @@ pub(super) fn materialize(
                 let allowed: BTreeSet<_> = input
                     .retained_edits
                     .iter()
-                    .filter(|e| e.id == operation.id && e.target == RetainedTarget::ExplanationText)
+                    .filter(|e| {
+                        e.id == operation.id
+                            && matches!(
+                                e.target,
+                                RetainedTarget::ExplanationText
+                                    | RetainedTarget::ExplanationContext
+                            )
+                    })
                     .filter_map(|e| e.fragment_id.as_deref())
                     .collect();
                 super::explanation_authorship::preserve(old, operation, &allowed)?;

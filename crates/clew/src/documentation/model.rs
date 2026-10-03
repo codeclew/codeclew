@@ -311,6 +311,17 @@ pub struct ExplanationAuthorship {
     pub source_snapshot: String,
     pub source_refs: BTreeMap<String, String>,
     pub dependency_refs: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_migration: Option<ExplanationContextMigration>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExplanationContextMigration {
+    pub editor: String,
+    pub instruction_digest: String,
+    pub previous_source_snapshot: String,
+    pub previous_context_digest: String,
+    pub context_review: AuthoredMeaningReview,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]

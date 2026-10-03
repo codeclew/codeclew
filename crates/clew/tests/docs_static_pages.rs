@@ -881,7 +881,7 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         .unwrap()
         .replace(
             "body.name, body.eligible",
-            "body.name.toUpperCase(), body.eligible",
+            "body.name + \" updated\", body.eligible",
         )
         .replace(
             "if (!current.enabled)",
@@ -1082,9 +1082,205 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     )
     .unwrap();
     reject(&invalid, "frozen-input-budget", "input exceeds 64 MiB");
+    let regeneration_work = public_work(
+        &f,
+        &v2,
+        &entry.id,
+        "Refresh native endpoint source fields before manual context selection",
+    );
+    complete_work(&f, &regeneration_work, Some(&entry.id));
+    let generated_work = work::load(&repo, &regeneration_work).unwrap();
+    let root = generated_work
+        .handles
+        .iter()
+        .find(|(_, h)| h.kind == "ENTRYPOINT" && h.id == entry.id)
+        .unwrap()
+        .0;
+    let mut steps = maintained
+        .events
+        .iter()
+        .filter(|e| e.kind != "end")
+        .map(|event| {
+            let mut evidence = vec![root.clone()];
+            evidence.extend(event.dependency_ids.iter().map(|id| {
+                generated_work
+                    .handles
+                    .iter()
+                    .find(|(_, h)| h.kind == "DEPENDENCY" && &h.id == id)
+                    .unwrap()
+                    .0
+                    .clone()
+            }));
+            json!({"kind":"note","meaning":{"text":event.text,"evidence":evidence}})
+        })
+        .collect::<Vec<_>>();
+    let previously_covered: std::collections::BTreeSet<_> = maintained
+        .events
+        .iter()
+        .flat_map(|e| e.dependency_ids.iter())
+        .collect();
+    for (reference, handle) in &generated_work.handles {
+        if handle.kind == "DEPENDENCY"
+            && !previously_covered.contains(&handle.id)
+            && generated_work
+                .checked
+                .dependencies
+                .get(&handle.id)
+                .is_some_and(|d| d.kind == "FLOW" && d.symbol == entry.symbol)
+        {
+            steps.push(json!({"kind":"note","meaning":{"text":"Additional current compiler source event.","evidence":[root,reference]}}));
+        }
+    }
+    let generated_input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":root,"title":"Submit a task","summary":{"text":"Current compiler source context for this synthetic endpoint.","evidence":[root]},"steps":steps,"explanation":(0..14).map(|i|json!({"text":format!("Current synthetic paragraph {i}. {}","Synthetic maintained explanation λ☕. ".repeat(120)),"evidence":[root]})).collect::<Vec<_>>()}]});
+    let generated_publication = submit_and_publish(&f, &regeneration_work, &generated_input);
+    let generated_data = support::read(f.bundle(
+        generated_publication["bundle"].as_str().unwrap(),
+        "services/alpha.json",
+    ));
+    let current_operation: Operation =
+        serde_json::from_value(generated_data["operations"][0].clone()).unwrap();
+    let original = current_operation
+        .explanation
+        .iter()
+        .find(|p| p.id == paragraph.id)
+        .unwrap();
+    let migration_work = public_work(
+        &f,
+        &v2,
+        &entry.id,
+        "Explicitly select current native endpoint paragraph context",
+    );
+    complete_work(&f, &migration_work, Some(&entry.id));
+    let saved_migration = work::load(&repo, &migration_work).unwrap();
+    let references = |kind: &str, ids: &[String]| {
+        ids.iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|id| {
+                saved_migration
+                    .handles
+                    .iter()
+                    .find(|(_, h)| h.kind == kind && &h.id == id)
+                    .unwrap()
+                    .0
+                    .clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    let source_refs = references("SOURCE", &original.source_ids);
+    for reference in &source_refs {
+        let mut cursor = None;
+        loop {
+            let mut request = json!({"schema":"codeclew-documentation-source-part-request/1.0","reference":reference});
+            if let Some(c) = &cursor {
+                request["cursor"] = json!(c);
+            }
+            let part_input = f.input("native-migration-source-part.json", &request);
+            let output = f.run_raw(&[
+                "docs",
+                "work",
+                "read-part",
+                "--work",
+                &migration_work,
+                "--input",
+                part_input.to_str().unwrap(),
+            ]);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(output.stdout.len() <= 49152);
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            cursor = value["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+    let auth = original.authorship.as_ref().unwrap();
+    let migration_input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{"kind":"RETAINED_OPERATION","id":entry.id,"recordDigest":canonical::hash(&current_operation).unwrap(),"target":"explanationContext","fragmentId":original.id,"expectedParagraphDigest":canonical::hash(original).unwrap(),"expectedContextDigest":canonical::hash(&(&auth.source_snapshot,&auth.source_refs,&auth.dependency_refs,&auth.context_role,&auth.context_migration)).unwrap(),"contextEditor":"Native context <editor>","sourceReferences":source_refs,"dependencyReferences":references("DEPENDENCY",&original.dependency_ids),"anchors":original.event_ids.iter().map(|id|json!({"eventId":id,"expectedEventDigest":canonical::hash(current_operation.events.iter().find(|e|&e.id==id).unwrap()).unwrap()})).collect::<Vec<_>>()}]});
+    let migration_publication = submit_and_publish(&f, &migration_work, &migration_input);
+    let mut migrated_selection = selected.clone();
+    migrated_selection[0]["authoredParagraphs"][0]["bundle"] =
+        migration_publication["bundle"].clone();
+    let migration_selection_input = f.input("native-migrated-selection.json", &migrated_selection);
+    let native_migrated = f.temp.path().join("native-migrated-current");
+    render(&f, &v2, &migration_selection_input, &native_migrated);
+    verify_bundle(&native_migrated);
+    let native_migrated_data = support::read(native_migrated.join("projection.json"));
+    let migrated_row = &native_migrated_data["pages"][0]["authoredParagraphs"][0];
+    assert_eq!(migrated_row["contextFreshness"], "CURRENT");
+    assert_eq!(
+        migrated_row["paragraph"]["authorship"]["sourceSnapshot"],
+        v2
+    );
+    assert_eq!(
+        migrated_row["paragraph"]["authorship"]["author"],
+        auth.author
+    );
+    assert_eq!(
+        migrated_row["paragraph"]["authorship"]["editDigest"],
+        auth.edit_digest
+    );
+    assert_eq!(migrated_row["paragraph"]["text"], original.text);
+    let html = fs::read_to_string(native_migrated.join("alpha-flow-overview.html")).unwrap();
+    assert!(
+        html.contains("Declared text author: Fixture &lt;maintainer&gt;")
+            && html.contains("Context selected by Native context &lt;editor&gt;")
+            && html.contains("Context review: UNASSESSED")
+            && html.contains("Explicitly selected source")
+    );
+    assert!(!html.contains("Originally linked source"));
+    assert!(
+        fs::read_to_string(native_migrated.join("sources.mdx"))
+            .unwrap()
+            .contains("Explicitly selected authored paragraph context")
+    );
+    let native_migrated_files = files(&native_migrated);
+    // A further real compiler capture makes the selected paragraph context stale.
+    fs::write(
+        &path,
+        fs::read_to_string(&path)
+            .unwrap()
+            .replace("body.name + \" updated\"", "body.name + \" newer\""),
+    )
+    .unwrap();
+    commit(&alpha);
+    let (v3, c3) = capture(&f);
+    assert_ne!(v2, v3);
+    let mut newer = migrated_selection.clone();
+    newer[0]["endpointDeclaration"] = json!(declaration(
+        &c3.services["alpha"],
+        "alpha.DispatchEndpoint",
+        "submit"
+    ));
+    newer[0]["workerDeclaration"] = json!(declaration(
+        &c3.services["alpha"],
+        "alpha.ProcessingLoop",
+        "runOnce"
+    ));
+    newer[0]["wiringDeclaration"] = json!(declaration(
+        &c3.services["alpha"],
+        "alpha.Composition",
+        "assemble"
+    ));
+    let newer_input = f.input("native-migrated-stale-selection.json", &newer);
+    let native_stale = f.temp.path().join("native-migrated-stale");
+    render(&f, &v3, &newer_input, &native_stale);
+    verify_bundle(&native_stale);
+    let stale_projection = support::read(native_stale.join("projection.json"));
+    let stale_row = &stale_projection["pages"][0]["authoredParagraphs"][0];
+    assert_eq!(stale_row["contextFreshness"], "STALE");
+    assert_eq!(stale_row["paragraph"], migrated_row["paragraph"]);
+    assert_eq!(stale_row["sourceRecords"], migrated_row["sourceRecords"]);
+    assert_eq!(files(&native_migrated), native_migrated_files);
     fs::remove_dir_all(&alpha).unwrap();
     let offline = f.temp.path().join("native-authored-offline");
     render(&f, &v2, &input, &offline);
+    let migrated_offline = f.temp.path().join("native-migrated-offline");
+    render(&f, &v2, &migration_selection_input, &migrated_offline);
+    assert_eq!(files(&migrated_offline), native_migrated_files);
     assert_eq!(files(&offline), expected_files);
     assert_eq!(frozen_tree(&f.bundle(bundle, "")), old_bundle);
     if let Some(destination) = std::env::var_os("CODECLEW_NATIVE_AUTHORED_TEST_ARTIFACTS") {
@@ -1093,6 +1289,9 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         fs::create_dir(destination).unwrap();
         copy_tree(&current, &destination.join("current"));
         copy_tree(&offline, &destination.join("offline"));
-        fs::write(destination.join("journey.json"),serde_json::to_vec_pretty(&json!({"schema":"codeclew-native-authored-journey/1.0","authority":"PUBLIC_MANUAL_UNASSESSED_NOT_SEMANTIC_REVIEW","originalSnapshot":v1,"currentSnapshot":v2,"authoredPublication":authored,"livePointerMovedPublication":moved,"selection":selected,"checkoutAndArchivesRemoved":true,"byteIdenticalOffline":true})).unwrap()).unwrap();
+        copy_tree(&native_migrated, &destination.join("migrated-current"));
+        copy_tree(&native_stale, &destination.join("migrated-stale"));
+        copy_tree(&migrated_offline, &destination.join("migrated-offline"));
+        fs::write(destination.join("journey.json"),serde_json::to_vec_pretty(&json!({"schema":"codeclew-native-authored-journey/1.0","authority":"PUBLIC_MANUAL_UNASSESSED_NOT_SEMANTIC_REVIEW","originalSnapshot":v1,"currentSnapshot":v2,"authoredPublication":authored,"livePointerMovedPublication":moved,"selection":selected,"contextMigrationInput":migration_input,"contextMigrationPublication":migration_publication,"migratedSelection":migrated_selection,"subsequentSourceSnapshot":v3,"checkoutAndArchivesRemoved":true,"byteIdenticalOffline":true})).unwrap()).unwrap();
     }
 }
