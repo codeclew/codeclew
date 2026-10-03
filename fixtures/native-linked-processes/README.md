@@ -20,11 +20,13 @@ it delegates to real `mvn`; it does not download Maven or emulate its metadata.
 The first ordinary Maven build may download public plugins and test dependencies.
 The Java driver itself uses only the JDK and local fixture classes.
 
-From a fresh Codeclew source clone containing this fixture:
+The fixture is published in the source candidate branch before release. Pin its
+first tested source commit for reproduction:
 
 ```sh
 git clone https://github.com/codeclew/codeclew.git codeclew
 cd codeclew
+git checkout 5785261fc80c4bfe84ce2f4dbd27b694bcc62994
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 export PATH="$JAVA_HOME/bin:$PATH"
 cd fixtures/native-linked-processes
