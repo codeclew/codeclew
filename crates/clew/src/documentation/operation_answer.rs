@@ -2570,7 +2570,9 @@ struct SourceLocation {
 #[derive(Default)]
 struct SourceNavigation {
     locations: Vec<SourceLocation>,
-    evidence_locations: BTreeMap<String, Vec<usize>>,
+    body_evidence_locations: BTreeMap<String, Vec<usize>>,
+    /// Claim affinity excludes implicit body ranges attached to a containing SOURCE.
+    claim_evidence_locations: BTreeMap<String, Vec<usize>>,
     citing_blocks: BTreeMap<usize, Vec<CitedBlock>>,
 }
 
@@ -2722,6 +2724,11 @@ fn source_navigation(
         }
     }
 
+    // Keep implicit body audit navigation separate from the exact source ranges
+    // cited by prose. A containing class SOURCE also supplies the root diagram,
+    // but citing that class does not cite every method body nested within it.
+    let mut claim_locations_by_evidence = locations_by_evidence.clone();
+    let mut callable_claim_locations = BTreeMap::<String, BTreeSet<SourceLocation>>::new();
     let mut add_body_location =
         |source_reference: &str, start: usize, end: usize, evidence: Vec<String>| {
             let (Some(parent_location), Some(text)) = (
@@ -2740,9 +2747,15 @@ fn source_navigation(
                 .filter(|label| navigation_labels.contains(label))
             {
                 locations_by_evidence
-                    .entry(label)
+                    .entry(label.clone())
                     .or_default()
                     .insert(location.clone());
+                if label != source_reference {
+                    callable_claim_locations
+                        .entry(label)
+                        .or_default()
+                        .insert(location.clone());
+                }
             }
         };
     for body in packet["methodBodies"].as_array().into_iter().flatten() {
@@ -2798,20 +2811,26 @@ fn source_navigation(
         .enumerate()
         .map(|(index, location)| (location.clone(), index))
         .collect();
-    let evidence_locations = locations_by_evidence
-        .into_iter()
-        .filter(|(label, _)| navigation_labels.contains(label))
-        .map(|(label, candidates)| {
-            let indices = candidates
-                .iter()
-                .filter_map(|location| location_indices.get(location).copied())
-                .collect();
-            (label, indices)
-        })
-        .collect();
+    // An explicit callable declaration binds its claim to the verified method
+    // range instead of a broad sourceIds association with the containing class.
+    claim_locations_by_evidence.extend(callable_claim_locations);
+    let indexed = |mapping: BTreeMap<String, BTreeSet<SourceLocation>>| {
+        mapping
+            .into_iter()
+            .filter(|(label, _)| navigation_labels.contains(label))
+            .map(|(label, candidates)| {
+                let indices = candidates
+                    .iter()
+                    .filter_map(|location| location_indices.get(location).copied())
+                    .collect();
+                (label, indices)
+            })
+            .collect()
+    };
     let mut navigation = SourceNavigation {
         locations,
-        evidence_locations,
+        body_evidence_locations: indexed(locations_by_evidence),
+        claim_evidence_locations: indexed(claim_locations_by_evidence),
         citing_blocks: BTreeMap::new(),
     };
     navigation.citing_blocks = source_citing_blocks(answer, &navigation);
@@ -2831,7 +2850,7 @@ fn source_citing_blocks(
     ) {
         let block = CitedBlock { anchor, label };
         for reference in evidence {
-            if let Some(locations) = navigation.evidence_locations.get(reference) {
+            if let Some(locations) = navigation.claim_evidence_locations.get(reference) {
                 for location in locations {
                     cited
                         .entry(*location)
@@ -3005,7 +3024,7 @@ fn root_process_diagram(
         .zip(source_excerpt.as_deref())
         .and_then(|(reference, excerpt)| {
             let matches: Vec<_> = navigation
-                .evidence_locations
+                .body_evidence_locations
                 .get(reference)?
                 .iter()
                 .copied()
@@ -3636,7 +3655,7 @@ fn render_markdown(
 
 const OFFLINE_STYLE: &str = r#"
 :root{color-scheme:light dark;font:16px/1.55 system-ui,sans-serif;--line:#8792a2;--panel:#171b22;--accent:#73b7ff}
-*{box-sizing:border-box}html,body{width:100%;min-width:0}body{margin:0;background:#101319;color:#e8edf5}main{width:100%;max-width:1120px;min-width:0;margin:auto;padding:2rem}
+*{box-sizing:border-box}html,body{width:100%;min-width:0}body{margin:0;background:#101319;color:#e8edf5}main{width:100%;max-width:1120px;min-width:0;margin:auto;padding:2rem;overflow-wrap:anywhere}
 main>*,main section,main details,.document-nav,.claim{max-width:100%;min-width:0}.document-nav{display:flex;flex-wrap:wrap;align-items:baseline;gap:.25rem .65rem}.document-nav a{min-width:0;overflow-wrap:anywhere;word-break:break-word}
 h1,h2,h3{line-height:1.2}h2{margin-top:2.2rem;border-bottom:1px solid #394252;padding-bottom:.45rem}
 a{color:var(--accent);overflow-wrap:anywhere;word-break:break-word}code{overflow-wrap:anywhere;word-break:break-word}.review-status{padding:.85rem 1rem;border-left:4px solid #d99e45;background:#29231a;overflow-wrap:anywhere}
@@ -5551,7 +5570,7 @@ fn render_source_links_html(
     labels: ReaderLabels,
 ) -> String {
     match navigation
-        .evidence_locations
+        .claim_evidence_locations
         .get(label)
         .filter(|items| !items.is_empty())
     {
@@ -5588,7 +5607,7 @@ fn render_source_links_markdown(
     labels: ReaderLabels,
 ) -> String {
     match navigation
-        .evidence_locations
+        .claim_evidence_locations
         .get(label)
         .filter(|items| !items.is_empty())
     {
@@ -6273,13 +6292,29 @@ mod tests {
     #[test]
     fn version_1_2_projects_glossary_predicates_and_block_evidence_with_technical_details_drilled_down()
      {
-        let packet = packet();
-        let authored = semantic_answer(&packet);
+        let mut packet = packet();
+        let long_declaration = "method:class:example.linked.ChildWorker#prepare(Lexample/linked/Task;)Ljava/lang/String;";
+        packet["callMap"]["nodes"] = json!([{
+            "id":"long-declaration",
+            "identity":long_declaration,
+            "ownerIdentity":"class:example.linked.ChildWorker",
+            "scope":":/main"
+        }]);
+        seal(&mut packet);
+        let mut authored = semantic_answer(&packet);
+        authored["glossary"][0]["subjectRefs"] = json!(["api.TransferRequest", "long-declaration"]);
+        authored["uncertainties"] = json!([
+            "SOURCE_RECEIVER_SHADOWING_AMBIGUOUS and CALL_SITE_SOURCE_NOT_CONTAINED_IN_METHOD_BODY remain unresolved."
+        ]);
         let original = authored.clone();
 
         let rendered = validate_and_render_draft(&packet, &audit(&packet), authored).unwrap();
 
         assert_eq!(rendered.answer, original);
+        assert!(rendered.html.contains("<li>SOURCE_RECEIVER_SHADOWING_AMBIGUOUS and CALL_SITE_SOURCE_NOT_CONTAINED_IN_METHOD_BODY remain unresolved.</li>"));
+        assert!(rendered.html.contains(&format!(
+            "<code>long-declaration</code> — long-declaration · {long_declaration}"
+        )));
         assert!(rendered.html.contains("Glossary"));
         assert!(rendered.html.contains("Transfer request"));
         assert!(
@@ -7829,6 +7864,142 @@ mod tests {
                 legacy_ids.iter().filter(|id| *id == &target).count(),
                 1,
                 "legacy fragment link #{target} must resolve exactly once"
+            );
+        }
+    }
+
+    #[test]
+    fn containing_source_claims_do_not_attach_to_implicit_method_body_ranges() {
+        let source = "class Demo {\n  final String prefix;\n  Demo(String prefix) { this.prefix = prefix; }\n  String prepare(String name) {\n    String chosen = name;\n    if (chosen == null) { chosen = \"anonymous\"; }\n    return prefix + chosen.trim();\n  }\n}\n";
+        let symbol = "method:class:demo.Demo#prepare(Ljava/lang/String;)Ljava/lang/String;";
+        let (mut packet, mut audit) = process_packet(source, symbol);
+        let start = packet["methods"][0]["body"]["startByte"].as_u64().unwrap() as usize;
+        let end = packet["methods"][0]["body"]["endByte"].as_u64().unwrap() as usize;
+        packet["citations"]["method-alias"] = json!("exact retained prepare declaration");
+        packet["citations"]["method-declaration"] = json!("prepare callable declaration");
+        packet["methods"][0]["declarationReference"] = json!("method-declaration");
+        packet["methods"][0]["evidence"] = json!(["method-declaration", "method-alias"]);
+        packet["methods"][0]["body"]["evidence"] = json!(["method-alias"]);
+        packet["methodSources"][0]["sourceAliases"] = json!([{
+            "reference":"method-alias", "authority":"TRANSFORMED_SOURCE",
+            "startByte":source.find("String prepare").unwrap(), "endByte":end,
+            "evidence":["method-alias"]
+        }]);
+        seal(&mut packet);
+        audit["records"].as_array_mut().unwrap().push(json!({
+            "label":"method-declaration", "kind":"DEPENDENCY", "id":"method-declaration-id",
+            "row":{"record":{"sourceIds":["source-root-id"]}}
+        }));
+        rebind_audit(&packet, &mut audit);
+        let mut answer = simple_answer(&packet, "method-alias");
+        answer["summary"]["evidence"] = json!(["method-declaration"]);
+        answer["steps"][0]["preparationRefs"] = json!(["constructor-prefix"]);
+        answer["preparations"] = json!([{
+            "id":"constructor-prefix", "title":"Constructor prefix origin",
+            "summary":{"text":"The constructor supplies prefix context.","evidence":["source-root"],
+                "uncertainty":"No constructor declaration or invocation metadata is retained; the assignment is supported by the displayed class source."},
+            "steps":[{"kind":"action","meaning":{
+                "text":"Assign the constructor prefix parameter to the field.","evidence":["source-root"]
+            }}]
+        }]);
+        let parsed: OperationAnswer = serde_json::from_value(answer.clone()).unwrap();
+        let navigation = source_navigation(
+            &packet,
+            &audit,
+            &BTreeSet::from([
+                "source-root".into(),
+                "method-alias".into(),
+                "method-declaration".into(),
+            ]),
+            &selected_root_source_references(&packet),
+            &parsed,
+        );
+        let container = navigation
+            .locations
+            .iter()
+            .position(|l| l.reference == "source-root" && l.excerpt == source)
+            .unwrap();
+        let body = navigation
+            .locations
+            .iter()
+            .position(|l| l.reference == "source-root" && l.excerpt == source[start..end])
+            .unwrap();
+        let alias = navigation
+            .locations
+            .iter()
+            .position(|l| l.reference == "method-alias")
+            .unwrap();
+        let constructor_summary = "preparation-constructor-prefix";
+        let constructor_step = step_anchor(
+            &parsed.preparations[0].steps[0],
+            &step_path(&preparation_step_prefix("constructor-prefix"), 1),
+        );
+        let anchors = |index| {
+            navigation
+                .citing_blocks
+                .get(&index)
+                .into_iter()
+                .flatten()
+                .map(|b| b.anchor.as_str())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            anchors(container),
+            BTreeSet::from([constructor_summary, constructor_step.as_str()])
+        );
+        assert_eq!(anchors(body), BTreeSet::from(["summary"]));
+        assert_eq!(anchors(alias), BTreeSet::from(["step-1"]));
+        // The containing source still indexes the body for the source-local
+        // diagram; exact alias navigation and the authored answer stay intact.
+        assert!(navigation.body_evidence_locations["source-root"].contains(&body));
+        assert!(navigation.body_evidence_locations["method-alias"].contains(&alias));
+        let labels = ReaderLabels::new(&packet);
+        for links in [
+            render_source_links_html("source-root", &navigation, labels),
+            render_source_links_markdown("source-root", &navigation, labels),
+        ] {
+            assert!(links.contains(&format!("#source-{}", container + 1)));
+            assert!(!links.contains(&format!("#source-{}", body + 1)));
+            assert!(!links.contains(&format!("#source-{}", alias + 1)));
+        }
+        for (reference, expected) in [("method-declaration", body), ("method-alias", alias)] {
+            for links in [
+                render_source_links_html(reference, &navigation, labels),
+                render_source_links_markdown(reference, &navigation, labels),
+            ] {
+                assert!(links.contains(&format!("#source-{}", expected + 1)));
+                assert!(!links.contains(&format!("#source-{}", container + 1)));
+            }
+        }
+        let rendered = validate_and_render(&packet, &audit, answer.clone()).unwrap();
+        assert_eq!(rendered.answer, answer);
+        let diagram = rendered.process_diagram.as_ref().unwrap();
+        assert!(diagram.has_causal_projection);
+        assert_eq!(diagram.source_anchor, Some(format!("source-{}", body + 1)));
+        assert!(diagram.tree.contains("chosen") && !diagram.tree.contains("this.prefix = prefix"));
+        for (text, section_start, section_end) in [
+            (
+                &rendered.html,
+                format!("<li id=\"source-{}\">", body + 1),
+                "</li>",
+            ),
+            (
+                &rendered.markdown,
+                format!("<a id=\"source-{}\"></a>", body + 1),
+                "<a id=\"source-",
+            ),
+        ] {
+            let section = text
+                .split_once(&section_start)
+                .unwrap()
+                .1
+                .split(section_end)
+                .next()
+                .unwrap();
+            assert!(section.contains("#summary"));
+            assert!(
+                !section.contains("#preparation-constructor-prefix")
+                    && !section.contains(&format!("#{constructor_step}"))
             );
         }
     }

@@ -760,6 +760,64 @@ fn frozen_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 #[ignore = "runs public manual Work and real native Maven/javac capture; requires repository JDK"]
 fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_page_offline() {
     use clew::documentation::{model::Operation, work};
+    let assert_source_calls = |out: &Path, projection: &Value| {
+        verify_bundle(out);
+        let page = &projection["pages"][0];
+        assert_eq!(page["selection"]["expandSourceCalls"], true);
+        let graph = &projection["sourceCallGraph"];
+        assert_eq!(graph["schema"], "codeclew-native-source-calls/1.0");
+        let nodes = graph["nodes"].as_object().unwrap();
+        // The graph examines current native roots, independently of the authored
+        // paragraph's original or explicitly migrated source pins.
+        for role in ["endpoint", "worker", "wiring"] {
+            let callable = &page[role];
+            let node = nodes
+                .values()
+                .find(|n| n["callable"]["declarationId"] == callable["declarationId"])
+                .expect("selected native root has a canonical source-call node");
+            assert_eq!(node["callable"], *callable);
+            let observation = &node["observations"][callable["declarationId"].as_str().unwrap()];
+            for source in observation["sourceIds"].as_array().unwrap() {
+                let id = source.as_str().unwrap();
+                assert_eq!(node["sources"][id], page["sources"][id]);
+                assert!(node["sources"][id]["text"].is_string());
+            }
+        }
+        let manifest = support::read(out.join("manifest.json"));
+        let rows = manifest["pages"].as_array().unwrap();
+        assert!(rows.iter().any(|row| row["id"] == "source-calls"));
+        let examined_digest = page["examinedSources"]["examinedSourceDigest"]
+            .as_str()
+            .unwrap();
+        assert!(examined_digest.starts_with("sha256:"));
+        let process_rows: Vec<_> = rows
+            .iter()
+            .filter(|row| row["id"].as_str().unwrap().starts_with("alpha-flow-"))
+            .collect();
+        assert_eq!(process_rows.len(), 5);
+        for row in process_rows {
+            assert_eq!(
+                row["examinedSourceDigest"],
+                page["examinedSources"]["examinedSourceDigest"]
+            );
+        }
+        for ext in ["html", "mdx"] {
+            let calls = fs::read_to_string(out.join(format!("source-calls.{ext}"))).unwrap();
+            assert!(
+                calls.contains("Retained source-call bodies") && calls.contains("ProcessingLoop")
+            );
+            let overview =
+                fs::read_to_string(out.join(format!("alpha-flow-overview.{ext}"))).unwrap();
+            let paragraph = &page["authoredParagraphs"][0]["paragraph"];
+            let author_label = if paragraph["authorship"]["contextMigration"].is_object() {
+                "Declared text author: Fixture &lt;maintainer&gt;"
+            } else {
+                "Declared author: Fixture &lt;maintainer&gt;"
+            };
+            assert!(overview.contains("Linked process source context"));
+            assert!(overview.contains(author_label));
+        }
+    };
     let f = Fixture::new();
     let alpha = setup(&f, "alpha", true);
     // Compiler-resolved Spring annotations create a public discovered endpoint;
@@ -869,14 +927,21 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         .unwrap();
     let mut selected = json!([{"id":"alpha-flow","service":"alpha","endpointDeclaration":declaration_v1,
         "workerDeclaration":declaration(service,"alpha.ProcessingLoop","runOnce"),"wiringDeclaration":declaration(service,"alpha.Composition","assemble"),
-        "authoredParagraphs":[{"bundle":bundle,"operation":entry.id,"fragment":paragraph.id}]}]);
+        "authoredParagraphs":[{"bundle":bundle,"operation":entry.id,"fragment":paragraph.id}],"expandSourceCalls":true}]);
     let old_selection = f.input("native-authored-v1-selection.json", &selected);
     let before = f.temp.path().join("native-authored-v1");
     render(&f, &v1, &old_selection, &before);
+    let before_projection = support::read(before.join("projection.json"));
+    assert_source_calls(&before, &before_projection);
     assert_eq!(
-        support::read(before.join("projection.json"))["pages"][0]["authoredParagraphs"][0]["contextFreshness"],
+        before_projection["pages"][0]["authoredParagraphs"][0]["contextFreshness"],
         "CURRENT"
     );
+    assert_eq!(
+        before_projection["pages"][0]["authoredParagraphs"][0]["paragraph"],
+        serde_json::to_value(protected).unwrap()
+    );
+    let before_files = files(&before);
     let changed = fs::read_to_string(&path)
         .unwrap()
         .replace(
@@ -914,8 +979,8 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     let input = f.input("native-authored-current-selection.json", &selected);
     let current = f.temp.path().join("native-authored-current");
     render(&f, &v2, &input, &current);
-    verify_bundle(&current);
     let projection = support::read(current.join("projection.json"));
+    assert_source_calls(&current, &projection);
     let page = &projection["pages"][0];
     let row = &page["authoredParagraphs"][0];
     assert_eq!(row["selection"], selected[0]["authoredParagraphs"][0]);
@@ -1207,8 +1272,8 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     let migration_selection_input = f.input("native-migrated-selection.json", &migrated_selection);
     let native_migrated = f.temp.path().join("native-migrated-current");
     render(&f, &v2, &migration_selection_input, &native_migrated);
-    verify_bundle(&native_migrated);
     let native_migrated_data = support::read(native_migrated.join("projection.json"));
+    assert_source_calls(&native_migrated, &native_migrated_data);
     let migrated_row = &native_migrated_data["pages"][0]["authoredParagraphs"][0];
     assert_eq!(migrated_row["contextFreshness"], "CURRENT");
     assert_eq!(
@@ -1224,6 +1289,14 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         auth.edit_digest
     );
     assert_eq!(migrated_row["paragraph"]["text"], original.text);
+    let migration = &migrated_row["paragraph"]["authorship"]["contextMigration"];
+    assert_eq!(migration["editor"], "Native context <editor>");
+    assert_eq!(migration["previousSourceSnapshot"], auth.source_snapshot);
+    assert_eq!(migration["contextReview"], "UNASSESSED");
+    for (id, pinned) in migrated_row["sourceRecords"].as_object().unwrap() {
+        assert_eq!(pinned["textDigest"], c2.sources()[id].text_digest);
+        assert_eq!(pinned["text"], c2.sources()[id].text);
+    }
     let html = fs::read_to_string(native_migrated.join("alpha-flow-overview.html")).unwrap();
     assert!(
         html.contains("Declared text author: Fixture &lt;maintainer&gt;")
@@ -1268,18 +1341,31 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     let newer_input = f.input("native-migrated-stale-selection.json", &newer);
     let native_stale = f.temp.path().join("native-migrated-stale");
     render(&f, &v3, &newer_input, &native_stale);
-    verify_bundle(&native_stale);
     let stale_projection = support::read(native_stale.join("projection.json"));
+    assert_source_calls(&native_stale, &stale_projection);
     let stale_row = &stale_projection["pages"][0]["authoredParagraphs"][0];
     assert_eq!(stale_row["contextFreshness"], "STALE");
     assert_eq!(stale_row["paragraph"], migrated_row["paragraph"]);
     assert_eq!(stale_row["sourceRecords"], migrated_row["sourceRecords"]);
     assert_eq!(files(&native_migrated), native_migrated_files);
+    assert_eq!(files(&before), before_files);
     fs::remove_dir_all(&alpha).unwrap();
+    let original_offline = f.temp.path().join("native-authored-original-offline");
+    render(&f, &v1, &old_selection, &original_offline);
+    assert_source_calls(
+        &original_offline,
+        &support::read(original_offline.join("projection.json")),
+    );
+    assert_eq!(files(&original_offline), before_files);
     let offline = f.temp.path().join("native-authored-offline");
     render(&f, &v2, &input, &offline);
     let migrated_offline = f.temp.path().join("native-migrated-offline");
     render(&f, &v2, &migration_selection_input, &migrated_offline);
+    assert_source_calls(&offline, &support::read(offline.join("projection.json")));
+    assert_source_calls(
+        &migrated_offline,
+        &support::read(migrated_offline.join("projection.json")),
+    );
     assert_eq!(files(&migrated_offline), native_migrated_files);
     assert_eq!(files(&offline), expected_files);
     assert_eq!(frozen_tree(&f.bundle(bundle, "")), old_bundle);
@@ -1287,6 +1373,8 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         let destination = Path::new(&destination);
         assert!(!destination.exists());
         fs::create_dir(destination).unwrap();
+        copy_tree(&before, &destination.join("original"));
+        copy_tree(&original_offline, &destination.join("original-offline"));
         copy_tree(&current, &destination.join("current"));
         copy_tree(&offline, &destination.join("offline"));
         copy_tree(&native_migrated, &destination.join("migrated-current"));

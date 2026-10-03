@@ -44,6 +44,7 @@ cargo test --locked -p clew --test managed_cli durable_source_documentation_java
 cargo test --locked -p clew --test managed_cli flow_dsl_static_render_uses_original_supported_snapshot -- --exact --test-threads=1
 cargo test --locked -p clew --test docs_dependency_targets -- --ignored --test-threads=1
 cargo test --locked -p clew --test docs_static_pages -- --ignored --test-threads=1
+cargo test --locked -p clew --test docs_static_linked_processes -- --ignored --test-threads=1
 cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'maven::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1
