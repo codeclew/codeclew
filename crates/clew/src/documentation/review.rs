@@ -505,6 +505,19 @@ pub(super) fn attach(
         }
         binding.influence_scopes.insert(scope, data);
     }
+    let retained_authored: BTreeSet<_> = binding
+        .fragments
+        .iter()
+        .filter(|(_, fragment)| fragment.influence_scope.is_some())
+        .map(|(key, _)| {
+            super::explanation_authorship::retained_scope(binding, key)
+                .map(|authored| (key, authored))
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?
+        .into_iter()
+        .filter(|(_, authored)| *authored)
+        .map(|(key, _)| key.clone())
+        .collect();
     for (key, version) in versions {
         let (subject, operation) = key
             .split_once('/')
@@ -517,11 +530,14 @@ pub(super) fn attach(
         if digest(current)? != version.operation_digest {
             return Err(invalid("accepted operation changed during publication"));
         }
-        for (_, fragment) in binding
+        for (id, fragment) in binding
             .fragments
             .iter_mut()
             .filter(|(id, _)| id.starts_with(&format!("{key}/")))
         {
+            if retained_authored.contains(id) {
+                continue;
+            }
             fragment.influence_scope = Some(version.influence.scope.clone());
             if let Some(evidence) = &mut fragment.evidence {
                 evidence.revisions.extend(version.source_revisions.clone());

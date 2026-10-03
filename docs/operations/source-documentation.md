@@ -577,16 +577,31 @@ read completeness, input freshness, baseline conflict and atomic publication
 checks still apply. This is manual publication, not separate meaning review or
 automatic-role qualification.
 
-A paragraph edit against a Work snapshot whose linked context differs from the
-published operation is refused instead of rebinding the existing explanation to
-new bytes. A status-only source update keeps authored text, provenance and the
-original source bytes while marking their source freshness stale. Ordinary
-regeneration must preserve the complete authored paragraph, including provenance,
-or its conflicting operation replacement is rejected and the prior publication
-is retained. A direct narrative input cannot forge new authorship or remove it.
-This slice does not implement rebasing authored text onto changed source or a
-separate semantic-verification workflow for user documentation. Snapshot editing
-remains historical; observing current target freshness is a separate status check.
+The first edit of an unauthored paragraph requires its linked context to match
+the selected Work snapshot. Later `explanationText` edits keep the paragraph's
+original pinned context, including when Work selects newer code. They never
+silently rebase that context. A status-only source update keeps authored text,
+provenance and original source bytes while marking local source freshness stale.
+
+An ordinary source-derived proposal supplies current summary, steps and generated
+explanation. Before review and publication, the host copies protected paragraphs
+from immutable Work, preserving their stable IDs, text, authorship, original
+bindings and influence scopes. The proposal does not need to fabricate authorship
+or repeat protected text as newly supported claims. Every protected step anchor
+must survive; a removed anchor or conflicting authored paragraph is rejected.
+New generated explanation covers current steps independently of stale user text.
+Publication keeps both original and current source revisions in the existing
+bindings. A paragraph's source drawer uses its exact fragment-owned original
+bytes, while generated fields use current operation code, even for the same
+logical SOURCE ID. Missing fragment context shows a gap without a current-code
+fallback. JSON, HTML and Markdown show each protected paragraph's local source
+freshness and UNASSESSED meaning separately from the operation's current fields.
+
+A direct narrative input cannot forge authorship or remove protected text. This
+slice does not implement explicit context rebasing, a native static-page authored
+paragraph consumer, or separate semantic verification for user documentation.
+Snapshot editing remains historical; observing current target freshness is a
+separate status check.
 
 Portable bindings 1.3 share identical evidence within a snapshot and derive
 duplicate dependency digest maps from the same retained observations. A fragment

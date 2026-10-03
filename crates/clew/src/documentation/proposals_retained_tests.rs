@@ -671,3 +671,101 @@ fn paragraph_edit_preserves_canonical_fields_and_declares_unverified_context() {
         "historic serialization must stay unchanged"
     );
 }
+
+#[test]
+fn host_preserves_protected_paragraph_and_requires_surviving_event_anchor() {
+    let (_temp, _repo, mut work, narrative) = fixture();
+    work.retained = Some(narrative.clone());
+    let mut old = narrative.operations[0].clone();
+    let mut edit = input(&work).retained_edits.remove(0);
+    edit.target = RetainedTarget::ExplanationText;
+    edit.fragment_id = Some(old.explanation[0].id.clone());
+    edit.author = Some("Fixture editor".into());
+    edit.expected_old_value = old.explanation[0].text.clone();
+    edit.replacement = "Protected documentation stays unchanged during regeneration.".into();
+    old.explanation[0].authorship = Some(
+        super::super::explanation_authorship::from_edit(&work, &old.explanation[0], &edit).unwrap(),
+    );
+    old.explanation[0].text = edit.replacement;
+    let mut generated = narrative.operations[0].clone();
+    generated.explanation.truncate(1);
+    generated.explanation[0].text = "Current generated interpretation of the changed step.".into();
+    generated.summary.text = "New generated summary.".into();
+    super::super::explanation_authorship::merge(&work.subject, &old, &mut generated).unwrap();
+    assert_eq!(
+        generated
+            .explanation
+            .iter()
+            .find(|p| p.id == old.explanation[0].id)
+            .unwrap(),
+        &old.explanation[0]
+    );
+    assert_eq!(generated.explanation.len(), 2);
+    assert_ne!(generated.explanation[0].id, old.explanation[0].id);
+    assert!(generated.explanation[0].authorship.is_none());
+    assert_eq!(
+        generated.explanation[0].source_ids,
+        old.explanation[0].source_ids
+    );
+    let once = generated.clone();
+    super::super::explanation_authorship::merge(&work.subject, &old, &mut generated).unwrap();
+    assert_eq!(generated, once, "host preservation is idempotent");
+    generated.events.clear();
+    assert!(
+        super::super::explanation_authorship::merge(&work.subject, &old, &mut generated)
+            .unwrap_err()
+            .message
+            .contains("event anchor")
+    );
+}
+
+#[test]
+fn retained_scope_exception_requires_exact_canonical_authored_provenance_and_covering_scope() {
+    let (_temp, repo, mut work, mut narrative) = fixture();
+    work.retained = Some(narrative.clone());
+    let mut edit = input(&work).retained_edits.remove(0);
+    edit.target = RetainedTarget::ExplanationText;
+    edit.fragment_id = Some(narrative.operations[0].explanation[0].id.clone());
+    edit.author = Some("Fixture editor".into());
+    let paragraph = &mut narrative.operations[0].explanation[0];
+    paragraph.authorship =
+        Some(super::super::explanation_authorship::from_edit(&work, paragraph, &edit).unwrap());
+    let key = format!("{}/reserve/{}", work.subject, paragraph.id);
+    let mut binding = render::make_bindings(
+        &work.checked,
+        BTreeMap::from([(work.subject.clone(), narrative)]),
+    )
+    .unwrap();
+    let scope = review::InfluenceScope {
+        dependencies: work.influence.clone(),
+        declarations: BTreeMap::new(),
+    };
+    let id = digest(&scope).unwrap();
+    binding.influence_scopes.insert(id.clone(), scope);
+    binding.fragments.get_mut(&key).unwrap().influence_scope = Some(id);
+    assert!(super::super::explanation_authorship::retained_scope(&binding, &key).unwrap());
+    super::super::explanation_authorship::validate_binding_pin(
+        &binding,
+        &key,
+        &check::Check::load_snapshot(&repo, work.snapshot.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let generated = format!("{}/reserve/summary", work.subject);
+    assert!(!super::super::explanation_authorship::retained_scope(&binding, &generated).unwrap());
+    let mut forged = binding.clone();
+    forged.fragments.get_mut(&key).unwrap().content["authorship"]["author"] = json!("Forged actor");
+    assert!(super::super::explanation_authorship::retained_scope(&forged, &key).is_err());
+    let empty = review::InfluenceScope {
+        dependencies: BTreeMap::new(),
+        declarations: BTreeMap::new(),
+    };
+    let empty_id = digest(&empty).unwrap();
+    binding.influence_scopes.insert(empty_id.clone(), empty);
+    binding.fragments.get_mut(&key).unwrap().influence_scope = Some(empty_id);
+    assert!(
+        super::super::explanation_authorship::retained_scope(&binding, &key)
+            .unwrap_err()
+            .message
+            .contains("does not cover")
+    );
+}

@@ -1083,8 +1083,15 @@ pub(super) fn materialize(
                 .iter()
                 .filter_map(|o| o["detail"].as_str().map(str::to_owned)),
         );
+        if let Some(old) = work
+            .retained
+            .as_ref()
+            .and_then(|n| n.operations.iter().find(|old| old.id == op.id))
+        {
+            super::explanation_authorship::merge(&work.subject, old, &mut op)?;
+        }
         n.operations.push(op);
-        if let Err(error) = render::validate(
+        if let Err(error) = render::validate_with_retained(
             &Narrative {
                 gaps: expected(work)
                     .into_iter()
@@ -1094,6 +1101,7 @@ pub(super) fn materialize(
                 ..n.clone()
             },
             &work.checked,
+            work.retained.as_ref(),
         ) {
             builder.diagnostics.push(json!({"code":"STRUCTURE_OR_COVERAGE_INVALID","operation":index,"nextAction":error.message}));
         }
@@ -1259,7 +1267,7 @@ pub(super) fn materialize(
                 .or_insert_with(|| "Outside the requested work entrypoint.".into());
         }
     }
-    if let Err(error) = render::validate(&n, &work.checked) {
+    if let Err(error) = render::validate_with_retained(&n, &work.checked, work.retained.as_ref()) {
         builder
             .diagnostics
             .push(json!({"code":"STRUCTURE_OR_COVERAGE_INVALID","nextAction":error.message}));

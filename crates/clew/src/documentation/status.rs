@@ -231,6 +231,7 @@ pub(super) fn attach(data: &mut Value, subject: &str, binding: &Bindings) {
             .collect::<BTreeMap<_, _>>()
     );
     data["targetRevisions"] = json!(binding.target_revisions);
+    super::explanation_authorship::project(data, subject, binding, None);
 }
 
 fn observation_reason(mut reason: Value) -> Value {
@@ -636,6 +637,7 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
         };
         let title = data["title"].as_str().unwrap_or(id);
         let body = render::markdown(title, &binding.narratives[subject], &binding.section_states)
+            + &super::explanation_authorship::markdown(&data)
             + &super::notes::markdown(&data["notes"])
             + &super::processes::markdown(&data["process"])
             + &super::dataflow::markdown(&data["view"], &binding.narratives[subject]);

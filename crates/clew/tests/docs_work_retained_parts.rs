@@ -619,13 +619,21 @@ fn manual_paragraph_edit_preserves_history_authorship_and_original_code_on_sourc
     changed_proposal["retainedEdits"][0]["expectedOldValue"] = json!(replacement);
     changed_proposal["retainedEdits"][0]["replacement"] =
         json!("A new editor correction against changed source.");
-    let refused = submit(&f, &changed_work, &changed_proposal);
-    assert_eq!(refused["status"], "NEEDS_REPAIR", "{refused}");
+    let preserved_context_edit = submit(&f, &changed_work, &changed_proposal);
     assert!(
-        refused.to_string().contains("linked dependencies changed")
-            || refused.to_string().contains("linked source bytes changed"),
-        "{refused}"
+        preserved_context_edit["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_"),
+        "{preserved_context_edit}"
     );
+    let next_artifact =
+        proposals::load(&repo, preserved_context_edit["proposal"].as_str().unwrap()).unwrap();
+    let next_paragraph = &next_artifact.narrative.as_ref().unwrap().operations[0].explanation[0];
+    let next_authorship = next_paragraph.authorship.as_ref().unwrap();
+    assert_eq!(next_authorship.source_snapshot, authorship.source_snapshot);
+    assert_eq!(next_authorship.source_refs, authorship.source_refs);
+    assert_eq!(next_authorship.dependency_refs, authorship.dependency_refs);
     let new_check = Check::load_snapshot(&repo, changed_snapshot).unwrap();
     let regenerated = f.author("orders", &new_check);
     let current_context = f.ok(&[
@@ -696,7 +704,7 @@ fn manual_paragraph_edit_preserves_history_authorship_and_original_code_on_sourc
             "baselinePublication":baseline, "paragraphSubmission":submitted,
             "paragraphPublication":publication, "concurrentPublicationConflict":conflict,
             "directOverwriteRejection":overwritten, "forgedAuthorshipRejection":forged_rejection,
-            "sourceStatusUpdate":refreshed, "changedContextSubmission":refused,
+            "sourceStatusUpdate":refreshed, "changedContextSubmission":preserved_context_edit,
             "finalRegenerationRejection":rejected,
             "commands":["docs render --snapshot BASELINE --input paragraph-baseline.json --publish",
                 "docs work prepare --subject service:orders --snapshot BASELINE --input retained-work-request.json",
@@ -706,6 +714,444 @@ fn manual_paragraph_edit_preserves_history_authorship_and_original_code_on_sourc
                 "docs proposal publish --proposal PROPOSAL --unassessed",
                 "docs refresh --status-only", "docs check",
                 "docs render --snapshot CHANGED --input paragraph-regeneration.json --publish"]
+        })).unwrap()).unwrap();
+    }
+}
+
+fn source_operation_proposal(work: &work::Work, summary: &str, step: &str, large: bool) -> Value {
+    let id = work.request.entrypoint.as_deref().unwrap();
+    let reference = work
+        .handles
+        .iter()
+        .find(|(_, handle)| handle.kind == "ENTRYPOINT" && handle.id == id)
+        .unwrap()
+        .0;
+    let entry = work.checked.services["orders"]
+        .entrypoints
+        .iter()
+        .find(|e| e.id == id)
+        .unwrap();
+    let return_flow = work
+        .handles
+        .iter()
+        .find(|(_, handle)| {
+            handle.kind == "DEPENDENCY"
+                && work.checked.dependencies.get(&handle.id).is_some_and(|d| {
+                    d.kind == "FLOW" && d.symbol == entry.symbol && d.normalized["kind"] == "RETURN"
+                })
+        })
+        .unwrap()
+        .0;
+    let claim = |text: String| json!({"text":text,"evidence":[reference]});
+    let step_claim = json!({"text":step,"evidence":[reference,return_flow]});
+    let explanation: Vec<_> = if large {
+        (0..14)
+            .map(|i| {
+                claim(format!(
+                    "Maintained fixture explanation {i}. {}",
+                    "The editor keeps this synthetic documentation paragraph intact. ".repeat(85)
+                ))
+            })
+            .collect()
+    } else {
+        vec![claim(
+            "Current source-derived explanation: return normalized quantity plus one.".into(),
+        )]
+    };
+    json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{
+        "entrypoint":reference,"title":"Quantity handling", "summary":claim(summary.into()),
+        "steps":[{"kind":"note","meaning":step_claim}], "explanation":explanation
+    }]})
+}
+
+#[test]
+fn mixed_source_regeneration_preserves_oversized_user_text_and_exact_original_fragment_code() {
+    let f = Fixture::new();
+    let source_repo = f.service("orders");
+    let (_, first_check) = f.run(&["docs", "check"]);
+    let old_snapshot = first_check["snapshot"].as_str().unwrap();
+    let repo = Repository::open(&f.docs).unwrap();
+    let checked = Check::load_snapshot(&repo, old_snapshot).unwrap();
+    let entry = checked.services["orders"]
+        .entrypoints
+        .iter()
+        .find(|e| e.symbol.contains("reserve"))
+        .unwrap();
+    let id = entry.id.as_str();
+    let initial_work = prepare(&f, old_snapshot, id, "Seed a large manual operation");
+    read_pages(&f, &initial_work);
+    let initial_input = source_operation_proposal(
+        &work::load(&repo, &initial_work).unwrap(),
+        "The source returns a normalized quantity.",
+        "Return the normalized requested quantity.",
+        true,
+    );
+    let seed = submit(&f, &initial_work, &initial_input);
+    assert!(
+        seed["status"].as_str().unwrap().starts_with("READY_"),
+        "{seed}"
+    );
+    let seed_publication = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        seed["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(
+        seed_publication["updateFailures"],
+        json!({}),
+        "{seed_publication}"
+    );
+    let seeded_data = read(f.bundle(
+        seed_publication["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    let original: Operation = serde_json::from_value(seeded_data["operations"][0].clone()).unwrap();
+    assert!(canonical::bytes(&original).unwrap().len() > MAX_BYTES);
+    let human_work = prepare(&f, old_snapshot, id, "Protect maintained explanation text");
+    complete_retained(&f, &human_work, id);
+    let protected_input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],
+        "retainedEdits":original.explanation.iter().map(|p| json!({"kind":"RETAINED_OPERATION", "id":id,
+            "recordDigest":canonical::hash(&original).unwrap(), "target":"explanationText", "fragmentId":p.id,
+            "author":"Fixture documentation editor", "expectedOldValue":p.text, "replacement":p.text})).collect::<Vec<_>>()});
+    let human_submission = submit(&f, &human_work, &protected_input);
+    assert!(
+        human_submission["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_"),
+        "{human_submission}"
+    );
+    let human_publication = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        human_submission["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(
+        human_publication["updateFailures"],
+        json!({}),
+        "{human_publication}"
+    );
+    let old_bundle = human_publication["bundle"].as_str().unwrap();
+    let frozen = bundle_files(&f.bundle(old_bundle, ""));
+    let old_binding = clew::documentation::bindings::baseline(&repo)
+        .unwrap()
+        .unwrap()
+        .1;
+    let protected_operation = &old_binding.narratives["service:orders"].operations[0];
+    assert!(
+        protected_operation
+            .explanation
+            .iter()
+            .all(|p| p.authorship.is_some())
+    );
+    assert!(canonical::bytes(protected_operation).unwrap().len() > MAX_BYTES);
+    let old_source_id = protected_operation.summary.source_ids[0].clone();
+    let old_sources = checked.sources();
+    let old_source = &old_sources[&old_source_id];
+    let source = source_repo.join("Orders.java");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "return normalize(quantity);",
+            "return normalize(quantity) + 1;",
+        ),
+    )
+    .unwrap();
+    support::commit(&source_repo);
+    let observed = f.ok(&["docs", "refresh", "--status-only"]);
+    assert_eq!(observed["agentInvocations"], 0);
+    let (_, changed_check) = f.run(&["docs", "check"]);
+    let new_snapshot = changed_check["snapshot"].as_str().unwrap();
+    let current_check = Check::load_snapshot(&repo, new_snapshot).unwrap();
+    let current_sources = current_check.sources();
+    let current_source = &current_sources[&old_source_id];
+    assert_eq!(
+        old_source.id, current_source.id,
+        "logical SOURCE identity stays unchanged"
+    );
+    assert_ne!(old_source.text, current_source.text);
+    assert!(current_source.text.contains("+ 1"));
+    let regeneration_work = prepare(
+        &f,
+        new_snapshot,
+        id,
+        "Regenerate current source fields and preserve protected text",
+    );
+    let concurrent_work = prepare(&f, new_snapshot, id, "Concurrent regenerated source fields");
+    complete_retained(&f, &regeneration_work, id);
+    complete_retained(&f, &concurrent_work, id);
+    let current_summary = "The source adds one to the normalized requested quantity.";
+    let current_step = "Return normalized quantity plus one.";
+    let regenerated_input = source_operation_proposal(
+        &work::load(&repo, &regeneration_work).unwrap(),
+        current_summary,
+        current_step,
+        false,
+    );
+    assert!(
+        !regenerated_input.to_string().contains("authorship"),
+        "model input never fabricates protected authorship"
+    );
+    let regenerated = submit(&f, &regeneration_work, &regenerated_input);
+    let concurrent = submit(&f, &concurrent_work, &regenerated_input);
+    assert!(
+        regenerated["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_"),
+        "{regenerated}"
+    );
+    assert!(
+        concurrent["status"].as_str().unwrap().starts_with("READY_"),
+        "{concurrent}"
+    );
+    let artifact = proposals::load(&repo, regenerated["proposal"].as_str().unwrap()).unwrap();
+    let canonical = &artifact.narrative.as_ref().unwrap().operations[0];
+    assert_eq!(canonical.summary.text, current_summary);
+    assert_eq!(canonical.events[0].text, current_step);
+    assert!(canonical::bytes(canonical).unwrap().len() > MAX_BYTES);
+    for paragraph in &protected_operation.explanation {
+        assert_eq!(
+            canonical
+                .explanation
+                .iter()
+                .find(|p| p.id == paragraph.id)
+                .unwrap(),
+            paragraph
+        );
+    }
+    assert!(
+        artifact
+            .claims
+            .values()
+            .all(|c| c["authority"] != "USER_DOCUMENTATION"),
+        "preserved prose is not relisted as new source-supported claims"
+    );
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        regenerated["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(published["updateFailures"], json!({}), "{published}");
+    let new_bundle = published["bundle"].as_str().unwrap();
+    let data_path = f.bundle(new_bundle, "services/orders.json");
+    let data = read(&data_path);
+    let new_binding = clew::documentation::bindings::baseline(&repo)
+        .unwrap()
+        .unwrap()
+        .1;
+    let operation_key = format!("service:orders/{id}");
+    let current_scope = &new_binding.accepted_versions[&operation_key]
+        .influence
+        .scope;
+    let generated_summary_key = format!("{operation_key}/{}", canonical.summary.id);
+    assert_eq!(
+        new_binding.fragments[&generated_summary_key]
+            .influence_scope
+            .as_ref(),
+        Some(current_scope)
+    );
+    assert_eq!(
+        data["operationSources"][id][&old_source_id]["text"],
+        current_source.text
+    );
+    for paragraph in &protected_operation.explanation {
+        let key = format!("{operation_key}/{}", paragraph.id);
+        assert_eq!(
+            canonical::bytes(&new_binding.fragments[&key]).unwrap(),
+            canonical::bytes(&old_binding.fragments[&key]).unwrap(),
+            "the complete paragraph binding remains original"
+        );
+        assert_ne!(
+            new_binding.fragments[&key].influence_scope.as_ref(),
+            Some(current_scope)
+        );
+        assert_eq!(
+            data["fragmentSources"][&key][&old_source_id]["text"],
+            old_source.text
+        );
+        assert_eq!(data["fragmentStates"][&key]["freshness"], "STALE");
+        assert_eq!(data["fragmentStates"][&key]["verification"], "UNASSESSED");
+    }
+    let mixed = data["operationStates"][id]["mixedRevisions"]["orders"]
+        .as_array()
+        .unwrap();
+    assert!(
+        mixed.contains(&json!(old_source.revision))
+            && mixed.contains(&json!(current_source.revision)),
+        "{mixed:?}"
+    );
+    let markdown = fs::read_to_string(f.bundle(new_bundle, "services/orders.md")).unwrap();
+    assert!(markdown.contains("source context freshness STALE. Meaning review: UNASSESSED."));
+    assert!(
+        fs::read_to_string(f.bundle(new_bundle, "services/orders.html"))
+            .unwrap()
+            .contains("data-source-fragment")
+    );
+    // Execute the shipped drawer against the actual published JSON, including
+    // both versions of the same SOURCE id and the exact missing-fragment route.
+    let reader_script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/test_documentation_visual_reader.cjs");
+    let drawer = std::process::Command::new("node")
+        .args(["--test", "--test-name-pattern", "public mixed publication"])
+        .arg(&reader_script)
+        .env("CODECLEW_MIXED_READER_DATA", &data_path)
+        .output()
+        .unwrap();
+    assert!(
+        drawer.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&drawer.stdout),
+        String::from_utf8_lossy(&drawer.stderr)
+    );
+    let index_before = fs::read(f.docs.join("docs/index.html")).unwrap();
+    let (code, conflict) = f.run(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        concurrent["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_ne!(code, 0);
+    assert!(
+        conflict
+            .to_string()
+            .contains("published content changed after work preparation"),
+        "{conflict}"
+    );
+    assert_eq!(
+        fs::read(f.docs.join("docs/index.html")).unwrap(),
+        index_before
+    );
+    let repeated = f.ok(&["docs", "refresh", "--status-only"]);
+    let repeated_data =
+        read(f.bundle(repeated["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(repeated_data["operations"], data["operations"]);
+    assert_eq!(repeated_data["fragmentSources"], data["fragmentSources"]);
+    assert_eq!(repeated_data["fragmentStates"], data["fragmentStates"]);
+    assert_eq!(bundle_files(&f.bundle(old_bundle, "")), frozen);
+    assert_eq!(
+        f.ok(&["docs", "history", "show", "--id", old_bundle])["status"],
+        "FROZEN_SNAPSHOT"
+    );
+    // Later user text edits keep old context even though Work uses current code.
+    let edit_work = prepare(
+        &f,
+        new_snapshot,
+        id,
+        "Correct preserved text without rebasing context",
+    );
+    complete_retained(&f, &edit_work, id);
+    let mixed_operation: Operation =
+        serde_json::from_value(repeated_data["operations"][0].clone()).unwrap();
+    let paragraph = &protected_operation.explanation[0];
+    let text_edit = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[],"retainedEdits":[{
+        "kind":"RETAINED_OPERATION","id":id,"recordDigest":canonical::hash(&mixed_operation).unwrap(),
+        "target":"explanationText","fragmentId":paragraph.id,"author":"Fixture documentation editor",
+        "expectedOldValue":paragraph.text,"replacement":"A later explicit text correction retains the originally linked code."}]});
+    let edited = submit(&f, &edit_work, &text_edit);
+    assert!(
+        edited["status"].as_str().unwrap().starts_with("READY_"),
+        "{edited}"
+    );
+    let edited_artifact = proposals::load(&repo, edited["proposal"].as_str().unwrap()).unwrap();
+    let edited_paragraph = edited_artifact.narrative.as_ref().unwrap().operations[0]
+        .explanation
+        .iter()
+        .find(|p| p.id == paragraph.id)
+        .unwrap();
+    assert_eq!(
+        edited_paragraph
+            .authorship
+            .as_ref()
+            .unwrap()
+            .source_snapshot,
+        old_snapshot
+    );
+    assert_eq!(
+        edited_paragraph.authorship.as_ref().unwrap().source_refs,
+        paragraph.authorship.as_ref().unwrap().source_refs
+    );
+    let edited_publication = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        edited["proposal"].as_str().unwrap(),
+        "--unassessed",
+    ]);
+    assert_eq!(
+        edited_publication["updateFailures"],
+        json!({}),
+        "{edited_publication}"
+    );
+    let edited_data = read(f.bundle(
+        edited_publication["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    let paragraph_key = format!("{operation_key}/{}", paragraph.id);
+    assert_eq!(
+        edited_data["fragmentSources"][&paragraph_key][&old_source_id]["text"],
+        old_source.text
+    );
+    assert_eq!(
+        edited_data["operationSources"][id][&old_source_id]["text"],
+        current_source.text
+    );
+    assert_eq!(
+        edited_data["fragmentStates"][&paragraph_key]["freshness"],
+        "STALE"
+    );
+    assert_eq!(
+        edited_data["fragmentStates"][&paragraph_key]["verification"],
+        "UNASSESSED"
+    );
+    let edited_binding = clew::documentation::bindings::baseline(&repo)
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_eq!(
+        canonical::bytes(&edited_binding.fragments[&paragraph_key].evidence).unwrap(),
+        canonical::bytes(&old_binding.fragments[&paragraph_key].evidence).unwrap()
+    );
+    assert_eq!(
+        edited_binding.fragments[&paragraph_key].influence_scope,
+        old_binding.fragments[&paragraph_key].influence_scope
+    );
+    assert_eq!(bundle_files(&f.bundle(old_bundle, "")), frozen);
+    if let Some(destination) = std::env::var_os("CODECLEW_MIXED_TEST_ARTIFACTS") {
+        let destination = Path::new(&destination);
+        assert!(
+            !destination.exists(),
+            "mixed artifact sink must be a new directory"
+        );
+        fs::create_dir_all(destination).unwrap();
+        for (path, content) in bundle_files(&f.docs) {
+            let target = destination.join("docs-root").join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, content).unwrap();
+        }
+        fs::write(destination.join("reader.log"), &drawer.stdout).unwrap();
+        fs::write(destination.join("journey.json"), serde_json::to_vec_pretty(&json!({
+            "schema":"codeclew-synthetic-mixed-source-journey/1.0", "authority":"PUBLIC_MANUAL_CLI_UNASSESSED",
+            "oldSnapshot":old_snapshot,"newSnapshot":new_snapshot,"operation":id,"source":old_source_id,
+            "seedPublication":seed_publication,"protectedPublication":human_publication,"sourceStatusObservation":observed,
+            "generatedInput":regenerated_input,"generatedSubmission":regenerated,"mixedPublication":published,
+            "concurrentConflict":conflict,"repeatedStatusUpdate":repeated,"laterTextEditInput":text_edit,"laterTextEditSubmission":edited,"laterTextEditPublication":edited_publication,
+            "commands":["docs check", "docs work prepare --subject service:orders --snapshot SNAPSHOT --input request.json",
+                "docs work read --work WORK --input selection.json (all pages)", "docs work read-retained-part --work WORK --input part.json (all parts)",
+                "docs proposal submit --work WORK --input proposal.json", "docs proposal publish --proposal PROPOSAL --unassessed",
+                "docs refresh --status-only", "docs history show --id ORIGINAL_BUNDLE"]
         })).unwrap()).unwrap();
     }
 }

@@ -169,6 +169,13 @@ pub(super) fn required_sequence_flows<'a>(
 }
 
 pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
+    validate_with_retained(n, checked, None)
+}
+pub(super) fn validate_with_retained(
+    n: &Narrative,
+    checked: &Check,
+    retained: Option<&Narrative>,
+) -> Result<(), ClewError> {
     if n.schema != "codeclew-documentation-narrative/1.3" {
         return Err(invalid(
             "only codeclew-documentation-narrative/1.3 is supported; author the current contract",
@@ -480,7 +487,17 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             return Err(invalid("operation explanation exceeds 128 paragraphs"));
         }
         for (paragraph_index, paragraph) in o.explanation.iter().enumerate() {
-            super::explanation_authorship::validate(paragraph, checked)?;
+            super::explanation_authorship::validate_metadata(paragraph)?;
+            let original = retained
+                .and_then(|n| n.operations.iter().find(|old| old.id == o.id))
+                .and_then(|old| old.explanation.iter().find(|p| p.id == paragraph.id));
+            let historical_context = super::explanation_authorship::validate(paragraph, checked)
+                .is_err()
+                && original
+                    .is_some_and(|old| super::explanation_authorship::same_context(old, paragraph));
+            if !historical_context {
+                super::explanation_authorship::validate(paragraph, checked)?;
+            }
             let diagnostic_prefix = format!(
                 "operation {}, explanation paragraph {}",
                 operation_index + 1,
@@ -525,37 +542,40 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                     "{diagnostic_prefix}: references a missing or end-marker diagram step"
                 )));
             }
-            supported_refs(
-                &paragraph.dependency_ids,
-                &paragraph.source_ids,
-                checked,
-                &allowed,
-            )?;
-            for event in o
-                .events
-                .iter()
-                .filter(|e| paragraph.event_ids.contains(&e.id))
-            {
-                if !event
-                    .dependency_ids
+            if !historical_context {
+                supported_refs(
+                    &paragraph.dependency_ids,
+                    &paragraph.source_ids,
+                    checked,
+                    &allowed,
+                )?;
+                for event in o
+                    .events
                     .iter()
-                    .all(|id| paragraph.dependency_ids.contains(id))
-                    || !event
-                        .source_ids
-                        .iter()
-                        .all(|id| paragraph.source_ids.contains(id))
+                    .filter(|e| paragraph.event_ids.contains(&e.id))
                 {
-                    return Err(invalid(
-                        "explanation must retain the evidence of every referenced diagram step",
-                    ));
+                    if !event
+                        .dependency_ids
+                        .iter()
+                        .all(|id| paragraph.dependency_ids.contains(id))
+                        || !event
+                            .source_ids
+                            .iter()
+                            .all(|id| paragraph.source_ids.contains(id))
+                    {
+                        return Err(invalid(
+                            "explanation must retain the evidence of every referenced diagram step",
+                        ));
+                    }
                 }
             }
         }
-        if o.events
-            .iter()
-            .filter(|e| e.kind != "end")
-            .any(|e| !o.explanation.iter().any(|p| p.event_ids.contains(&e.id)))
-        {
+        if o.events.iter().filter(|e| e.kind != "end").any(|e| {
+            !o.explanation.iter().any(|p| {
+                p.event_ids.contains(&e.id)
+                    && super::explanation_authorship::validate(p, checked).is_ok()
+            })
+        }) {
             return Err(invalid(
                 "narrative 1.3 requires a domain explanation covering every diagram step",
             ));
@@ -860,6 +880,13 @@ pub fn make_bindings(
     checked: &Check,
     narratives: BTreeMap<String, Narrative>,
 ) -> Result<Bindings, ClewError> {
+    make_bindings_with_retained(checked, narratives, None)
+}
+fn make_bindings_with_retained(
+    checked: &Check,
+    narratives: BTreeMap<String, Narrative>,
+    retained: Option<&Bindings>,
+) -> Result<Bindings, ClewError> {
     let mut fragments = BTreeMap::new();
     for (subject, n) in &narratives {
         for o in &n.operations {
@@ -1017,6 +1044,26 @@ pub fn make_bindings(
                 }
             }
             for paragraph in &o.explanation {
+                let original = retained
+                    .and_then(|binding| binding.narratives.get(subject))
+                    .and_then(|n| n.operations.iter().find(|old| old.id == o.id))
+                    .and_then(|old| old.explanation.iter().find(|p| p.id == paragraph.id));
+                if original
+                    .is_some_and(|old| super::explanation_authorship::same_context(old, paragraph))
+                {
+                    let key = format!("{prefix}/{}", paragraph.id);
+                    let baseline = retained.unwrap();
+                    if !super::explanation_authorship::authored_binding(baseline, &key)? {
+                        return Err(invalid(
+                            "protected paragraph original binding is unavailable",
+                        ));
+                    }
+                    let mut binding = baseline.fragments[&key].clone();
+                    binding.content = serde_json::to_value(paragraph).map_err(io_error)?;
+                    binding.content_digest = digest(paragraph)?;
+                    fragments.insert(key, binding);
+                    continue;
+                }
                 add_binding(
                     &mut fragments,
                     format!("{prefix}/{}", paragraph.id),
@@ -2806,7 +2853,15 @@ fn publish_internal_phases(
                     &checked,
                     versions.get(&key),
                 )
-                .and_then(|()| validate(&candidate, &checked))
+                .and_then(|()| {
+                    validate_with_retained(
+                        &candidate,
+                        &checked,
+                        previous
+                            .as_ref()
+                            .and_then(|(_, b)| b.narratives.get(&n.subject)),
+                    )
+                })
             };
             match validation {
                 Ok(()) => {
@@ -2830,7 +2885,8 @@ fn publish_internal_phases(
             .gaps
             .retain(|id, _| !target.operations.iter().any(|o| &o.id == id));
     }
-    let mut binding = make_bindings(&checked, fresh.clone())?;
+    let mut binding =
+        make_bindings_with_retained(&checked, fresh.clone(), previous.as_ref().map(|(_, b)| b))?;
     binding.documentation_language = requested_language.clone();
     let mut narratives = previous
         .as_ref()
@@ -3346,11 +3402,13 @@ fn publish_internal_phases(
                 .collect::<BTreeMap<_, _>>()
         );
         super::status::attach(&mut data, subject, &binding);
+        super::explanation_authorship::project(&mut data, subject, &binding, Some(&checked));
         pending_pages.push((folder.to_owned(), id.to_owned(), data.clone()));
         let state = &binding.section_states[subject];
         let displayed = super::language::display_narrative(n, requested_language.as_deref());
         let mut prose =
             super::language::markdown(title, &displayed, &binding.section_states, ui_language);
+        prose += &super::explanation_authorship::markdown(&data);
         if ui_language == "en" {
             prose += &super::notes::markdown(&data["notes"]);
             prose += &super::processes::markdown(&data["process"]);

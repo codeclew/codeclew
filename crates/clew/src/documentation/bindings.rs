@@ -434,10 +434,12 @@ pub(super) fn capture_baseline(
         &mut binding.accepted_versions,
         &binding.influence_scopes,
     )?;
+    expand_shared(&mut binding)?;
     for (id, fragment) in &binding.fragments {
         let operation = id.split('/').take(2).collect::<Vec<_>>().join("/");
         if let Some(version) = binding.accepted_versions.get(&operation)
             && fragment.influence_scope.as_ref() != Some(&version.influence.scope)
+            && !super::explanation_authorship::retained_scope(&binding, id)?
         {
             return Err(invalid(
                 "accepted fragment does not match its influence scope",
@@ -451,7 +453,6 @@ pub(super) fn capture_baseline(
             return Err(invalid("fragment influence scope is missing"));
         }
     }
-    expand_shared(&mut binding)?;
     for (id, observation) in &binding.observations {
         if id != &observation.id || digest(&observation.normalized)? != observation.digest {
             return Err(invalid("portable baseline observation digest is invalid"));
@@ -460,6 +461,23 @@ pub(super) fn capture_baseline(
     for source in binding.retained_sources.values() {
         if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
             return Err(invalid("retained source digest is invalid"));
+        }
+    }
+    let mut authored_contexts = BTreeMap::new();
+    for key in binding.fragments.keys() {
+        if super::explanation_authorship::authored_binding(&binding, key)? {
+            let snapshot = binding.fragments[key].content["authorship"]["sourceSnapshot"]
+                .as_str()
+                .ok_or_else(|| invalid("authored source snapshot is unavailable"))?;
+            if !authored_contexts.contains_key(snapshot) {
+                authored_contexts
+                    .insert(snapshot.to_owned(), Check::load_snapshot(repo, snapshot)?);
+            }
+            super::explanation_authorship::validate_binding_pin(
+                &binding,
+                key,
+                &authored_contexts[snapshot],
+            )?;
         }
     }
     for fragment in binding.fragments.values() {
