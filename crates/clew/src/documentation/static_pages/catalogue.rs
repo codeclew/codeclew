@@ -1,6 +1,6 @@
 //! Discovery of this immutable native bundle, never repository-wide impact.
 use super::super::model::*;
-use super::{anchor, escape, process_label};
+use super::{anchor, callable_label, escape, process_label};
 use crate::{documentation::digest, error::ClewError};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +17,8 @@ pub(super) struct CatalogueLink {
 pub(super) struct Row {
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_title: Option<String>,
     pub kind: String,
     pub href: String,
     pub context: String,
@@ -44,6 +46,7 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
             Row {
                 id: page.id.clone(),
                 title: process_label(page),
+                display_title: None,
                 kind: "Process".into(),
                 href: format!("{}-overview.html", page.id),
                 context: context.clone(),
@@ -64,7 +67,8 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
             &digest(&(&page.selection.service, scope, &page.endpoint.symbol))?[7..]
         );
         let endpoint = rows.entry(endpoint_key.clone()).or_insert_with(|| Row {
-            id: endpoint_key, title: page.endpoint.symbol.clone(), kind: "Endpoint".into(),
+            id: endpoint_key, title: page.endpoint.symbol.clone(),
+            display_title: Some(callable_label(&page.endpoint.symbol)), kind: "Endpoint".into(),
             href: format!("{}-endpoint.html", page.id), context,
             summary: "Explicitly selected compiler declaration; no inferred HTTP route or runtime activation.".into(),
             search_text: vec![page.selection.service.clone(), scope.into(), page.endpoint.symbol.clone()],
@@ -76,7 +80,7 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
         });
         if let Some(question) = &page.selection.question {
             rows.insert(format!("question:{}", page.id), Row {
-                id: format!("diagnostic-{}", page.id), title: question.clone(), kind: "Diagnostic question".into(),
+                id: format!("diagnostic-{}", page.id), title: question.clone(), display_title: None, kind: "Diagnostic question".into(),
                 href: format!("{}-diagnostic.html", page.id), context: format!("{} · {scope}", page.selection.service),
                 summary: "Supplied diagnostic question; source conditions describe possible reasons, not an approved answer or observed incident.".into(),
                 search_text: vec![page.id.clone(), page.selection.service.clone(), scope.into(), page.endpoint.symbol.clone(), page.worker.symbol.clone()],
@@ -129,7 +133,8 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                     .map(|row| row.process_id.clone()),
             );
             rows.insert(node.id.clone(), Row {
-                id: node.id.clone(), title: node.callable.symbol.clone(), kind: "Examined callable".into(),
+                id: node.id.clone(), title: node.callable.symbol.clone(),
+                display_title: Some(callable_label(&node.callable.symbol)), kind: "Examined callable".into(),
                 href: format!("source-calls.html#{}", anchor(&node.id)),
                 context: format!("{} · {}", node.service, node.scope),
                 summary: "Retained examined source body; reverse links are documentation context, not runtime impact. Call frontiers remain local gaps.".into(),
@@ -243,6 +248,18 @@ mod tests {
             .unwrap();
         assert_eq!(main.related_links.len(), 2);
         assert_eq!(main.href, "parent-a-endpoint.html");
+        assert_eq!(main.title, "method:class:Same#submit()V");
+        assert_eq!(main.display_title.as_deref(), Some("Same.submit"));
+        assert!(
+            catalogue
+                .iter()
+                .filter(|row| matches!(row.kind.as_str(), "Process" | "Diagnostic question"))
+                .all(|row| !serde_json::to_value(row)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .contains_key("displayTitle"))
+        );
         assert_ne!(endpoints[0].id, endpoints[1].id);
         assert_eq!(
             catalogue.iter().filter(|row| row.kind == "Process").count(),

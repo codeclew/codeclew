@@ -493,6 +493,7 @@ test('shared catalogue localizes chrome and retains neutral filtering keys and a
   assert.equal(nodes['catalog-results'].children.length,1);
   assert.equal(nodes['catalog-query'].value,'order-manager hit');
   assert.equal(nodes['catalog-kind'].value,'Service');
+  assert.equal(nodes['catalog-results'].children[0].children.length,3);
   assert.equal(nodes['catalog-results'].children[0].children[0].textContent,'Authored title');
   assert.equal(nodes['catalog-results'].children[0].children[0].href,'services/orderAPI.html');
   assert.equal(nodes['catalog-results'].children[0].children[1].textContent,language==='ru'?'Сервис · Orders service · orderAPI · Описание есть':'Service · Orders service · orderAPI · Description present');
@@ -613,9 +614,9 @@ test('manual context selection retains text attribution and distinguishes freshn
 
 test('native catalogue reuses bounded filtering and restores query kind and page on reload and Back',()=>{
  const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
- const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
+ const element=(tagName='')=>({tagName,children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
  const nodes=Object.fromEntries(['catalog-data','catalog-query','catalog-kind','catalog-results','catalog-status','catalog-prev','catalog-next','catalog-controls','catalog-pager','catalog-processes'].map(key=>[key,element()]));
- const rows=Array.from({length:45},(_,i)=>({kind:'Examined callable',id:`callable-${i}`,title:`ChildWorker.prepare ${i}`,href:`source-calls.html#body-${i}`,context:'linked · :/main',summary:'Examined source, not runtime impact',searchText:['prepare','parent-a','parent-b'],relatedLinks:[{title:'Examined by: parent-a',href:'parent-a-overview.html'},{title:'Examined by: parent-b',href:'parent-b-overview.html'}]}));
+ const rows=Array.from({length:45},(_,i)=>({kind:'Examined callable',id:`callable-${i}`,title:`method:class:ChildWorker#prepare(Task${i})Request`,displayTitle:'ChildWorker.prepare',href:`source-calls.html#body-${i}`,context:'linked · :/main',summary:'Examined source, not runtime impact',searchText:['prepare','parent-a','parent-b'],relatedLinks:[{title:'Examined by: parent-a',href:'parent-a-overview.html'},{title:'Examined by: parent-b',href:'parent-b-overview.html'}]}));
  rows.push({kind:'Diagnostic question',id:'question',title:'Why is delivery absent?',href:'child-diagnostic.html',summary:'Supplied question, not an approved answer'});
  nodes['catalog-data'].textContent=JSON.stringify(rows);
  const location={pathname:'/index.html',search:'?q=prepare&kind=Examined+callable&page=2&campaign=owned',hash:'#catalog-title'};
@@ -628,6 +629,14 @@ test('native catalogue reuses bounded filtering and restores query kind and page
  assert.equal(list.children.length,20);assert.equal(list.children[0].children[0].href,'source-calls.html#body-20');
  assert.equal(list.children[0].children[3].children[0].href,'parent-a-overview.html');
  assert.equal(list.children[0].children[3].children[2].href,'parent-b-overview.html');
+ const preview=list.children[0];assert.equal(preview.children[0].textContent,'ChildWorker.prepare');
+ assert.equal(preview.children[1].textContent,'Examined callable · linked · :/main');
+ assert.equal(preview.children[2].textContent,'Examined source, not runtime impact');
+ const exact=preview.children[4];assert.equal(exact.tagName,'details');assert.equal(exact.className,'catalog-identity');assert.equal(Object.hasOwn(exact,'open'),false);
+ assert.equal(exact.children[0].tagName,'summary');assert.equal(exact.children[0].textContent,'Exact identity');
+ assert.equal(exact.children[1].children[1].tagName,'code');assert.equal(exact.children[1].children[1].textContent,rows[20].title);
+ assert.equal(exact.children[2].children[1].textContent,rows[20].id);
+ assert.equal(new Set(list.children.map(li=>li.children[0].href)).size,20);
  assert.equal(nodes['catalog-controls'].hidden,false);assert.equal(nodes['catalog-pager'].hidden,false);assert.equal(nodes['catalog-processes'].hidden,true);
  nodes['catalog-next'].listeners.click();assert.equal(list.children.length,5);assert.equal(new URL(stack[index],'https://codex.test').searchParams.get('page'),'3');
  index--;setUrl(stack[index]);popstate();assert.equal(list.children.length,20);assert.equal(list.children[0].children[0].href,'source-calls.html#body-20');
@@ -635,6 +644,9 @@ test('native catalogue reuses bounded filtering and restores query kind and page
  index--;setUrl(stack[index]);popstate();assert.equal(nodes['catalog-query'].value,'prepare');assert.equal(nodes['catalog-kind'].value,'Examined callable');assert.equal(list.children[0].children[0].href,'source-calls.html#body-20');
  location.search='?q=prepare&kind=Examined+callable&page=999999999999';popstate();assert.equal(list.children.length,5);assert.equal(new URL(stack[index],'https://codex.test').searchParams.get('page'),'3');
  location.search='?q=absent';popstate();assert.equal(list.children.length,1);assert.equal(list.children[0].children[0].href,'child-diagnostic.html');
+ location.search=`?q=${encodeURIComponent(rows[31].title)}`;popstate();assert.equal(list.children.length,1);assert.equal(list.children[0].children[0].href,rows[31].href);assert.equal(list.children[0].children[4].children[1].children[1].textContent,rows[31].title);
+ location.search='?q=callable-31';popstate();assert.equal(list.children.length,1);assert.equal(list.children[0].children[0].href,rows[31].href);
+ location.search='?q=ChildWorker.prepare&page=2';popstate();assert.equal(list.children.length,20);assert.equal(list.children[0].children[0].href,rows[20].href);
  location.search='?q=unmatched-fixture-query-9f7b&page=2';popstate();assert.equal(list.children.length,0);assert.match(nodes['catalog-status'].textContent,/No matching results/);assert.equal(new URL(stack[index],'https://codex.test').searchParams.has('page'),false);
 });
 
@@ -651,9 +663,9 @@ test('native catalogue synthetic 200-service 2000-process DOM pagination filteri
   const processes=Array.from({length:10},(_,p)=>`${service}-parent-${String(p).padStart(2,'0')}`);
   for(const id of processes)rows.push({id,title:id,kind:'Process',href:`${id}-overview.html`,context,summary:'Selected source process; runtime activation and business meaning unverified.',searchText:[service,scope,'method:class:Parent#submit()V','method:class:ChildWorker#run()V'],relatedLinks:[]});
   const endpointSymbol='method:class:Parent#submit()V',endpointId=canonical('endpoint',service,scope,endpointSymbol);
-  rows.push({id:endpointId,title:endpointSymbol,kind:'Endpoint',href:`${processes[0]}-endpoint.html`,context,summary:'Explicitly selected compiler declaration; no inferred HTTP route or runtime activation.',searchText:[service,scope,endpointSymbol],relatedLinks:processes.map(id=>({href:`${id}-overview.html`,title:`Selected process: ${id}`}))});
+  rows.push({id:endpointId,title:endpointSymbol,displayTitle:'Parent.submit',kind:'Endpoint',href:`${processes[0]}-endpoint.html`,context,summary:'Explicitly selected compiler declaration; no inferred HTTP route or runtime activation.',searchText:[service,scope,endpointSymbol],relatedLinks:processes.map(id=>({href:`${id}-overview.html`,title:`Selected process: ${id}`}))});
   const symbol='method:class:ChildWorker#prepare(Task)Request',id=canonical('callable',service,scope,symbol);
-  rows.push({id,title:symbol,kind:'Examined callable',href:`source-calls.html#ref-${hash(id)}`,context,summary:'Retained examined source body; reverse links are documentation context, not runtime impact. Call frontiers remain local gaps.',searchText:[service,scope,symbol,...processes.slice(0,2)],relatedLinks:processes.slice(0,2).map(parent=>({href:`${parent}-overview.html`,title:`Examined by: ${parent}`}))});
+  rows.push({id,title:symbol,displayTitle:'ChildWorker.prepare',kind:'Examined callable',href:`source-calls.html#ref-${hash(id)}`,context,summary:'Retained examined source body; reverse links are documentation context, not runtime impact. Call frontiers remain local gaps.',searchText:[service,scope,symbol,...processes.slice(0,2)],relatedLinks:processes.slice(0,2).map(parent=>({href:`${parent}-overview.html`,title:`Examined by: ${parent}`}))});
   rows.push({id:`diagnostic-${processes[0]}`,title:'Why is delivery absent?',kind:'Diagnostic question',href:`${processes[0]}-diagnostic.html`,context,summary:'Supplied diagnostic question; source conditions describe possible reasons, not an approved answer or observed incident.',searchText:[processes[0],service,scope,endpointSymbol],relatedLinks:[]});
  }
  rows.sort((a,b)=>{for(const key of ['kind','title','id']){if(a[key]<b[key])return -1;if(a[key]>b[key])return 1;}return 0;});
@@ -687,6 +699,8 @@ test('native catalogue synthetic 200-service 2000-process DOM pagination filteri
  const helper=rows.find(row=>row.kind==='Examined callable'&&row.context.startsWith('svc199 '));
  assert.deepEqual(r.links(),[helper.href]);const related=n['catalog-results'].children[0].children[3].children;
  assert.equal(related[0].href,'svc199-parent-00-overview.html');assert.equal(related[0].textContent,'Examined by: svc199-parent-00');assert.equal(related[2].href,'svc199-parent-01-overview.html');
+ assert.equal(n['catalog-results'].children[0].children[0].textContent,'ChildWorker.prepare');
+ assert.equal(n['catalog-results'].children[0].children[4].children[2].children[1].textContent,helper.id);
  assert.notEqual(helper.id,rows.find(row=>row.kind==='Examined callable'&&row.context.startsWith('svc198 ')).id);
  const helperReload=loadCatalogue(r.url());assert.deepEqual(helperReload.links(),[helper.href]);assert.equal(helperReload.nodes['catalog-query'].value,'svc199');assert.equal(helperReload.nodes['catalog-kind'].value,'Examined callable');
  r.back();assert.equal(n['catalog-kind'].value,'Process');assert.equal(n['catalog-query'].value,'svc199');assert.equal(r.links().length,10);
