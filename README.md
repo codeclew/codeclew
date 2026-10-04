@@ -18,15 +18,19 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.5
+## Current release: v0.13.6
 
-This release supports bounded edits of retained operation titles and attributed
-explanation paragraphs, preserving their original linked context and immutable
-history. Native HTML and inert MDX exports can include explicitly selected
-operational notes from the saved source snapshot. Manual edits remain UNASSESSED;
-linked code does not verify their meaning. Source-derived conditions and
-transformations remain separate from maintained user documentation.
-See the [v0.13.5 release notes](docs/releases/v0.13.5.md).
+This release adds explicit manual source-context selection for an attributed
+explanation paragraph without rewriting its text or changing its declared text
+author. A separate context editor records the selection. Text and context review
+remain UNASSESSED; current source context does not verify meaning. Native HTML and
+inert MDX exports retain each selected paragraph's own frozen source context.
+
+Native Java page selections can also opt into bounded exact source-call links
+between documented processes and retained helper bodies. Local examined-source
+digests identify review candidates; missing bodies, ambiguity, cycles and limits
+remain visible frontiers. These links do not establish runtime dispatch or impact.
+See the [v0.13.6 release notes](docs/releases/v0.13.6.md).
 
 ### Historical v0.13.1 example and limits
 
@@ -57,7 +61,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.5 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.6 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -86,7 +90,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.5 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.6 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -241,6 +245,32 @@ endpoint, worker and wiring declarations, use
 [native source documentation pages](docs/guides/native-static-pages.md).
 The selector supplies exact roots; conditions, source expressions and local
 uncertainty come from the saved evidence.
+
+Set `"expandSourceCalls": true` on each selected process to follow exact compiler
+call occurrences to selected child endpoint pages in the same service and
+compilation scope, or to retained helper bodies. Expansion stops at depth two,
+64 additional bodies or 1 MiB of additional source text. The separate
+`examinedSourceDigest` and reverse membership describe only the examined source:
+a child helper change can identify both examining parents, while unexamined
+targets remain frontiers. Existing publication and file hashes keep their meaning.
+
+### Maintain an attributed paragraph's source context
+
+The manual Work/proposal route can edit an exact retained paragraph with
+`explanationText`, or separately select its effective source context with
+`explanationContext`. Context selection requires complete retained-operation and
+current source reads, matching paragraph/context digests, compatible logical
+source and dependency references, and exact current event anchors. Regenerate
+stale source-derived fields first; changed scopes and ID remapping are unsupported.
+
+Context selection preserves the paragraph text, ID and declared text author. Its
+declared context editor, previous snapshot and context digest record the change.
+Publish the prepared manual proposal with `--unassessed`. Later text edits keep
+the selected context; a later source change can mark it stale without silently
+rebinding it. Older publications keep their original text and source bytes.
+Native page selectors can include an exact frozen publication's paragraph beside
+current generated content, with separate source links and visible local freshness.
+Read the [manual context-selection contract](docs/operations/docs-snapshot-store.md#explicitly-select-a-new-paragraph-source-context).
 
 Use `docs check` when source acquisition or freshness checking is needed.
 Ordinary context, Work and rendering consume compatible saved evidence; adding
