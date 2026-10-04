@@ -41,6 +41,71 @@ clew docs context --root /work/architecture --service orders --snapshot SOURCE_S
 
 Use the latest list/show `inputDigest`, including `sha256:`, for each catalog mutation; save `snapshot` from check. If evidence-selection/update policies were already configured, inspect them first: an admitted external evidence package may be selected ahead of local capture. This example assumes a new root with no such policy.
 
+A first check can return exit code 3 with `MISSING_BASELINE` even after saving a
+`CHECKED` source snapshot: no explanation has been published yet. Inspect the
+returned producer status and unresolved evidence. Reuse that exact snapshot when
+capture succeeded; do not repeat acquisition just to clear the missing baseline.
+
+Start with a service overview before defining a process. Save `/work/request.json`:
+
+```json
+{"schema":"codeclew-documentation-work-request/1.0","audience":"Worker maintainers seeking their first source explanation","entrypoint":"section-overview","maxItems":100,"maxBytes":40960}
+```
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders --input /work/request.json --snapshot SOURCE_SNAPSHOT
+clew docs work read --root /work/architecture --work WORK_ID --input /work/sources.json
+```
+
+The preparation returns `WORK_ID`, the overview operation reference and recorded
+context. Read every initial context page using its returned cursor. For the
+source-syntax profile, `/work/sources.json` can be
+`{"query":{"kind":"SOURCE"}}`. The query returns registered SOURCE references,
+including otherwise-unreferenced whole files. Select the actual references for
+the explanation; never guess `s` ordinals. Read selected records through
+`{"references":["RETURNED_SOURCE_REFERENCE"]}`. If a record is omitted for size,
+use [complete SOURCE part reads](docs-snapshot-store.md#read-one-retained-source-in-bounded-parts)
+until `nextCursor` is null. Pagination changes delivery size, not source authority
+or the requirement to finish reading a cited file. Complete FILE_ONLY text can
+support an explanation of those exact bytes; it is not parsed compiler evidence.
+
+Ask your current agent to explain the selected service from those recorded reads
+and write a native proposal. For the first overview, the shape is:
+
+```json
+{
+  "schema": "codeclew-documentation-proposal/1.0",
+  "operations": [{
+    "entrypoint": "RETURNED_OVERVIEW_REFERENCE",
+    "title": "SOURCE_SUPPORTED_TITLE",
+    "summary": {"text": "EXPLANATION_FROM_RECORDED_SOURCE", "evidence": ["RETURNED_SOURCE_REFERENCE"]},
+    "steps": []
+  }]
+}
+```
+
+Replace every uppercase placeholder with the actual returned reference or an
+explanation supported by the supplied text. The summary is plain prose; describe
+missing facts explicitly. This authoring step is required: capture alone does not
+write an explanation. The first overview can leave other sections as visible gaps.
+
+```sh
+clew docs proposal submit --root /work/architecture --work WORK_ID --input /work/proposal.json
+clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --unassessed
+clew docs recompose --root /work/architecture --snapshot SOURCE_SNAPSHOT
+clew docs render --root /work/architecture --snapshot RECOMPOSED_SNAPSHOT
+```
+
+Submit must return `READY_FOR_REVIEW` or `READY_WITH_LIMITATIONS`, with no structural
+diagnostics, before local publication. Open the returned HTML output beneath
+`/work/architecture/docs/`. `--unassessed` keeps meaning review explicitly
+`UNASSESSED`; it does not certify the explanation. Recomposition after publication
+includes the new narrative using the saved capture. It runs no analyzer. A saved
+process definition, protected note or configured provider is optional for this
+first result.
+
+## Add a process explanation after the first overview
+
 Select one method from returned evidence. `docs process candidates --root /work/architecture --service orders --snapshot SOURCE_SNAPSHOT --declaration SYMBOL_OBSERVATION_ID` supports an explicit callable root even where automatic discovery is incomplete. A candidate is navigation, not accepted business meaning. Create a process definition using the existing process schema/fixture: exact service/selector, explicit requested scope, participants, trigger/outcomes, bounded `maxDepth`/`maxNodes`, and only declared interactions. Source methods must use the selector values exposed by retained evidence rather than guessed JVM identities.
 
 To inspect the complete retained call/evidence graph for one exact method without

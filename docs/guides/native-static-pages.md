@@ -3,9 +3,53 @@
 `docs pages render` consumes an explicit immutable `docs check` snapshot and
 exact retained declaration IDs. It produces linked offline HTML and inert MDX 3
 from one typed source projection. It runs no analyzer, recapture or latest-pointer
-fallback. Ordinary source development uses `./clew`.
+fallback. Ordinary source development uses `./clew`; examples below use installed `clew`.
 
-First register and bind the Java service. To include an attributed operational
+## First native HTML from saved Java evidence
+
+Register and bind the Java service, then capture its compiler evidence. For a
+runnable public source scope, use the
+[owned linked-process fixture](../../fixtures/native-linked-processes/README.md#capture-committed-source).
+Its origin is illustrative and its gateway is local; it is not a production
+service or real external delivery. No protected note or process definition is
+required for the first native pages.
+
+Obtain the saved snapshot and public callable IDs:
+
+```sh
+clew docs check --root /path/to/docs --service example
+clew docs context --root /path/to/docs --snapshot sha256:IDENTITY/SIZE \
+  --service example
+```
+
+Use the returned snapshot and exact callable observation IDs in `selection.json`:
+
+```json
+[
+  {
+    "id": "delivery",
+    "service": "example",
+    "endpointDeclaration": "EXACT_RETAINED_ENDPOINT_ID",
+    "workerDeclaration": "EXACT_RETAINED_WORKER_ID",
+    "question": "Which guards can leave the gateway call unreached?"
+  }
+]
+```
+
+```sh
+clew docs pages render --root /path/to/docs \
+  --snapshot sha256:IDENTITY/SIZE --input selection.json --output /path/to/pages
+```
+
+Open the emitted `index.html`, follow the worker and diagnostic pages, then open
+the cited source. Use IDs returned by the same saved context; callable names are
+discovery hints, not declaration IDs. A first check may save a `CHECKED` snapshot
+and return exit code 3 for `MISSING_BASELINE`; inspect producer failures separately.
+That missing publication is not a reason to run the compiler again.
+
+## Include an optional protected instruction
+
+To include an attributed operational
 instruction, import it through the protected note lifecycle before capture. Use
 `docs note list --root /path/to/docs` to obtain the current `inputDigest` and put
 this association in `association.json`:
@@ -25,9 +69,9 @@ this association in `association.json`:
 ```
 
 ```sh
-./clew docs note import --root /path/to/docs --input association.json \
+clew docs note import --root /path/to/docs --input association.json \
   --source /path/to/on-call-original.md --expected-input-digest CURRENT_INPUT_DIGEST
-./clew docs note inspect --root /path/to/docs --path notes/on-call.md
+clew docs note inspect --root /path/to/docs --path notes/on-call.md
 ```
 
 Import preserves the bounded UTF-8 original text, including Unicode and CRLF.
@@ -35,34 +79,10 @@ Import preserves the bounded UTF-8 original text, including Unicode and CRLF.
 note digest checks; `docs note remove` removes the association while preserving
 the original. List and inspect remain the supported ways to inspect live notes.
 
-Then capture native compiler evidence and the note inputs:
-
-```sh
-./clew docs check --root /path/to/docs --service example
-./clew docs context --root /path/to/docs --snapshot sha256:IDENTITY/SIZE \
-  --service example
-```
-
-Use the returned snapshot and exact callable observation IDs in `selection.json`:
-
-```json
-[
-  {
-    "id": "delivery",
-    "service": "example",
-    "endpointDeclaration": "EXACT_RETAINED_ENDPOINT_ID",
-    "workerDeclaration": "EXACT_RETAINED_WORKER_ID",
-    "wiringDeclaration": "EXACT_RETAINED_WIRING_ID",
-    "question": "Which guards can leave the gateway call unreached?",
-    "noteIds": ["on-call"]
-  }
-]
-```
-
-```sh
-./clew docs pages render --root /path/to/docs \
-  --snapshot sha256:IDENTITY/SIZE --input selection.json --output /path/to/pages
-```
+Import the note before a new capture when it should be included. Add
+`"noteIds": ["on-call"]` to the selected page and use that returned snapshot.
+Later exports reuse its captured note and compiler evidence. The basic export
+above does not need this optional step.
 
 The input is a JSON array of 1–128 selections. Each selection has a safe `id` unique ignoring ASCII case, `service`, exact `endpointDeclaration` and `workerDeclaration` IDs.
 `wiringDeclaration`, `question` and `noteIds` are optional. The question is displayed as
