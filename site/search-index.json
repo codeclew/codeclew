@@ -108,7 +108,7 @@
     "group": "Guides"
   },
   {
-    "title": "One service, one method, or release history.",
+    "title": "Start with the question you need to answer.",
     "url": "./documentation.html#task-paths",
     "description": "Service documentation",
     "group": "Guides"
@@ -140,6 +140,12 @@
   {
     "title": "Follow selected calls between documented processes.",
     "url": "./documentation.html#native-source-pages",
+    "description": "Service documentation",
+    "group": "Guides"
+  },
+  {
+    "title": "Keep the answer close to the code.",
+    "url": "./documentation.html#reviewed-questions",
     "description": "Service documentation",
     "group": "Guides"
   },

@@ -14,23 +14,28 @@ checkout for source development; direct capsule binaries are unsupported.
 | Install Codeclew and connect an agent | [Install](#install-on-macos-linux-or-windows-through-wsl2) and [install the agent skill](#install-the-agent-skill) |
 | Navigate code and check repository support | [Practical code navigation](#practical-code-navigation) and [operational admission](#operational-admission) |
 | Create or refresh service documentation | [Durable service documentation](#durable-service-documentation) and the [service workflow](skills/codeclew/references/service-documentation.md) |
+| Export linked pages from selected Java source | [Native source pages](docs/guides/native-static-pages.md) |
+| Ask and review a question about retained Java source | [Draft review and explicit publication](docs/operations/docs-snapshot-store.md#review-a-saved-operation-draft) and [compare a saved answer with a new Check](docs/operations/docs-snapshot-store.md#compare-a-saved-answer-with-an-explicit-captured-check) |
 | Try the internal Java process draft | [historical v0.13.1 example and limits](#historical-v0131-example-and-limits), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.6
+## Current release: v0.13.7
 
-This release adds explicit manual source-context selection for an attributed
-explanation paragraph without rewriting its text or changing its declared text
-author. A separate context editor records the selection. Text and context review
-remain UNASSESSED; current source context does not verify meaning. Native HTML and
-inert MDX exports retain each selected paragraph's own frozen source context.
+Find a selected Java process and its retained helper bodies in linked HTML and
+MDX pages. Native discovery leads with readable callable names and explanations;
+exact compiler identities remain searchable and available in disclosures.
+Scoped variable facts connect supported source reads, guarded assignments and
+call prerequisites without claiming runtime values or delivery.
 
-Native Java page selections can also opt into bounded exact source-call links
-between documented processes and retained helper bodies. Local examined-source
-digests identify review candidates; missing bodies, ambiguity, cycles and limits
-remain visible frontiers. These links do not establish runtime dispatch or impact.
-See the [v0.13.6 release notes](docs/releases/v0.13.6.md).
+Keep attributed explanations alongside updated source, with each paragraph's
+own frozen context. Configured operation authors receive selected attributed
+context and complete admitted source. Retained edits remain a manual Work path.
+A question-focused Java draft can undergo independent configured meaning review,
+be exported or explicitly published, and be compared with a later captured Check.
+Source freshness and model approval stay separate. Configuration and model
+execution are explicit; there is no bundled default provider.
+See the [v0.13.7 release notes](docs/releases/v0.13.7.md).
 
 ### Historical v0.13.1 example and limits
 
@@ -61,7 +66,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.6 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.7 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -90,7 +95,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.6 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.7 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a

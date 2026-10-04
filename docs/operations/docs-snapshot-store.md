@@ -662,6 +662,8 @@ between file replacements, rerun it with the same saved Work and answer to
 finish the draft; this performs no index capture. The result remains a local
 `DRAFT` / `UNREVIEWED`; it does not publish or create a release version.
 
+### Review a saved operation draft
+
 To export an approved saved review without a configuration or another model call:
 
 ```sh
