@@ -44,6 +44,7 @@ pub mod reviewed_answers;
 mod section_author;
 pub mod sections;
 pub mod snapshot_pins;
+mod source_data_context;
 mod source_inputs;
 pub mod source_steps;
 pub(crate) mod sqlite_objects;

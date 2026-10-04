@@ -214,6 +214,23 @@ fn handoff_digest(page: &PageContent) -> Result<String, ClewError> {
 /// Roots are preloaded before breadth-first expansion, so a shared body has one
 /// canonical record and the depth budget uses its shortest selected-root path.
 fn build(checked: &Check, pages: &[PageContent]) -> Result<SourceCallGraph, ClewError> {
+    let roots: Vec<_> = pages
+        .iter()
+        .filter(|p| p.selection.expand_source_calls)
+        .flat_map(|p| {
+            selected_roots(p, &checked.services[&p.selection.service])
+                .into_iter()
+                .map(move |(declaration, _)| (p.selection.service.clone(), declaration))
+        })
+        .collect();
+    build_roots(checked, &roots)
+}
+/// Same bounded expansion over explicit callable declarations; no process/handoff
+/// association is manufactured for model Work.
+pub(super) fn build_roots(
+    checked: &Check,
+    roots: &[(String, String)],
+) -> Result<SourceCallGraph, ClewError> {
     let mut graph = SourceCallGraph {
         schema: GRAPH_SCHEMA.into(),
         authority: AUTHORITY.into(),
@@ -225,13 +242,13 @@ fn build(checked: &Check, pages: &[PageContent]) -> Result<SourceCallGraph, Clew
         reverse_examined_processes: BTreeMap::new(),
         reverse_field_references: BTreeMap::new(),
     };
-    for page in pages.iter().filter(|p| p.selection.expand_source_calls) {
-        let evidence = &checked.services[&page.selection.service];
-        for (declaration, _) in selected_roots(page, evidence) {
-            let id = root_key(evidence, &declaration)?;
-            if let std::collections::btree_map::Entry::Vacant(entry) = graph.nodes.entry(id) {
-                entry.insert(node(evidence, &declaration)?);
-            }
+    for (service, declaration) in roots {
+        let evidence = checked.services.get(service).ok_or_else(|| {
+            crate::documentation::invalid("source-data selected service is unavailable")
+        })?;
+        let id = root_key(evidence, declaration)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = graph.nodes.entry(id) {
+            entry.insert(node(evidence, declaration)?);
         }
     }
     let mut pending: VecDeque<_> = graph.nodes.keys().cloned().map(|id| (id, 0)).collect();
@@ -471,7 +488,7 @@ fn statement_paths(steps: &[Statement], path: &str, result: &mut BTreeMap<String
     }
 }
 
-fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
+pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
     let mut paths = BTreeMap::new();
     statement_paths(&node.callable.steps, "body", &mut paths);
     let own = &node.observations[&node.callable.declaration_id];

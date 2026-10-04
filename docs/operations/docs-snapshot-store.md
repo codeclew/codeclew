@@ -518,6 +518,37 @@ builds this packet and renders the returned answer through the same saved Work.
 The complete preparation, author-only configuration and recovery recipe is in
 `skills/codeclew/references/service-documentation.md`.
 
+Internal callable Work may opt into `"sourceDataContext": true` in the same
+`process-graph-v1` preparation request. `rootDeclaration` selects an exact retained
+Java compiler callable. Run `docs work packet --root ROOT --work WORK_ID` to inspect
+the resulting `sourceDataContext` and genuine Work citation labels before authoring.
+The graph uses only the immutable Work snapshot; it never captures or reads current
+source. Omitted and false retain the ordinary Work and packet representation.
+
+This context reuses the native source-call and data-state projection: shared guarded
+definition IDs preserve alternatives, opaque transformations and field interference.
+Compiler variable identity is distinct from source-syntax transfer and model meaning
+review. Actual/formal and return links are declared-target conditional; source-order
+normal-completion prerequisites do not prove runtime success, receiver identity,
+delivery or incident facts. Meaning remains `UNASSESSED` and runtime `UNKNOWN`.
+The source-data digest is separate from examined-source digest and packet digest.
+`sourceDataContext.sources` delivers complete exact source records independently
+of legacy containing-class aliases. Definition `sourceSpan` keys preserve native
+covering source ranges; `citationId` and span `reference` are genuine Work labels.
+The addition bound includes these sources, context and all additional citation metadata.
+Node-local `dataState.shared` tables intern exact storage, guard and completion sets;
+`storageRef`, `guardSetRef` and `completionSetRef` are lossless table references,
+not compiler identities or source citation labels. Definitions still reference
+prior definitions instead of copying paths. Full variable facts remain in the
+immutable audit and are bound by per-node count/digest; unused statement spans
+and duplicate variable-fact citation descriptions are not author evidence rows.
+The fixed traversal bounds remain depth two, 64 additional bodies and one MiB of
+additional source. Complete added context and exact sources must fit 65,536 bytes;
+preparation refuses larger selections before any model reservation. This bound is
+not a provider token or monetary cap. Existing role preflight still counts the whole
+model envelope. Authoring, review, repair and export validate the exact saved context
+and source delivery; no implicit publication follows this opt-in.
+
 Internal callable drafts use the separate `process-graph-v1` profile with an
 exact scoped `rootDeclaration` and a persisted question from the same saved
 snapshot. Their compact author packet includes linked containing-type source

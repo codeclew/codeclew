@@ -904,12 +904,49 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
                 .flat_map(|s| s.memberships.iter().map(|m| m.node.clone()))
         })
         .collect();
+    attach_graph(checked, graph, &selected)?;
+    for page in p.pages.iter_mut().filter(|p| p.selection.expand_data_state) {
+        let nodes: Vec<_> = page
+            .examined_sources
+            .iter()
+            .flat_map(|e| e.memberships.iter().map(|m| m.node.clone()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let hashes: Vec<_> = nodes
+            .iter()
+            .map(|id| {
+                (
+                    id,
+                    graph.nodes[id]
+                        .data_state
+                        .as_ref()
+                        .map(|s| &s.data_state_digest),
+                )
+            })
+            .collect();
+        page.data_state = Some(ExaminedDataState {
+            schema: SCHEMA.into(),
+            authority: AUTHORITY.into(),
+            data_state_digest: digest(&hashes)?,
+            nodes,
+        });
+    }
+    Ok(())
+}
+
+/// Shared graph consumer: same fact, source, row and IR ceilings as native pages.
+pub(super) fn attach_graph(
+    checked: &Check,
+    graph: &mut SourceCallGraph,
+    selected: &BTreeSet<String>,
+) -> Result<(), ClewError> {
     let mut bytes = 0;
     let mut rows = 0;
     let mut fact_bytes = 0;
     let mut fact_count = 0;
     let mut retained_sources = BTreeSet::new();
-    for id in &selected {
+    for id in selected {
         let node = &graph.nodes[id];
         let e = &checked.services[&node.service];
         for o in e.observations.values().filter(|o| {
@@ -933,7 +970,7 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
             }
         }
     }
-    for id in &selected {
+    for id in selected {
         let node = graph
             .nodes
             .get(id)
@@ -1021,33 +1058,6 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
                     .push(node.id.clone());
             }
         }
-    }
-    for page in p.pages.iter_mut().filter(|p| p.selection.expand_data_state) {
-        let nodes: Vec<_> = page
-            .examined_sources
-            .iter()
-            .flat_map(|e| e.memberships.iter().map(|m| m.node.clone()))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let hashes: Vec<_> = nodes
-            .iter()
-            .map(|id| {
-                (
-                    id,
-                    graph.nodes[id]
-                        .data_state
-                        .as_ref()
-                        .map(|s| &s.data_state_digest),
-                )
-            })
-            .collect();
-        page.data_state = Some(ExaminedDataState {
-            schema: SCHEMA.into(),
-            authority: AUTHORITY.into(),
-            data_state_digest: digest(&hashes)?,
-            nodes,
-        });
     }
     Ok(())
 }
@@ -1272,6 +1282,160 @@ mod tests {
                 _ => {}
             }
         }
+    }
+    fn bridge_work(text: &str) -> crate::documentation::work::Work {
+        let mut e = evidence(text);
+        let parsed = Parsed::new(text).unwrap();
+        local_facts(&mut e, &parsed);
+        let o = e.observations.get_mut("method").unwrap();
+        o.normalized["schema"] = json!("codeclew-java-compiler-fact/1.0");
+        o.normalized["kind"] = json!("DECLARATION");
+        o.normalized["symbolIdentity"] = json!(o.symbol);
+        o.normalized["ownerIdentity"] = json!("class:Fixture");
+        o.normalized["resolution"] = json!("COMPILER_EXACT");
+        o.digest = digest(&o.normalized).unwrap();
+        let mut work = crate::documentation::work::api_contract_tests::endpoint_context_fixture();
+        work.subject = "service:fixture".into();
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("method".into());
+        work.request.entrypoint = None;
+        work.request.source_data_context = true;
+        work.snapshot = Some("synthetic-immutable-snapshot".into());
+        work.checked.dependencies = e.observations.clone();
+        work.checked.services = BTreeMap::from([("fixture".into(), e)]);
+        work.influence = work
+            .checked
+            .dependencies
+            .iter()
+            .map(|(id, o)| (id.clone(), o.digest.clone()))
+            .collect();
+        work.handles = work
+            .checked
+            .dependencies
+            .keys()
+            .enumerate()
+            .map(|(i, id)| {
+                (
+                    format!("d{}", i + 1),
+                    crate::documentation::work::Handle {
+                        kind: "DEPENDENCY".into(),
+                        id: id.clone(),
+                    },
+                )
+            })
+            .collect();
+        work.handles.insert(
+            "s1".into(),
+            crate::documentation::work::Handle {
+                kind: "SOURCE".into(),
+                id: "body".into(),
+            },
+        );
+        work
+    }
+    #[test]
+    fn source_data_packet_bridge_binds_guarded_ir_exact_sources_and_default_identity() {
+        use crate::documentation::source_data_context as bridge;
+        let mut work = bridge_work(
+            "String prepare(Task task) { String chosen = task; if (chosen == null) { chosen = \"anonymous\"; } String transformed = chosen.trim(); return \"prefix:\" + transformed; }",
+        );
+        let projection = bridge::build(&work).unwrap().unwrap();
+        let state = &projection.context["nodes"][0]["dataState"];
+        let encoded = state.to_string();
+        assert!(encoded.contains("CHOICE"), "{encoded}");
+        assert!(encoded.contains("CALL_RESULT"), "{encoded}");
+        assert!(encoded.contains("DECLARED_TARGET_SOURCE_CONDITIONAL"));
+        assert!(encoded.contains("BINARY"));
+        assert_eq!(projection.context["runtimeStatus"], "UNKNOWN");
+        assert_eq!(
+            projection.context["sources"][0]["text"],
+            work.checked.services["fixture"].sources["body"].text
+        );
+        assert!(
+            !projection
+                .rows
+                .iter()
+                .any(|r| r["kind"] == "VARIABLE_ACCESS")
+        ); // rows retain the real DEPENDENCY kind
+        assert!(
+            projection
+                .rows
+                .iter()
+                .any(|r| r["record"]["kind"] == "VARIABLE_ACCESS")
+        );
+        let packet =
+            json!({"sourceDataContext":projection.context,"citations":projection.citations});
+        bridge::validate_saved(&work, &packet).unwrap();
+        assert_eq!(
+            packet["sourceDataContext"],
+            bridge::build(&work).unwrap().unwrap().context
+        );
+        for pointer in [
+            "/sourceDataContext/sourceDataDigest",
+            "/sourceDataContext/snapshot",
+            "/sourceDataContext/nodes/0/dataState/authority",
+            "/sourceDataContext/sources/0/text",
+        ] {
+            let mut forged = packet.clone();
+            *forged.pointer_mut(pointer).unwrap() = json!("forged");
+            assert!(bridge::validate_saved(&work, &forged).is_err(), "{pointer}");
+        }
+        assert!(bridge::validate_saved(&work, &json!({})).is_err());
+        work.request.source_data_context = false;
+        assert!(bridge::build(&work).unwrap().is_none());
+        assert!(
+            serde_json::to_value(&work.request)
+                .unwrap()
+                .get("sourceDataContext")
+                .is_none()
+        );
+        bridge::validate_saved(&work, &json!({})).unwrap();
+        assert!(bridge::validate_saved(&work, &packet).is_err());
+        let absent = serde_json::to_value(&work.request).unwrap();
+        let mut explicit = absent.clone();
+        explicit["sourceDataContext"] = json!(false);
+        assert_eq!(
+            crate::documentation::bytes(
+                &serde_json::from_value::<crate::documentation::work::Request>(absent).unwrap()
+            )
+            .unwrap(),
+            crate::documentation::bytes(
+                &serde_json::from_value::<crate::documentation::work::Request>(explicit).unwrap()
+            )
+            .unwrap()
+        );
+    }
+    #[test]
+    fn source_data_packet_bridge_refuses_missing_provenance_and_cap_before_dispatch() {
+        use crate::documentation::source_data_context as bridge;
+        let work =
+            bridge_work("String prepare(Task task) { String chosen = task; return chosen; }");
+        let mut missing = work.clone();
+        missing.snapshot = None;
+        assert!(bridge::build(&missing).is_err());
+        missing = work.clone();
+        missing.handles.remove("s1");
+        assert!(bridge::build(&missing).is_err());
+        missing = work.clone();
+        missing.influence.clear();
+        assert!(bridge::build(&missing).is_err());
+        missing = work.clone();
+        missing.request.context_profile = None;
+        assert!(bridge::build(&missing).is_err());
+        missing = work.clone();
+        missing
+            .checked
+            .dependencies
+            .get_mut("method")
+            .unwrap()
+            .digest = "forged".into();
+        assert!(bridge::build(&missing).is_err());
+        let oversized = bridge_work(&format!(
+            "String prepare(Task task) {{ /*{}*/ return task; }}",
+            "x".repeat(70_000)
+        ));
+        let error = bridge::build(&oversized).err().unwrap().to_string();
+        assert!(error.contains("65536-byte"), "{error}");
     }
     #[test]
     fn guarded_definitions_preserve_both_values_and_stable_local_digest() {

@@ -303,6 +303,7 @@
           ],
           "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
         },
+        "sourceDataContext": {"type": "boolean", "default": false, "description": "Opt-in bounded exact callable source-syntax data context, only process-graph-v1; omitted false preserves legacy identity. No runtime or compiler dataflow proof."},
         "maintainedParagraph": {
           "oneOf": [{"$ref": "#/$defs/maintainedParagraphSelector"}, {"type": "null"}],
           "description": "Explicit frozen human paragraph for new service endpoint process-graph-v1 Work; no latest fallback, automatic ID mapping or compiler-proof promotion."

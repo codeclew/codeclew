@@ -315,12 +315,18 @@ pub struct Request {
     /// Resolve one exact authored fragment from this frozen bundle during new Work preparation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maintained_from_bundle: Option<super::maintained_context::FromBundle>,
+    /// Opt-in exact callable source transformations; omitted false preserves old identity.
+    #[serde(default, skip_serializing_if = "source_data_false")]
+    pub source_data_context: bool,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
     pub max_bytes: usize,
     #[serde(default)]
     pub external_inputs: Vec<String>,
+}
+fn source_data_false(value: &bool) -> bool {
+    !value
 }
 impl Request {
     pub fn documentation_language(&self) -> &str {
@@ -753,7 +759,9 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
     validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
     validate_process_graph_root(&stored.subject, &stored.request, &checked)?;
+    super::source_data_context::validate_request(&stored.request)?;
     let work = stored.into_runtime(checked, handles, influence);
+    super::source_data_context::build(&work)?;
     super::maintained_context::validate_optional(
         work.maintained_context.as_ref(),
         &work.subject,
@@ -1857,6 +1865,7 @@ pub fn prepare_with_snapshot(
     validate_http_api_contract_profile(&subject, &request, &checked)?;
     validate_endpoint_context_profile(&subject, &request, &checked)?;
     validate_process_graph_root(&subject, &request, &checked)?;
+    super::source_data_context::validate_request(&request)?;
     normalize_operation_authoring_contract(&mut request)?;
     let maintained_context =
         super::maintained_context::load(repo, &subject, &mut request, &checked)?;
@@ -2034,6 +2043,9 @@ pub fn prepare_with_snapshot(
     }
     let mut stored = StoredWork::from_runtime(&work, evidence_snapshot)?;
     stored.id = digest(&stored)?[7..].into();
+    if work.request.source_data_context {
+        super::source_data_context::build(&work)?;
+    }
     // Validate selection before committing an unusable work object.
     rows(&work, &Selection::default())?;
     let encoded = bytes(&stored)?;
@@ -3208,6 +3220,7 @@ mod section_context_tests {
                 authoring_contract: None,
                 maintained_paragraph: None,
                 maintained_from_bundle: None,
+                source_data_context: false,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: vec![],
@@ -4386,6 +4399,7 @@ pub(super) mod api_contract_tests {
                 authoring_contract: None,
                 maintained_paragraph: None,
                 maintained_from_bundle: None,
+                source_data_context: false,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: Vec::new(),

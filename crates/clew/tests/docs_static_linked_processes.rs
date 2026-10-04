@@ -512,6 +512,60 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         sink.as_deref(),
         &mut timings,
     );
+    // Native Work bridge uses this same saved capture; no additional compiler
+    // invocation, page selection, current-source read, or model call.
+    let bridge_request=f.input("source-data-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Synthetic source-data fixture","contextProfile":"process-graph-v1","rootDeclaration":declaration(&checked.services["linked"],"ChildWorker","runOnce"),"question":"Where do the request and attempts values come from?","sourceDataContext":true}));
+    let bridge_work = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:linked",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        bridge_request.to_str().unwrap(),
+    ]);
+    let bridge_work_id = bridge_work["work"]
+        .as_str()
+        .or_else(|| bridge_work["workId"].as_str())
+        .unwrap();
+    let bridge_packet = f.ok(&["docs", "work", "packet", "--work", bridge_work_id]);
+    let bridge_context = &bridge_packet["sourceDataContext"];
+    assert_eq!(bridge_context["runtimeStatus"], "UNKNOWN");
+    assert_eq!(bridge_context["snapshot"], snapshot);
+    assert!(
+        bridge_context
+            .to_string()
+            .contains("DECLARED_TARGET_SOURCE_CONDITIONAL")
+    );
+    assert!(bridge_context.to_string().contains("INTERFERENCE"));
+    assert!(bridge_context.to_string().contains("anonymous"));
+    assert!(bridge_context.to_string().contains("CHOICE"));
+    assert!(bridge_context["nodes"].as_array().unwrap().iter().any(|n| {
+        n["symbol"].as_str().unwrap().contains("prepare")
+            && n["dataState"]["definitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["value"]["kind"] == "BINARY")
+    }));
+    for node in bridge_context["nodes"].as_array().unwrap() {
+        for label in node["evidence"].as_array().unwrap() {
+            assert!(
+                bridge_packet["citations"]
+                    .get(label.as_str().unwrap())
+                    .is_some()
+            );
+        }
+    }
+    if let Some(sink) = sink.as_deref() {
+        fs::write(
+            sink.join("source-data-packet.json"),
+            serde_json::to_vec_pretty(&bridge_packet).unwrap(),
+        )
+        .unwrap();
+    }
     let data_frozen = files(&data_path);
     let data_graph = data.source_call_graph.as_ref().unwrap();
     let prepare = data_graph
@@ -752,6 +806,10 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     );
     assert_eq!(files(&baseline_path), frozen);
     fs::remove_dir_all(&source).unwrap();
+    assert_eq!(
+        bridge_packet,
+        f.ok(&["docs", "work", "packet", "--work", bridge_work_id])
+    );
     let (offline_path, offline) = render(
         &f,
         &snapshot,

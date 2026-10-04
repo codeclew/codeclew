@@ -630,6 +630,72 @@
         "dependencyRecords"
       ]
     },
+    "sourceDataContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-source-data-context/1.0"
+        },
+        "authority": {
+          "const": "SOURCE_SYNTAX_WITH_COMPILER_VARIABLE_IDENTITY"
+        },
+        "meaningReview": {
+          "const": "UNASSESSED"
+        },
+        "runtimeStatus": {
+          "const": "UNKNOWN"
+        },
+        "snapshot": {
+          "type": "string"
+        },
+        "rootDeclarationReference": {
+          "$ref": "#/$defs/label"
+        },
+        "sourceDataDigest": {
+          "type": "string"
+        },
+        "examinedSourceDigest": {
+          "type": "string"
+        },
+        "bounds": {
+          "type": "object"
+        },
+        "nodes": {
+          "type": "array",
+          "maxItems": 65,
+          "items": {
+            "type": "object"
+          }
+        },
+        "sources": {"type":"array", "items":{"type":"object"}},
+        "sourceSpans": {
+          "type": "object"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "authority",
+        "meaningReview",
+        "runtimeStatus",
+        "snapshot",
+        "rootDeclarationReference",
+        "sourceDataDigest",
+        "examinedSourceDigest",
+        "bounds",
+        "nodes",
+        "sourceSpans",
+        "sources",
+        "limitations"
+      ],
+      "description": "The host validates this entire derived typed IR and exact source delivery against immutable Work. Node/state IDs are shared source-syntax refs, not packet citation labels or runtime proof."
+    },
     "processPacket": {
       "type": "object",
       "additionalProperties": false,
@@ -699,6 +765,7 @@
           },
           "required": ["schema", "artifactDigest", "rootMethodId", "snapshot", "service"]
         },
+        "sourceDataContext": { "$ref": "#/$defs/sourceDataContext" },
         "maintainedContext": { "$ref": "#/$defs/maintainedContext" },
         "citations": { "$ref": "#/$defs/citationMap" },
         "packetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }

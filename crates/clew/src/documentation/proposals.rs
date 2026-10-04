@@ -1615,6 +1615,7 @@ mod operation_input_tests {
                 authoring_contract: None,
                 maintained_paragraph: None,
                 maintained_from_bundle: None,
+                source_data_context: false,
                 max_items: 20,
                 max_bytes: 40960,
                 external_inputs: Vec::new(),

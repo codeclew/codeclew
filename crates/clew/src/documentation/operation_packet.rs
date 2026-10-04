@@ -36,6 +36,7 @@ pub(super) fn validate_saved_maintained_context(
             "saved reader packet maintainedContext differs from immutable Work; context must be complete and exact",
         ));
     }
+    super::source_data_context::validate_saved(work, packet)?;
     Ok(())
 }
 
@@ -617,7 +618,7 @@ pub(super) fn audit_saved_packet(work: &Work, packet: &Value) -> Result<Value, C
     }
     let rows = match profile {
         endpoint_context::PROFILE => endpoint_context::profile_rows(work)?,
-        "process-graph-v1" => endpoint_context::process_profile_rows(work)?,
+        "process-graph-v1" => super::source_data_context::profile_rows(work)?,
         _ => return Err(invalid("unsupported saved reader packet profile")),
     };
     let mut counts = BTreeMap::new();
@@ -680,7 +681,8 @@ pub(super) fn audit_saved_packet(work: &Work, packet: &Value) -> Result<Value, C
 }
 
 fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
-    let rows = endpoint_context::process_profile_rows(work)?;
+    let source_data = super::source_data_context::build(work)?;
+    let rows = super::source_data_context::profile_rows(work)?;
     let graph = super::process_graph::collect_from_work(work)?;
     let mut row_counts = BTreeMap::<String, usize>::new();
     let mut selected_by_key = BTreeMap::<(String, String), (String, Value)>::new();
@@ -1268,6 +1270,11 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
     } else {
         None
     };
+    if let Some(projection) = &source_data {
+        for (label, role) in &projection.citations {
+            cite(&mut citations, label, role);
+        }
+    }
     let mut packet = json!({
         "schema":PACKET_SCHEMA,
         "profile":"process-graph-v1",
@@ -1324,6 +1331,9 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
     }
     if let Some(context) = &work.maintained_context {
         packet["maintainedContext"] = serde_json::to_value(context).map_err(super::io_error)?;
+    }
+    if let Some(projection) = source_data {
+        packet["sourceDataContext"] = projection.context;
     }
     validate_saved_maintained_context(work, &packet)?;
     let packet_digest = digest(&packet)?;
@@ -3217,6 +3227,189 @@ mod tests {
             exact_source_range(&parent_with_occurrence, &part_with_occurrence),
             None
         );
+    }
+
+    #[test]
+    fn source_data_full_packet_preserves_class_enrichment_aliases_and_exact_delivery() {
+        let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
+        let class_text = "class Controller { Response handle(Request request) { if (request == null) return null; return service.process(request); } }";
+        add_process_profile_fields(&mut work, class_text, None);
+        // Explicit synthetic compiler bindings and exact occurrence ranges. This
+        // exercises the actual packet builder; native tests qualify javac facts.
+        let method_text = "Response handle(Request request) { if (request == null) return null; return service.process(request); }";
+        let original = work.checked.services["orders"].sources["endpoint-source"].clone();
+        let mut method = original.clone();
+        method.id = "endpoint-method-source".into();
+        method.text = method_text.into();
+        method.text_digest = canonical::hash_bytes(method.text.as_bytes());
+        let start = class_text.find(method_text).unwrap();
+        let blob = canonical::hash_bytes(class_text.as_bytes());
+        method.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            snapshot: "synthetic-packet-source".into(),
+            blob: blob.clone(),
+            start_byte: start,
+            end_byte: start + method_text.len(),
+        });
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap();
+        source.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            snapshot: "synthetic-packet-source".into(),
+            blob,
+            start_byte: 0,
+            end_byte: class_text.len(),
+        });
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .insert(method.id.clone(), method.clone());
+        work.handles.insert(
+            "source-endpoint-method".into(),
+            super::super::work::Handle {
+                kind: "SOURCE".into(),
+                id: method.id.clone(),
+            },
+        );
+        let mut declaration = work.checked.dependencies["endpoint-declaration"].clone();
+        declaration.normalized["resolution"] = json!("COMPILER_EXACT");
+        declaration.source_ids = vec![method.id.clone()];
+        declaration.digest = digest(&declaration.normalized).unwrap();
+        work.influence
+            .insert(declaration.id.clone(), declaration.digest.clone());
+        work.checked
+            .dependencies
+            .insert(declaration.id.clone(), declaration.clone());
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .observations
+            .insert(declaration.id.clone(), declaration);
+        add_process_context_symbol(
+            &mut work,
+            "controller-class-context",
+            "class:orders.Controller",
+            json!({"schema":"codeclew-java-compiler-fact/1.0","declarationKind":"CLASS","symbolIdentity":"class:orders.Controller","ownerIdentity":"class:orders","name":"Controller","scope":":main"}),
+            &["endpoint-source"],
+        );
+        let (legacy, legacy_audit) = build(&work).unwrap();
+        assert!(
+            legacy["methodSources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|source| source["sourceAliases"]
+                    .as_array()
+                    .is_some_and(|aliases| aliases
+                        .iter()
+                        .any(|alias| alias["reference"] == "source-endpoint-method"))),
+            "{legacy}"
+        );
+        work.request.source_data_context = true;
+        let (packet, audit) = build(&work).unwrap();
+        assert_eq!(
+            packet["methodSources"], legacy["methodSources"],
+            "Opt-in delivery must preserve containing-class enrichment and source aliases"
+        );
+        assert_eq!(audit, audit_saved_packet(&work, &packet).unwrap());
+        let complete = packet["sourceDataContext"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["reference"] == "source-endpoint-method")
+            .unwrap();
+        assert_eq!(complete["text"], method_text);
+        assert_eq!(complete["authority"], original.authority);
+        let projection = super::super::source_data_context::build(&work)
+            .unwrap()
+            .unwrap();
+        assert!(
+            super::super::bytes(
+                &json!({"sourceDataContext":projection.context,"citations":projection.citations})
+            )
+            .unwrap()
+            .len()
+                <= super::super::source_data_context::MAX_PACKET_BYTES
+        );
+        let native = super::super::static_pages::source_data_graph(
+            &work.checked,
+            "orders",
+            "endpoint-declaration",
+        )
+        .unwrap();
+        let mut associations = 0;
+        for node in packet["sourceDataContext"]["nodes"].as_array().unwrap() {
+            let native_state = native.nodes[node["id"].as_str().unwrap()]
+                .data_state
+                .as_ref()
+                .unwrap();
+            for definition in node["dataState"]["definitions"].as_array().unwrap() {
+                let original = native_state
+                    .definitions
+                    .iter()
+                    .find(|d| d.id == definition["id"].as_str().unwrap())
+                    .unwrap();
+                assert_eq!(
+                    definition["sourceSpan"].as_str(),
+                    original.citation_id.as_deref()
+                );
+                if let Some(span) = definition["sourceSpan"].as_str() {
+                    associations += 1;
+                    let binding = &packet["sourceDataContext"]["sourceSpans"][span];
+                    assert_eq!(binding["reference"], definition["citationId"]);
+                    let source = packet["sourceDataContext"]["sources"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|source| source["reference"] == binding["reference"])
+                        .unwrap();
+                    let excerpt =
+                        &source["text"].as_str().unwrap()[binding["startByte"].as_u64().unwrap()
+                            as usize
+                            ..binding["endByte"].as_u64().unwrap() as usize];
+                    assert_eq!(
+                        binding["textDigest"],
+                        canonical::hash_bytes(excerpt.as_bytes())
+                    );
+                }
+            }
+        }
+        assert!(
+            associations > 0,
+            "Real packet definitions must retain native span associations"
+        );
+        let unique_ranges: std::collections::BTreeSet<_> =
+            packet["sourceDataContext"]["sourceSpans"]
+                .as_object()
+                .unwrap()
+                .values()
+                .filter(|binding| binding["reference"] == "source-endpoint-method")
+                .map(|binding| {
+                    (
+                        binding["startByte"].as_u64().unwrap(),
+                        binding["endByte"].as_u64().unwrap(),
+                    )
+                })
+                .collect();
+        assert!(
+            unique_ranges.len() > 1,
+            "One source retains distinct native covering spans without collapsing them to its broad evidence label"
+        );
+        // Recomputed packetDigest cannot bless changed explicit source delivery.
+        let mut forged = packet.clone();
+        forged["sourceDataContext"]["sources"][0]["text"] = json!("forged");
+        forged.as_object_mut().unwrap().remove("packetDigest");
+        forged["packetDigest"] = json!(digest(&forged).unwrap());
+        assert!(audit_saved_packet(&work, &forged).is_err());
+        work.request.source_data_context = false;
+        assert_eq!((legacy, legacy_audit), build(&work).unwrap());
     }
 
     #[test]
