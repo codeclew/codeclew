@@ -677,9 +677,10 @@ The command selects the immutable author input and result through the exact
 saved report, checkpoint and invocation. It checks the Work snapshot, original
 packet and answer digests, and passes the saved author instruction and guide as
 untrusted review material. Editable exported `answer.json` is not authoritative.
-The first review slice accepts successful original author runs with answer 1.2
-and authoring contract 1.4 or 1.3; invalid answers and repaired author runs are
-rejected before a reviewer reservation. No author driver is needed for review.
+Review accepts successful original author runs with answer 1.2 and authoring
+contract 1.4 or 1.3, plus successful semantic-repair children whose complete
+saved rejection lineage and author payload validate. Invalid answers and native
+validation-repair runs remain ineligible. No author driver is needed for review.
 
 The reviewer returns the closed
 `codeclew-operation-draft-meaning-review/1.0` result. The host derives unique JSON
@@ -701,6 +702,43 @@ is never automatically dispatched again; inspect its retained invocation and
 maximum accounting. Cancellation and timeout stop the local adapter process;
 they do not prove provider cancellation or absence of billing. Invalid reviewer
 output is retained without automatic repair, replacement review or publication.
+
+One explicit semantic repair is available for an exact saved `REJECT`:
+
+```sh
+./clew docs work run --root <root> --work <work-id> --draft \
+  --repair-from-review <review-run-id> --config <repair-author.json>
+```
+
+Use the existing author-only execution configuration with a budget account
+separate from both the original author and rejecting reviewer. This command
+conflicts with `--new-run` and native-invalid `--repair-from-run`. It verifies
+the durable review input/result, original author input/result, selected Work,
+snapshot, packet, answer and complete review coverage before reserving a fresh
+single author call. `APPROVE`, `NEEDS_EVIDENCE`, invalid review results and
+reviews of repaired answers are ineligible. No source capture or packet
+regeneration occurs.
+
+The repair receives the unchanged saved author payload, complete previous
+answer and complete model rejection as untrusted correction feedback. Compiler
+citation labels and answer validation remain mandatory. Selected maintained
+human context remains complete, attributed and `UNASSESSED`; its `CURRENT` or
+`STALE` status describes retained source context rather than semantic truth.
+The complete repair request must fit the author cap before reservation; selected
+context is never pruned or truncated to fit.
+
+The original author/reviewer records, rendered files and accounts remain
+unchanged. Repair output uses a new directory under
+`.codeclew/drafts/<work-id>/<repair-run-id>`. Repeating the same explicit selector
+and configuration replays its matching child without another author call;
+uncertain dispatch does not retry. A later review cannot rewind to that old
+rejection. A repaired answer cannot be repaired again in this slice.
+
+A native-valid repair is still an unreviewed, unpublished draft. Explicitly use
+`docs work review-draft --source-run <repair-run-id>` for an independent reviewer
+call over its exact saved answer, packet and full repair contract. Review
+coverage and `APPROVE` remain model judgments, not compiler or execution proof;
+human context is not promoted to assessed truth.
 
 The endpoint selector changed in v3, so saved `endpoint-context-v1` and
 `endpoint-context-v2` Work fail closed and must be prepared again from their

@@ -57,6 +57,9 @@ pub enum Command {
         /// Repair one explicitly selected retained invalid draft answer.
         #[arg(long, requires = "draft", conflicts_with = "new_run", value_parser = parse_run_identity)]
         repair_from_run: Option<String>,
+        /// Repair one exact saved semantic REJECT without replacing its author or review.
+        #[arg(long, requires = "draft", conflicts_with_all = ["new_run", "repair_from_run"], value_parser = parse_run_identity)]
+        repair_from_review: Option<String>,
     },
     /// Review one immutable saved operation answer without authoring or publication.
     ReviewDraft {
@@ -789,6 +792,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             draft,
             new_run,
             repair_from_run,
+            repair_from_review,
         } => {
             let repository = Repository::open(&root)?;
             if draft {
@@ -798,6 +802,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     config.as_deref(),
                     new_run,
                     repair_from_run.as_deref(),
+                    repair_from_review.as_deref(),
                 )
             } else {
                 super::agent_jobs::run(&repository, &work, config.as_deref())

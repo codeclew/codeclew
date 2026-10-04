@@ -3990,6 +3990,48 @@ mod tests {
     }
 
     #[test]
+    fn work_draft_semantic_repair_flag_requires_exact_review_and_excludes_other_attempt_selectors()
+    {
+        let base = [
+            "clew",
+            "docs",
+            "work",
+            "run",
+            "--root",
+            "/tmp",
+            "--work",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        for tail in [
+            vec!["--repair-from-review", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+            vec!["--draft", "--repair-from-review", "not-a-run"],
+            vec![
+                "--draft",
+                "--repair-from-review",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "--new-run",
+            ],
+            vec![
+                "--draft",
+                "--repair-from-review",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "--repair-from-run",
+                "cccccccccccccccccccccccccccccccc",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(base.into_iter().chain(tail)).is_err());
+        }
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--draft",
+                "--repair-from-review",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ]))
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn removed_entrypoints_are_unparseable() {
         for removed in ["project", "index", "resolve", "thread", "task-apply"] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());

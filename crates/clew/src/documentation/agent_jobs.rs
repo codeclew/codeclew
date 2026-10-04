@@ -572,6 +572,22 @@ pub(super) struct DraftRepairOrigin {
     pub(super) source_result_digest: String,
     pub(super) packet_digest: String,
     pub(super) source_authoring_contract: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) rejection: Option<DraftRepairRejection>,
+}
+
+const DRAFT_REPAIR_REJECTION_SCHEMA: &str = "codeclew-operation-draft-repair-rejection/1.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DraftRepairRejection {
+    pub(super) schema: String,
+    pub(super) review_run: String,
+    review_checkpoint: recovery::CheckpointRef,
+    pub(super) reviewer_invocation: String,
+    pub(super) reviewer_input_digest: String,
+    pub(super) reviewer_result_digest: String,
+    pub(super) coverage_digest: String,
 }
 
 const RUN_CHECKPOINT_SCHEMA: &str = "codeclew-documentation-agent-run-checkpoint/1.0";
@@ -4665,8 +4681,16 @@ pub fn run_operation_draft(
     config_path: Option<&std::path::Path>,
     new_run: bool,
     repair_from_run: Option<&str>,
+    repair_from_review: Option<&str>,
 ) -> Result<Value, ClewError> {
-    operation_draft::run(repo, id, config_path, new_run, repair_from_run)
+    operation_draft::run(
+        repo,
+        id,
+        config_path,
+        new_run,
+        repair_from_run,
+        repair_from_review,
+    )
 }
 
 pub fn review_operation_draft(
