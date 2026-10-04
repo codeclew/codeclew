@@ -20,7 +20,7 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.9
+## Current release: v0.13.10
 
 Create a first source-linked overview with the executable starter included by
 `clew docs init`. It registers an explicit committed source scope, captures it,
@@ -37,7 +37,7 @@ repair paths preserve their final diagnostics and explain the replacement route.
 
 Manual publication remains `UNASSESSED`; independent model review still requires
 explicit drivers and finite configuration. Prior publications and attributed notes
-remain intact. See the [v0.13.9 release notes](docs/releases/v0.13.9.md).
+remain intact. See the [v0.13.10 release notes](docs/releases/v0.13.10.md).
 
 ### Historical v0.13.1 example and limits
 
@@ -68,7 +68,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.9 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.10 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -97,7 +97,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.9 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.10 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a

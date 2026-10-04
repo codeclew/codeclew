@@ -90,11 +90,14 @@ function processOutline(svgAvailable=false){
 }
 function load(data=fixture(),mobile=false){
  const elements=new Map(),listeners={},navigationHistory=[],browserLocation={hash:''};
- function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:false,innerHTML:'',textContent:'',isConnected:true,classList:{add(){},remove(){}},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
+ let testDocument;
+ const media={matches:mobile,addEventListener(){}};
+ function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
- const context=vm.createContext({document:{getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{classList:{add(){},remove(){}}},activeElement:null},location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>({matches:mobile,addEventListener(){}})},navigator:{clipboard:{writeText:async()=>{}}}});
+ testDocument={getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){}}},activeElement:null};
+ const context=vm.createContext({document:testDocument,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
- return {data,e:element,navigationHistory,run:code=>vm.runInContext(code,context),click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
+ return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
 test('default service overview exposes the first native graph and all visual navigation',()=>{
  const r=load(),html=r.e('scenario-content').innerHTML;
@@ -325,7 +328,8 @@ test('missing profile sections and discovered but unauthored entries remain expl
  assert.match(html,/POST \/input/);
  assert.match(html,/Behavior narrative not yet accepted/);
  assert.match(html,/Entity ownership and creation roles have no explicit domain declarations/);
- assert.doesNotMatch(html,/creates no entities|No outgoing calls|No Kafka|No cron/);
+ assert.doesNotMatch(html,/accepted description of external boundaries|creates no entities|No outgoing calls|No Kafka|No cron/);
+ assert.match(html,/Thread-to-call links and complete outgoing coverage are not inferred/);
 });
 test('entity section shows only its accepted local visuals while the process gallery still includes all owners',()=>{
  const r=load(entitySectionFixture());r.run("showEntry('section-entities')");
@@ -755,4 +759,31 @@ test('reader section navigation records browser history while tabs keep the sele
  r.click({entry:'section-responsibilities'});assert.equal(r.navigationHistory.length,1);
  r.click({entry:'section-overview'});assert.deepEqual(r.navigationHistory,['#section-responsibilities','#section-overview']);
  r.run("showEntry('section-responsibilities','contract')");assert.equal(r.navigationHistory.length,2);
+});
+
+test('mobile source panel cycles visible enabled controls and Escape restores its initiating focus',()=>{
+ const r=load(fixture(),true),panel=r.e('source-panel'),trigger=r.e('source-trigger'),background=r.e('background'),alreadyInert=r.e('already-inert');
+ alreadyInert.inert=true;r.document.body.children=[background,alreadyInert,panel];
+ const close=r.e('close-source'),link=r.e('source-url'),select=r.e('source-select'),copy=r.e('copy-source'),code=r.e('source-code'),binding=r.e('source-binding');
+ const hidden=r.e('hidden-control'),disabled=r.e('disabled-control'),untabbable=r.e('untabbable-control'),invisible=r.e('invisible-control');
+ hidden.hidden=true;disabled.disabled=true;untabbable.tabIndex=-1;invisible.visibility='hidden';
+ panel.children=[close,link,select,copy,code,binding,hidden,disabled,untabbable,invisible];
+ trigger.focus();r.click({sources:'same-source'});
+ assert.equal(r.document.activeElement,close);assert.equal(panel.attributes.role,'dialog');assert.equal(panel.attributes['aria-modal'],'true');assert.equal(panel.attributes['aria-labelledby'],'source-title');assert.equal(background.inert,true);
+ assert.equal(r.key('Tab',true),true);assert.equal(r.document.activeElement,binding);
+ assert.equal(r.key('Tab'),true);assert.equal(r.document.activeElement,close);
+ select.focus();assert.equal(r.key('Tab'),false,'the browser advances between interior controls');
+ background.focus();assert.equal(r.key('Tab'),true);assert.equal(r.document.activeElement,close,'out-of-panel focus is recovered');
+ assert.equal(r.key('Escape'),true);assert.equal(panel.hidden,true);assert.equal(r.document.activeElement,trigger);assert.equal(background.inert,undefined);assert.equal(alreadyInert.inert,true);assert.equal(panel.attributes.role,undefined);assert.equal(panel.attributes['aria-modal'],undefined);
+ background.focus();assert.equal(r.key('Escape'),false);assert.equal(r.document.activeElement,background,'Escape outside a closed panel does not restore an old trigger');
+});
+
+test('source panel becomes modal only at mobile widths and releases background on resize or source gaps',()=>{
+ const r=load(),panel=r.e('source-panel'),background=r.e('background'),trigger=r.e('source-trigger');
+ panel.children=[r.e('close-source'),r.e('source-code')];r.document.body.children=[background,panel];trigger.focus();r.click({sources:'same-source'});
+ assert.equal(panel.attributes.role,undefined);assert.equal(background.inert,undefined);
+ r.e('source-code').focus();assert.equal(r.key('Tab'),false,'desktop side-panel permits keyboard access to the document');
+ r.media.matches=true;background.focus();r.run('navigationViewport()');assert.equal(panel.attributes['aria-modal'],'true');assert.equal(r.document.activeElement,r.e('close-source'));assert.equal(background.inert,true);
+ r.media.matches=false;r.run('navigationViewport()');assert.equal(panel.attributes.role,undefined);assert.equal(background.inert,undefined);assert.equal(r.key('Tab',true),false);
+ r.media.matches=true;r.run('navigationViewport()');r.click({sources:'missing-source'});assert.equal(panel.hidden,true);assert.equal(background.inert,undefined);assert.equal(panel.attributes['aria-modal'],undefined);
 });
