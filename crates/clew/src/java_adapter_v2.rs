@@ -1871,9 +1871,16 @@ import org.springframework.core.annotation.AliasFor;
     @AliasFor(annotation = RequestMapping.class, attribute = "value") String[] value();
 }
 interface Api { @GetMapping("/inherited") String inherited(int id); }
+@interface VariableMetadata { String value(); Class<?> type() default String.class; }
 @RestController @RequestMapping("/v1") @KafkaListener(topics = "events")
 class Handlers implements Api {
     static final String PATH = "/items";
+    String prefix = "prefix";
+    String variableProbe(@VariableMetadata(PATH) String input) {
+        @VariableMetadata(value = PATH, type = String.class) String local = input;
+        Class<?> literal = String.class;
+        return this.prefix + input + local;
+    }
     @GetMapping(PATH) String load() { return ""; }
     @GetMapping(path = "/items/{id}") String load(int id) { return ""; }
     @PostJson("/composed") void post() {}
@@ -1988,7 +1995,122 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                     _ => None,
                 })
                 .collect();
-            assert!(boundaries.is_empty(), "{boundaries:?}");
+            let boundary_sites: Vec<_> = if boundaries.is_empty() {
+                Vec::new()
+            } else {
+                facts
+                    .iter()
+                    .filter_map(|fact| match fact {
+                        JavaCompilerFact::Boundary {
+                            code,
+                            file,
+                            start,
+                            end,
+                            byte_start,
+                            byte_end,
+                            ..
+                        } => {
+                            let excerpt = file
+                                .as_ref()
+                                .and_then(|file| fs::read_to_string(root.join(file)).ok())
+                                .and_then(|source| {
+                                    let start = usize::try_from((*byte_start)?).ok()?;
+                                    let end = usize::try_from((*byte_end)?).ok()?;
+                                    source
+                                        .get(start..end)
+                                        .map(|text| text.chars().take(160).collect::<String>())
+                                });
+                            Some(serde_json::json!({
+                                "code": code,
+                                "file": file,
+                                "start": start,
+                                "end": end,
+                                "byteStart": byte_start,
+                                "byteEnd": byte_end,
+                                "excerpt": excerpt,
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .take(16)
+                    .collect()
+            };
+            assert!(
+                boundaries.is_empty(),
+                "Java {release}: {boundaries:?}; boundary sites: {boundary_sites:?}"
+            );
+            let probe = "Handlers#variableProbe(Ljava/lang/String;)Ljava/lang/String;";
+            for (name, kind) in [
+                ("prefix", JavaVariableKind::Field),
+                ("input", JavaVariableKind::Parameter),
+                ("local", JavaVariableKind::LocalVariable),
+            ] {
+                assert!(facts.iter().any(|fact| matches!(
+                    fact,
+                    JavaCompilerFact::VariableAccess(row)
+                        if row.enclosing_callable.ends_with(probe)
+                            && row.name == name
+                            && row.variable_kind == kind
+                            && row.access_mode == JavaVariableAccessMode::Read
+                            && row.declaration_status == JavaVariableDeclarationStatus::SourceRetained
+                )), "Java {release}: missing genuine {kind:?} read for {name}");
+            }
+            assert!(facts.iter().any(|fact| matches!(
+                fact,
+                JavaCompilerFact::VariableDeclaration(row)
+                    if row.enclosing_callable.ends_with(probe)
+                        && row.name == "input"
+                        && row.variable_kind == JavaVariableKind::Parameter
+                        && row.definition_kind == JavaVariableDefinitionKind::ParameterInput
+            )));
+            assert!(
+                facts.iter().any(|fact| matches!(
+                    fact,
+                    JavaCompilerFact::VariableDeclaration(row)
+                        if row.enclosing_callable.ends_with("Api#inherited(I)Ljava/lang/String;")
+                            && row.name == "id"
+                            && row.definition_kind == JavaVariableDefinitionKind::ParameterInput
+                )),
+                "bodyless method parameters remain admitted declarations"
+            );
+            assert!(facts.iter().any(|fact| matches!(
+                fact,
+                JavaCompilerFact::VariableDeclaration(row)
+                    if row.enclosing_callable.ends_with(probe)
+                        && row.name == "local"
+                        && row.definition_kind == JavaVariableDefinitionKind::InitializerDefinition
+            )));
+            let handlers_source = fs::read_to_string(root.join("example/Handlers.java")).unwrap();
+            for fact in &facts {
+                if let JavaCompilerFact::VariableAccess(row) = fact {
+                    assert_ne!(row.name, "class", "class literals are not storage reads");
+                    assert_ne!(row.name, "PATH", "annotation constants are not body reads");
+                    if row.enclosing_callable.ends_with(probe) {
+                        let excerpt = handlers_source
+                            .get(row.byte_start as usize..row.byte_end as usize)
+                            .unwrap();
+                        assert!(matches!(excerpt, "this.prefix" | "input" | "local"));
+                    }
+                }
+            }
+            let literal_start = handlers_source
+                .find("Class<?> literal = String.class;")
+                .unwrap()
+                + "Class<?> literal = ".len();
+            assert!(
+                facts.iter().any(|fact| matches!(
+                    fact,
+                    JavaCompilerFact::Relation {
+                        relation_kind, source_identity, target_identity, byte_start, byte_end, ..
+                    }
+                        if relation_kind == "TYPE_USES"
+                            && source_identity.ends_with(probe)
+                            && target_identity == "class:java.lang.String"
+                            && *byte_start == Some(literal_start as u64)
+                            && *byte_end == Some((literal_start + "String".len()) as u64)
+                )),
+                "body class literals retain their exact compiler type-use evidence"
+            );
             let spring_for = |suffix: &str| {
                 facts
                     .iter()

@@ -556,6 +556,21 @@ final class CodeclewJavaAnalyzer {
             return true;
         }
 
+        /** Variable accesses describe executable storage use, not annotation metadata. */
+        private boolean variableAccessContext() {
+            if (!variableContext()) return false;
+            Tree child = null;
+            for (TreePath path = getCurrentPath(); path != null; path = path.getParentPath()) {
+                Tree tree = path.getLeaf();
+                if (tree instanceof AnnotationTree) return false;
+                if (tree instanceof MethodTree method) {
+                    return method.getBody() != null && child == method.getBody();
+                }
+                child = tree;
+            }
+            return false;
+        }
+
         private String methodIdentity(ExecutableElement method) {
             String descriptor = executableDescriptor(method);
             if (descriptor == null) return null;
@@ -613,7 +628,10 @@ final class CodeclewJavaAnalyzer {
         }
 
         private void variableAccess(Element target, Tree tree) {
-            if (!variableContext() || !(target instanceof VariableElement variable)) return;
+            if (!variableAccessContext() || !(target instanceof VariableElement variable)) return;
+            // javac exposes a class literal's pseudo-field as a VariableElement.
+            // Its type use is retained separately; it is not a storage access.
+            if (tree instanceof MemberSelectTree select && select.getIdentifier().contentEquals("class")) return;
             if (variable.getSimpleName().contentEquals("this") || variable.getSimpleName().contentEquals("super")) return;
             if (!Set.of(ElementKind.FIELD, ElementKind.ENUM_CONSTANT, ElementKind.PARAMETER, ElementKind.LOCAL_VARIABLE)
                     .contains(variable.getKind())) {
