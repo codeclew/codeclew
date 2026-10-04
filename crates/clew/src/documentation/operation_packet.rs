@@ -597,6 +597,7 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
 /// Rebuild only the source audit from the immutable Work, preserving the exact
 /// packet saved in an author invocation. No current source or latest Check is used.
 pub(super) fn audit_saved_packet(work: &Work, packet: &Value) -> Result<Value, ClewError> {
+    validate_saved_maintained_context(work, packet)?;
     let profile = work.request.context_profile.as_deref().unwrap_or_default();
     if packet["schema"] != PACKET_SCHEMA || packet["profile"] != profile {
         return Err(invalid(
