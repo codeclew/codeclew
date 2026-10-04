@@ -1,5 +1,7 @@
 //! A single semantic content tree is emitted as inert JSX and static HTML.
 use super::model::*;
+#[path = "catalogue.rs"]
+mod catalogue;
 use crate::documentation::{digest, invalid, io_error, store};
 use crate::error::ClewError;
 use serde_json::{Value, json};
@@ -866,7 +868,7 @@ fn html(title: &str, body: &str) -> String {
         escape(title)
     )
 }
-const CSS: &str = "html{color:#172d49;background:#f7f4ec;font:16px/1.6 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:32px 24px;overflow-wrap:anywhere}a{color:#245d97}nav{margin:20px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0f2;padding:12px}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}table:focus-visible{outline:2px solid #245d97;outline-offset:3px}caption{text-align:left;font-weight:600}th,td{min-width:160px;padding:8px;border:1px solid #c7d0da;text-align:left;vertical-align:top}th:nth-child(3),td:nth-child(3){min-width:180px}th:nth-child(4),td:nth-child(4){min-width:220px}section,details{border-top:1px solid #c7d0da;padding:12px 0}h1{line-height:1.2}@media(max-width:600px){main{padding:20px 16px}h1{font-size:28px}}\n";
+const CSS: &str = "html{color:#172d49;background:#f7f4ec;font:16px/1.6 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:32px 24px;overflow-wrap:anywhere}a{color:#245d97}nav{margin:20px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0f2;padding:12px}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}table:focus-visible{outline:2px solid #245d97;outline-offset:3px}caption{text-align:left;font-weight:600}th,td{min-width:160px;padding:8px;border:1px solid #c7d0da;text-align:left;vertical-align:top}th:nth-child(3),td:nth-child(3){min-width:180px}th:nth-child(4),td:nth-child(4){min-width:220px}section,details{border-top:1px solid #c7d0da;padding:12px 0}h1{line-height:1.2}[hidden]{display:none!important}.catalog-controls{display:flex;flex-wrap:wrap;gap:12px}.catalog-controls label{display:flex;flex-direction:column;max-width:100%}.catalog-controls input,.catalog-controls select{font:inherit;box-sizing:border-box;max-width:100%}#catalog-results{padding-left:24px}.catalog-meta,.catalog-detail{display:block}.catalog-pager{display:flex;gap:12px}.catalog-pager button{font:inherit}a:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #245d97;outline-offset:3px}@media(max-width:600px){main{padding:20px 16px}h1{font-size:28px}}\n";
 pub(super) fn write(
     output: &Path,
     snapshot: &str,
@@ -881,11 +883,16 @@ pub(super) fn write(
             ));
         }
     }
+    let catalogue = catalogue::rows(p)?;
     let mut files = BTreeMap::new();
     let mut page_rows = Vec::new();
     for ext in ["html", "mdx"] {
         let mut bodies = BTreeMap::new();
-        let mut index = "<main><h1>Native source documentation</h1><ul>\n".to_string();
+        let mut index = "<main><h1>Native source documentation</h1>".to_string();
+        if ext == "html" {
+            index += &catalogue::enhancement(&catalogue)?;
+        }
+        index += "<ul id=\"catalog-processes\">\n";
         for page_content in &p.pages {
             if !store::valid_id(&page_content.id) {
                 return Err(invalid("native page ID is invalid"));
@@ -919,6 +926,15 @@ pub(super) fn write(
             link(&format!("sources.{ext}"), "Shared source appendix"),
             link("projection.json", "Typed projection")
         );
+        if p.source_call_graph.is_some() {
+            index += &format!(
+                "<p>{}</p>",
+                link(
+                    &format!("source-calls.{ext}"),
+                    "Examined callable bodies and reverse process links"
+                )
+            );
+        }
         index += &format!(
             "<details><summary>Sources and version</summary>{}</details></main>\n",
             paragraph(&format!(
@@ -964,7 +980,14 @@ pub(super) fn write(
                 page_rows.push(row);
             }
             let bytes = if ext == "html" {
-                html(&title, &body).into_bytes()
+                let mut document = html(&title, &body);
+                if slug == "index" {
+                    document = document.replace(
+                        "</head>",
+                        "<script src=\"native-reader.js\" defer></script></head>",
+                    );
+                }
+                document.into_bytes()
             } else {
                 body.into_bytes()
             };
@@ -972,6 +995,11 @@ pub(super) fn write(
         }
     }
     files.insert("style.css".into(), CSS.as_bytes().to_vec());
+    files.insert(
+        "native-reader.js".into(),
+        crate::documentation::reader::SCRIPT.as_bytes().to_vec(),
+    );
+    files.insert("catalogue.json".into(), serde_json::to_vec_pretty(&json!({"schema":"codeclew-native-catalogue/1.0", "snapshot":snapshot, "inputDigest":p.input_digest, "contextDigest":p.context_digest, "selectionDigest":p.selection_digest, "authority":"SELECTED_AND_EXAMINED_DOCUMENTATION_CONTEXT_NOT_RUNTIME_IMPACT", "rows":catalogue})).map_err(io_error)?);
     files.insert(
         "projection.json".into(),
         serde_json::to_vec_pretty(p).map_err(io_error)?,

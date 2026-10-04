@@ -487,7 +487,7 @@ test('shared catalogue localizes chrome and retains neutral filtering keys and a
    {kind:'Entity',id:'order',title:'Order',href:'services/orderAPI.html#section-entities',context:'Orders service',summary:['OrderRecord'],searchText:['order-record'],coverage:'unavailable'}
   ]);
   const location={search:'?q=order-manager%20hit&kind=Service&campaign=qa',pathname:'/catalog.html',hash:''};
-  const history={state:{marker:'keep'},lastUrl:null,replaceState(state,_title,url){assert.equal(state.marker,'keep');this.lastUrl=url;const parsed=new URL(url,'https://codex.test');location.search=parsed.search;location.hash=parsed.hash;}};
+  const history={state:{marker:'keep'},lastUrl:null,pushState(state,title,url){this.replaceState(state,title,url);},replaceState(state,_title,url){assert.equal(state.marker,'keep');this.lastUrl=url;const parsed=new URL(url,'https://codex.test');location.search=parsed.search;location.hash=parsed.hash;}};
   const document={documentElement:{lang:language},querySelector(){return null;},querySelectorAll(){return [];},getElementById(key){return nodes[key];},createElement:element};
   vm.runInNewContext(reader,{document,URL,URLSearchParams,location,history});
   assert.equal(nodes['catalog-results'].children.length,1);
@@ -609,4 +609,91 @@ test('manual context selection retains text attribution and distinguishes freshn
  assert.match(r.e('source-code').innerHTML,/EXPLICIT CURRENT CONTEXT/);
  data.fragmentStates[key].freshness='STALE';
  assert.match(load(data).run('explanation(D.operations[0])'),/Source context freshness: STALE/);
+});
+
+test('native catalogue reuses bounded filtering and restores query kind and page on reload and Back',()=>{
+ const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
+ const nodes=Object.fromEntries(['catalog-data','catalog-query','catalog-kind','catalog-results','catalog-status','catalog-prev','catalog-next','catalog-controls','catalog-pager','catalog-processes'].map(key=>[key,element()]));
+ const rows=Array.from({length:45},(_,i)=>({kind:'Examined callable',id:`callable-${i}`,title:`ChildWorker.prepare ${i}`,href:`source-calls.html#body-${i}`,context:'linked · :/main',summary:'Examined source, not runtime impact',searchText:['prepare','parent-a','parent-b'],relatedLinks:[{title:'Examined by: parent-a',href:'parent-a-overview.html'},{title:'Examined by: parent-b',href:'parent-b-overview.html'}]}));
+ rows.push({kind:'Diagnostic question',id:'question',title:'Why is delivery absent?',href:'child-diagnostic.html',summary:'Supplied question, not an approved answer'});
+ nodes['catalog-data'].textContent=JSON.stringify(rows);
+ const location={pathname:'/index.html',search:'?q=prepare&kind=Examined+callable&page=2&campaign=owned',hash:'#catalog-title'};
+ const stack=[`${location.pathname}${location.search}${location.hash}`];let index=0,popstate;
+ const setUrl=url=>{const parsed=new URL(url,'https://codex.test');location.search=parsed.search;location.hash=parsed.hash;};
+ const history={state:{original:'keep'},replaceState(state,_title,url){assert.equal(state.original,'keep');stack[index]=url;setUrl(url);},pushState(state,_title,url){assert.equal(state.original,'keep');stack.splice(index+1);stack.push(url);index++;setUrl(url);}};
+ const document={documentElement:{lang:'en'},querySelector(){return null;},querySelectorAll(){return [];},getElementById:key=>nodes[key],createElement:element,createTextNode:text=>({textContent:text})};
+ vm.runInNewContext(reader,{document,URL,URLSearchParams,location,history,addEventListener(kind,fn){assert.equal(kind,'popstate');popstate=fn;}});
+ const list=nodes['catalog-results'];
+ assert.equal(list.children.length,20);assert.equal(list.children[0].children[0].href,'source-calls.html#body-20');
+ assert.equal(list.children[0].children[3].children[0].href,'parent-a-overview.html');
+ assert.equal(list.children[0].children[3].children[2].href,'parent-b-overview.html');
+ assert.equal(nodes['catalog-controls'].hidden,false);assert.equal(nodes['catalog-pager'].hidden,false);assert.equal(nodes['catalog-processes'].hidden,true);
+ nodes['catalog-next'].listeners.click();assert.equal(list.children.length,5);assert.equal(new URL(stack[index],'https://codex.test').searchParams.get('page'),'3');
+ index--;setUrl(stack[index]);popstate();assert.equal(list.children.length,20);assert.equal(list.children[0].children[0].href,'source-calls.html#body-20');
+ nodes['catalog-kind'].value='Diagnostic question';nodes['catalog-query'].value='';nodes['catalog-kind'].listeners.change();assert.equal(list.children.length,1);assert.equal(list.children[0].children[0].href,'child-diagnostic.html');assert.match(list.children[0].children[2].textContent,/not an approved answer/);
+ index--;setUrl(stack[index]);popstate();assert.equal(nodes['catalog-query'].value,'prepare');assert.equal(nodes['catalog-kind'].value,'Examined callable');assert.equal(list.children[0].children[0].href,'source-calls.html#body-20');
+ location.search='?q=prepare&kind=Examined+callable&page=999999999999';popstate();assert.equal(list.children.length,5);assert.equal(new URL(stack[index],'https://codex.test').searchParams.get('page'),'3');
+ location.search='?q=absent';popstate();assert.equal(list.children.length,1);assert.equal(list.children[0].children[0].href,'child-diagnostic.html');
+ location.search='?q=unmatched-fixture-query-9f7b&page=2';popstate();assert.equal(list.children.length,0);assert.match(nodes['catalog-status'].textContent,/No matching results/);assert.equal(new URL(stack[index],'https://codex.test').searchParams.has('page'),false);
+});
+
+
+test('native catalogue synthetic 200-service 2000-process DOM pagination filtering and history',()=>{
+ // SYNTHETIC_DOM_ONLY_NOT_NATIVE_2000_PROCESS: renderer-shaped rows exercise
+ // the shipped reader only, not native capture/projection caps or usefulness.
+ const reader=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/reader.js'),'utf8');
+ const hash=value=>require('node:crypto').createHash('sha256').update(value).digest('hex');
+ const canonical=(kind,service,scope,symbol)=>`${kind}-${hash(JSON.stringify([service,scope,symbol]))}`;
+ const rows=[];
+ for(let s=0;s<200;s++){
+  const service=`svc${String(s).padStart(3,'0')}`,scope=':/main',context=`${service} · ${scope}`;
+  const processes=Array.from({length:10},(_,p)=>`${service}-parent-${String(p).padStart(2,'0')}`);
+  for(const id of processes)rows.push({id,title:id,kind:'Process',href:`${id}-overview.html`,context,summary:'Selected source process; runtime activation and business meaning unverified.',searchText:[service,scope,'method:class:Parent#submit()V','method:class:ChildWorker#run()V'],relatedLinks:[]});
+  const endpointSymbol='method:class:Parent#submit()V',endpointId=canonical('endpoint',service,scope,endpointSymbol);
+  rows.push({id:endpointId,title:endpointSymbol,kind:'Endpoint',href:`${processes[0]}-endpoint.html`,context,summary:'Explicitly selected compiler declaration; no inferred HTTP route or runtime activation.',searchText:[service,scope,endpointSymbol],relatedLinks:processes.map(id=>({href:`${id}-overview.html`,title:`Selected process: ${id}`}))});
+  const symbol='method:class:ChildWorker#prepare(Task)Request',id=canonical('callable',service,scope,symbol);
+  rows.push({id,title:symbol,kind:'Examined callable',href:`source-calls.html#ref-${hash(id)}`,context,summary:'Retained examined source body; reverse links are documentation context, not runtime impact. Call frontiers remain local gaps.',searchText:[service,scope,symbol,...processes.slice(0,2)],relatedLinks:processes.slice(0,2).map(parent=>({href:`${parent}-overview.html`,title:`Examined by: ${parent}`}))});
+  rows.push({id:`diagnostic-${processes[0]}`,title:'Why is delivery absent?',kind:'Diagnostic question',href:`${processes[0]}-diagnostic.html`,context,summary:'Supplied diagnostic question; source conditions describe possible reasons, not an approved answer or observed incident.',searchText:[processes[0],service,scope,endpointSymbol],relatedLinks:[]});
+ }
+ rows.sort((a,b)=>{for(const key of ['kind','title','id']){if(a[key]<b[key])return -1;if(a[key]>b[key])return 1;}return 0;});
+ assert.equal(rows.length,2600);assert.equal(new Set(rows.filter(r=>r.kind==='Process').map(r=>r.context)).size,200);
+ const element=()=>({children:[],value:'',textContent:'',listeners:{},replaceChildren(){this.children=[];},append(...nodes){this.children.push(...nodes);},addEventListener(kind,fn){this.listeners[kind]=fn;}});
+ function loadCatalogue(initialUrl){
+  const nodes=Object.fromEntries(['catalog-data','catalog-query','catalog-kind','catalog-results','catalog-status','catalog-prev','catalog-next','catalog-controls','catalog-pager','catalog-processes'].map(key=>[key,element()]));
+  nodes['catalog-data'].textContent=JSON.stringify(rows);
+  const location={pathname:'/index.html',search:'',hash:''},stack=[initialUrl];let index=0,popstate;
+  const setUrl=url=>{const parsed=new URL(url,'https://codex.test');location.search=parsed.search;location.hash=parsed.hash;};setUrl(initialUrl);
+  const history={state:{marker:'preserve'},replaceState(state,_title,url){assert.equal(state.marker,'preserve');stack[index]=url;setUrl(url);},pushState(state,_title,url){assert.equal(state.marker,'preserve');stack.splice(index+1);stack.push(url);index++;setUrl(url);}};
+  const document={documentElement:{lang:'en'},querySelector(){return null;},querySelectorAll(){return [];},getElementById:key=>nodes[key],createElement:element,createTextNode:text=>({textContent:text})};
+  vm.runInNewContext(reader,{document,URL,URLSearchParams,location,history,addEventListener(kind,fn){assert.equal(kind,'popstate');popstate=fn;}});
+  return {nodes,url:()=>stack[index],back(){assert.ok(index>0);setUrl(stack[--index]);popstate();},restore(url){setUrl(url);popstate();},links:()=>nodes['catalog-results'].children.map(li=>li.children[0].href)};
+ }
+ const processRows=rows.filter(r=>r.kind==='Process');
+ const r=loadCatalogue('/index.html?kind=Process&campaign=synthetic#catalog-title'),n=r.nodes,seen=[];
+ for(let page=1;page<=100;page++){
+  assert.equal(n['catalog-results'].children.length,20);
+  assert.equal(n['catalog-status'].textContent,`2000 results · page ${page} of 100`);
+  assert.deepEqual(r.links(),processRows.slice((page-1)*20,page*20).map(row=>row.href));seen.push(...r.links());
+  assert.equal(n['catalog-prev'].disabled,page===1);assert.equal(n['catalog-next'].disabled,page===100);
+  if(page<100)n['catalog-next'].listeners.click();
+ }
+ assert.equal(new Set(seen).size,2000);assert.equal(seen[1999],'svc199-parent-09-overview.html');
+ n['catalog-prev'].listeners.click();assert.deepEqual(r.links(),processRows.slice(1960,1980).map(row=>row.href));
+ r.back();assert.deepEqual(r.links(),processRows.slice(1980).map(row=>row.href));
+ const reload=loadCatalogue(r.url());assert.deepEqual(reload.links(),r.links());assert.equal(reload.nodes['catalog-kind'].value,'Process');assert.equal(reload.nodes['catalog-status'].textContent,'2000 results · page 100 of 100');
+ n['catalog-query'].value='svc199';n['catalog-query'].listeners.input();assert.deepEqual(r.links(),processRows.filter(row=>row.context.startsWith('svc199 ')).map(row=>row.href));assert.equal(n['catalog-status'].textContent,'10 results · page 1 of 1');
+ n['catalog-kind'].value='Examined callable';n['catalog-kind'].listeners.change();
+ const helper=rows.find(row=>row.kind==='Examined callable'&&row.context.startsWith('svc199 '));
+ assert.deepEqual(r.links(),[helper.href]);const related=n['catalog-results'].children[0].children[3].children;
+ assert.equal(related[0].href,'svc199-parent-00-overview.html');assert.equal(related[0].textContent,'Examined by: svc199-parent-00');assert.equal(related[2].href,'svc199-parent-01-overview.html');
+ assert.notEqual(helper.id,rows.find(row=>row.kind==='Examined callable'&&row.context.startsWith('svc198 ')).id);
+ const helperReload=loadCatalogue(r.url());assert.deepEqual(helperReload.links(),[helper.href]);assert.equal(helperReload.nodes['catalog-query'].value,'svc199');assert.equal(helperReload.nodes['catalog-kind'].value,'Examined callable');
+ r.back();assert.equal(n['catalog-kind'].value,'Process');assert.equal(n['catalog-query'].value,'svc199');assert.equal(r.links().length,10);
+ n['catalog-query'].value='svc199 prepare';n['catalog-query'].listeners.input();assert.equal(r.links().length,0);assert.match(n['catalog-status'].textContent,/No matching results/);
+ n['catalog-kind'].value='Examined callable';n['catalog-kind'].listeners.change();assert.deepEqual(r.links(),[helper.href]);
+ n['catalog-query'].value='delivery absent';n['catalog-query'].listeners.input();n['catalog-kind'].value='Diagnostic question';n['catalog-kind'].listeners.change();assert.equal(n['catalog-status'].textContent,'200 results · page 1 of 10');assert.match(n['catalog-results'].children[0].children[2].textContent,/not an approved answer/);
+ r.restore('/index.html?page=999999&campaign=synthetic#catalog-title');assert.equal(n['catalog-status'].textContent,'2600 results · page 130 of 130');assert.deepEqual(r.links(),rows.slice(2580).map(row=>row.href));assert.equal(n['catalog-next'].disabled,true);
+ const lastReload=loadCatalogue(r.url());assert.deepEqual(lastReload.links(),rows.slice(2580).map(row=>row.href));
+ const url=new URL(r.url(),'https://codex.test');assert.equal(url.searchParams.get('page'),'130');assert.equal(url.searchParams.get('campaign'),'synthetic');assert.equal(url.hash,'#catalog-title');
 });

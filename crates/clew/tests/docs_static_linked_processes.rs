@@ -90,7 +90,7 @@ fn selections(checked: &Check) -> Value {
     json!([
         {"id":"parent-a","service":"linked","endpointDeclaration":declaration(e,"ParentAEndpoint","submit"),"workerDeclaration":declaration(e,"ParentAWorker","runOnce"),"wiringDeclaration":wiring,"expandSourceCalls":true},
         {"id":"parent-b","service":"linked","endpointDeclaration":declaration(e,"ParentBEndpoint","enqueue"),"workerDeclaration":declaration(e,"ParentBWorker","runOnce"),"wiringDeclaration":wiring,"expandSourceCalls":true},
-        {"id":"child","service":"linked","endpointDeclaration":declaration(e,"ChildEndpoint","submit"),"workerDeclaration":declaration(e,"ChildWorker","runOnce"),"wiringDeclaration":wiring,"expandSourceCalls":true},
+        {"id":"child","service":"linked","question":"Where is the outbound name defaulted and prefixed?","endpointDeclaration":declaration(e,"ChildEndpoint","submit"),"workerDeclaration":declaration(e,"ChildWorker","runOnce"),"wiringDeclaration":wiring,"expandSourceCalls":true},
         {"id":"cycle","service":"linked","endpointDeclaration":declaration(e,"CycleProbe","first"),"workerDeclaration":declaration(e,"CycleProbe","second"),"expandSourceCalls":true}
     ])
 }
@@ -148,6 +148,14 @@ fn verify(path: &Path, p: &BundleProjection) {
             .1
             .strip_suffix("</body></html>\n")
             .unwrap();
+        // Only HTML has optional catalogue controls/data. The shared native
+        // content tree, including all inert MDX, still has exact parity.
+        let body = if let Some((before, rest)) = body.split_once("<!-- native-catalog-start -->") {
+            let (_, after) = rest.split_once("<!-- native-catalog-end -->").unwrap();
+            format!("{before}{after}")
+        } else {
+            body.to_owned()
+        };
         let mut normalized = String::new();
         let mut pieces = mdx.split("href=\"");
         normalized.push_str(pieces.next().unwrap());
@@ -434,6 +442,69 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
             .target_node
             .is_some()
     );
+    let catalogue: Value =
+        serde_json::from_slice(&fs::read(baseline_path.join("catalogue.json")).unwrap()).unwrap();
+    assert_eq!(catalogue["snapshot"], snapshot);
+    let prepare_id = child
+        .calls
+        .iter()
+        .find(|edge| edge.call.name == "prepare")
+        .unwrap()
+        .target_node
+        .as_ref()
+        .unwrap();
+    let prepare_row = catalogue["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "Examined callable" && row["id"] == prepare_id.as_str())
+        .unwrap();
+    assert_eq!(
+        prepare_row["title"],
+        graph.nodes[prepare_id].callable.symbol
+    );
+    for parent in ["parent-a", "parent-b", "child"] {
+        assert!(
+            prepare_row["relatedLinks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|link| link["href"] == format!("{parent}-overview.html"))
+        );
+    }
+    let (body_file, body_anchor) = prepare_row["href"]
+        .as_str()
+        .unwrap()
+        .split_once('#')
+        .unwrap();
+    let body_html = fs::read_to_string(baseline_path.join(body_file)).unwrap();
+    assert!(body_html.contains(&format!("id=\"{body_anchor}\"")));
+    assert!(!graph.nodes[prepare_id].callable.steps.is_empty());
+    assert!(
+        !catalogue["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "Examined callable"
+                && row["title"].as_str().unwrap().contains("Gateway#deliver"))
+    );
+    let question = catalogue["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "Diagnostic question")
+        .unwrap();
+    assert_eq!(
+        question["title"],
+        "Where is the outbound name defaulted and prefixed?"
+    );
+    assert_eq!(question["href"], "child-diagnostic.html");
+    assert!(
+        question["summary"]
+            .as_str()
+            .unwrap()
+            .contains("not an approved answer")
+    );
     for (parent, conditions) in [
         (
             "parent-a",
@@ -697,7 +768,7 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     fs::write(&b_file, format!("\n\n{b_original}")).unwrap();
     commit(&source);
     let (a_snapshot, changed) = capture(&f, "a-guard-b-relocation", sink.as_deref(), &mut timings);
-    let (_, a_changed) = render(
+    let (a_path, a_changed) = render(
         &f,
         &a_snapshot,
         &selections(&changed),
@@ -727,6 +798,18 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     assert_ne!(
         child_calls(&baseline, "parent-b"),
         child_calls(&a_changed, "parent-b")
+    );
+    let moved_catalogue: Value =
+        serde_json::from_slice(&fs::read(a_path.join("catalogue.json")).unwrap()).unwrap();
+    let moved_prepare = moved_catalogue["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == prepare_id.as_str())
+        .unwrap();
+    assert_eq!(
+        moved_prepare, prepare_row,
+        "Unrelated B line relocation must retain canonical helper discovery"
     );
     fs::write(&a_file, &a_original).unwrap();
     fs::write(

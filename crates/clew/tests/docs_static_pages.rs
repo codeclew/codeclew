@@ -275,6 +275,14 @@ fn verify_bundle(out: &Path) {
             .1
             .strip_suffix("</body></html>\n")
             .unwrap();
+        // Only HTML has optional catalogue controls/data. The shared native
+        // content tree, including all inert MDX, still has exact parity.
+        let body = if let Some((before, rest)) = body.split_once("<!-- native-catalog-start -->") {
+            let (_, after) = rest.split_once("<!-- native-catalog-end -->").unwrap();
+            format!("{before}{after}")
+        } else {
+            body.to_owned()
+        };
         let mut normalized = String::new();
         let mut parts = mdx.split("href=\"");
         normalized.push_str(parts.next().unwrap());

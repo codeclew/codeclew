@@ -310,3 +310,30 @@ bodies, not runtime impact or a whole-repository field inventory. Additional
 retained facts/source snippets and constructed data IR each have a cumulative
 1 MiB ceiling and 4096-row ceiling; a larger selection is refused before output.
 The existing source expansion bounds still apply.
+
+## Search the current native bundle
+
+Open the emitted `index.html` to search selected processes, exact selected endpoint
+symbols, and retained examined callable bodies. Result types distinguish supplied
+**diagnostic questions** from source declarations. A diagnostic question opens the
+existing source-condition matrix; it is not a saved model-approved answer or an
+observed incident diagnosis. Search also matches exact service and compilation
+scope metadata. It does not infer business entities, purpose, or runtime activation.
+
+Shared examined bodies have one canonical callable identity based on service,
+compilation scope and compiler symbol. Their results link the exact retained body
+and the selected process pages that examined it, including shared Parent A/B
+context. These reverse links identify documentation context, not runtime impact.
+A frontier alone never adds an examined callable result. A selected root with
+unavailable, ambiguous or unparsed body remains reachable through its process or
+endpoint page and is excluded from examined-body results; a genuine empty body
+remains available. Exact source citations and all process links remain available without
+JavaScript; the HTML enhancement uses only bundled local assets. MDX remains inert.
+
+Search renders at most 20 results per page. Query, result type and page are retained
+in the URL for reload and Back navigation. `catalogue.json` records typed result
+metadata with the exact snapshot and input/context/selection digests; it derives
+from the same immutable projection without another store or capture. Scope is this
+one selected native bundle. Existing selection/body/source budgets are unchanged.
+This result does not qualify a 200-service/2,000-process catalogue or aggregate
+historical publications; those scale and discovery tasks remain separate.
