@@ -4230,7 +4230,7 @@ mod section_context_tests {
         loop {
             let part =
                 super::super::work_parts::read_part_loaded(&repo, &work, request.clone()).unwrap();
-            assert!(bytes(&part).unwrap().len() + 1 <= work.request.max_bytes);
+            assert!(bytes(&part).unwrap().len() < work.request.max_bytes);
             assert_eq!(part["source"]["file"], "README.md");
             reconstructed.push_str(part["text"].as_str().unwrap());
             let Some(cursor) = part["nextCursor"].as_str() else {
