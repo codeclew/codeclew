@@ -3903,6 +3903,35 @@ mod tests {
     }
 
     #[test]
+    fn uncertain_review_retry_keeps_exact_author_selector_and_parses_closed_run_identity() {
+        let base = vec![
+            "clew",
+            "docs",
+            "work",
+            "review-draft",
+            "--root",
+            "/tmp",
+            "--work",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--source-run",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--config",
+            "review.json",
+        ];
+        assert!(Cli::try_parse_from(base.clone()).is_ok());
+        let mut retry = base.clone();
+        retry.extend(["--retry-from-review", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
+        assert!(Cli::try_parse_from(retry).is_ok());
+        let mut invalid = base.clone();
+        invalid.extend(["--retry-from-review", "latest"]);
+        assert!(Cli::try_parse_from(invalid).is_err());
+        let mut missing_author = base;
+        missing_author.drain(8..10);
+        missing_author.extend(["--retry-from-review", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
+        assert!(Cli::try_parse_from(missing_author).is_err());
+    }
+
+    #[test]
     fn work_explain_requires_exactly_one_input_or_review_run() {
         let base = vec![
             "clew",

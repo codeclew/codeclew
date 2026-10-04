@@ -726,6 +726,28 @@ clew docs work status --root docs --work WORK_ID
 clew docs work cancel --root docs --work WORK_ID
 ```
 
+A terminal `DRAFT_REVIEW_UNCERTAIN` with no durable response keeps its maximum
+reservation. Ordinary replay never launches another reviewer. After inspecting
+that failed invocation, an explicit replacement can select its exact run:
+
+```sh
+clew docs work review-draft --root docs --work WORK_ID \
+  --source-run AUTHOR_RUN_ID --retry-from-review FAILED_REVIEW_RUN_ID \
+  --config new-review-execution.json
+```
+
+Use a new empty reviewer budget account. This starts one reviewer invocation
+against the same immutable author answer, complete packet and host coverage;
+it never starts an author. The failed review must be the selected latest child
+of that exact author and must have a terminal uncertain checkpoint, no verdict
+and no saved result. Completed, cancelled, invalid and nonterminal reviews
+cannot be replaced by this selector. The original failed records and maximum
+accounting remain unchanged; no refund or provider cancellation is implied.
+A retry child carries exact prior invocation/checkpoint lineage and remains
+unpublished. Once it finishes, reusing the old failed selector is refused;
+ordinary replay without the retry flag selects the existing child. This first
+slice does not replace a failed retry child or import an external completion.
+
 The closed configuration uses
 `codeclew-documentation-operation-draft-review-execution/1.0`, with `reviewer`
 and `budget` fields. The reviewer role has the same isolated driver and finite

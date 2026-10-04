@@ -71,6 +71,9 @@ pub enum Command {
         source_run: String,
         #[arg(long)]
         config: PathBuf,
+        /// Explicitly start one replacement for an exact uncertain review, with a new budget account.
+        #[arg(long, value_parser = parse_run_identity)]
+        retry_from_review: Option<String>,
     },
     /// Inspect the exact catalogue baseline without captures, models or writes.
     PublicationBaseline {
@@ -836,11 +839,13 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             work,
             source_run,
             config,
+            retry_from_review,
         } => super::agent_jobs::review_operation_draft(
             &Repository::open(&root)?,
             &work,
             &source_run,
             &config,
+            retry_from_review.as_deref(),
         ),
         Command::PublicationBaseline { root } => {
             super::reviewed_answers::baseline(&Repository::open(&root)?)

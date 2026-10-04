@@ -201,6 +201,21 @@ fn save_account(repo: &Repository, budget: &Budget, value: &Account) -> Result<(
 /// Reserve the whole configured bounded path, including reviewer and repair calls.
 /// This conservative reservation is atomic across competing work items.
 pub fn reserve(repo: &Repository, config: &Config, run: &str) -> Result<Vec<String>, ClewError> {
+    reserve_with_account_guard(repo, config, run, false)
+}
+
+/// A fresh review retry owns its entire account. The guard and reservation
+/// mutation share the same repository lock; a per-Work lock alone is insufficient.
+fn reserve_review_retry(repo: &Repository, config: &Config, run: &str) -> Result<(), ClewError> {
+    reserve_with_account_guard(repo, config, run, true).map(|_| ())
+}
+
+fn reserve_with_account_guard(
+    repo: &Repository,
+    config: &Config,
+    run: &str,
+    review_retry: bool,
+) -> Result<Vec<String>, ClewError> {
     if config.budget.cost_unit.trim().is_empty()
         || config.budget.cost_unit.len() > 64
         || !config.budget.ceiling.positive()
@@ -214,6 +229,24 @@ pub fn reserve(repo: &Repository, config: &Config, run: &str) -> Result<Vec<Stri
     }
     let _lock = repo.lock()?;
     let mut ledger = account(repo, &config.budget)?;
+    if review_retry {
+        if config.author_calls != 0
+            || config.reviewer_calls != 1
+            || config.fallback_calls != 0
+            || ledger
+                .reservations
+                .values()
+                .any(|reservation| reservation.run != run)
+        {
+            return Err(invalid(
+                "DRAFT_REVIEW_RETRY_ACCOUNT_CONFLICT: this retry requires an empty account or only its own exact reviewer reservation; historical and concurrent foreign reservations remain untouched",
+            ));
+        }
+        if !ledger.reservations.is_empty() {
+            validate_run_reservations(config, run, &ledger.reservations)?;
+            return Ok(ledger.reservations.keys().cloned().collect());
+        }
+    }
     // Keep reservations outside disposable Work state so cleanup cannot reset spend.
     save_account(repo, &config.budget, &ledger)?;
     if ledger
@@ -277,6 +310,14 @@ fn ensure_reserved(repo: &Repository, config: &Config, run: &str) -> Result<(), 
         reserve(repo, config, run)?;
         return Ok(());
     }
+    validate_run_reservations(config, run, &existing)
+}
+
+fn validate_run_reservations(
+    config: &Config,
+    run: &str,
+    existing: &BTreeMap<String, Reservation>,
+) -> Result<(), ClewError> {
     let mut expected = BTreeMap::new();
     for (role, driver, count) in [
         ("author", Some(&config.author), config.author_calls),
@@ -556,6 +597,8 @@ pub struct RunReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     draft_review: Option<operation_draft_review::Origin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_review_retry: Option<operation_draft_review::RetryOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<recovery::CheckpointRef>,
 }
 
@@ -614,6 +657,8 @@ struct RunCheckpoint {
     draft_repair: Option<DraftRepairOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     draft_review: Option<operation_draft_review::Origin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_review_retry: Option<operation_draft_review::RetryOrigin>,
     driver_digests: BTreeMap<String, String>,
     phase: String,
     pages: Vec<Value>,
@@ -697,6 +742,7 @@ impl RunCheckpoint {
             execution_mode: report.execution_mode.clone(),
             draft_repair: report.draft_repair.clone(),
             draft_review: report.draft_review.clone(),
+            draft_review_retry: report.draft_review_retry.clone(),
             driver_digests,
             phase: "AUTHOR".into(),
             pages: Vec::new(),
@@ -750,6 +796,11 @@ impl RunCheckpoint {
         if self.draft_review != report.draft_review {
             return Err(invalid(
                 "RECOVERY_CHECKPOINT_MISMATCH: saved draft review origin differs from the run report",
+            ));
+        }
+        if self.draft_review_retry != report.draft_review_retry {
+            return Err(invalid(
+                "RECOVERY_CHECKPOINT_MISMATCH: saved review retry lineage differs from the run report",
             ));
         }
         if self.draft_repair != report.draft_repair {
@@ -941,6 +992,9 @@ pub fn status(
     if let Some(origin) = report.draft_review.as_ref() {
         metadata["draftReview"] = serde_json::json!(origin);
         metadata["review"] = serde_json::json!(report.review);
+        if let Some(retry) = &report.draft_review_retry {
+            metadata["draftReviewRetry"] = serde_json::json!(retry);
+        }
     }
     super::cli::page(&digest(&report)?, rows, cursor, limit, metadata)
 }
@@ -4605,6 +4659,7 @@ pub fn run(
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let mut checkpoint = None;
@@ -4698,8 +4753,9 @@ pub fn review_operation_draft(
     id: &str,
     source_run: &str,
     config_path: &std::path::Path,
+    retry_from_review: Option<&str>,
 ) -> Result<Value, ClewError> {
-    operation_draft_review::run(repo, id, source_run, config_path)
+    operation_draft_review::run(repo, id, source_run, config_path, retry_from_review)
 }
 
 pub(super) fn export_reviewed_operation_answer(
@@ -4962,6 +5018,7 @@ mod input_cap_tests {
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let mut remaining = 2;
@@ -5432,6 +5489,7 @@ mod input_cap_tests {
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let checkpoint = RunCheckpoint::new(
@@ -5527,6 +5585,7 @@ mod input_cap_tests {
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: Some(recovery::CheckpointRef {
                 schema: "codeclew-documentation-recovery-checkpoint-ref/1.0".into(),
                 run: run.clone(),
@@ -7226,6 +7285,7 @@ mod input_cap_tests {
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let mut driver = Role {
@@ -7385,6 +7445,7 @@ mod input_cap_tests {
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(

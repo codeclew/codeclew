@@ -302,6 +302,7 @@ pub(super) fn run_loaded_selection(
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         if fresh_repair {
@@ -1959,6 +1960,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(
@@ -3492,6 +3494,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             draft: None,
             draft_repair: Some(material.origin.clone()),
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         let read_digest =
@@ -4188,6 +4191,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
             draft: None,
             draft_repair: None,
             draft_review: None,
+            draft_review_retry: None,
             checkpoint: None,
         };
         save_report(&repo, &report).unwrap();

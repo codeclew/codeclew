@@ -41,6 +41,17 @@ pub(super) struct Origin {
     pub(super) source_authoring_contract: String,
 }
 
+/// Exact prior review selected manually; never a retry instruction to the provider.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RetryOrigin {
+    schema: String,
+    review_run: String,
+    review_checkpoint: super::recovery::CheckpointRef,
+    review_invocation: String,
+    review_input_digest: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReviewConfig {
@@ -96,10 +107,14 @@ pub(super) fn run(
     id: &str,
     source_run: &str,
     config: &Path,
+    retry_from_review: Option<&str>,
 ) -> Result<Value, ClewError> {
     let _lock = acquire_run_lock(repo, id)?;
     let work = super::super::work::load(repo, id)?;
-    run_loaded(repo, &work, source_run, config)
+    match retry_from_review {
+        None => run_loaded(repo, &work, source_run, config),
+        Some(run) => run_loaded_selection(repo, &work, source_run, config, Some(run)),
+    }
 }
 
 /// Read-only material selected by an exact approved review run. The stored
@@ -267,6 +282,9 @@ fn load_terminal_review(
             "RECOVERY_INPUT_BINDING_MISMATCH: durable review did not receive this exact saved answer, packet and host coverage",
         ));
     }
+    if let Some(retry) = &report.draft_review_retry {
+        validate_retry_origin(repo, work, retry, origin, &answer, &blocks, saved_payload)?;
+    }
     let value = validate_saved_review(repo, &report, &checkpoint, saved_payload)?;
     let validated = validate_review(value.clone(), work, origin, &packet, &blocks)?;
     if validated.verdict != verdict
@@ -277,7 +295,7 @@ fn load_terminal_review(
             "RECOVERY_RESULT_MISMATCH: selected verdict differs from its durable reviewer result",
         ));
     }
-    let provenance = json!({"schema":"codeclew-operation-answer-review-provenance/1.0",
+    let mut provenance = json!({"schema":"codeclew-operation-answer-review-provenance/1.0",
         "work":work.id,"sourceRun":source.run,"reviewRun":report.run,
         "sourceCheckpoint":source_reference,"reviewCheckpoint":reference,
         "snapshot":origin.snapshot,"packetDigest":origin.packet_digest,"answerDigest":origin.answer_digest,
@@ -289,6 +307,9 @@ fn load_terminal_review(
         "reviewer":{"invocation":reviewer_identity.invocation,"model":reviewer_identity.model,
             "inputDigest":reviewer_identity.input_digest,"inputRecordDigest":reviewer_input.record_digest,"resultDigest":digest(&value)?},
         "limitations":validated.limitations,"issues":validated.issues});
+    if let Some(retry) = &report.draft_review_retry {
+        provenance["reviewRetry"] = json!(retry);
+    }
     let repair_origin = super::DraftRepairOrigin {
         schema: super::DRAFT_REPAIR_SCHEMA.into(),
         source_run: origin.source_run.clone(),
@@ -352,6 +373,16 @@ fn run_loaded(
     source_run: &str,
     config_path: &Path,
 ) -> Result<Value, ClewError> {
+    run_loaded_selection(repo, work, source_run, config_path, None)
+}
+
+fn run_loaded_selection(
+    repo: &Repository,
+    work: &Work,
+    source_run: &str,
+    config_path: &Path,
+    retry_from_review: Option<&str>,
+) -> Result<Value, ClewError> {
     super::operation_draft::validate_work(work)?;
     let source = super::load_report_by_id(repo, &work.id, source_run)?;
     let (packet, audit) = progress::run("BUILD_OPERATION_REVIEW_PACKET", || {
@@ -381,11 +412,18 @@ fn run_loaded(
         })?;
     let blocks = super::super::operation_answer::review_blocks(&answer)?;
     let selected = latest_report(repo, &work.id)?;
+    let fresh_retry = retry_from_review
+        .is_some_and(|run| selected.as_ref().is_some_and(|report| report.run == run));
     let prior = match selected {
-        Some(report) if report.run == source_run => None,
+        Some(report) if report.run == source_run && retry_from_review.is_none() => None,
         Some(report)
             if report.execution_mode.as_deref() == Some(MODE)
-                && report.draft_review.as_ref() == Some(&origin) =>
+                && report.draft_review.as_ref() == Some(&origin)
+                && (retry_from_review.is_none()
+                    || fresh_retry
+                    || report.draft_review_retry.as_ref().is_some_and(|retry| {
+                        Some(retry.review_run.as_str()) == retry_from_review
+                    })) =>
         {
             Some(report)
         }
@@ -395,12 +433,23 @@ fn run_loaded(
             ));
         }
     };
+    if retry_from_review.is_some()
+        && !fresh_retry
+        && prior
+            .as_ref()
+            .is_some_and(|report| report.status != "PREPARED")
+    {
+        return Err(invalid(
+            "DRAFT_REVIEW_RETRY_ALREADY_FINISHED: the selected failed review already has a terminal retry child; replay that child without --retry-from-review, never start another review",
+        ));
+    }
     let cfg: ReviewConfig = store::read(config_path, store::MAX_RECORD)?;
     validate_config(&cfg)?;
     let config_digest = digest(&cfg)?;
-    if prior
-        .as_ref()
-        .is_some_and(|r| r.config_digest.as_deref() != Some(config_digest.as_str()))
+    if !fresh_retry
+        && prior
+            .as_ref()
+            .is_some_and(|r| r.config_digest.as_deref() != Some(config_digest.as_str()))
     {
         return Err(invalid(
             "RECOVERY_CONFIG_MISMATCH: replay this review with its original reviewer and budget",
@@ -419,6 +468,11 @@ fn run_loaded(
             "DRAFT_REVIEW_ACCOUNT_CONFLICT: use a separate review budget account; source and ancestor accounting must remain unchanged",
         ));
     }
+    if fresh_retry && !account(repo, &cfg.budget)?.reservations.is_empty() {
+        return Err(invalid(
+            "DRAFT_REVIEW_RETRY_ACCOUNT_CONFLICT: an explicit fresh review requires a new empty reviewer budget account; previous maximum accounting is retained",
+        ));
+    }
     let admission = super::super::agent_adapter::admit(repo, &cfg.reviewer)?;
     let driver_digest = admission["driverDigest"]
         .as_str()
@@ -427,7 +481,22 @@ fn run_loaded(
     let driver_digests = BTreeMap::from([("reviewer".into(), driver_digest)]);
     let config = coordinator_config(&cfg);
     let payload = payload(work, &origin, &packet, &answer, &blocks, &author_contract)?;
-    let (mut report, mut checkpoint) = if let Some(report) = prior {
+    let retry_origin = if fresh_retry {
+        let failed = prior.as_ref().ok_or_else(|| {
+            invalid("DRAFT_REVIEW_RETRY_INELIGIBLE: failed review is not selected")
+        })?;
+        Some(validate_uncertain_review(
+            repo, work, failed, &origin, &answer, &blocks, &payload,
+        )?)
+    } else {
+        prior
+            .as_ref()
+            .and_then(|report| report.draft_review_retry.clone())
+    };
+    if let Some(retry) = &retry_origin {
+        validate_retry_origin(repo, work, retry, &origin, &answer, &blocks, &payload)?;
+    }
+    let (mut report, mut checkpoint) = if let Some(report) = prior.filter(|_| !fresh_retry) {
         let checkpoint = load_run_checkpoint(repo, &report, &config_digest, &driver_digests)?
             .ok_or_else(|| {
                 invalid("RECOVERY_CHECKPOINT_MISSING: review child has no phase record")
@@ -459,6 +528,7 @@ fn run_loaded(
             draft: None,
             draft_repair: None,
             draft_review: Some(origin.clone()),
+            draft_review_retry: retry_origin,
             checkpoint: None,
         };
         let mut checkpoint = RunCheckpoint::new(
@@ -526,7 +596,11 @@ fn run_loaded(
         }
         return Ok(summary(&report));
     }
-    ensure_reserved(repo, &config, &report.run)?;
+    if report.draft_review_retry.is_some() {
+        super::reserve_review_retry(repo, &config, &report.run)?;
+    } else {
+        ensure_reserved(repo, &config, &report.run)?;
+    }
     save_run_checkpoint(repo, &mut report, &checkpoint)?;
     let phase = Phase::start("REVIEW_SAVED_OPERATION_DRAFT");
     let result = call(
@@ -601,6 +675,120 @@ fn run_loaded(
     }
     super::operation_draft::finish_state(repo, &config, &mut report, &mut checkpoint)?;
     Ok(summary(&report))
+}
+
+fn validate_uncertain_review(
+    repo: &Repository,
+    work: &Work,
+    failed: &RunReport,
+    origin: &Origin,
+    answer: &Value,
+    blocks: &[Value],
+    expected_payload: &Value,
+) -> Result<RetryOrigin, ClewError> {
+    if failed.execution_mode.as_deref() != Some(MODE)
+        || failed.status != "DRAFT_REVIEW_UNCERTAIN"
+        || failed.draft_review.as_ref() != Some(origin)
+        || failed.draft_review_retry.is_some()
+        || failed.review.is_some()
+        || failed.proposal.is_some()
+        || failed.draft.is_some()
+        || failed.draft_repair.is_some()
+        || failed.publication.as_ref() != Some(&json!({"status":"NOT_PUBLISHED"}))
+    {
+        return Err(invalid(
+            "DRAFT_REVIEW_RETRY_INELIGIBLE: select one original terminal uncertain review without a verdict; no author or completed review is replaceable",
+        ));
+    }
+    let reference = failed.checkpoint.as_ref().ok_or_else(|| {
+        invalid("RECOVERY_CHECKPOINT_MISSING: uncertain review has no selected checkpoint")
+    })?;
+    let checkpoint: RunCheckpoint = super::recovery::load_checkpoint(repo, reference)?;
+    let config_digest = failed.config_digest.as_deref().ok_or_else(|| {
+        invalid("RECOVERY_CONFIG_MISMATCH: uncertain review has no config binding")
+    })?;
+    checkpoint.validate(failed, config_digest, &checkpoint.driver_digests)?;
+    if checkpoint.phase != "TERMINAL"
+        || checkpoint.snapshot != origin.snapshot
+        || work.snapshot.as_deref() != Some(origin.snapshot.as_str())
+        || checkpoint.previous != *answer
+        || checkpoint.feedback != json!(blocks)
+        || checkpoint.review.is_some()
+        || checkpoint.proposal_id.is_some()
+        || checkpoint.publication_baseline.is_some()
+        || checkpoint.publication_receipt.is_some()
+    {
+        return Err(invalid(
+            "DRAFT_REVIEW_RETRY_INELIGIBLE: failed checkpoint is not an exact unpublished terminal review",
+        ));
+    }
+    let pending = checkpoint.pending_call.as_ref().ok_or_else(|| {
+        invalid("RECOVERY_REPORT_MISMATCH: uncertain review has no bound invocation")
+    })?;
+    let attempt = failed
+        .attempts
+        .first()
+        .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: uncertain review has no attempt"))?;
+    let identity = &pending.identity;
+    if failed.attempts.len() != 1
+        || attempt.result_digest.is_some()
+        || !matches!(pending.status.as_str(), "FAILED" | "UNCERTAIN_NO_RESULT")
+        || !matches!(
+            attempt.status.as_str(),
+            "FAILED" | "DISPATCH_UNCERTAIN_MAXIMUM_RETAINED"
+        )
+        || identity.role != "reviewer"
+        || attempt.role != "reviewer"
+        || identity.run != failed.run
+        || identity.work != work.id
+        || identity.snapshot != checkpoint.snapshot
+        || identity.config_digest != checkpoint.config_digest
+        || checkpoint.driver_digests.get("reviewer") != Some(&identity.driver_digest)
+        || attempt.admission["driverDigest"] != identity.driver_digest
+        || attempt.invocation != identity.invocation
+        || attempt.reservation != identity.reservation
+        || attempt.model != identity.model
+        || attempt.input_digest != identity.input_digest
+    {
+        return Err(invalid(
+            "RECOVERY_REPORT_MISMATCH: failed reviewer attempt differs from its immutable input",
+        ));
+    }
+    let input = super::recovery::load_input(repo, identity)?;
+    if input.request["payload"] != *expected_payload
+        || super::recovery::try_load_result(repo, &input)?.is_some()
+    {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: uncertain review payload differs or a durable reviewer result exists",
+        ));
+    }
+    Ok(RetryOrigin {
+        schema: "codeclew-operation-draft-review-retry/1.0".into(),
+        review_run: failed.run.clone(),
+        review_checkpoint: reference.clone(),
+        review_invocation: identity.invocation.clone(),
+        review_input_digest: identity.input_digest.clone(),
+    })
+}
+
+fn validate_retry_origin(
+    repo: &Repository,
+    work: &Work,
+    retry: &RetryOrigin,
+    origin: &Origin,
+    answer: &Value,
+    blocks: &[Value],
+    payload: &Value,
+) -> Result<(), ClewError> {
+    super::operation_draft::validate_run_id(&retry.review_run)?;
+    let failed = super::load_report_by_id(repo, &work.id, &retry.review_run)?;
+    let expected = validate_uncertain_review(repo, work, &failed, origin, answer, blocks, payload)?;
+    if retry != &expected {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: review retry lineage differs from its exact prior invocation",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_saved_review(
@@ -876,9 +1064,13 @@ fn validate_review(
 }
 
 fn summary(report: &RunReport) -> Value {
-    json!({"schema":"codeclew-documentation-work-run/1.0","run":report.run,"work":report.work,
+    let mut value = json!({"schema":"codeclew-documentation-work-run/1.0","run":report.run,"work":report.work,
         "status":report.status,"executionMode":report.execution_mode,"draftReview":report.draft_review,
-        "review":report.review,"publication":report.publication,"attempts":report.attempts,"accounting":report.accounting,"gap":report.gap})
+        "review":report.review,"publication":report.publication,"attempts":report.attempts,"accounting":report.accounting,"gap":report.gap});
+    if let Some(retry) = &report.draft_review_retry {
+        value["draftReviewRetry"] = json!(retry);
+    }
+    value
 }
 
 #[cfg(test)]
@@ -2190,6 +2382,266 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
                 .contains("RECOVERY_RESULT_MISMATCH")
         );
         assert_eq!(account(&repo, &cfg.budget).unwrap().reservations.len(), 1);
+    }
+
+    #[test]
+    fn explicit_uncertain_review_retry_reservation_guard_is_atomic_and_keeps_ordinary_sharing() {
+        let (temp, repo, _work, author_config) =
+            super::super::operation_draft::tests::setup("success");
+        let path = temp.path().join("reservation-guard.json");
+        let cfg = config(&path, &author_config, "approve");
+        let coordinator = coordinator_config(&cfg);
+        assert!(account(&repo, &cfg.budget).unwrap().reservations.is_empty());
+        // Deterministically insert the other Work's reservation after the
+        // earlier admission observed an empty ledger, before retry reservation.
+        let foreign = "a".repeat(32);
+        let retry = "b".repeat(32);
+        let ids = super::super::reserve(&repo, &coordinator, &foreign).unwrap();
+        let ledger_path = repo
+            .path(&super::super::account_path(&cfg.budget.account).unwrap())
+            .unwrap();
+        let before = fs::read(&ledger_path).unwrap();
+        assert!(
+            super::super::reserve_review_retry(&repo, &coordinator, &retry)
+                .unwrap_err()
+                .message
+                .contains("DRAFT_REVIEW_RETRY_ACCOUNT_CONFLICT")
+        );
+        assert_eq!(fs::read(&ledger_path).unwrap(), before);
+        let usage = super::super::Usage {
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            cost_units: Some(1),
+        };
+        assert_eq!(
+            super::super::dispatch(&repo, &cfg.budget, &foreign, "reviewer").unwrap(),
+            ids[0]
+        );
+        super::super::reconcile(&repo, &cfg.budget, &ids[0], Some(usage), 0).unwrap();
+        let settled = fs::read(&ledger_path).unwrap();
+        assert!(super::super::reserve_review_retry(&repo, &coordinator, &retry).is_err());
+        assert_eq!(fs::read(&ledger_path).unwrap(), settled);
+        // Ordinary Work retains the existing shared-budget behavior.
+        super::super::reserve(&repo, &coordinator, &retry).unwrap();
+        assert_eq!(account(&repo, &cfg.budget).unwrap().reservations.len(), 2);
+
+        let mut exclusive = coordinator.clone();
+        exclusive.budget.account = "exclusive-review-retry".into();
+        super::super::reserve_review_retry(&repo, &exclusive, &retry).unwrap();
+        let exact = serde_json::to_value(account(&repo, &exclusive.budget).unwrap()).unwrap();
+        super::super::reserve_review_retry(&repo, &exclusive, &retry).unwrap();
+        assert_eq!(
+            serde_json::to_value(account(&repo, &exclusive.budget).unwrap()).unwrap(),
+            exact
+        );
+        let mut wrong_role = exclusive.clone();
+        wrong_role.reviewer_calls = 0;
+        wrong_role.author_calls = 1;
+        assert!(super::super::reserve_review_retry(&repo, &wrong_role, &retry).is_err());
+        let mut wrong_maximum = exclusive.clone();
+        wrong_maximum.reviewer.cap.maximum.output_tokens += 1;
+        assert!(super::super::reserve_review_retry(&repo, &wrong_maximum, &retry).is_err());
+        // Correct run identity with an inconsistent stored key is also refused.
+        let mut forged = account(&repo, &exclusive.budget).unwrap();
+        let reservation = forged.reservations.pop_first().unwrap().1;
+        forged
+            .reservations
+            .insert("sha256:forged".into(), reservation);
+        super::super::save_account(&repo, &exclusive.budget, &forged).unwrap();
+        assert!(super::super::reserve_review_retry(&repo, &exclusive, &retry).is_err());
+    }
+
+    #[test]
+    fn explicit_uncertain_review_retry_preserves_failed_authority_and_exports_one_new_review() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, work, author_config, source_run) = authored();
+        let failed_config = temp.path().join("failed-review.json");
+        let failed_cfg = config(&failed_config, &author_config, "uncertain");
+        let failed = run_loaded(&repo, &work, &source_run, &failed_config).unwrap();
+        assert_eq!(failed["status"], "DRAFT_REVIEW_UNCERTAIN");
+        let failed_run = failed["run"].as_str().unwrap();
+        assert_eq!(
+            run_loaded(&repo, &work, &source_run, &failed_config).unwrap(),
+            failed
+        );
+        let originals = immutable_originals(&repo, &work, &source_run, failed_run);
+        let maximum = serde_json::to_value(account(&repo, &failed_cfg.budget).unwrap()).unwrap();
+        let failed_report = super::super::load_report_by_id(&repo, &work.id, failed_run).unwrap();
+        let old_input = frozen_input(&repo, &failed_report);
+        let retry_config = temp.path().join("retry-review.json");
+        let cfg = config(&retry_config, &author_config, "approve");
+        let reviewed =
+            super::super::super::work::run(super::super::super::work::Command::ReviewDraft {
+                root: repo.root.clone(),
+                work: work.id.clone(),
+                source_run: source_run.clone(),
+                config: retry_config.clone(),
+                retry_from_review: Some(failed_run.into()),
+            })
+            .unwrap();
+        assert_eq!(reviewed["status"], "DRAFT_REVIEW_APPROVED");
+        assert_ne!(reviewed["run"], failed["run"]);
+        assert_eq!(reviewed["attempts"].as_array().unwrap().len(), 1);
+        assert_eq!(reviewed["attempts"][0]["role"], "reviewer");
+        assert_ne!(
+            reviewed["attempts"][0]["invocation"],
+            failed["attempts"][0]["invocation"]
+        );
+        assert_eq!(reviewed["draftReviewRetry"]["reviewRun"], failed_run);
+        let report = latest_report(&repo, &work.id).unwrap().unwrap();
+        let input = frozen_input(&repo, &report);
+        assert_eq!(input.request["payload"], old_input.request["payload"]);
+        assert_eq!(
+            serde_json::to_value(account(&repo, &failed_cfg.budget).unwrap()).unwrap(),
+            maximum
+        );
+        assert_originals_unchanged(&originals);
+        assert_eq!(account(&repo, &cfg.budget).unwrap().reservations.len(), 1);
+        assert!(
+            run_loaded_selection(&repo, &work, &source_run, &retry_config, Some(failed_run))
+                .unwrap_err()
+                .message
+                .contains("DRAFT_REVIEW_RETRY_ALREADY_FINISHED")
+        );
+        assert_eq!(
+            run_loaded(&repo, &work, &source_run, &retry_config).unwrap(),
+            reviewed
+        );
+        assert_eq!(account(&repo, &cfg.budget).unwrap().reservations.len(), 1);
+        let exports = tempfile::tempdir().unwrap();
+        let output = exports.path().join("retry-export");
+        export_approved_answer(&repo, &work.id, &report.run, &output).unwrap();
+        let provenance: Value =
+            store::read(&output.join("review-provenance.json"), store::MAX_RECORD).unwrap();
+        assert_eq!(provenance["reviewRetry"], reviewed["draftReviewRetry"]);
+        assert_eq!(provenance["publication"], "NOT_PUBLISHED");
+        assert_originals_unchanged(&originals);
+    }
+
+    #[test]
+    fn explicit_uncertain_review_retry_refuses_shared_account_and_corrupt_or_stale_origins() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, work, author_config, source_run) = authored();
+        let path = temp.path().join("failed.json");
+        let failed_cfg = config(&path, &author_config, "uncertain");
+        let failed = run_loaded(&repo, &work, &source_run, &path).unwrap();
+        let failed_run = failed["run"].as_str().unwrap();
+        let original = super::super::load_report_by_id(&repo, &work.id, failed_run).unwrap();
+        let failed_ledger =
+            serde_json::to_value(account(&repo, &failed_cfg.budget).unwrap()).unwrap();
+        assert!(
+            run_loaded_selection(&repo, &work, &source_run, &path, Some(failed_run))
+                .unwrap_err()
+                .message
+                .contains("DRAFT_REVIEW_RETRY_ACCOUNT_CONFLICT")
+        );
+        assert_eq!(
+            serde_json::to_value(account(&repo, &failed_cfg.budget).unwrap()).unwrap(),
+            failed_ledger
+        );
+        let next = temp.path().join("new.json");
+        let cfg = config(&next, &author_config, "approve");
+        for status in [
+            "PREPARED",
+            "DRAFT_REVIEW_APPROVED",
+            "DRAFT_REVIEW_REJECTED",
+            "DRAFT_REVIEW_CANCELLED",
+            "DRAFT_REVIEW_INVALID_RESULT",
+        ] {
+            let mut forged = original.clone();
+            forged.status = status.into();
+            super::super::save_report(&repo, &forged).unwrap();
+            assert!(
+                run_loaded_selection(&repo, &work, &source_run, &next, Some(failed_run)).is_err(),
+                "{status}"
+            );
+            assert!(account(&repo, &cfg.budget).unwrap().reservations.is_empty());
+        }
+        super::super::save_report(&repo, &original).unwrap();
+        let mut foreign = work.clone();
+        foreign.id = "f".repeat(64);
+        assert!(
+            run_loaded_selection(&repo, &foreign, &source_run, &next, Some(failed_run)).is_err()
+        );
+        assert!(
+            run_loaded_selection(&repo, &work, &"0".repeat(32), &next, Some(failed_run)).is_err()
+        );
+        assert!(run_loaded_selection(&repo, &work, &source_run, &next, Some(&source_run)).is_err());
+        let mut forged = original.clone();
+        forged.draft_review.as_mut().unwrap().answer_digest = "sha256:forged".into();
+        super::super::save_report(&repo, &forged).unwrap();
+        assert!(run_loaded_selection(&repo, &work, &source_run, &next, Some(failed_run)).is_err());
+        super::super::save_report(&repo, &original).unwrap();
+        let input = frozen_input(&repo, &original);
+        let input_path = repo
+            .path(&format!(
+                ".codeclew/job-inputs/{}.json",
+                input.identity.invocation
+            ))
+            .unwrap();
+        let saved = std::fs::read(&input_path).unwrap();
+        std::fs::remove_file(&input_path).unwrap();
+        assert!(run_loaded_selection(&repo, &work, &source_run, &next, Some(failed_run)).is_err());
+        std::fs::write(&input_path, saved).unwrap();
+        assert!(account(&repo, &cfg.budget).unwrap().reservations.is_empty());
+        assert_eq!(
+            latest_report(&repo, &work.id).unwrap().unwrap().run,
+            failed_run
+        );
+        assert_eq!(
+            serde_json::to_value(account(&repo, &failed_cfg.budget).unwrap()).unwrap(),
+            failed_ledger
+        );
+    }
+
+    #[test]
+    fn explicit_uncertain_review_retry_rejects_real_completed_verdicts_and_omits_legacy_lineage() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        for mode in ["approve", "reject"] {
+            let (temp, repo, work, author_config, source_run) = authored();
+            let path = temp.path().join("completed.json");
+            config(&path, &author_config, mode);
+            let completed = run_loaded(&repo, &work, &source_run, &path).unwrap();
+            let report = latest_report(&repo, &work.id).unwrap().unwrap();
+            assert!(
+                serde_json::to_value(&report)
+                    .unwrap()
+                    .get("draftReviewRetry")
+                    .is_none()
+            );
+            let checkpoint: RunCheckpoint =
+                super::super::recovery::load_checkpoint(&repo, report.checkpoint.as_ref().unwrap())
+                    .unwrap();
+            assert!(
+                serde_json::to_value(&checkpoint)
+                    .unwrap()
+                    .get("draftReviewRetry")
+                    .is_none()
+            );
+            let next = temp.path().join("new.json");
+            let mut cfg = config(&next, &author_config, "approve");
+            cfg.budget.account = "explicit-fresh-review".into();
+            std::fs::write(&next, serde_json::to_vec(&cfg).unwrap()).unwrap();
+            let originals = immutable_originals(&repo, &work, &source_run, &report.run);
+            assert!(
+                run_loaded_selection(
+                    &repo,
+                    &work,
+                    &source_run,
+                    &next,
+                    Some(completed["run"].as_str().unwrap())
+                )
+                .is_err()
+            );
+            assert!(account(&repo, &cfg.budget).unwrap().reservations.is_empty());
+            assert_originals_unchanged(&originals);
+        }
     }
 
     #[test]
