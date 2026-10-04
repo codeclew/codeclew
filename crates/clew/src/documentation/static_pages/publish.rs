@@ -422,6 +422,12 @@ fn process_calls(p: &PageContent, graph: &SourceCallGraph, ext: &str) -> String 
             )
         );
     }
+    if let Some(state) = &p.data_state {
+        out += &paragraph(&format!(
+            "Source data state digest: {}. This separate syntax fingerprint does not prove runtime values or completion.",
+            state.data_state_digest
+        ));
+    }
     out += "</section>\n";
     out
 }
@@ -448,6 +454,34 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
             node.service, node.scope, node.examined_source_digest
         ));
         out += &callable(&node.callable, ext);
+        if let Some(state) = &node.data_state {
+            out += &format!(
+                "<details id=\"{}-data\"><summary>Source data transformations</summary><h3>Guarded definitions and call prerequisites</h3>",
+                anchor(&node.id)
+            );
+            out += &paragraph(&format!(
+                "Data state digest: {}. Compiler facts identify declarations; transformations and guards describe source syntax. Values, receiver aliases, external results and normal runtime completion are unproven.",
+                state.data_state_digest
+            ));
+            for definition in &state.definitions {
+                out += &format!(
+                    "<details><summary>{}</summary><pre>{}</pre>{}</details>",
+                    escape(&definition.id),
+                    escape(&serde_json::to_string_pretty(definition).unwrap()),
+                    definition
+                        .citation_id
+                        .as_ref()
+                        .map(|c| cite(c, ext))
+                        .unwrap_or_default()
+                );
+            }
+            out += "<h3>Per-occurrence argument and return mappings</h3>";
+            out += &format!(
+                "<pre>{}</pre><ul>{}</ul></details>",
+                escape(&serde_json::to_string_pretty(&state.calls).unwrap()),
+                gaps(&state.gaps, ext)
+            );
+        }
         for edge in &node.calls {
             out += &format!(
                 "<details><summary>Source call {}</summary><pre>{}</pre><ul>{}</ul>\n",
@@ -494,6 +528,23 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
             }
         }
         out += "</ul></section>\n";
+    }
+    if !graph.reverse_field_references.is_empty() {
+        out += "<h2>Examined field declaration references</h2>";
+        out += &paragraph(
+            "These are references in examined source bodies, not runtime instance identities or an impact inventory.",
+        );
+        for (field, nodes) in &graph.reverse_field_references {
+            out += &format!(
+                "<p>{}: {}</p>",
+                escape(field),
+                nodes
+                    .iter()
+                    .map(|node| link(&format!("source-calls.{ext}#{}-data", anchor(node)), node))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            );
+        }
     }
     out += "</main>\n";
     out
@@ -905,6 +956,9 @@ pub(super) fn write(
                         && let Some(examined) = &process.examined_sources
                     {
                         row["examinedSourceDigest"] = json!(examined.examined_source_digest);
+                        if let Some(state) = &process.data_state {
+                            row["dataStateDigest"] = json!(state.data_state_digest);
+                        }
                     }
                 }
                 page_rows.push(row);
@@ -1087,6 +1141,7 @@ mod tests {
                 note_ids: vec![],
                 authored_paragraphs: vec![],
                 expand_source_calls: false,
+                expand_data_state: false,
             },
             service_revision: "revision".into(),
             service_digest: "digest".into(),
@@ -1110,6 +1165,7 @@ mod tests {
             human_instructions: vec![],
             authored_paragraphs: vec![],
             examined_sources: None,
+            data_state: None,
         };
         let p = BundleProjection {
             schema: SCHEMA.into(),

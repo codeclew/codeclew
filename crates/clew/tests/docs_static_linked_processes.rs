@@ -248,6 +248,30 @@ fn child_calls(p: &BundleProjection, parent: &str) -> Vec<String> {
         .collect()
 }
 
+fn data_projection(checked: &Check) -> BundleProjection {
+    let mut input = selections(checked);
+    for row in input.as_array_mut().unwrap() {
+        row["expandDataState"] = json!(true);
+    }
+    clew::documentation::static_pages::project(
+        checked,
+        &serde_json::from_value::<Vec<clew::documentation::static_pages::model::Selection>>(input)
+            .unwrap(),
+    )
+    .unwrap()
+}
+fn data_digest(p: &BundleProjection, id: &str) -> String {
+    p.pages
+        .iter()
+        .find(|p| p.id == id)
+        .unwrap()
+        .data_state
+        .as_ref()
+        .unwrap()
+        .data_state_digest
+        .clone()
+}
+
 #[test]
 #[ignore = "runs real Maven/compiler capture for four committed variants; JDK21 and Maven required"]
 fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
@@ -475,6 +499,88 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         &mut timings,
     );
     assert_eq!(files(&false_path), files(&omitted_path));
+    // Opt-in data projection reuses this exact compiler snapshot and traversal.
+    let mut data_selected = selected.clone();
+    for row in data_selected.as_array_mut().unwrap() {
+        row["expandDataState"] = json!(true);
+    }
+    let (data_path, data) = render(
+        &f,
+        &snapshot,
+        &data_selected,
+        "baseline-data-state",
+        sink.as_deref(),
+        &mut timings,
+    );
+    let data_frozen = files(&data_path);
+    let data_graph = data.source_call_graph.as_ref().unwrap();
+    let prepare = data_graph
+        .nodes
+        .values()
+        .find(|n| n.callable.declaration_id == helper_id)
+        .unwrap()
+        .data_state
+        .as_ref()
+        .unwrap();
+    assert!(!prepare.definitions.is_empty(), "{prepare:?}");
+    let transformed=prepare.definitions.iter().find(|d|matches!(&d.value,clew::documentation::static_pages::model::DataValue::CallResult {occurrence,..} if prepare.calls.iter().any(|c|&c.occurrence==occurrence))).unwrap();
+    let trim = prepare
+        .calls
+        .iter()
+        .find(|c| c.target_node.is_none())
+        .unwrap();
+    assert!(
+        transformed
+            .normal_completion_of
+            .iter()
+            .any(|c| c.occurrence == trim.occurrence)
+    );
+    assert!(prepare.definitions.iter().any(|d|matches!(&d.value,clew::documentation::static_pages::model::DataValue::Literal {text} if text=="\"anonymous\"")));
+    assert!(prepare.definitions.iter().any(|d|d.storage.is_none() && matches!(&d.value,clew::documentation::static_pages::model::DataValue::Binary {operator,..} if operator=="+")));
+    let child_data = data_graph.nodes[&child.id].data_state.as_ref().unwrap();
+    assert!(
+        child_data
+            .calls
+            .iter()
+            .any(|c| c.target_node.as_deref() == Some(helper.id.as_str())
+                && c.arguments.iter().any(|a| a.formal_identity.is_some())
+                && !c.return_definitions.is_empty())
+    );
+    assert!(
+        child_data
+            .calls
+            .iter()
+            .all(|c| c.mapping_authority == "DECLARED_TARGET_SOURCE_CONDITIONAL")
+    );
+    let deliver_data = child_data
+        .calls
+        .iter()
+        .find(|c| c.occurrence == gateway.occurrence_path)
+        .unwrap();
+    assert!(deliver_data.target_node.is_none());
+    assert!(child_data.definitions.iter().any(|d| {
+        d.normal_completion_of
+            .iter()
+            .any(|c| c.occurrence == deliver_data.occurrence)
+    }));
+    assert!(!data_graph.reverse_field_references.is_empty());
+    for page in &data.pages {
+        assert_eq!(
+            page.examined_sources,
+            baseline
+                .pages
+                .iter()
+                .find(|p| p.id == page.id)
+                .unwrap()
+                .examined_sources
+        );
+        assert!(page.data_state.is_some());
+    }
+    let html = fs::read_to_string(data_path.join("source-calls.html")).unwrap();
+    assert!(
+        html.contains("Source data transformations")
+            && html.contains("not runtime instance identities")
+    );
     let java = source.join("src/main/java/example/linked");
     let child_file = java.join("ChildWorker.java");
     let a_file = java.join("ParentAWorker.java");
@@ -500,9 +606,15 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         sink.as_deref(),
         &mut timings,
     );
+    let child_data_changed = data_projection(&changed);
     for id in ["parent-a", "parent-b", "child"] {
+        assert_ne!(data_digest(&data, id), data_digest(&child_data_changed, id));
         assert_ne!(reviewed(&baseline, id), reviewed(&child_changed, id));
     }
+    assert_eq!(
+        data_digest(&data, "cycle"),
+        data_digest(&child_data_changed, "cycle")
+    );
     assert_eq!(
         reviewed(&baseline, "cycle"),
         reviewed(&child_changed, "cycle")
@@ -539,6 +651,18 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         sink.as_deref(),
         &mut timings,
     );
+    let a_data_changed = data_projection(&changed);
+    assert_ne!(
+        data_digest(&data, "parent-a"),
+        data_digest(&a_data_changed, "parent-a")
+    );
+    for id in ["parent-b", "child", "cycle"] {
+        assert_eq!(
+            data_digest(&data, id),
+            data_digest(&a_data_changed, id),
+            "{id}: unrelated source relocation must not change data semantics"
+        );
+    }
     assert_ne!(
         reviewed(&baseline, "parent-a"),
         reviewed(&a_changed, "parent-a")
@@ -565,6 +689,40 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         "b-retarget",
         sink.as_deref(),
         &mut timings,
+    );
+    let b_data_changed = data_projection(&changed);
+    assert_ne!(
+        data_digest(&data, "parent-b"),
+        data_digest(&b_data_changed, "parent-b")
+    );
+    for id in ["parent-a", "child", "cycle"] {
+        assert_eq!(data_digest(&data, id), data_digest(&b_data_changed, id));
+    }
+    let b_page = b_data_changed
+        .pages
+        .iter()
+        .find(|p| p.id == "parent-b")
+        .unwrap();
+    let a_page = b_data_changed
+        .pages
+        .iter()
+        .find(|p| p.id == "parent-a")
+        .unwrap();
+    assert!(
+        !b_page
+            .data_state
+            .as_ref()
+            .unwrap()
+            .nodes
+            .contains(&helpers[0].id)
+    );
+    assert!(
+        a_page
+            .data_state
+            .as_ref()
+            .unwrap()
+            .nodes
+            .contains(&helpers[0].id)
     );
     assert_eq!(child_calls(&b_changed, "parent-a").len(), 1);
     assert!(child_calls(&b_changed, "parent-b").is_empty());
@@ -604,6 +762,16 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     );
     assert_eq!(offline, baseline);
     assert_eq!(files(&offline_path), frozen);
+    let (data_offline_path, data_offline) = render(
+        &f,
+        &snapshot,
+        &data_selected,
+        "offline-data-state",
+        sink.as_deref(),
+        &mut timings,
+    );
+    assert_eq!(data_offline, data);
+    assert_eq!(files(&data_offline_path), data_frozen);
     if let Some(sink) = sink {
         fs::write(sink.join("journey.json"), serde_json::to_vec_pretty(&json!({"schema":"codeclew-native-linked-process-journey/1.0",
             "authority":"OWNED_SYNTHETIC_SOURCE_AND_COMPILER_NOT_RUNTIME_OR_CORPORATE_ACCEPTANCE",

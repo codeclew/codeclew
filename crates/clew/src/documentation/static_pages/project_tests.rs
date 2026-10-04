@@ -255,6 +255,7 @@ fn scenario(
             note_ids: vec![],
             authored_paragraphs: vec![],
             expand_source_calls: false,
+            expand_data_state: false,
         },
     )
 }
@@ -494,6 +495,7 @@ fn negation_else_early_returns_and_unsupported_expressions_remain_ordered() {
             note_ids: vec![],
             authored_paragraphs: vec![],
             expand_source_calls: false,
+            expand_data_state: false,
         },
     );
     assert_eq!(p.worker.steps[2].conditions[0].expression, "(!ready)");
@@ -603,6 +605,7 @@ fn one_same_line_relation_cannot_be_borrowed_by_a_different_call() {
             note_ids: vec![],
             authored_paragraphs: vec![],
             expand_source_calls: false,
+            expand_data_state: false,
         },
     );
     assert!(
@@ -717,6 +720,7 @@ fn nested_early_return_guards_restrict_the_following_call() {
             note_ids: vec![],
             authored_paragraphs: vec![],
             expand_source_calls: false,
+            expand_data_state: false,
         },
     );
     let call = p.worker.steps.last().unwrap();
@@ -776,6 +780,7 @@ fn switch_expression_arms_are_retained_without_unconditional_calls() {
             note_ids: vec![],
             authored_paragraphs: vec![],
             expand_source_calls: false,
+            expand_data_state: false,
         },
     );
     assert!(p.worker.steps[0].calls.is_empty());
@@ -1059,6 +1064,7 @@ fn linked_fixture(guard: &str, transform: &str, b_target: &str) -> (Check, Vec<S
         note_ids: vec![],
         authored_paragraphs: vec![],
         expand_source_calls: true,
+        expand_data_state: false,
     })
     .collect();
     (checked, selections)

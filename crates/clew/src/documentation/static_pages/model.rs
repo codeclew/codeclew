@@ -26,6 +26,9 @@ pub struct Selection {
     /// Bounded source-call bodies and selected-process navigation, never runtime activation.
     #[serde(default, skip_serializing_if = "is_false")]
     pub expand_source_calls: bool,
+    /// Syntax transformations over exact compiler variable occurrences; no runtime values.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub expand_data_state: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -93,6 +96,8 @@ pub struct PageContent {
     pub authored_paragraphs: Vec<AuthoredParagraph>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub examined_sources: Option<ExaminedSources>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_state: Option<ExaminedDataState>,
 }
 
 /// Each body is cached once by service, compilation scope and compiler symbol.
@@ -107,6 +112,8 @@ pub struct SourceCallGraph {
     pub nodes: BTreeMap<String, SourceCallNode>,
     pub process_links: Vec<ProcessCallLink>,
     pub reverse_examined_processes: BTreeMap<String, Vec<ExaminedProcessReason>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reverse_field_references: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -122,6 +129,8 @@ pub struct SourceCallNode {
     pub sources: BTreeMap<String, Source>,
     /// Local examined text and call semantics; excludes global capture provenance.
     pub examined_source_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_state: Option<NodeDataState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -340,4 +349,125 @@ pub struct Diagnostic {
     pub inspect: Vec<String>,
     pub selected_call: String,
     pub citation_ids: Vec<String>,
+}
+
+/// Declaration identity does not identify an object instance. Receiver expressions
+/// are deliberately not unified across inputs or source-local calls.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct DataStorage {
+    pub identity: String,
+    pub kind: String,
+    pub receiver: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum DataValue {
+    Interference {
+        occurrence: String,
+        prior_definitions: Vec<String>,
+    },
+    Choice {
+        alternatives: Vec<DataGuardedAlternative>,
+    },
+    Literal {
+        text: String,
+    },
+    Input {
+        storage: DataStorage,
+    },
+    Read {
+        storage: DataStorage,
+        alternatives: Vec<String>,
+    },
+    Unary {
+        operator: String,
+        operand: Box<DataValue>,
+    },
+    Binary {
+        operator: String,
+        left: Box<DataValue>,
+        right: Box<DataValue>,
+    },
+    CallResult {
+        occurrence: String,
+        receiver: Option<Box<DataValue>>,
+        arguments: Vec<DataValue>,
+        target_node: Option<String>,
+        target_authority: String,
+        frontier: Option<String>,
+    },
+    Opaque {
+        syntax: String,
+        reason: String,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataGuardedAlternative {
+    pub definitions: Vec<String>,
+    pub conditions: Vec<DataGuard>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataGuard {
+    pub expression: String,
+    pub holds: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCompletion {
+    pub occurrence: String,
+    pub conditions: Vec<DataGuard>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataDefinition {
+    pub id: String,
+    pub storage: Option<DataStorage>,
+    pub value: DataValue,
+    pub conditions: Vec<DataGuard>,
+    pub normal_completion_of: Vec<DataCompletion>,
+    pub citation_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataArgument {
+    pub slot: usize,
+    pub formal_identity: Option<String>,
+    pub value: DataValue,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCall {
+    pub mapping_authority: String,
+    pub conditions: Vec<DataGuard>,
+    pub occurrence: String,
+    pub target_node: Option<String>,
+    pub arguments: Vec<DataArgument>,
+    pub return_definitions: Vec<String>,
+    pub normal_completion_of: Vec<DataCompletion>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeDataState {
+    pub schema: String,
+    pub authority: String,
+    pub data_state_digest: String,
+    pub definitions: Vec<DataDefinition>,
+    pub calls: Vec<DataCall>,
+    pub field_declarations: Vec<String>,
+    pub gaps: Vec<Gap>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExaminedDataState {
+    pub schema: String,
+    pub authority: String,
+    pub data_state_digest: String,
+    pub nodes: Vec<String>,
 }

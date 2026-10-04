@@ -270,3 +270,43 @@ exact retargeting to a same-named alternative. Cycle/interface frontiers, relati
 links, file hashes, inert HTML/MDX parity and old-snapshot offline bytes are checked.
 These source checks do not qualify customer delivery, people tasks or corporate
 usefulness.
+
+
+## Source data transformations
+
+Set `"expandDataState": true` together with `"expandSourceCalls": true` in an
+explicit selection to include source data transformations in the same bounded
+source-call graph. Omitted or false keeps the previous projection and output
+shape. This option adds no capture, provider call, traversal depth or body budget.
+
+The `source-calls` HTML/MDX page shows guarded definitions, copies, literal and
+binary/compound expressions, incoming fields/formal parameters, exact call
+occurrences, argument-to-formal slots and source return alternatives. Reads
+reference shared earlier definition IDs. Branches join alternatives instead of
+choosing the last textual assignment or enumerating path combinations. A call
+prerequisite means the following source statement requires that occurrence to
+complete normally; it does not establish that completion at runtime. Argument and
+return mappings are `DECLARED_TARGET_SOURCE_CONDITIONAL`: a compiler-declared
+callee body does not prove runtime dispatch to that body. Guarded
+prerequisites remain guarded after a branch join.
+
+Identities come from retained compiler variable facts joined by exact UTF-8
+columns and span digests. Older facts without exact retained-byte origins become
+explicit gaps. Unsupported controls, deferred bodies and expressions with
+unavailable occurrence bindings withhold following transformations. `String.trim`
+and Gateway delivery remain opaque; no string normalization, receiver dispatch,
+delivery result or completion is inferred. Field declaration identity does not
+identify instance storage: `task.name`, `other.name` and source-local `this.name`
+remain separate. Non-`this` instance writes do not propagate aliases or state.
+Incoming fields remain opaque, including on a branch that leaves them unchanged.
+Every call adds opaque field interference for potential aliases/callbacks; prior
+field writes are not promoted to exhaustive post-call values. Unsupported nested
+writes stop transfer rather than keep an earlier local value as exact.
+
+Each opted-in page has a separate `dataStateDigest`, while `examinedSourceDigest`
+keeps its existing meaning. The data fingerprint excludes capture revisions and
+citation coordinates. Reverse field references describe only examined source
+bodies, not runtime impact or a whole-repository field inventory. Additional
+retained facts/source snippets and constructed data IR each have a cumulative
+1 MiB ceiling and 4096-row ceiling; a larger selection is refused before output.
+The existing source expansion bounds still apply.

@@ -65,6 +65,7 @@ fn node(evidence: &ServiceEvidence, declaration: &str) -> Result<SourceCallNode,
         observations: ctx.observations,
         sources: ctx.sources,
         examined_source_digest: String::new(),
+        data_state: None,
     })
 }
 
@@ -222,6 +223,7 @@ fn build(checked: &Check, pages: &[PageContent]) -> Result<SourceCallGraph, Clew
         nodes: BTreeMap::new(),
         process_links: vec![],
         reverse_examined_processes: BTreeMap::new(),
+        reverse_field_references: BTreeMap::new(),
     };
     for page in pages.iter().filter(|p| p.selection.expand_source_calls) {
         let evidence = &checked.services[&page.selection.service];

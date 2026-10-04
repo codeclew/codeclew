@@ -37,6 +37,9 @@ pub(super) fn project_unresolved(
     let mut ids = BTreeSet::new();
     let mut pages = Vec::new();
     for selection in selections {
+        if selection.expand_data_state && !selection.expand_source_calls {
+            return Err(invalid("expandDataState requires expandSourceCalls"));
+        }
         if selection.id.is_empty() || !ids.insert(&selection.id) {
             return Err(invalid(
                 "native page selection IDs must be nonempty and unique",
@@ -88,6 +91,7 @@ pub(super) fn project_unresolved(
             human_instructions,
             authored_paragraphs: vec![],
             examined_sources: None,
+            data_state: None,
         });
     }
     let mut projection = BundleProjection {
@@ -99,6 +103,7 @@ pub(super) fn project_unresolved(
         source_call_graph: None,
     };
     super::linked::attach(checked, &mut projection)?;
+    super::data_state::attach(checked, &mut projection)?;
     Ok(projection)
 }
 
@@ -257,12 +262,12 @@ fn active_nodes<'a>(parsed: &Parsed, node: Node<'a>, kind: &str) -> Vec<Node<'a>
     found
 }
 
-struct Parsed {
+pub(super) struct Parsed {
     text: String,
     tree: tree_sitter::Tree,
 }
 impl Parsed {
-    fn new(source: &str) -> Option<Self> {
+    pub(super) fn new(source: &str) -> Option<Self> {
         let text = format!("{WRAP}{source}\n}}");
         let mut parser = Parser::new();
         parser
@@ -271,16 +276,16 @@ impl Parsed {
         let tree = parser.parse(&text, None)?;
         Some(Self { text, tree })
     }
-    fn text(&self, node: Node<'_>) -> String {
+    pub(super) fn text(&self, node: Node<'_>) -> String {
         self.text[node.byte_range()].to_owned()
     }
-    fn range(&self, node: Node<'_>) -> (usize, usize) {
+    pub(super) fn range(&self, node: Node<'_>) -> (usize, usize) {
         (
             node.start_byte().saturating_sub(WRAP.len()),
             node.end_byte().saturating_sub(WRAP.len()),
         )
     }
-    fn callable(&self, o: &Observation) -> Option<Node<'_>> {
+    pub(super) fn callable(&self, o: &Observation) -> Option<Node<'_>> {
         let name = o.normalized["name"].as_str().unwrap_or_else(|| {
             o.symbol
                 .split('#')
