@@ -794,6 +794,7 @@ mod tests {
                 question: None,
                 authoring_contract: None,
                 maintained_paragraph: None,
+                maintained_from_bundle: None,
                 max_items: 20,
                 max_bytes,
                 external_inputs: Vec::new(),

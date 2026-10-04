@@ -23,6 +23,12 @@ pub struct Selector {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FromBundle {
+    pub bundle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ContextFreshness {
     Current,
@@ -51,7 +57,7 @@ pub struct MaintainedContext {
     pub dependency_records: BTreeMap<String, Observation>,
 }
 
-fn root<'a>(
+fn declared_root<'a>(
     subject: &str,
     request: &Request,
     checked: &'a Check,
@@ -70,13 +76,22 @@ fn root<'a>(
             "maintainedParagraph requires an exact retained endpoint source",
         ));
     }
+    Ok(selected.declaration)
+}
+
+fn root<'a>(
+    subject: &str,
+    request: &Request,
+    checked: &'a Check,
+) -> Result<&'a Observation, ClewError> {
+    let declaration = declared_root(subject, request, checked)?;
     let selector = request
         .maintained_paragraph
         .as_ref()
         .ok_or_else(|| invalid("maintained endpoint selection is missing"))?;
     let service = checked
         .services
-        .get(&selected.declaration.service)
+        .get(&declaration.service)
         .ok_or_else(|| invalid("maintained current endpoint service is missing"))?;
     let entries: Vec<_> = service
         .entrypoints
@@ -84,15 +99,101 @@ fn root<'a>(
         .filter(|entry| entry.id == selector.operation)
         .collect();
     if entries.len() != 1
-        || entries[0].service != selected.declaration.service
-        || entries[0].symbol != selected.declaration.symbol
-        || !entries[0].dependency_ids.contains(&selected.declaration.id)
+        || entries[0].service != declaration.service
+        || entries[0].symbol != declaration.symbol
+        || !entries[0].dependency_ids.contains(&declaration.id)
     {
         return Err(invalid(
             "maintainedParagraph requires the exact discovered endpoint operation, service, symbol and root declaration in the selected current Check",
         ));
     }
-    Ok(selected.declaration)
+    Ok(declaration)
+}
+
+/// Select only a unique canonical authored fragment at this exact endpoint.
+/// Body/source changes affect freshness, never the original pins or text.
+fn automatic_selection(
+    binding: &Bindings,
+    contexts: &BTreeMap<String, Check>,
+    subject: &str,
+    current: &Observation,
+    checked: &Check,
+    bundle: &str,
+) -> Result<Selector, ClewError> {
+    let service = &checked.services[&current.service];
+    let narrative = binding.narratives.get(subject).ok_or_else(|| {
+        invalid("maintained paragraph service is absent from the selected publication")
+    })?;
+    let mut count = 0usize;
+    let mut candidates = Vec::new();
+    for operation in &narrative.operations {
+        let entries: Vec<_> = service
+            .entrypoints
+            .iter()
+            .filter(|entry| entry.id == operation.id)
+            .collect();
+        if entries.len() != 1
+            || entries[0].service != current.service
+            || entries[0].symbol != current.symbol
+            || !entries[0].dependency_ids.contains(&current.id)
+        {
+            continue;
+        }
+        for paragraph in &operation.explanation {
+            let Some(auth) = &paragraph.authorship else {
+                continue;
+            };
+            let original = contexts
+                .get(&auth.source_snapshot)
+                .ok_or_else(|| invalid("maintained paragraph original snapshot is unavailable"))?;
+            let Some(old_service) = original.services.get(&current.service) else {
+                continue;
+            };
+            let old_entries: Vec<_> = old_service
+                .entrypoints
+                .iter()
+                .filter(|entry| entry.id == operation.id)
+                .collect();
+            if old_service.service_digest != service.service_digest
+                || old_entries.len() != 1
+                || old_entries[0].service != current.service
+                || old_entries[0].symbol != current.symbol
+                || !old_entries[0].dependency_ids.contains(&current.id)
+                || !old_service
+                    .observations
+                    .get(&current.id)
+                    .is_some_and(|old| associated(old, current))
+            {
+                continue;
+            }
+            let key = format!("{subject}/{}/{}", operation.id, paragraph.id);
+            explanation_authorship::validate_binding_pin(binding, &key, original)?;
+            count += 1;
+            if candidates.len() < 8 {
+                candidates.push(Selector {
+                    bundle: bundle.into(),
+                    operation: operation.id.clone(),
+                    fragment: paragraph.id.clone(),
+                });
+            }
+        }
+    }
+    if count != 1 {
+        let ids: Vec<_> = candidates
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{}/{}",
+                    candidate.operation.chars().take(256).collect::<String>(),
+                    candidate.fragment.chars().take(256).collect::<String>()
+                )
+            })
+            .collect();
+        return Err(invalid(format!(
+            "MAINTAINED_ATTACHMENT_NOT_UNIQUE: {count} exact authored fragments; candidates (first eight): {ids:?}; use maintainedParagraph for an explicit selection"
+        )));
+    }
+    Ok(candidates.remove(0))
 }
 
 fn associated(old: &Observation, current: &Observation) -> bool {
@@ -226,6 +327,11 @@ pub(super) fn validate_optional(
     request: &Request,
     checked: &Check,
 ) -> Result<(), ClewError> {
+    if request.maintained_from_bundle.is_some() {
+        return Err(invalid(
+            "maintainedFromBundle must be resolved when preparing new Work; saved Work requires its exact maintainedParagraph selector",
+        ));
+    }
     match (context, &request.maintained_paragraph) {
         (None, None) => Ok(()),
         (Some(context), Some(_)) => context.validate(subject, request, checked),
@@ -239,26 +345,62 @@ pub(super) fn validate_optional(
 pub(super) fn load(
     repo: &Repository,
     subject: &str,
-    request: &Request,
+    request: &mut Request,
     checked: &Check,
 ) -> Result<Option<MaintainedContext>, ClewError> {
-    let Some(selected) = &request.maintained_paragraph else {
+    if request.maintained_paragraph.is_some() && request.maintained_from_bundle.is_some() {
+        return Err(invalid(
+            "maintainedFromBundle conflicts with maintainedParagraph",
+        ));
+    }
+    if request.maintained_paragraph.is_none() && request.maintained_from_bundle.is_none() {
         return Ok(None);
-    };
-    if selected.operation.trim().is_empty()
-        || selected.operation.len() > 512
-        || selected.fragment.trim().is_empty()
-        || selected.fragment.len() > 512
+    }
+    if let Some(selected) = &request.maintained_paragraph
+        && (selected.operation.trim().is_empty()
+            || selected.operation.len() > 512
+            || selected.fragment.trim().is_empty()
+            || selected.fragment.len() > 512)
     {
         return Err(invalid(
             "maintainedParagraph requires bounded nonblank operation and fragment IDs",
         ));
     }
-    let current = root(subject, request, checked)?;
+    let automatic = request.maintained_from_bundle.is_some();
+    let current = if automatic {
+        declared_root(subject, request, checked)?
+    } else {
+        root(subject, request, checked)?
+    };
+    if automatic
+        && !checked.services[&current.service]
+            .entrypoints
+            .iter()
+            .any(|entry| {
+                entry.service == current.service
+                    && entry.symbol == current.symbol
+                    && entry.dependency_ids.contains(&current.id)
+            })
+    {
+        return Err(invalid(
+            "maintainedFromBundle requires the exact discovered current endpoint root",
+        ));
+    }
+    let bundle = request
+        .maintained_from_bundle
+        .as_ref()
+        .map(|s| s.bundle.clone())
+        .or_else(|| {
+            request
+                .maintained_paragraph
+                .as_ref()
+                .map(|s| s.bundle.clone())
+        })
+        .expect("selection checked");
     let mut budget = history::FrozenInputBudget {
         remaining_bytes: 64 * 1024 * 1024,
     };
-    let (publication, raw) = history::read_frozen_bindings(repo, &selected.bundle, &mut budget)?;
+    let (publication, raw) = history::read_frozen_bindings(repo, &bundle, &mut budget)?;
     let preliminary: Bindings = serde_yaml_ng::from_slice(&raw).map_err(super::io_error)?;
     let contexts: BTreeSet<_> = preliminary
         .fragments
@@ -273,6 +415,17 @@ pub(super) fn load(
     let mut contexts = BTreeMap::new();
     let (publication, binding) =
         history::validate_frozen_bindings(repo, publication, &raw, &mut contexts)?;
+    if automatic {
+        let selected =
+            automatic_selection(&binding, &contexts, subject, current, checked, &bundle)?;
+        request.maintained_from_bundle = None;
+        request.maintained_paragraph = Some(selected);
+    }
+    let selected = request
+        .maintained_paragraph
+        .as_ref()
+        .expect("exact selection resolved");
+    let current = root(subject, request, checked)?;
     let operations: Vec<_> = binding
         .narratives
         .get(subject)
@@ -483,6 +636,281 @@ mod tests {
         let mut work = super::super::work::api_contract_tests::endpoint_context_fixture();
         large_fixture(&mut work);
         work
+    }
+
+    // Selection-only synthetic records. Frozen filesystem admission is exercised
+    // separately through the existing actual native publication/capture journey.
+    fn automatic_fixture() -> (super::super::work::Work, Bindings, BTreeMap<String, Check>) {
+        use serde_json::json;
+        let work = work();
+        let paragraph = &work.maintained_context.as_ref().unwrap().paragraph;
+        let operation = json!({"id":"entry-http","title":"Synthetic endpoint",
+            "summary":{"id":"summary","text":"Synthetic summary","dependencyIds":[],"sourceIds":[]},
+            "explanation":[paragraph],"participants":[],"events":[]});
+        let mut binding: Bindings = serde_json::from_value(json!({"schema":"synthetic", "inputDigest":"synthetic",
+            "renderer":"synthetic","extractor":"synthetic","influenceScopes":{},"revisions":{},"coverage":{},"catalogues":{},
+            "fragments":{},"observations":{},"narratives":{(work.subject.clone()):{"schema":"synthetic","subject":work.subject,"contextDigest":"synthetic","operations":[operation]}},
+            "outputHashes":{},"retainedSources":{},"sectionStates":{},"targetRevisions":{},"updateFailures":{}})).unwrap();
+        let fragment = super::super::bindings::fragment(
+            &work.subject,
+            paragraph,
+            &paragraph.dependency_ids,
+            &paragraph.source_ids,
+            &work.checked,
+        )
+        .unwrap();
+        binding.fragments.insert(
+            format!("{}/entry-http/{}", work.subject, paragraph.id),
+            fragment,
+        );
+        let contexts = BTreeMap::from([(
+            paragraph
+                .authorship
+                .as_ref()
+                .unwrap()
+                .source_snapshot
+                .clone(),
+            work.checked.clone(),
+        )]);
+        (work, binding, contexts)
+    }
+
+    fn resolve_automatic(
+        work: &super::super::work::Work,
+        binding: &Bindings,
+        contexts: &BTreeMap<String, Check>,
+        bundle: &str,
+    ) -> Result<Selector, ClewError> {
+        let current = declared_root(&work.subject, &work.request, &work.checked)?;
+        automatic_selection(
+            binding,
+            contexts,
+            &work.subject,
+            current,
+            &work.checked,
+            bundle,
+        )
+    }
+
+    #[test]
+    fn automatic_attachment_preserves_exact_identity_body_relocation_and_specified_text_versions() {
+        let (mut work, binding, contexts) = automatic_fixture();
+        let old = super::super::bytes(&binding).unwrap();
+        let bundle = "c".repeat(64);
+        let selector = resolve_automatic(&work, &binding, &contexts, &bundle).unwrap();
+        assert_eq!(selector, work.request.maintained_paragraph.clone().unwrap());
+        let context = work.maintained_context.clone().unwrap();
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap();
+        source.text.push_str(" /* changed current body */");
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        assert_eq!(
+            resolve_automatic(&work, &binding, &contexts, &bundle).unwrap(),
+            selector
+        );
+        assert_eq!(
+            context.freshness(
+                &work.checked,
+                declared_root(&work.subject, &work.request, &work.checked).unwrap()
+            ),
+            ContextFreshness::Stale
+        );
+        let source = work
+            .checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap();
+        source.start_line += 3;
+        source.end_line += 3;
+        assert_eq!(
+            resolve_automatic(&work, &binding, &contexts, &bundle).unwrap(),
+            selector
+        );
+        assert_eq!(super::super::bytes(&binding).unwrap(), old);
+        // Two independently pinned input bindings retain their distinct authored text.
+        let mut competing = binding.clone();
+        let paragraph = &mut competing
+            .narratives
+            .get_mut(&work.subject)
+            .unwrap()
+            .operations[0]
+            .explanation[0];
+        paragraph.text = "Distinct synthetic human edit; never overwrite the earlier text.".into();
+        paragraph.authorship.as_mut().unwrap().author = "Second fixture editor".into();
+        let key = format!("{}/entry-http/{}", work.subject, paragraph.id);
+        competing.fragments.insert(
+            key,
+            super::super::bindings::fragment(
+                &work.subject,
+                paragraph,
+                &paragraph.dependency_ids,
+                &paragraph.source_ids,
+                &contexts[&paragraph.authorship.as_ref().unwrap().source_snapshot],
+            )
+            .unwrap(),
+        );
+        let other_bundle = "d".repeat(64);
+        let other = resolve_automatic(&work, &competing, &contexts, &other_bundle).unwrap();
+        assert_eq!(other.bundle, other_bundle);
+        assert_eq!(other.fragment, selector.fragment);
+        assert_ne!(
+            competing.narratives[&work.subject].operations[0].explanation[0].text,
+            context.paragraph.text
+        );
+        assert_eq!(super::super::bytes(&binding).unwrap(), old);
+    }
+
+    #[test]
+    fn automatic_attachment_refuses_missing_ambiguous_foreign_declarations_and_corrupt_pins() {
+        let (work, binding, contexts) = automatic_fixture();
+        let bundle = "c".repeat(64);
+        let mut missing = binding.clone();
+        missing
+            .narratives
+            .get_mut(&work.subject)
+            .unwrap()
+            .operations[0]
+            .explanation
+            .clear();
+        assert!(
+            resolve_automatic(&work, &missing, &contexts, &bundle)
+                .unwrap_err()
+                .message
+                .contains("0 exact authored fragments")
+        );
+        let mut ambiguous = binding.clone();
+        for index in 0..12 {
+            let mut paragraph =
+                binding.narratives[&work.subject].operations[0].explanation[0].clone();
+            paragraph.id = format!("another-{index}");
+            let fragment = super::super::bindings::fragment(
+                &work.subject,
+                &paragraph,
+                &paragraph.dependency_ids,
+                &paragraph.source_ids,
+                &work.checked,
+            )
+            .unwrap();
+            ambiguous.fragments.insert(
+                format!("{}/entry-http/{}", work.subject, paragraph.id),
+                fragment,
+            );
+            ambiguous
+                .narratives
+                .get_mut(&work.subject)
+                .unwrap()
+                .operations[0]
+                .explanation
+                .push(paragraph);
+        }
+        let refused = resolve_automatic(&work, &ambiguous, &contexts, &bundle).unwrap_err();
+        assert!(refused.message.contains("13 exact authored fragments"));
+        assert!(refused.message.len() < 4096);
+        assert!(!refused.message.contains("another-11"));
+        for variant in ["missing", "scope", "descriptor", "identity"] {
+            let mut foreign = work.clone();
+            let service = foreign.checked.services.get_mut("orders").unwrap();
+            match variant {
+                "missing" => service.entrypoints.clear(),
+                "scope" => {
+                    service
+                        .observations
+                        .get_mut("endpoint-declaration")
+                        .unwrap()
+                        .normalized["scope"] = serde_json::json!("different-scope");
+                }
+                "descriptor" => {
+                    service
+                        .observations
+                        .get_mut("endpoint-declaration")
+                        .unwrap()
+                        .symbol = "method:orders.Controller#handle(I)V".into();
+                    service.entrypoints[0].symbol = "method:orders.Controller#handle(I)V".into();
+                }
+                _ => {
+                    let mut root = service.observations.remove("endpoint-declaration").unwrap();
+                    root.id = "different-method-identity".into();
+                    service.observations.insert(root.id.clone(), root);
+                    service.entrypoints[0].dependency_ids =
+                        vec!["different-method-identity".into()];
+                    foreign.request.root_declaration = Some("different-method-identity".into());
+                }
+            }
+            assert!(
+                resolve_automatic(&foreign, &binding, &contexts, &bundle).is_err(),
+                "{variant}"
+            );
+        }
+        let mut foreign_service = work.clone();
+        foreign_service.subject = "service:another".into();
+        assert!(resolve_automatic(&foreign_service, &binding, &contexts, &bundle).is_err());
+        let mut corrupt = binding.clone();
+        let key = format!("{}/entry-http/maintained", work.subject);
+        corrupt
+            .fragments
+            .get_mut(&key)
+            .unwrap()
+            .evidence
+            .as_mut()
+            .unwrap()
+            .sources
+            .get_mut("endpoint-source")
+            .unwrap()
+            .text
+            .push_str(" corrupt original bytes");
+        assert!(resolve_automatic(&work, &corrupt, &contexts, &bundle).is_err());
+        assert!(resolve_automatic(&work, &binding, &BTreeMap::new(), &bundle).is_err());
+    }
+
+    #[test]
+    fn automatic_input_is_closed_conflicting_and_omitted_selection_never_reads_history() {
+        let temp = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temp.path(), "Synthetic omitted context").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let work = work();
+        let mut omitted = work.request.clone();
+        omitted.maintained_paragraph = None;
+        let legacy = super::super::bytes(&omitted).unwrap();
+        assert!(
+            load(&repo, &work.subject, &mut omitted, &work.checked)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(super::super::bytes(&omitted).unwrap(), legacy);
+        let mut explicit = work.request.clone();
+        explicit.maintained_from_bundle = Some(FromBundle {
+            bundle: "c".repeat(64),
+        });
+        assert!(
+            load(&repo, &work.subject, &mut explicit, &work.checked)
+                .unwrap_err()
+                .message
+                .contains("conflicts")
+        );
+        assert!(
+            validate_optional(
+                work.maintained_context.as_ref(),
+                &work.subject,
+                &explicit,
+                &work.checked
+            )
+            .is_err()
+        );
+        let mut null = serde_json::to_value(&omitted).unwrap();
+        null["maintainedFromBundle"] = serde_json::Value::Null;
+        let restored: Request = serde_json::from_value(null).unwrap();
+        assert_eq!(super::super::bytes(&restored).unwrap(), legacy);
+        let invalid = serde_json::json!({"bundle":"c".repeat(64),"operation":"unrequested"});
+        assert!(serde_json::from_value::<FromBundle>(invalid).is_err());
     }
 
     #[test]

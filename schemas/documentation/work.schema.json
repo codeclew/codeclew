@@ -223,6 +223,17 @@
     "request": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": ["maintainedParagraph", "maintainedFromBundle"],
+            "properties": {
+              "maintainedParagraph": {"type": "object"},
+              "maintainedFromBundle": {"type": "object"}
+            }
+          }
+        }
+      ],
       "properties": {
         "schema": {
           "const": "codeclew-documentation-work-request/1.0"
@@ -295,6 +306,10 @@
         "maintainedParagraph": {
           "oneOf": [{"$ref": "#/$defs/maintainedParagraphSelector"}, {"type": "null"}],
           "description": "Explicit frozen human paragraph for new service endpoint process-graph-v1 Work; no latest fallback, automatic ID mapping or compiler-proof promotion."
+        },
+        "maintainedFromBundle": {
+          "oneOf": [{"$ref": "#/$defs/maintainedFromBundleSelector"}, {"type": "null"}],
+          "description": "New Work input only: resolve one unique authored paragraph at the exact selected endpoint in this frozen bundle; conflicts with maintainedParagraph and normalizes to the exact selector before storage."
         }
       },
       "required": [
@@ -587,6 +602,12 @@
           "gap"
         ]
       }
+    },
+    "maintainedFromBundleSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"bundle": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+      "required": ["bundle"]
     },
     "maintainedParagraphSelector": {
       "type": "object",

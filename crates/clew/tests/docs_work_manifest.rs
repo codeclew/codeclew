@@ -21,6 +21,7 @@ fn request(audience: &str) -> work::Request {
         question: None,
         authoring_contract: None,
         maintained_paragraph: None,
+        maintained_from_bundle: None,
         max_items: 20,
         max_bytes: 40 * 1024,
         external_inputs: Vec::new(),

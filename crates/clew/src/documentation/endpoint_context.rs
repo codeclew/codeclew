@@ -3870,6 +3870,7 @@ mod tests {
                 question: None,
                 authoring_contract: None,
                 maintained_paragraph: None,
+                maintained_from_bundle: None,
                 max_items: 100,
                 max_bytes: 128 * 1024,
                 external_inputs: Vec::new(),

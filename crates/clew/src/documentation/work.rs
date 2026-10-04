@@ -312,6 +312,9 @@ pub struct Request {
     /// Explicit frozen human paragraph selected only when preparing a new Work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maintained_paragraph: Option<super::maintained_context::Selector>,
+    /// Resolve one exact authored fragment from this frozen bundle during new Work preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintained_from_bundle: Option<super::maintained_context::FromBundle>,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
@@ -1792,6 +1795,11 @@ pub fn prepare_with_snapshot(
     mut request: Request,
     snapshot: Option<&str>,
 ) -> Result<Value, ClewError> {
+    if request.maintained_paragraph.is_some() && request.maintained_from_bundle.is_some() {
+        return Err(invalid(
+            "maintainedFromBundle conflicts with maintainedParagraph",
+        ));
+    }
     if request.schema != "codeclew-documentation-work-request/1.0"
         || request.audience.trim().is_empty()
         || request.audience.len() > 512
@@ -1850,7 +1858,8 @@ pub fn prepare_with_snapshot(
     validate_endpoint_context_profile(&subject, &request, &checked)?;
     validate_process_graph_root(&subject, &request, &checked)?;
     normalize_operation_authoring_contract(&mut request)?;
-    let maintained_context = super::maintained_context::load(repo, &subject, &request, &checked)?;
+    let maintained_context =
+        super::maintained_context::load(repo, &subject, &mut request, &checked)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -3198,6 +3207,7 @@ mod section_context_tests {
                 question: None,
                 authoring_contract: None,
                 maintained_paragraph: None,
+                maintained_from_bundle: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: vec![],
@@ -4375,6 +4385,7 @@ pub(super) mod api_contract_tests {
                 question: None,
                 authoring_contract: None,
                 maintained_paragraph: None,
+                maintained_from_bundle: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: Vec::new(),

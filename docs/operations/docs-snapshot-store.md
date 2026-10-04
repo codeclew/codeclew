@@ -554,6 +554,22 @@ source/dependency pins, event anchors and any explicit context migration into
 `maintainedContext` in the new Work. A changed logical endpoint identity is
 refused; this selector does not map old IDs to new IDs.
 
+For a new endpoint Work, `maintainedFromBundle: {"bundle": "BUNDLE_ID"}` may
+replace `maintainedParagraph`. The explicitly selected frozen bundle must have
+one uniquely authored paragraph associated with the same discovered current
+endpoint, service, scoped declaration, and full callable descriptor. Missing or
+ambiguous matches are refused with at most eight bounded candidates; use the
+explicit paragraph selector to choose among competing fragments. This does not
+search other bundles, select the latest version, or remap changed declarations
+or anchors.
+
+The automatic input normalizes to the existing exact paragraph selector before
+Work storage, preserving its Work identity and complete packet bytes. Original
+text, text author, context editor, and source pins remain intact; changed source
+context remains conservatively `STALE`, with meaning `UNASSESSED`. Omitting both
+selectors preserves legacy serialization and performs no history lookup. Saved
+Work never resolves an automatic selection again.
+
 `docs work packet` and the author request deliver this complete context before
 calculating the packet digest and request budget. `CURRENT` means the pinned
 root, sources and dependencies match the selected Work; it does not assess the

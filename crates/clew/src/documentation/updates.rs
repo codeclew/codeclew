@@ -345,6 +345,7 @@ fn run_queue(
                 question: None,
                 authoring_contract: None,
                 maintained_paragraph: None,
+                maintained_from_bundle: None,
                 max_items: 20,
                 max_bytes: 40 * 1024,
                 external_inputs: vec![],

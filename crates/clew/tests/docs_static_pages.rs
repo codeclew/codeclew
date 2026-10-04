@@ -634,7 +634,12 @@ fn public_maintained_packet(
 ) -> (String, Value) {
     let mut request = json!({"schema":"codeclew-documentation-work-request/1.0", "audience":"Synthetic maintained context consumer", "contextProfile":"process-graph-v1", "rootDeclaration":root, "question":"Explain the selected current endpoint; keep historical human context attributed and unassessed.", "maxItems":100, "maxBytes":49152});
     if let Some(selected) = selection {
-        request["maintainedParagraph"] = selected.clone();
+        let field = if selected.is_null() || selected.get("operation").is_some() {
+            "maintainedParagraph"
+        } else {
+            "maintainedFromBundle"
+        };
+        request[field] = selected.clone();
     }
     let input = f.input(&format!("maintained-work-{name}.json"), &request);
     let prepared = f.ok(&[
@@ -978,6 +983,17 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         Some(&selected[0]["authoredParagraphs"][0]),
         "v1",
     );
+    let automatic = json!({"bundle":bundle});
+    let (automatic_work, automatic_packet) =
+        public_maintained_packet(&f, &v1, &declaration_v1, Some(&automatic), "auto-v1");
+    assert_eq!(
+        automatic_work, maintained_v1_work,
+        "automatic input normalizes to the exact existing selector"
+    );
+    assert_eq!(
+        canonical::bytes(&automatic_packet).unwrap(),
+        canonical::bytes(&maintained_v1_packet).unwrap()
+    );
     let before_context = &maintained_v1_packet["maintainedContext"];
     assert_eq!(before_context["contextFreshness"], "CURRENT");
     assert_eq!(
@@ -1111,6 +1127,17 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         Some(&selected[0]["authoredParagraphs"][0]),
         "v2-stale",
     );
+    let automatic = json!({"bundle":bundle});
+    let (automatic_work, automatic_packet) =
+        public_maintained_packet(&f, &v2, root_v2, Some(&automatic), "auto-v2");
+    assert_eq!(
+        automatic_work, maintained_v2_work,
+        "automatic input normalizes to the exact existing selector"
+    );
+    assert_eq!(
+        canonical::bytes(&automatic_packet).unwrap(),
+        canonical::bytes(&maintained_v2_packet).unwrap()
+    );
     let stale_context = &maintained_v2_packet["maintainedContext"];
     assert_eq!(stale_context["contextFreshness"], "STALE");
     for key in [
@@ -1134,7 +1161,13 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     );
     let reject_work = |selection: &Value, root: &str, name: &str, expected: &str| {
         let records_before = frozen_tree(&repo.path(".codeclew/work").unwrap());
-        let input = f.input(&format!("reject-maintained-work-{name}.json"), &json!({"schema":"codeclew-documentation-work-request/1.0", "audience":"Synthetic negative maintained selection", "contextProfile":"process-graph-v1", "rootDeclaration":root, "question":"Explain current source with selected human context", "maintainedParagraph":selection}));
+        let mut request = json!({"schema":"codeclew-documentation-work-request/1.0", "audience":"Synthetic negative maintained selection", "contextProfile":"process-graph-v1", "rootDeclaration":root, "question":"Explain current source with selected human context"});
+        request[if selection.get("operation").is_some() {
+            "maintainedParagraph"
+        } else {
+            "maintainedFromBundle"
+        }] = selection.clone();
+        let input = f.input(&format!("reject-maintained-work-{name}.json"), &request);
         let (code, response) = f.run(&[
             "docs",
             "work",
@@ -1215,6 +1248,24 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         "missing-bundle",
         "publication",
     );
+    reject_work(
+        &json!({"bundle":seeded["bundle"]}),
+        root_v2,
+        "auto-no-authored-fragments",
+        "0 exact authored fragments",
+    );
+    reject_work(
+        &json!({"bundle":"0".repeat(64)}),
+        root_v2,
+        "auto-missing-bundle",
+        "publication",
+    );
+    reject_work(
+        &json!({"bundle":bundle}),
+        invalid[0]["workerDeclaration"].as_str().unwrap(),
+        "auto-unrelated-root",
+        "exact discovered current endpoint",
+    );
     // Tampering with public frozen output bytes is detected by its manifest.
     let binding_file = f.bundle(bundle, "bindings.json");
     let binding_bytes = fs::read(&binding_file).unwrap();
@@ -1224,6 +1275,12 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         &selected[0]["authoredParagraphs"][0],
         root_v2,
         "damaged-bindings",
+        "damaged or incomplete",
+    );
+    reject_work(
+        &json!({"bundle":bundle}),
+        root_v2,
+        "auto-damaged-bindings",
         "damaged or incomplete",
     );
     // Omission and null remain identical and do not read the damaged old bundle.
@@ -1282,6 +1339,12 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         &invalid[0]["authoredParagraphs"][0],
         root_v2,
         "forged-refs",
+        "pinned provenance",
+    );
+    reject_work(
+        &json!({"bundle":fake}),
+        root_v2,
+        "auto-forged-refs",
         "pinned provenance",
     );
     // Unselected paragraphs still count toward the original-Check budget. These
@@ -1496,6 +1559,17 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         Some(&migrated_selection[0]["authoredParagraphs"][0]),
         "migrated-current",
     );
+    let automatic = json!({"bundle":migration_publication["bundle"]});
+    let (automatic_work, automatic_packet) =
+        public_maintained_packet(&f, &v2, root_v2, Some(&automatic), "auto-migrated");
+    assert_eq!(
+        automatic_work, maintained_migrated_work,
+        "automatic input normalizes to the exact existing selector"
+    );
+    assert_eq!(
+        canonical::bytes(&automatic_packet).unwrap(),
+        canonical::bytes(&maintained_migrated_packet).unwrap()
+    );
     let migrated_context = &maintained_migrated_packet["maintainedContext"];
     assert_eq!(migrated_context["contextFreshness"], "CURRENT");
     assert_eq!(migrated_context["paragraph"], migrated_row["paragraph"]);
@@ -1558,6 +1632,22 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         Some(&newer[0]["authoredParagraphs"][0]),
         "migrated-stale",
     );
+    let automatic = json!({"bundle":migration_publication["bundle"]});
+    let (automatic_work, automatic_packet) = public_maintained_packet(
+        &f,
+        &v3,
+        newer[0]["endpointDeclaration"].as_str().unwrap(),
+        Some(&automatic),
+        "auto-newer",
+    );
+    assert_eq!(
+        automatic_work, maintained_newer_work,
+        "automatic input normalizes to the exact existing selector"
+    );
+    assert_eq!(
+        canonical::bytes(&automatic_packet).unwrap(),
+        canonical::bytes(&maintained_newer_packet).unwrap()
+    );
     assert_eq!(
         maintained_newer_packet["maintainedContext"]["contextFreshness"],
         "STALE"
@@ -1573,6 +1663,37 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     assert_eq!(files(&native_migrated), native_migrated_files);
     assert_eq!(files(&before), before_files);
     fs::remove_dir_all(&alpha).unwrap();
+    let original_work_path = repo
+        .path(&format!(".codeclew/work/{maintained_v1_work}"))
+        .unwrap();
+    let original_work_files = frozen_tree(&original_work_path);
+    assert!(!original_work_files.is_empty());
+    let (automatic_offline, packet_offline) = public_maintained_packet(
+        &f,
+        &v1,
+        &declaration_v1,
+        Some(&json!({"bundle":bundle})),
+        "auto-offline",
+    );
+    // A new Work pins the current publication baseline as well as its explicit
+    // historical Check. Compare both selectors at this same final baseline.
+    let (explicit_offline, explicit_packet_offline) = public_maintained_packet(
+        &f,
+        &v1,
+        &declaration_v1,
+        Some(&selected[0]["authoredParagraphs"][0]),
+        "explicit-offline",
+    );
+    assert_eq!(automatic_offline, explicit_offline);
+    assert_eq!(
+        canonical::bytes(&packet_offline).unwrap(),
+        canonical::bytes(&explicit_packet_offline).unwrap()
+    );
+    assert_eq!(
+        packet_offline["maintainedContext"],
+        maintained_v1_packet["maintainedContext"]
+    );
+    assert_eq!(frozen_tree(&original_work_path), original_work_files);
     let original_offline = f.temp.path().join("native-authored-original-offline");
     render(&f, &v1, &old_selection, &original_offline);
     assert_source_calls(
