@@ -1513,8 +1513,14 @@ fn diagnostics(worker: &CallableProjection) -> Vec<Diagnostic> {
     let rows = all_steps(&worker.steps);
     let mut result = Vec::new();
     for row in &rows {
+        if !row.reachable {
+            continue;
+        }
         for call in &row.calls {
-            if call.external_boundary.is_none() {
+            // Guard alternatives belong to the selected source occurrence,
+            // whether its target is a repository declaration, binary dependency
+            // or unresolved source call. This does not inspect helper bodies.
+            if call.phase == "CREATION" {
                 continue;
             }
             for condition in &row.conditions {

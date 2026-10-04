@@ -327,6 +327,98 @@ fn fresh_renamed_sources_drive_projection_and_shared_queue_proof() {
 }
 
 #[test]
+fn guarded_call_diagnostics_do_not_depend_on_target_source_availability() {
+    let (binary, selection) = scenario(
+        "Ingress",
+        "Consumer",
+        "pending",
+        "task.sku",
+        "!task.eligible()",
+        false,
+    );
+    let target = "method:class:publicapi.Gateway#send(Ljava/lang/String;)LResponse;";
+    let mut retained = binary.services["sample"].clone();
+    retained.observations.retain(|_, observation| {
+        !(observation.kind == "DEPENDENCY_TARGET"
+            && observation.normalized["symbolIdentity"] == target)
+    });
+    add_declaration(
+        &mut retained,
+        "gateway-send",
+        "publicapi.Gateway",
+        "send",
+        "METHOD",
+        "Response send(String request) { return null; }",
+    );
+    let declaration = retained.observations.get_mut("gateway-send").unwrap();
+    declaration.symbol = target.into();
+    declaration.normalized["symbolIdentity"] = json!(target);
+    declaration.normalized["jvmDescriptor"] = json!("(Ljava/lang/String;)LResponse;");
+    declaration.digest = digest(&declaration.normalized).unwrap();
+    let source = check::assemble(
+        "input-digest".into(),
+        BTreeMap::from([("sample".into(), retained)]),
+        BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let binary = page(&binary, selection.clone());
+    let source = page(&source, selection);
+    let find_call = |page: &PageContent| {
+        all_steps(&page.worker.steps)
+            .into_iter()
+            .flat_map(|row| &row.calls)
+            .find(|call| call.target.as_deref() == Some(target))
+            .unwrap()
+            .clone()
+    };
+    assert!(find_call(&binary).external_boundary.is_some());
+    assert!(find_call(&source).external_boundary.is_none());
+    let for_target = |page: &PageContent| {
+        page.diagnostics
+            .iter()
+            .filter(|row| row.selected_call == target)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let binary_rows = for_target(&binary);
+    let source_rows = for_target(&source);
+    assert_eq!(source_rows, binary_rows);
+    assert_eq!(source_rows.len(), 3);
+    assert!(
+        source_rows
+            .iter()
+            .any(|row| row.condition == "(!enabled) is true")
+    );
+    assert!(
+        source_rows
+            .iter()
+            .all(|row| !row.condition.contains("response"))
+    );
+    for row in &source_rows {
+        assert_eq!(row.citation_ids.len(), 2);
+        assert!(
+            row.citation_ids
+                .iter()
+                .all(|id| source.citations.contains_key(id))
+        );
+        assert!(
+            row.inspect
+                .iter()
+                .any(|text| text == "gateway.send(prepared)")
+        );
+    }
+    assert!(source.worker.state.iter().any(|row| {
+        row.name == "this.lastResponse"
+            && row
+                .conditions
+                .iter()
+                .any(|condition| condition.expression == "(!response.ok())" && !condition.holds)
+    }));
+}
+
+#[test]
 fn guard_and_request_mutations_change_native_content_and_diagnostics() {
     let (a, s) = scenario(
         "Ingress",

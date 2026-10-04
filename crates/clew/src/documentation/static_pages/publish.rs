@@ -648,22 +648,37 @@ fn page(
             out += &paragraph(
                 "Inspect rows describe source-derived possible reasons; they do not diagnose an observed incident.",
             );
-            out += "<table tabIndex=\"0\"><caption>Scroll horizontally: source condition diagnostic matrix</caption><thead><tr><th scope=\"col\">Condition</th><th scope=\"col\">Possible reason</th><th scope=\"col\">Inspect</th><th scope=\"col\">Selected call</th><th scope=\"col\">Source</th></tr></thead><tbody>\n";
-            for d in &p.diagnostics {
-                out += &format!(
-                    "<tr><td><pre>{}</pre></td><td>{}</td><td>{}</td><td><pre>{}</pre></td><td>{}</td></tr>\n",
-                    escape(&d.condition),
-                    escape(&d.possible_reason),
-                    escape(&d.inspect.join("; ")),
-                    escape(&d.selected_call),
-                    d.citation_ids
-                        .iter()
-                        .map(|id| cite(id, ext))
-                        .collect::<Vec<_>>()
-                        .join(" · ")
+            out += &paragraph(
+                "Rows concern direct calls in the selected worker body. A later result check does not prevent an earlier call. If a call throws, its normal result is unavailable; these rows do not establish which field assignments completed or any runtime outcome.",
+            );
+            out += &format!(
+                "<p>Inspect {} for source order and call boundaries, {} for retained local changes, and {} for exact evidence.</p>\n",
+                link(&format!("{}-worker.{ext}", p.id), "Worker path"),
+                link(&format!("{}-fields-state.{ext}", p.id), "Fields and state"),
+                link(&format!("sources.{ext}"), "Retained sources"),
+            );
+            if p.diagnostics.is_empty() {
+                out += &paragraph(
+                    "No source-derived guard alternative is available for this selected worker. This does not establish successful delivery or absence of failure; missing call or control evidence remains a boundary. Use the inspection links above.",
                 );
+            } else {
+                out += "<table tabIndex=\"0\"><caption>Scroll horizontally: source condition diagnostic matrix</caption><thead><tr><th scope=\"col\">Condition</th><th scope=\"col\">Possible reason</th><th scope=\"col\">Inspect</th><th scope=\"col\">Selected call</th><th scope=\"col\">Source</th></tr></thead><tbody>\n";
+                for d in &p.diagnostics {
+                    out += &format!(
+                        "<tr><td><pre>{}</pre></td><td>{}</td><td>{}</td><td><pre>{}</pre></td><td>{}</td></tr>\n",
+                        escape(&d.condition),
+                        escape(&d.possible_reason),
+                        escape(&d.inspect.join("; ")),
+                        escape(&d.selected_call),
+                        d.citation_ids
+                            .iter()
+                            .map(|id| cite(id, ext))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    );
+                }
+                out += "</tbody></table>\n";
             }
-            out += "</tbody></table>\n";
         }
         _ => unreachable!(),
     }
@@ -1219,7 +1234,18 @@ mod tests {
         write(&valid, "snapshot/1", &single).unwrap();
         for slug in ["fields-state", "diagnostic"] {
             let mdx = fs::read_to_string(valid.join(format!("single-{slug}.mdx"))).unwrap();
-            assert!(mdx.contains("<table ") && mdx.contains("<tbody>"));
+            if slug == "diagnostic" {
+                assert!(!mdx.contains("<table ") && !mdx.contains("<tbody>"));
+                assert!(mdx.contains("No source-derived guard alternative is available"));
+                assert!(
+                    mdx.contains("does not establish successful delivery or absence of failure")
+                );
+                assert!(mdx.contains("href=\"single-worker.mdx\""));
+                assert!(mdx.contains("href=\"single-fields-state.mdx\""));
+                assert!(mdx.contains("href=\"sources.mdx\""));
+            } else {
+                assert!(mdx.contains("<table ") && mdx.contains("<tbody>"));
+            }
             assert!(!mdx.contains('\n'));
             let html = fs::read_to_string(valid.join(format!("single-{slug}.html"))).unwrap();
             let body = html
@@ -1231,5 +1257,28 @@ mod tests {
             let normalized = body.replace(".html", ".mdx");
             assert_eq!(mdx, normalized);
         }
+        let mut guarded = single.clone();
+        guarded.pages[0].diagnostics.push(Diagnostic {
+            condition: "(ready) is false".into(),
+            possible_reason: "The source branch can leave this call unreached.".into(),
+            inspect: vec!["ready".into(), "gateway.deliver(request)".into()],
+            selected_call: "gateway.deliver(request)".into(),
+            citation_ids: vec![],
+        });
+        let guarded_output = temp.path().join("guarded");
+        write(&guarded_output, "snapshot/1", &guarded).unwrap();
+        let mdx = fs::read_to_string(guarded_output.join("single-diagnostic.mdx")).unwrap();
+        let html = fs::read_to_string(guarded_output.join("single-diagnostic.html")).unwrap();
+        assert!(mdx.contains("<tbody><tr>") && mdx.contains("gateway.deliver(request)"));
+        assert!(mdx.contains("A later result check does not prevent an earlier call"));
+        assert!(mdx.contains("do not establish which field assignments completed"));
+        assert!(!mdx.contains("No source-derived guard alternative is available"));
+        let body = html
+            .split_once("<body>\n")
+            .unwrap()
+            .1
+            .strip_suffix("</body></html>\n")
+            .unwrap();
+        assert_eq!(mdx, body.replace(".html", ".mdx"));
     }
 }
