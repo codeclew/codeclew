@@ -413,9 +413,14 @@ fn attached_dependency_source_projects_as_shared_exact_archive_evidence() {
         .facts
         .iter()
         .map(|fact| {
+            let binding = clew::cas::CasObject::for_bytes(
+                clew::java_adapter_v2::JAVA_FACT_SCHEMA,
+                &canonical::bytes(fact).unwrap(),
+            )
+            .unwrap()
+            .digest;
             let mut value = serde_json::to_value(fact).unwrap();
-            value["scope"] = json!({"compilation":":/main"});
-            let binding = canonical::hash(&value).unwrap();
+            value["scope"] = json!({"compilation":index.compilation});
             (value, binding)
         })
         .collect();

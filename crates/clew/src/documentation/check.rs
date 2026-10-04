@@ -1710,7 +1710,19 @@ mod tests {
             let facts: Vec<_> = index
                 .facts
                 .iter()
-                .map(|fact| (serde_json::to_value(fact).unwrap(), digest(fact).unwrap()))
+                .map(|fact| {
+                    // The adapter stores the raw compiler payload in the Java
+                    // CAS schema; capture attaches compilation membership later.
+                    let binding = crate::cas::CasObject::for_bytes(
+                        crate::java_adapter_v2::JAVA_FACT_SCHEMA,
+                        &bytes(fact).unwrap(),
+                    )
+                    .unwrap()
+                    .digest;
+                    let mut value = serde_json::to_value(fact).unwrap();
+                    value["scope"] = json!({"compilation":index.compilation});
+                    (value, binding)
+                })
                 .collect();
             assert!(
                 !index
@@ -1746,6 +1758,38 @@ mod tests {
                 contract_files: vec![contract.into()],
                 annotation_processor_paths: vec![],
             };
+            for kind in ["VARIABLE_DECLARATION", "VARIABLE_ACCESS"] {
+                assert!(
+                    facts.iter().any(|(fact, _)| fact["kind"] == kind),
+                    "{id}: missing {kind}"
+                );
+            }
+            // Reproduce the old helper's missing admission metadata. Native
+            // projection must continue rejecting it, even for one compilation.
+            let unscoped = facts
+                .iter()
+                .map(|(fact, binding)| {
+                    let mut value = fact.clone();
+                    value.as_object_mut().unwrap().remove("scope");
+                    (value, binding.clone())
+                })
+                .collect();
+            let error = analysis::project(
+                &service,
+                &"1".repeat(40),
+                &digest(&service).unwrap(),
+                "DEVELOPMENT",
+                "PARTIAL",
+                unscoped,
+                &files,
+                false,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .message
+                    .contains("compiler variable facts require a registered scope")
+            );
             let evidence = analysis::project(
                 &service,
                 &"1".repeat(40),
@@ -1757,6 +1801,23 @@ mod tests {
                 false,
             )
             .unwrap();
+            analysis::verify_evidence(&evidence).unwrap();
+            for observation in evidence.observations.values().filter(|row| {
+                matches!(
+                    row.kind.as_str(),
+                    "VARIABLE_DECLARATION" | "VARIABLE_ACCESS"
+                )
+            }) {
+                assert_eq!(observation.service, id);
+                assert_eq!(observation.normalized["scope"], index.compilation);
+                assert_eq!(observation.normalized["variableSite"]["service"], id);
+                assert!(!observation.source_ids.is_empty());
+                for source_id in &observation.source_ids {
+                    let source = &evidence.sources[source_id];
+                    assert_eq!(source.service, id);
+                    assert_eq!(source.authority, "EXACT_SNAPSHOT_TEXT");
+                }
+            }
             services.insert(id.into(), evidence);
         }
         let selector = |service: &str, owner: &str, name: &str| Endpoint {
