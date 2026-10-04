@@ -1,4 +1,4 @@
-//! Immutable Work manifests share saved evidence; unsupported inline work requires reindexing.
+//! Immutable Work manifests share saved evidence; unsupported inline work requires repreparation.
 #![cfg(unix)]
 #[path = "support/documentation.rs"]
 mod support;
@@ -7,7 +7,7 @@ use clew::{
     documentation::{cache, check::Check, model::Observation, store::Repository, work},
 };
 use serde_json::{Value, json};
-use std::{fs, time::Instant};
+use std::{collections::BTreeMap, fs, time::Instant};
 use support::{Fixture, read};
 
 fn request(audience: &str) -> work::Request {
@@ -92,10 +92,12 @@ fn large_saved_check_is_shared_by_small_independent_work_manifests() {
     let latest = f.docs.join(".codeclew/cache/latest-check.json");
     fs::write(&latest, b"not a readable latest pointer").unwrap();
     let before = cache::inventory(&repo).unwrap();
+    let before_objects = cache::owned_objects(&repo, usize::MAX).unwrap();
     let started = Instant::now();
     let first = prepare(&repo, &snapshot, "Maintainers");
     let first_ms = started.elapsed().as_millis();
     let a = first["work"].as_str().unwrap();
+    let first_objects = cache::owned_objects(&repo, usize::MAX).unwrap();
     let second = prepare(&repo, &snapshot, "Operators");
     let b = second["work"].as_str().unwrap();
     assert_ne!(a, b);
@@ -108,11 +110,63 @@ fn large_saved_check_is_shared_by_small_independent_work_manifests() {
         assert_eq!(stored["snapshot"], snapshot);
         assert!(raw.len() < 64 * 1024, "manifest bytes: {}", raw.len());
     }
+    let stored_a: Value = serde_json::from_slice(&a_bytes).unwrap();
+    let stored_b: Value = serde_json::from_slice(&b_bytes).unwrap();
+    let mut expected_tables = BTreeMap::new();
+    for (field, schema) in [
+        ("handlesRef", "codeclew-documentation-work-handles/1.0"),
+        ("influenceRef", "codeclew-documentation-work-influence/1.0"),
+    ] {
+        let reference: cache::ObjectRef = serde_json::from_value(stored_a[field].clone()).unwrap();
+        assert_eq!(reference.schema, schema);
+        assert!(reference.size > 0 && reference.size < 64 * 1024);
+        assert_eq!(stored_a[field], stored_b[field], "audiences reuse {field}");
+        assert!(!before_objects.contains_key(&reference.digest));
+        assert!(
+            expected_tables
+                .insert(reference.digest, reference.size)
+                .is_none()
+        );
+    }
+    assert_eq!(expected_tables.len(), 2);
+    let after_objects = cache::owned_objects(&repo, usize::MAX).unwrap();
+    assert_eq!(
+        after_objects, first_objects,
+        "second Work adds no table or evidence objects"
+    );
+    for (digest, size) in &before_objects {
+        assert_eq!(
+            after_objects.get(digest),
+            Some(size),
+            "old immutable object {digest}"
+        );
+    }
+    let additional_objects: BTreeMap<_, _> = after_objects
+        .iter()
+        .filter(|(digest, _)| !before_objects.contains_key(*digest))
+        .map(|(digest, size)| (digest.clone(), *size))
+        .collect();
+    assert_eq!(additional_objects, expected_tables);
+    let table_bytes: u64 = expected_tables.values().sum();
     let after = cache::inventory(&repo).unwrap();
-    assert_eq!(before.object_count, after.object_count);
-    assert_eq!(before.object_bytes, after.object_bytes);
+    assert_eq!(
+        after.object_count,
+        before.object_count + expected_tables.len()
+    );
+    assert_eq!(after.object_bytes, before.object_bytes + table_bytes);
     assert_eq!(fs::read(&latest).unwrap(), b"not a readable latest pointer");
     let loaded = work::load(&repo, a).unwrap();
+    for (field, expected_payload) in [
+        ("handlesRef", canonical::bytes(&loaded.handles).unwrap()),
+        ("influenceRef", canonical::bytes(&loaded.influence).unwrap()),
+    ] {
+        let reference: cache::ObjectRef = serde_json::from_value(stored_a[field].clone()).unwrap();
+        let payload = cache::get(&repo, &reference, 64 * 1024).unwrap().unwrap();
+        assert_eq!(
+            payload, expected_payload,
+            "{field} stores only its canonical table"
+        );
+    }
     let inline_bytes = canonical::bytes(&loaded).unwrap().len();
     assert!(inline_bytes > 64 * 1024 * 1024);
     assert!(a_bytes.len() * 100 < inline_bytes);
@@ -136,8 +190,8 @@ fn large_saved_check_is_shared_by_small_independent_work_manifests() {
         json!({
             "fixture":"34 synthetic 1MiB observations mirrored in dependencies/service evidence",
             "formerInlineWorkBytes":inline_bytes,"manifestABytes":a_bytes.len(),
-            "manifestBBytes":b_bytes.len(),"additionalEvidenceObjects":after.object_count-before.object_count,
-            "additionalEvidenceBytes":after.object_bytes-before.object_bytes,
+            "manifestBBytes":b_bytes.len(),"additionalWorkTableObjects":expected_tables.len(),
+            "additionalWorkTableBytes":table_bytes,"additionalCheckObjects":0,"additionalCheckBytes":0,
             "prepareAElapsedMs":first_ms,"firstPageBytes":canonical::bytes(&first).unwrap().len(),
             "nativeThroughputMeasured":false,"modelTokensMeasured":false
         })
@@ -145,7 +199,7 @@ fn large_saved_check_is_shared_by_small_independent_work_manifests() {
 }
 
 #[test]
-fn inline_work_requires_reindexing_without_mutating_evidence() {
+fn inline_work_requires_repreparation_without_mutating_evidence() {
     let f = Fixture::new();
     let source = f.service("orders");
     let repo = Repository::open(&f.docs).unwrap();
@@ -160,7 +214,7 @@ fn inline_work_requires_reindexing_without_mutating_evidence() {
         let path = record_path(&repo, id);
         let before = fs::read(&path).unwrap();
         let error = work::load(&repo, id).unwrap_err();
-        assert!(error.message.contains("DOCS_REINDEX_REQUIRED"));
+        assert!(error.message.contains("DOCS_WORK_REPREPARE_REQUIRED"));
         assert!(work::read(&repo, id, Default::default()).is_err());
         assert_eq!(fs::read(path).unwrap(), before);
     }
@@ -195,7 +249,7 @@ fn manifest_and_snapshot_damage_fail_without_reacquisition_or_latest_fallback() 
             work::load(&repo, id)
                 .unwrap_err()
                 .message
-                .contains("DOCS_REINDEX_REQUIRED")
+                .contains("DOCS_WORK_REPREPARE_REQUIRED")
         );
         fs::write(&path, &original).unwrap();
     }
