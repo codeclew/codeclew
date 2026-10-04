@@ -222,6 +222,16 @@ captured file addition, removal or change can invalidate accepted content;
 the original Work still reads its original snapshot. Absence describes only
 the captured scope, not unobserved files or runtime behavior.
 
+An otherwise-unreferenced whole `FILE_ONLY` source can support a manual prose
+claim through its existing SOURCE_SCOPE inventory pin. SOURCE citation
+materialization adds that exact watched scope when no direct dependency cites
+the file. The source must retain its complete byte occurrence from offset zero,
+line range, service and revision, verified text and occurrence digests, and an
+inventory entry with matching `FILE_ONLY` coverage and whole-file text digest.
+Partial excerpts, parsed-source inventory entries and mismatched pins cannot use
+this fallback. This binds captured text only; it creates no compiler fact or
+semantic approval and does not change the historical source or scope records.
+
 ### Read one retained SOURCE in bounded parts
 
 When an initial Work page marks a SOURCE as `ITEM_EXCEEDS_WORK_BYTE_BUDGET`,

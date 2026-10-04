@@ -502,6 +502,13 @@ impl Builder<'_> {
             match handle.kind.as_str() {
                 "DEPENDENCY" | "NOTE" => {
                     let observation = &self.work.checked.dependencies[&handle.id];
+                    if observation.kind == "SOURCE_SCOPE"
+                        && self.work.influence.get(&observation.id) != Some(&observation.digest)
+                    {
+                        return Err(invalid(
+                            "SOURCE_SCOPE reference is outside exact Work influence",
+                        ));
+                    }
                     deps.insert(handle.id.clone());
                     sources.extend(observation.source_ids.iter().cloned());
                 }
@@ -519,17 +526,45 @@ impl Builder<'_> {
                 }
                 "SOURCE" => {
                     sources.insert(handle.id.clone());
-                    deps.extend(
-                        self.work
+                    let direct: Vec<_> = self
+                        .work
+                        .checked
+                        .dependencies
+                        .values()
+                        .filter(|d| {
+                            d.source_ids.contains(&handle.id)
+                                && self.work.influence.contains_key(&d.id)
+                        })
+                        .map(|d| d.id.clone())
+                        .collect();
+                    if direct.is_empty() {
+                        let source = self
+                            .work
                             .checked
-                            .dependencies
+                            .services
                             .values()
-                            .filter(|d| {
-                                d.source_ids.contains(&handle.id)
-                                    && self.work.influence.contains_key(&d.id)
-                            })
-                            .map(|d| d.id.clone()),
-                    );
+                            .find_map(|e| e.sources.get(&handle.id))
+                            .ok_or_else(|| {
+                                invalid("SOURCE reference is absent from its Work snapshot")
+                            })?;
+                        deps.extend(
+                            self.work
+                                .checked
+                                .dependencies
+                                .values()
+                                .filter(|d| {
+                                    self.work.influence.get(&d.id) == Some(&d.digest)
+                                        && render::file_only_scope_binds_source(
+                                            d,
+                                            source,
+                                            &self.work.checked,
+                                        )
+                                })
+                                .map(|d| d.id.clone()),
+                        );
+                    } else {
+                        deps.extend(direct);
+                    }
                 }
                 _ => return Err(invalid("unsupported evidence reference")),
             }

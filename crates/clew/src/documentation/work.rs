@@ -3834,6 +3834,196 @@ mod section_context_tests {
         serde_json::from_value(json!({"query":{"kind":"SOURCE"}})).unwrap()
     }
 
+    fn exact_file_only_proposal_fixture() -> Work {
+        let mut work =
+            source_inventory_fixture("# Fixture documentation\nRetained λ☕ text.\n".into());
+        work.request.entrypoint = Some("section-responsibilities".into());
+        work.request.context_profile = None;
+        let evidence = work.checked.services.get_mut("orders").unwrap();
+        evidence.extractor = SOURCE_EXTRACTOR.into();
+        evidence.revision = "c".repeat(40);
+        let source = evidence.sources.get_mut("retained-source").unwrap();
+        source.revision = evidence.revision.clone();
+        source.authority = "EXACT_SNAPSHOT_TEXT".into();
+        source.occurrence = Some(SourceOccurrence {
+            snapshot: "fixture-source-snapshot".into(),
+            blob: "d".repeat(40),
+            start_byte: 0,
+            end_byte: source.text.len(),
+        });
+        let occurrence = source.occurrence.as_ref().unwrap();
+        source.evidence_digest = digest(&(
+            SOURCE_EXTRACTOR,
+            &occurrence.snapshot,
+            &occurrence.blob,
+            occurrence.start_byte,
+            occurrence.end_byte,
+        ))
+        .unwrap();
+        work.handles.insert(
+            "d-scope".into(),
+            Handle {
+                kind: "DEPENDENCY".into(),
+                id: "orders:source-scope".into(),
+            },
+        );
+        super::super::analysis::verify_evidence(evidence).unwrap();
+        work
+    }
+
+    #[test]
+    fn file_only_source_summary_materializes_exact_inventory_pin_without_phantom_facts() {
+        let work = exact_file_only_proposal_fixture();
+        let captured = bytes(&work.checked).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "FILE_ONLY proposal fixture").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        for reference in ["section2", "s1", "d-scope"] {
+            read_loaded(
+                &repo,
+                &work,
+                Selection {
+                    references: vec![reference.into()],
+                    ..Selection::default()
+                },
+            )
+            .unwrap();
+        }
+        let state = read_state(&repo, &work.id).unwrap();
+        for references in [vec!["s1"], vec!["d-scope", "s1"]] {
+            let input = serde_json::from_value(json!({
+                "schema":"codeclew-documentation-proposal/1.0",
+                "operations":[{"entrypoint":"section2","title":"Responsibilities",
+                    "summary":{"text":"The captured README records fixture documentation.","evidence":references},"steps":[]}]
+            })).unwrap();
+            let (narrative, _, diagnostics) =
+                super::super::proposals::materialize(&work, &input, &state).unwrap();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            assert_eq!(
+                narrative.operations[0].summary.dependency_ids,
+                vec!["orders:source-scope"]
+            );
+            assert_eq!(
+                narrative.operations[0].summary.source_ids,
+                vec!["retained-source"]
+            );
+            super::super::render::validate(&narrative, &work.checked).unwrap();
+            for defect in [
+                "partial",
+                "line",
+                "text",
+                "digest",
+                "file",
+                "service",
+                "revision",
+                "coverage",
+                "inventory-digest",
+                "influence",
+                "scope",
+            ] {
+                let mut forged = work.clone();
+                let source = forged
+                    .checked
+                    .services
+                    .get_mut("orders")
+                    .unwrap()
+                    .sources
+                    .get_mut("retained-source")
+                    .unwrap();
+                match defect {
+                    "partial" => {
+                        source.occurrence.as_mut().unwrap().start_byte = 1;
+                        source.occurrence.as_mut().unwrap().end_byte += 1;
+                        let occurrence = source.occurrence.as_ref().unwrap();
+                        source.evidence_digest = digest(&(
+                            SOURCE_EXTRACTOR,
+                            &occurrence.snapshot,
+                            &occurrence.blob,
+                            occurrence.start_byte,
+                            occurrence.end_byte,
+                        ))
+                        .unwrap();
+                    }
+                    "line" => {
+                        source.start_line += 1;
+                        source.end_line += 1;
+                    }
+                    "text" => {
+                        source.text.push('x');
+                    }
+                    "digest" => {
+                        source.text_digest = crate::canonical::hash_bytes(b"other bytes");
+                    }
+                    "file" => {
+                        source.file = "other.md".into();
+                    }
+                    "service" => {
+                        source.service = "other".into();
+                    }
+                    "revision" => {
+                        source.revision = "e".repeat(40);
+                    }
+                    "coverage" | "inventory-digest" => {
+                        let scope = forged
+                            .checked
+                            .dependencies
+                            .get_mut("orders:source-scope")
+                            .unwrap();
+                        if defect == "coverage" {
+                            scope.normalized["inventory"]["README.md"]["coverage"] =
+                                json!("SYNTAX");
+                        } else {
+                            scope.normalized["inventory"]["README.md"]["digest"] =
+                                json!(crate::canonical::hash_bytes(b"different whole file"));
+                        }
+                        scope.digest = digest(&scope.normalized).unwrap();
+                        forged
+                            .influence
+                            .insert(scope.id.clone(), scope.digest.clone());
+                        forged
+                            .checked
+                            .services
+                            .get_mut("orders")
+                            .unwrap()
+                            .observations
+                            .insert(scope.id.clone(), scope.clone());
+                    }
+                    "influence" => {
+                        forged.influence.remove("orders:source-scope");
+                    }
+                    "scope" => {
+                        forged
+                            .checked
+                            .services
+                            .get_mut("orders")
+                            .unwrap()
+                            .observations
+                            .clear();
+                    }
+                    _ => unreachable!(),
+                }
+                let result = super::super::proposals::materialize(&forged, &input, &state);
+                if defect == "influence" && references.len() > 1 {
+                    assert!(result.unwrap_err().message.contains("exact Work influence"));
+                    continue;
+                }
+                let (_, _, diagnostics) = result.unwrap();
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d["code"] == "STRUCTURE_OR_COVERAGE_INVALID"),
+                    "{defect}: {diagnostics:?}"
+                );
+            }
+        }
+        assert_eq!(bytes(&work.checked).unwrap(), captured);
+        assert!(
+            work.checked.dependencies["orders:source-scope"]
+                .source_ids
+                .is_empty()
+        );
+    }
+
     #[test]
     fn source_inventory_discovers_unreferenced_file_only_handles_with_scope_isolation() {
         let mut work = source_inventory_fixture("# Captured fixture documentation\n".into());

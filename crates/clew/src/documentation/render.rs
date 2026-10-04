@@ -69,12 +69,87 @@ fn supported_refs(
         }
         supported.extend(dependency.source_ids.iter());
     }
-    if source_ids.iter().any(|id| !supported.contains(id)) {
+    if source_ids.iter().any(|id| {
+        !supported.contains(id)
+            && !checked
+                .services
+                .values()
+                .find_map(|e| e.sources.get(id))
+                .is_some_and(|source| {
+                    deps.iter().any(|dependency| {
+                        file_only_scope_binds_source(
+                            &checked.dependencies[dependency],
+                            source,
+                            checked,
+                        )
+                    })
+                })
+    }) {
         return Err(invalid(
             "fragment source is not bound to its claimed dependencies",
         ));
     }
     Ok(())
+}
+
+/// A captured whole FILE_ONLY file can be cited through its exact inventory
+/// scope. This establishes retained bytes, never parsed or compiler semantics.
+pub(super) fn file_only_scope_binds_source(
+    scope: &Observation,
+    source: &Source,
+    checked: &Check,
+) -> bool {
+    if scope.kind != "SOURCE_SCOPE"
+        || scope.service != source.service
+        || source.authority != "EXACT_SNAPSHOT_TEXT"
+        || source.text.is_empty()
+        || source.start_line != 1
+        || source.end_line != source.text.lines().count() as u64
+        || canonical::hash_bytes(source.text.as_bytes()) != source.text_digest
+        || digest(&scope.normalized).ok().as_ref() != Some(&scope.digest)
+    {
+        return false;
+    }
+    let Some(evidence) = checked.services.get(&source.service) else {
+        return false;
+    };
+    if evidence.service != source.service
+        || evidence.revision != source.revision
+        || evidence.extractor != SOURCE_EXTRACTOR
+        || evidence.sources.get(&source.id) != Some(source)
+        || !evidence
+            .observations
+            .get(&scope.id)
+            .is_some_and(|registered| {
+                registered.kind == "SOURCE_SCOPE"
+                    && registered.service == scope.service
+                    && registered.digest == scope.digest
+                    && digest(&registered.normalized).ok().as_ref() == Some(&scope.digest)
+            })
+    {
+        return false;
+    }
+    let file = &scope.normalized["inventory"][&source.file];
+    if file["coverage"] != "FILE_ONLY" || file["digest"] != source.text_digest {
+        return false;
+    }
+    let Some(occurrence) = &source.occurrence else {
+        return false;
+    };
+    occurrence.start_byte == 0
+        && occurrence.end_byte == source.text.len()
+        && !occurrence.snapshot.is_empty()
+        && !occurrence.blob.is_empty()
+        && digest(&(
+            SOURCE_EXTRACTOR,
+            &occurrence.snapshot,
+            &occurrence.blob,
+            occurrence.start_byte,
+            occurrence.end_byte,
+        ))
+        .ok()
+        .as_ref()
+            == Some(&source.evidence_digest)
 }
 
 fn validate_summary_text(text: &str) -> Result<(), ClewError> {
