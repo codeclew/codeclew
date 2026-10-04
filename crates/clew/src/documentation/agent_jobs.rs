@@ -67,19 +67,25 @@ fn maximum_only() -> String {
 }
 
 pub(super) fn selection_guidance(work: &super::work::Work) -> Value {
-    let available_kinds: BTreeSet<_> = work
+    let mut available_kinds: BTreeSet<_> = work
         .checked
         .dependencies
         .values()
         .map(|dependency| dependency.kind.as_str())
         .collect();
+    let source_inventory = super::work::source_inventory_available(work);
+    if source_inventory {
+        available_kinds.insert("SOURCE");
+    }
     serde_json::json!({
         "availableKinds": available_kinds,
-        "queryKind": "Matches an Observation.kind dependency-record kind, not a page-row kind such as SOURCE or DEPENDENCY. Use * for all dependency kinds.",
+        "queryKind": "Matches an Observation.kind dependency-record kind. Use * for all dependency kinds. SOURCE is a separate retained source inventory only when listed in availableKinds; DEPENDENCY is not a query kind.",
         "symbolContains": "Searches captured symbols and method names with a case-sensitive substring. For example, {\"kind\":\"SYMBOL\",\"symbolContains\":\"helper\"} finds SYMBOL records whose captured symbol contains helper.",
         "symbolLookup": "A SYMBOL query is one bounded declaration-discovery page. Continue with its returned cursor and the same query to discover more declarations. These navigation rows are not citable provider facts; request an exact symbol identity or fullRecordReference for a full record, subject to the existing Work page limits. SYMBOL records include captured declarations that may be callable or non-callable; use declarationKind and syntaxKind when present. A symbols selection must use an exact compiler identity or qualified declaration name. If expansionFeedback reports NOT_FOUND or AMBIGUOUS, it describes only that lookup, not proof code is absent; do not guess a package, owner, or signature.",
         "exampleSelection": {"query":{"kind":"SYMBOL","symbolContains":"helper","projection":"NAVIGATION"}},
-        "resultAuthority": "Queries search captured dependency records; returned rows remain limited to dependencies registered in this Work's influence set.",
+        "resultAuthority": "Dependency queries search captured records registered in this Work's influence set. SOURCE inventory searches only the Work service's registered captured file membership; its SOURCE_SCOPE is watched by immutable Work influence. Absence is not evidence of runtime behavior or uncaptured code.",
+        "sourceInventoryAvailable": source_inventory,
+        "sourceInventory": "When SOURCE is available, use {\"query\":{\"kind\":\"SOURCE\"}} and continue with the same selection and returned cursor. SOURCE has no symbol field: omit symbolContains or use an empty string; nonempty filters are rejected. Read file metadata and exact references from returned rows or omissions, then expand the exact reference or use docs work read-part for oversized source text. Discovery does not prove complete read coverage or parsed semantics. Compiler services without SOURCE_SCOPE inventory continue using declaration sourceReferences; scenario inventory is unsupported.",
         "navigation": "sourceReferences and dependencyReferences are navigation handles. Expand a handle in a separate recorded read before citing its contents, unless those contents are already delivered and allowed by this packet. For SYMBOL CALLABLE_SUMMARY rows, callableReadActions reports declaration and source delivery separately; use primaryRead.selection to read the fullRecordReference. A callableEntryReference points to the matching callables entry for immediateTargetHints. Oversized SOURCE records use recorded SOURCE_PART content."
     })
 }

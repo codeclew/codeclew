@@ -190,6 +190,38 @@ yet establish bounded per-query IO for large publications.
 
 ## Shared evidence in saved Work
 
+### Discover captured files without dependency source links
+
+For a service Work with a registered captured `SOURCE_SCOPE`, use this raw
+selection with `docs work read --root docs --work "$work" --input sources.json`:
+
+```json
+{"query":{"kind":"SOURCE"}}
+```
+
+This inventory includes retained `FILE_ONLY` sources such as an explicitly
+captured README even when no dependency cites them. It searches only that
+service's immutable captured file membership. Continue using the same selection
+and returned cursor. Each returned SOURCE row or oversized omission carries its
+exact `s` reference; use that returned reference for a separate read or
+`docs work read-part`. Do not guess reference numbers. A discovery query cannot
+establish that omitted text was read or that a file has parsed semantics.
+
+SOURCE records have no symbol field: omit `symbolContains` or set it to the empty
+string. A nonempty filter is rejected; it does not search paths, IDs or source
+text. `*` still searches dependency kinds only. Compiler services without a
+captured source inventory use declaration `sourceReferences` instead. Scenario
+inventory and unregistered source scopes are explicitly refused. Driver
+`selectionGuidance.availableKinds` advertises SOURCE only when this Work admits
+the inventory.
+
+SOURCE query receipts bind the exact Work, selection and page membership. The
+existing conservative Work influence watches the declared SOURCE_SCOPE,
+including file membership and content digests, even for an empty query. A later
+captured file addition, removal or change can invalidate accepted content;
+the original Work still reads its original snapshot. Absence describes only
+the captured scope, not unobserved files or runtime behavior.
+
 ### Read one retained SOURCE in bounded parts
 
 When an initial Work page marks a SOURCE as `ITEM_EXCEEDS_WORK_BYTE_BUDGET`,

@@ -383,7 +383,7 @@
     },
     "selection": {
       "type": "object",
-      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, not a page-row kind such as SOURCE or DEPENDENCY. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION is available only for SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
+      "description": "Choose at most one active mode: nonempty references, nonempty symbols, or a non-null query. A query kind matches a dependency record's Observation.kind, except SOURCE selects the service Work's registered immutable source inventory. SOURCE requires RAW and omitted/empty symbolContains; nonempty filters, scenarios and unregistered source scopes are rejected. Returned rows or oversized omissions carry exact source references for separate reads or read-part. Discovery alone does not establish complete source delivery or parsed semantics. DEPENDENCY is not a query kind. Use SYMBOL for captured symbols/methods, symbolContains for a case-sensitive substring, and * for all dependency kinds. RAW is the default query projection and preserves full dependency rows. NAVIGATION is available only for SYMBOL and returns small noncitable declaration summaries with fullRecordReference and sourceReferences. Its rows are discovery handles; select an exact symbol or expand a reference to read full evidence. sourceReferences and dependencyReferences are navigation handles; separately expand and record their contents before citing unless already delivered and allowed.",
       "additionalProperties": false,
       "properties": {
         "references": {
@@ -410,12 +410,12 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 100,
-                  "description": "Matches a dependency record's Observation.kind, not the page-row kind. Use * for every dependency kind."
+                  "description": "Matches a dependency record's Observation.kind, or SOURCE for registered service source inventory. Use * for every dependency kind only."
                 },
                 "symbolContains": {
                   "type": "string",
                   "maxLength": 512,
-                  "description": "Case-sensitive substring of captured symbol or method names; empty matches every name within the selected kind."
+                  "description": "Case-sensitive substring of captured dependency symbols or method names. SOURCE has no symbol field and requires this field omitted or empty; nonempty SOURCE filters are rejected."
                 },
                 "projection": {
                   "type": "string",

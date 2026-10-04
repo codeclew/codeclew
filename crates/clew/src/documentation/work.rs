@@ -441,6 +441,15 @@ pub(super) fn validate_selection(selection: &Selection) -> Result<(), ClewError>
     }) {
         return Err(invalid("NAVIGATION query projection requires kind SYMBOL"));
     }
+    if selection
+        .query
+        .as_ref()
+        .is_some_and(|query| query.kind == "SOURCE" && !query.symbol_contains.is_empty())
+    {
+        return Err(invalid(
+            "SOURCE inventory has no symbol field; omit symbolContains or use an empty string, then select a returned source reference",
+        ));
+    }
     Ok(())
 }
 
@@ -2584,11 +2593,14 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
                 "query kind is required; use * for every dependency kind",
             ));
         }
-        let matches = work.checked.dependencies.values().filter(|dependency| {
-            (query.kind == "*" || dependency.kind == query.kind)
-                && dependency.symbol.contains(&query.symbol_contains)
-        });
-        match query.projection {
+        if query.kind == "SOURCE" {
+            source_inventory_rows(work)?
+        } else {
+            let matches = work.checked.dependencies.values().filter(|dependency| {
+                (query.kind == "*" || dependency.kind == query.kind)
+                    && dependency.symbol.contains(&query.symbol_contains)
+            });
+            match query.projection {
                 QueryProjection::Raw => matches
                     .map(|dependency| {
                         json!({"kind":"DEPENDENCY","id":dependency.id,"record":dependency})
@@ -2602,6 +2614,7 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
                         .collect()
                 }
             }
+        }
     } else {
         let mut args = ContextArgs {
             root: PathBuf::new(),
@@ -2727,6 +2740,65 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     } else {
         Ok(projected)
     }
+}
+
+/// Inventory is scoped by immutable captured source membership, never dependency
+/// symbol matching. Its scope digest is already watched by Work influence.
+fn source_inventory_evidence(work: &Work) -> Result<&ServiceEvidence, ClewError> {
+    let service = work
+        .subject
+        .strip_prefix("service:")
+        .ok_or_else(|| invalid("SOURCE inventory requires a service Work subject"))?;
+    let evidence = work.checked.services.get(service).ok_or_else(|| {
+        invalid("SOURCE inventory requires retained evidence for the Work service")
+    })?;
+    let mut scopes =
+        work.checked.dependencies.values().filter(|dependency| {
+            dependency.service == service && dependency.kind == "SOURCE_SCOPE"
+        });
+    let scope = scopes.next().ok_or_else(|| {
+        invalid("SOURCE inventory requires a registered source scope in Work influence")
+    })?;
+    if scopes.next().is_some()
+        || work.influence.get(&scope.id) != Some(&scope.digest)
+        || digest(&scope.normalized)? != scope.digest
+    {
+        return Err(invalid(
+            "SOURCE inventory requires one exact registered source scope in Work influence",
+        ));
+    }
+    let inventory = scope.normalized["inventory"].as_object().ok_or_else(|| {
+        invalid("SOURCE inventory requires captured file membership in its source scope")
+    })?;
+    let registered: BTreeSet<_> = work
+        .handles
+        .values()
+        .filter(|handle| handle.kind == "SOURCE")
+        .map(|handle| handle.id.as_str())
+        .collect();
+    for (id, source) in &evidence.sources {
+        if evidence.service != service
+            || source.service != service
+            || source.id != *id
+            || !inventory.contains_key(&source.file)
+            || !registered.contains(id.as_str())
+        {
+            return Err(invalid("SOURCE inventory contains an unregistered source"));
+        }
+    }
+    Ok(evidence)
+}
+
+pub(super) fn source_inventory_available(work: &Work) -> bool {
+    source_inventory_evidence(work).is_ok()
+}
+
+fn source_inventory_rows(work: &Work) -> Result<Vec<Value>, ClewError> {
+    Ok(source_inventory_evidence(work)?
+        .sources
+        .iter()
+        .map(|(id, source)| json!({"kind":"SOURCE","id":id,"record":source}))
+        .collect())
 }
 
 fn callable_navigation_row(
@@ -3669,7 +3741,7 @@ mod section_context_tests {
         assert_eq!(matching[0]["id"], method_id);
         assert_eq!(matching[0]["record"]["symbol"], "OrderService.helperMethod");
 
-        let page_row_kind_confusion = rows(
+        let unsupported_source_filter = rows(
             &work,
             &Selection {
                 query: Some(Query {
@@ -3680,8 +3752,12 @@ mod section_context_tests {
                 ..Selection::default()
             },
         )
-        .unwrap();
-        assert!(page_row_kind_confusion.is_empty());
+        .unwrap_err();
+        assert!(
+            unsupported_source_filter
+                .message
+                .contains("no symbol field")
+        );
 
         let no_match = rows(
             &work,
@@ -3716,6 +3792,266 @@ mod section_context_tests {
                 .map(|row| row["id"].as_str().unwrap())
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([method_id, http_id])
+        );
+    }
+
+    fn source_inventory_fixture(text: String) -> Work {
+        let mut work = entity_fixture(0);
+        work.id = "a".repeat(64);
+        work.snapshot = Some(format!("sha256:{}/1", "b".repeat(64)));
+        work.checked.dependencies.clear();
+        work.influence.clear();
+        let evidence = work.checked.services.get_mut("orders").unwrap();
+        evidence.observations.clear();
+        evidence.boundaries = vec!["FILE_ONLY:README.md".into()];
+        let source = evidence.sources.get_mut("retained-source").unwrap();
+        source.file = "README.md".into();
+        source.text = text;
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.end_line = source.text.lines().count().max(1) as u64;
+        let normalized = json!({"roots":["README.md"],"inventory":{
+            "README.md":{"coverage":"FILE_ONLY","digest":source.text_digest}
+        }});
+        let scope = Observation {
+            id: "orders:source-scope".into(),
+            kind: "SOURCE_SCOPE".into(),
+            service: "orders".into(),
+            symbol: "source-scope".into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        };
+        evidence
+            .observations
+            .insert(scope.id.clone(), scope.clone());
+        work.influence
+            .insert(scope.id.clone(), scope.digest.clone());
+        work.checked.dependencies.insert(scope.id.clone(), scope);
+        work
+    }
+
+    fn source_inventory_selection() -> Selection {
+        serde_json::from_value(json!({"query":{"kind":"SOURCE"}})).unwrap()
+    }
+
+    #[test]
+    fn source_inventory_discovers_unreferenced_file_only_handles_with_scope_isolation() {
+        let mut work = source_inventory_fixture("# Captured fixture documentation\n".into());
+        let mut other = work.checked.services["orders"].clone();
+        other.service = "other".into();
+        other.sources.clear();
+        other.observations.clear();
+        let mut foreign = work.checked.services["orders"].sources["retained-source"].clone();
+        foreign.id = "foreign-source".into();
+        foreign.service = "other".into();
+        other.sources.insert(foreign.id.clone(), foreign);
+        work.checked.services.insert("other".into(), other);
+        let selection = source_inventory_selection();
+        let selected = rows(&work, &selection).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0]["reference"], "s1");
+        assert_eq!(selected[0]["record"]["file"], "README.md");
+        assert_eq!(
+            selected[0]["record"]["text"],
+            "# Captured fixture documentation\n"
+        );
+        assert!(
+            work.checked
+                .dependencies
+                .values()
+                .all(|d| d.source_ids.is_empty())
+        );
+        let guidance = super::super::agent_jobs::selection_guidance(&work);
+        assert_eq!(guidance["sourceInventoryAvailable"], true);
+        assert!(
+            guidance["availableKinds"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("SOURCE"))
+        );
+        let mut invalid = selection;
+        invalid.query.as_mut().unwrap().symbol_contains = "README".into();
+        assert!(
+            rows(&work, &invalid)
+                .unwrap_err()
+                .message
+                .contains("no symbol field")
+        );
+        for defect in [
+            "scenario",
+            "unregistered",
+            "digest",
+            "membership",
+            "foreign",
+            "handle",
+        ] {
+            let mut invalid_work = work.clone();
+            match defect {
+                "scenario" => invalid_work.subject = "scenario:unrelated".into(),
+                "unregistered" => {
+                    invalid_work.influence.clear();
+                }
+                "digest" => {
+                    invalid_work
+                        .checked
+                        .dependencies
+                        .get_mut("orders:source-scope")
+                        .unwrap()
+                        .normalized["roots"] = json!(["forged"]);
+                }
+                "membership" => {
+                    invalid_work
+                        .checked
+                        .services
+                        .get_mut("orders")
+                        .unwrap()
+                        .sources
+                        .get_mut("retained-source")
+                        .unwrap()
+                        .file = "outside.md".into();
+                }
+                "foreign" => {
+                    invalid_work
+                        .checked
+                        .services
+                        .get_mut("orders")
+                        .unwrap()
+                        .sources
+                        .get_mut("retained-source")
+                        .unwrap()
+                        .service = "other".into();
+                }
+                "handle" => {
+                    invalid_work.handles.remove("s1");
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                rows(&invalid_work, &source_inventory_selection()).is_err(),
+                "{defect}"
+            );
+            assert_eq!(
+                super::super::agent_jobs::selection_guidance(&invalid_work)["sourceInventoryAvailable"],
+                false
+            );
+        }
+    }
+
+    #[test]
+    fn source_inventory_empty_query_preserves_recorded_scope_and_addition_freshness() {
+        let mut work = source_inventory_fixture(String::new());
+        work.checked
+            .services
+            .get_mut("orders")
+            .unwrap()
+            .sources
+            .clear();
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Empty source inventory fixture").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let page = read_loaded(&repo, &work, source_inventory_selection()).unwrap();
+        assert_eq!(page["total"], 0);
+        let state = read_state(&repo, &work.id).unwrap();
+        let receipt = state.receipts.values().next().unwrap();
+        assert_eq!(receipt.selection.query.as_ref().unwrap().kind, "SOURCE");
+        assert!(receipt.supplied.is_empty());
+        assert_eq!(
+            receipt.membership_digest,
+            digest(&Vec::<Value>::new()).unwrap()
+        );
+        let fragment = bindings::fragment(
+            &work.subject,
+            &"No retained source rows",
+            &[],
+            &[],
+            &work.checked,
+        )
+        .unwrap();
+        assert_eq!(fragment.dependencies, work.influence);
+        let binding = bindings::Bindings {
+            reviewed_answers: BTreeMap::new(),
+            documentation_language: None,
+            influence_scopes: BTreeMap::new(),
+            schema: "codeclew-documentation-bindings/1.4".into(),
+            input_digest: work.checked.input_digest.clone(),
+            renderer: RENDERER.into(),
+            extractor: EXTRACTOR.into(),
+            revisions: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            catalogues: BTreeMap::new(),
+            fragments: BTreeMap::from([("empty-inventory-claim".into(), fragment)]),
+            observations: work.checked.dependencies.clone(),
+            narratives: BTreeMap::new(),
+            output_hashes: BTreeMap::new(),
+            retained_sources: BTreeMap::new(),
+            section_states: BTreeMap::new(),
+            target_revisions: BTreeMap::new(),
+            update_failures: BTreeMap::new(),
+            accepted_versions: BTreeMap::new(),
+        };
+        assert!(
+            bindings::freshness(Some(&binding), &work.checked)["affected"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let mut changed = work.checked.clone();
+        let scope = changed.dependencies.get_mut("orders:source-scope").unwrap();
+        scope.normalized["inventory"]["new-file.md"] =
+            json!({"coverage":"FILE_ONLY","digest":"new-file-content"});
+        scope.digest = digest(&scope.normalized).unwrap();
+        assert_eq!(
+            bindings::freshness(Some(&binding), &changed)["affected"][0]["fragment"],
+            "empty-inventory-claim"
+        );
+        // The recorded inventory continues to use its original immutable Work.
+        assert_eq!(
+            read_loaded(&repo, &work, source_inventory_selection()).unwrap(),
+            page
+        );
+    }
+
+    #[test]
+    fn source_inventory_omission_discovers_exact_handle_for_bounded_source_parts() {
+        let text = "Fixture λ☕ captured FILE_ONLY content\n".repeat(1800);
+        let mut work = source_inventory_fixture(text.clone());
+        work.request.max_bytes = 4096;
+        work.request.max_items = 1;
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Source inventory part fixture").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let page = read_loaded(&repo, &work, source_inventory_selection()).unwrap();
+        assert!(page["items"].as_array().unwrap().is_empty());
+        let reference = page["omitted"][0]["reference"].as_str().unwrap();
+        assert_eq!(reference, "s1");
+        assert!(
+            read_state(&repo, &work.id)
+                .unwrap()
+                .receipts
+                .values()
+                .all(|r| r.supplied.is_empty())
+        );
+        let mut request = SourcePartRequest {
+            schema: "codeclew-documentation-source-part-request/1.0".into(),
+            reference: reference.into(),
+            cursor: None,
+        };
+        let mut reconstructed = String::new();
+        loop {
+            let part =
+                super::super::work_parts::read_part_loaded(&repo, &work, request.clone()).unwrap();
+            assert!(bytes(&part).unwrap().len() + 1 <= work.request.max_bytes);
+            assert_eq!(part["source"]["file"], "README.md");
+            reconstructed.push_str(part["text"].as_str().unwrap());
+            let Some(cursor) = part["nextCursor"].as_str() else {
+                break;
+            };
+            request.cursor = Some(cursor.into());
+        }
+        assert_eq!(reconstructed, text);
+        assert_eq!(
+            completed_source_references(&work, &read_state(&repo, &work.id).unwrap()).unwrap(),
+            BTreeSet::from([reference.to_owned()])
         );
     }
 
