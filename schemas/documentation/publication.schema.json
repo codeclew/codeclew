@@ -35,7 +35,10 @@
     },
     "documentationLanguage": {
       "type": "string",
-      "enum": ["en", "ru"]
+      "enum": [
+        "en",
+        "ru"
+      ]
     },
     "targetRevisions": {
       "type": "object",
@@ -148,6 +151,17 @@
         "pattern": "^sha256:[0-9a-f]{64}$"
       },
       "maxProperties": 8192
+    },
+    "reviewedAnswers": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "description": "Exact typed reviewed-answer binding digests, omitted when empty."
     }
   },
   "allOf": [
@@ -158,7 +172,9 @@
             "const": true
           }
         },
-        "required": ["released"]
+        "required": [
+          "released"
+        ]
       },
       "then": {
         "properties": {

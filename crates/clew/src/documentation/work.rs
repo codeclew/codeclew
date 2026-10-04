@@ -69,6 +69,23 @@ pub enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Inspect the exact catalogue baseline without captures, models or writes.
+    PublicationBaseline {
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Explicitly publish one saved approved answer without authoring or review.
+    PublishAnswer {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long, value_parser = parse_run_identity)]
+        review_run: String,
+        /// Closed NONE/EXACT selector from publication-baseline or prior publication.
+        #[arg(long)]
+        baseline: PathBuf,
+    },
     Status {
         #[arg(long)]
         root: PathBuf,
@@ -126,6 +143,7 @@ mod explanation_output_tests {
 
     fn process_diagram() -> super::super::operation_answer::ProcessDiagram {
         super::super::operation_answer::ProcessDiagram {
+            puml_filename: super::super::operation_answer::PROCESS_DIAGRAM_PUML_FILE.into(),
             puml: "@startuml\nstart\n:Run;\nstop\n@enduml\n".into(),
             tree: "Entry: run\nRun\n".into(),
             source_reference: Some("source-root".into()),
@@ -780,6 +798,23 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &source_run,
             &config,
         ),
+        Command::PublicationBaseline { root } => {
+            super::reviewed_answers::baseline(&Repository::open(&root)?)
+        }
+        Command::PublishAnswer {
+            root,
+            work,
+            review_run,
+            baseline,
+        } => {
+            let expected = store::read(&baseline, 4096)?;
+            super::reviewed_answers::publish(
+                &Repository::open(&root)?,
+                &work,
+                &review_run,
+                expected,
+            )
+        }
         Command::Status {
             root,
             work,

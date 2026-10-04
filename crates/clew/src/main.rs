@@ -3869,6 +3869,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reviewed_answer_publication_requires_explicit_work_review_and_baseline() {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "docs",
+                "work",
+                "publication-baseline",
+                "--root",
+                "/tmp"
+            ])
+            .is_ok()
+        );
+        let base = vec![
+            "clew",
+            "docs",
+            "work",
+            "publish-answer",
+            "--root",
+            "/tmp",
+            "--work",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--review-run",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        assert!(Cli::try_parse_from(base.clone()).is_err());
+        let mut valid = base.clone();
+        valid.extend(["--baseline", "baseline.json"]);
+        assert!(Cli::try_parse_from(valid).is_ok());
+        let mut invalid = base;
+        invalid.extend(["--baseline", "baseline.json", "--config", "review.json"]);
+        assert!(Cli::try_parse_from(invalid).is_err());
+    }
+
+    #[test]
     fn work_explain_requires_exactly_one_input_or_review_run() {
         let base = vec![
             "clew",

@@ -540,6 +540,24 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
     let mut rows: Vec<_> = pages.into_values().collect();
     rows.extend(api_rows.into_values());
     rows.extend(entity_rows.into_values());
+    for (_, bytes) in files
+        .iter()
+        .filter(|(p, _)| p.starts_with("answers/") && p.ends_with(".publication.json"))
+    {
+        let Ok(entry) = serde_json::from_slice::<super::reviewed_answers::PublishedAnswer>(bytes)
+        else {
+            continue;
+        };
+        if super::reviewed_answers::validate_entries(&BTreeMap::from([(
+            entry.id.clone(),
+            entry.clone(),
+        )]))
+        .is_err()
+        {
+            continue;
+        }
+        rows.push(serde_json::json!({"id":entry.id,"title":entry.title,"kind":"Reviewed answer","href":entry.route(),"context":entry.source_snapshot,"summary":"MODEL REVIEW: APPROVED · saved snapshot; current source and runtime not verified","searchText":[entry.work,entry.review_run,entry.title]}));
+    }
     rows.sort_by(|left, right| {
         (
             left["kind"].as_str().unwrap_or(""),
@@ -554,13 +572,24 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
                 right["href"].as_str().unwrap_or(""),
             ))
     });
+    let has_reviewed_answers = rows.iter().any(|r| r["kind"] == "Reviewed answer");
     let payload = serde_json::to_string(&rows)
         .expect("catalog strings serialize")
         .replace('<', "\\u003c");
-    if language == "ru" {
+    let catalog = if language == "ru" {
         page_language("Каталог документации", &format!(r#"<div class="eyebrow">КАТАЛОГ ДОКУМЕНТАЦИИ</div><h1>Поиск по документации</h1><p>Ищите сервисы, маршруты API, обработчики, процессы и сущности по названию или идентификатору. Откройте результат, чтобы посмотреть разделы, операции и подтверждения.</p><p class="catalog-caveat">Метаданные каталога помогают искать сведения, но не подтверждают полноту описания.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Найти документы" placeholder="Сервис, API, обработчик или сущность"><select id="catalog-kind" aria-label="Тип документа"><option value="">Все типы</option><option value="Service">Сервис</option><option value="Process">Процесс</option><option value="Dataflow">Движение данных</option><option value="API">API</option><option value="Entrypoint">Точка входа</option><option value="Entity">Сущность</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Назад</button><button id="catalog-next" type="button">Далее</button></div><noscript><p>Для поиска в локальном каталоге включите JavaScript или откройте обзор через меню.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#), language).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
     } else {
         page("Browse documentation", &format!(r#"<div class="eyebrow">DOCUMENTATION CATALOG</div><h1>Search documentation</h1><p>Search services, API routes, handlers, processes and entities by name or identifier. Open a result to browse its sections, operations and evidence.</p><p class="catalog-caveat">Catalog metadata helps discovery; it does not establish that explanations are complete.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Find documentation metadata" placeholder="Service, API, handler or entity"><select id="catalog-kind" aria-label="Document type"><option value="">All types</option><option>Service</option><option>Process</option><option>Dataflow</option><option>API</option><option>Entrypoint</option><option>Entity</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Enable JavaScript to search this offline catalog, or open the overview from the navigation.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#)).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
+    };
+    if has_reviewed_answers {
+        let option = if language == "ru" {
+            "<option value=\"Reviewed answer\">Ответ с проверкой модели</option>"
+        } else {
+            "<option>Reviewed answer</option>"
+        };
+        catalog.replacen("</select>", &format!("{option}</select>"), 1)
+    } else {
+        catalog
     }
 }
 
@@ -658,7 +687,9 @@ pub(super) fn connect_starters_language(
             == Some(decorate(&empty, &navigation("", "index.html", None, &[])).as_bytes())
     {
         let mut documents = BTreeMap::new();
-        for path in pages.iter().filter(|p| p.ends_with(".html")) {
+        for path in pages.iter().filter(|p| {
+            p.ends_with(".html") || (p.starts_with("answers/") && p.ends_with(".publication.json"))
+        }) {
             if let Ok(bytes) = std::fs::read(repo.path(&format!("docs/generated/{bundle}/{path}"))?)
             {
                 documents.insert(path.clone(), bytes);
@@ -668,6 +699,10 @@ pub(super) fn connect_starters_language(
             .replace(
                 "\"href\":\"services/",
                 &format!("\"href\":\"generated/{bundle}/services/"),
+            )
+            .replace(
+                "\"href\":\"answers/",
+                &format!("\"href\":\"generated/{bundle}/answers/"),
             )
             .replace(
                 "\"href\":\"scenarios/",

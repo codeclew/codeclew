@@ -167,6 +167,7 @@ fn bindings_bundle(index: &str, child_operation: &model::Operation) -> bindings:
         accepted_version("manual/b.md", "sha256:unreachable-operation"),
     );
     bindings::Bindings {
+        reviewed_answers: BTreeMap::new(),
         documentation_language: None,
         influence_scopes: BTreeMap::from([(
             digest(&review::InfluenceScope::default()).unwrap(),

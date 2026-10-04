@@ -51,7 +51,12 @@ fn is_false(value: &bool) -> bool {
 /// observation or source remain attached to their original fragment.
 pub(super) fn compact(binding: &mut Bindings) {
     prune_influence_scopes(binding);
-    binding.schema = "codeclew-documentation-bindings/1.4".into();
+    binding.schema = if binding.reviewed_answers.is_empty() {
+        "codeclew-documentation-bindings/1.4"
+    } else {
+        "codeclew-documentation-bindings/1.5"
+    }
+    .into();
     for fragment in binding.fragments.values_mut() {
         let Some(evidence) = fragment.evidence.as_mut() else {
             continue;
@@ -149,6 +154,8 @@ fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Bindings {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reviewed_answers: BTreeMap<String, super::reviewed_answers::PublishedAnswer>,
     /// Presentation target only; does not change source-analysis identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation_language: Option<String>,
@@ -454,11 +461,17 @@ pub(super) fn validate_retained_bindings_with_contexts(
     }
     let mut binding: Bindings = serde_yaml_ng::from_slice(raw).map_err(|error| invalid(format!(
         "DOCS_REINDEX_REQUIRED: unsupported documentation bindings ({error}); initialize a fresh documentation root and run docs check")))?;
-    if binding.schema != "codeclew-documentation-bindings/1.4" {
+    if !matches!(
+        binding.schema.as_str(),
+        "codeclew-documentation-bindings/1.4" | "codeclew-documentation-bindings/1.5"
+    ) || (binding.schema == "codeclew-documentation-bindings/1.4"
+        && !binding.reviewed_answers.is_empty())
+    {
         return Err(invalid(
             "DOCS_REINDEX_REQUIRED: unsupported documentation bindings schema; initialize a fresh documentation root and run docs check",
         ));
     }
+    super::reviewed_answers::validate_entries(&binding.reviewed_answers)?;
     super::review::resolve_influence_scopes(
         &mut binding.accepted_versions,
         &binding.influence_scopes,
@@ -1104,6 +1117,7 @@ mod tests {
             ),
         ]);
         Bindings {
+            reviewed_answers: BTreeMap::new(),
             documentation_language: None,
             influence_scopes: BTreeMap::new(),
             section_states: BTreeMap::new(),

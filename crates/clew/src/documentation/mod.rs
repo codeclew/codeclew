@@ -39,6 +39,7 @@ pub mod proposals;
 mod reader;
 pub mod render;
 pub mod review;
+pub mod reviewed_answers;
 mod section_author;
 pub mod sections;
 pub mod snapshot_pins;

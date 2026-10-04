@@ -17,7 +17,7 @@ use std::{
 #[path = "agent_jobs/operation_draft.rs"]
 mod operation_draft;
 #[path = "agent_jobs/operation_draft_review.rs"]
-mod operation_draft_review;
+pub(super) mod operation_draft_review;
 #[path = "agent_jobs/recovery.rs"]
 mod recovery;
 

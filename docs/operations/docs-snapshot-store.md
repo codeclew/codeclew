@@ -577,6 +577,36 @@ evidence. A missing retained snapshot rejects export even if current source is
 available. Saving this local reader does not admit it to the documentation
 catalogue or publication history.
 
+To explicitly admit an approved answer to the documentation catalogue and
+immutable publication history, first save the exact current baseline:
+
+```sh
+clew docs work publication-baseline --root docs > answer-baseline.json
+clew docs work publish-answer --root docs --work WORK_ID \
+  --review-run REVIEW_RUN_ID --baseline answer-baseline.json
+```
+
+The closed baseline is `{"kind":"NONE"}` only for an initial empty publication;
+an existing catalogue requires its exact bundle, index digest and bindings
+digest. The command checks that baseline again under the publication lock and
+returns the next baseline. Stale or concurrent changes reject publication.
+Selecting the same already published answer is idempotent.
+
+Publication stores a separate typed reviewed-answer binding and standalone
+reader route, with the exact saved answer, packet, source audit, meaning review
+and provenance in the immutable bundle manifest. It preserves prior narratives,
+answers and historical bundles. Later ordinary render or status updates retain
+the reviewed answer artifacts. This does not create a narrative proposal or
+change original author/reviewer records, exports or accounting; no model or
+source capture is dispatched. Meaning approval remains model review against the
+saved snapshot, independently from current narrative sources or source
+freshness. The original review provenance retains its pre-publication status;
+the separate publication entry and reader report explicit publication. PlantUML
+and the source tree are retained without launching an SVG renderer. Catalogue
+answer payloads are limited to 64 entries and 64 MiB; this explicit publication
+path also bounds copied prior bundle input to 64 MiB. Existing publications
+without reviewed answers retain their previous schema and limits.
+
 To review one successful original operation draft without another author call, use:
 
 ```sh

@@ -33,6 +33,8 @@ pub struct Publication {
     pub target_revisions: BTreeMap<String, Option<String>>,
     pub sections: BTreeMap<String, SectionState>,
     pub explanation_versions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reviewed_answers: BTreeMap<String, String>,
     pub observed_tags: BTreeMap<String, BTreeMap<String, String>>,
     pub evidence_packages: Vec<String>,
     pub files: BTreeMap<String, String>,
@@ -98,6 +100,7 @@ fn load(repo: &Repository, id: &str) -> Result<Publication, ClewError> {
             .is_some_and(|language| !matches!(language, "en" | "ru"))
         || p.files.len() > 8192
         || p.sections.len() > 32768
+        || p.reviewed_answers.len() > 64
     {
         return Err(invalid("invalid frozen publication manifest"));
     }
@@ -203,6 +206,17 @@ pub(super) fn validate_frozen_bindings(
     {
         return Err(invalid(
             "selected publication metadata does not match its frozen bindings",
+        ));
+    }
+    if publication.reviewed_answers
+        != binding
+            .reviewed_answers
+            .iter()
+            .map(|(id, e)| Ok((id.clone(), digest(e)?)))
+            .collect::<Result<BTreeMap<_, _>, ClewError>>()?
+    {
+        return Err(invalid(
+            "frozen reviewed answer manifest differs from binding",
         ));
     }
     for (subject, narrative) in &binding.narratives {
@@ -389,6 +403,11 @@ pub(super) fn prepare(
             })
             .map(|(id, o)| Ok((id, digest(o)?)))
             .collect::<Result<_, ClewError>>()?,
+        reviewed_answers: binding
+            .reviewed_answers
+            .iter()
+            .map(|(id, e)| Ok((id.clone(), digest(e)?)))
+            .collect::<Result<_, ClewError>>()?,
         observed_tags: tags,
         evidence_packages: packages.into_iter().collect(),
         files: BTreeMap::new(),
@@ -478,6 +497,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             "summary"=>vec![json!({"id":p.id,"released":p.released,"ordinal":p.ordinal,"parent":p.parent,"inputDigest":p.input_digest,"targetRevisions":p.target_revisions,"observedTags":p.observed_tags})],
             "sections"=>p.sections.iter().map(|(id,state)|json!({"id":id,"state":state})).collect(),
             "explanations"=>p.explanation_versions.iter().map(|(id,version)|json!({"id":id,"version":version})).collect(),
+            "reviewed-answers"=>p.reviewed_answers.iter().map(|(id,version)|json!({"id":id,"version":version})).collect(),
             "files"=>p.files.iter().map(|(id,hash)|json!({"id":id,"digest":hash})).collect(),
             "inputs"=>{let value:Value=store::read(&repo.path(&format!("docs/generated/{id}/inputs.json"))?,super::check::PORTABLE_CACHE_MAX_BYTES)?;value.as_object().ok_or_else(||invalid("invalid frozen inputs"))?.iter().map(|(id,value)|json!({"id":id,"record":value})).collect()},
             "evidence"=>p.evidence_packages.iter().map(|id|json!({"id":id,"status":if packages.contains(id){"MISSING_OR_DAMAGED"}else{"RETAINED"}})).collect(),

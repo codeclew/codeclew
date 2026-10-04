@@ -1315,6 +1315,9 @@ fn make_bindings_with_retained(
         .filter(|(id, _)| reachable_sources.contains(id))
         .collect();
     let mut binding = Bindings {
+        reviewed_answers: retained
+            .map(|b| b.reviewed_answers.clone())
+            .unwrap_or_default(),
         documentation_language: None,
         influence_scopes: BTreeMap::new(),
         schema: "codeclew-documentation-bindings/1.4".into(),
@@ -3591,6 +3594,7 @@ fn publish_internal_phases(
     // The bundle identity covers every output file (including auto-generated
     // diagrams), so any change to the rendered output produces a fresh
     // immutable bundle instead of conflicting with an existing one.
+    super::reviewed_answers::retain_files(repo, previous.as_ref(), &binding, &mut files)?;
     let output_digest = digest(
         &files
             .iter()
@@ -3648,9 +3652,38 @@ fn publish_internal_phases(
         released,
         receipt_request.as_ref(),
         before_switch,
+        None,
     )?;
     Ok(
         json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn commit_reviewed_answer_bundle(
+    repo: &Repository,
+    bundle: &str,
+    binding: Bindings,
+    files: BTreeMap<String, Vec<u8>>,
+    overview: &str,
+    input_digest: &str,
+    previous: Option<&(String, Bindings)>,
+    previous_bytes: Option<&[u8]>,
+    expected: Option<&bindings::BaselineReceipt>,
+) -> Result<(), ClewError> {
+    commit_bundle_with_mode(
+        repo,
+        bundle,
+        binding,
+        files,
+        overview,
+        input_digest,
+        previous,
+        previous_bytes,
+        true,
+        None,
+        None,
+        Some(expected),
     )
 }
 
@@ -3678,6 +3711,7 @@ pub(super) fn commit_bundle(
         false,
         None,
         None,
+        None,
     )
 }
 
@@ -3694,7 +3728,10 @@ fn commit_bundle_with_mode(
     released: bool,
     receipt_request: Option<&PublicationReceiptRequest>,
     before_switch: Option<BeforePublicationSwitch<'_>>,
+    expected_baseline: Option<Option<&bindings::BaselineReceipt>>,
 ) -> Result<(), ClewError> {
+    let overview = super::reviewed_answers::overview(overview, bundle, &binding);
+    let overview = overview.as_str();
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
     files.insert("overview.html".into(), bundle_overview.into_bytes());
@@ -3703,7 +3740,11 @@ fn commit_bundle_with_mode(
         "Snapshot history",
         "История публикаций",
     );
-    let live_overview=overview.replacen("<body>",&format!("<body><nav aria-label=\"{history_label}\" style=\"padding:12px 20px\"><a href=\"history.html\">{history_label}</a></nav>"),1);
+    let live_overview = if overview.contains("class=\"reader-nav\"") {
+        overview.to_owned()
+    } else {
+        overview.replacen("<body>",&format!("<body><nav aria-label=\"{history_label}\" style=\"padding:12px 20px\"><a href=\"history.html\">{history_label}</a></nav>"),1)
+    };
     files.insert(
         "root-overview.html".into(),
         live_overview.as_bytes().to_vec(),
@@ -3713,10 +3754,19 @@ fn commit_bundle_with_mode(
         .as_deref()
         .unwrap_or("en")
         .to_owned();
+    super::reviewed_answers::retain_files(repo, previous, &binding, &mut files)?;
+    let decorated: BTreeMap<_, _> = files
+        .iter()
+        .filter(|(p, b)| {
+            p.ends_with(".html") && String::from_utf8_lossy(b).contains("class=\"reader-nav\"")
+        })
+        .map(|(p, b)| (p.clone(), b.clone()))
+        .collect();
     super::reader::decorate_bundle_language(&mut files, bundle, &ui_language)?;
-    let live_overview = String::from_utf8(files["root-overview.html"].clone()).map_err(io_error)?;
     let mut publication =
         super::history::prepare(repo, bundle, &binding, &mut files, input_digest, released)?;
+    files.extend(decorated);
+    let live_overview = String::from_utf8(files["root-overview.html"].clone()).map_err(io_error)?;
     binding.output_hashes = files
         .iter()
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
@@ -3772,6 +3822,18 @@ fn commit_bundle_with_mode(
             ErrorCode::WwConflict,
             "documentation input changed before output publication",
         ));
+    }
+    if let Some(expected) = expected_baseline {
+        let captured = bindings::capture_baseline(repo)?;
+        let current = captured.as_ref().map(|(r, _)| r);
+        if current.map(|r| (&r.bundle, &r.index_digest, &r.bindings_digest))
+            != expected.map(|r| (&r.bundle, &r.index_digest, &r.bindings_digest))
+        {
+            return Err(ClewError::new(
+                ErrorCode::WwConflict,
+                "answer publication baseline changed under the publication lock",
+            ));
+        }
     }
     let current_bytes = if previous_root.exists() {
         Some(fs::read(&previous_root).map_err(io_error)?)
@@ -5137,6 +5199,7 @@ mod publication_receipt_tests {
 
     fn binding(repo: &Repository, language: Option<&str>, gap: &str) -> Bindings {
         Bindings {
+            reviewed_answers: BTreeMap::new(),
             documentation_language: language.map(str::to_owned),
             influence_scopes: BTreeMap::new(),
             schema: "codeclew-documentation-bindings/1.4".into(),
@@ -5197,6 +5260,7 @@ mod publication_receipt_tests {
             false,
             receipt_request,
             before_switch,
+            None,
         )
     }
 

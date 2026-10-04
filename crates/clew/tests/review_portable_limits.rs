@@ -82,6 +82,7 @@ fn stage_publication(
         target_revisions: Default::default(),
         sections: Default::default(),
         explanation_versions: Default::default(),
+        reviewed_answers: Default::default(),
         observed_tags: Default::default(),
         evidence_packages: vec![],
         files: BTreeMap::from([(file.to_string(), digest)]),

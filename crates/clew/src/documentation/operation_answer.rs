@@ -149,6 +149,7 @@ pub(super) struct RenderedAnswer {
 }
 
 pub(super) struct ProcessDiagram {
+    pub(super) puml_filename: String,
     pub(super) puml: String,
     pub(super) tree: String,
     pub(super) source_reference: Option<String>,
@@ -160,6 +161,7 @@ pub(super) struct ProcessDiagram {
 struct ReaderLabels {
     russian: bool,
     reviewed: bool,
+    published: bool,
 }
 
 impl ReaderLabels {
@@ -167,10 +169,18 @@ impl ReaderLabels {
         Self {
             russian: packet["documentationLanguage"].as_str() == Some("ru"),
             reviewed: false,
+            published: false,
         }
     }
 
     fn status(self) -> &'static str {
+        if self.published {
+            return if self.russian {
+                "ОПУБЛИКОВАНО / ОДОБРЕНО МОДЕЛЬЮ"
+            } else {
+                "PUBLISHED / MODEL REVIEW: APPROVED"
+            };
+        }
         if self.reviewed {
             return if self.russian {
                 "ЧЕРНОВИК / ОДОБРЕНО МОДЕЛЬЮ / НЕ ОПУБЛИКОВАНО"
@@ -692,7 +702,7 @@ pub(super) fn validate_and_render(
     audit: &Value,
     answer: Value,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
-    validate_and_render_with_review(packet, audit, answer, None)
+    validate_and_render_with_review(packet, audit, answer, None, None)
 }
 
 pub(super) fn validate_and_render_reviewed(
@@ -701,7 +711,23 @@ pub(super) fn validate_and_render_reviewed(
     answer: Value,
     provenance: &Value,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
-    validate_and_render_with_review(packet, audit, answer, Some(provenance))
+    validate_and_render_with_review(packet, audit, answer, Some(provenance), None)
+}
+
+pub(super) fn validate_and_render_published(
+    packet: &Value,
+    audit: &Value,
+    answer: Value,
+    provenance: &Value,
+    publication_id: &str,
+) -> Result<RenderedAnswer, crate::error::ClewError> {
+    validate_and_render_with_review(
+        packet,
+        audit,
+        answer,
+        Some(provenance),
+        Some(publication_id),
+    )
 }
 
 fn validate_and_render_with_review(
@@ -709,6 +735,7 @@ fn validate_and_render_with_review(
     audit: &Value,
     answer: Value,
     provenance: Option<&Value>,
+    publication_id: Option<&str>,
 ) -> Result<RenderedAnswer, crate::error::ClewError> {
     if packet["schema"] != PACKET_SCHEMA
         || !matches!(
@@ -779,6 +806,7 @@ fn validate_and_render_with_review(
 
     let mut labels = ReaderLabels::new(packet);
     labels.reviewed = provenance.is_some();
+    labels.published = publication_id.is_some();
     let evidence_index = evidence_index(citations);
     let used_labels = answer_evidence_labels(&parsed);
     let root_source_references = selected_root_source_references(packet);
@@ -791,9 +819,21 @@ fn validate_and_render_with_review(
     );
     let mut process_diagram = root_process_diagram(packet, &parsed, &source_navigation);
     if let (Some(diagram), Some(provenance)) = (process_diagram.as_mut(), provenance) {
+        if let Some(id) = publication_id {
+            diagram.puml_filename = format!("{id}.puml");
+            diagram.puml = diagram.puml.replacen(
+                "ROOT_SOURCE_EXCERPT=index.html#",
+                &format!("ROOT_SOURCE_EXCERPT={id}.html#"),
+                1,
+            );
+        }
         diagram.puml = diagram.puml.replacen(
             "CODECLEW_STATUS=DRAFT/UNREVIEWED/NOT_PUBLISHED",
-            "CODECLEW_STATUS=DRAFT/MODEL_REVIEW_APPROVED/NOT_PUBLISHED",
+            if publication_id.is_some() {
+                "CODECLEW_STATUS=PUBLISHED/MODEL_REVIEW_APPROVED"
+            } else {
+                "CODECLEW_STATUS=DRAFT/MODEL_REVIEW_APPROVED/NOT_PUBLISHED"
+            },
             1,
         );
         diagram.puml.push_str(&format!(
@@ -3214,6 +3254,7 @@ fn root_process_diagram(
         )
     );
     Some(ProcessDiagram {
+        puml_filename: PROCESS_DIAGRAM_PUML_FILE.into(),
         puml: format!("{provenance}{}", rendered.puml),
         tree: rendered.tree,
         source_reference,
@@ -3264,10 +3305,14 @@ fn render_process_diagram_html(
             "Parsed source outline"
         }),
         html_escape(&diagram.tree),
-        PROCESS_DIAGRAM_PUML_FILE,
+        html_escape(&diagram.puml_filename),
         html_escape(labels.editable_plantuml()),
         source_link,
-        PROCESS_DIAGRAM_HTML_MARKER
+        if labels.published {
+            "<p>Diagram SVG was not rendered; the source tree and PlantUML are retained.</p>"
+        } else {
+            PROCESS_DIAGRAM_HTML_MARKER
+        }
     )
 }
 
@@ -3290,7 +3335,7 @@ fn render_process_diagram_markdown(
         }),
         markdown_code_block(&diagram.tree),
         markdown_escape(labels.editable_plantuml()),
-        PROCESS_DIAGRAM_PUML_FILE
+        diagram.puml_filename
     ));
     if let (Some(reference), Some(anchor)) = (
         diagram.source_reference.as_deref(),
@@ -3312,7 +3357,11 @@ fn render_process_diagram_markdown(
             })
         ));
     }
-    output.push_str(PROCESS_DIAGRAM_MARKDOWN_MARKER);
+    output.push_str(if labels.published {
+        "Diagram SVG was not rendered; the source tree and PlantUML are retained."
+    } else {
+        PROCESS_DIAGRAM_MARKDOWN_MARKER
+    });
     output.push_str("\n\n");
     output
 }
@@ -8255,6 +8304,53 @@ mod tests {
         assert!(rendered.html.contains("href=\"#summary\""));
         assert!(rendered.html.contains("href=\"#step-1\""));
         assert!(rendered.html.contains("href=\"#source-"));
+    }
+
+    #[test]
+    fn published_process_routes_preserve_literal_source_and_answer_paths() {
+        // Renderer fixture only: publication admission is independently tested
+        // against durable fake-driver author and reviewer records.
+        let literal =
+            "index.html#anchor https://example.invalid/index.html#anchor process-flow.puml";
+        let source = format!(
+            "class Demo {{\n  void run() {{\n    // {literal}\n    this.finish();\n  }}\n}}\n"
+        );
+        let (packet, audit) = process_packet(&source, "method:class:demo.Handler#run()V");
+        let mut answer = simple_answer(&packet, "source-root");
+        answer["summary"]["text"] = json!(literal);
+        let provenance = json!({"snapshot":"saved synthetic snapshot", "reviewer":{"resultDigest":"synthetic renderer result"}, "limitations":["Renderer fixture; no model approval asserted."], "issues":[]});
+        let id = "a".repeat(64);
+        let rendered =
+            validate_and_render_published(&packet, &audit, answer.clone(), &provenance, &id)
+                .unwrap();
+        assert_eq!(rendered.answer, answer);
+        for view in [&rendered.html, &rendered.markdown] {
+            assert!(
+                view.contains(&format!("// {literal}")),
+                "source excerpt must retain its literal comment bytes"
+            );
+            assert!(view.contains(literal));
+            assert!(view.contains("Diagram SVG was not rendered"));
+            assert!(!view.contains(PROCESS_DIAGRAM_HTML_MARKER));
+            assert!(!view.contains(PROCESS_DIAGRAM_MARKDOWN_MARKER));
+        }
+        assert!(rendered.html.contains(&format!("href=\"{id}.puml\"")));
+        assert!(rendered.markdown.contains(&format!("]({id}.puml)")));
+        let diagram = rendered.process_diagram.unwrap();
+        assert!(diagram.has_causal_projection);
+        assert_eq!(diagram.puml_filename, format!("{id}.puml"));
+        let source_anchor = diagram.source_anchor.unwrap();
+        assert!(
+            diagram
+                .puml
+                .contains(&format!("ROOT_SOURCE_EXCERPT={id}.html#{source_anchor}"))
+        );
+        assert!(
+            rendered
+                .html
+                .contains(&format!("href=\"#{source_anchor}\""))
+        );
+        assert!(rendered.html.contains(&format!("id=\"{source_anchor}\"")));
     }
 
     #[test]
