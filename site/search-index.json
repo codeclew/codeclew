@@ -138,13 +138,13 @@
     "group": "Guides"
   },
   {
-    "title": "Follow a selected process from retained source.",
+    "title": "Follow selected calls between documented processes.",
     "url": "./documentation.html#native-source-pages",
     "description": "Service documentation",
     "group": "Guides"
   },
   {
-    "title": "Keep an explanation and its original context.",
+    "title": "Keep the text. Select its source context.",
     "url": "./documentation.html#maintained-explanations",
     "description": "Service documentation",
     "group": "Guides"
