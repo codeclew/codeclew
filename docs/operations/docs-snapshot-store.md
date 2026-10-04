@@ -1000,3 +1000,29 @@ share a paragraph in one proposal. Later text edits preserve migration metadata
 and effective context. Subsequent source changes make that context stale without
 silently moving it again. Current context freshness establishes neither semantic
 review of text nor review of the selected context.
+
+
+## Compare a saved answer with an explicit captured Check
+
+`clew docs work answer-context --root DOCS --work WORK_ID --review-run REVIEW_RUN --snapshot NEW_CHECK`
+is read-only. Select an exact saved approved answer and a Check produced by an
+explicit source check. There is no latest fallback, capture, provider call,
+publication, or promotion of the old model verdict. The result preserves the
+original question/root/profile and labels meaning
+`MODEL_APPROVED_AGAINST_SAVED_PACKET` separately from captured-context freshness.
+
+`CURRENT` means the complete selected packet SOURCE and DEPENDENCY content/pins
+match the compared capture. This includes selected records the answer never cited;
+it excludes unrelated global Work influence. Revision, source-link and coordinate
+metadata can appear in `linkChanges` without staling exact content and stable
+compiler bindings. Changed compiler pins are never heuristically remapped to claim
+equivalence. Changed selected content/pins report `STALE`. Missing records,
+retained-only/unselected service evidence, changed captured service declaration
+(including configured repository and source-root origin), unsupported identity/scope
+bindings or changed capture coverage report `UNKNOWN`, with explicit missing/change reasons.
+The result compares with the supplied Check, not live runtime or a later source
+state. Human/imported maintained prose remains unverified and UNASSESSED.
+
+Saved answer/packet/review/provenance files and historical publications stay frozen.
+A different question or scope requires new Work and cannot inherit this saved
+approval. The comparison creates no new cache, review or publication baseline.

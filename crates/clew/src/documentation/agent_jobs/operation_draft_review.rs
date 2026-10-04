@@ -2157,6 +2157,59 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
+    fn saved_answer_context_command_preserves_approved_publication_and_refuses_foreign_review() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, work, author_config, source_run) = authored();
+        let config_path = temp.path().join("context-review.json");
+        config(&config_path, &author_config, "approve");
+        let reviewed = run_loaded(&repo, &work, &source_run, &config_path).unwrap();
+        let run = reviewed["run"].as_str().unwrap();
+        let published = super::super::super::reviewed_answers::publish(
+            &repo,
+            &work.id,
+            run,
+            super::super::super::reviewed_answers::ExpectedBaseline::None {},
+        )
+        .unwrap();
+        assert_eq!(published["status"], "PUBLISHED");
+        let mut before = BTreeMap::new();
+        files(&repo.root, &mut before);
+        let result =
+            super::super::super::work::run(super::super::super::work::Command::AnswerContext {
+                root: repo.root.clone(),
+                work: work.id.clone(),
+                review_run: run.into(),
+                snapshot: work.snapshot.clone().unwrap(),
+            })
+            .unwrap();
+        assert_eq!(
+            result["meaningReview"],
+            "MODEL_APPROVED_AGAINST_SAVED_PACKET"
+        );
+        assert_eq!(result["capturedContext"]["status"], "CURRENT");
+        assert_eq!(result["captures"], 0);
+        assert_eq!(result["agentInvocations"], 0);
+        assert_eq!(result["writes"], 0);
+        assert!(
+            super::super::super::work::run(super::super::super::work::Command::AnswerContext {
+                root: repo.root.clone(),
+                work: work.id.clone(),
+                review_run: "f".repeat(32),
+                snapshot: work.snapshot.clone().unwrap(),
+            })
+            .is_err()
+        );
+        let mut after = BTreeMap::new();
+        files(&repo.root, &mut after);
+        assert_eq!(
+            before, after,
+            "Comparison must preserve published bytes, history, checkpoints and accounting"
+        );
+    }
+
+    #[test]
     fn reviewed_export_rejects_unapproved_and_forged_terminal_metadata() {
         if !cfg!(target_os = "macos") {
             return;

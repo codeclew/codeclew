@@ -89,6 +89,17 @@ pub enum Command {
         #[arg(long)]
         baseline: PathBuf,
     },
+    /// Compare one historical approved answer with an explicit captured Check.
+    AnswerContext {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long, value_parser = parse_run_identity)]
+        review_run: String,
+        #[arg(long)]
+        snapshot: String,
+    },
     Status {
         #[arg(long)]
         root: PathBuf,
@@ -847,6 +858,12 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 expected,
             )
         }
+        Command::AnswerContext {
+            root,
+            work,
+            review_run,
+            snapshot,
+        } => super::answer_context::run(&Repository::open(&root)?, &work, &review_run, &snapshot),
         Command::Status {
             root,
             work,
