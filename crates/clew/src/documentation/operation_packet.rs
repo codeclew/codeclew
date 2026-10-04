@@ -12,9 +12,42 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PACKET_SCHEMA: &str = "codeclew-documentation-reader-packet/1.0";
 pub const AUDIT_SCHEMA: &str = "codeclew-documentation-reader-packet-audit/1.0";
 
+/// Bind saved author/reviewer payloads to the complete historical context frozen
+/// into Work. A digest-consistent packet may still omit or substitute that context.
+/// This check performs no history or current-source reads.
+pub(super) fn validate_saved_maintained_context(
+    work: &Work,
+    packet: &Value,
+) -> Result<(), ClewError> {
+    super::maintained_context::validate_optional(
+        work.maintained_context.as_ref(),
+        &work.subject,
+        &work.request,
+        &work.checked,
+    )?;
+    let expected = work
+        .maintained_context
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(super::io_error)?;
+    if packet.get("maintainedContext") != expected.as_ref() {
+        return Err(invalid(
+            "saved reader packet maintainedContext differs from immutable Work; context must be complete and exact",
+        ));
+    }
+    Ok(())
+}
+
 /// Build the short author packet and a separate audit projection of every
 /// immutable profile row selected for it.
 pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
+    super::maintained_context::validate_optional(
+        work.maintained_context.as_ref(),
+        &work.subject,
+        &work.request,
+        &work.checked,
+    )?;
     if work.request.context_profile.as_deref() == Some("process-graph-v1") {
         return build_process_graph(work);
     }
@@ -527,6 +560,7 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
         packet["fields"] = json!(fields);
     }
 
+    validate_saved_maintained_context(work, &packet)?;
     let packet_digest = digest(&packet)?;
     packet["packetDigest"] = json!(packet_digest);
     let selected_rows_digest = digest(&selected_bindings)?;
@@ -1287,6 +1321,10 @@ fn build_process_graph(work: &Work) -> Result<(Value, Value), ClewError> {
     if let Some(process_intent) = process_intent {
         packet["processIntent"] = process_intent;
     }
+    if let Some(context) = &work.maintained_context {
+        packet["maintainedContext"] = serde_json::to_value(context).map_err(super::io_error)?;
+    }
+    validate_saved_maintained_context(work, &packet)?;
     let packet_digest = digest(&packet)?;
     packet["packetDigest"] = json!(packet_digest);
     let selected_rows_digest = digest(&selected_bindings)?;

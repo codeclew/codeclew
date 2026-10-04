@@ -291,6 +291,10 @@
             "ru"
           ],
           "description": "Requested language of authored reader prose. New Work inherits the active publication language, falling back to en before identity is computed; code, source and API identifiers remain unchanged."
+        },
+        "maintainedParagraph": {
+          "oneOf": [{"$ref": "#/$defs/maintainedParagraphSelector"}, {"type": "null"}],
+          "description": "Explicit frozen human paragraph for new service endpoint process-graph-v1 Work; no latest fallback, automatic ID mapping or compiler-proof promotion."
         }
       },
       "required": [
@@ -583,6 +587,31 @@
           "gap"
         ]
       }
+    },
+    "maintainedParagraphSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bundle": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "fragment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "bundle",
+        "operation",
+        "fragment"
+      ]
     }
   }
 }

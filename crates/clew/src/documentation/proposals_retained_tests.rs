@@ -185,6 +185,7 @@ fn fixture() -> (tempfile::TempDir, Repository, Work, Narrative) {
         checked: checked.clone(),
         snapshot: Some(snapshot),
         retained: None,
+        maintained_context: None,
         external_inputs,
         handles: BTreeMap::new(),
         influence: checked

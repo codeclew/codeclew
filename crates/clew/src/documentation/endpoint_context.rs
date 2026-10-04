@@ -3869,6 +3869,7 @@ mod tests {
                 root_declaration: None,
                 question: None,
                 authoring_contract: None,
+                maintained_paragraph: None,
                 max_items: 100,
                 max_bytes: 128 * 1024,
                 external_inputs: Vec::new(),
@@ -3887,6 +3888,7 @@ mod tests {
             },
             snapshot: None,
             retained: None,
+            maintained_context: None,
             external_inputs: BTreeMap::new(),
             handles,
             influence: all_observation_ids

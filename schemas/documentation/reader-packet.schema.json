@@ -530,6 +530,106 @@
         "desiredOutcomes", "declaredContinuations", "linkedSubviews"
       ]
     },
+    "maintainedContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Complete frozen USER_DOCUMENTATION and historical context, independently UNASSESSED. No record is a compiler citation or a current method body. The host checks all immutable pins and the eight MiB bound.",
+      "properties": {
+        "schema": {
+          "const": "codeclew-maintained-paragraph-context/1.0"
+        },
+        "selection": {
+          "$ref": "work.schema.json#/$defs/maintainedParagraphSelector"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "serviceDigest": {
+          "type": "string"
+        },
+        "publicationDigest": {
+          "type": "string"
+        },
+        "bindingsDigest": {
+          "type": "string"
+        },
+        "operationDigest": {
+          "type": "string"
+        },
+        "paragraphDigest": {
+          "type": "string"
+        },
+        "contextDigest": {
+          "type": "string"
+        },
+        "contextFreshness": {
+          "enum": [
+            "CURRENT",
+            "STALE"
+          ]
+        },
+        "paragraph": {
+          "type": "object",
+          "properties": {
+            "authorship": {
+              "type": "object",
+              "properties": {
+                "authority": {
+                  "const": "USER_DOCUMENTATION"
+                },
+                "meaningReview": {
+                  "const": "UNASSESSED"
+                },
+                "contextRole": {
+                  "const": "RETAINED_UNVERIFIED_CONTEXT"
+                }
+              }
+            }
+          },
+          "required": [
+            "id",
+            "text",
+            "eventIds",
+            "dependencyIds",
+            "sourceIds",
+            "authorship"
+          ]
+        },
+        "root": {
+          "type": "object"
+        },
+        "rootSources": {
+          "type": "object"
+        },
+        "anchors": {
+          "type": "object"
+        },
+        "sourceRecords": {
+          "type": "object"
+        },
+        "dependencyRecords": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema",
+        "selection",
+        "subject",
+        "serviceDigest",
+        "publicationDigest",
+        "bindingsDigest",
+        "operationDigest",
+        "paragraphDigest",
+        "contextDigest",
+        "contextFreshness",
+        "paragraph",
+        "root",
+        "rootSources",
+        "anchors",
+        "sourceRecords",
+        "dependencyRecords"
+      ]
+    },
     "processPacket": {
       "type": "object",
       "additionalProperties": false,
@@ -599,6 +699,7 @@
           },
           "required": ["schema", "artifactDigest", "rootMethodId", "snapshot", "service"]
         },
+        "maintainedContext": { "$ref": "#/$defs/maintainedContext" },
         "citations": { "$ref": "#/$defs/citationMap" },
         "packetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
       },

@@ -306,6 +306,9 @@ pub struct Request {
     /// Absent in legacy Work and deliberately omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authoring_contract: Option<String>,
+    /// Explicit frozen human paragraph selected only when preparing a new Work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintained_paragraph: Option<super::maintained_context::Selector>,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
@@ -432,6 +435,8 @@ pub struct Work {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<String>,
     pub retained: Option<Narrative>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintained_context: Option<super::maintained_context::MaintainedContext>,
     pub external_inputs: BTreeMap<String, Value>,
     pub handles: BTreeMap<String, Handle>,
     pub influence: BTreeMap<String, String>,
@@ -462,6 +467,8 @@ struct StoredWork {
     request: Request,
     snapshot: String,
     retained: Option<Narrative>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maintained_context: Option<super::maintained_context::MaintainedContext>,
     external_inputs: BTreeMap<String, Value>,
     handles_ref: super::cache::ObjectRef,
     influence_ref: super::cache::ObjectRef,
@@ -482,6 +489,7 @@ impl StoredWork {
             request: work.request.clone(),
             snapshot: evidence_snapshot.clone(),
             retained: work.retained.clone(),
+            maintained_context: work.maintained_context.clone(),
             external_inputs: work.external_inputs.clone(),
             handles_ref: work_table_reference(WORK_HANDLES_OBJECT_SCHEMA, &work.handles)?,
             influence_ref: work_table_reference(WORK_INFLUENCE_OBJECT_SCHEMA, &work.influence)?,
@@ -526,6 +534,7 @@ impl StoredWork {
             checked,
             snapshot: Some(self.snapshot),
             retained: self.retained,
+            maintained_context: self.maintained_context,
             external_inputs: self.external_inputs,
             handles,
             influence,
@@ -738,7 +747,14 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     validate_http_api_contract_profile(&stored.subject, &stored.request, &checked)?;
     validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
     validate_process_graph_root(&stored.subject, &stored.request, &checked)?;
-    Ok(stored.into_runtime(checked, handles, influence))
+    let work = stored.into_runtime(checked, handles, influence);
+    super::maintained_context::validate_optional(
+        work.maintained_context.as_ref(),
+        &work.subject,
+        &work.request,
+        &work.checked,
+    )?;
+    Ok(work)
 }
 
 pub fn read_state(repo: &Repository, id: &str) -> Result<ReadState, ClewError> {
@@ -1829,6 +1845,7 @@ pub fn prepare_with_snapshot(
     validate_endpoint_context_profile(&subject, &request, &checked)?;
     validate_process_graph_root(&subject, &request, &checked)?;
     normalize_operation_authoring_contract(&mut request)?;
+    let maintained_context = super::maintained_context::load(repo, &subject, &request, &checked)?;
     let baseline = bindings::baseline(repo)?;
     if request.documentation_language.is_none() {
         request.documentation_language = baseline
@@ -1990,6 +2007,7 @@ pub fn prepare_with_snapshot(
         checked,
         snapshot: Some(evidence_snapshot.clone()),
         retained,
+        maintained_context,
         external_inputs,
         handles,
         influence,
@@ -3174,6 +3192,7 @@ mod section_context_tests {
                 root_declaration: None,
                 question: None,
                 authoring_contract: None,
+                maintained_paragraph: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: vec![],
@@ -3181,6 +3200,7 @@ mod section_context_tests {
             checked,
             snapshot: None,
             retained: narrative,
+            maintained_context: None,
             external_inputs: BTreeMap::new(),
             handles,
             influence,
@@ -4349,6 +4369,7 @@ pub(super) mod api_contract_tests {
                 root_declaration: None,
                 question: None,
                 authoring_contract: None,
+                maintained_paragraph: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: Vec::new(),
@@ -4367,6 +4388,7 @@ pub(super) mod api_contract_tests {
             },
             snapshot: Some("snapshot-test".into()),
             retained: None,
+            maintained_context: None,
             external_inputs: BTreeMap::new(),
             handles: BTreeMap::new(),
             influence: BTreeMap::new(),

@@ -624,6 +624,35 @@ fn public_work(f: &Fixture, snapshot: &str, entrypoint: &str, audience: &str) ->
         .unwrap()
         .to_owned()
 }
+// Public preparation freezes selected human context once; packet reads use that Work.
+fn public_maintained_packet(
+    f: &Fixture,
+    snapshot: &str,
+    root: &str,
+    selection: Option<&Value>,
+    name: &str,
+) -> (String, Value) {
+    let mut request = json!({"schema":"codeclew-documentation-work-request/1.0", "audience":"Synthetic maintained context consumer", "contextProfile":"process-graph-v1", "rootDeclaration":root, "question":"Explain the selected current endpoint; keep historical human context attributed and unassessed.", "maxItems":100, "maxBytes":49152});
+    if let Some(selected) = selection {
+        request["maintainedParagraph"] = selected.clone();
+    }
+    let input = f.input(&format!("maintained-work-{name}.json"), &request);
+    let prepared = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:alpha",
+        "--snapshot",
+        snapshot,
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    let id = prepared["work"].as_str().unwrap().to_owned();
+    let packet = f.ok(&["docs", "work", "packet", "--work", &id]);
+    (id, packet)
+}
+
 fn complete_work(f: &Fixture, id: &str, operation: Option<&str>) -> Option<String> {
     let mut omitted = false;
     let mut cursor = None;
@@ -942,6 +971,50 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         serde_json::to_value(protected).unwrap()
     );
     let before_files = files(&before);
+    let (maintained_v1_work, maintained_v1_packet) = public_maintained_packet(
+        &f,
+        &v1,
+        &declaration_v1,
+        Some(&selected[0]["authoredParagraphs"][0]),
+        "v1",
+    );
+    let before_context = &maintained_v1_packet["maintainedContext"];
+    assert_eq!(before_context["contextFreshness"], "CURRENT");
+    assert_eq!(
+        before_context["paragraph"],
+        serde_json::to_value(protected).unwrap()
+    );
+    assert_eq!(
+        before_context["sourceRecords"],
+        before_projection["pages"][0]["authoredParagraphs"][0]["sourceRecords"]
+    );
+    assert_eq!(
+        before_context["paragraph"]["authorship"]["meaningReview"],
+        "UNASSESSED"
+    );
+    assert_eq!(
+        serde_json::to_value(
+            work::load(&repo, &maintained_v1_work)
+                .unwrap()
+                .maintained_context
+                .unwrap()
+        )
+        .unwrap(),
+        *before_context
+    );
+    for event_id in &protected.event_ids {
+        assert_eq!(
+            before_context["anchors"][event_id],
+            serde_json::to_value(
+                maintained
+                    .events
+                    .iter()
+                    .find(|e| &e.id == event_id)
+                    .unwrap()
+            )
+            .unwrap()
+        );
+    }
     let changed = fs::read_to_string(&path)
         .unwrap()
         .replace(
@@ -1030,6 +1103,58 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
             && appendix.contains("Logical SOURCE ID:")
     );
     let expected_files = files(&current);
+    let root_v2 = selected[0]["endpointDeclaration"].as_str().unwrap();
+    let (maintained_v2_work, maintained_v2_packet) = public_maintained_packet(
+        &f,
+        &v2,
+        root_v2,
+        Some(&selected[0]["authoredParagraphs"][0]),
+        "v2-stale",
+    );
+    let stale_context = &maintained_v2_packet["maintainedContext"];
+    assert_eq!(stale_context["contextFreshness"], "STALE");
+    for key in [
+        "paragraph",
+        "root",
+        "rootSources",
+        "anchors",
+        "sourceRecords",
+        "dependencyRecords",
+        "publicationDigest",
+        "bindingsDigest",
+        "operationDigest",
+        "paragraphDigest",
+        "contextDigest",
+    ] {
+        assert_eq!(stale_context[key], before_context[key], "historical {key}");
+    }
+    assert_ne!(
+        maintained_v2_packet["packetDigest"],
+        maintained_v1_packet["packetDigest"]
+    );
+    let reject_work = |selection: &Value, root: &str, name: &str, expected: &str| {
+        let records_before = frozen_tree(&repo.path(".codeclew/work").unwrap());
+        let input = f.input(&format!("reject-maintained-work-{name}.json"), &json!({"schema":"codeclew-documentation-work-request/1.0", "audience":"Synthetic negative maintained selection", "contextProfile":"process-graph-v1", "rootDeclaration":root, "question":"Explain current source with selected human context", "maintainedParagraph":selection}));
+        let (code, response) = f.run(&[
+            "docs",
+            "work",
+            "prepare",
+            "--subject",
+            "service:alpha",
+            "--snapshot",
+            &v2,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        assert_ne!(code, 0, "{response}");
+        assert!(response.to_string().contains(expected), "{response}");
+        assert_eq!(
+            records_before,
+            frozen_tree(&repo.path(".codeclew/work").unwrap())
+        );
+        assert!(!repo.path(".codeclew/jobs").unwrap().exists());
+        assert!(!repo.path("execution/accounts").unwrap().exists());
+    };
     let reject = |selection: &Value, name: &str, expected: &str| {
         let input = f.input(&format!("reject-{name}.json"), selection);
         let out = f.temp.path().join(format!("reject-{name}"));
@@ -1051,12 +1176,30 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     let mut invalid = selected.clone();
     invalid[0]["authoredParagraphs"][0]["fragment"] = json!("missing");
     reject(&invalid, "missing-fragment", "missing or ambiguous");
+    reject_work(
+        &invalid[0]["authoredParagraphs"][0],
+        root_v2,
+        "missing-fragment",
+        "missing or ambiguous",
+    );
     invalid = selected.clone();
     invalid[0]["endpointDeclaration"] = invalid[0]["workerDeclaration"].clone();
     reject(&invalid, "unrelated-endpoint", "endpoint compiler symbol");
+    reject_work(
+        &selected[0]["authoredParagraphs"][0],
+        invalid[0]["endpointDeclaration"].as_str().unwrap(),
+        "unrelated-root",
+        "exact discovered endpoint",
+    );
     invalid = selected.clone();
     invalid[0]["authoredParagraphs"][0]["fragment"] = json!(original.explanation[1].id);
     reject(&invalid, "unauthored", "no declared user authorship");
+    reject_work(
+        &invalid[0]["authoredParagraphs"][0],
+        root_v2,
+        "unauthored",
+        "no declared human authorship",
+    );
     invalid = selected.clone();
     invalid[0]["authoredParagraphs"]
         .as_array_mut()
@@ -1066,11 +1209,40 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     invalid = selected.clone();
     invalid[0]["authoredParagraphs"][0]["bundle"] = json!("0".repeat(64));
     reject(&invalid, "missing-bundle", "publication");
+    reject_work(
+        &invalid[0]["authoredParagraphs"][0],
+        root_v2,
+        "missing-bundle",
+        "publication",
+    );
     // Tampering with public frozen output bytes is detected by its manifest.
     let binding_file = f.bundle(bundle, "bindings.json");
     let binding_bytes = fs::read(&binding_file).unwrap();
     fs::write(&binding_file, b"{}").unwrap();
     reject(&selected, "damaged-bindings", "damaged or incomplete");
+    reject_work(
+        &selected[0]["authoredParagraphs"][0],
+        root_v2,
+        "damaged-bindings",
+        "damaged or incomplete",
+    );
+    // Omission and null remain identical and do not read the damaged old bundle.
+    let (legacy_id, legacy_packet) =
+        public_maintained_packet(&f, &v2, root_v2, None, "legacy-omitted");
+    let (null_id, null_packet) =
+        public_maintained_packet(&f, &v2, root_v2, Some(&Value::Null), "legacy-null");
+    assert_eq!(legacy_id, null_id);
+    assert_eq!(
+        canonical::bytes(&legacy_packet).unwrap(),
+        canonical::bytes(&null_packet).unwrap()
+    );
+    assert!(legacy_packet.get("maintainedContext").is_none());
+    assert!(
+        serde_json::to_value(work::load(&repo, &legacy_id).unwrap())
+            .unwrap()
+            .get("maintainedContext")
+            .is_none()
+    );
     fs::write(&binding_file, &binding_bytes).unwrap();
     // A manifest-consistent forged map still cannot borrow another source digest.
     let fake = "f".repeat(64);
@@ -1106,6 +1278,12 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     invalid = selected.clone();
     invalid[0]["authoredParagraphs"][0]["bundle"] = json!(fake);
     reject(&invalid, "forged-refs", "pinned provenance");
+    reject_work(
+        &invalid[0]["authoredParagraphs"][0],
+        root_v2,
+        "forged-refs",
+        "pinned provenance",
+    );
     // Unselected paragraphs still count toward the original-Check budget. These
     // deliberately unavailable snapshots must reject before any Check is loaded.
     let budget_bundle = "e".repeat(64);
@@ -1311,6 +1489,32 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
             .contains("Explicitly selected authored paragraph context")
     );
     let native_migrated_files = files(&native_migrated);
+    let (maintained_migrated_work, maintained_migrated_packet) = public_maintained_packet(
+        &f,
+        &v2,
+        root_v2,
+        Some(&migrated_selection[0]["authoredParagraphs"][0]),
+        "migrated-current",
+    );
+    let migrated_context = &maintained_migrated_packet["maintainedContext"];
+    assert_eq!(migrated_context["contextFreshness"], "CURRENT");
+    assert_eq!(migrated_context["paragraph"], migrated_row["paragraph"]);
+    assert_eq!(
+        migrated_context["sourceRecords"],
+        migrated_row["sourceRecords"]
+    );
+    assert_eq!(
+        migrated_context["paragraph"]["authorship"]["author"],
+        "Fixture <maintainer>"
+    );
+    assert_eq!(
+        migrated_context["paragraph"]["authorship"]["contextMigration"]["editor"],
+        "Native context <editor>"
+    );
+    assert_eq!(
+        migrated_context["paragraph"]["authorship"]["contextMigration"]["contextReview"],
+        "UNASSESSED"
+    );
     // A further real compiler capture makes the selected paragraph context stale.
     fs::write(
         &path,
@@ -1347,6 +1551,25 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     assert_eq!(stale_row["contextFreshness"], "STALE");
     assert_eq!(stale_row["paragraph"], migrated_row["paragraph"]);
     assert_eq!(stale_row["sourceRecords"], migrated_row["sourceRecords"]);
+    let (maintained_newer_work, maintained_newer_packet) = public_maintained_packet(
+        &f,
+        &v3,
+        newer[0]["endpointDeclaration"].as_str().unwrap(),
+        Some(&newer[0]["authoredParagraphs"][0]),
+        "migrated-stale",
+    );
+    assert_eq!(
+        maintained_newer_packet["maintainedContext"]["contextFreshness"],
+        "STALE"
+    );
+    assert_eq!(
+        maintained_newer_packet["maintainedContext"]["paragraph"],
+        migrated_context["paragraph"]
+    );
+    assert_eq!(
+        maintained_newer_packet["maintainedContext"]["sourceRecords"],
+        migrated_context["sourceRecords"]
+    );
     assert_eq!(files(&native_migrated), native_migrated_files);
     assert_eq!(files(&before), before_files);
     fs::remove_dir_all(&alpha).unwrap();
@@ -1368,6 +1591,25 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
     );
     assert_eq!(files(&migrated_offline), native_migrated_files);
     assert_eq!(files(&offline), expected_files);
+    for (id, packet) in [
+        (&maintained_v1_work, &maintained_v1_packet),
+        (&maintained_v2_work, &maintained_v2_packet),
+        (&maintained_migrated_work, &maintained_migrated_packet),
+        (&maintained_newer_work, &maintained_newer_packet),
+    ] {
+        let offline_packet = f.ok(&["docs", "work", "packet", "--work", id]);
+        assert_eq!(
+            canonical::bytes(&offline_packet).unwrap(),
+            canonical::bytes(packet).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(work::load(&repo, id).unwrap().maintained_context.unwrap())
+                .unwrap(),
+            packet["maintainedContext"]
+        );
+    }
+    assert!(!repo.path(".codeclew/jobs").unwrap().exists());
+    assert!(!repo.path("execution/accounts").unwrap().exists());
     assert_eq!(frozen_tree(&f.bundle(bundle, "")), old_bundle);
     if let Some(destination) = std::env::var_os("CODECLEW_NATIVE_AUTHORED_TEST_ARTIFACTS") {
         let destination = Path::new(&destination);
@@ -1380,6 +1622,18 @@ fn frozen_authored_paragraph_consumes_original_sources_beside_current_native_pag
         copy_tree(&native_migrated, &destination.join("migrated-current"));
         copy_tree(&native_stale, &destination.join("migrated-stale"));
         copy_tree(&migrated_offline, &destination.join("migrated-offline"));
+        for (name, packet) in [
+            ("work-original", &maintained_v1_packet),
+            ("work-stale", &maintained_v2_packet),
+            ("work-migrated-current", &maintained_migrated_packet),
+            ("work-migrated-stale", &maintained_newer_packet),
+        ] {
+            fs::write(
+                destination.join(format!("{name}-packet.json")),
+                canonical::bytes(packet).unwrap(),
+            )
+            .unwrap();
+        }
         fs::write(destination.join("journey.json"),serde_json::to_vec_pretty(&json!({"schema":"codeclew-native-authored-journey/1.0","authority":"PUBLIC_MANUAL_UNASSESSED_NOT_SEMANTIC_REVIEW","originalSnapshot":v1,"currentSnapshot":v2,"authoredPublication":authored,"livePointerMovedPublication":moved,"selection":selected,"contextMigrationInput":migration_input,"contextMigrationPublication":migration_publication,"migratedSelection":migrated_selection,"subsequentSourceSnapshot":v3,"checkoutAndArchivesRemoved":true,"byteIdenticalOffline":true})).unwrap()).unwrap();
     }
 }

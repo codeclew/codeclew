@@ -793,6 +793,7 @@ mod tests {
                 root_declaration: None,
                 question: None,
                 authoring_contract: None,
+                maintained_paragraph: None,
                 max_items: 20,
                 max_bytes,
                 external_inputs: Vec::new(),
@@ -800,6 +801,7 @@ mod tests {
             checked,
             snapshot: Some("sha256:snapshot/100".into()),
             retained: None,
+            maintained_context: None,
             external_inputs: BTreeMap::new(),
             handles: BTreeMap::from([(
                 "s1".into(),

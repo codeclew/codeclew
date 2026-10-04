@@ -526,6 +526,54 @@ calls. The full process graph remains in the operator-only audit. Use the same
 `docs work run --draft` command and author-only configuration; do not reuse an
 endpoint-context Work for this profile.
 
+A new endpoint `process-graph-v1` Work can explicitly select one frozen human
+paragraph with `maintainedParagraph` in its preparation request:
+
+```json
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Maintainers",
+  "contextProfile": "process-graph-v1",
+  "rootDeclaration": "<exact current endpoint declaration ID>",
+  "question": "Explain current source with the selected attributed context.",
+  "maintainedParagraph": {
+    "bundle": "<exact published bundle ID>",
+    "operation": "<discovered endpoint operation ID>",
+    "fragment": "<human explanation paragraph ID>"
+  }
+}
+```
+
+Prepare it with `docs work prepare --root docs --subject service:ID --snapshot
+SNAPSHOT --input request.json`. Preparation verifies the immutable publication,
+its original snapshot and the exact endpoint symbol, declaration and scope.
+The selected current Check must still discover that same endpoint operation and
+retain the selected root in its dependency membership; removal of its endpoint
+route is refused even when the method remains. Preparation freezes the paragraph's text, declared author, effective source snapshot,
+source/dependency pins, event anchors and any explicit context migration into
+`maintainedContext` in the new Work. A changed logical endpoint identity is
+refused; this selector does not map old IDs to new IDs.
+
+`docs work packet` and the author request deliver this complete context before
+calculating the packet digest and request budget. `CURRENT` means the pinned
+root, sources and dependencies match the selected Work; it does not assess the
+human prose. Changed source bytes produce `STALE` while retaining the original
+attributed text and historical records. The text author and an explicit context
+editor remain distinct, and meaning/context review remains `UNASSESSED`.
+Historical records are separate from compiler citation labels and current
+method bodies. Their presence does not prove a compiler fact or approve a claim.
+
+The inline context limit is eight MiB within the existing 64 MiB Work limit.
+Public paragraph text edits retain their existing 8192-byte limit; complete
+source context can exceed the ordinary 49,152-byte Work read page. Packet and
+author input delivery do not truncate that selected context. An oversized
+complete author request fails its input cap before the driver starts; narrow
+selection or use a configured supported larger input budget. Omit the selector
+(or use `null`) to retain legacy Work and packet bytes. Existing saved jobs are
+not augmented, and later packet reads use only the frozen Work and snapshot,
+including when the original source checkout is unavailable. This selection does
+not automatically edit text, remap anchors or attest to human meaning.
+
 To render a saved structured answer conforming to
 `codeclew-operation-answer/1.0`, `codeclew-operation-answer/1.1`, or
 `codeclew-operation-answer/1.2`, run

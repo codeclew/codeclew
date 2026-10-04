@@ -1568,7 +1568,12 @@ fn packet_displayed_citation_labels(
     }
 
     let mut labels = BTreeSet::new();
-    visit(packet, &mut labels)?;
+    // Frozen user context has historical record identities, never compiler citation labels.
+    let mut compiler_packet = packet.clone();
+    if let Some(fields) = compiler_packet.as_object_mut() {
+        fields.remove("maintainedContext");
+    }
+    visit(&compiler_packet, &mut labels)?;
     if let Some(process_intent) = packet.get("processIntent") {
         let process_intent = process_intent
             .as_object()
