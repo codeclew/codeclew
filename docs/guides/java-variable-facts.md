@@ -30,9 +30,12 @@ compiler scope. Lambda and local-class bodies emit local boundaries and do not
 produce immediate variable accesses. Field/static initializer flows, exception
 parameters and resource-variable identities are outside this initial contract.
 
-Native capture validates the closed typed facts, canonical payload digest,
+Native capture validates the closed typed facts, exact CAS payload reference,
 registered compilation, enclosing callable, target metadata and immutable source
-membership. It verifies Javac UTF-16 coordinates against exact UTF-8 byte spans, including
+membership. The reference hashes canonical compiler JSON under the compiler-fact
+CAS schema and domain. It stays separate from the unsalted semantic observation
+digest; a semantic hash cannot substitute for the compiler payload reference.
+It verifies Javac UTF-16 coordinates against exact UTF-8 byte spans, including
 CR-only, CRLF and mixed source line endings. Variable context sources preserve
 original intermediate terminator bytes. The Javac line contract applies only to
 the new variable sources; historical source snippets keep their prior behavior.
@@ -60,7 +63,9 @@ The focused real-JDK qualification test is
 `documentation::analysis::tests::javac_variables_resolve_storage_modes_spans_and_scoped_admission`.
 It exercises shadows, sibling locals, field/parameter assignments, compound and
 increment accesses, member receivers, array elements, Unicode, deferred bodies,
-external fields, file relocation, real CR-only/CRLF/mixed compiler captures and
-native admission rejection. Separate typed
+external fields, file relocation, real CR-only/CRLF/mixed compiler captures,
+constructor parameters and qualified/static fields across multiple classes, and
+native admission rejection. Actual CAS references are preserved in retained
+source evidence; an unsalted semantic payload hash is rejected. Separate typed
 contract tests reject unsupported modes, fields, paths and spans. Source-ready
 regressions do not constitute a compiler qualification result until executed.

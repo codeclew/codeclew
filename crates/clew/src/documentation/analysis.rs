@@ -1091,7 +1091,13 @@ fn validate_variable_facts(
         let typed: JavaCompilerFact = serde_json::from_value(raw.clone())
             .map_err(|_| invalid("compiler variable fact is not closed typed evidence"))?;
         validate_fact(&typed)?;
-        if digest(&raw)? != *binding {
+        // Compiler payload references are CAS identities, including the schema
+        // domain. An unsalted semantic JSON hash is not their provenance.
+        let payload = crate::cas::CasObject::for_bytes(
+            crate::java_adapter_v2::JAVA_FACT_SCHEMA,
+            &bytes(&raw)?,
+        )?;
+        if payload.digest != *binding {
             return Err(invalid("compiler variable payload binding differs"));
         }
         let file = fact["file"].as_str().unwrap();
@@ -1904,6 +1910,15 @@ pub fn resolve<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn java_fact_binding(value: &impl serde::Serialize) -> String {
+        crate::cas::CasObject::for_bytes(
+            crate::java_adapter_v2::JAVA_FACT_SCHEMA,
+            &canonical::bytes(value).unwrap(),
+        )
+        .unwrap()
+        .digest
+    }
     #[test]
     fn source_normalization_preserves_strings_and_identifiers() {
         assert_eq!(
@@ -2426,7 +2441,7 @@ class Variables {
                 .iter()
                 .map(|fact| {
                     let mut value = serde_json::to_value(fact).unwrap();
-                    let binding = digest(&value).unwrap();
+                    let binding = java_fact_binding(fact);
                     value["scope"] = json!({"compilation":":/main"});
                     (value, binding)
                 })
@@ -2767,12 +2782,24 @@ class Variables {
             bad[access_index].0[key] = value;
             let mut raw = bad[access_index].0.clone();
             raw.as_object_mut().unwrap().remove("scope");
-            bad[access_index].1 = digest(&raw).unwrap();
+            bad[access_index].1 = java_fact_binding(&raw);
             assert!(
                 validate_variable_facts(&bad, &tables, &known).is_err(),
                 "{key}"
             );
         }
+        let mut semantic_binding = facts.clone();
+        let mut raw = semantic_binding[access_index].0.clone();
+        raw.as_object_mut().unwrap().remove("scope");
+        semantic_binding[access_index].1 = digest(&raw).unwrap();
+        assert_ne!(semantic_binding[access_index].1, facts[access_index].1);
+        assert!(
+            validate_variable_facts(&semantic_binding, &tables, &known)
+                .unwrap_err()
+                .message
+                .contains("compiler variable payload binding differs"),
+            "an unsalted semantic digest cannot replace the actual CAS reference"
+        );
         let mut bad_binding = facts.clone();
         bad_binding[access_index].1 = "sha256:forged".into();
         assert!(validate_variable_facts(&bad_binding, &tables, &known).is_err());
@@ -2826,6 +2853,100 @@ class Variables {
             BTreeMap::new(),
         );
         assert!(validate_variable_facts(&facts, &wrong_tables, &known).is_err());
+        // A second genuine compiler capture exercises constructor formals,
+        // qualified/static fields and several owners, as in native linked pages.
+        let task_probe = r#"package example;
+class Task {
+    static final int DEFAULT_PRIORITY = 1;
+    String name;
+    int priority;
+    Task(String name, int priority) { this.name = name; this.priority = priority; }
+}
+class UseTask {
+    String prepare(Task task) {
+        int priority = Task.DEFAULT_PRIORITY;
+        String name = task.name;
+        return name + priority;
+    }
+}
+"#;
+        let task_facts = produce(temp.path(), task_probe);
+        let task_tables = compile_sources(
+            vec![(
+                ":/main",
+                BTreeMap::from([(file.into(), task_probe.into())]),
+                false,
+            )],
+            BTreeMap::new(),
+        );
+        let task_evidence = project_scoped_ok(
+            &projection_service(),
+            task_facts.clone(),
+            &task_tables,
+            &[":/main"],
+        );
+        verify_evidence(&task_evidence).unwrap();
+        let task_variables = task_facts
+            .iter()
+            .filter(|(f, _)| {
+                matches!(
+                    f["kind"].as_str(),
+                    Some("VARIABLE_ACCESS" | "VARIABLE_DECLARATION")
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            task_variables
+                .iter()
+                .any(|(f, _)| f["kind"] == "VARIABLE_DECLARATION"
+                    && f["variableKind"] == "PARAMETER"
+                    && f["enclosingCallable"].as_str().unwrap().contains("#<init>"))
+        );
+        for exact in [
+            "this.name",
+            "this.priority",
+            "Task.DEFAULT_PRIORITY",
+            "task.name",
+        ] {
+            assert!(
+                task_variables
+                    .iter()
+                    .any(|(f, _)| f["kind"] == "VARIABLE_ACCESS"
+                        && &task_probe[f["byteStart"].as_u64().unwrap() as usize
+                            ..f["byteEnd"].as_u64().unwrap() as usize]
+                            == exact),
+                "{exact}"
+            );
+        }
+        for (fact, binding) in task_variables {
+            let mut raw = fact.clone();
+            raw.as_object_mut().unwrap().remove("scope");
+            assert_eq!(*binding, java_fact_binding(&raw));
+            assert_ne!(*binding, digest(&raw).unwrap());
+            let rows = task_evidence
+                .observations
+                .values()
+                .filter(|o| {
+                    o.kind == fact["kind"].as_str().unwrap()
+                        && o.normalized["variableSite"]["byteStart"] == fact["byteStart"]
+                        && o.normalized["variableSite"]["byteEnd"] == fact["byteEnd"]
+                        && o.normalized["variableIdentity"] == fact["variableIdentity"]
+                        && o.normalized["occurrencePath"] == fact["occurrencePath"]
+                        && o.normalized["enclosingCallable"] == fact["enclosingCallable"]
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows.len(),
+                1,
+                "exact variable occurrence must remain unique"
+            );
+            let row = rows[0];
+            assert_eq!(row.normalized["variableSite"]["evidenceDigest"], *binding);
+            assert_eq!(
+                task_evidence.sources[&row.source_ids[0]].evidence_digest,
+                *binding
+            );
+        }
         let relocated = format!("// unrelated file line relocation 🙂\n\n{original}");
         let relocated_facts = produce(temp.path(), &relocated);
         let identities = |fs: &[(Value, String)]| {
@@ -2947,7 +3068,7 @@ class Variables {
             wrong_lines[index].0["startLine"] = json!(1);
             let mut raw = wrong_lines[index].0.clone();
             raw.as_object_mut().unwrap().remove("scope");
-            wrong_lines[index].1 = digest(&raw).unwrap();
+            wrong_lines[index].1 = java_fact_binding(&raw);
             assert!(
                 validate_variable_facts(&wrong_lines, &probe_tables, &known).is_err(),
                 "{name}: LF-style/forged compiler line must fail"
@@ -3061,7 +3182,7 @@ class Variables {
             .map(|fact| {
                 let mut value = serde_json::to_value(fact).unwrap();
                 value["scope"] = scope.clone();
-                (value, digest(fact).unwrap())
+                (value, java_fact_binding(fact))
             })
             .collect();
         let table = BTreeMap::from([(file.into(), source.into())]);
