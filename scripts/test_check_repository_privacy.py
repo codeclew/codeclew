@@ -4,6 +4,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import random
+import re
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +20,34 @@ SPEC.loader.exec_module(privacy)
 
 
 class RepositoryPrivacyTest(unittest.TestCase):
+    def test_large_inline_assets_do_not_require_an_email_to_make_progress(self) -> None:
+        asset = b"A" * 65536
+        first = next(privacy.EMAIL_RE.finditer(asset))
+        self.assertEqual(first.span(), (0, len(asset)))
+        self.assertIsNone(first.group(1))
+        self.assertNotIn("non-placeholder-email", privacy.blob_rules(asset))
+        for domain, forbidden in [(b"example.invalid", False), (b"example.com", True)]:
+            data = asset + b"@" + domain
+            self.assertEqual("non-placeholder-email" in privacy.blob_rules(data), forbidden)
+
+    def test_email_findings_preserve_previous_detector_semantics(self) -> None:
+        previous = re.compile(br"[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
+        at = b"@"
+        cases = [b"a" + at + b"example.invalid+next" + at + b"example.com",
+                 b"a" + at + b"b" + at + b"example.com",
+                 b"person" + at + b"example.INVALID", b"not an address"]
+        generator = random.Random(2718)
+        alphabet = b"abCD09._%+-@ /:"
+        for _ in range(2000):
+            cases.append(bytes(generator.choice(alphabet) for _ in range(80)))
+        for data in cases:
+            expected = any(not match.group(1).lower().endswith(b".invalid")
+                           for match in previous.finditer(data))
+            observed = any(match.group(1) is not None
+                           and not match.group(1).lower().endswith(b".invalid")
+                           for match in privacy.EMAIL_RE.finditer(data))
+            self.assertEqual(observed, expected, repr(data))
+
     def test_worktree_checks_pending_content_without_changing_index(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

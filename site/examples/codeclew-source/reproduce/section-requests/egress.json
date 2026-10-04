@@ -1,0 +1,7 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Developers consuming Clew documentation. Summarize returned Work/proposal/review results, accepted source-linked publication, and maintenance next actions. Focus documentation workflow; omit installer internals, SVG and Q&A exports. Keep summary.text below 1800 UTF-8 bytes (native maximum 2048). Use complete supplied source; distinguish static FILE_ONLY interpretation from runtime guarantees and unknown delegated implementations. Reader-intent is task context, not proof.",
+  "entrypoint": "section-egress",
+  "maxItems": 100,
+  "maxBytes": 40960
+}

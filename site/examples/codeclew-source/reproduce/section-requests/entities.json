@@ -1,0 +1,7 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Developers preparing documentation inputs and inspecting saved Clew results. Explain the documentation repository, service declaration, source snapshot and record, Work and reference, proposal, meaning review, publication and finite execution configuration, with their relationships and stable identities. Use complete supplied source; keep FILE_ONLY, delegated persistence and runtime limits explicit. Reader-intent is task context, not proof.",
+  "entrypoint": "section-entities",
+  "maxItems": 100,
+  "maxBytes": 40960
+}

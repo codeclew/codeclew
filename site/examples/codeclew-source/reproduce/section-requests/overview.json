@@ -1,0 +1,7 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Developers installing released Clew 0.13.7 and maintaining source-linked service documentation. Explain a practical first service, registered inputs, captured evidence, configured Work author/reviewer, publication and freshness checks from the complete supplied files. Focus on the released documentation interface; distinguish unsupported runtime effects and FILE_ONLY source interpretation. Use reader-intent as task context, not proof.",
+  "entrypoint": "section-overview",
+  "maxItems": 100,
+  "maxBytes": 40960
+}

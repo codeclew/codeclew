@@ -1,0 +1,82 @@
+{
+  "schema": "codeclew-documentation-execution/1.0",
+  "author": {
+    "adapter": "macos-seatbelt-stdio/1.0",
+    "model": "gpt-6.1-sol",
+    "usageAuthority": "TRANSPORT_METADATA",
+    "command": [
+      "REPLACE_ABSOLUTE_PYTHON3",
+      "-I",
+      "-S",
+      "REPLACE_TRANSPORT_DIRECTORY/bridge.py",
+      "--token-file",
+      "REPLACE_PRIVATE_TOKEN_PATH"
+    ],
+    "runtimeReads": [
+      "REPLACE_TRANSPORT_DIRECTORY",
+      "REPLACE_PYTHON_RUNTIME_PREFIX",
+      "REPLACE_PRIVATE_TOKEN_PATH"
+    ],
+    "environment": [],
+    "network": true,
+    "cap": {
+      "maximum": {
+        "inputTokens": 1500000,
+        "outputTokens": 12000,
+        "costUnits": 1
+      },
+      "overheadInputTokens": 0,
+      "timeoutMs": 600000,
+      "outputBytes": 49152
+    }
+  },
+  "reviewer": {
+    "adapter": "macos-seatbelt-stdio/1.0",
+    "model": "gpt-6.1-sol",
+    "usageAuthority": "TRANSPORT_METADATA",
+    "command": [
+      "REPLACE_ABSOLUTE_PYTHON3",
+      "-I",
+      "-S",
+      "REPLACE_TRANSPORT_DIRECTORY/bridge.py",
+      "--token-file",
+      "REPLACE_PRIVATE_TOKEN_PATH"
+    ],
+    "runtimeReads": [
+      "REPLACE_TRANSPORT_DIRECTORY",
+      "REPLACE_PYTHON_RUNTIME_PREFIX",
+      "REPLACE_PRIVATE_TOKEN_PATH"
+    ],
+    "environment": [],
+    "network": true,
+    "cap": {
+      "maximum": {
+        "inputTokens": 1500000,
+        "outputTokens": 6000,
+        "costUnits": 1
+      },
+      "overheadInputTokens": 0,
+      "timeoutMs": 300000,
+      "outputBytes": 32768
+    }
+  },
+  "authorCalls": 3,
+  "reviewerCalls": 4,
+  "fallbackCalls": 0,
+  "repairAttempts": 1,
+  "expansions": 1,
+  "budget": {
+    "account": "REPLACE_FRESH_NATIVE_ACCOUNT",
+    "costUnit": "local-planning-unit-not-money",
+    "ceiling": {
+      "inputTokens": 12000000,
+      "outputTokens": 72000,
+      "costUnits": 8
+    },
+    "stopLoss": {
+      "inputTokens": 10500000,
+      "outputTokens": 60000,
+      "costUnits": 7
+    }
+  }
+}

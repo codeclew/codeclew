@@ -1,0 +1,176 @@
+{
+  "status": "FIVE_NATIVE_SECTIONS_ACCEPTED",
+  "qualificationScope": "FIVE_ACTUAL_SECTIONS_MACOS_INSTALLED_RELEASE_NOT_ALL_PLATFORMS",
+  "release": "0.13.7",
+  "sourceRevision": "fd82a763fb5b38083fc3f298aee5ee116c906e21",
+  "publication": {
+    "status": "PARTIAL",
+    "bundle": "7c84c5220aa3bd456acf143043d657955a73bd4ff685f1f3322e4a258f89c86c",
+    "documentedSections": 5,
+    "unresolvedInternalWorkerOrNoteGaps": 15,
+    "sourceFreshness": "UNVERIFIED",
+    "sourceReason": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+    "runtime": "UNKNOWN",
+    "released": true
+  },
+  "configuredRoles": {
+    "model": "gpt-6.1-sol",
+    "reasoningEffort": "high",
+    "actualAuthors": 6,
+    "actualReviewers": 6,
+    "localExpansionCalls": 5,
+    "responsibilitiesRepair": "One bounded author/reviewer repair pair"
+  },
+  "completeSelectedFiles": [
+    "site/install.sh",
+    "clew",
+    "crates/clew/src/documentation/cli.rs",
+    "crates/clew/src/documentation/work.rs",
+    "crates/clew/src/documentation/proposals.rs",
+    "crates/clew/src/documentation/model.rs",
+    "crates/clew/src/documentation/agent_jobs.rs"
+  ],
+  "scopeLimit": "Chosen task-specific exact refs; not a universal source or cardinality policy",
+  "exactRuntimeSha256": {
+    "bridge.py": "75ca6a91d579282ce06cac3e12ec8c1c59631ebaff6b2761c4868aafcd3798a5",
+    "controller.py": "13b39befff9d02e4458143716d341c3e40b235e54b65f901a2799b97d457c6b0",
+    "finite_cli.py": "cd4276bd60141f126af8a9c21dbbd3847bf21b0640d9b6d2ed6299f8d996eeaf",
+    "native_contract.py": "fe27d923a7d418f089dcfb279daefaaec346b3ca19cea26f6ed84d105776a34e",
+    "known-proposal-schema.json": "7df12b839f41781008d915ff641ad71c33b15947a225e6eda011753039eb80a7",
+    "known-review-schema.json": "7e9a6595a115f3117d333fa223855433d60ba519c522b145a2f25940f0c30643",
+    "known-section-author-schema.json": "f2d9af1035c06ae4a8ef2576b9005c5e78288bc429050d973d06ffe2fcc50cc8",
+    "source-provenance.json": "c4e90a4e2f02a724f21816cfe99d66b1aa22a6376b98741d5bcfc4f0070240cc"
+  },
+  "originalCaptureSnapshot": "sha256:d0fdfe75b9a0523d0971573238e28e802e4fde54a89112d5457fc7bc5ec35ec4/10074",
+  "finalSnapshot": "sha256:ff4d594cf804b6b538889b387c171ad23466f877a5fdd10051b33cd5c64c31da/10244",
+  "overviewObservation": {
+    "work": "5796c9558af75e5f7dbef79d52c0a6034f3b7e8033aee091fa74abc4ee0cf65c",
+    "run": "7233b48a87e24046a9c24bf9ee6dc9db",
+    "proposal": "794cc2e6b86640b14c7a7ddabe375acc3710838830a1893c97e038ec29fe511c",
+    "publication": {
+      "status": "PARTIAL",
+      "bundle": "0e8bd3b707cf222e10b05796d956bac7725f8c3a075bf1e0db27e8a0fb6e2266"
+    },
+    "telemetry": {
+      "authorElapsedSeconds": 80.179792,
+      "reviewerElapsedSeconds": 63.945293,
+      "cliReportedAuthorInputTokens": 237377,
+      "cliReportedReviewerInputTokens": 237849,
+      "nativeUsage": "MAXIMUM_ONLY_REAL_USAGE_NULL",
+      "monetaryUsage": "UNKNOWN",
+      "providerCancellation": "NOT_ESTABLISHED"
+    }
+  },
+  "acceptedCases": [
+    {
+      "section": "overview",
+      "status": "ACCEPTED",
+      "meaningReview": "APPROVE",
+      "work": "5796c9558af75e5f7dbef79d52c0a6034f3b7e8033aee091fa74abc4ee0cf65c",
+      "run": "7233b48a87e24046a9c24bf9ee6dc9db",
+      "proposal": "794cc2e6b86640b14c7a7ddabe375acc3710838830a1893c97e038ec29fe511c",
+      "acceptedPublication": {
+        "bundle": "0e8bd3b707cf222e10b05796d956bac7725f8c3a075bf1e0db27e8a0fb6e2266",
+        "status": "PARTIAL"
+      },
+      "modelAuthorCalls": 1,
+      "modelReviewerCalls": 1,
+      "localExpansionCalls": 1,
+      "meaningReviewObservation": "Native ACCEPTED independently observed in retained public run output; final reviewer APPROVE reported by root"
+    },
+    {
+      "section": "responsibilities",
+      "status": "ACCEPTED",
+      "meaningReview": "APPROVE",
+      "work": "b75b6698c298abe92569e3d177497680ce79b84696799a94a110d9317eae3607",
+      "run": "75599c61c41e480f8ff14cbd80b38924",
+      "proposal": "704b3c046a379c013d1c63f9e8b0529fa51b7dde3bbb422570fdbae74fbbfe70",
+      "acceptedPublication": {
+        "bundle": "0d29a4cf3a748177484677ef564a6dfe48a8b27dde00c399524e273ebdf8443a",
+        "status": "PARTIAL"
+      },
+      "modelAuthorCalls": 2,
+      "modelReviewerCalls": 2,
+      "localExpansionCalls": 1,
+      "meaningReviewObservation": "Native ACCEPTED independently observed in retained public run output; final reviewer APPROVE reported by root"
+    },
+    {
+      "section": "entities",
+      "status": "ACCEPTED",
+      "meaningReview": "APPROVE",
+      "work": "5e0599dd64c686fd9ac1472d64f89798effef749b27273339be6d100848323c9",
+      "run": "50e49e50713a4d07a885edb28ea3704c",
+      "proposal": "c638336ae6f1fc478b46d98ca673c776edf7853804c1d73571f5d17369c26aeb",
+      "acceptedPublication": {
+        "bundle": "a1eb5e011090b5d178bf22f270da13a694b53723c9492747077af9eeb30a023e",
+        "status": "PARTIAL"
+      },
+      "modelAuthorCalls": 1,
+      "modelReviewerCalls": 1,
+      "localExpansionCalls": 1,
+      "meaningReviewObservation": "Native ACCEPTED independently observed in retained public run output; final reviewer APPROVE reported by root"
+    },
+    {
+      "section": "ingress",
+      "status": "ACCEPTED",
+      "meaningReview": "APPROVE",
+      "work": "3b71197d204ceb91734fcca37efbc986ac8d6a9471c6d861bd524a3e9f450485",
+      "run": "81364a99571f454eb5f8475c660ef7ec",
+      "proposal": "205be36fd4baba8c0d314cbf1cb66b203ca34fd82410abce10a5207b8158102a",
+      "acceptedPublication": {
+        "bundle": "7b0d9065f0cdc4a56f7fea525f8bf9263a3f5f4729921585b5dcf177136a0498",
+        "status": "PARTIAL"
+      },
+      "modelAuthorCalls": 1,
+      "modelReviewerCalls": 1,
+      "localExpansionCalls": 1,
+      "meaningReviewObservation": "Native ACCEPTED independently observed in retained public run output; final reviewer APPROVE reported by root"
+    },
+    {
+      "section": "egress",
+      "status": "ACCEPTED",
+      "meaningReview": "APPROVE",
+      "work": "6423ffc4fea1b8c1851f5f80d495b6778b0c35164ba4de42de1cffdaed066d89",
+      "run": "16b1fac5ed25462980ac784156708644",
+      "proposal": "b663128befae46523cbc8b00483cef8d1267dfb8298a7963dd8e18bbf9fa22c3",
+      "acceptedPublication": {
+        "bundle": "8967ea49776fe633eedddfe3e47cc2520f9ff1f6bdc716ec517d0227a4886274",
+        "status": "PARTIAL"
+      },
+      "modelAuthorCalls": 1,
+      "modelReviewerCalls": 1,
+      "localExpansionCalls": 1,
+      "meaningReviewObservation": "Native ACCEPTED independently observed in retained public run output; final reviewer APPROVE reported by root"
+    }
+  ],
+  "preservedFailures": [
+    {
+      "case": "overview01",
+      "cause": "LOCAL_TRANSPORT_ERROR; exact final not retained, cause unknown"
+    },
+    {
+      "case": "overview02",
+      "cause": "Operation and gap conflict for same section target; rejected final retained privately"
+    },
+    {
+      "case": "overview03",
+      "cause": "CLI exit1; stderr was not retained, cause unknown"
+    },
+    {
+      "case": "egress01",
+      "cause": "Summary 2063 UTF8 bytes exceeded existing2048 byte maximum; new Work egress02 accepted with same complete source files"
+    },
+    {
+      "case": "recompose harness",
+      "cause": "Strict zero-only harness refused native exit3; native CHECKED with unresolved{} and UNVERIFIED pinned sources; later explicit native render --publish exit0"
+    }
+  ],
+  "limits": [
+    "Observed native usage null/MAXIMUM_ONLY; cost units are local reservation units, not money",
+    "Provider cancellation not established",
+    "FILE_ONLY Rust/source launcher text is not compiler proof",
+    "Not exhaustive worker behavior; 15 remaining internalworker/NOTE gaps",
+    "Source/file selection reflects actual tasks, not a universal cap"
+  ],
+  "websiteDeploymentAuthority": "REPOSITORY_PAGES_WORKFLOW_SEPARATE_FROM_NATIVE_QUALIFICATION"
+}

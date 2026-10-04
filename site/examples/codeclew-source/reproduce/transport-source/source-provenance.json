@@ -1,0 +1,12 @@
+{
+  "schema": "PRIVATE_SOURCE_ADAPTATION_ONLY/1.0",
+  "nativeSourceRevision": "33e8ea70ab6c86aa2d2a96b5a256ecfb2d2642ef",
+  "priorControllerSha256": "bd810b5d6ca59461e980c1eb707c71935788d00ebad611944b728547a719dee5",
+  "templatesRawSha256": {
+    "proposal": "7df12b839f41781008d915ff641ad71c33b15947a225e6eda011753039eb80a7",
+    "review": "7e9a6595a115f3117d333fa223855433d60ba519c522b145a2f25940f0c30643",
+    "section-author": "f2d9af1035c06ae4a8ef2576b9005c5e78288bc429050d973d06ffe2fcc50cc8"
+  },
+  "qualification": "OFFLINE_ONLY_PENDING",
+  "nativeRuntimeOrProviderQualified": false
+}

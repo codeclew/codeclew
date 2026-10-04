@@ -1,0 +1,108 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-review/1.0"
+    },
+    "work": {
+      "type": "string",
+      "minLength": 1
+    },
+    "proposal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidenceDigest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verdict": {
+      "enum": [
+        "APPROVE",
+        "REJECT",
+        "NEEDS_EVIDENCE"
+      ]
+    },
+    "assessedClaims": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "assessedOperations": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "enum": [
+              "ERROR",
+              "LIMITATION"
+            ]
+          },
+          "claim": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "severity",
+          "reason"
+        ]
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "work",
+    "proposal",
+    "evidenceDigest",
+    "verdict",
+    "assessedClaims",
+    "assessedOperations",
+    "issues",
+    "limitations"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/review.schema.json",
+  "title": "Separately dispatched documentation meaning review"
+}

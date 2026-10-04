@@ -47,7 +47,9 @@ PILOT_EVIDENCE_SCHEMAS = {
 }
 TOKEN_RE = re.compile(br"[A-Za-z0-9]+")
 HOME_PATH_RE = re.compile(br"/(?:Users|home)/[A-Za-z0-9._-]+")
-EMAIL_RE = re.compile(br"[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
+# Consume email-free runs once as well. A required @ makes finditer retry every
+# suffix of long inline image data; the optional domain preserves email matches.
+EMAIL_RE = re.compile(br"[A-Z0-9._%+-]+(?:@([A-Z0-9.-]+\.[A-Z]{2,}))?", re.IGNORECASE)
 SECRET_PATTERNS = (
     ("private-key", re.compile(br"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     ("aws-key", re.compile(br"(?:AKIA|ASIA)[0-9A-Z]{16}")),
@@ -92,7 +94,8 @@ def blob_rules(data: bytes, path: str | None = None) -> list[str]:
         if digest in FORBIDDEN_TOKEN_SHA256:
             findings.add("forbidden-identity")
     for match in EMAIL_RE.finditer(data):
-        if not match.group(1).lower().endswith(b".invalid"):
+        domain = match.group(1)
+        if domain is not None and not domain.lower().endswith(b".invalid"):
             findings.add("non-placeholder-email")
     for label, pattern in SECRET_PATTERNS:
         if pattern.search(data):

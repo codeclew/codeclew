@@ -1,0 +1,7 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Developers starting or updating Clew documentation. Explain supported documentation CLI inputs: registered service and source selection, repository binding, captured snapshot, protected note, Work subject/request/read selection, proposal and execution configuration. Show practical command and input boundaries from complete supplied source. Distinguish source-declared interface from successful runtime execution and exhaustive ingress coverage. Reader-intent is task context, not proof.",
+  "entrypoint": "section-ingress",
+  "maxItems": 100,
+  "maxBytes": 40960
+}

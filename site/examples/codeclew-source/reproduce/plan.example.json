@@ -1,0 +1,17 @@
+{
+  "schema": "codeclew-private-generic-bridge-plan/1.0",
+  "work": "REPLACE_RETURNED_NATIVE_WORK_ID",
+  "service": "clew-public-workflow",
+  "publicSourceReads": [
+    {
+      "path": "REPLACE_ONE_PUBLIC_SOURCE_PART_RESPONSE_PATH",
+      "sha256": "REPLACE_EXACT_FILE_SHA256"
+    }
+  ],
+  "publicTargetPages": [
+    {
+      "path": "REPLACE_PUBLIC_SELECTED_SECTION_WORK_PAGE_PATH",
+      "sha256": "REPLACE_EXACT_FILE_SHA256"
+    }
+  ]
+}

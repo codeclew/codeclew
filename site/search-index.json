@@ -108,6 +108,12 @@
     "group": "Guides"
   },
   {
+    "title": "Understand Codeclew through its own source.",
+    "url": "./documentation.html#codeclew-source-docs",
+    "description": "Service documentation",
+    "group": "Guides"
+  },
+  {
     "title": "Start with the question you need to answer.",
     "url": "./documentation.html#task-paths",
     "description": "Service documentation",

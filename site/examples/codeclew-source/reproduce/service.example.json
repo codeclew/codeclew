@@ -1,0 +1,27 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "clew-public-workflow",
+  "title": "Use Clew to create and maintain source-linked documentation",
+  "repositoryId": "codeclew",
+  "repository": "https://github.com/codeclew/codeclew",
+  "language": "kotlin",
+  "profile": "source-syntax",
+  "targetRef": "v0.13.7",
+  "source": {
+    "roots": [
+      "clew",
+      "crates/clew/src/main.rs",
+      "crates/clew/src/documentation/cli.rs",
+      "bootstrap/clew_bootstrap.py",
+      "site/install.sh",
+      "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Main.kt",
+      "crates/clew/src/documentation/work.rs",
+      "crates/clew/src/documentation/proposals.rs",
+      "crates/clew/src/documentation/model.rs",
+      "crates/clew/src/documentation/agent_jobs.rs"
+    ],
+    "dialect": "2.4.10"
+  },
+  "sourceLinkTemplate": "https://github.com/codeclew/codeclew/blob/{revision}/{file}",
+  "contractFiles": []
+}

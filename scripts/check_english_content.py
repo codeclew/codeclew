@@ -2,6 +2,9 @@
 """Keep repository prose English while allowing explicit Russian product localization."""
 
 from pathlib import Path
+from html.parser import HTMLParser
+import hashlib
+import json
 import os
 import re
 import stat
@@ -262,9 +265,158 @@ def _mask_rust_string_literals(content: str) -> str:
     return "".join(masked)
 
 
+
+# Only the copied native publication has embedded localization and retained code.
+# Narratives, source metadata, arbitrary JSON fields, and ordinary site pages
+# remain English. These are the producer versions in the published example.
+GENERATED_DOCS_PREFIX = "site/examples/codeclew-source/docs/"
+GENERATED_SERVICE = re.compile(r"generated/[0-9a-f]{64}/services/[^/]+\.(html|json)\Z")
+GENERATED_BINDINGS = re.compile(r"generated/[0-9a-f]{64}/bindings\.json\Z")
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+SCRIPT = re.compile(r"(<script\b[^>]*>)(.*?)(</script\s*>)", re.DOTALL | re.IGNORECASE)
+LOCALIZATION_ASSETS = ("app.js", "analysis.js", "reader.js", "limits.js")
+
+
+def _blank(content: str) -> str:
+    return re.sub(r"[^\r\n]", " ", content)
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _retained_source_text(source: object, source_id: str) -> bool:
+    if not isinstance(source, dict) or source.get("id") != source_id:
+        return False
+    text = source.get("text")
+    occurrence = source.get("occurrence")
+    if not isinstance(text, str) or not isinstance(occurrence, dict):
+        return False
+    start, end = occurrence.get("startByte"), occurrence.get("endByte")
+    if type(start) is not int or type(end) is not int or not 0 <= start < end:
+        return False
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        source.get("authority") == "EXACT_SNAPSHOT_TEXT"
+        and isinstance(source.get("service"), str) and bool(source["service"])
+        and isinstance(source.get("file"), str) and bool(source["file"])
+        and isinstance(source.get("revision"), str) and bool(source["revision"])
+        and isinstance(source.get("evidenceDigest"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", source["evidenceDigest"]) is not None
+        and isinstance(occurrence.get("snapshot"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", occurrence["snapshot"]) is not None
+        and end - start == len(raw)
+        and source.get("textDigest") == "sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+
+
+def _mask_generated_json(content: str, kind: str | None) -> str:
+    try:
+        value = json.loads(content, object_pairs_hook=_unique_object)
+    except (ValueError, RecursionError):
+        return content
+    allowed = set()
+
+    def sources(group: object, path: tuple) -> None:
+        if isinstance(group, dict):
+            for source_id, source in group.items():
+                if _retained_source_text(source, source_id):
+                    allowed.add(path + (source_id, "text"))
+
+    if isinstance(value, dict):
+        if kind == "service" and value.get("renderer") == "codeclew-documentation-html/1.16":
+            sources(value.get("sources"), ("sources",))
+            groups = value.get("operationSources")
+            if isinstance(groups, dict):
+                for operation, group in groups.items():
+                    sources(group, ("operationSources", operation))
+        elif kind == "bindings" and value.get("schema") == "codeclew-documentation-bindings/1.4":
+            sources(value.get("retainedSources"), ("retainedSources",))
+
+    # Walk parsed keys/values and original string tokens together. Replacement
+    # is by exact JSON path, never by shared text (a narrative may quote code).
+    tokens = iter(JSON_STRING.finditer(content))
+    edits = []
+
+    def token(text: str, path: tuple | None) -> None:
+        match = next(tokens)
+        if path in allowed:
+            edits.append((match.start(), match.end(), _blank(match[0])))
+        elif CYRILLIC.search(text) and not CYRILLIC.search(match[0]):
+            # Escaped Unicode narratives must not bypass the prose check.
+            edits.append((match.start(), match.start() + 1, "\u0400"))
+
+    def walk(item: object, path: tuple = ()) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                token(key, None)
+                walk(child, path + (key,))
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                walk(child, path + (index,))
+        elif isinstance(item, str):
+            token(item, path)
+
+    walk(value)
+    parts = []
+    cursor = 0
+    for start, end, replacement in edits:
+        parts.extend((content[cursor:start], replacement))
+        cursor = end
+    parts.append(content[cursor:])
+    return "".join(parts)
+
+
+class _ScriptAttributes(HTMLParser):
+    attributes: dict | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script" and len(dict(attrs)) == len(attrs):
+            self.attributes = dict(attrs)
+
+
+def _mask_generated_publication(relative_path: str, content: str) -> str:
+    if not relative_path.startswith(GENERATED_DOCS_PREFIX):
+        return content
+    path = relative_path[len(GENERATED_DOCS_PREFIX):]
+    service = GENERATED_SERVICE.fullmatch(path)
+    if path.endswith(".json"):
+        kind = "bindings" if GENERATED_BINDINGS.fullmatch(path) else "service" if service else None
+        return _mask_generated_json(content, kind)
+    if not path.endswith(".html"):
+        return content
+    assets = [(ROOT / "crates/clew/assets/documentation" / name).read_text(encoding="utf-8")
+              for name in LOCALIZATION_ASSETS]
+
+    def script(match: re.Match) -> str:
+        parser = _ScriptAttributes()
+        parser.feed(match[1])
+        attrs = parser.attributes
+        body = match[2]
+        if attrs is not None and attrs.get("type") == "application/json":
+            kind = "service" if service and attrs.get("id") == "document-data" else None
+            body = _mask_generated_json(body, kind)
+        elif attrs is not None and attrs.get("type", "") in ("", "text/javascript"):
+            for asset in assets:
+                # Exact known executable asset bytes only; added prose remains.
+                body = body.replace(asset, _blank(asset))
+        return match[1] + body + match[3]
+
+    return SCRIPT.sub(script, content)
+
+
 def rejected_cyrillic_line_numbers(relative_path: str, content: str) -> list[int]:
     if relative_path in RUSSIAN_LOCALIZATION_STRING_FILES:
         content = _mask_rust_string_literals(content)
+    content = _mask_generated_publication(relative_path, content)
     return [
         line_number
         for line_number, line in enumerate(content.splitlines(), start=1)

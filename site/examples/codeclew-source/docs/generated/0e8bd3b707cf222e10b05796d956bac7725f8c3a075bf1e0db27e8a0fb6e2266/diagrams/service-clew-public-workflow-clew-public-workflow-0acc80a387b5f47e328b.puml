@@ -1,0 +1,9 @@
+@startuml
+!theme plain
+!pragma layout smetana
+!pragma useVerticalIf on
+title clew-public-workflow-0acc80a387b5f47e328b
+note as Evidence
+FLOW_AUTHORITY_NOT_QUALIFIED； EVIDENCE_BOUNDARIES:FLOW_AUTHORITY_NOT_QUALIFIED
+end note
+@enduml

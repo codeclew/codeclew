@@ -1,0 +1,7 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Developers deciding what Clew owns in a documentation workflow. Explain registered-service preparation, capture requests, immutable Work, configured author/reviewer, proposal publication and maintenance responsibilities, alongside user and provider responsibilities. Use complete supplied source. Distinguish FILE_ONLY interpretation and delegated implementations from runtime guarantees. Reader-intent is task context, not proof.",
+  "entrypoint": "section-responsibilities",
+  "maxItems": 100,
+  "maxBytes": 40960
+}
