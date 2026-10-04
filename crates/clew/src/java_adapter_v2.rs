@@ -74,6 +74,83 @@ pub struct JavaDependencySourceEvidence {
     pub matching_basis: String,
 }
 
+/// Resolved storage identities, never inferred from identifier spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum JavaVariableKind {
+    Field,
+    LocalVariable,
+    Parameter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum JavaVariableAccessMode {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum JavaVariableDefinitionKind {
+    ParameterInput,
+    InitializerDefinition,
+    Uninitialized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum JavaVariableDeclarationStatus {
+    SourceRetained,
+    DeclarationSourceUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaVariableDeclaration {
+    pub schema: String,
+    pub variable_identity: String,
+    pub variable_kind: JavaVariableKind,
+    pub name: String,
+    pub jvm_descriptor: String,
+    pub variable_owner_identity: String,
+    pub enclosing_callable: String,
+    pub occurrence_path: String,
+    pub file: String,
+    pub start: u64,
+    pub end: u64,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub byte_start: u64,
+    pub byte_end: u64,
+    pub resolution: String,
+    pub definition_kind: JavaVariableDefinitionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JavaVariableAccess {
+    pub schema: String,
+    pub variable_identity: String,
+    pub variable_kind: JavaVariableKind,
+    pub name: String,
+    pub jvm_descriptor: String,
+    pub variable_owner_identity: String,
+    pub enclosing_callable: String,
+    pub occurrence_path: String,
+    pub file: String,
+    pub start: u64,
+    pub end: u64,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub byte_start: u64,
+    pub byte_end: u64,
+    pub resolution: String,
+    pub access_mode: JavaVariableAccessMode,
+    pub declaration_status: JavaVariableDeclarationStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -82,6 +159,8 @@ pub struct JavaDependencySourceEvidence {
     deny_unknown_fields
 )]
 pub enum JavaCompilerFact {
+    VariableDeclaration(JavaVariableDeclaration),
+    VariableAccess(JavaVariableAccess),
     SourceFile {
         schema: String,
         file: String,
@@ -202,6 +281,8 @@ pub enum JavaCompilerFact {
 impl JavaCompilerFact {
     fn schema(&self) -> &str {
         match self {
+            Self::VariableDeclaration(fact) => &fact.schema,
+            Self::VariableAccess(fact) => &fact.schema,
             Self::SourceFile { schema, .. }
             | Self::Declaration { schema, .. }
             | Self::Relation { schema, .. }
@@ -213,6 +294,8 @@ impl JavaCompilerFact {
 
     pub(crate) fn path(&self) -> Option<&str> {
         match self {
+            Self::VariableDeclaration(fact) => Some(&fact.file),
+            Self::VariableAccess(fact) => Some(&fact.file),
             Self::SourceFile { file, .. }
             | Self::Declaration { file, .. }
             | Self::Relation { file, .. } => Some(file),
@@ -1173,11 +1256,65 @@ impl LanguageAdapter for JavaAdapterV2 {
     }
 }
 
-fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
+pub(crate) fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
     if fact.schema() != JAVA_FACT_SCHEMA
         || fact.path().is_some_and(|path| !safe_relative_path(path))
     {
         return Err(corrupt("Java compiler fact authority is invalid"));
+    }
+    match fact {
+        JavaCompilerFact::VariableDeclaration(row) => {
+            validate_variable_identity(
+                &row.variable_identity,
+                &row.variable_kind,
+                &row.name,
+                &row.jvm_descriptor,
+                &row.variable_owner_identity,
+                &row.enclosing_callable,
+                &row.occurrence_path,
+                row.start,
+                row.end,
+                row.start_line,
+                row.end_line,
+                row.byte_start,
+                row.byte_end,
+                &row.resolution,
+            )?;
+            if row.variable_kind == JavaVariableKind::Field
+                || row.variable_owner_identity != row.enclosing_callable
+                || (row.variable_kind == JavaVariableKind::Parameter)
+                    != (row.definition_kind == JavaVariableDefinitionKind::ParameterInput)
+                || (row.variable_kind == JavaVariableKind::Parameter
+                    && !row.occurrence_path.starts_with("parameter/"))
+                || (row.variable_kind == JavaVariableKind::LocalVariable
+                    && row.variable_identity
+                        != format!("local:{}/{}", row.enclosing_callable, row.occurrence_path))
+            {
+                return Err(corrupt("Java variable declaration authority is invalid"));
+            }
+        }
+        JavaCompilerFact::VariableAccess(row) => {
+            validate_variable_identity(
+                &row.variable_identity,
+                &row.variable_kind,
+                &row.name,
+                &row.jvm_descriptor,
+                &row.variable_owner_identity,
+                &row.enclosing_callable,
+                &row.occurrence_path,
+                row.start,
+                row.end,
+                row.start_line,
+                row.end_line,
+                row.byte_start,
+                row.byte_end,
+                &row.resolution,
+            )?;
+            if !row.occurrence_path.starts_with("body/") {
+                return Err(corrupt("Java variable access is outside an immediate body"));
+            }
+        }
+        _ => {}
     }
     if let JavaCompilerFact::DependencyTarget {
         symbol_identity,
@@ -1280,6 +1417,90 @@ fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
             Some(symbol_identity),
             "JAVAC_RESOLVED_ANNOTATIONS",
         )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_variable_identity(
+    identity: &str,
+    kind: &JavaVariableKind,
+    name: &str,
+    descriptor: &str,
+    owner: &str,
+    callable: &str,
+    path: &str,
+    start: u64,
+    end: u64,
+    start_line: u64,
+    end_line: u64,
+    byte_start: u64,
+    byte_end: u64,
+    resolution: &str,
+) -> Result<(), ClewError> {
+    fn ordinal(value: &str) -> bool {
+        value
+            .parse::<usize>()
+            .is_ok_and(|number| number.to_string() == value)
+    }
+    fn body_path(value: &str) -> bool {
+        value
+            .strip_prefix("body/")
+            .is_some_and(|parts| parts.split('/').all(ordinal))
+    }
+    let primitive = matches!(descriptor, "B" | "C" | "D" | "F" | "I" | "J" | "S" | "Z");
+    let mut base = descriptor;
+    while let Some(component) = base.strip_prefix('[') {
+        base = component;
+    }
+    let descriptor_valid = primitive
+        || matches!(base, "B" | "C" | "D" | "F" | "I" | "J" | "S" | "Z")
+        || (base.starts_with('L')
+            && base.ends_with(';')
+            && base.len() > 2
+            && !base[1..base.len() - 1].contains([';', '[', '(', ')', '.', ' ']));
+    let identity_valid = match kind {
+        JavaVariableKind::Field => {
+            owner.starts_with("class:") && identity == format!("field:{owner}#{name}:{descriptor}")
+        }
+        JavaVariableKind::Parameter => {
+            owner.starts_with("method:")
+                && identity
+                    .strip_prefix(&format!("parameter:{owner}/slot/"))
+                    .is_some_and(ordinal)
+        }
+        JavaVariableKind::LocalVariable => {
+            owner.starts_with("method:")
+                && identity
+                    .strip_prefix(&format!("local:{owner}/"))
+                    .is_some_and(body_path)
+        }
+    };
+    let parameter_path = path.strip_prefix("parameter/").is_some_and(ordinal);
+    if !identity_valid
+        || !descriptor_valid
+        || name.is_empty()
+        || name.chars().any(char::is_control)
+        || !callable.starts_with("method:class:")
+        || !callable.contains('(')
+        || (!body_path(path) && !parameter_path)
+        || start >= end
+        || byte_start >= byte_end
+        || start_line == 0
+        || end_line < start_line
+        || resolution != "COMPILER_EXACT"
+    {
+        return Err(corrupt("Java variable identity or exact span is invalid"));
+    }
+    if *kind == JavaVariableKind::Parameter
+        && parameter_path
+        && identity
+            != format!(
+                "parameter:{owner}/slot/{}",
+                path.trim_start_matches("parameter/")
+            )
+    {
+        return Err(corrupt("Java parameter slot differs from declaration path"));
     }
     Ok(())
 }
@@ -1398,6 +1619,50 @@ fn poisoned<T>(error: std::sync::PoisonError<T>) -> ClewError {
 mod tests {
     use super::*;
     use crate::java_project_model::extract_java_model;
+
+    #[test]
+    fn variable_fact_contract_rejects_unknown_modes_slots_paths_and_spans() {
+        let declaration = json!({"kind":"VARIABLE_DECLARATION","schema":JAVA_FACT_SCHEMA,
+            "variableIdentity":"parameter:method:class:example.C#f(I)V/slot/0",
+            "variableKind":"PARAMETER","name":"x","jvmDescriptor":"I",
+            "variableOwnerIdentity":"method:class:example.C#f(I)V","enclosingCallable":"method:class:example.C#f(I)V",
+            "occurrencePath":"parameter/0","file":"C.java","start":1,"end":6,
+            "startLine":1,"endLine":1,"byteStart":1,"byteEnd":6,
+            "resolution":"COMPILER_EXACT","definitionKind":"PARAMETER_INPUT"});
+        let parse = |row: &serde_json::Value| {
+            parse_java_compiler_output(serde_json::to_string(row).unwrap().as_bytes())
+        };
+        assert!(parse(&declaration).is_ok());
+        for (key, value) in [
+            ("occurrencePath", json!("parameter/1")),
+            ("variableKind", json!("FIELD")),
+            ("byteEnd", json!(0)),
+            ("definitionKind", json!("INITIALIZER_DEFINITION")),
+            ("jvmDescriptor", json!("V")),
+            ("extraTarget", json!("forged")),
+        ] {
+            let mut invalid = declaration.clone();
+            invalid[key] = value;
+            assert!(parse(&invalid).is_err(), "{key}");
+        }
+        let mut access = declaration.clone();
+        access.as_object_mut().unwrap().remove("definitionKind");
+        access["kind"] = json!("VARIABLE_ACCESS");
+        access["occurrencePath"] = json!("body/0/1");
+        access["accessMode"] = json!("READ");
+        access["declarationStatus"] = json!("SOURCE_RETAINED");
+        assert!(parse(&access).is_ok());
+        for (key, value) in [
+            ("accessMode", json!("MAY_WRITE")),
+            ("declarationStatus", json!("LATEST")),
+            ("occurrencePath", json!("body/../1")),
+            ("variableIdentity", json!("x")),
+        ] {
+            let mut invalid = access.clone();
+            invalid[key] = value;
+            assert!(parse(&invalid).is_err(), "{key}");
+        }
+    }
 
     #[test]
     #[ignore = "qualification launches the JDK compiler analyzer"]

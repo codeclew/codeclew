@@ -1,3 +1,7 @@
+import com.sun.source.tree.AssignmentTree;
+import com.sun.source.tree.CompoundAssignmentTree;
+import com.sun.source.tree.ParenthesizedTree;
+import com.sun.source.tree.UnaryTree;
 import com.sun.source.tree.AnnotationTree;
 import com.sun.source.tree.BinaryTree;
 import com.sun.source.tree.BreakTree;
@@ -31,6 +35,7 @@ import com.sun.source.util.JavacTask;
 import com.sun.source.util.SourcePositions;
 import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
+import com.sun.source.util.TreeScanner;
 import com.sun.source.util.Trees;
 import java.io.IOException;
 import java.net.URI;
@@ -41,6 +46,7 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -217,7 +223,7 @@ final class CodeclewJavaAnalyzer {
             } else {
                 Trees trees = Trees.instance(task);
                 Analyzer analyzer = new Analyzer(
-                        root, trees, task.getElements(), task.getTypes(), files, classpath, facts);
+                        root, trees, task.getElements(), task.getTypes(), files, classpath, facts, parsed);
                 parsed.forEach(unit -> analyzer.scan(unit, null));
             }
         }
@@ -364,6 +370,8 @@ final class CodeclewJavaAnalyzer {
         private final List<Map<String, Object>> facts;
         private final Deque<String> owners = new ArrayDeque<>();
         private final Deque<String> executableOwners = new ArrayDeque<>();
+        private final Set<CompilationUnitTree> variableUnits = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Map<Tree, String> variablePaths = new IdentityHashMap<>();
         private final Map<CompilationUnitTree, int[]> utf8Offsets = new IdentityHashMap<>();
 
         private Analyzer(
@@ -373,7 +381,9 @@ final class CodeclewJavaAnalyzer {
                 Types types,
                 StandardJavaFileManager files,
                 List<String> classpath,
-                List<Map<String, Object>> facts) {
+                List<Map<String, Object>> facts,
+                List<CompilationUnitTree> variableUnits) {
+            this.variableUnits.addAll(variableUnits);
             this.root = root;
             this.trees = trees;
             this.elements = elements;
@@ -386,6 +396,7 @@ final class CodeclewJavaAnalyzer {
 
         @Override
         public Void visitClass(ClassTree tree, Void unused) {
+            if (!executableOwners.isEmpty()) boundary("JAVA_VARIABLE_LOCAL_CLASS_DEFERRED", tree);
             Element element = trees.getElement(getCurrentPath());
             if (!(element instanceof TypeElement type)) {
                 boundary("JAVA_CLASS_SYMBOL_UNRESOLVED", tree);
@@ -436,6 +447,10 @@ final class CodeclewJavaAnalyzer {
                 declaration.put("documentation", new DocumentationFlow().read(tree, executable));
             }
             facts.add(declaration);
+            if (tree.getBody() != null) new VariablePaths().scan(tree.getBody(), null);
+            for (int slot = 0; slot < tree.getParameters().size(); slot++) {
+                variablePaths.put(tree.getParameters().get(slot), "parameter/" + slot);
+            }
             executableOwners.push(identity);
             super.visitMethod(tree, unused);
             executableOwners.pop();
@@ -461,6 +476,10 @@ final class CodeclewJavaAnalyzer {
                             owner, descriptor, variable, tree));
                 }
             }
+            if (element instanceof VariableElement variable && variableContext()
+                    && Set.of(ElementKind.PARAMETER, ElementKind.LOCAL_VARIABLE).contains(variable.getKind())) {
+                variableDeclaration(variable, tree);
+            }
             return super.visitVariable(tree, unused);
         }
 
@@ -484,14 +503,152 @@ final class CodeclewJavaAnalyzer {
 
         @Override
         public Void visitIdentifier(IdentifierTree tree, Void unused) {
-            typeUse(trees.getElement(getCurrentPath()), tree);
+            Element target = trees.getElement(getCurrentPath());
+            typeUse(target, tree);
+            variableAccess(target, tree);
             return super.visitIdentifier(tree, unused);
         }
 
         @Override
         public Void visitMemberSelect(MemberSelectTree tree, Void unused) {
-            typeUse(trees.getElement(getCurrentPath()), tree);
+            Element target = trees.getElement(getCurrentPath());
+            typeUse(target, tree);
+            variableAccess(target, tree);
             return super.visitMemberSelect(tree, unused);
+        }
+
+        /** Child ordinals are structural, independent of source offsets and identifier spelling. */
+        private final class VariablePaths extends TreeScanner<Void, Void> {
+            private final Deque<String> paths = new ArrayDeque<>();
+            private final Deque<Integer> children = new ArrayDeque<>();
+            @Override public Void scan(Tree tree, Void unused) {
+                if (tree == null) return null;
+                String path = "body";
+                if (!paths.isEmpty()) {
+                    int ordinal = children.pop(); children.push(ordinal + 1);
+                    path = paths.peek() + "/" + ordinal;
+                }
+                variablePaths.put(tree, path);
+                paths.push(path); children.push(0);
+                super.scan(tree, unused);
+                children.pop(); paths.pop();
+                return null;
+            }
+            @Override public Void visitLambdaExpression(LambdaExpressionTree tree, Void unused) { return null; }
+            @Override public Void visitClass(ClassTree tree, Void unused) { return null; }
+        }
+
+        @Override public Void visitLambdaExpression(LambdaExpressionTree tree, Void unused) {
+            if (!executableOwners.isEmpty()) boundary("JAVA_VARIABLE_LAMBDA_DEFERRED", tree);
+            return super.visitLambdaExpression(tree, unused);
+        }
+
+        private boolean variableContext() {
+            if (executableOwners.isEmpty()) return false;
+            for (TreePath path = getCurrentPath(); path != null; path = path.getParentPath()) {
+                if (path.getLeaf() instanceof LambdaExpressionTree) return false;
+                if (path.getLeaf() instanceof ClassTree) {
+                    for (TreePath above = path.getParentPath(); above != null; above = above.getParentPath()) {
+                        if (above.getLeaf() instanceof MethodTree || above.getLeaf() instanceof NewClassTree) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        private String methodIdentity(ExecutableElement method) {
+            String descriptor = executableDescriptor(method);
+            if (descriptor == null) return null;
+            String name = method.getKind() == ElementKind.CONSTRUCTOR ? "<init>" : method.getSimpleName().toString();
+            return "method:" + ownerOf(method) + "#" + name + descriptor;
+        }
+
+        private String variableIdentity(VariableElement variable) {
+            String descriptor = descriptor(variable.asType());
+            if (descriptor == null) return null;
+            if (variable.getKind() == ElementKind.FIELD || variable.getKind() == ElementKind.ENUM_CONSTANT) {
+                return "field:" + ownerOf(variable) + "#" + variable.getSimpleName() + ":" + descriptor;
+            }
+            if (!(variable.getEnclosingElement() instanceof ExecutableElement method)) return null;
+            String callable = methodIdentity(method);
+            if (callable == null) return null;
+            if (variable.getKind() == ElementKind.PARAMETER) {
+                int slot = method.getParameters().indexOf(variable);
+                return slot < 0 ? null : "parameter:" + callable + "/slot/" + slot;
+            }
+            if (variable.getKind() == ElementKind.LOCAL_VARIABLE) {
+                TreePath declaration = trees.getPath(variable);
+                String path = declaration == null ? null : variablePaths.get(declaration.getLeaf());
+                return path == null ? null : "local:" + callable + "/" + path;
+            }
+            return null;
+        }
+
+        private Map<String, Object> variableFact(String kind, VariableElement variable, Tree tree) {
+            String identity = variableIdentity(variable);
+            String path = variablePaths.get(tree);
+            if (identity == null || path == null || !hasSourceRange(tree)) {
+                boundary("JAVA_VARIABLE_IDENTITY_UNAVAILABLE", tree); return null;
+            }
+            Map<String, Object> row = base(kind);
+            row.put("variableIdentity", identity);
+            row.put("variableKind", variable.getKind() == ElementKind.ENUM_CONSTANT ? "FIELD" : variable.getKind().name());
+            row.put("name", variable.getSimpleName().toString());
+            row.put("jvmDescriptor", descriptor(variable.asType()));
+            row.put("variableOwnerIdentity", variable.getKind() == ElementKind.FIELD || variable.getKind() == ElementKind.ENUM_CONSTANT
+                    ? ownerOf(variable) : methodIdentity((ExecutableElement) variable.getEnclosingElement()));
+            row.put("enclosingCallable", executableOwners.peek());
+            row.put("occurrencePath", path);
+            anchor(row, tree);
+            row.put("resolution", "COMPILER_EXACT");
+            return row;
+        }
+
+        private void variableDeclaration(VariableElement variable, VariableTree tree) {
+            Map<String, Object> row = variableFact("VARIABLE_DECLARATION", variable, tree);
+            if (row == null) return;
+            row.put("definitionKind", variable.getKind() == ElementKind.PARAMETER ? "PARAMETER_INPUT"
+                    : tree.getInitializer() == null ? "UNINITIALIZED" : "INITIALIZER_DEFINITION");
+            facts.add(row);
+        }
+
+        private void variableAccess(Element target, Tree tree) {
+            if (!variableContext() || !(target instanceof VariableElement variable)) return;
+            if (variable.getSimpleName().contentEquals("this") || variable.getSimpleName().contentEquals("super")) return;
+            if (!Set.of(ElementKind.FIELD, ElementKind.ENUM_CONSTANT, ElementKind.PARAMETER, ElementKind.LOCAL_VARIABLE)
+                    .contains(variable.getKind())) {
+                boundary("JAVA_VARIABLE_KIND_UNSUPPORTED", tree); return;
+            }
+            Map<String, Object> row = variableFact("VARIABLE_ACCESS", variable, tree);
+            if (row == null) return;
+            TreePath parent = getCurrentPath().getParentPath();
+            Tree operand = tree;
+            while (parent != null && parent.getLeaf() instanceof ParenthesizedTree paren
+                    && paren.getExpression() == operand) {
+                operand = parent.getLeaf(); parent = parent.getParentPath();
+            }
+            String access = "READ";
+            if (parent != null && parent.getLeaf() instanceof AssignmentTree assignment
+                    && assignment.getVariable() == operand) access = "WRITE";
+            else if (parent != null && parent.getLeaf() instanceof CompoundAssignmentTree assignment
+                    && assignment.getVariable() == operand) access = "READ_WRITE";
+            else if (parent != null && parent.getLeaf() instanceof UnaryTree unary
+                    && unary.getExpression() == operand && Set.of(Tree.Kind.PREFIX_INCREMENT, Tree.Kind.POSTFIX_INCREMENT,
+                            Tree.Kind.PREFIX_DECREMENT, Tree.Kind.POSTFIX_DECREMENT).contains(unary.getKind())) access = "READ_WRITE";
+            row.put("accessMode", access);
+            TreePath declaration = trees.getPath(variable);
+            boolean retained = false;
+            if (declaration != null) {
+                CompilationUnitTree unit = declaration.getCompilationUnit();
+                long start = positions.getStartPosition(unit, declaration.getLeaf());
+                long end = positions.getEndPosition(unit, declaration.getLeaf());
+                try {
+                    retained = variableUnits.contains(unit) && start >= 0 && end > start
+                            && Path.of(unit.getSourceFile().toUri()).toRealPath().startsWith(root);
+                } catch (IOException | RuntimeException unavailable) { retained = false; }
+            }
+            row.put("declarationStatus", retained ? "SOURCE_RETAINED" : "DECLARATION_SOURCE_UNAVAILABLE");
+            facts.add(row);
         }
 
         /** Bounded source structure, not a runtime trace or a general control-flow proof. */

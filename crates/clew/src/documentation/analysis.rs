@@ -541,6 +541,7 @@ type SourceTable = BTreeMap<String, Arc<SourceBlob>>;
 #[derive(Debug)]
 struct SourceBlob {
     text: Arc<str>,
+    content_digest: String,
     line_ranges: Box<[Range<usize>]>,
 }
 
@@ -612,6 +613,7 @@ impl SourceBlob {
             line_ranges.push(start..bytes.len());
         }
         Self {
+            content_digest: canonical::hash_bytes(text.as_bytes()),
             text,
             line_ranges: line_ranges.into_boxed_slice(),
         }
@@ -715,6 +717,89 @@ fn add_source(
         },
     );
     Ok(Some(id))
+}
+
+/// Javac LineMap recognizes CR, LF and CRLF. This is intentionally separate
+/// from the historical SourceBlob/snippet contract used by older fact kinds.
+fn javac_line_ranges(text: &str) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if matches!(bytes[index], b'\r' | b'\n') {
+            ranges.push(start..index);
+            if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                index += 1;
+            }
+            index += 1;
+            start = index;
+        } else {
+            index += 1;
+        }
+    }
+    if start < bytes.len() {
+        ranges.push(start..bytes.len());
+    }
+    ranges
+}
+
+type VariableSourceLines = BTreeMap<(String, String), Vec<Range<usize>>>;
+
+#[allow(clippy::too_many_arguments)]
+fn add_variable_source(
+    evidence: &mut ServiceEvidence,
+    service: &Service,
+    sources: &CompilationSource,
+    scope: &str,
+    fact: &Value,
+    binding: &str,
+    identity: &str,
+    lines: &[Range<usize>],
+) -> Result<(String, usize, usize), ClewError> {
+    let file = fact["file"].as_str().unwrap();
+    let start = fact["startLine"].as_u64().unwrap();
+    let end = fact["endLine"].as_u64().unwrap();
+    if start == 0 || end < start || end > lines.len() as u64 {
+        return Err(invalid("compiler variable source line range is invalid"));
+    }
+    let blob = sources.blob(scope, file).unwrap();
+    // Preserve every original intermediate terminator, including bare CR;
+    // omit only the terminator following the final selected context line.
+    let source_start = lines[start as usize - 1].start;
+    let source_end = lines[end as usize - 1].end;
+    let exact = &blob.text[source_start..source_end];
+    let id = source_id(&service.id, identity)?;
+    let transformed = sources.transformed.get(scope).copied().unwrap_or(false);
+    let (authority, url) = if transformed {
+        (
+            crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY.into(),
+            None,
+        )
+    } else {
+        (
+            "EXACT_SNAPSHOT_TEXT".into(),
+            source_link(service, &evidence.revision, file, start, end),
+        )
+    };
+    evidence.sources.insert(
+        id.clone(),
+        Source {
+            id: id.clone(),
+            service: service.id.clone(),
+            revision: evidence.revision.clone(),
+            file: file.into(),
+            start_line: start,
+            end_line: end,
+            text: exact.into(),
+            text_digest: canonical::hash_bytes(exact.as_bytes()),
+            evidence_digest: binding.into(),
+            authority,
+            occurrence: None,
+            url,
+        },
+    );
+    Ok((id, source_start, source_end))
 }
 
 fn strip_coordinates(value: &Value) -> Value {
@@ -893,6 +978,252 @@ pub fn project(
     )
 }
 
+/// Fail closed before retaining compiler variable facts. Source/target membership is
+/// checked within the exact compilation, never borrowed from another scope.
+fn validate_variable_facts(
+    facts: &[(Value, String)],
+    sources: &CompilationSource,
+    known: &BTreeSet<String>,
+) -> Result<VariableSourceLines, ClewError> {
+    use crate::java_adapter_v2::{JavaCompilerFact, validate_fact};
+    if !facts.iter().any(|(f, _)| {
+        matches!(
+            f["kind"].as_str(),
+            Some("VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
+        )
+    }) {
+        return Ok(BTreeMap::new());
+    }
+    let mut declarations: BTreeMap<(String, String), Vec<&Value>> = BTreeMap::new();
+    let mut memberships: BTreeMap<(String, String), Vec<&Value>> = BTreeMap::new();
+    for (fact, _) in facts {
+        let kind = fact["kind"].as_str().unwrap_or_default();
+        if matches!(kind, "DECLARATION" | "VARIABLE_DECLARATION") {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            let identity = if kind == "DECLARATION" {
+                &fact["symbolIdentity"]
+            } else {
+                &fact["variableIdentity"]
+            };
+            declarations
+                .entry((scope, identity.as_str().unwrap_or_default().into()))
+                .or_default()
+                .push(fact);
+        } else if kind == "SOURCE_FILE" {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            memberships
+                .entry((scope, fact["file"].as_str().unwrap_or_default().into()))
+                .or_default()
+                .push(fact);
+        }
+    }
+    let mut wanted: BTreeMap<(String, String), BTreeSet<usize>> = BTreeMap::new();
+    for (fact, _) in facts {
+        if !matches!(
+            fact["kind"].as_str(),
+            Some("VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
+        ) {
+            continue;
+        }
+        let scope = resolve_scope_key(&fact["scope"], known)?;
+        let file = fact["file"]
+            .as_str()
+            .ok_or_else(|| invalid("compiler variable file is missing"))?;
+        let offsets = wanted.entry((scope, file.into())).or_default();
+        for key in ["byteStart", "byteEnd"] {
+            if let Some(offset) = fact[key].as_u64().and_then(|v| usize::try_from(v).ok()) {
+                offsets.insert(offset);
+            }
+        }
+    }
+    let mut coordinates: BTreeMap<(String, String), BTreeMap<usize, u64>> = BTreeMap::new();
+    for ((scope, file), wanted) in wanted {
+        let blob = sources
+            .blob(&scope, &file)
+            .ok_or_else(|| invalid("compiler variable source is unavailable in its compilation"))?;
+        let mut utf16 = 0u64;
+        let mut offsets = BTreeMap::new();
+        for (byte, ch) in blob.text.char_indices() {
+            if wanted.contains(&byte) {
+                offsets.insert(byte, utf16);
+            }
+            utf16 += ch.len_utf16() as u64;
+        }
+        if wanted.contains(&blob.text.len()) {
+            offsets.insert(blob.text.len(), utf16);
+        }
+        coordinates.insert((scope, file), offsets);
+    }
+    let variable_lines: VariableSourceLines = coordinates
+        .keys()
+        .map(|(scope, file)| {
+            (
+                (scope.clone(), file.clone()),
+                javac_line_ranges(&sources.blob(scope, file).unwrap().text),
+            )
+        })
+        .collect();
+    let mut occurrences = BTreeSet::new();
+    for (fact, binding) in facts {
+        if !matches!(
+            fact["kind"].as_str(),
+            Some("VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
+        ) {
+            continue;
+        }
+        let scope = resolve_scope_key(&fact["scope"], known)?;
+        let occurrence = (
+            scope.clone(),
+            fact["kind"].to_string(),
+            fact["enclosingCallable"].to_string(),
+            fact["occurrencePath"].to_string(),
+        );
+        if !occurrences.insert(occurrence) {
+            return Err(invalid("compiler variable occurrence is duplicated"));
+        }
+        if scope.is_empty() {
+            return Err(invalid(
+                "compiler variable facts require a registered scope",
+            ));
+        }
+        let mut raw = fact.clone();
+        raw.as_object_mut().unwrap().remove("scope");
+        let typed: JavaCompilerFact = serde_json::from_value(raw.clone())
+            .map_err(|_| invalid("compiler variable fact is not closed typed evidence"))?;
+        validate_fact(&typed)?;
+        if digest(&raw)? != *binding {
+            return Err(invalid("compiler variable payload binding differs"));
+        }
+        let file = fact["file"].as_str().unwrap();
+        let blob = sources
+            .blob(&scope, file)
+            .ok_or_else(|| invalid("compiler variable source is unavailable in its compilation"))?;
+        let full_digest = &blob.content_digest;
+        let pins = memberships
+            .get(&(scope.clone(), file.into()))
+            .ok_or_else(|| invalid("compiler variable source membership is missing"))?;
+        if pins.len() != 1 || pins[0]["sourceContentDigest"].as_str() != Some(full_digest.as_str())
+        {
+            return Err(invalid(
+                "compiler variable source differs from its immutable membership",
+            ));
+        }
+        let start = usize::try_from(fact["byteStart"].as_u64().unwrap())
+            .map_err(|_| invalid("compiler variable byte start is invalid"))?;
+        let end = usize::try_from(fact["byteEnd"].as_u64().unwrap())
+            .map_err(|_| invalid("compiler variable byte end is invalid"))?;
+        let _exact = blob
+            .text
+            .get(start..end)
+            .ok_or_else(|| invalid("compiler variable byte span is not exact UTF-8"))?;
+        let offsets = &coordinates[&(scope.clone(), file.into())];
+        let utf16_start = offsets[&start];
+        let utf16_end = offsets[&end];
+        let lines = &variable_lines[&(scope.clone(), file.into())];
+        let first_line = lines.partition_point(|range| range.start <= start) as u64;
+        let last_line = lines.partition_point(|range| range.start < end) as u64;
+        if fact["start"] != utf16_start
+            || fact["end"] != utf16_end
+            || fact["startLine"] != first_line
+            || fact["endLine"] != last_line
+        {
+            return Err(invalid(
+                "compiler variable source coordinates disagree with immutable bytes",
+            ));
+        }
+        let callable = fact["enclosingCallable"].as_str().unwrap();
+        let owners = declarations
+            .get(&(scope.clone(), callable.into()))
+            .ok_or_else(|| invalid("compiler variable callable is not retained in its scope"))?;
+        if owners.len() != 1
+            || !matches!(
+                owners[0]["declarationKind"].as_str(),
+                Some("METHOD" | "CONSTRUCTOR")
+            )
+            || owners[0]["file"] != file
+            || owners[0]["byteStart"]
+                .as_u64()
+                .is_none_or(|value| value > start as u64)
+            || owners[0]["byteEnd"]
+                .as_u64()
+                .is_none_or(|value| value < end as u64)
+        {
+            return Err(invalid(
+                "compiler variable callable source binding is invalid",
+            ));
+        }
+        if fact["variableKind"] != "FIELD" && fact["variableOwnerIdentity"] != callable {
+            return Err(invalid(
+                "compiler variable owner differs from immediate callable",
+            ));
+        }
+        if fact["kind"] == "VARIABLE_ACCESS" {
+            let identity = fact["variableIdentity"].as_str().unwrap();
+            let target = declarations.get(&(scope.clone(), identity.into()));
+            if fact["declarationStatus"] == "DECLARATION_SOURCE_UNAVAILABLE" {
+                if fact["variableKind"] != "FIELD" || target.is_some() {
+                    return Err(invalid(
+                        "unavailable variable declaration conflicts with retained scope",
+                    ));
+                }
+            } else {
+                let target = target.filter(|rows| rows.len() == 1).ok_or_else(|| {
+                    invalid("variable target is missing or ambiguous in its scope")
+                })?[0];
+                let field = fact["variableKind"] == "FIELD";
+                if target["name"] != fact["name"]
+                    || target["jvmDescriptor"] != fact["jvmDescriptor"]
+                    || (field
+                        && (target["declarationKind"] != "FIELD"
+                            || target["ownerIdentity"] != fact["variableOwnerIdentity"]))
+                    || (!field
+                        && (target["variableKind"] != fact["variableKind"]
+                            || target["enclosingCallable"] != callable))
+                {
+                    return Err(invalid(
+                        "compiler variable resolved target metadata differs",
+                    ));
+                }
+                let target_file = target["file"]
+                    .as_str()
+                    .ok_or_else(|| invalid("variable target source path is missing"))?;
+                let target_blob = sources.blob(&scope, target_file).ok_or_else(|| {
+                    invalid("variable target source is not retained in its scope")
+                })?;
+                let target_pins = memberships
+                    .get(&(scope.clone(), target_file.into()))
+                    .ok_or_else(|| invalid("variable target source membership is missing"))?;
+                if target_pins.len() != 1
+                    || target_pins[0]["sourceContentDigest"].as_str()
+                        != Some(target_blob.content_digest.as_str())
+                {
+                    return Err(invalid(
+                        "variable target source differs from immutable membership",
+                    ));
+                }
+                let (Some(target_start), Some(target_end)) =
+                    (target["byteStart"].as_u64(), target["byteEnd"].as_u64())
+                else {
+                    return Err(invalid(
+                        "variable target declaration lacks exact source span",
+                    ));
+                };
+                if target_start >= target_end
+                    || target_blob
+                        .text
+                        .get(target_start as usize..target_end as usize)
+                        .is_none()
+                {
+                    return Err(invalid(
+                        "variable target declaration source span is invalid",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(variable_lines)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn project_scoped(
     service: &Service,
@@ -918,6 +1249,7 @@ pub(crate) fn project_scoped(
         sources: BTreeMap::new(),
         contracts: BTreeMap::new(),
     };
+    let variable_lines = validate_variable_facts(&facts, sources, known)?;
     let annotation_registry = spring_entrypoints::annotation_registry(facts.iter().map(|(f, _)| f));
     // Track, per symbol, the distinct normalized payload digests observed
     // across admitted compilation scopes. A symbol that resolves to multiple
@@ -1019,6 +1351,83 @@ pub(crate) fn project_scoped(
                     digest: digest(&normalized)?,
                     normalized,
                     source_ids,
+                },
+            );
+            continue;
+        }
+        if matches!(
+            fact["kind"].as_str(),
+            Some("VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
+        ) {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            let declaration = fact["kind"] == "VARIABLE_DECLARATION";
+            let callable = fact["enclosingCallable"].as_str().unwrap();
+            let variable = fact["variableIdentity"].as_str().unwrap();
+            let logical = if declaration {
+                variable.to_string()
+            } else {
+                format!("{callable}/{}", fact["occurrencePath"].as_str().unwrap())
+            };
+            let identity = scoped_identity(&scope, &logical);
+            let id = dependency_id(
+                &service.id,
+                if declaration {
+                    "variable-declaration"
+                } else {
+                    "variable-access"
+                },
+                &identity,
+            )?;
+            let (source, source_start, source_end) = add_variable_source(
+                &mut evidence,
+                service,
+                sources,
+                &scope,
+                fact,
+                binding,
+                &identity,
+                &variable_lines[&(scope.clone(), fact["file"].as_str().unwrap().into())],
+            )?;
+            let blob = sources
+                .blob(&scope, fact["file"].as_str().unwrap())
+                .unwrap();
+            let start = fact["byteStart"].as_u64().unwrap() as usize;
+            let end = fact["byteEnd"].as_u64().unwrap() as usize;
+            let mut normalized = strip_coordinates(fact);
+            normalized["scope"] = json!(scope);
+            normalized["callableObservationId"] = json!(dependency_id(
+                &service.id,
+                "symbol",
+                &scoped_identity(&scope, callable)
+            )?);
+            if !declaration && fact["declarationStatus"] == "SOURCE_RETAINED" {
+                normalized["declarationObservationId"] = json!(dependency_id(
+                    &service.id,
+                    if fact["variableKind"] == "FIELD" {
+                        "symbol"
+                    } else {
+                        "variable-declaration"
+                    },
+                    &scoped_identity(&scope, variable)
+                )?);
+            }
+            normalized["variableSite"] = json!({"file":fact["file"],"service":service.id,"revision":revision,
+                "byteStart":start,"byteEnd":end,"sourceByteStart":source_start,"sourceByteEnd":source_end,
+                "startLine":fact["startLine"],"endLine":fact["endLine"],
+                "sourceContentDigest":blob.content_digest,
+                "spanDigest":canonical::hash_bytes(blob.text[start..end].as_bytes()),
+                "sourceId":source,"sourceDigest":evidence.sources[&source].text_digest,
+                "evidenceDigest":binding,"sourceStatus":"SOURCE_RETAINED"});
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: fact["kind"].as_str().unwrap().into(),
+                    service: service.id.clone(),
+                    symbol: callable.into(),
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids: vec![source],
                 },
             );
             continue;
@@ -1296,6 +1705,67 @@ pub(crate) fn project_scoped(
     Ok(evidence)
 }
 
+/// Validate present column bounds without trusting normalized JSON. Old variable
+/// sites without either bound remain readable, but cannot supply an exact column.
+fn verify_variable_site(e: &ServiceEvidence, observation: &Observation) -> Result<(), ClewError> {
+    let site = &observation.normalized["variableSite"];
+    if site.get("sourceByteStart").is_none() && site.get("sourceByteEnd").is_none() {
+        return Ok(());
+    }
+    let number = |key: &str| {
+        site[key]
+            .as_u64()
+            .ok_or_else(|| invalid("portable variable site byte bound is invalid"))
+    };
+    let source_start = number("sourceByteStart")?;
+    let source_end = number("sourceByteEnd")?;
+    let start = number("byteStart")?;
+    let end = number("byteEnd")?;
+    let source_id = site["sourceId"]
+        .as_str()
+        .ok_or_else(|| invalid("portable variable site source ID is missing"))?;
+    let source = e
+        .sources
+        .get(source_id)
+        .ok_or_else(|| invalid("portable variable site source is unavailable"))?;
+    if observation.source_ids.len() != 1
+        || observation.source_ids[0] != source_id
+        || source.id != source_id
+        || observation.service != e.service
+        || source.service != e.service
+        || site["service"] != e.service
+        || site["revision"] != e.revision
+        || source.revision != e.revision
+        || site["file"] != source.file
+        || site["sourceDigest"] != source.text_digest
+        || site["evidenceDigest"] != source.evidence_digest
+        || source.text_digest != canonical::hash_bytes(source.text.as_bytes())
+        || site["sourceStatus"] != "SOURCE_RETAINED"
+        || site["startLine"] != source.start_line
+        || site["endLine"] != source.end_line
+        || source_start > start
+        || start >= end
+        || end > source_end
+        || source_end.checked_sub(source_start) != Some(source.text.len() as u64)
+    {
+        return Err(invalid(
+            "portable variable source span or pins are inconsistent",
+        ));
+    }
+    let relative_start = usize::try_from(start - source_start)
+        .map_err(|_| invalid("portable variable local byte start is invalid"))?;
+    let relative_end = usize::try_from(end - source_start)
+        .map_err(|_| invalid("portable variable local byte end is invalid"))?;
+    let exact = source
+        .text
+        .get(relative_start..relative_end)
+        .ok_or_else(|| invalid("portable variable local span is not UTF-8"))?;
+    if site["spanDigest"] != canonical::hash_bytes(exact.as_bytes()) {
+        return Err(invalid("portable variable local span digest differs"));
+    }
+    Ok(())
+}
+
 pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
     if e.schema != "codeclew-documentation-service-evidence/1.0"
         || e.revision.len() != 40
@@ -1304,12 +1774,23 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
     {
         return Err(invalid("portable evidence version or revision is invalid"));
     }
+    let variable_sources: BTreeSet<_> = e
+        .observations
+        .values()
+        .filter(|o| matches!(o.kind.as_str(), "VARIABLE_ACCESS" | "VARIABLE_DECLARATION"))
+        .flat_map(|o| o.source_ids.iter())
+        .collect();
     for s in e.sources.values() {
+        let line_count = if variable_sources.contains(&s.id) {
+            javac_line_ranges(&s.text).len()
+        } else {
+            s.text.lines().count()
+        };
         if s.service != e.service
             || s.revision != e.revision
             || s.start_line == 0
             || s.end_line < s.start_line
-            || s.end_line - s.start_line + 1 != s.text.lines().count() as u64
+            || s.end_line - s.start_line + 1 != line_count as u64
             || canonical::hash_bytes(s.text.as_bytes()) != s.text_digest
         {
             return Err(invalid("portable source binding is inconsistent"));
@@ -1330,6 +1811,9 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
         store::relative(&s.file)?;
     }
     for o in e.observations.values() {
+        if matches!(o.kind.as_str(), "VARIABLE_ACCESS" | "VARIABLE_DECLARATION") {
+            verify_variable_site(e, o)?;
+        }
         if digest(&o.normalized)? != o.digest
             || o.source_ids.iter().any(|id| !e.sources.contains_key(id))
         {
@@ -1862,6 +2346,631 @@ mod tests {
                 .boundaries
                 .iter()
                 .any(|boundary| boundary == "CALL_RELATION_OWNER_UNAVAILABLE")
+        );
+    }
+
+    #[test]
+    #[ignore = "qualification launches the real JDK compiler variable producer"]
+    fn javac_variables_resolve_storage_modes_spans_and_scoped_admission() {
+        use crate::java_adapter_v2::build_java_compiler_index;
+        use crate::java_project_model::{JavaBuildSystem, JavaOperationalModel, JavaProjectModel};
+        use std::process::Command;
+        let original = r#"package example;
+class Variables {
+    int value; int attempts;
+    void probe(int value, int[] arr, Variables other) {
+        String café = "🙂";
+        value = 3;
+        this.value = value;
+        this.value += other.value;
+        ++value;
+        arr[value] = this.value;
+        { int same = value; this.value = same; }
+        { int same = this.value; same++; }
+        Runnable deferred = () -> { this.value = 999; };
+        class Deferred { void later() { Variables.this.value = 888; } }
+        System.out.println(café); attempts = attempts + 1; int repeated = value + value;
+    }
+    void localShadow() { int value = 1; this.value = value; }
+}
+"#;
+        fn produce(root: &Path, source: &str) -> Vec<(Value, String)> {
+            let file = "src/main/java/example/Variables.java";
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, source).unwrap();
+            let version = Command::new("javac").arg("-version").output().unwrap();
+            assert!(version.status.success());
+            let compiler_version = format!(
+                "{}{}",
+                String::from_utf8_lossy(&version.stdout),
+                String::from_utf8_lossy(&version.stderr)
+            )
+            .trim()
+            .to_string();
+            let mut authority = JavaProjectModel {
+                schema: crate::java_project_model::JAVA_MODEL_SCHEMA.into(),
+                model_digest: String::new(),
+                build_system: JavaBuildSystem::Maven,
+                compilation: ":/main".into(),
+                source_files: vec![file.into()],
+                classpath: vec![],
+                dependency_sources: vec![],
+                release: 17,
+                compiler_version,
+                compiler_options: vec![],
+                annotation_processors: vec![],
+                annotation_processor_paths: vec![],
+                boundaries: vec![],
+            };
+            authority.model_digest = canonical::hash(&authority).unwrap();
+            let operational = JavaOperationalModel {
+                authority,
+                source_paths: vec![path],
+                classpath_paths: vec![],
+                annotation_processor_paths: vec![],
+                java_executable: "java".into(),
+            };
+            let index = build_java_compiler_index(
+                root,
+                &operational,
+                &BTreeMap::from([(file.into(), canonical::hash_bytes(source.as_bytes()))]),
+                false,
+                None,
+                &[],
+                None,
+            )
+            .unwrap();
+            index
+                .facts
+                .iter()
+                .map(|fact| {
+                    let mut value = serde_json::to_value(fact).unwrap();
+                    let binding = digest(&value).unwrap();
+                    value["scope"] = json!({"compilation":":/main"});
+                    (value, binding)
+                })
+                .collect()
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let facts = produce(temp.path(), original);
+        let file = "src/main/java/example/Variables.java";
+        let variable: Vec<_> = facts
+            .iter()
+            .filter(|(f, _)| {
+                matches!(
+                    f["kind"].as_str(),
+                    Some("VARIABLE_ACCESS" | "VARIABLE_DECLARATION")
+                )
+            })
+            .map(|(f, _)| f)
+            .collect();
+        assert!(
+            !variable.is_empty(),
+            "real compiler must produce variable facts"
+        );
+        let declarations: Vec<_> = variable
+            .iter()
+            .filter(|f| f["kind"] == "VARIABLE_DECLARATION")
+            .collect();
+        let parameter = declarations
+            .iter()
+            .find(|f| f["name"] == "value" && f["variableKind"] == "PARAMETER")
+            .unwrap();
+        assert_eq!(parameter["variableKind"], "PARAMETER");
+        assert!(
+            parameter["variableIdentity"]
+                .as_str()
+                .unwrap()
+                .ends_with("/slot/0")
+        );
+        let local_shadow = declarations
+            .iter()
+            .find(|f| f["name"] == "value" && f["variableKind"] == "LOCAL_VARIABLE")
+            .unwrap();
+        assert_ne!(
+            local_shadow["variableIdentity"],
+            parameter["variableIdentity"]
+        );
+        assert!(facts.iter().any(|(f, _)| f["kind"] == "DECLARATION"
+            && f["declarationKind"] == "FIELD"
+            && f["symbolIdentity"] == "field:class:example.Variables#value:I"));
+        let sibling_ids: BTreeSet<_> = declarations
+            .iter()
+            .filter(|f| f["name"] == "same")
+            .map(|f| f["variableIdentity"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            sibling_ids.len(),
+            2,
+            "same spelling in sibling scopes is different storage"
+        );
+        let accesses: Vec<_> = variable
+            .iter()
+            .filter(|f| f["kind"] == "VARIABLE_ACCESS")
+            .collect();
+        let span = |f: &Value| {
+            &original
+                [f["byteStart"].as_u64().unwrap() as usize..f["byteEnd"].as_u64().unwrap() as usize]
+        };
+        assert!(
+            !accesses
+                .iter()
+                .any(|f| f["name"] == "café" && f["startLine"] == 5),
+            "initializer definition must not be an identifier read"
+        );
+        assert!(accesses.iter().any(|f| span(f) == "this.value"
+            && f["accessMode"] == "WRITE"
+            && f["variableIdentity"] == "field:class:example.Variables#value:I"));
+        assert!(
+            accesses
+                .iter()
+                .any(|f| span(f) == "this.value" && f["accessMode"] == "READ_WRITE")
+        );
+        assert!(accesses.iter().any(|f| span(f) == "value"
+            && f["accessMode"] == "WRITE"
+            && f["variableIdentity"] == parameter["variableIdentity"]));
+        assert!(
+            accesses
+                .iter()
+                .any(|f| span(f) == "value" && f["accessMode"] == "READ_WRITE")
+        );
+        assert!(
+            accesses
+                .iter()
+                .filter(|f| f["name"] == "arr")
+                .all(|f| f["accessMode"] == "READ")
+        );
+        assert!(
+            accesses
+                .iter()
+                .any(|f| span(f) == "other" && f["accessMode"] == "READ")
+        );
+        assert!(
+            accesses
+                .iter()
+                .any(|f| span(f) == "other.value" && f["accessMode"] == "READ")
+        );
+        assert!(accesses.iter().any(|f| span(f) == "café"
+            && f["byteStart"].as_u64().unwrap() > f["start"].as_u64().unwrap()));
+        assert!(accesses.iter().any(|f| f["variableIdentity"]
+            == "field:class:java.lang.System#out:Ljava/io/PrintStream;"
+            && f["declarationStatus"] == "DECLARATION_SOURCE_UNAVAILABLE"));
+        assert!(
+            !accesses
+                .iter()
+                .any(|f| f["startLine"] == 13 || f["startLine"] == 14),
+            "deferred bodies must not emit immediate accesses"
+        );
+        for code in [
+            "JAVA_VARIABLE_LAMBDA_DEFERRED",
+            "JAVA_VARIABLE_LOCAL_CLASS_DEFERRED",
+        ] {
+            assert!(
+                facts
+                    .iter()
+                    .any(|(f, _)| f["kind"] == "BOUNDARY" && f["code"] == code)
+            );
+        }
+        assert!(
+            declarations
+                .iter()
+                .any(|f| f["name"] == "café" && f["definitionKind"] == "INITIALIZER_DEFINITION")
+        );
+        let tables = compile_sources(
+            vec![(
+                ":/main",
+                BTreeMap::from([(file.into(), original.into())]),
+                false,
+            )],
+            BTreeMap::new(),
+        );
+        let known = BTreeSet::from([":/main".into()]);
+        let evidence =
+            project_scoped_ok(&projection_service(), facts.clone(), &tables, &[":/main"]);
+        let rows: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "VARIABLE_ACCESS")
+            .collect();
+        assert_eq!(rows.len(), accesses.len());
+        for row in &rows {
+            let site = &row.normalized["variableSite"];
+            let start = site["byteStart"].as_u64().unwrap() as usize;
+            let end = site["byteEnd"].as_u64().unwrap() as usize;
+            assert_eq!(
+                site["spanDigest"],
+                canonical::hash_bytes(&original.as_bytes()[start..end])
+            );
+            assert_eq!(
+                site["sourceContentDigest"],
+                canonical::hash_bytes(original.as_bytes())
+            );
+            assert!(evidence.sources.contains_key(&row.source_ids[0]));
+            assert!(
+                evidence
+                    .observations
+                    .contains_key(row.normalized["callableObservationId"].as_str().unwrap())
+            );
+            if let Some(target) = row.normalized["declarationObservationId"].as_str() {
+                assert!(evidence.observations.contains_key(target));
+            }
+        }
+        let checked = super::super::check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: digest(&"owned-variable-fixture").unwrap(),
+            context_digest: digest(&evidence).unwrap(),
+            services: BTreeMap::from([("svc".into(), evidence.clone())]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            dependencies: evidence.observations.clone(),
+            source_inputs: None,
+            composition: None,
+        };
+        let args = super::super::cli::ContextArgs {
+            root: temp.path().to_path_buf(),
+            service: Some("svc".into()),
+            scenario: None,
+            entrypoint: None,
+            symbols: vec![],
+            source_ids: vec![],
+            dependency_ids: vec![rows[0].id.clone()],
+            format: super::super::cli::ContextFormat::Raw,
+            refresh: false,
+            snapshot: None,
+            cursor: None,
+            limit: 100,
+        };
+        let raw = super::super::cli::context_items(&checked, &args, None).unwrap();
+        assert!(
+            raw.iter().any(
+                |row| row["kind"] == "DEPENDENCY" && row["record"]["kind"] == "VARIABLE_ACCESS"
+            )
+        );
+        assert!(
+            raw.iter()
+                .any(|row| row["kind"] == "SOURCE" && row["id"] == rows[0].source_ids[0])
+        );
+        let mut attempts: Vec<_> = rows
+            .iter()
+            .filter(|o| o.normalized["name"] == "attempts")
+            .copied()
+            .collect();
+        attempts.sort_by_key(|o| o.normalized["variableSite"]["byteStart"].as_u64().unwrap());
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].normalized["accessMode"], "WRITE");
+        assert_eq!(attempts[1].normalized["accessMode"], "READ");
+        assert_eq!(
+            attempts[0].normalized["variableIdentity"],
+            attempts[1].normalized["variableIdentity"]
+        );
+        let mut repeated: Vec<_> = rows
+            .iter()
+            .filter(|o| {
+                o.normalized["name"] == "value" && o.normalized["variableSite"]["startLine"] == 15
+            })
+            .copied()
+            .collect();
+        repeated.sort_by_key(|o| o.normalized["variableSite"]["byteStart"].as_u64().unwrap());
+        assert_eq!(repeated.len(), 2);
+        let first = original.rfind("value + value").unwrap();
+        assert_eq!(repeated[0].normalized["variableSite"]["byteStart"], first);
+        assert_eq!(
+            repeated[1].normalized["variableSite"]["byteStart"],
+            first + 8
+        );
+        assert_ne!(repeated[0].id, repeated[1].id);
+        assert_eq!(
+            repeated[0].normalized["variableIdentity"],
+            repeated[1].normalized["variableIdentity"]
+        );
+        for row in attempts.iter().chain(repeated.iter()) {
+            let site = &row.normalized["variableSite"];
+            let source = &evidence.sources[&row.source_ids[0]];
+            let source_start = site["sourceByteStart"].as_u64().unwrap() as usize;
+            let source_end = site["sourceByteEnd"].as_u64().unwrap() as usize;
+            let start = site["byteStart"].as_u64().unwrap() as usize - source_start;
+            let end = site["byteEnd"].as_u64().unwrap() as usize - source_start;
+            assert_eq!(&original[source_start..source_end], source.text);
+            assert_eq!(
+                &source.text[start..end],
+                row.normalized["name"].as_str().unwrap()
+            );
+            assert_eq!(
+                site["spanDigest"],
+                canonical::hash_bytes(&source.text.as_bytes()[start..end])
+            );
+        }
+        let site_id = attempts[0].id.clone();
+        let site = &attempts[0].normalized["variableSite"];
+        let inside_unicode = site["sourceByteStart"].as_u64().unwrap()
+            + evidence.sources[&attempts[0].source_ids[0]]
+                .text
+                .find('é')
+                .unwrap() as u64
+            + 1;
+        for (key, value) in [
+            ("byteStart", json!(inside_unicode)),
+            (
+                "sourceByteStart",
+                json!(site["sourceByteStart"].as_u64().unwrap() + 1),
+            ),
+            (
+                "sourceByteEnd",
+                json!(site["sourceByteEnd"].as_u64().unwrap() - 1),
+            ),
+            (
+                "byteStart",
+                json!(site["sourceByteStart"].as_u64().unwrap() - 1),
+            ),
+            (
+                "byteEnd",
+                json!(site["sourceByteEnd"].as_u64().unwrap() + 1),
+            ),
+            ("sourceByteStart", Value::Null),
+            ("sourceByteEnd", json!("not-a-byte-bound")),
+            ("sourceId", json!("missing")),
+            ("file", json!("Other.java")),
+            ("service", json!("other")),
+            ("revision", json!("0".repeat(40))),
+            ("sourceDigest", json!("sha256:forged")),
+            ("spanDigest", json!("sha256:forged")),
+            ("evidenceDigest", json!("sha256:forged")),
+        ] {
+            let mut bad = evidence.clone();
+            let observation = bad.observations.get_mut(&site_id).unwrap();
+            observation.normalized["variableSite"][key] = value;
+            observation.digest = digest(&observation.normalized).unwrap();
+            assert!(verify_evidence(&bad).is_err(), "portable forged {key}");
+        }
+        let mut partial = evidence.clone();
+        let observation = partial.observations.get_mut(&site_id).unwrap();
+        observation.normalized["variableSite"]
+            .as_object_mut()
+            .unwrap()
+            .remove("sourceByteEnd");
+        observation.digest = digest(&observation.normalized).unwrap();
+        assert!(
+            verify_evidence(&partial).is_err(),
+            "partial bounds are never legacy absence"
+        );
+        let mut legacy = evidence.clone();
+        let observation = legacy.observations.get_mut(&site_id).unwrap();
+        for key in ["sourceByteStart", "sourceByteEnd", "service", "revision"] {
+            observation.normalized["variableSite"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        observation.digest = digest(&observation.normalized).unwrap();
+        verify_evidence(&legacy).unwrap();
+        // Mutations are admission negatives of actual compiler output, not manufactured compiler proof.
+        let access_index = facts
+            .iter()
+            .position(|(f, _)| f["kind"] == "VARIABLE_ACCESS" && f["variableKind"] == "PARAMETER")
+            .unwrap();
+        for (key, value) in [
+            ("byteEnd", json!(original.len() + 1)),
+            ("byteStart", json!(original.find('é').unwrap() + 1)),
+            (
+                "enclosingCallable",
+                json!("method:class:example.Other#probe()V"),
+            ),
+            (
+                "variableIdentity",
+                json!("parameter:method:class:example.Other#probe(I)V/slot/0"),
+            ),
+            ("declarationStatus", json!("DECLARATION_SOURCE_UNAVAILABLE")),
+        ] {
+            let mut bad = facts.clone();
+            bad[access_index].0[key] = value;
+            let mut raw = bad[access_index].0.clone();
+            raw.as_object_mut().unwrap().remove("scope");
+            bad[access_index].1 = digest(&raw).unwrap();
+            assert!(
+                validate_variable_facts(&bad, &tables, &known).is_err(),
+                "{key}"
+            );
+        }
+        let mut bad_binding = facts.clone();
+        bad_binding[access_index].1 = "sha256:forged".into();
+        assert!(validate_variable_facts(&bad_binding, &tables, &known).is_err());
+        let mut duplicate = facts.clone();
+        duplicate.push(facts[access_index].clone());
+        assert!(validate_variable_facts(&duplicate, &tables, &known).is_err());
+        let mut wrong_scope = facts.clone();
+        wrong_scope[access_index].0["scope"] = json!({"compilation":":other/main"});
+        assert!(validate_variable_facts(&wrong_scope, &tables, &known).is_err());
+        let mut cross_scope = facts.clone();
+        cross_scope[access_index].0["scope"] = json!({"compilation":":other/main"});
+        for (fact, binding) in &facts {
+            if fact["kind"] == "SOURCE_FILE"
+                || (fact["kind"] == "DECLARATION" && fact["declarationKind"] == "METHOD")
+            {
+                let mut copied = fact.clone();
+                copied["scope"] = json!({"compilation":":other/main"});
+                cross_scope.push((copied, binding.clone()));
+            }
+        }
+        let two_scopes = compile_sources(
+            vec![
+                (
+                    ":/main",
+                    BTreeMap::from([(file.into(), original.into())]),
+                    false,
+                ),
+                (
+                    ":other/main",
+                    BTreeMap::from([(file.into(), original.into())]),
+                    false,
+                ),
+            ],
+            BTreeMap::new(),
+        );
+        assert!(
+            validate_variable_facts(
+                &cross_scope,
+                &two_scopes,
+                &BTreeSet::from([":/main".into(), ":other/main".into()])
+            )
+            .is_err(),
+            "registered scope must not borrow parameter target from another scope"
+        );
+        let wrong_tables = compile_sources(
+            vec![(
+                ":/main",
+                BTreeMap::from([(file.into(), original.replace("value = 3", "value = 4"))]),
+                false,
+            )],
+            BTreeMap::new(),
+        );
+        assert!(validate_variable_facts(&facts, &wrong_tables, &known).is_err());
+        let relocated = format!("// unrelated file line relocation 🙂\n\n{original}");
+        let relocated_facts = produce(temp.path(), &relocated);
+        let identities = |fs: &[(Value, String)]| {
+            fs.iter()
+                .filter(|(f, _)| {
+                    matches!(
+                        f["kind"].as_str(),
+                        Some("VARIABLE_ACCESS" | "VARIABLE_DECLARATION")
+                    )
+                })
+                .map(|(f, _)| {
+                    (
+                        f["kind"].to_string(),
+                        f["variableIdentity"].to_string(),
+                        f["occurrencePath"].to_string(),
+                        f["accessMode"].to_string(),
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(identities(&facts), identities(&relocated_facts));
+        // These are new real compiler captures, not coordinate-only or injected fact probes.
+        let multiline = original.replace(
+            "String café = \"🙂\";",
+            "String café =\n            \"🙂\";",
+        );
+        let mixed = multiline
+            .lines()
+            .enumerate()
+            .map(|(index, line)| format!("{line}{}", ["\r", "\r\n", "\n"][index % 3]))
+            .collect::<String>();
+        for (name, probe) in [
+            ("CR", multiline.replace('\n', "\r")),
+            ("CRLF", multiline.replace('\n', "\r\n")),
+            ("mixed", mixed),
+        ] {
+            let probe_facts = produce(temp.path(), &probe);
+            assert_eq!(
+                identities(&facts),
+                identities(&probe_facts),
+                "{name} changes source coordinates, not storage/occurrence identity"
+            );
+            let probe_tables = compile_sources(
+                vec![(
+                    ":/main",
+                    BTreeMap::from([(file.into(), probe.clone())]),
+                    false,
+                )],
+                BTreeMap::new(),
+            );
+            let probe_evidence = project_scoped_ok(
+                &projection_service(),
+                probe_facts.clone(),
+                &probe_tables,
+                &[":/main"],
+            );
+            verify_evidence(&probe_evidence).unwrap();
+            let lines = javac_line_ranges(&probe);
+            let mut retained_multiline = false;
+            for row in probe_evidence
+                .observations
+                .values()
+                .filter(|o| matches!(o.kind.as_str(), "VARIABLE_ACCESS" | "VARIABLE_DECLARATION"))
+            {
+                let site = &row.normalized["variableSite"];
+                let source = &probe_evidence.sources[&row.source_ids[0]];
+                let expected = &probe[lines[source.start_line as usize - 1].start
+                    ..lines[source.end_line as usize - 1].end];
+                assert_eq!(
+                    source.text, expected,
+                    "{name}: retained context must preserve original CR/CRLF bytes"
+                );
+                let start = site["byteStart"].as_u64().unwrap() as usize;
+                let end = site["byteEnd"].as_u64().unwrap() as usize;
+                assert_eq!(
+                    site["spanDigest"],
+                    canonical::hash_bytes(&probe.as_bytes()[start..end])
+                );
+                assert_eq!(
+                    site["sourceContentDigest"],
+                    canonical::hash_bytes(probe.as_bytes())
+                );
+                let context_start = site["sourceByteStart"].as_u64().unwrap() as usize;
+                let context_end = site["sourceByteEnd"].as_u64().unwrap() as usize;
+                assert_eq!(&probe[context_start..context_end], source.text);
+                assert_eq!(
+                    site["spanDigest"],
+                    canonical::hash_bytes(
+                        &source.text.as_bytes()[start - context_start..end - context_start]
+                    )
+                );
+                if name == "CRLF"
+                    && row.kind == "VARIABLE_ACCESS"
+                    && row.normalized["name"] == "attempts"
+                {
+                    let column = start - context_start;
+                    assert!(source.text[..column].contains("café"));
+                    assert!(
+                        column > source.text[..column].encode_utf16().count(),
+                        "Unicode byte columns are not UTF16 columns"
+                    );
+                    assert_eq!(&source.text[column..end - context_start], "attempts");
+                }
+                if row.kind == "VARIABLE_DECLARATION" && row.normalized["name"] == "café" {
+                    assert_eq!(source.end_line - source.start_line, 1);
+                    assert!(source.text.contains('\r'));
+                    retained_multiline = true;
+                }
+            }
+            assert!(
+                retained_multiline,
+                "{name}: multiline variable declaration was not captured"
+            );
+            let mut wrong_lines = probe_facts;
+            let index = wrong_lines
+                .iter()
+                .position(|(f, _)| f["kind"] == "VARIABLE_ACCESS")
+                .unwrap();
+            wrong_lines[index].0["startLine"] = json!(1);
+            let mut raw = wrong_lines[index].0.clone();
+            raw.as_object_mut().unwrap().remove("scope");
+            wrong_lines[index].1 = digest(&raw).unwrap();
+            assert!(
+                validate_variable_facts(&wrong_lines, &probe_tables, &known).is_err(),
+                "{name}: LF-style/forged compiler line must fail"
+            );
+        }
+        let relocated_tables = compile_sources(
+            vec![(":/main", BTreeMap::from([(file.into(), relocated)]), false)],
+            BTreeMap::new(),
+        );
+        let relocated_evidence = project_scoped_ok(
+            &projection_service(),
+            relocated_facts,
+            &relocated_tables,
+            &[":/main"],
+        );
+        assert_eq!(
+            rows.iter().map(|o| o.id.clone()).collect::<BTreeSet<_>>(),
+            relocated_evidence
+                .observations
+                .values()
+                .filter(|o| o.kind == "VARIABLE_ACCESS")
+                .map(|o| o.id.clone())
+                .collect()
         );
     }
 
