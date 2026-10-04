@@ -1595,6 +1595,140 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
+    fn question_authoring_1_5_saved_answer_review_repair_and_export_keep_exact_contract() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, mut work, author_config) =
+            super::super::operation_draft::tests::setup("success");
+        work.request.entrypoint = None;
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("endpoint-declaration".into());
+        work.request.question = Some("Where does the response come from?".into());
+        work.request.source_data_context = true;
+        work.request.authoring_contract =
+            Some(super::super::super::operation_answer::QUESTION_AUTHORING_CONTRACT.into());
+        super::super::super::work::api_contract_tests::persist_operation_fixture(&repo, &mut work);
+        let authored =
+            super::super::operation_draft::run_loaded(&repo, &work, Some(&author_config), false)
+                .unwrap();
+        let source_run = authored["run"].as_str().unwrap();
+        let source_report = super::super::load_report_by_id(&repo, &work.id, source_run).unwrap();
+        let source_input = frozen_input(&repo, &source_report);
+        let mut original = author_files(&repo, &work, source_run);
+        files(&repo.path(".codeclew/job-inputs").unwrap(), &mut original);
+        files(&repo.path(".codeclew/job-results").unwrap(), &mut original);
+        let report_path = repo
+            .path(&format!(".codeclew/jobs/{source_run}.json"))
+            .unwrap();
+        let mut original_report: Value =
+            serde_json::from_slice(&original.remove(&report_path).unwrap()).unwrap();
+        original_report
+            .as_object_mut()
+            .unwrap()
+            .remove("checkpoint");
+        let original_ledger: Value = store::read(
+            &repo
+                .path("execution/accounts/operation-draft-success.json")
+                .unwrap(),
+            store::MAX_RECORD,
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::operation_draft::run_loaded(&repo, &work, Some(&author_config), false)
+                .unwrap(),
+            authored
+        );
+        // Replay may advance the report's checkpoint pointer and append a
+        // terminal checkpoint. Every prior checkpoint, authoritative input,
+        // raw result, answer/export and account byte must remain unchanged.
+        assert_originals_unchanged(&original);
+        let mut replayed_report: Value = store::read(&report_path, store::MAX_RECORD).unwrap();
+        replayed_report
+            .as_object_mut()
+            .unwrap()
+            .remove("checkpoint");
+        assert_eq!(replayed_report, original_report);
+        let replayed_input = frozen_input(
+            &repo,
+            &super::super::load_report_by_id(&repo, &work.id, source_run).unwrap(),
+        );
+        assert_eq!(
+            super::super::super::bytes(&replayed_input).unwrap(),
+            super::super::super::bytes(&source_input).unwrap()
+        );
+        assert_eq!(
+            store::read::<Value>(
+                &repo
+                    .path("execution/accounts/operation-draft-success.json")
+                    .unwrap(),
+                store::MAX_RECORD
+            )
+            .unwrap(),
+            original_ledger
+        );
+        let reject_path = temp.path().join("question-reject.json");
+        config(&reject_path, &author_config, "reject");
+        let rejected = run_loaded(&repo, &work, source_run, &reject_path).unwrap();
+        let rejected_run = rejected["run"].as_str().unwrap();
+        let originals = immutable_originals(&repo, &work, source_run, rejected_run);
+        let repair_path = temp.path().join("question-repair.json");
+        semantic_repair_config(&repair_path, &author_config, "success");
+        let repaired = semantic_repair(&repo, &work, rejected_run, &repair_path).unwrap();
+        let repaired_run = repaired["run"].as_str().unwrap();
+        let repair_report = super::super::load_report_by_id(&repo, &work.id, repaired_run).unwrap();
+        let repair_input = frozen_input(&repo, &repair_report);
+        for key in ["packet", "instruction", "packetGuide", "outputSchema"] {
+            assert_eq!(
+                repair_input.request["payload"][key], source_input.request["payload"][key],
+                "{key}"
+            );
+        }
+        assert_originals_unchanged(&originals);
+        let approve_path = temp.path().join("question-approve.json");
+        config(&approve_path, &author_config, "approve");
+        let reviewed = run_loaded(&repo, &work, repaired_run, &approve_path).unwrap();
+        assert_eq!(reviewed["status"], "DRAFT_REVIEW_APPROVED");
+        let review_run = reviewed["run"].as_str().unwrap();
+        let review_report = super::super::load_report_by_id(&repo, &work.id, review_run).unwrap();
+        let review_input = frozen_input(&repo, &review_report);
+        assert_eq!(
+            review_input.request["payload"]["packet"],
+            source_input.request["payload"]["packet"]
+        );
+        assert_eq!(
+            review_input.request["payload"]["savedAuthorContract"],
+            json!({
+                "instruction":repair_input.request["payload"]["instruction"],
+                "packetGuide":repair_input.request["payload"]["packetGuide"],
+                "outputSchema":repair_input.request["payload"]["outputSchema"],
+                "repair":repair_input.request["payload"]["repair"]
+            })
+        );
+        assert_eq!(
+            review_input.request["payload"]["source"]["sourceAuthoringContract"],
+            super::super::super::operation_answer::QUESTION_AUTHORING_CONTRACT
+        );
+        let exports = tempfile::tempdir().unwrap();
+        let result = export_approved_answer(
+            &repo,
+            &work.id,
+            review_run,
+            &exports.path().join("question-export"),
+        )
+        .unwrap();
+        assert_eq!(result["reviewStatus"], "MODEL_APPROVED");
+        assert_eq!(result["publication"], "NOT_PUBLISHED");
+        let exported: Value = store::read(
+            &exports.path().join("question-export/reader-packet.json"),
+            store::MAX_RECORD,
+        )
+        .unwrap();
+        assert_eq!(exported, source_input.request["payload"]["packet"]);
+        assert_originals_unchanged(&originals);
+    }
+
+    #[test]
     fn maintained_context_reviewer_receives_exact_author_packet_and_replays_without_promoting_human_truth()
      {
         if !cfg!(target_os = "macos") {

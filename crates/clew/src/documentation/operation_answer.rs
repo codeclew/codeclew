@@ -21,6 +21,30 @@ const STEP_KINDS: &[&str] = &["action", "decision", "try", "return", "throw", "l
 // this identity is persisted on newly prepared operation Work.
 pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.4";
 pub(super) const PREVIOUS_AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.3";
+// A separate policy for bounded source-data questions; generic 1.4 stays immutable.
+pub(super) const QUESTION_AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.5";
+
+pub(super) fn question_authoring_eligible(request: &super::work::Request) -> bool {
+    request.context_profile.as_deref() == Some("process-graph-v1")
+        && request.source_data_context
+        && request
+            .question
+            .as_deref()
+            .is_some_and(|question| !question.trim().is_empty())
+}
+
+pub(super) fn validate_authoring_request(
+    request: &super::work::Request,
+) -> Result<(), crate::error::ClewError> {
+    if request.authoring_contract.as_deref() == Some(QUESTION_AUTHORING_CONTRACT)
+        && !question_authoring_eligible(request)
+    {
+        return Err(invalid(
+            "OPERATION_AUTHORING_CONTRACT_PROFILE_MISMATCH: authoring contract 1.5 requires process-graph-v1, sourceDataContext and a non-empty question",
+        ));
+    }
+    Ok(())
+}
 
 pub(super) fn output_schema() -> Value {
     serde_json::from_str(include_str!(

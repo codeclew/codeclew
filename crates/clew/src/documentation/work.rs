@@ -771,6 +771,7 @@ pub fn load(repo: &Repository, id: &str) -> Result<Work, ClewError> {
     validate_endpoint_context_profile(&stored.subject, &stored.request, &checked)?;
     validate_process_graph_root(&stored.subject, &stored.request, &checked)?;
     super::source_data_context::validate_request(&stored.request)?;
+    super::operation_answer::validate_authoring_request(&stored.request)?;
     let work = stored.into_runtime(checked, handles, influence);
     super::source_data_context::build(&work)?;
     super::maintained_context::validate_optional(
@@ -1309,9 +1310,24 @@ fn normalize_operation_authoring_contract(request: &mut Request) -> Result<(), C
     );
     match (operation_profile, request.authoring_contract.as_deref()) {
         (true, None) => {
-            request.authoring_contract = Some(super::operation_answer::AUTHORING_CONTRACT.into());
+            request.authoring_contract = Some(
+                if super::operation_answer::question_authoring_eligible(request) {
+                    super::operation_answer::QUESTION_AUTHORING_CONTRACT
+                } else {
+                    super::operation_answer::AUTHORING_CONTRACT
+                }
+                .into(),
+            );
         }
-        (true, Some(identity)) if identity == super::operation_answer::AUTHORING_CONTRACT => {}
+        (
+            true,
+            Some(
+                super::operation_answer::AUTHORING_CONTRACT
+                | super::operation_answer::QUESTION_AUTHORING_CONTRACT,
+            ),
+        ) => {
+            super::operation_answer::validate_authoring_request(request)?;
+        }
         (true, Some(_)) => {
             return Err(invalid(format!(
                 "OPERATION_AUTHORING_CONTRACT_UNSUPPORTED: prepare new Work from the saved snapshot using {} and the selected operation profile",
@@ -5404,6 +5420,58 @@ pub(super) mod api_contract_tests {
         let repo = Repository::open(temporary.path()).unwrap();
         let error = prepare_with_snapshot(&repo, work.subject, work.request, None).unwrap_err();
         assert!(error.message.contains("PROCESS_GRAPH_SNAPSHOT_REQUIRED"));
+    }
+
+    #[test]
+    fn question_authoring_default_is_opt_in_and_has_distinct_immutable_identity() {
+        let mut work = endpoint_context_fixture();
+        work.snapshot = Some("sha256:saved-question-snapshot/1".into());
+        work.request.entrypoint = None;
+        work.request.context_profile = Some("process-graph-v1".into());
+        work.request.root_declaration = Some("endpoint-declaration".into());
+        work.request.question = Some("Where does the result come from?".into());
+        let mut generic = work.clone();
+        normalize_operation_authoring_contract(&mut generic.request).unwrap();
+        assert_eq!(
+            generic.request.authoring_contract.as_deref(),
+            Some(super::super::operation_answer::AUTHORING_CONTRACT)
+        );
+        work.request.source_data_context = true;
+        normalize_operation_authoring_contract(&mut work.request).unwrap();
+        assert_eq!(
+            work.request.authoring_contract.as_deref(),
+            Some(super::super::operation_answer::QUESTION_AUTHORING_CONTRACT)
+        );
+        let mut pinned_1_4 = work.clone();
+        pinned_1_4.request.authoring_contract =
+            Some(super::super::operation_answer::AUTHORING_CONTRACT.into());
+        normalize_operation_authoring_contract(&mut pinned_1_4.request).unwrap();
+        let mut ids = Vec::new();
+        for candidate in [&work, &pinned_1_4] {
+            let mut saved =
+                StoredWork::from_runtime(candidate, candidate.snapshot.clone().unwrap()).unwrap();
+            saved.id = digest(&saved).unwrap()[7..].into();
+            let original = bytes(&saved).unwrap();
+            let loaded: StoredWork = serde_json::from_slice(&original).unwrap();
+            loaded.validate_identity(&saved.id).unwrap();
+            assert_eq!(bytes(&loaded).unwrap(), original);
+            ids.push(saved.id);
+        }
+        assert_ne!(ids[0], ids[1]);
+        for (profile, enabled, question) in [
+            ("process-graph-v1", false, "Question"),
+            ("endpoint-context-v3", true, "Question"),
+            ("process-graph-v1", true, "   "),
+        ] {
+            let mut incompatible = work.request.clone();
+            incompatible.context_profile = Some(profile.into());
+            incompatible.source_data_context = enabled;
+            incompatible.question = Some(question.into());
+            assert!(normalize_operation_authoring_contract(&mut incompatible).is_err());
+            assert!(
+                super::super::operation_answer::validate_authoring_request(&incompatible).is_err()
+            );
+        }
     }
 
     #[test]

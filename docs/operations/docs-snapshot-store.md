@@ -639,6 +639,21 @@ not establish runtime values or initialization timing, and `final` does not
 establish deep immutability. A material change to the schema, policy, or packet
 requires a new identity and new Work prepared from the same saved snapshot; old
 Work identity is never rewritten.
+
+New `process-graph-v1` Work with `sourceDataContext: true` and a non-empty
+question defaults to `codeclew-operation-draft-authoring/1.5`. This separate
+question-focused policy keeps the complete packet, exact sources, source-data
+IR, citations and answer schema 1.2. It asks for the requested answer and only
+its necessary prerequisites, decisions, mutations, failures and uncertainties;
+it does not require exhaustive documentation of unrelated packet behavior.
+Glossary and preparations may be empty when they do not help that question.
+The ordinary reviewer still assesses every included answer block and its
+material claims against the complete saved packet. Explicit 1.4 remains
+available; saved 1.4 inputs and reviews keep their exact policy bytes. Saved
+1.5 answers support replay, review, explicit bounded repair and approved export
+through the same immutable bindings. This policy does not change model,
+transport, timeout or token reservations, or establish a latency guarantee.
+
 Existing 1.3 Work keeps its prior packet and may only replay a validated saved
 answer, including after an interrupted output write; a fresh author attempt
 requires new 1.4 Work prepared from the same saved snapshot.
@@ -725,7 +740,7 @@ saved report, checkpoint and invocation. It checks the Work snapshot, original
 packet and answer digests, and passes the saved author instruction and guide as
 untrusted review material. Editable exported `answer.json` is not authoritative.
 Review accepts successful original author runs with answer 1.2 and authoring
-contract 1.4 or 1.3, plus successful semantic-repair children whose complete
+contract 1.5, 1.4 or 1.3, plus successful semantic-repair children whose complete
 saved rejection lineage and author payload validate. Invalid answers and native
 validation-repair runs remain ineligible. No author driver is needed for review.
 
