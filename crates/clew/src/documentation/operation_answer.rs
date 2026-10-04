@@ -2515,7 +2515,7 @@ fn render_preparation_technical_markdown(
         String::new()
     } else {
         format!(
-            "<details class=\"preparation-technical-reference\"><summary>{}</summary>\n\n{}\n</details>\n\n",
+            "<details class=\"preparation-technical-reference\">\n<summary>{}</summary>\n\n{}\n</details>\n\n",
             markdown_escape(if labels.russian {
                 "Технические ссылки подготовок"
             } else {
@@ -3907,7 +3907,7 @@ fn render_markdown(
         labels,
     ));
     markdown.push_str(&format!(
-        "<details class=\"technical-details\"><summary>{}</summary>\n\n<a id=\"technical-reference\"></a>\n**{}:** `{}`\n\n",
+        "<details class=\"technical-details\">\n<summary>{}</summary>\n\n<a id=\"technical-reference\"></a>\n**{}:** `{}`\n\n",
         markdown_escape(labels.technical_details()),
         markdown_escape(if labels.russian {
             "Хеш пакета"
