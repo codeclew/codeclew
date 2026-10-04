@@ -90,7 +90,7 @@ h1 em { font-weight: inherit; color: var(--ink); }
 .sidebar-note img { width: 76px; margin: 0; grid-row: span 2; }
 .sidebar-note strong { color: var(--ink); }
 .sidebar-note span { color: var(--muted); }
-.page-content > section { scroll-margin-top: 110px; }
+.page-content > section { scroll-margin-top: 0; }
 .section { padding-block: 65px; }
 .section h2, .cta h2, .section-heading h2 { font-size: clamp(28px, 3vw, 40px); line-height: 1.15; letter-spacing: -.04em; margin: 12px 0 16px; }
 .section-heading > p, .privacy-copy > p { font-size: 16px; }

@@ -114,6 +114,12 @@
     "group": "Guides"
   },
   {
+    "title": "Write one useful overview in four steps.",
+    "url": "./documentation.html#first-document",
+    "description": "Service documentation",
+    "group": "Guides"
+  },
+  {
     "title": "Start with the question you need to answer.",
     "url": "./documentation.html#task-paths",
     "description": "Service documentation",

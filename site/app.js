@@ -50,7 +50,8 @@ if (button && command) {
   function renderResults() {
     const words = input.value.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
     const matches = index.filter(entry => {
-      const text = `${entry.title} ${entry.description} ${entry.group}`.toLocaleLowerCase();
+      const address = entry.url.replace(/[-_/#.]/g, " ");
+      const text = `${entry.title} ${entry.description} ${entry.group} ${address}`.toLocaleLowerCase();
       return words.every(word => text.includes(word));
     }).sort((a, b) => {
       if (!words.length) return Number(a.url.includes("#")) - Number(b.url.includes("#"));
@@ -104,7 +105,10 @@ if (button && command) {
   input.addEventListener("input", () => { if (index) renderResults(); });
   dialog.addEventListener("keydown", event => {
     const links = [...results.querySelectorAll("a")];
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      dialog.close();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       if (!links.length) return;
       event.preventDefault();
       const current = links.indexOf(document.activeElement);
