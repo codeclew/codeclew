@@ -155,7 +155,8 @@ pub(super) fn file_only_scope_binds_source(
 fn validate_summary_text(text: &str) -> Result<(), ClewError> {
     if text.trim().is_empty() || text.contains(['`', '<']) || text.len() > SUMMARY_TEXT_MAX_BYTES {
         return Err(invalid(format!(
-            "summary.text must be nonblank plain prose of at most {SUMMARY_TEXT_MAX_BYTES} UTF-8 bytes, without backticks or '<'"
+            "summary.text must be nonblank plain prose of at most {SUMMARY_TEXT_MAX_BYTES} UTF-8 bytes, without backticks or '<'; received {} UTF-8 bytes. Rewrite the summary within these bounds, preserving its evidence references",
+            text.len()
         )));
     }
     Ok(())
@@ -298,7 +299,8 @@ pub(super) fn validate_with_retained(
         if !expected.contains(&o.id) || !covered.insert(o.id.clone()) || o.title.trim().is_empty() {
             return Err(invalid("duplicate or out-of-scope operation"));
         }
-        validate_summary_text(&o.summary.text)?;
+        validate_summary_text(&o.summary.text)
+            .map_err(|error| invalid(format!("operations[{operation_index}].{}", error.message)))?;
         super::visuals::validate_structure(&o.visuals)?;
         if (o.dataflow.is_some() || super::notes::is_root(&o.id)) && !o.visuals.is_empty() {
             return Err(invalid(

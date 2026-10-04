@@ -88,13 +88,13 @@ function processFixture(svgAvailable=false,lifecycleName='changeTaskStatus'){
 function processOutline(svgAvailable=false){
  return {status:'STATIC_SOURCE_OUTLINE',authority:'STATIC_SOURCE_STRUCTURE_NOT_REVIEWED',causal:true,origin:'source',diagramStem:'scenario-checkout-process-outline-91ab42',pumlAvailable:true,svgAvailable,sourceIds:['checkout-root'],root:{service:'orders',scope:':main',symbol:'method:class:example.CheckoutController#checkout()Ljava/lang/String;',observation:'orders:symbol:checkout',observationDigest:'flow-digest',sourceIds:['checkout-root'],sourceRecordDigests:{'checkout-root':'source-record-digest'},candidates:[]},tree:'Entry: method:class:example.CheckoutController#checkout()Ljava/lang/String;\n[D] if (!hasPositiveQuantity(request)) then\n  return invalid()\n[W] reservations.save(request)\nreturn inventory.reserve(request)'};
 }
-function load(data=fixture()){
- const elements=new Map(),listeners={};
+function load(data=fixture(),mobile=false){
+ const elements=new Map(),listeners={},navigationHistory=[],browserLocation={hash:''};
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:false,innerHTML:'',textContent:'',isConnected:true,classList:{add(){},remove(){}},focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
- const context=vm.createContext({document:{getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{classList:{add(){},remove(){}}},activeElement:null},location:{hash:''},history:{replaceState(){}},window:{addEventListener(){},scrollTo(){}},navigator:{clipboard:{writeText:async()=>{}}}});
+ const context=vm.createContext({document:{getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{classList:{add(){},remove(){}}},activeElement:null},location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>({matches:mobile,addEventListener(){}})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
- return {data,e:element,run:code=>vm.runInContext(code,context),click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
+ return {data,e:element,navigationHistory,run:code=>vm.runInContext(code,context),click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
 test('default service overview exposes the first native graph and all visual navigation',()=>{
  const r=load(),html=r.e('scenario-content').innerHTML;
@@ -412,7 +412,7 @@ test('Russian UNIQUE and UNKNOWN policies explain selection without translating 
 test('Russian catalogue, coverage and contract UI preserve paths, schema keys and authored descriptions',()=>{
  const data=fixture();data.language='ru';data.catalogue=[{id:'handler',symbol:'handleTask',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/tasks/{taskType}']},sourceIds:[]}];
  const r=load(data);
- r.run('catalogue()');assert.match(r.e('catalogue-view').innerHTML,/точек входа/);assert.match(r.e('catalogue-view').innerHTML,/POST/);assert.match(r.e('catalogue-view').innerHTML,/\/tasks\/\{taskType\}/);
+ r.run('catalogue()');assert.match(r.e('catalogue-view').innerHTML,/Каталог исходного кода и API/);assert.match(r.e('catalogue-view').innerHTML,/POST/);assert.match(r.e('catalogue-view').innerHTML,/\/tasks\/\{taskType\}/);
  r.run('coverage()');assert.match(r.e('coverage-view').innerHTML,/Что подтверждено исходным кодом/);
  const fields=r.run(`fields({type:'object',required:['task_id'],properties:{task_id:{type:'string',description:'Original description'},optionalKey:{type:'integer'}}})`);
  assert.match(fields,/<th>Поле<\/th><th>Тип/);assert.match(fields,/class="required">обязательно/);assert.match(fields,/class="optional">необязательно/);
@@ -710,4 +710,49 @@ test('native catalogue synthetic 200-service 2000-process DOM pagination filteri
  r.restore('/index.html?page=999999&campaign=synthetic#catalog-title');assert.equal(n['catalog-status'].textContent,'2600 results · page 130 of 130');assert.deepEqual(r.links(),rows.slice(2580).map(row=>row.href));assert.equal(n['catalog-next'].disabled,true);
  const lastReload=loadCatalogue(r.url());assert.deepEqual(lastReload.links(),rows.slice(2580).map(row=>row.href));
  const url=new URL(r.url(),'https://codex.test');assert.equal(url.searchParams.get('page'),'130');assert.equal(url.searchParams.get('campaign'),'synthetic');assert.equal(url.hash,'#catalog-title');
+});
+
+test('pinned-only freshness presents a saved snapshot without hiding the original authority',()=>{
+ const data=fixture();data.sectionState={freshness:'UNVERIFIED',verification:'VERIFIED_WITH_LIMITATIONS',contentRevisions:{sample:'abc'},targetRevisions:{sample:'abc'},reasons:[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED',snapshot:'saved'}]};
+ const original=JSON.stringify(data.sectionState),r=load(data),html=r.e('freshness-status').innerHTML;
+ assert.match(html,/freshness-snapshot/);assert.match(html,/Saved source snapshot/);assert.match(html,/Current checkout freshness was not rechecked/);
+ assert.match(html,/<details class="freshness-details"><summary>Source and review details<\/summary>/);
+ assert.match(html,/Source freshness: <b>UNVERIFIED<\/b>/);assert.match(html,/PINNED_SNAPSHOT_NOT_REVERIFIED/);assert.match(html,/Model approved with limitations/);
+ assert.doesNotMatch(html,/freshness-unverified|retained with a gap/);assert.equal(JSON.stringify(r.data.sectionState),original);
+ const ru=load({...data,language:'ru'}).e('freshness-status').innerHTML;assert.match(ru,/Сохранённая версия исходного кода/);assert.match(ru,/Не проверено/);
+ for(const reasons of [[],[{reason:'SOURCE_MISSING'}],[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED'},{reason:'SOURCE_MISSING'}]]){
+  const actual=load({...data,sectionState:{...data.sectionState,reasons}}).e('freshness-status').innerHTML;
+  assert.match(actual,/freshness-unverified/);assert.doesNotMatch(actual,/freshness-snapshot/);
+ }
+ assert.match(load({...data,sectionState:{...data.sectionState,freshness:'STALE'}}).e('freshness-status').innerHTML,/freshness-stale/);
+});
+test('unexplained source declarations stay discoverable with readable labels and exact identities',()=>{
+ const data=fixture(),symbol='source:workers/Main.kt/package:example.worker/processRequest/114e9ee8cc58ecb97b3e';
+ data.catalogue=[{id:'candidate',symbol,kind:'SOURCE_CALLABLE',trigger:{methods:['CODE'],paths:[]},sourceIds:[]}];
+ const r=load(data),nav=r.e('scenario-nav').innerHTML;
+ assert.match(nav,/<details class="pending-navigation" ><summary>Awaiting explanation · 1<\/summary>/);
+ assert.match(nav,/processRequest\(\) · Main.kt/);assert.ok(nav.includes(symbol));
+ r.e('search').value='114e9ee8';r.run('nav()');assert.match(r.e('scenario-nav').innerHTML,/<details class="pending-navigation" open>/);
+ r.click({entry:'candidate'});assert.match(r.e('scenario-content').innerHTML,/processRequest\(\) · Main.kt/);assert.equal(r.run('current.id'),'candidate');
+ r.run('catalogue()');assert.match(r.e('catalogue-view').innerHTML,/<summary>Exact identity<\/summary>/);assert.ok(r.e('catalogue-view').innerHTML.includes(symbol));
+ assert.equal(r.data.catalogue[0].symbol,symbol);
+ assert.equal(r.run("sourceLabel('source:workers/Main.kt/class:example.Nested/string/114e9ee8cc58ecb97b3e')"),'Nested.string() · Main.kt');
+ assert.equal(r.run("sourceLabel('source:workers/Main.kt/class:example.Other/string/114e9ee8cc58ecb97b3e')"),'Other.string() · Main.kt');
+});
+test('mobile navigation starts collapsed and closes after selecting a section',()=>{
+ const r=load(fixture(),true);assert.equal(r.e('reader-navigation').open,false);
+ r.e('reader-navigation').open=true;r.click({entry:'section-responsibilities'});
+ assert.equal(r.e('reader-navigation').open,false);assert.equal(r.e('content').focused,true);assert.equal(r.run('current.id'),'section-responsibilities');
+ r.e('reader-navigation').open=true;r.e('catalogue-button').onclick();
+ assert.equal(r.e('reader-navigation').open,false);assert.equal(r.e('catalogue-view').hidden,false);assert.equal(r.e('content').focused,true);
+ assert.equal(load().e('reader-navigation').open,true);
+});
+
+test('reader section navigation records browser history while tabs keep the selected location',()=>{
+ const r=load();
+ assert.equal(r.navigationHistory.length,0);
+ r.click({entry:'section-responsibilities'});assert.deepEqual(r.navigationHistory,['#section-responsibilities']);
+ r.click({entry:'section-responsibilities'});assert.equal(r.navigationHistory.length,1);
+ r.click({entry:'section-overview'});assert.deepEqual(r.navigationHistory,['#section-responsibilities','#section-overview']);
+ r.run("showEntry('section-responsibilities','contract')");assert.equal(r.navigationHistory.length,2);
 });

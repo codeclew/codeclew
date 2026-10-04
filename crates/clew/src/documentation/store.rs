@@ -189,6 +189,10 @@ impl Repository {
         }
         for (name, content) in [
             (
+                "examples/first-document.py",
+                include_str!("../../assets/documentation/examples/first-document.py"),
+            ),
+            (
                 "examples/service-source.json",
                 include_str!("../../assets/documentation/examples/service-source.json"),
             ),
@@ -210,8 +214,16 @@ impl Repository {
             }
         }
         super::reader::init(&repo)?;
+        let first_document = repo.path("examples/first-document.py")?;
+        let starter_command = format!(
+            "python3 '{}' capture --help",
+            first_document.to_string_lossy().replace('\'', "'\\''")
+        );
         Ok(
-            json!({"schema":"codeclew-docs-init/1.0", "status":"READY", "inputDigest":repo.input_digest()?}),
+            json!({"schema":"codeclew-docs-init/1.0", "status":"READY", "inputDigest":repo.input_digest()?,
+                "help":repo.path("docs/help.html")?, "runbooks":repo.path("docs/runbooks.html")?,
+                "firstDocument":first_document,
+                "nextAction":format!("Run {starter_command} to prepare a source-bound first overview without model calls.")}),
         )
     }
 
@@ -956,6 +968,37 @@ mod tests {
             .unwrap();
         assert!(r.inputs().is_err());
     }
+    #[test]
+    fn initialization_delivers_first_document_starter_and_preserves_edited_copy() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("architecture with owner's notes");
+        let initialized = Repository::init(&root, "Architecture").unwrap();
+        let script = initialized["firstDocument"].as_str().unwrap();
+        assert!(Path::new(script).is_absolute());
+        let command = initialized["nextAction"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("Run ")
+            .unwrap()
+            .strip_suffix(" to prepare a source-bound first overview without model calls.")
+            .unwrap();
+        let help = std::process::Command::new("sh")
+            .args(["-c", command])
+            .current_dir(temporary.path())
+            .output()
+            .unwrap();
+        assert!(help.status.success(), "{:?}", help);
+        assert!(fs::read_to_string(script).unwrap().contains("def main():"));
+        assert!(Path::new(initialized["help"].as_str().unwrap()).is_file());
+        assert!(!root.join("docs/index.html").exists());
+        fs::write(script, "My customized starter\n").unwrap();
+        Repository::init(&root, "Architecture").unwrap();
+        assert_eq!(
+            fs::read_to_string(script).unwrap(),
+            "My customized starter\n"
+        );
+    }
+
     #[test]
     fn current_git_clone_initializes_local_state_and_binds_without_changing_declarations() {
         let temporary = tempfile::tempdir().unwrap();

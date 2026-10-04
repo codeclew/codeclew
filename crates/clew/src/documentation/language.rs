@@ -32,6 +32,7 @@ pub(super) fn template(template: &str, language: &str) -> String {
             "Разделы, заметки и операции",
         ),
         ("Source and API inventory", "Перечень исходников и API"),
+        ("Sections and source", "Разделы и исходный код"),
         (
             "Sources pinned to revisions",
             "Исходники привязаны к версиям",
@@ -298,6 +299,8 @@ mod tests {
         );
         assert!(template.contains("lang=\"ru\""));
         assert!(template.contains("Перечень исходников и API"));
+        assert!(template.contains("<summary>Разделы и исходный код</summary>"));
+        assert!(!template.contains("Sections and source"));
         assert!(template.contains("__DOCUMENT_DATA__"));
         assert!(validate(Some("fr")).is_err());
     }

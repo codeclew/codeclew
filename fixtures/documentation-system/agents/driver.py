@@ -523,6 +523,19 @@ else:
             result = {"action": "proposal", "proposal": options["proposal"]}
     elif "proposal" in options:
         result = {"action": "proposal", "proposal": options["proposal"]}
+        if options.get("summaryByteRepair"):
+            invalid_summary = "\u044f" * 1024 + "x" * 15
+            if payload["feedback"] is not None:
+                assert payload["feedback"]["kind"] == "MACHINE_DIAGNOSTICS"
+                diagnostics = payload["feedback"]["diagnostics"]
+                assert any("operations[0].summary.text" in item["nextAction"]
+                           and "received 2063 UTF-8 bytes" in item["nextAction"]
+                           for item in diagnostics)
+                assert payload["previousProposal"]["operations"][0]["summary"]["text"] == invalid_summary
+            if payload["feedback"] is None or options["summaryByteRepair"] == "exhaust":
+                result["proposal"]["operations"][0]["summary"]["text"] = (
+                    invalid_summary + "zz" if payload["feedback"] is not None else invalid_summary
+                )
     else:
         rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
         entry = next(item for item in rows if item["kind"] == "ENTRYPOINT")

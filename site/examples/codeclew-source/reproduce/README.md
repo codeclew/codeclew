@@ -1,4 +1,4 @@
-# Configured author and reviewer: five accepted native sections
+# Reproduce a first document and the recorded five-section publication
 
 These are the eight exact transport runtime files used for five accepted native
 sections on installed Clew **0.13.7**. They are not a new Clew implementation or a
@@ -10,6 +10,60 @@ schema snapshots plus `source-provenance.json`. Its historical schema-preparatio
 record remains unchanged, including the original pending label; actual qualification
 is recorded separately in `qualification.json`. Neither private mail nor credentials
 are included.
+
+## First document without provider execution
+
+Start here to try source-backed documentation with installed Clew 0.13.7+ and
+Python 3.11+. The included `first-document.py` uses the supported native CLI;
+it does not require the Mac-only transport, provider credentials or model calls.
+Use a caller-owned checkout of Codeclew and an initialized separate root:
+
+```sh
+checkout=/path/to/codeclew
+example="$checkout/site/examples/codeclew-source/reproduce"
+docs=/path/to/new-architecture
+clew docs init --root "$docs" --title 'CLI documentation generator'
+python3 -I -S "$example/first-document.py" capture \
+  --root "$docs" --repo "$checkout" --service cli-documentation \
+  --title 'CLI documentation generator' \
+  --repository https://github.com/codeclew/codeclew \
+  --language python --dialect 3.11 \
+  --source-root scripts/build_cli_documentation.py
+```
+
+This selects one real committed Python file at the checkout's HEAD. The result
+names an `authoring/first-document-*` directory containing complete native reads,
+one assembled `packet.md`, exact Work/snapshot handles and `proposal.json` with
+its actual overview operation reference. Ask your current agent to read the
+packet and write a useful paragraph in the proposal with genuine supporting
+source references. The summary limit is 2048 UTF-8 bytes. Submit the authored
+proposal with the printed Work ID, inspect READY status without structural
+diagnostics, then explicitly publish locally:
+
+```sh
+clew docs proposal submit --root "$docs" --work RETURNED_WORK --input RETURNED_DIRECTORY/proposal.json
+clew docs proposal publish --root "$docs" --proposal RETURNED_PROPOSAL --unassessed
+```
+
+Open the returned reader path. Publication remains meaning `UNASSESSED`; the
+unwritten service sections remain gaps. To ask a source question without another
+capture or publication:
+
+```sh
+python3 -I -S "$example/first-document.py" read \
+  --root "$docs" --service cli-documentation --snapshot RETURNED_SNAPSHOT \
+  --question 'What does --check verify, and when does this script invoke Graphviz?'
+```
+
+Give the returned packet to your agent and request source-linked reasoning.
+Repeated preparation retains prior authoring files. Capture reuses an identical
+registration; different fields require an explicit service update. Clew 0.13.8 bundles the same
+starter in newly initialized roots; this public copy also works with 0.13.7
+roots created before the starter was bundled.
+
+The rest of this page is a historical, configured model-run reproduction. Its
+large exact source scope, transport constraints and usage observations describe
+those recorded runs; they are unnecessary for the first-document recipe above.
 
 ## What was demonstrated
 

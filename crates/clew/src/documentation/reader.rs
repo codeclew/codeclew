@@ -129,6 +129,33 @@ fn string_values(value: &serde_json::Value) -> Vec<String> {
     values.into_keys().collect()
 }
 
+fn source_callable_label(symbol: &str) -> Option<String> {
+    let identity = symbol.strip_prefix("source:")?;
+    let (declaration, digest) = identity.rsplit_once('/')?;
+    if digest.len() != 20
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let (scope, name) = declaration.rsplit_once('/')?;
+    let (file, owner) = scope.rsplit_once('/')?;
+    let class_scoped = owner.starts_with("class:");
+    let owner = owner
+        .strip_prefix("package:")
+        .or_else(|| owner.strip_prefix("class:"))?;
+    if file.is_empty() || owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    let name = if class_scoped {
+        format!("{}.{name}", owner.rsplit('.').next()?)
+    } else {
+        name.to_owned()
+    };
+    Some(format!("{name}() · {}", file.rsplit('/').next()?))
+}
+
 fn entrypoint_trigger_metadata(
     trigger: &serde_json::Value,
     language: &str,
@@ -341,6 +368,27 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
                 )
             }) || !paths.is_empty();
             let http = entry["kind"] == "HTTP_ENDPOINT" || entry["kind"].is_null() && inferred_http;
+            let source_declaration = entry["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("SOURCE_"));
+            let source_label = source_declaration
+                .then(|| source_callable_label(symbol))
+                .flatten();
+            let coverage = coverage_presence(payload, id);
+            let authored_title = (coverage == "authored")
+                .then(|| {
+                    payload["operations"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|operation| operation["id"] == id)
+                })
+                .flatten()
+                .and_then(|operation| operation["title"].as_str())
+                .filter(|title| !title.trim().is_empty());
+            let display_title = source_label
+                .as_deref()
+                .map(|label| authored_title.unwrap_or(label));
             let route_known = paths.iter().any(|path| !path.trim().is_empty());
             let title = if http && route_known && methods.len() == 1 && paths.len() == 1 {
                 format!("{} {}", methods[0], paths[0])
@@ -373,6 +421,12 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
                     text(language, "Handler", "Обработчик"),
                     symbol
                 )
+            } else if let Some(label) = source_label.as_deref() {
+                format!(
+                    "{}: {}",
+                    text(language, "Source declaration", "Объявление в исходном коде"),
+                    label
+                )
             } else {
                 let (_, trigger_parts) = entrypoint_trigger_metadata(trigger, language);
                 if trigger_parts.is_empty() {
@@ -401,11 +455,17 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
                 service_id.to_owned(),
                 context.to_owned(),
             ]);
+            if let Some(display_title) = display_title {
+                terms.push(display_title.to_owned());
+            }
             let mut row = serde_json::json!({
-                "id":id,"title":title,"kind":if http {"API"} else {"Entrypoint"},
+                "id":id,"title":title,"kind":if http {"API"} else if source_declaration {"Source declaration"} else {"Entrypoint"},
                 "href":format!("{path}#{id}"),"context":context,"summary":summary,
-                "coverage":coverage_presence(payload,id),"searchText":[]
+                "coverage":coverage,"searchText":[]
             });
+            if let Some(display_title) = display_title {
+                row["displayTitle"] = serde_json::json!(display_title);
+            }
             search_terms(&mut row, terms);
             api_rows.insert((service_id.to_owned(), id.to_owned()), row);
         }
@@ -573,6 +633,7 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
             ))
     });
     let has_reviewed_answers = rows.iter().any(|r| r["kind"] == "Reviewed answer");
+    let has_source_declarations = rows.iter().any(|r| r["kind"] == "Source declaration");
     let payload = serde_json::to_string(&rows)
         .expect("catalog strings serialize")
         .replace('<', "\\u003c");
@@ -581,6 +642,15 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
     } else {
         page("Browse documentation", &format!(r#"<div class="eyebrow">DOCUMENTATION CATALOG</div><h1>Search documentation</h1><p>Search services, API routes, handlers, processes and entities by name or identifier. Open a result to browse its sections, operations and evidence.</p><p class="catalog-caveat">Catalog metadata helps discovery; it does not establish that explanations are complete.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Find documentation metadata" placeholder="Service, API, handler or entity"><select id="catalog-kind" aria-label="Document type"><option value="">All types</option><option>Service</option><option>Process</option><option>Dataflow</option><option>API</option><option>Entrypoint</option><option>Entity</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Enable JavaScript to search this offline catalog, or open the overview from the navigation.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#)).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
     };
+    let mut catalog = catalog;
+    if has_source_declarations {
+        let label = text(language, "Source declaration", "Объявление в исходном коде");
+        catalog = catalog.replacen(
+            "</select>",
+            &format!("<option value=\"Source declaration\">{label}</option></select>"),
+            1,
+        );
+    }
     if has_reviewed_answers {
         let option = if language == "ru" {
             "<option value=\"Reviewed answer\">Ответ с проверкой модели</option>"
@@ -770,6 +840,108 @@ pub(super) fn decorate_bundle_language(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_declaration_catalog_uses_readable_labels_and_retains_exact_identities() {
+        let symbol =
+            "source:workers/Main.kt/package:example.worker/processRequest/114e9ee8cc58ecb97b3e";
+        let class_symbol = "source:workers/Main.kt/class:example.worker.Nested/optionalString/e0efee2144d2ca813dd2";
+        let unrecognized = "source:workers/Main.kt/unknown:example/handler/114e9ee8cc58ecb97b3e";
+        let payload = serde_json::json!({
+            "title":"Worker", "subject":"service:worker",
+            "catalogue":[
+                {"id":"pending","symbol":symbol,"kind":"SOURCE_DECLARATION"},
+                {"id":"authored","symbol":class_symbol,"kind":"SOURCE_DECLARATION"},
+                {"id":"translation-gap","symbol":symbol,"kind":"SOURCE_DECLARATION"},
+                {"id":"unrecognized","symbol":unrecognized,"kind":"SOURCE_DECLARATION"}
+            ],
+            "operations":[
+                {"id":"authored","title":"Read the optional string","summary":{"text":"Accepted explanation."}},
+                {"id":"translation-gap","title":"Unavailable translated title","summary":{"text":"Prior language."}}
+            ],
+            "translationGaps":{"translation-gap":{"availableLanguage":"en"}}
+        });
+        let files = BTreeMap::from([(
+            "services/worker.html".into(),
+            format!("<script id=\"document-data\">{payload}</script>").into_bytes(),
+        )]);
+        for language in ["en", "ru"] {
+            let html = catalog_language(&files, language);
+            let encoded = html
+                .split("id=\"catalog-data\" type=\"application/json\">")
+                .nth(1)
+                .unwrap()
+                .split("</script>")
+                .next()
+                .unwrap();
+            let rows: Vec<serde_json::Value> = serde_json::from_str(encoded).unwrap();
+            let find = |id: &str| rows.iter().find(|row| row["id"] == id).unwrap();
+            let pending = find("pending");
+            assert_eq!(pending["displayTitle"], "processRequest() · Main.kt");
+            assert_eq!(pending["title"], symbol);
+            assert_eq!(pending["kind"], "Source declaration");
+            assert_eq!(pending["href"], "services/worker.html#pending");
+            assert!(
+                pending["searchText"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(symbol))
+            );
+            assert!(!pending["summary"].as_str().unwrap().contains(symbol));
+            assert!(
+                pending["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("processRequest() · Main.kt")
+            );
+            assert_eq!(find("authored")["displayTitle"], "Read the optional string");
+            assert_eq!(find("authored")["title"], class_symbol);
+            assert!(
+                find("authored")["searchText"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("Read the optional string"))
+            );
+            assert_eq!(
+                find("translation-gap")["displayTitle"],
+                "processRequest() · Main.kt"
+            );
+            assert_eq!(find("unrecognized")["title"], unrecognized);
+            assert!(find("unrecognized").get("displayTitle").is_none());
+            assert!(html.contains("value=\"Source declaration\""));
+            assert!(html.contains(text(
+                language,
+                "Source declaration",
+                "Объявление в исходном коде"
+            )));
+        }
+        assert_eq!(
+            source_callable_label(class_symbol).as_deref(),
+            Some("Nested.optionalString() · Main.kt")
+        );
+        let decode =
+            "source:workers/Main.kt/class:example.worker.decodeRequest/string/114e9ee8cc58ecb97b3e";
+        let response = "source:workers/Main.kt/class:example.worker.typedResponsePayload/string/114e9ee8cc58ecb97b3e";
+        assert_eq!(
+            source_callable_label(decode).as_deref(),
+            Some("decodeRequest.string() · Main.kt")
+        );
+        assert_eq!(
+            source_callable_label(response).as_deref(),
+            Some("typedResponsePayload.string() · Main.kt")
+        );
+        assert_ne!(
+            source_callable_label(decode),
+            source_callable_label(response)
+        );
+        for invalid in [
+            unrecognized,
+            "source:Main.kt/package:worker/name/not-a-digest",
+            "source:Main.kt/package:/name/114e9ee8cc58ecb97b3e",
+        ] {
+            assert!(source_callable_label(invalid).is_none());
+        }
+    }
+
     #[test]
     fn russian_catalog_localizes_controls_without_translating_authored_titles() {
         let mut files = BTreeMap::from([(

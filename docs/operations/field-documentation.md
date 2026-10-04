@@ -6,6 +6,63 @@ not literal values to copy unchanged. Use installed `clew`, or `./clew` when
 developing this checkout. See [snapshot storage](docs-snapshot-store.md) for pins
 and retention, and [source profiles](source-documentation.md) for evidence limits.
 
+## Executable first overview and source questions
+
+For a first overview, initialize a separate root and use its bundled starter.
+Python 3.11+ is already a launcher prerequisite; no provider configuration or
+model execution is required by preparation. Choose one small real committed
+scope and include the helpers/configuration needed to understand it:
+
+```sh
+clew docs init --root ./architecture --title 'Order worker documentation'
+python3 -I -S architecture/examples/first-document.py capture \
+  --root ./architecture --repo /path/to/orders --service orders \
+  --repository https://github.com/your-team/orders \
+  --language java --dialect 17 --source-root src/main/java/example/worker
+```
+
+The starter registers exact committed HEAD, supplies the current catalogue digest,
+binds, captures, prepares overview Work and completes context/SOURCE part reads.
+It saves one `packet.md`, the individual native responses, genuine source handles,
+and an editable `proposal.json` in a new `authoring/first-document-*` directory.
+It reuses an identical registration; conflicting fields stop before changing it.
+Uncommitted edits are outside the capture. A repeated run preserves prior packets
+and authored files. For the repository's public, runnable reproduction, see
+[the unpaid first-document example](../../site/examples/codeclew-source/reproduce/README.md#first-document-without-provider-execution).
+
+Give the returned packet to your current agent. Ask it to write one overview in
+`proposal.json`, replace the title and summary, and select actual supporting
+source handles for `summary.evidence`. The template is intentionally incomplete;
+it cannot certify its own source meaning. Use the Work ID and output directory
+printed by the starter:
+
+```sh
+clew docs proposal submit --root ./architecture --work RETURNED_WORK --input RETURNED_DIRECTORY/proposal.json
+clew docs proposal publish --root ./architecture --proposal RETURNED_PROPOSAL --unassessed
+```
+
+Publish only a `READY_FOR_REVIEW` or `READY_WITH_LIMITATIONS` proposal without
+structural diagnostics. Open the returned reader path. This creates a useful
+first explanation while other sections remain visible gaps and meaning remains
+`UNASSESSED`. Do not render the earlier capture immediately after publication.
+
+For a source question, reuse the exact saved snapshot:
+
+```sh
+python3 -I -S architecture/examples/first-document.py read \
+  --root ./architecture --service orders --snapshot RETURNED_SNAPSHOT \
+  --question 'What rejects an invalid quantity, and what happens afterwards?'
+```
+
+Read mode assembles the packet without binding, capture or publication. Ask your
+agent to answer with source file/line references and explicit unknowns. For an
+existing overview, read its retained content before updating it: the starter's
+empty-step template is for a first explanation and must not erase retained steps
+or visuals. Advance a pinned `targetRef` explicitly before a new capture; preserve
+notes and unrelated sections when preparing a replacement proposal.
+
+The commands below expose the same steps individually for customized workflows.
+
 ## First useful document without Maven
 
 Use a separate documentation root and one explicitly selected service. Register a small committed source scope containing the worker, relevant helpers and configuration. Example `/work/orders-source.json`:

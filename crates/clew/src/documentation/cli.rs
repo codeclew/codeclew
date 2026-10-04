@@ -100,7 +100,7 @@ pub enum Command {
         #[command(subcommand)]
         command: super::modules::Command,
     },
-    /// Initialize a separate, user-owned documentation repository.
+    /// Initialize a separate documentation repository with offline help and an executable first-document starter.
     Init {
         #[arg(long)]
         root: PathBuf,

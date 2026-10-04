@@ -3306,6 +3306,11 @@ fn advance_after_feedback(
         *fallback = true;
         *fallback_candidates = fallback_candidates.saturating_add(1);
     } else {
+        // Preserve the final failed response's feedback, rather than leaving
+        // the terminal checkpoint with the previous repair's diagnostics.
+        checkpoint.feedback = feedback.clone();
+        checkpoint.previous = previous.clone();
+        checkpoint.previous_section = previous_section.clone();
         return Err(invalid(
             "REPAIR_EXHAUSTED: proposal did not pass validation or review after the configured repair and fallback path",
         ));
@@ -4773,6 +4778,16 @@ pub(super) fn export_reviewed_operation_answer(
     operation_draft_review::export_approved_answer(repo, id, review_run, output)
 }
 
+fn failed_run_next_action(message: &str) -> &'static str {
+    if message.contains("FINAL_SCHEMA_INVALID") || message.contains("FINAL_OUTPUT_BOUND_INVALID") {
+        "The driver rejected the final response before returning usable content. Inspect its validation metadata and any retained unaccepted response, then correct the output format or byte bounds. Configured proposal repairs require a returned proposal. Prepare new Work against the latest publication before a replacement run. For manual replacement, use docs proposal submit; docs proposal publish --unassessed retains unreviewed status."
+    } else if message.contains("REPAIR_EXHAUSTED") {
+        "Inspect validationFeedback in docs work status and the saved proposal or review issues. Correct the reported fields or evidence-backed claims, then prepare new Work against the latest publication before a replacement run. The configured repair and fallback calls are exhausted."
+    } else {
+        "Inspect the recorded limitation, restore evidence or execution configuration, then prepare work against the latest publication."
+    }
+}
+
 fn finalize_failed_run(
     repo: &Repository,
     work: &super::work::Work,
@@ -4805,9 +4820,12 @@ fn finalize_failed_run(
     .into();
     report.gap = Some(serde_json::json!({
         "reason":error.message,
-        "nextAction":"Inspect the recorded limitation, restore evidence or execution configuration, then prepare work against the latest publication."
+        "nextAction":failed_run_next_action(&error.message)
     }));
     if let Some(checkpoint) = checkpoint {
+        if error.message.contains("REPAIR_EXHAUSTED") && !checkpoint.feedback.is_null() {
+            report.gap.as_mut().unwrap()["validationFeedback"] = checkpoint.feedback.clone();
+        }
         checkpoint.phase = "TERMINAL".into();
         save_run_checkpoint(repo, report, checkpoint)?;
     }
@@ -4820,7 +4838,7 @@ fn finalize_failed_run(
     {
         let failure = BTreeMap::from([(
             work.subject.clone(),
-            serde_json::json!({"reason":"GENERATION_GAP","nextAction":error.message}),
+            serde_json::json!({"reason":"GENERATION_GAP","nextAction":format!("{} {}", error.message, failed_run_next_action(&error.message))}),
         )]);
         let publication = if let Some(snapshot) = work.snapshot.as_deref() {
             super::render::publish_from_snapshot(repo, vec![], false, failure, snapshot)
@@ -5296,6 +5314,27 @@ mod input_cap_tests {
                 }]
             }]
         })).unwrap()
+    }
+
+    #[test]
+    fn conflicting_operation_gap_identifies_the_target_and_correction() {
+        let work = sequence_work();
+        let state = read_state(&work, &["entry-ref", "flow-ref"]);
+        let mut proposal = proposal_input("entry-ref", "return", "entry-ref", "flow-ref");
+        proposal
+            .gaps
+            .insert("entry-ref".into(), "Deployment is unknown.".into());
+        let error = super::super::proposals::materialize(&work, &proposal, &state).unwrap_err();
+        assert!(error.message.contains("gap entry-ref conflicts"), "{error}");
+        assert!(error.message.contains("target entry-main"), "{error}");
+        assert!(
+            error.message.contains("remove the conflicting entry"),
+            "{error}"
+        );
+        proposal.gaps.clear();
+        let (_, _, diagnostics) =
+            super::super::proposals::materialize(&work, &proposal, &state).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]

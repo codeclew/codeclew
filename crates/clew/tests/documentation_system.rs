@@ -4144,6 +4144,17 @@ fn docsys_t04_ordinary_shape_authority_evidence_and_retry_budget_fail_closed() {
                 .contains(expected_reason),
             "{mode}: {report}"
         );
+        if mode == "ordinary-shape-exhaust" {
+            let feedback = &report["gap"]["validationFeedback"];
+            assert_eq!(feedback["kind"], "AUTHOR_PROPOSAL_SHAPE", "{report}");
+            assert_eq!(feedback["paths"], json!(["operations[0].uncertainties"]));
+            assert!(
+                report["gap"]["nextAction"]
+                    .as_str()
+                    .unwrap()
+                    .contains("validationFeedback")
+            );
+        }
     }
 
     let f = Fixture::new();
@@ -4167,6 +4178,59 @@ fn docsys_t04_ordinary_shape_authority_evidence_and_retry_budget_fail_closed() {
             .contains("finite calls covering initial authoring"),
         "{report}"
     );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t04_summary_byte_failures_use_bounded_repair_and_keep_final_diagnostics() {
+    use serde_json::json;
+    for repair in ["correct", "exhaust"] {
+        let f = Fixture::new();
+        f.service("orders");
+        let (work, proposal, _) = proposal_fixture(&f);
+        let config = execution_config(
+            &f,
+            json!({"proposal":proposal,"summaryByteRepair":repair}),
+            json!({}),
+            None,
+        );
+        let result = work_run(&f, &work, &config);
+        let report = run_report(&f, &result);
+        let attempts = report["attempts"].as_array().unwrap();
+        assert_eq!(attempts[0]["role"], "author");
+        assert_eq!(attempts[1]["role"], "author");
+        let saved = read(f.docs.join(format!(
+            ".codeclew/job-results/{}.json",
+            attempts[0]["invocation"].as_str().unwrap()
+        )));
+        assert_eq!(
+            saved["result"]["proposal"]["operations"][0]["summary"]["text"]
+                .as_str()
+                .unwrap()
+                .len(),
+            2063
+        );
+        if repair == "correct" {
+            assert_eq!(result["status"], "ACCEPTED", "{report}");
+            assert_eq!(attempts.len(), 3, "{report}");
+            assert_eq!(attempts[2]["role"], "reviewer");
+        } else {
+            assert_eq!(result["status"], "EXHAUSTED", "{report}");
+            assert_eq!(attempts.len(), 2, "{report}");
+            assert!(report["review"].is_null());
+            let diagnostics = report["gap"]["validationFeedback"]["diagnostics"]
+                .as_array()
+                .unwrap();
+            assert!(
+                diagnostics.iter().any(|item| {
+                    let message = item["nextAction"].as_str().unwrap_or_default();
+                    message.contains("operations[0].summary.text")
+                        && message.contains("received 2065 UTF-8 bytes")
+                }),
+                "{report}"
+            );
+        }
+    }
 }
 
 #[test]

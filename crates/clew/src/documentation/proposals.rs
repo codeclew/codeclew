@@ -1343,9 +1343,9 @@ pub(super) fn materialize(
             ));
         };
         if operation_targets.contains(&id) {
-            return Err(invalid(
-                "proposal gap conflicts with a proposed operation or retained edit",
-            ));
+            return Err(invalid(format!(
+                "proposal gap {reference} conflicts with a proposed operation or retained edit for target {id}; supply either the supported operation/edit or its gap, and remove the conflicting entry"
+            )));
         }
         n.gaps.insert(id, reason.clone());
     }

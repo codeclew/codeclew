@@ -276,6 +276,14 @@ JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
 SCRIPT = re.compile(r"(<script\b[^>]*>)(.*?)(</script\s*>)", re.DOTALL | re.IGNORECASE)
 LOCALIZATION_ASSETS = ("app.js", "analysis.js", "reader.js", "limits.js")
 
+# Exact executable script bodies from the immutable v0.13.7 public readers.
+# Verified against source revision fd82a763 before admitting these digests.
+# New reader assets must not invalidate already published frozen snapshots.
+FROZEN_LOCALIZATION_SCRIPT_DIGESTS = {
+    "7e772ad1b4c368ba5d3a49f0a1e3dd306f7b51e2bbba552f9b600e9a49d28faa",
+    "81169526b9b54c0c78da0eeadfb6035e955aee15444772bd1158a81dc651252e",
+}
+
 
 def _blank(content: str) -> str:
     return re.sub(r"[^\r\n]", " ", content)
@@ -405,6 +413,8 @@ def _mask_generated_publication(relative_path: str, content: str) -> str:
             kind = "service" if service and attrs.get("id") == "document-data" else None
             body = _mask_generated_json(body, kind)
         elif attrs is not None and attrs.get("type", "") in ("", "text/javascript"):
+            if hashlib.sha256(body.encode("utf-8")).hexdigest() in FROZEN_LOCALIZATION_SCRIPT_DIGESTS:
+                return match[1] + _blank(body) + match[3]
             for asset in assets:
                 # Exact known executable asset bytes only; added prose remains.
                 body = body.replace(asset, _blank(asset))

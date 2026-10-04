@@ -20,22 +20,24 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.7
+## Current release: v0.13.8
 
-Find a selected Java process and its retained helper bodies in linked HTML and
-MDX pages. Native discovery leads with readable callable names and explanations;
-exact compiler identities remain searchable and available in disclosures.
-Scoped variable facts connect supported source reads, guarded assignments and
-call prerequisites without claiming runtime values or delivery.
+Create a first source-linked overview with the executable starter included by
+`clew docs init`. It registers an explicit committed source scope, captures it,
+resolves native Work references and assembles complete source reads for your
+current agent. Saved-snapshot questions need no recapture or model driver.
+See the [first-document recipe](docs/operations/field-documentation.md#executable-first-overview-and-source-questions).
 
-Keep attributed explanations alongside updated source, with each paragraph's
-own frozen context. Configured operation authors receive selected attributed
-context and complete admitted source. Retained edits remain a manual Work path.
-A question-focused Java draft can undergo independent configured meaning review,
-be exported or explicitly published, and be compared with a later captured Check.
-Source freshness and model approval stay separate. Configuration and model
-execution are explicit; there is no bundled default provider.
-See the [v0.13.7 release notes](docs/releases/v0.13.7.md).
+The reader presents a pinned publication as a saved source snapshot, keeping its
+unverified current freshness and meaning review available separately. Mobile
+navigation starts collapsed so the explanation is visible sooner. Source
+inventory uses readable declaration names and retains searchable exact identities.
+Generation errors identify invalid fields and actual UTF-8 byte counts; exhausted
+repair paths preserve their final diagnostics and explain the replacement route.
+
+Manual publication remains `UNASSESSED`; independent model review still requires
+explicit drivers and finite configuration. Prior publications and attributed notes
+remain intact. See the [v0.13.8 release notes](docs/releases/v0.13.8.md).
 
 ### Historical v0.13.1 example and limits
 
@@ -66,7 +68,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.7 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.8 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -95,7 +97,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.7 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.8 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
