@@ -500,7 +500,10 @@ fn retained_edit_rejects_stale_values_targets_duplicates_and_replacement_collisi
         ("scope", "outside the Work"),
         ("empty", "must be nonblank"),
         ("control", "control characters"),
-        ("gap", "gap conflicts"),
+        (
+            "gap",
+            "conflicts with a proposed operation or retained edit",
+        ),
     ] {
         let mut invalid = proposal.clone();
         match change {
@@ -530,6 +533,11 @@ fn retained_edit_rejects_stale_values_targets_duplicates_and_replacement_collisi
             "{change}: {}",
             error.message
         );
+        if change == "gap" {
+            assert!(error.message.contains("proposal gap root"));
+            assert!(error.message.contains("target reserve"));
+            assert!(error.message.contains("remove the conflicting entry"));
+        }
     }
     let value = serde_json::to_value(&proposal).unwrap();
     for target in [

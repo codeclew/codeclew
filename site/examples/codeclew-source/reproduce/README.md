@@ -57,7 +57,7 @@ python3 -I -S "$example/first-document.py" read \
 
 Give the returned packet to your agent and request source-linked reasoning.
 Repeated preparation retains prior authoring files. Capture reuses an identical
-registration; different fields require an explicit service update. Clew 0.13.8 bundles the same
+registration; different fields require an explicit service update. Clew 0.13.9 bundles the same
 starter in newly initialized roots; this public copy also works with 0.13.7
 roots created before the starter was bundled.
 
