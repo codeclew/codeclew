@@ -150,6 +150,16 @@ struct CatalogState {
 type SharedCatalog = Arc<RwLock<CatalogState>>;
 type CatalogIdentity = (u64, u64);
 
+#[cfg(test)]
+thread_local! {
+    static CATALOG_ADMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn catalog_admissions_for_current_thread() -> usize {
+    CATALOG_ADMISSIONS.with(std::cell::Cell::get)
+}
+
 fn catalog_registry() -> &'static Mutex<BTreeMap<CatalogIdentity, Weak<RwLock<CatalogState>>>> {
     static REGISTRY: OnceLock<Mutex<BTreeMap<CatalogIdentity, Weak<RwLock<CatalogState>>>>> =
         OnceLock::new();
@@ -614,6 +624,10 @@ impl CasStore {
             .read()
             .map_err(|_| internal("CAS pack catalog lock is poisoned"))?
             .initialized;
+        #[cfg(test)]
+        if !initialized {
+            CATALOG_ADMISSIONS.with(|count| count.set(count.get() + 1));
+        }
         if !initialized && !self.try_lookup_catalog_locked()? {
             self.sync_catalog_locked()?;
         }

@@ -58,9 +58,21 @@ pub fn source(
     if !(1..=WINDOW_BYTES).contains(&limit) {
         return Err(invalid("source limit must be 1..16384 bytes"));
     }
-    let (_, report) = working_tree_change_service::load(id)?;
     let state = StateAuthority::process_default()?;
-    let store = CasStore::open(&state)?;
+    source_with_state(&state, id, node, file, side, offset, limit)
+}
+
+fn source_with_state(
+    state: &StateAuthority,
+    id: &str,
+    node: Option<&str>,
+    file: Option<&str>,
+    side: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Value, ClewError> {
+    let store = CasStore::open(state)?;
+    let (_, report) = working_tree_change_service::load_with_store(state, &store, id)?;
     let selected = match side {
         "before" => &report.before,
         "after" => &report.after,
@@ -121,9 +133,13 @@ pub fn source(
 }
 
 pub fn freshness(id: &str) -> Result<Value, ClewError> {
-    let (_, report) = working_tree_change_service::load(id)?;
     let state = StateAuthority::process_default()?;
-    let store = CasStore::open(&state)?;
+    freshness_with_state(&state, id)
+}
+
+fn freshness_with_state(state: &StateAuthority, id: &str) -> Result<Value, ClewError> {
+    let store = CasStore::open(state)?;
+    let (_, report) = working_tree_change_service::load_with_store(state, &store, id)?;
     // Check the source and fact objects used by claims, not just the report hash.
     let mut checked = BTreeSet::new();
     for side in [&report.before, &report.after] {
@@ -248,9 +264,13 @@ fn html(value: &Value) -> Result<String, ClewError> {
 }
 
 pub fn render(id: &str, output: &Path) -> Result<Value, ClewError> {
-    let (_, report) = working_tree_change_service::load(id)?;
     let state = StateAuthority::process_default()?;
-    let store = CasStore::open(&state)?;
+    render_with_state(&state, id, output)
+}
+
+fn render_with_state(state: &StateAuthority, id: &str, output: &Path) -> Result<Value, ClewError> {
+    let store = CasStore::open(state)?;
+    let (_, report) = working_tree_change_service::load_with_store(state, &store, id)?;
     let value = model(&store, &report)?;
     let html = html(&value)?;
     let parent = output
@@ -275,6 +295,161 @@ pub fn render(id: &str, output: &Path) -> Result<Value, ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repository_snapshot::IndexEntry;
+    use crate::runtime::RuntimeMode;
+    use crate::session::{
+        ModelCachePolicy, SessionAuthority, SessionLanguage, WorkingTreeSourceBinding,
+    };
+    use crate::working_tree_change::{self as change, Analysis, Side};
+
+    #[test]
+    fn retained_commands_admit_once_and_source_preserves_exact_bytes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let before_text = "fun price() = \"λ before\"\n";
+        let after_text = "fun price() = \"λ saved\"\n";
+        let snapshot = |text: &str| {
+            let content = store.put("test/source/1", text.as_bytes()).unwrap();
+            let snapshot = RepositoryInputSnapshot {
+                schema: repository_snapshot::SNAPSHOT_SCHEMA.into(),
+                snapshot_id: String::new(),
+                staged_view_digest: String::new(),
+                cached_view_digest: String::new(),
+                untracked_view_digest: String::new(),
+                index: vec![IndexEntry {
+                    path: "Price.kt".into(),
+                    mode: 0o100644,
+                    stage: 0,
+                    git_oid: "0".repeat(40),
+                    content,
+                }],
+                worktree: vec![],
+            };
+            let object = store
+                .put(
+                    repository_snapshot::SNAPSHOT_SCHEMA,
+                    &canonical::bytes(&snapshot).unwrap(),
+                )
+                .unwrap();
+            (snapshot, object)
+        };
+        let (before_snapshot, before_object) = snapshot(before_text);
+        let (after_snapshot, after_object) = snapshot(after_text);
+        let session = SessionAuthority {
+            schema: "test".into(),
+            authority_digest: String::new(),
+            session_id: String::new(),
+            repository_key: "fixture".into(),
+            base_revision: "0".repeat(40),
+            target_ref: "refs/heads/main".into(),
+            target_oid: "0".repeat(40),
+            runtime_key: String::new(),
+            runtime_mode: RuntimeMode::Development,
+            language: SessionLanguage::Kotlin,
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
+            model_cache_policy: ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            maven_settings_digest: None,
+            profile: None,
+            working_tree: None,
+            created_unix_ms: 0,
+        };
+        let before = Side {
+            profile_id: "test".into(),
+            session,
+            snapshot: before_object,
+            analysis: Analysis {
+                status: "UNAVAILABLE".into(),
+                authority: "TEST".into(),
+                ready: None,
+                declarations: vec![],
+                relations: vec![],
+                relation_coverage_complete: false,
+                declaration_coverage_complete: false,
+                boundaries: vec![],
+                failure: None,
+            },
+        };
+        let mut after = before.clone();
+        after.snapshot = after_object;
+        after.session.working_tree = Some(WorkingTreeSourceBinding {
+            schema: "test".into(),
+            source_selection: "WORKING_TREE".into(),
+            operation: "ANALYSIS".into(),
+            profile_id: "test".into(),
+            snapshot: after.snapshot.clone(),
+            capture_scope: "test".into(),
+            excluded_categories: vec![],
+            consistency: "test".into(),
+            limits: repository_snapshot::WorkingTreeLimits::default(),
+        });
+        let mut report =
+            change::compare(&store, before, after, &before_snapshot, &after_snapshot).unwrap();
+        report.consequences = Some(crate::working_tree_consequences::build(&report).unwrap());
+        report.seal().unwrap();
+        let root = working_tree_change_service::ChangeRoot {
+            schema: "codeclew-working-tree-change-root/1.0".into(),
+            comparison_id: report.comparison_id.clone(),
+            report: store
+                .put(change::SCHEMA, &canonical::bytes(&report).unwrap())
+                .unwrap(),
+        };
+        let changes = state.directory(Path::new("changes")).unwrap();
+        let component = report
+            .comparison_id
+            .strip_prefix("comparison:sha256:")
+            .unwrap();
+        state
+            .write_private_atomic(
+                &changes.path().join(format!("{component}.json")),
+                &canonical::bytes(&root).unwrap(),
+            )
+            .unwrap();
+        // Drop the fixture store so command admission cannot borrow its shared catalog.
+        drop(store);
+        for (side, expected) in [("before", before_text), ("after", after_text)] {
+            let admissions = crate::cas::catalog_admissions_for_current_thread();
+            let source = source_with_state(
+                &state,
+                &report.comparison_id,
+                None,
+                Some("Price.kt"),
+                side,
+                0,
+                WINDOW_BYTES,
+            )
+            .unwrap();
+            assert_eq!(
+                crate::cas::catalog_admissions_for_current_thread() - admissions,
+                1
+            );
+            assert_eq!(source["text"], expected);
+            assert_eq!(source["totalBytes"], expected.len());
+            assert_eq!(source["authority"], "EXACT_RETAINED_SOURCE");
+        }
+        let admissions = crate::cas::catalog_admissions_for_current_thread();
+        let rendered = render_with_state(
+            &state,
+            &report.comparison_id,
+            &temporary.path().join("report.html"),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::cas::catalog_admissions_for_current_thread() - admissions,
+            1
+        );
+        assert_eq!(rendered["status"], "RENDERED");
+        let admissions = crate::cas::catalog_admissions_for_current_thread();
+        let freshness = freshness_with_state(&state, &report.comparison_id).unwrap();
+        assert_eq!(
+            crate::cas::catalog_admissions_for_current_thread() - admissions,
+            1
+        );
+        assert_eq!(freshness["retainedEvidenceValid"], true);
+    }
+
     #[test]
     fn source_cannot_escape_embedded_json_or_become_html() {
         let value = json!({"source":"</script><img src=x onerror=alert(1)>&"});

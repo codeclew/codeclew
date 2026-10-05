@@ -404,7 +404,17 @@ fn projected_declaration_shape(payload: &Value) -> Value {
 pub fn load(comparison_id: &str) -> Result<(ChangeRoot, Comparison), ClewError> {
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
-    let bytes = state.read_private_file(&root_path(&state, comparison_id)?, 64 * 1024)?;
+    load_with_store(&state, &store, comparison_id)
+}
+
+/// Reuse the caller's store, opened from this state authority, through a retained
+/// operation so catalog admission and its world lease span every evidence read.
+pub(crate) fn load_with_store(
+    state: &StateAuthority,
+    store: &CasStore,
+    comparison_id: &str,
+) -> Result<(ChangeRoot, Comparison), ClewError> {
+    let bytes = state.read_private_file(&root_path(state, comparison_id)?, 64 * 1024)?;
     let root: ChangeRoot = serde_json::from_slice(&bytes).map_err(internal)?;
     if root.schema != ROOT_SCHEMA
         || root.comparison_id != comparison_id
@@ -412,7 +422,7 @@ pub fn load(comparison_id: &str) -> Result<(ChangeRoot, Comparison), ClewError> 
     {
         return Err(invalid("retained comparison root is invalid"));
     }
-    let report: Comparison = read_canonical(&store, &root.report, change::MAX_REPORT_BYTES)?;
+    let report: Comparison = read_canonical(store, &root.report, change::MAX_REPORT_BYTES)?;
     report.verify()?;
     if report.comparison_id != comparison_id {
         return Err(invalid("comparison root refers to another report"));
