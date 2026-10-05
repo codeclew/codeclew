@@ -45,14 +45,17 @@ jobs:
       matrix:
         include:
           - arch: arm64
+            dotnet_arch: arm64
             os: macos
             kernel: Darwin
             runner: macos-15
           - arch: x86_64
+            dotnet_arch: x64
             os: macos
             kernel: Darwin
             runner: macos-15-intel
           - arch: x86_64
+            dotnet_arch: x64
             os: linux
             kernel: Linux
             runner: ubuntu-22.04
@@ -71,12 +74,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install the required C# preview SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+          architecture: ${{ matrix.dotnet_arch }}
       - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
       - name: Verify runner platform
         run: |
           test "$(uname -s)" = '${{ matrix.kernel }}'
           test "$(uname -m)" = '${{ matrix.arch }}'
+      - name: Qualify the real C# Roslyn worker on this release architecture
+        run: ./scripts/ci-verify.sh --csharp-only
       - name: Build sealed release bundle
         env:
           CODECLEW_VERSION: ${{ env.RELEASE_VERSION }}

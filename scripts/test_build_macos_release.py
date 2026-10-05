@@ -19,6 +19,122 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def capabilities(self, profile: str) -> dict:
+        return {
+            "schema": "codeclew-capabilities/1.0", "status": "PILOT_READY",
+            "runtimeMode": "RELEASE",
+            "packagedWorkers": [
+                {"runtimeName": name, "compilerVersion": version}
+                for name, version in release.RELEASE_PROFILES[profile].items()
+            ],
+            "analysisModules": [{"id": "csharp-roslyn", "compiler": "roslyn-5.9.0"}],
+        }
+
+    def test_release_requires_dotnet_10_before_building_any_runtime(self) -> None:
+        with mock.patch.object(release.shutil, "which", return_value=None), mock.patch.object(release, "run") as run:
+            with self.assertRaisesRegex(release.ReleaseError, ".NET 10"):
+                release.build_runtime_state(Path("/source"), Path("/work"), "v1.2.3")
+            run.assert_not_called()
+        for version, accepted in [(b"6.0.428\n", False), (b"9.0.100\n", False), (b"10.0.401\n", True), (b"invalid\n", False)]:
+            with self.subTest(version=version), mock.patch.object(release.shutil, "which", return_value="/sdk/dotnet"), mock.patch.object(release, "run", return_value=version) as run:
+                if accepted:
+                    release.require_dotnet_sdk(Path("/source"), {"PATH": "/sdk"})
+                else:
+                    with self.assertRaisesRegex(release.ReleaseError, ".NET 10"):
+                        release.require_dotnet_sdk(Path("/source"), {"PATH": "/sdk"})
+                self.assertEqual(run.call_args.args, (["/sdk/dotnet", "--version"], Path("/source/workers/dotnet")))
+
+    def test_profiles_reject_missing_substituted_or_duplicate_csharp_workers(self) -> None:
+        for profile in release.RELEASE_PROFILES:
+            release.verify_worker_profile(self.capabilities(profile), profile)
+            for corruption in ["missing", "wrong-name", "wrong-version", "duplicate", "missing-module"]:
+                with self.subTest(profile=profile, corruption=corruption):
+                    value = self.capabilities(profile)
+                    csharp = next(row for row in value["packagedWorkers"] if row["runtimeName"] == "csharp")
+                    if corruption == "missing":
+                        value["packagedWorkers"].remove(csharp)
+                    elif corruption == "wrong-name":
+                        csharp["runtimeName"] = "unexpected"
+                    elif corruption == "wrong-version":
+                        csharp["compilerVersion"] = "roslyn-5.8.0"
+                    elif corruption == "duplicate":
+                        value["packagedWorkers"].append(dict(csharp))
+                    else:
+                        value["analysisModules"] = []
+                    with self.assertRaisesRegex(release.ReleaseError, "C# Roslyn is required"):
+                        release.verify_worker_profile(value, profile)
+
+    def test_csharp_smoke_uses_public_launcher_and_preserves_partial_authority(self) -> None:
+        for defect, expected_error in [
+            (None, None), ("call", "resolved repository Save call"),
+            ("boundary", "unrestored test-project boundary"),
+            ("route", "entrypoint routes"), ("coverage", "partial Roslyn authority"),
+            ("write", "changed caller-owned"),
+        ]:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as value:
+                work = Path(value)
+                repository = work / "repository"
+                calls = []
+
+                def run(arguments, cwd, *, environment=None):
+                    calls.append(arguments)
+                    if arguments[0] in {"git", "dotnet"}:
+                        if arguments[0] == "dotnet":
+                            assets = repository / "src/Orders.Api/obj/project.assets.json"
+                            assets.parent.mkdir()
+                            assets.write_text("{}")
+                        return b""
+                    self.assertEqual(arguments[0], "/extracted/bin/clew")
+                    self.assertEqual(environment, {"CODECLEW_HOME": "/isolated/state"})
+                    if arguments[1:] == ["capabilities"]:
+                        result = self.capabilities("core")
+                    elif arguments[1:3] == ["session", "open"]:
+                        result = {"status": "OPEN", "session": {"sessionId": "session:smoke"}}
+                    elif arguments[1:3] == ["context", "create"]:
+                        term = arguments[arguments.index("--term") + 1]
+                        if term == "Save":
+                            payloads = [{"kind": "DECLARATION", "name": "Save"}]
+                            if defect != "call":
+                                payloads.append({"kind": "RELATION", "relationKind": "CALLS", "targetIdentity": "method:class:Orders.Core.IOrderRepository#Save(LOrders/Core/Order;)V"})
+                        else:
+                            payloads = [] if defect == "boundary" else [{"kind": "BOUNDARY", "code": "CSHARP_PROJECT_UNRESTORED"}]
+                        result = {"context": {"matches": [{"payload": row} for row in payloads]}}
+                    elif arguments[1] == "entrypoints":
+                        routes = [
+                            ("DELETE", "/internal/audit/{id}"), ("GET", "/admin/Reports/Daily"),
+                            ("GET", "/api/Orders/{id:int}"), ("GET", "/api/v{version:apiVersion}/quotes"),
+                            ("GET", "/health"), ("POST", "/api/Orders"), ("PUT", "/api/Orders/{id}"),
+                        ]
+                        result = {
+                            "entries": [{"trigger": {"methods": [method], "paths": [path]}} for method, path in routes],
+                            "scopes": [{"boundaries": ["CSHARP_PROJECT_UNRESTORED"], "generationCoverage": "COMPLETE" if defect == "coverage" else "PARTIAL", "generationCertainty": "UNSURE"}],
+                            "nextCursor": None,
+                        }
+                        if defect == "route":
+                            result["entries"].pop()
+                        if defect == "write":
+                            (repository / "src/Orders.Core/Orders.cs").write_text("changed")
+                    else:
+                        result = {}
+                    return json.dumps(result).encode()
+
+                with mock.patch.object(release, "run", side_effect=run):
+                    arguments = (
+                        Path(__file__).resolve().parent.parent, Path("/extracted/bin/clew"),
+                        {"CODECLEW_HOME": "/isolated/state"}, work, "core",
+                    )
+                    if expected_error:
+                        with self.assertRaisesRegex(release.ReleaseError, expected_error):
+                            release.verify_csharp_archive(*arguments)
+                    else:
+                        release.verify_csharp_archive(*arguments)
+                self.assertIn(["dotnet", "restore", "src/Orders.Api/Orders.Api.csproj"], calls)
+                self.assertEqual(calls[-2:], [
+                    ["/extracted/bin/clew", "session", "close", "--session", "session:smoke"],
+                    ["/extracted/bin/clew", "session", "gc", "--session", "session:smoke"],
+                ])
+                self.assertFalse((repository / "tests/Orders.Tests/obj/project.assets.json").exists())
+
     def test_release_platform_accepts_linux_x64_and_rejects_native_windows(self) -> None:
         for system, architecture, expected in [
             ("Darwin", "arm64", "macos"),
@@ -207,10 +323,13 @@ class ReleaseVersionTest(unittest.TestCase):
             capsule = state / "v2" / "runtimes" / runtime_key
             kotlin23 = capsule / "workers" / "kotlin23" / "build" / "install" / "kotlin23"
             kotlin24 = capsule / "workers" / "kotlin" / "build" / "install" / "kotlin"
+            csharp = capsule / "workers" / "dotnet" / "publish"
             kotlin23.mkdir(parents=True)
             kotlin24.mkdir(parents=True)
+            csharp.mkdir(parents=True)
             (kotlin23 / "worker.jar").write_bytes(b"kotlin23")
             (kotlin24 / "worker.jar").write_bytes(b"kotlin24")
+            (csharp / "Codeclew.CSharp.Analyzer.dll").write_bytes(b"roslyn")
             components = state / "v2" / "runtimes" / "components"
             component23 = "2" * 64
             component24 = "3" * 64
@@ -225,14 +344,19 @@ class ReleaseVersionTest(unittest.TestCase):
             manifest = {
                 "artifacts": {"clew": {"sha256": "sha256:" + "4" * 64}},
                 "components": {
+                    "csharp": "sha256:" + "8" * 64,
                     "kotlin23": "sha256:" + component23,
                     "kotlin24": "sha256:" + component24,
                 },
                 "manifestDigest": "sha256:" + "5" * 64,
                 "mode": "RELEASE",
                 "runtimeKey": "sha256:" + runtime_key,
-                "workerIds": ["kotlin23", "kotlin24"],
+                "workerIds": ["csharp", "kotlin23", "kotlin24"],
                 "workers": {
+                    "csharp": {
+                        "distribution": "workers/dotnet/publish",
+                        "treeHash": "sha256:" + "9" * 64,
+                    },
                     "kotlin23": {
                         "distribution": "workers/kotlin23/build/install/kotlin23",
                         "treeHash": "sha256:" + "6" * 64,
@@ -250,8 +374,9 @@ class ReleaseVersionTest(unittest.TestCase):
             core_capsule = release.prepare_profile_state(state, destination, "core")
             core_manifest = json.loads((core_capsule / "runtime.json").read_bytes())
             self.assertEqual(stat.S_IMODE(core_capsule.stat().st_mode), 0o500)
-            self.assertEqual(set(core_manifest["workers"]), {"kotlin24"})
-            self.assertEqual(set(core_manifest["components"]), {"kotlin24"})
+            self.assertEqual(set(core_manifest["workers"]), {"csharp", "kotlin24"})
+            self.assertEqual(set(core_manifest["components"]), {"csharp", "kotlin24"})
+            self.assertEqual((core_capsule / "workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll").read_bytes(), b"roslyn")
             self.assertFalse((core_capsule / "workers" / "kotlin23").exists())
             self.assertEqual(
                 list((destination / "v2" / "runtimes" / "components").iterdir()),

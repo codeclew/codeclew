@@ -98,8 +98,10 @@ def validate_tree(root: Path) -> None:
 
 
 RELEASE_PROFILES = {
-    "core": {"2.4.10"},
-    "kotlin23": {"2.3.0", "2.4.10"},
+    "core": {"kotlin24": "2.4.10", "csharp": "roslyn-5.9.0"},
+    "kotlin23": {
+        "kotlin23": "2.3.0", "kotlin24": "2.4.10", "csharp": "roslyn-5.9.0",
+    },
 }
 
 MINIMAL_SOURCE_FILES = (
@@ -116,12 +118,46 @@ MINIMAL_SOURCE_FILES = (
 )
 
 
+def require_dotnet_sdk(root: Path, environment: dict[str, str]) -> None:
+    dotnet = shutil.which("dotnet", path=environment.get("PATH"))
+    if dotnet is None:
+        raise ReleaseError("release packaging requires a .NET 10+ SDK on PATH")
+    version = run([dotnet, "--version"], root / "workers" / "dotnet", environment=environment)
+    match = re.fullmatch(rb"([0-9]+)\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?\s*", version)
+    if match is None or int(match[1]) < 10:
+        raise ReleaseError("release packaging requires a .NET 10+ SDK on PATH")
+
+
+def verify_worker_profile(capabilities: object, profile: str) -> None:
+    if not isinstance(capabilities, dict):
+        raise ReleaseError("release capabilities are invalid")
+    workers = capabilities.get("packagedWorkers")
+    modules = capabilities.get("analysisModules")
+    expected = RELEASE_PROFILES[profile]
+    if (
+        capabilities.get("schema") != "codeclew-capabilities/1.0"
+        or capabilities.get("status") != "PILOT_READY"
+        or capabilities.get("runtimeMode") != "RELEASE"
+        or not isinstance(workers, list)
+        or len(workers) != len(expected)
+        or any(not isinstance(row, dict) or not isinstance(row.get("runtimeName"), str)
+               or not isinstance(row.get("compilerVersion"), str) for row in workers)
+        or {row.get("runtimeName"): row.get("compilerVersion") for row in workers}
+        != expected
+        or not isinstance(modules, list)
+        or not any(isinstance(row, dict) and row.get("id") == "csharp-roslyn"
+                   and row.get("compiler") == "roslyn-5.9.0" for row in modules)
+    ):
+        raise ReleaseError("release runtime does not match the supported worker profile (C# Roslyn is required)")
+
+
 def build_runtime_state(
     root: Path, work: Path, release_version: str
 ) -> tuple[Path, bytes]:
     runtime_home = work / "runtime-state"
     environment = dict(os.environ)
     environment["CODECLEW_HOME"] = str(runtime_home)
+    require_dotnet_sdk(root, environment)
     completed = subprocess.run(
         [str(root / "clew"), "capabilities"],
         cwd=root,
@@ -137,16 +173,7 @@ def build_runtime_state(
         capabilities = json.loads(completed.stdout)
     except (TypeError, ValueError) as error:
         raise ReleaseError("release capabilities are invalid") from error
-    workers = capabilities.get("packagedWorkers")
-    if (
-        capabilities.get("schema") != "codeclew-capabilities/1.0"
-        or capabilities.get("status") != "PILOT_READY"
-        or capabilities.get("runtimeMode") != "RELEASE"
-        or not isinstance(workers, list)
-        or {row.get("compilerVersion") for row in workers if isinstance(row, dict)}
-        != {"2.3.0", "2.4.10"}
-    ):
-        raise ReleaseError("release runtime does not match the supported worker profile")
+    verify_worker_profile(capabilities, "kotlin23")
     verify_cli_version(root / "clew", release_version, runtime_home, root)
 
     runtime_parent = runtime_home / "v2" / "runtimes"
@@ -609,6 +636,102 @@ def verify_annotated_tag_navigation(
             raise ReleaseError("packaged navigation smoke changed the repository")
 
 
+def verify_csharp_archive(
+    root: Path, launcher: Path, environment: dict[str, str], work: Path, profile: str,
+) -> None:
+    """Use only the extracted public launcher; restore belongs to fixture setup."""
+    def command(*arguments: str) -> dict:
+        try:
+            value = json.loads(run([str(launcher), *arguments], repository, environment=environment))
+        except (TypeError, ValueError) as error:
+            raise ReleaseError("packaged C# smoke output is invalid") from error
+        if not isinstance(value, dict):
+            raise ReleaseError("packaged C# smoke output is invalid")
+        return value
+
+    repository = work / "repository"
+    shutil.copytree(
+        root / "fixtures" / "csharp-aspnetcore", repository,
+        ignore=shutil.ignore_patterns("bin", "obj"),
+    )
+    run(["git", "init", "-q", "-b", "main"], repository)
+    (repository / ".gitignore").write_text("**/bin/\n**/obj/\n", encoding="ascii")
+    run(["git", "add", "."], repository)
+    run([
+        "git", "-c", "user.name=Codeclew Release Smoke",
+        "-c", "user.email=codeclew-release-smoke@localhost",
+        "commit", "-q", "-m", "fixture",
+    ], repository)
+    run(["dotnet", "restore", "src/Orders.Api/Orders.Api.csproj"], repository, environment=environment)
+    test_assets = repository / "tests/Orders.Tests/obj/project.assets.json"
+    if test_assets.exists():
+        raise ReleaseError("C# smoke must leave the test project unrestored")
+    def file_state() -> list[dict[str, object]]:
+        return [row for row in source_file_rows(repository) if not str(row["path"]).startswith(".git/")]
+
+    before = file_state()
+    verify_worker_profile(command("capabilities"), profile)
+    opened = command(
+        "session", "open", "--repo", str(repository), "--target-ref", "main",
+        "--language", "csharp", "--compilation", "sln:Orders.slnx",
+    )
+    session_id = opened.get("session", {}).get("sessionId")
+    if opened.get("status") != "OPEN" or not isinstance(session_id, str):
+        raise ReleaseError("packaged C# session did not open")
+    try:
+        # Creating a context builds the compiler generation and its query index.
+        context = command(
+            "context", "create", "--session", session_id,
+            "--intent", "Verify packaged Roslyn declarations and calls",
+            "--term", "Save", "--max-roots", "4",
+        )
+        payloads = [row.get("payload", {}) for row in context.get("context", {}).get("matches", [])]
+        if not any(row.get("kind") == "DECLARATION" and row.get("name") == "Save" for row in payloads):
+            raise ReleaseError("packaged Roslyn query omitted the Save declaration")
+        if not any(
+            row.get("kind") == "RELATION" and row.get("relationKind") == "CALLS"
+            and row.get("targetIdentity") == "method:class:Orders.Core.IOrderRepository#Save(LOrders/Core/Order;)V"
+            for row in payloads
+        ):
+            raise ReleaseError("packaged Roslyn query omitted the resolved repository Save call")
+        boundary = command(
+            "context", "create", "--session", session_id,
+            "--intent", "Verify the unrestored project remains an explicit boundary",
+            "--term", "CSHARP_PROJECT_UNRESTORED", "--max-roots", "1",
+        )
+        if not any(
+            row.get("payload", {}).get("code") == "CSHARP_PROJECT_UNRESTORED"
+            for row in boundary.get("context", {}).get("matches", [])
+        ):
+            raise ReleaseError("packaged Roslyn query omitted the unrestored test-project boundary")
+        catalogue = command("entrypoints", "--session", session_id, "--limit", "100")
+        routes = {
+            f"{method} {path}"
+            for row in catalogue.get("entries", [])
+            for path in row.get("trigger", {}).get("paths", [])
+            for method in row.get("trigger", {}).get("methods", [])
+        }
+        expected_routes = {
+            "DELETE /internal/audit/{id}", "GET /admin/Reports/Daily",
+            "GET /api/Orders/{id:int}", "GET /api/v{version:apiVersion}/quotes",
+            "GET /health", "POST /api/Orders", "PUT /api/Orders/{id}",
+        }
+        if routes != expected_routes or catalogue.get("nextCursor") is not None:
+            raise ReleaseError("packaged ASP.NET Core entrypoint routes are invalid")
+        if not any(
+            "CSHARP_PROJECT_UNRESTORED" in row.get("boundaries", [])
+            and row.get("generationCoverage") == "PARTIAL"
+            and row.get("generationCertainty") == "UNSURE"
+            for row in catalogue.get("scopes", [])
+        ):
+            raise ReleaseError("packaged ASP.NET Core scope lost partial Roslyn authority")
+    finally:
+        command("session", "close", "--session", session_id)
+        command("session", "gc", "--session", session_id)
+    if test_assets.exists() or file_state() != before:
+        raise ReleaseError("packaged C# smoke changed caller-owned source or build outputs")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -634,7 +757,7 @@ def main() -> int:
             root, temporary, arguments.version
         )
         assets = []
-        for profile, expected_workers in RELEASE_PROFILES.items():
+        for profile in RELEASE_PROFILES:
             package = temporary / "packages" / profile / "codeclew"
             (package / "bin").mkdir(parents=True, mode=0o700)
             source_payload_digest = assemble_source(
@@ -680,13 +803,7 @@ def main() -> int:
             capabilities = json.loads(
                 run([str(launcher), "capabilities"], package, environment=environment)
             )
-            observed_workers = {
-                row.get("compilerVersion")
-                for row in capabilities.get("packagedWorkers", [])
-                if isinstance(row, dict)
-            }
-            if observed_workers != expected_workers:
-                raise ReleaseError("packaged profile worker set is invalid")
+            verify_worker_profile(capabilities, profile)
             asset, checksum = write_archive(
                 package, output, platform.machine(), profile, operating_system
             )
@@ -694,22 +811,19 @@ def main() -> int:
                 root, output, temporary / "installer-smoke" / profile,
                 arguments.version, profile,
             )
+            extracted = extract_release_archive(asset, temporary / "extracted" / profile)
+            extracted_launcher = extracted / "bin" / "clew"
+            extracted_environment = dict(os.environ)
+            extracted_environment["CODECLEW_HOME"] = str(temporary / "verification-extracted" / profile)
+            verify_cli_version(
+                extracted_launcher, arguments.version,
+                Path(extracted_environment["CODECLEW_HOME"]), extracted,
+            )
+            verify_csharp_archive(
+                root, extracted_launcher, extracted_environment,
+                temporary / "csharp-smoke-extracted" / profile, profile,
+            )
             if profile == "core":
-                extracted = extract_release_archive(
-                    asset,
-                    temporary / "extracted" / profile,
-                )
-                extracted_launcher = extracted / "bin" / "clew"
-                extracted_environment = dict(os.environ)
-                extracted_environment["CODECLEW_HOME"] = str(
-                    temporary / "verification-extracted" / profile
-                )
-                verify_cli_version(
-                    extracted_launcher,
-                    arguments.version,
-                    Path(extracted_environment["CODECLEW_HOME"]),
-                    extracted,
-                )
                 verify_annotated_tag_navigation(
                     root,
                     extracted_launcher,

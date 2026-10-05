@@ -381,6 +381,7 @@ boundary between editing Codeclew and using its installed-release skill.
 - Node.js 22 for the development/CI reader tests (not needed to open generated documentation)
 - Git
 - JDK 21
+- .NET 10+ SDK for C# analysis, full CI and release qualification; otherwise the source bootstrap omits the optional C# worker
 - the Rust toolchain pinned by `rust-toolchain.toml`
 - Cargo on `PATH` for Rust repositories
 - Maven on `PATH` only for Maven projects without `./mvnw`
@@ -645,9 +646,11 @@ shapes. Project references, mixed-language files, missing dependencies, `any`
 types and unresolved calls remain named boundaries. Both profiles are read-only
 previews and reject candidate generation.
 
-C# uses an optional Roslyn worker. The runtime builds it only when a .NET 10+
-SDK (`dotnet`) is on `PATH` during bootstrap; without one, `clew capabilities`
-omits `csharp-roslyn` and C# sessions report `INSTALL_CSHARP_COMPONENT`. Open a
+C# uses a Roslyn worker included in the published macOS and Linux archives.
+Analyzing a project requires a .NET 10+ SDK (`dotnet`) on `PATH`; the SDK is
+not bundled. Source bootstrap builds this optional worker only when that SDK
+is available; otherwise `clew capabilities` omits `csharp-roslyn` and C#
+sessions report `INSTALL_CSHARP_COMPONENT`. Open a
 session with `--language csharp`, profile `csharp-dotnet-msbuild-read-only`, and
 an exact `csproj:<path>[@<tfm>]` or `sln:<path>` (`.sln`/`.slnx`) selector. The
 worker runs the project's own SDK design-time `Compile` target in-process and

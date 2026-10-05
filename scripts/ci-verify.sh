@@ -5,12 +5,65 @@ umask 077
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
+case "${1-}" in
+  '') ;;
+  --csharp-only) test "$#" -eq 1 ;;
+  *) printf '%s\n' 'Usage: scripts/ci-verify.sh [--csharp-only]' >&2; exit 1 ;;
+esac
+
+export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+export DOTNET_CLI_USE_MSBUILD_SERVER=0 MSBUILDDISABLENODEREUSE=1
+
+# Full verification and every release architecture must exercise the C# preview.
+if ! command -v dotnet >/dev/null 2>&1; then
+  printf '%s\n' 'C# verification requires an installed .NET SDK 10 or newer' >&2
+  exit 1
+fi
+CSHARP_SDK_VERSION=$(cd workers/dotnet && dotnet --version)
+CSHARP_SDK_MAJOR=${CSHARP_SDK_VERSION%%.*}
+case "$CSHARP_SDK_MAJOR" in
+  ''|*[!0-9]*) printf '%s\n' 'C# verification could not identify the .NET SDK major version' >&2; exit 1 ;;
+esac
+if [ "$CSHARP_SDK_MAJOR" -lt 10 ]; then
+  printf 'C# verification requires .NET SDK 10 or newer; found %s\n' "$CSHARP_SDK_VERSION" >&2
+  exit 1
+fi
+printf 'C# verification SDK: %s\n' "$CSHARP_SDK_VERSION"
+
 CI_TMP_BASE=$(python3 -I -S -c 'import os, pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')
 TEST_TMP_ROOT=$(mktemp -d "$CI_TMP_BASE/.codeclew-ci.XXXXXX")
 chmod 700 "$TEST_TMP_ROOT"
 trap 'rm -rf -- "$TEST_TMP_ROOT"' EXIT HUP INT TERM
 TMPDIR=$TEST_TMP_ROOT
 export TMPDIR
+
+qualify_csharp() {
+  set -- dotnet publish workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj --configuration Release \
+    --output workers/dotnet/publish -p:UseAppHost=false -p:RestoreLockedMode=true \
+    -nodeReuse:false -p:UseSharedCompilation=false
+  if [ -n "${CODECLEW_DOTNET_PACKAGE_SOURCE-}" ]; then
+    set -- "$@" --source "$CODECLEW_DOTNET_PACKAGE_SOURCE"
+  fi
+  "$@"
+  test -f workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll
+  CODECLEW_TEST_CSHARP_WORKER="$ROOT/workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll"
+  export CODECLEW_TEST_CSHARP_WORKER
+  CSHARP_INTEGRATION_TEST=csharp_project_model::tests::fixture_solution_yields_roslyn_facts_routes_and_restore_boundaries
+  cargo test --locked -p clew --lib "$CSHARP_INTEGRATION_TEST" \
+    -- --exact --ignored --list >"$TEST_TMP_ROOT/csharp-integration-tests.txt"
+  if ! grep -Fx "$CSHARP_INTEGRATION_TEST: test" "$TEST_TMP_ROOT/csharp-integration-tests.txt" >/dev/null; then
+    printf '%s\n' 'The real ignored C# integration test is missing; refusing a zero-test qualification' >&2
+    exit 1
+  fi
+  cargo test --locked -p clew --lib "$CSHARP_INTEGRATION_TEST" \
+    -- --exact --ignored --test-threads=1
+}
+
+if [ "${1-}" = --csharp-only ]; then
+  qualify_csharp
+  printf '%s\n' '{"schema":"codeclew-verification/1.0","status":"PASSED","scope":"CSHARP"}'
+  exit 0
+fi
 
 python3 -I -S scripts/test_pilot_case_record.py
 python3 -I -S scripts/test_pilot_release_gate.py
@@ -66,15 +119,7 @@ cargo test --locked -p clew --lib \
   -- --exact --ignored --test-threads=1
 cargo test --locked -p clew-framework-aspnetcore
 cargo test --locked -p clew --lib 'csharp' -- --test-threads=1
-# The C# worker is an optional runtime component; qualify it where a .NET 10 SDK exists.
-if command -v dotnet >/dev/null 2>&1; then
-  dotnet publish workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj --configuration Release \
-    --output workers/dotnet/publish -p:UseAppHost=false -p:RestoreLockedMode=true \
-    ${CODECLEW_DOTNET_PACKAGE_SOURCE:+--source "$CODECLEW_DOTNET_PACKAGE_SOURCE"}
-  cargo test --locked -p clew --lib \
-    csharp_project_model::tests::fixture_solution_yields_roslyn_facts_routes_and_restore_boundaries \
-    -- --exact --ignored --test-threads=1
-fi
+qualify_csharp
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
