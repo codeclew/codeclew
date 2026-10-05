@@ -153,11 +153,17 @@ type CatalogIdentity = (u64, u64);
 #[cfg(test)]
 thread_local! {
     static CATALOG_ADMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CATALOG_LOCATION_REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 pub(crate) fn catalog_admissions_for_current_thread() -> usize {
     CATALOG_ADMISSIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn catalog_location_rebuilds_for_current_thread() -> usize {
+    CATALOG_LOCATION_REBUILDS.with(std::cell::Cell::get)
 }
 
 fn catalog_registry() -> &'static Mutex<BTreeMap<CatalogIdentity, Weak<RwLock<CatalogState>>>> {
@@ -818,44 +824,81 @@ impl CasStore {
             .filter(|name| Path::new(name).extension() == Some(OsStr::new("record")))
             .collect::<Vec<_>>();
         record_names.sort();
-        for name in record_names {
-            let name_text = name
-                .to_str()
-                .ok_or_else(|| corrupt("CAS catalog record name is not UTF-8"))?;
-            let bytes = self
-                .catalog_records
-                .read_file(&name, MAX_CATALOG_RECORD_BYTES)
-                .map_err(|_| corrupt("CAS catalog record is missing or unsafe"))?;
-            let record: CatalogRecord = serde_json::from_slice(&bytes)
-                .map_err(|_| corrupt("CAS catalog record is invalid"))?;
-            let record_bytes = catalog_bytes(&record)?;
-            let record_digest = canonical::hash_bytes(&record_bytes);
-            if record.schema != CATALOG_RECORD_SCHEMA
-                || record_bytes != bytes
-                || catalog_record_name(record.sequence, &record_digest)? != name_text
-            {
-                return Err(corrupt("CAS catalog record authority mismatch"));
-            }
-            let mut state = self
-                .pack_catalog
-                .write()
-                .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
-            if record.sequence <= state.sequence {
-                continue;
-            }
-            if record.sequence != state.sequence + 1
-                || record.previous_record_digest != state.last_record_digest
-            {
-                return Err(corrupt("CAS catalog record chain is discontinuous"));
-            }
-            apply_catalog_record(&mut state, &record)?;
-            state.sequence = record.sequence;
-            state.last_record_digest = Some(record_digest);
-            state.tail_bytes = state.tail_bytes.saturating_add(bytes.len() as u64);
-        }
+        self.replay_catalog_records_locked(&record_names)?;
         self.load_catalog_deferred_locked(&head)?;
         self.prune_catalog_metadata_locked(&head.snapshot_name, head.snapshot_sequence)?;
         self.prune_redundant_pack_metadata_locked()
+    }
+
+    fn replay_catalog_records_locked(
+        &self,
+        record_names: &[std::ffi::OsString],
+    ) -> Result<(), ClewError> {
+        // Readers must not observe removed packs through locations awaiting a
+        // rebuild. Keep the guard through replay and error cleanup.
+        let mut state = self
+            .pack_catalog
+            .write()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        let mut removals_pending = false;
+        let outcome = (|| {
+            for name in record_names {
+                let name_text = name
+                    .to_str()
+                    .ok_or_else(|| corrupt("CAS catalog record name is not UTF-8"))?;
+                let bytes = self
+                    .catalog_records
+                    .read_file(name, MAX_CATALOG_RECORD_BYTES)
+                    .map_err(|_| corrupt("CAS catalog record is missing or unsafe"))?;
+                let record: CatalogRecord = serde_json::from_slice(&bytes)
+                    .map_err(|_| corrupt("CAS catalog record is invalid"))?;
+                let record_bytes = catalog_bytes(&record)?;
+                let record_digest = canonical::hash_bytes(&record_bytes);
+                if record.schema != CATALOG_RECORD_SCHEMA
+                    || record_bytes != bytes
+                    || catalog_record_name(record.sequence, &record_digest)? != name_text
+                {
+                    return Err(corrupt("CAS catalog record authority mismatch"));
+                }
+                if record.sequence <= state.sequence {
+                    continue;
+                }
+                if record.sequence != state.sequence + 1
+                    || record.previous_record_digest != state.last_record_digest
+                {
+                    return Err(corrupt("CAS catalog record chain is discontinuous"));
+                }
+                if record.operation == CatalogOperation::Remove {
+                    validate_pack_manifest(&record.pack.data_name, &record.pack.manifest)?;
+                    remove_catalog_pack(&mut state, &record.pack)?;
+                    removals_pending = true;
+                } else {
+                    // A removal can expose a shadowed duplicate. Rebuild before
+                    // an ADD performs its collision and winning-location checks.
+                    if removals_pending {
+                        state.locations = locations_from_packs(&state.packs)?;
+                        removals_pending = false;
+                    }
+                    apply_catalog_record(&mut state, &record)?;
+                }
+                state.sequence = record.sequence;
+                state.last_record_digest = Some(record_digest);
+                state.tail_bytes = state.tail_bytes.saturating_add(bytes.len() as u64);
+            }
+            Ok(())
+        })();
+        // Complete a valid removal prefix even when a later record is invalid.
+        // Recheck on errors as ADD validation may have rejected a partial map.
+        if removals_pending || outcome.is_err() {
+            match locations_from_packs(&state.packs) {
+                Ok(locations) => state.locations = locations,
+                Err(error) => {
+                    *state = CatalogState::default();
+                    return outcome.and(Err(error));
+                }
+            }
+        }
+        outcome
     }
 
     fn load_catalog_deferred_locked(&self, head: &CatalogHead) -> Result<(), ClewError> {
@@ -2083,19 +2126,26 @@ fn apply_catalog_record(state: &mut CatalogState, record: &CatalogRecord) -> Res
             )?;
         }
         CatalogOperation::Remove => {
-            if state.packs.get(&record.pack.data_name) != Some(&record.pack.manifest) {
-                return Err(corrupt("CAS catalog removes a different or missing pack"));
-            }
-            state.packs.remove(&record.pack.data_name);
+            remove_catalog_pack(state, &record.pack)?;
             state.locations = locations_from_packs(&state.packs)?;
         }
     }
     Ok(())
 }
 
+fn remove_catalog_pack(state: &mut CatalogState, pack: &CatalogPack) -> Result<(), ClewError> {
+    if state.packs.get(&pack.data_name) != Some(&pack.manifest) {
+        return Err(corrupt("CAS catalog removes a different or missing pack"));
+    }
+    state.packs.remove(&pack.data_name);
+    Ok(())
+}
+
 fn locations_from_packs(
     packs: &BTreeMap<String, PackManifest>,
 ) -> Result<HashMap<String, PackLocation>, ClewError> {
+    #[cfg(test)]
+    CATALOG_LOCATION_REBUILDS.with(|count| count.set(count.get() + 1));
     let capacity = packs
         .values()
         .map(|manifest| manifest.objects.len())
@@ -2269,6 +2319,202 @@ mod tests {
         let authority = StateAuthority::open(root.path().join("v2")).unwrap();
         let store = CasStore::open(&authority).unwrap();
         (root, store)
+    }
+
+    fn removal_replay_fixture() -> (tempfile::TempDir, CasStore, Vec<CatalogPack>, CasObject) {
+        let (root, store) = store();
+        let shared_bytes = b"shared in every pack".to_vec();
+        let shared = CasObject::for_bytes("test/remove-replay/1", &shared_bytes).unwrap();
+        let lock = store.batch_lock().unwrap();
+        for index in 0..4 {
+            let bytes = format!("unique-{index}").into_bytes();
+            let unique = CasObject::for_bytes("test/remove-replay/1", &bytes).unwrap();
+            store
+                .write_pack(&[(shared.clone(), shared_bytes.clone()), (unique, bytes)])
+                .unwrap();
+        }
+        store.maybe_snapshot_catalog_locked(true).unwrap();
+        drop(lock);
+        let packs = snapshot_from_catalog_state(&store.pack_catalog.read().unwrap()).packs;
+        (root, store, packs, shared)
+    }
+
+    fn replay_record(
+        previous: &mut CatalogState,
+        operation: CatalogOperation,
+        pack: CatalogPack,
+    ) -> CatalogRecord {
+        let record = CatalogRecord {
+            schema: CATALOG_RECORD_SCHEMA.into(),
+            sequence: previous.sequence + 1,
+            previous_record_digest: previous.last_record_digest.clone(),
+            operation,
+            pack,
+        };
+        previous.sequence = record.sequence;
+        previous.last_record_digest = Some(catalog_hash(&record).unwrap());
+        record
+    }
+
+    fn write_replay_records(
+        store: &CasStore,
+        records: &[CatalogRecord],
+    ) -> Vec<std::ffi::OsString> {
+        records
+            .iter()
+            .map(|record| {
+                let bytes = catalog_bytes(record).unwrap();
+                let name =
+                    catalog_record_name(record.sequence, &canonical::hash_bytes(&bytes)).unwrap();
+                store
+                    .catalog_records
+                    .atomic_write(OsStr::new(&name), &bytes)
+                    .unwrap();
+                std::ffi::OsString::from(name)
+            })
+            .collect()
+    }
+
+    fn assert_catalog_locations_match_packs(state: &CatalogState) {
+        let expected = locations_from_packs(&state.packs).unwrap();
+        assert_eq!(state.locations.len(), expected.len());
+        for (digest, location) in expected {
+            let actual = &state.locations[&digest];
+            assert_eq!(actual.data_name, location.data_name);
+            assert_eq!(actual.entry, location.entry);
+        }
+    }
+
+    #[test]
+    fn removal_replay_rebuilds_once_and_preserves_shadowed_digest() {
+        let (_root, store, packs, shared) = removal_replay_fixture();
+        let mut sequence = store.pack_catalog.read().unwrap().clone();
+        let records = packs[..3]
+            .iter()
+            .map(|pack| replay_record(&mut sequence, CatalogOperation::Remove, pack.clone()))
+            .collect::<Vec<_>>();
+        write_replay_records(&store, &records);
+        let before = catalog_location_rebuilds_for_current_thread();
+        let lock = store.batch_lock().unwrap();
+        store.sync_catalog_locked().unwrap();
+        drop(lock);
+        assert_eq!(catalog_location_rebuilds_for_current_thread() - before, 1);
+        let state = store.pack_catalog.read().unwrap();
+        assert_eq!(
+            state.locations[&shared.digest].data_name,
+            packs[3].data_name
+        );
+        assert_eq!(state.sequence, sequence.sequence);
+        assert_eq!(state.last_record_digest, sequence.last_record_digest);
+        assert_catalog_locations_match_packs(&state);
+        drop(state);
+        assert_eq!(
+            store.read(&shared, 1024).unwrap().bytes(),
+            b"shared in every pack"
+        );
+    }
+
+    #[test]
+    fn removal_replay_flushes_before_interleaved_add_and_at_end() {
+        let (_root, store, packs, shared) = removal_replay_fixture();
+        let mut expected = store.pack_catalog.read().unwrap().clone();
+        let mut sequence = expected.clone();
+        let records = vec![
+            replay_record(&mut sequence, CatalogOperation::Remove, packs[0].clone()),
+            replay_record(&mut sequence, CatalogOperation::Remove, packs[1].clone()),
+            replay_record(&mut sequence, CatalogOperation::Add, packs[0].clone()),
+            replay_record(&mut sequence, CatalogOperation::Remove, packs[2].clone()),
+        ];
+        for record in &records {
+            apply_catalog_record(&mut expected, record).unwrap();
+        }
+        write_replay_records(&store, &records);
+        let before = catalog_location_rebuilds_for_current_thread();
+        let lock = store.batch_lock().unwrap();
+        store.sync_catalog_locked().unwrap();
+        drop(lock);
+        assert_eq!(catalog_location_rebuilds_for_current_thread() - before, 2);
+        let state = store.pack_catalog.read().unwrap();
+        assert_eq!(state.packs, expected.packs);
+        assert_eq!(
+            state.locations[&shared.digest].data_name,
+            packs[0].data_name
+        );
+        assert_catalog_locations_match_packs(&state);
+    }
+
+    #[test]
+    fn removal_replay_errors_leave_valid_prefix_locations() {
+        for failure in ["removal", "manifest", "chain", "read"] {
+            let (_root, store, packs, shared) = removal_replay_fixture();
+            let mut sequence = store.pack_catalog.read().unwrap().clone();
+            let first = replay_record(&mut sequence, CatalogOperation::Remove, packs[0].clone());
+            let second = replay_record(&mut sequence, CatalogOperation::Remove, packs[1].clone());
+            let prefix_sequence = sequence.sequence;
+            let mut bad = replay_record(
+                &mut sequence,
+                CatalogOperation::Remove,
+                packs[if failure == "removal" { 0 } else { 2 }].clone(),
+            );
+            match failure {
+                "manifest" => bad.pack.manifest.data_size += 1,
+                "chain" => bad.previous_record_digest = Some(canonical::hash_bytes(b"wrong chain")),
+                _ => {}
+            }
+            let names = write_replay_records(&store, &[first, second, bad]);
+            if failure == "read" {
+                store.catalog_records.remove_file(&names[2]).unwrap();
+            }
+            let before = catalog_location_rebuilds_for_current_thread();
+            assert_eq!(
+                store
+                    .replay_catalog_records_locked(&names)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::StateCorrupt
+            );
+            assert_eq!(catalog_location_rebuilds_for_current_thread() - before, 1);
+            let state = store.pack_catalog.read().unwrap();
+            assert_eq!(state.sequence, prefix_sequence);
+            assert_eq!(
+                state.locations[&shared.digest].data_name,
+                packs[2].data_name
+            );
+            assert_catalog_locations_match_packs(&state);
+        }
+    }
+
+    #[test]
+    fn removal_replay_rejects_add_collision_without_exposing_partial_state() {
+        let (_root, store, packs, shared) = removal_replay_fixture();
+        let mut sequence = store.pack_catalog.read().unwrap().clone();
+        let first = replay_record(&mut sequence, CatalogOperation::Remove, packs[0].clone());
+        let second = replay_record(&mut sequence, CatalogOperation::Remove, packs[1].clone());
+        let mut conflicting = packs[2].clone();
+        conflicting.manifest.objects[0].object.size += 1;
+        conflicting.manifest.objects[1].offset += 1;
+        conflicting.manifest.data_size += 1;
+        conflicting.data_name = format!(
+            "{}.pack",
+            digest_component(&catalog_hash(&conflicting.manifest).unwrap()).unwrap()
+        );
+        let bad = replay_record(&mut sequence, CatalogOperation::Add, conflicting);
+        let names = write_replay_records(&store, &[first, second, bad]);
+        let before = catalog_location_rebuilds_for_current_thread();
+        let error = store.replay_catalog_records_locked(&names).unwrap_err();
+        assert_eq!(error.code, ErrorCode::StateCorrupt);
+        assert_eq!(error.message, "CAS pack catalog has a digest collision");
+        // One flush precedes ADD; failed cleanup discards the unusable map.
+        assert_eq!(catalog_location_rebuilds_for_current_thread() - before, 2);
+        let state = store.pack_catalog.read().unwrap();
+        assert!(!state.initialized);
+        assert!(state.packs.is_empty());
+        assert!(state.locations.is_empty());
+        drop(state);
+        assert_eq!(
+            store.read(&shared, 1024).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
     }
 
     #[test]
