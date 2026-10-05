@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "clew-framework-aspnetcore"
-version = "0.13.2"
+version = "0.13.11"
 dependencies = [
  "clew-facts",
  "hex",
