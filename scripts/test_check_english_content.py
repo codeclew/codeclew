@@ -189,18 +189,24 @@ class GeneratedPublicationEnglishTest(unittest.TestCase):
             self.html_path, '<script type="application/json" id="document-data">' + payload + '</script>'))
 
     def test_frozen_released_reader_survives_asset_updates_but_not_script_changes(self) -> None:
-        path = (english.ROOT / "site/examples/codeclew-source/docs/generated/"
-                "7c84c5220aa3bd456acf143043d657955a73bd4ff685f1f3322e4a258f89c86c/"
-                "services/clew-public-workflow.html")
-        content = path.read_text(encoding="utf-8")
-        relative = path.relative_to(english.ROOT).as_posix()
-        self.assertEqual([], english.rejected_cyrillic_line_numbers(relative, content))
-        body = next(match[2] for match in english.SCRIPT.finditer(content)
-                    if "application/json" not in match[1] and english.CYRILLIC.search(match[2]))
-        altered = content.replace(body, body + '\nconst extraProse="' + RUSSIAN + '";', 1)
-        self.assertTrue(english.rejected_cyrillic_line_numbers(relative, altered))
-        changed = content.replace(body, body.replace("const", "var", 1), 1)
-        self.assertTrue(english.rejected_cyrillic_line_numbers(relative, changed))
+        paths = (
+            "site/examples/codeclew-source/docs/generated/"
+            "7c84c5220aa3bd456acf143043d657955a73bd4ff685f1f3322e4a258f89c86c/"
+            "services/clew-public-workflow.html",
+            "site/examples/current-workflow/docs/generated/"
+            "bf1cf2b887bd2cd30062cc00d6da3ac18722ddd76f8310d1df1006f37f7310ab/"
+            "services/cli-documentation.html",
+        )
+        for relative in paths:
+            with self.subTest(publication=relative):
+                content = (english.ROOT / relative).read_text(encoding="utf-8")
+                self.assertEqual([], english.rejected_cyrillic_line_numbers(relative, content))
+                body = next(match[2] for match in english.SCRIPT.finditer(content)
+                            if "application/json" not in match[1] and english.CYRILLIC.search(match[2]))
+                altered = content.replace(body, body + '\nconst extraProse="' + RUSSIAN + '";', 1)
+                self.assertTrue(english.rejected_cyrillic_line_numbers(relative, altered))
+                changed = content.replace(body, body.replace("const", "var", 1), 1)
+                self.assertTrue(english.rejected_cyrillic_line_numbers(relative, changed))
 
     def test_duplicate_keys_and_malformed_json_do_not_hide_prose(self) -> None:
         source = json.dumps(self.source(), ensure_ascii=False)

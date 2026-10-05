@@ -319,7 +319,7 @@ const RU_MESSAGES={
  "Evidence:": "Подтверждение:",
  "Source copied": "Исходный код скопирован",
  "Select the source text and copy it manually.": "Выделите исходный код и скопируйте его вручную.",
- "MICROSERVICE": "МИКРОСЕРВИС",
+ "SERVICE": "СЕРВИС",
  "INTERACTION SCENARIO": "СЦЕНАРИЙ ВЗАИМОДЕЙСТВИЯ"
 };
 Object.assign(RU_MESSAGES,{
@@ -738,7 +738,7 @@ document.addEventListener('change',e=>{const kind=e.target.dataset.contractSelec
 document.addEventListener('keydown',e=>{if(sourceKeyboard(e))return;if(e.target.matches('[role=tab]')&&['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const tabs=['sequence','contract','findings'];const next=tabs[(tabs.indexOf(tab)+(e.key==='ArrowRight'?1:2))%3];showEntry(current.id,next);$('tab-'+next).focus();}});
 $('search').addEventListener('input',nav);$('source-select').onchange=e=>{sourceId=e.target.value;sourceContent();};$('close-source').onclick=()=>closeSource();$('catalogue-button').onclick=()=>{catalogue();readerSelection();};$('coverage-button').onclick=()=>{coverage();readerSelection();};
 $('copy-source').onclick=async()=>{try{await navigator.clipboard.writeText(sourceRecords()[sourceId].text);$('copy-status').textContent=t('Source copied');}catch{$('copy-status').textContent=t('Select the source text and copy it manually.');}};
-$('project-kind').textContent=D.subject.startsWith('service:')?t('MICROSERVICE'):t('INTERACTION SCENARIO');$('project-title').textContent=D.title;$('project-subtitle').textContent=D.subtitle;$('catalogue-count').textContent=inventoryEntries().length;$('revision-links').innerHTML=Object.entries(D.revisions).map(([id,revision])=>chromeHtml`<div class="small-label">${esc(id)} · ${esc(revision.slice(0,12))}</div>`).join('');
+$('project-kind').textContent=D.subject.startsWith('service:')?t('SERVICE'):t('INTERACTION SCENARIO');$('project-title').textContent=D.title;$('project-subtitle').textContent=D.subtitle;$('catalogue-count').textContent=inventoryEntries().length;$('revision-links').innerHTML=Object.entries(D.revisions).map(([id,revision])=>chromeHtml`<div class="small-label">${esc(id)} · ${esc(revision.slice(0,12))}</div>`).join('');
 const navigationMedia=window.matchMedia?.('(max-width:760px)');
 function navigateEntry(id,nextTab='sequence'){if(location.hash!=='#'+id)history.pushState(null,'','#'+id);showEntry(id,nextTab);}
 function readerSelection(){if(navigationMedia?.matches)$('reader-navigation').open=false;$('content').focus();}

@@ -279,12 +279,14 @@ JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
 SCRIPT = re.compile(r"(<script\b[^>]*>)(.*?)(</script\s*>)", re.DOTALL | re.IGNORECASE)
 LOCALIZATION_ASSETS = ("app.js", "analysis.js", "reader.js", "limits.js")
 
-# Exact executable script bodies from the immutable v0.13.7 public readers.
-# Verified against source revision fd82a763 before admitting these digests.
+# Exact executable script bodies from immutable public readers.
+# The v0.13.7 bodies were verified against source revision fd82a763.
+# The v0.13.13 body was verified against source revision 56a9e33a.
 # New reader assets must not invalidate already published frozen snapshots.
 FROZEN_LOCALIZATION_SCRIPT_DIGESTS = {
     "7e772ad1b4c368ba5d3a49f0a1e3dd306f7b51e2bbba552f9b600e9a49d28faa",
     "81169526b9b54c0c78da0eeadfb6035e955aee15444772bd1158a81dc651252e",
+    "5c50f53ee17dae7c291c6596f63db02c43e1381eeb6fd6fd90cee4581638bc3f",
 }
 
 
