@@ -391,11 +391,8 @@ fn task_checks(
             "INSTALL_NODE",
         )),
         SessionLanguage::CSharp => {
-            checks.push(check(
-                "tool.dotnet",
-                executable_available("dotnet"),
-                true,
-                "INSTALL_DOTNET_SDK_10",
+            checks.push(csharp_sdk_check(
+                std::process::Command::new("dotnet").current_dir(repository),
             ));
             checks.push(check(
                 "runtime.language-adapter",
@@ -614,6 +611,15 @@ fn executable_file(path: &Path) -> bool {
             }
         }
     })
+}
+
+fn csharp_sdk_check(command: &mut std::process::Command) -> DoctorCheck {
+    check(
+        "tool.dotnet",
+        crate::csharp_project_model::dotnet_sdk_available(command),
+        true,
+        "INSTALL_DOTNET_SDK_10",
+    )
 }
 
 fn executable_available(name: &str) -> bool {
@@ -984,6 +990,68 @@ mod tests {
         std::fs::write(canonical_root.join("READY"), format!("{runtime_key}\n")).unwrap();
         let authority = RuntimeAuthority::load(&canonical_root).unwrap();
         (root, authority)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn csharp_doctor_checks_host_inventory_even_with_an_older_project_sdk_pin() {
+        use std::os::unix::fs::PermissionsExt;
+        let repository = tempfile::tempdir().unwrap();
+        fs::write(
+            repository.path().join("global.json"),
+            r#"{"sdk":{"version":"6.0.136","rollForward":"disable"}}"#,
+        )
+        .unwrap();
+        let host = repository.path().join("dotnet-fixture");
+        for (inventory, ready) in [
+            ("6.0.136 [/fixture/sdk]", false),
+            ("10.0.401 [/fixture/sdk]", true),
+        ] {
+            let selected_version = if ready {
+                "exit 155"
+            } else {
+                "printf '%s\\n' '6.0.136'"
+            };
+            fs::write(
+                &host,
+                format!(
+                    "#!/bin/sh\nif [ \"$1\" = --list-sdks ]; then printf '%s\\n' '{inventory}'; elif [ \"$1\" = --version ]; then {selected_version}; else exit 99; fi\n"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&host, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                std::process::Command::new(&host)
+                    .arg("--version")
+                    .current_dir(repository.path())
+                    .stdout(Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success(),
+                !ready
+            );
+            let result =
+                csharp_sdk_check(std::process::Command::new(&host).current_dir(repository.path()));
+            assert_eq!(result.passed, ready);
+            assert!(result.required);
+            assert_eq!(
+                result.value()["status"],
+                if ready { "PASS" } else { "ACTION_REQUIRED" }
+            );
+            assert_eq!(
+                result.value()["remediationId"],
+                if ready {
+                    Value::Null
+                } else {
+                    json!("INSTALL_DOTNET_SDK_10")
+                }
+            );
+        }
+        let absent = csharp_sdk_check(&mut std::process::Command::new(
+            repository.path().join("missing-dotnet-host"),
+        ));
+        assert!(!absent.passed);
+        assert_eq!(absent.remediation, Some("INSTALL_DOTNET_SDK_10"));
     }
 
     fn doctor_task_authority(

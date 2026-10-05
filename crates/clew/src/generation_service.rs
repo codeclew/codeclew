@@ -2348,8 +2348,11 @@ fn csharp_incremental_receipt(
 ) -> Result<CasObject, ClewError> {
     let mut surfaces = BTreeMap::<String, Vec<&CSharpCompilerFact>>::new();
     for fact in &index.facts {
-        if let CSharpCompilerFact::Declaration { file, .. } = fact {
-            surfaces.entry(file.clone()).or_default().push(fact);
+        if let CSharpCompilerFact::Declaration(declaration) = fact {
+            surfaces
+                .entry(declaration.file.clone())
+                .or_default()
+                .push(fact);
         }
     }
     let files = source_content_digests

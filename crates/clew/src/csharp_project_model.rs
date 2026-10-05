@@ -350,12 +350,73 @@ pub fn verify_model(model: &CSharpProjectModel) -> Result<(), ClewError> {
     Ok(())
 }
 
+// Inventory belongs to the selected host, unlike --version, which resolves the
+// repository's global.json and may intentionally select an older project SDK.
+pub(crate) fn dotnet_sdk_available(command: &mut Command) -> bool {
+    command
+        .arg("--list-sdks")
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+        .env("DOTNET_NOLOGO", "1")
+        .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            output.status.success()
+                && supported_dotnet_sdk_inventory(&String::from_utf8_lossy(&output.stdout))
+        })
+}
+
+fn supported_dotnet_sdk_inventory(inventory: &str) -> bool {
+    inventory.lines().any(|line| {
+        let Some((version, directory)) = line.trim().split_once(" [") else {
+            return false;
+        };
+        if directory
+            .strip_suffix(']')
+            .is_none_or(|directory| directory.trim().is_empty())
+        {
+            return false;
+        }
+        let core = version.split('-').next().unwrap_or_default();
+        let components = core
+            .split('.')
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>();
+        components.is_ok_and(|components| components.len() == 3 && components[0] >= 10)
+    })
+}
+
+fn dotnet_preparation_required() -> ClewError {
+    ClewError::new(
+        ErrorCode::WorkerPreparationRequired,
+        "C# Roslyn analysis requires an installed .NET SDK 10 or newer; install it and make its dotnet host available in PATH",
+    )
+}
+
+fn missing_worker_status(exit_code: Option<i32>) -> ClewError {
+    if exit_code == Some(150) {
+        return dotnet_preparation_required();
+    }
+    ClewError::new(
+        ErrorCode::IncompleteSemanticAnalysis,
+        format!(
+            "C# Roslyn worker exited without status ({})",
+            exit_code.map_or("signal".into(), |code| code.to_string())
+        ),
+    )
+}
+
 fn run_worker(
     assembly: &Path,
     repository: &Path,
     home: &Path,
     request: &Value,
 ) -> Result<Value, ClewError> {
+    if !dotnet_sdk_available(Command::new("dotnet").current_dir(repository)) {
+        return Err(dotnet_preparation_required());
+    }
     let mut child = Command::new("dotnet")
         .arg(assembly)
         .current_dir(repository)
@@ -423,15 +484,7 @@ fn run_worker(
         .split(|byte| *byte == b'\n')
         .find(|line| !line.is_empty())
         .and_then(|line| serde_json::from_slice(line).ok())
-        .ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::IncompleteSemanticAnalysis,
-                format!(
-                    "C# Roslyn worker exited without status ({})",
-                    exit.code().map_or("signal".into(), |code| code.to_string())
-                ),
-            )
-        })?;
+        .ok_or_else(|| missing_worker_status(exit.code()))?;
     if status["protocol"] != crate::runtime::CSHARP_WORKER_PROTOCOL {
         return Err(corrupt("C# worker status protocol is invalid"));
     }
@@ -641,6 +694,47 @@ fn io_error(error: std::io::Error) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdk_inventory_requires_a_supported_installed_sdk() {
+        for inventory in [
+            "10.0.401 [/host/sdk]",
+            "6.0.136 [/host/sdk]\n10.0.401 [/host/sdk]",
+            "11.0.100 [/host/sdk]",
+            "10.0.100-preview.1 [/host/sdk with spaces]",
+        ] {
+            assert!(supported_dotnet_sdk_inventory(inventory), "{inventory}");
+        }
+        for inventory in [
+            "",
+            "6.0.136 [/host/sdk]\n9.0.100 [/host/sdk]",
+            "10.0.401",
+            "SDK 10.0.401 [/host/sdk]",
+            "10.invalid.401 [/host/sdk]",
+            "10.0.401 []",
+            "10.0.401.1 [/host/sdk]",
+        ] {
+            assert!(!supported_dotnet_sdk_inventory(inventory), "{inventory}");
+        }
+    }
+
+    #[test]
+    fn missing_runtime_status_has_preparation_action_without_private_stderr() {
+        let missing_runtime = missing_worker_status(Some(150));
+        assert_eq!(missing_runtime.code, ErrorCode::WorkerPreparationRequired);
+        assert!(missing_runtime.message.contains(".NET SDK 10 or newer"));
+        assert!(missing_runtime.message.contains("PATH"));
+        let unknown = missing_worker_status(Some(3));
+        assert_eq!(unknown.code, ErrorCode::IncompleteSemanticAnalysis);
+        assert_eq!(
+            unknown.message,
+            "C# Roslyn worker exited without status (3)"
+        );
+        assert_eq!(
+            missing_worker_status(None).code,
+            ErrorCode::IncompleteSemanticAnalysis
+        );
+    }
 
     #[test]
     fn compilation_selector_is_exact_and_repository_relative() {

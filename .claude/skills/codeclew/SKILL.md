@@ -108,6 +108,15 @@ unsupported. Java uses the project-selected JDK 17+; 17 and 21 have fixture
 coverage. These baseline profiles are read-only. Kotlin 2.4.x analysis does not
 imply that every patch is mutation-qualified.
 
+C# uses the read-only `csharp-dotnet-msbuild-read-only` profile and the packaged
+Roslyn worker. Select the exact returned `csproj:<path>[@<tfm>]` or `sln:<path>`
+compilation; `.sln` and `.slnx` are supported selectors. Require a .NET 10+ host
+SDK, the project's own SDK and caller-restored inputs. Codeclew does not restore
+packages. Keep unrestored projects, generated sources and source-generator
+output as explicit boundaries. ASP.NET Core MVC attribute-route facts do not
+establish running endpoints, conventional routing, minimal APIs or custom
+controller discovery. The profile never admits candidate generation.
+
 For Java/Maven, read caller-local launch preferences from `codeclew.yaml` through
 normal admission. The supported shape is `version: 1` and
 `maven: {settings: ../private/settings.xml}`; the path is relative to the

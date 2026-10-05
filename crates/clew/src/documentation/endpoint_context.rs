@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const PROFILE: &str = "endpoint-context-v3";
 
-#[cfg(test)]
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const MAX_GAP_EXAMPLES: usize = 8;
 const MAX_GAP_EXAMPLE_BYTES: usize = 512;

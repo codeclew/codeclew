@@ -41,58 +41,7 @@ pub enum CSharpCompilerFact {
         source_content_digest: String,
         resolution: String,
     },
-    Declaration {
-        schema: String,
-        declaration_kind: String,
-        name: String,
-        symbol_identity: String,
-        owner_identity: String,
-        csharp_identity: String,
-        accessibility: String,
-        modifiers: Vec<String>,
-        annotations: Vec<String>,
-        project: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        generated: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        qualified_name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        interfaces: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        superclass: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        partial_parts: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        jvm_descriptor: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        return_type: Option<String>,
-        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-        value_type: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parameters: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature_types: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        attributes: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        overrides: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        implements: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        clr_attributes: Option<Box<Value>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        documentation: Option<Box<Value>>,
-        file: String,
-        start: u64,
-        end: u64,
-        start_line: u64,
-        end_line: u64,
-        byte_start: u64,
-        byte_end: u64,
-        resolution: String,
-    },
+    Declaration(Box<CSharpDeclarationFact>),
     Relation {
         schema: String,
         relation_kind: String,
@@ -134,21 +83,76 @@ pub enum CSharpCompilerFact {
     },
 }
 
+/// Heap-backed declaration payload; its fields remain flat in the tagged fact JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CSharpDeclarationFact {
+    pub schema: String,
+    pub declaration_kind: String,
+    pub name: String,
+    pub symbol_identity: String,
+    pub owner_identity: String,
+    pub csharp_identity: String,
+    pub accessibility: String,
+    pub modifiers: Vec<String>,
+    pub annotations: Vec<String>,
+    pub project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interfaces: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superclass: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_parts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jvm_descriptor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_type: Option<String>,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub value_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_types: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implements: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clr_attributes: Option<Box<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<Box<Value>>,
+    pub file: String,
+    pub start: u64,
+    pub end: u64,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub byte_start: u64,
+    pub byte_end: u64,
+    pub resolution: String,
+}
+
 impl CSharpCompilerFact {
     fn schema(&self) -> &str {
         match self {
             Self::SourceFile { schema, .. }
-            | Self::Declaration { schema, .. }
             | Self::Relation { schema, .. }
             | Self::Boundary { schema, .. } => schema,
+            Self::Declaration(declaration) => &declaration.schema,
         }
     }
 
     pub(crate) fn path(&self) -> Option<&str> {
         match self {
-            Self::SourceFile { file, .. }
-            | Self::Declaration { file, .. }
-            | Self::Relation { file, .. } => Some(file),
+            Self::SourceFile { file, .. } | Self::Relation { file, .. } => Some(file),
+            Self::Declaration(declaration) => Some(&declaration.file),
             Self::Boundary { file, .. } => file.as_deref(),
         }
     }
@@ -162,8 +166,8 @@ impl CSharpCompilerFact {
 
     fn query_family(&self) -> String {
         match self {
-            Self::Declaration { name, .. } => {
-                format!("0-declaration:{}", query_key_component(name))
+            Self::Declaration(declaration) => {
+                format!("0-declaration:{}", query_key_component(&declaration.name))
             }
             Self::Relation { relation_kind, .. } => {
                 format!("1-relation:{}", query_key_component(relation_kind))
@@ -175,16 +179,13 @@ impl CSharpCompilerFact {
 
     fn position_is_valid(&self) -> bool {
         match self {
-            Self::Declaration {
-                start,
-                end,
-                start_line,
-                end_line,
-                byte_start,
-                byte_end,
-                ..
+            Self::Declaration(declaration) => {
+                declaration.start <= declaration.end
+                    && declaration.start_line > 0
+                    && declaration.start_line <= declaration.end_line
+                    && declaration.byte_start <= declaration.byte_end
             }
-            | Self::Relation {
+            Self::Relation {
                 start,
                 end,
                 start_line,
@@ -523,8 +524,8 @@ fn poisoned<T>(error: std::sync::PoisonError<T>) -> ClewError {
 mod tests {
     use super::*;
 
-    fn declaration(name: &str, start: u64, end: u64) -> CSharpCompilerFact {
-        serde_json::from_value(json!({
+    fn declaration_json(name: &str, start: u64, end: u64) -> Value {
+        json!({
             "schema":CSHARP_FACT_SCHEMA,"kind":"DECLARATION","declarationKind":"METHOD","name":name,
             "symbolIdentity":format!("method:class:Orders.Api.OrdersController#{name}()V"),
             "ownerIdentity":"class:Orders.Api.OrdersController",
@@ -533,8 +534,45 @@ mod tests {
             "project":"src/Orders.Api/Orders.Api.csproj","file":"src/Orders.Api/OrdersController.cs",
             "start":start,"end":end,"startLine":3,"endLine":5,"byteStart":start+3,"byteEnd":end+3,
             "resolution":"COMPILER_EXACT"
-        }))
-        .unwrap()
+        })
+    }
+
+    fn declaration(name: &str, start: u64, end: u64) -> CSharpCompilerFact {
+        serde_json::from_value(declaration_json(name, start, end)).unwrap()
+    }
+
+    #[test]
+    fn boxed_declaration_preserves_flat_canonical_wire_contract() {
+        let minimal = declaration_json("Get", 10, 40);
+        let mut complete = minimal.clone();
+        complete.as_object_mut().unwrap().extend(
+            json!({
+                "generated":false,"qualifiedName":"Orders.Api.OrdersController.Get",
+                "interfaces":["class:Orders.Api.IOrders"],"superclass":"class:Orders.Api.BaseController",
+                "partialParts":2,"jvmDescriptor":"()V","signature":"public void Get()",
+                "returnType":"void","type":"Order","parameters":[],
+                "signatureTypes":["class:Orders.Core.Order"],"attributes":{"example":true},
+                "overrides":"method:class:Orders.Api.BaseController#Get()V",
+                "implements":["method:class:Orders.Api.IOrders#Get()V"],
+                "clrAttributes":{"declaration":"method:class:Orders.Api.OrdersController#Get()V"},
+                "documentation":{"summary":"Returns an order."}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        for expected in [minimal, complete] {
+            let fact: CSharpCompilerFact = serde_json::from_value(expected.clone()).unwrap();
+            assert!(matches!(fact, CSharpCompilerFact::Declaration(_)));
+            assert_eq!(
+                canonical::bytes(&fact).unwrap(),
+                canonical::bytes(&expected).unwrap()
+            );
+            assert_eq!(fact.schema(), CSHARP_FACT_SCHEMA);
+            assert_eq!(fact.path(), Some("src/Orders.Api/OrdersController.cs"));
+            assert_eq!(fact.query_family(), "0-declaration:get");
+            assert!(fact.position_is_valid());
+        }
     }
 
     #[test]
