@@ -20,7 +20,23 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.11
+## Current release: v0.13.12
+
+Retained change commands reuse one store through report and source reads.
+Catalog recovery batches adjacent removals, preserving duplicate-object
+fallback and corruption checks. Saved-edit report search keeps the detail panel
+in step with its selection and distinguishes main/test compilation identities.
+Documentation History now explains explicit release checkpoints and its empty
+state; run-ledger diagnostics identify the rejected run and transition. Source
+bootstrap rejects input changes during a build before saving its reuse checkpoint.
+See the [v0.13.12 release notes](docs/releases/v0.13.12.md).
+
+C# reading and analysis through Roslyn remains included, with the read-only
+profile and .NET 10+ host SDK requirement introduced in 0.13.11.
+The [public task guides](https://codeclew.github.io/codeclew/) include pinned,
+executed 0.13.11 examples and their explicit evidence limits.
+
+### Included from v0.13.11
 
 Create a first source-linked overview with the executable starter included by
 `clew docs init`. It registers an explicit committed source scope, captures it,
@@ -76,7 +92,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.11 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.12 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -105,7 +121,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.11 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.12 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a

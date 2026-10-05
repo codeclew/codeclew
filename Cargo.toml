@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/clew", "crates/clew-facts", "crates/clew-framework-aspnetcore", "crates/clew-framework-spring"]
 
 [workspace.package]
-version = "0.13.11"
+version = "0.13.12"
 edition = "2024"
 license = "Apache-2.0"
 
