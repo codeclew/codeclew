@@ -1489,6 +1489,71 @@ class BootstrapAuthorityTest(unittest.TestCase):
             ):
                 bootstrap._verify_release_source(source, seed)
 
+    def test_checkpoint_rejects_source_changes_since_build_inputs(self) -> None:
+        for mutation in ["edit", "add", "delete", "executable", "commit", "late-edit"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = root / "source"
+                state = root / "state"
+                capsule = state / "runtimes" / ("3" * 64)
+                source.mkdir()
+                capsule.mkdir(parents=True)
+                (state / "runtimes/checkpoints").mkdir()
+                (source / "Cargo.toml").write_text("[workspace]\n")
+                template = source / "crates/example/src/working_tree_report.html"
+                template.parent.mkdir(parents=True)
+                template.write_text("<style>old</style>\n")
+                write_minimal_registry(source, input_files=["Cargo.toml"], input_roots=["crates"])
+                subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+                subprocess.run(["git", "add", "."], cwd=source, check=True)
+                commit = ["git", "-c", "user.name=Codeclew Tests", "-c",
+                          "user.email=tests@codeclew.invalid", "commit", "-qam", "fixture"]
+                subprocess.run(commit, cwd=source, check=True)
+                if mutation == "commit":
+                    template.write_text("<style>new</style>\n")
+                inputs, development = bootstrap.source_manifest(source)
+                mode = "DEVELOPMENT" if development else "RELEASE"
+                stage = root / "stage"
+                bootstrap.stage_inputs(source, stage, inputs, workers=1)
+                artifact = capsule / "clew"
+                artifact.write_bytes((stage / template.relative_to(source)).read_bytes())
+                executable = Path(sys.executable).resolve()
+                fast_tools = {
+                    "python": {"path": str(executable)},
+                    "executables": {name: {"path": str(executable)} for name in ["cargo", "java", "rustc"]},
+                    "jdkRelease": {"path": str(executable)},
+                }
+                path = bootstrap.checkpoint_path(state, source)
+                bootstrap.write_checkpoint(path, source, capsule, "sha256:" + "3" * 64,
+                                           mode, inputs, fast_tools)
+                previous = path.read_bytes()
+                if mutation == "edit":
+                    template.write_text("<style>new</style>\n")
+                elif mutation == "add":
+                    (template.parent / "added.rs").write_text("pub fn added() {}\n")
+                elif mutation == "delete":
+                    template.unlink()
+                elif mutation == "executable":
+                    template.chmod(0o700)
+                elif mutation == "commit":
+                    subprocess.run(commit, cwd=source, check=True)
+                verify = bootstrap.verify_source_manifest
+
+                def verify_then_edit(*arguments, **keywords) -> None:
+                    verify(*arguments, **keywords)
+                    template.write_text("<style>new</style>\n")
+
+                late_edit = (
+                    mock.patch.object(bootstrap, "verify_source_manifest", side_effect=verify_then_edit)
+                    if mutation == "late-edit" else contextlib.nullcontext()
+                )
+                with late_edit, self.assertRaisesRegex(bootstrap.BootstrapError, "changed during bootstrap"):
+                    bootstrap.write_checkpoint(path, source, capsule, "sha256:" + "3" * 64,
+                                               mode, inputs, fast_tools)
+                self.assertEqual(path.read_bytes(), previous)
+                self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+                self.assertEqual(artifact.read_bytes(), (stage / template.relative_to(source)).read_bytes())
+
     def test_metadata_checkpoint_warm_path_never_runs_or_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -1501,17 +1566,11 @@ class BootstrapAuthorityTest(unittest.TestCase):
             checkpoint_directory.mkdir()
             subprocess.run(["git", "init", "-q"], cwd=source, check=True)
             (source / "Cargo.toml").write_text("[workspace]\n")
-            subprocess.run(["git", "add", "Cargo.toml"], cwd=source, check=True)
+            write_minimal_registry(source, input_files=["Cargo.toml"], input_roots=["crates"])
+            subprocess.run(["git", "add", "Cargo.toml", "bootstrap"], cwd=source, check=True)
             artifact = capsule / "clew"
             artifact.write_bytes(b"capsule")
-            source_file = source / "Cargo.toml"
-            source_metadata = source_file.stat()
-            inputs = [{
-                "path": "Cargo.toml",
-                "size": source_metadata.st_size,
-                "mode": source_metadata.st_mode & 0o111,
-                "sha256": "sha256:" + "0" * 64,
-            }]
+            inputs, _development = bootstrap.source_manifest(source)
             executable = Path(os.sys.executable).resolve()
             fast_tools = {
                 "python": {"path": str(executable)},
@@ -1528,7 +1587,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 source,
                 capsule,
                 "sha256:" + "1" * 64,
-                "RELEASE",
+                "DEVELOPMENT",
                 inputs,
                 fast_tools,
             )
@@ -1729,7 +1788,8 @@ class BootstrapAuthorityTest(unittest.TestCase):
             subprocess.run(["git", "init", "-q"], cwd=source, check=True)
             source_file = source / "Cargo.toml"
             source_file.write_text("[workspace]\n")
-            subprocess.run(["git", "add", "Cargo.toml"], cwd=source, check=True)
+            write_minimal_registry(source, input_files=["Cargo.toml"], input_roots=["crates"])
+            subprocess.run(["git", "add", "Cargo.toml", "bootstrap"], cwd=source, check=True)
             artifact = capsule / "clew"
             artifact.write_bytes(b"capsule")
             executable = Path(os.sys.executable).resolve()
@@ -1742,29 +1802,22 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 },
                 "jdkRelease": {"path": str(executable)},
             }
-            inputs = [{
-                "path": "Cargo.toml",
-                "size": source_file.stat().st_size,
-                "mode": 0,
-                "sha256": "sha256:" + "0" * 64,
-            }]
             path = bootstrap.checkpoint_path(state, source)
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "DEVELOPMENT", inputs, fast_tools,
-            )
+
+            def write_current_checkpoint() -> None:
+                inputs, development = bootstrap.source_manifest(source)
+                bootstrap.write_checkpoint(
+                    path, source, capsule, "sha256:" + "2" * 64,
+                    "DEVELOPMENT" if development else "RELEASE", inputs, fast_tools,
+                )
+
+            write_current_checkpoint()
             source_file.write_text("[workspace]\nmembers=[]\n")
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "DEVELOPMENT", inputs, fast_tools,
-            )
+            write_current_checkpoint()
             subprocess.run(["git", "add", "Cargo.toml"], cwd=source, check=True)
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "DEVELOPMENT", inputs, fast_tools,
-            )
+            write_current_checkpoint()
             subprocess.run(
                 [
                     "git", "-c", "user.name=Codeclew Tests",
@@ -1775,30 +1828,18 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 check=True,
             )
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "RELEASE", inputs, fast_tools,
-            )
+            write_current_checkpoint()
             added = source / "crates" / "new" / "src" / "lib.rs"
             added.parent.mkdir(parents=True)
             added.write_text("pub fn added() {}\n")
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "DEVELOPMENT", inputs, fast_tools,
-            )
+            write_current_checkpoint()
             added.unlink()
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "DEVELOPMENT", inputs, fast_tools,
-            )
+            write_current_checkpoint()
             artifact.write_bytes(b"corrupt")
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
-            bootstrap.write_checkpoint(
-                path, source, capsule, "sha256:" + "2" * 64,
-                "DEVELOPMENT", inputs, fast_tools,
-            )
+            write_current_checkpoint()
             (capsule / "unexpected").write_bytes(b"extra")
             self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
 

@@ -451,7 +451,7 @@ def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
             "sha256": digest_file(path),
         })
     dirty_output = run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", ".", *exclusions],
+        ["git", "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all", "--", ".", *exclusions],
         source,
     ).decode()
     dirty_paths = set()
@@ -473,7 +473,12 @@ def verify_source_manifest(
 ) -> None:
     for row in rows:
         path = source / str(row["path"])
-        metadata = path.lstat()
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError as error:
+            raise BootstrapError(
+                f"runtime input changed during bootstrap: {row['path']}"
+            ) from error
         if (
             stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISREG(metadata.st_mode)
@@ -1339,6 +1344,13 @@ def write_checkpoint(
         raise BootstrapError("Rust sysroot authority is not absolute")
     source_paths.update([rust_sysroot / "bin" / "rustc", rust_sysroot / "bin" / "cargo"])
     capsule_paths = [capsule, *capsule.rglob("*")]
+    # Capture metadata before checking the input closure. Otherwise a source
+    # edit during the build can bind new metadata to the old staged inputs and
+    # make a stale capsule appear current on every later checkpoint hit.
+    source_nodes = [_metadata_identity(value) for value in sorted(source_paths, key=str)]
+    verify_source_manifest(source, inputs, expected_development=mode == "DEVELOPMENT")
+    if not all(_metadata_matches(row) for row in source_nodes):
+        raise BootstrapError("runtime input closure changed during bootstrap")
     payload = {
         "schema": "codeclew-runtime-checkpoint/3.0",
         "source": _metadata_identity(source),
@@ -1347,7 +1359,7 @@ def write_checkpoint(
         "mode": mode,
         "inputs": inputs,
         "capsule": str(capsule),
-        "sourceNodes": [_metadata_identity(value) for value in sorted(source_paths, key=str)],
+        "sourceNodes": source_nodes,
         "capsuleNodes": [_metadata_identity(value) for value in sorted(capsule_paths, key=str)],
     }
     encoded = canonical(payload) + b"\n"
