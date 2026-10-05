@@ -2595,7 +2595,10 @@ fn load_run_projection_with_repair(
                 }
                 require_same_run_identity(&prior.record, &entry.record)?;
                 if !run_transition_allowed(prior.record.status, entry.record.status) {
-                    return Err(invalid("run ledger contains an invalid transition"));
+                    return Err(invalid(&format!(
+                        "run {expected_run_id} ledger contains an invalid transition {:?} -> {:?} at sequence {}",
+                        prior.record.status, entry.record.status, entry.sequence
+                    )));
                 }
             }
         }
@@ -4626,6 +4629,30 @@ mod tests {
                 .unwrap()
                 .status,
             RunStatus::Created
+        );
+    }
+
+    #[test]
+    fn invalid_retained_transition_identifies_run_without_repairing_state() {
+        let (_temporary, state, root, mut run) = initialized_run();
+        let previous = run.ledger_head.clone();
+        run.sequence = 1;
+        run.status = RunStatus::Published;
+        append_run_entry(&state, &root, &mut run, Some(previous)).unwrap();
+        let ledger_before = fs::read(root.join("ledger.jsonl")).unwrap();
+        let projection_before = fs::read(root.join("record.json")).unwrap();
+
+        let error = load_run_projection(&state, &root, &run.run_id).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.contains(&run.run_id));
+        assert!(error.message.contains("Created -> Published"));
+        assert!(error.message.contains("sequence 1"));
+        assert!(!error.message.contains(root.to_str().unwrap()));
+        assert_eq!(fs::read(root.join("ledger.jsonl")).unwrap(), ledger_before);
+        assert_eq!(
+            fs::read(root.join("record.json")).unwrap(),
+            projection_before
         );
     }
 
