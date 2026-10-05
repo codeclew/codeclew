@@ -28,6 +28,7 @@ function load(data=fixture(),width=1200){
   replaceChildren(...children){this.children=[];this._selected='';this.append(...children);}
   setAttribute(name,value){this.attributes[name]=String(value);if(name==='class')this.className=String(value);if(name==='data-id')this.dataset.id=String(value);}
   getAttribute(name){return this.attributes[name];}
+  getComputedTextLength(){return Array.from(this.textContent).reduce((width,char)=>width+(char==='W'?12:7),0);}
   addEventListener(type,listener){(this.listeners[type]??=[]).push(listener);}
   dispatch(type,extra={}){const event={type,target:this,defaultPrevented:false,preventDefault(){this.defaultPrevented=true},...extra};for(const listener of this.listeners[type]||[])listener(event);return event;}
   scrollIntoView(){this.scrolled=true;}
@@ -118,4 +119,20 @@ test('Enter and Space activate graph buttons like click and reveal mobile detail
  }
  const r=load(),before=state(r),event=r.graph('test-call').dispatch('keydown',{key:'ArrowDown'});
  assert.equal(event.defaultPrevented,false);assert.deepEqual(state(r),before);
+});
+test('long compilation labels fit the graph while full retained identity remains available',()=>{
+ const compilation='sln:fixtures/csharp-project-basic/Orders.slnx',data=fixture();
+ data.graph.nodes[0].before.compilation=compilation;data.graph.nodes[0].after.compilation=compilation;
+ const r=load(data),original=r.retained(),group=r.graph('main-price'),texts=group.children.filter(e=>e.tagName==='text'),compact=texts[1];
+ assert.ok(compact.textContent.endsWith('…'));assert.ok(compact.getComputedTextLength()<=210);
+ assert.ok(group.children.find(e=>e.tagName==='title').textContent.includes(compilation));
+ assert.ok(group.getAttribute('aria-label').includes(compilation));
+ assert.ok(r.e('nodeSelect').options.find(o=>o.value==='main-price').textContent.includes(compilation));
+ r.choose('nodeSelect','main-price');assert.equal(r.e('selectionTitle').textContent,'Pricing.price · '+compilation);
+ assert.equal(r.retained(),original,'display compaction must not alter retained identity or evidence');
+ // Width, rather than character count, bounds even unusually wide labels.
+ const wide=fixture();wide.graph.nodes[0].before.compilation='W'.repeat(24);wide.graph.nodes[0].after.compilation='W'.repeat(24);
+ const wideGraph=load(wide).graph('main-price'),wideText=wideGraph.children.filter(e=>e.tagName==='text')[1];
+ assert.ok(wideText.getComputedTextLength()<=210);assert.ok(wideText.textContent.endsWith('…'));
+ const short=load();for(const id of ['main-price','test-price'])assert.ok(short.graph(id).children.filter(e=>e.tagName==='text')[1].textContent.includes(id==='main-price'?':/main':':/test'));
 });
