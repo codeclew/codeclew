@@ -20,7 +20,7 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.10
+## Current release: v0.13.11
 
 Create a first source-linked overview with the executable starter included by
 `clew docs init`. It registers an explicit committed source scope, captures it,
@@ -28,16 +28,24 @@ resolves native Work references and assembles complete source reads for your
 current agent. Saved-snapshot questions need no recapture or model driver.
 See the [first-document recipe](docs/operations/field-documentation.md#executable-first-overview-and-source-questions).
 
-The reader presents a pinned publication as a saved source snapshot, keeping its
-unverified current freshness and meaning review available separately. Mobile
-navigation starts collapsed so the explanation is visible sooner. Source
-inventory uses readable declaration names and retains searchable exact identities.
-Generation errors identify invalid fields and actual UTF-8 byte counts; exhausted
-repair paths preserve their final diagnostics and explain the replacement route.
+New operation Work can opt into authoring contract 1.6 and execution schema 1.1.
+An author or independent reviewer can request a group of native references,
+exact symbols or queries before its next decision. Complete pages and source
+parts come from the retained snapshot. Reviewer reads form a separate evidence
+context; they do not rewrite the saved author answer. Both roles receive their
+remaining caller-selected finite call budget. Existing defaults are unchanged.
+See the [configuration and recovery guide](docs/operations/docs-snapshot-store.md#opt-in-section-author-contract).
 
-Manual publication remains `UNASSESSED`; independent model review still requires
-explicit drivers and finite configuration. Prior publications and attributed notes
-remain intact. See the [v0.13.10 release notes](docs/releases/v0.13.10.md).
+Replay resumes interrupted evidence delivery and settles unfinished terminal
+accounting under the original configuration without repeating a model call.
+An explicit uncertain-review retry preserves the failed invocation and uses a
+new empty account. Untouched generated Help and Runbooks navigation updates on
+the next publication while preserving edited guides and historical bundles.
+
+Manual publication remains `UNASSESSED`; independent model review requires
+explicit drivers and finite configuration. The complete initial semantic packet
+is preserved; this feature alone does not establish a token saving. See the
+[v0.13.11 release notes](docs/releases/v0.13.11.md).
 
 ### Historical v0.13.1 example and limits
 
@@ -68,7 +76,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.10 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.11 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -97,7 +105,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.10 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.11 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
