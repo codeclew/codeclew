@@ -448,12 +448,21 @@ pub(super) fn index(repo: &Repository, current: &str) -> Result<(), ClewError> {
         })
         .unwrap_or_else(|| (String::new(), "index.html".to_owned(), Vec::new()));
     let nav = super::reader::navigation_language(&prefix, &overview, None, &pages, language);
-    let title = label("Documentation history", "История документации");
+    let title = label("Released documentation snapshots", "Выпуски документации");
     let explanation = label(
-        "Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.",
-        "Снимки сохраняют версии исходных данных и состояние проверки смысла. Перемещение метки не изменяет снимок. Проверка истории позволяет убедиться в целостности сохранённых файлов и доступности подтверждающих данных.",
+        "Only explicit release checkpoints appear here. Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.",
+        "Здесь показаны только явно выпущенные снимки. Снимки сохраняют версии исходных данных и состояние проверки смысла. Перемещение метки не изменяет снимок. Проверка истории позволяет убедиться в целостности сохранённых файлов и доступности подтверждающих данных.",
     );
-    let body = format!("<h1>{title}</h1><p>{explanation}</p><ol>{cards}</ol>");
+    let history = if rows.is_empty() {
+        let empty = label(
+            "No released snapshots yet. Local proposal snapshots remain retained, but are not listed here. Run <code>clew docs render --root &lt;ROOT&gt; --publish</code> to create a release checkpoint from saved documentation. This does not recapture source or perform meaning review.",
+            "Выпущенных снимков пока нет. Локальные снимки предложений сохранены, но не показаны здесь. Выполните <code>clew docs render --root &lt;ROOT&gt; --publish</code>, чтобы создать выпуск из сохранённой документации. Команда не извлекает исходный код заново и не проверяет смысл описаний.",
+        );
+        format!("<p class=\"history-empty\">{empty}</p>")
+    } else {
+        format!("<ol>{cards}</ol>")
+    };
+    let body = format!("<h1>{title}</h1><p>{explanation}</p>{history}");
     repo.atomic(
         "docs/history.html",
         super::reader::decorate(&super::reader::page_language(title, &body, language), &nav)
@@ -569,6 +578,52 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 mod language_tests {
     use super::*;
     #[test]
+    fn working_snapshots_explain_empty_history_without_becoming_releases() {
+        let root = tempfile::tempdir().unwrap();
+        Repository::init(root.path(), "Docs").unwrap();
+        let repo = Repository::open(root.path()).unwrap();
+        let id = "a".repeat(64);
+        let working: Publication = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-publication/1.0","id":id,
+            "released":false,"parent":null,"ordinal":0,"inputDigest":"digest",
+            "documentationLanguage":"en","targetRevisions":{},"sections":{},
+            "explanationVersions":{},"observedTags":{},"evidencePackages":[],"files":{}
+        }))
+        .unwrap();
+        let original = bytes(&working).unwrap();
+        repo.atomic(&path(&id).unwrap(), &original).unwrap();
+        index(&repo, &id).unwrap();
+        let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
+        assert!(html.contains("Released documentation snapshots"));
+        assert!(html.contains("class=\"history-empty\""));
+        assert!(html.contains("Local proposal snapshots remain retained"));
+        assert!(html.contains("clew docs render --root &lt;ROOT&gt; --publish"));
+        assert!(!html.contains("<ol>"));
+        assert!(records(&repo).unwrap().is_empty());
+        assert_eq!(
+            fs::read(repo.path(&path(&id).unwrap()).unwrap()).unwrap(),
+            original
+        );
+
+        let mut released = working;
+        released.id = "b".repeat(64);
+        released.released = true;
+        released.ordinal = 1;
+        repo.atomic(&path(&released.id).unwrap(), &bytes(&released).unwrap())
+            .unwrap();
+        index(&repo, &released.id).unwrap();
+        let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
+        assert!(!html.contains("class=\"history-empty\""));
+        assert!(html.contains(&format!("generated/{}/overview.html", released.id)));
+        assert!(!html.contains(&format!("generated/{id}/overview.html")));
+        assert_eq!(records(&repo).unwrap().len(), 1);
+        assert_eq!(
+            fs::read(repo.path(&path(&id).unwrap()).unwrap()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
     fn history_localizes_chrome_and_preserves_legacy_language_absence() {
         let id = "a".repeat(64);
         let legacy = json!({"schema":"codeclew-documentation-publication/1.0","id":id,"parent":null,"ordinal":1,"inputDigest":"digest","targetRevisions":{},"sections":{},"explanationVersions":{},"observedTags":{},"evidencePackages":[],"files":{}});
@@ -636,7 +691,7 @@ mod language_tests {
         index(&repo, &publication.id).unwrap();
         let html = fs::read_to_string(repo.path("docs/history.html").unwrap()).unwrap();
         assert!(html.contains("<html lang=\"ru\">"));
-        assert!(html.contains("История документации"));
+        assert!(html.contains("Выпуски документации"));
         assert!(html.contains("Исходная версия (язык не указан)"));
         assert!(html.contains("Русский"));
         assert_eq!(
