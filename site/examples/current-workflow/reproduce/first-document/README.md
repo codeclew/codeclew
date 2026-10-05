@@ -135,7 +135,7 @@ The helper verifies committed blob bytes against native retained text, digests a
 
 ## Publication files and checks
 
-All 100 native docs files were copied byte for byte. The ordinary reader routes, current bundle navigation, source mirror anchors and pinned released source ranges were checked locally; browser and deployment checks are separate. Each bundle also retains `root-overview.html`, the native root restore payload: its relative links assume restoration to the docs root, so it is not a directly navigable bundle reader. No reader links to that payload.
+The original installed 0.13.11 publication copy contained 100 native docs files, all copied byte for byte, as recorded by `nativeFilesCopiedByteExactly` in [the original focused checks](observed/focused-public-checks.json). This is the original copy stage, not the later reader refresh inventory. The ordinary reader routes, current bundle navigation, source mirror anchors and pinned released source ranges were checked locally; browser and deployment checks are separate. Each bundle also retains `root-overview.html`, the native root restore payload: its relative links assume restoration to the docs root, so it is not a directly navigable bundle reader. No reader links to that payload.
 
 ## Create an explicit release checkpoint
 
@@ -151,4 +151,4 @@ The checkpoint was emitted by the official installed 0.13.11. The source UX fix 
 
 ## Reader refresh with installed Clew 0.13.13
 
-The same saved snapshot was rendered through official installed Clew 0.13.13 in RELEASE mode. All 95 existing bundle files and caller notes remained byte-identical. History now says **Released documentation snapshots**. The current bundle is `0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b`. The refresh performs no new source acquisition or model review; the source, authoring and original checkpoint remain the recorded 0.13.11 case. Read `rendererRefresh01313` in `record.json` and the separate exact native render/history responses under `observed/`.
+The same saved snapshot was rendered through official installed Clew 0.13.13 in RELEASE mode. All 95 existing bundle files and caller notes remained byte-identical. The refreshed 0.13.13 publication copy contained 124 native producer files, recorded separately by `rendererRefresh01313.nativeProducerFilesCopiedByteExactly` in [record.json](record.json). The 95 count measures preserved prior bundle files; 124 counts the refreshed copied producer tree. Neither count changes the original 100-file copy receipt. History now says **Released documentation snapshots**. The current bundle is `0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b`. The refresh performs no new source acquisition or model review; the source, authoring and original checkpoint remain the recorded 0.13.11 case. Read `rendererRefresh01313` in `record.json` and the separate exact native render/history responses under `observed/`.

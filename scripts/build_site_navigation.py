@@ -22,6 +22,12 @@ PAGES = [
     ("extend.html", "Contribute", "Contribute", "Choose the source layer for a capability, adapter or build provider."),
 ]
 HISTORICAL_PAGES = [("pilot.html", "Historical Spring case", "History", "A pinned two-service source study.")]
+# Search current native guides through outer wrappers; frozen copies stay out.
+READER_RESOURCES = [
+    ("examples/current-workflow/help.html", "Reader Help", "Reference", "Installation, first document, analysis engines, freshness, review and safe updates."),
+    ("examples/current-workflow/runbooks.html", "Reader Runbooks", "Reference", "Twenty everyday documentation recipes: services, processes, source questions, refresh and publication."),
+]
+
 
 
 def link(file, label, current, **attrs):
@@ -136,6 +142,9 @@ def main():
             if file == 'extend.html' and anchor == 'csharp-preview':
                 description = 'Contribute to C# Roslyn read-only analysis with .NET 10+ SDK (dotnet), restored project inputs and explicit MVC attribute-route boundaries.'
             index.append({'title': title, 'url': f'./{file}#{anchor}', 'description': description, 'group': group})
+    for file, label, group, description in READER_RESOURCES:
+        assert (SITE / file).is_file(), f'{file}: missing reader resource wrapper'
+        index.append({'title': label, 'url': './' + file, 'description': description, 'group': group})
     output = json.dumps(index, indent=2, ensure_ascii=False) + '\n'
     target = SITE / 'search-index.json'
     if not target.exists() or target.read_text() != output:

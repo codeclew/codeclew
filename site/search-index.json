@@ -226,5 +226,17 @@
     "url": "./extend.html#contribute",
     "description": "Contribute",
     "group": "Contribute"
+  },
+  {
+    "title": "Reader Help",
+    "url": "./examples/current-workflow/help.html",
+    "description": "Installation, first document, analysis engines, freshness, review and safe updates.",
+    "group": "Reference"
+  },
+  {
+    "title": "Reader Runbooks",
+    "url": "./examples/current-workflow/runbooks.html",
+    "description": "Twenty everyday documentation recipes: services, processes, source questions, refresh and publication.",
+    "group": "Reference"
   }
 ]

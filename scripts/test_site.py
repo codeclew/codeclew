@@ -173,11 +173,30 @@ class SiteTests(unittest.TestCase):
 
     def test_search_reaches_every_page_and_real_sections(self):
         index = json.loads((SITE / 'search-index.json').read_text())
-        self.assertEqual({'./' + name for name in ACTIVE},
+        reader_resources = {'examples/current-workflow/help.html', 'examples/current-workflow/runbooks.html'}
+        self.assertEqual({'./' + name for name in ACTIVE | reader_resources},
                          {entry['url'] for entry in index if '#' not in entry['url']})
-        self.assertEqual(ACTIVE, {urlsplit(entry['url']).path.removeprefix('./') for entry in index})
+        self.assertEqual(ACTIVE | reader_resources,
+                         {urlsplit(entry['url']).path.removeprefix('./') for entry in index})
         for entry in index:
             self.assert_destination('index.html', entry['url'])
+
+    def test_native_example_wrappers_keep_task_return_and_real_native_targets(self):
+        for name, task in (('first-document', 'documentation'), ('updated-document', 'documentation'),
+                           ('help', 'documentation'), ('runbooks', 'documentation'),
+                           ('saved-edits', 'working-tree')):
+            path = SITE / 'examples/current-workflow' / (name + '.html')
+            with self.subTest(reader=name):
+                page = Page(path)
+                self.assertIn('../../' + task + '.html', page.navigation['Return to task'])
+                iframe = re.search(r'<iframe\s+src="([^"]+)"\s+title="([^"]+)"', path.read_text())
+                self.assertIsNotNone(iframe)
+                self.assertTrue(iframe[2].strip())
+                self.assertIn('target="_blank" rel="noopener"', path.read_text())
+                for url in page.references:
+                    assert_local_destination(self, SITE, self.destination_pages, path, url)
+                self.assertIn('/docs/' if name != 'saved-edits' else '/reproduce/saved-edits/',
+                              str((path.parent / iframe[1]).resolve()))
 
     def test_redirect_targets_have_real_fallback_links(self):
         for name in ('architecture.html', 'working-tree-example.html'):
