@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and record deterministic trusted Kotlin worker distributions."""
+"""Build and record deterministic trusted Kotlin and C# worker distributions."""
 
 from __future__ import annotations
 
@@ -16,10 +16,13 @@ from contextlib import nullcontext
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CSHARP_PROJECT = "workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj"
+CSHARP_DISTRIBUTION = "workers/dotnet/publish"
 VARIANTS = (
     ("kotlin21", ":workers:kotlin21:installDist", "workers/kotlin21/build/install/kotlin21"),
     ("kotlin23", ":workers:kotlin23:installDist", "workers/kotlin23/build/install/kotlin23"),
     ("kotlin24", ":workers:kotlin:installDist", "workers/kotlin/build/install/kotlin"),
+    ("csharp", f"dotnet publish {CSHARP_PROJECT} --configuration Release --output {CSHARP_DISTRIBUTION} -p:UseAppHost=false -p:RestoreLockedMode=true", CSHARP_DISTRIBUTION),
 )
 MANIFEST_ROOT = ROOT / "workers" / "manifests"
 INJECTION_ENV = {
@@ -86,7 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verify-only",
         action="store_true",
-        help="verify current install distributions against committed manifests without Gradle or writes",
+        help="verify current install distributions against committed manifests without building or writes",
     )
     parser.add_argument(
         "--gradle-user-home",
@@ -119,6 +122,34 @@ def verify_distribution_manifest(
     ) + "\n"
     if manifest_path.read_text(encoding="utf-8") != canonical:
         raise RuntimeError(f"trusted worker manifest is not canonical: {variant}")
+
+
+def publish_csharp(environment: dict[str, str], *, offline: bool) -> None:
+    version = subprocess.check_output(
+        ["dotnet", "--version"], cwd=ROOT / "workers/dotnet", env=environment,
+    ).decode().strip()
+    if not version.split(".")[0].isdigit() or int(version.split(".")[0]) < 10:
+        raise RuntimeError("trusted C# distribution requires a .NET 10+ SDK")
+    command = [
+        "dotnet", "publish", str(ROOT / CSHARP_PROJECT),
+        "--configuration", "Release", "--output", str(ROOT / CSHARP_DISTRIBUTION),
+        "-p:UseAppHost=false", "-p:RestoreLockedMode=true",
+        "-nodeReuse:false", "-p:UseSharedCompilation=false",
+    ]
+    environment = {
+        **environment,
+        "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1",
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_CLI_USE_MSBUILD_SERVER": "0",
+        "MSBUILDDISABLENODEREUSE": "1",
+    }
+    package_source = environment.get("CODECLEW_DOTNET_PACKAGE_SOURCE")
+    if package_source and (not Path(package_source).is_absolute() or not Path(package_source).is_dir()):
+        raise RuntimeError("CODECLEW_DOTNET_PACKAGE_SOURCE must be an absolute directory")
+    # Cached packages remain usable with an empty feed; offline means no NuGet network access.
+    with tempfile.TemporaryDirectory(prefix="codeclew-nuget-offline-") as empty_feed:
+        if package_source or offline:
+            command += ["--source", package_source or empty_feed]
+        subprocess.run(command, cwd=ROOT, env=environment, check=True)
 
 
 def main() -> None:
@@ -156,21 +187,15 @@ def main() -> None:
         }
         environment["GRADLE_USER_HOME"] = str(gradle_home)
         for variant, task, relative_distribution in selected:
-            command = [
-                str(ROOT / "gradlew"),
-                task,
-                "--rerun-tasks",
-                "--no-daemon",
-                "--quiet",
-            ]
-            if args.offline:
-                command.append("--offline")
-            subprocess.run(
-                command,
-                cwd=ROOT,
-                env=environment,
-                check=True,
-            )
+            if variant == "csharp":
+                publish_csharp(environment, offline=args.offline)
+            else:
+                command = [
+                    str(ROOT / "gradlew"), task, "--rerun-tasks", "--no-daemon", "--quiet",
+                ]
+                if args.offline:
+                    command.append("--offline")
+                subprocess.run(command, cwd=ROOT, env=environment, check=True)
             distribution = ROOT / relative_distribution
             rows = distribution_files(distribution)
             manifest = {

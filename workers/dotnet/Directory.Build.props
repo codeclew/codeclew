@@ -8,6 +8,7 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
     <PathMap>$(MSBuildThisFileDirectory)=/codeclew/workers/dotnet/</PathMap>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <DebugType>none</DebugType>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <InvariantGlobalization>true</InvariantGlobalization>

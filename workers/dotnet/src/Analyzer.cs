@@ -9,7 +9,7 @@ namespace Codeclew.CSharp.Analyzer;
 
 public sealed record AnalysisSummary(int FactCount);
 
-public static partial class Analyzer
+public static class Analyzer
 {
     private const int MaxProjects = 512;
     private const int MaxSourceFiles = 65_536;
@@ -372,8 +372,9 @@ public static partial class Analyzer
     public static string Relative(string repository, string path) =>
         Path.GetRelativePath(repository, path).Replace(Path.DirectorySeparatorChar, '/');
 
-    [GeneratedRegex(@"^Project\(""\{[^}]+\}""\)\s*=\s*""[^""]*""\s*,\s*""([^""]+)""")]
-    private static partial Regex SolutionProjectPattern();
+    // GeneratedRegex emits file-local types whose identities depend on the staging path.
+    private static readonly Regex SolutionProjectRegex = new(@"^Project\(""\{[^}]+\}""\)\s*=\s*""[^""]*""\s*,\s*""([^""]+)""");
+    private static Regex SolutionProjectPattern() => SolutionProjectRegex;
 
     /// <summary>
     /// Imports the repository's own Directory.Build.props, keeps NuGet restore output

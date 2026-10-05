@@ -46,6 +46,7 @@ qualify_csharp() {
   fi
   "$@"
   test -f workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll
+  python3 -I -S scripts/build-trusted-worker-distributions.py --variant csharp --verify-only
   CODECLEW_TEST_CSHARP_WORKER="$ROOT/workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll"
   export CODECLEW_TEST_CSHARP_WORKER
   CSHARP_INTEGRATION_TEST=csharp_project_model::tests::fixture_solution_yields_roslyn_facts_routes_and_restore_boundaries
@@ -66,6 +67,7 @@ if [ "${1-}" = --csharp-only ]; then
 fi
 
 python3 -I -S scripts/test_pilot_case_record.py
+python3 -I -S bootstrap/test_clew_bootstrap.py
 python3 -I -S scripts/test_pilot_release_gate.py
 python3 -I -S scripts/test_language_mutation_pilot.py
 python3 -I -S scripts/test_check_repository_privacy.py
@@ -83,6 +85,7 @@ python3 -I -S scripts/test_runtime_attach_canary.py
 node --test scripts/test_documentation_visual_reader.cjs
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+qualify_csharp
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
 cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
 cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
@@ -119,7 +122,6 @@ cargo test --locked -p clew --lib \
   -- --exact --ignored --test-threads=1
 cargo test --locked -p clew-framework-aspnetcore
 cargo test --locked -p clew --lib 'csharp' -- --test-threads=1
-qualify_csharp
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
@@ -138,7 +140,6 @@ cargo test --locked -p clew --test managed_cli \
   managed_python_context_rejects_missing_plan_without_project_processes -- --exact --test-threads=1
 cargo test --locked -p clew --test managed_cli \
   managed_support_summary_requires_private_input_and_drops_private_material -- --test-threads=1
-python3 -I -S bootstrap/test_clew_bootstrap.py
 GIT_CONFIG_COUNT=2 \
 GIT_CONFIG_KEY_0=user.name \
 GIT_CONFIG_VALUE_0='Codeclew Maintainers' \

@@ -1022,6 +1022,42 @@ class BootstrapAuthorityTest(unittest.TestCase):
             ["env", f"HOME={Path.home()}", "dotnet", "publish"],
         )
 
+    def test_csharp_release_manifest_is_staged_bound_and_enforced(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        registry = bootstrap.load_component_registry(repository)
+        csharp = next(c for c in registry["components"] if c["componentId"] == "csharp")
+        relative = csharp["buildContract"]["manifest"]
+        self.assertIn(relative, csharp["inputFiles"])
+        self.assertTrue(bootstrap.selected_source(relative, registry))
+        inputs, _development = bootstrap.source_manifest(repository)
+        manifest_row = next(row for row in inputs if row["path"] == relative)
+        tools = {
+            "jdk": {"digest": "jdk"}, "platform": {"digest": "platform"},
+            "python": {"digest": "python"}, "rust": {"digest": "rust"},
+            "dotnet": {"sdkVersion": "10.0.401"},
+        }
+        specs = bootstrap.runtime_component_specs("RELEASE", inputs, tools, registry)
+        original = next(spec for spec in specs if spec["componentId"] == "csharp")
+        changed_inputs = [dict(row) for row in inputs]
+        next(row for row in changed_inputs if row["path"] == relative)["sha256"] = "sha256:" + "a" * 64
+        changed = bootstrap.runtime_component_specs("RELEASE", changed_inputs, tools, registry)
+        changed = next(spec for spec in changed if spec["componentId"] == "csharp")
+        self.assertNotEqual(original["authority"]["componentKey"], changed["authority"]["componentKey"])
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "input file is absent"):
+            bootstrap.runtime_component_specs(
+                "RELEASE", [row for row in inputs if row["path"] != relative], tools, registry,
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            stage = Path(directory) / "source"
+            bootstrap.stage_inputs(repository, stage, [manifest_row], workers=1)
+            self.assertEqual((stage / relative).read_bytes(), (repository / relative).read_bytes())
+            manifest = json.loads((stage / relative).read_bytes())
+            bootstrap.verify_release_worker(stage, relative, manifest["files"])
+            corrupted_rows = [dict(row) for row in manifest["files"]]
+            corrupted_rows[0]["sha256"] = "sha256:" + "b" * 64
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "RELEASE worker differs"):
+                bootstrap.verify_release_worker(stage, relative, corrupted_rows)
+
     def test_capsule_assembly_all_hit_runs_no_stage_or_toolchain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

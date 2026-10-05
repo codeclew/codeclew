@@ -2,6 +2,7 @@
 """Regression checks for release-gate source and cleanup authority."""
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -30,7 +31,105 @@ def check_gate(relative: str, *, inline_tree_cleanup: bool) -> None:
     assert '"status": "FAILED_INCOMPLETE"' in source
 
 
+def check_csharp_ci_order() -> None:
+    """Execute both shell modes with recording stand-ins; never build a runtime."""
+    fixture = "csharp_project_model::tests::fixture_solution_yields_roslyn_facts_routes_and_restore_boundaries"
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        source = temporary / "source"
+        (source / "scripts").mkdir(parents=True)
+        (source / "workers/dotnet").mkdir(parents=True)
+        gate = source / "scripts/ci-verify.sh"
+        gate.write_bytes((ROOT / "scripts/ci-verify.sh").read_bytes())
+        commands = temporary / "commands"
+        commands.mkdir()
+        driver = commands / "driver"
+        driver.write_text(
+            f"#!{sys.executable}\n" + r'''
+import json, os, pathlib, sys
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+mode = os.environ["GATE_FAILURE"]
+with open(os.environ["GATE_EVENTS"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps({"name": name, "args": args,
+        "worker": os.environ.get("CODECLEW_TEST_CSHARP_WORKER"),
+        "server": os.environ.get("DOTNET_CLI_USE_MSBUILD_SERVER")}) + "\n")
+if name == "python3" and "-c" in args:
+    print(os.environ["GATE_TMP_BASE"])
+elif name == "python3" and "scripts/build-trusted-worker-distributions.py" in args:
+    if mode in ("missing-manifest", "mismatched-manifest"):
+        sys.exit(12)
+elif name == "dotnet" and args == ["--version"]:
+    print("9.0.100" if mode == "old-sdk" else "10.0.401")
+elif name == "dotnet" and args[0] == "publish":
+    if mode != "missing-dll":
+        output = pathlib.Path(args[args.index("--output") + 1])
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "Codeclew.CSharp.Analyzer.dll").write_bytes(b"published fixture")
+elif name == "cargo" and "--list" in args and mode != "missing-test":
+    print(os.environ["GATE_FIXTURE"] + ": test")
+''',
+            encoding="utf-8",
+        )
+        driver.chmod(0o700)
+        for name in ("python3", "dotnet", "cargo", "node"):
+            (commands / name).symlink_to(driver)
+        (source / "gradlew").symlink_to(driver)
+        for mode, csharp_only in (
+            ("", False), ("", True), ("missing-manifest", False),
+            ("mismatched-manifest", True), ("missing-test", True),
+            ("missing-dll", True), ("old-sdk", True),
+        ):
+            events = temporary / "events.jsonl"
+            events.write_text("", encoding="utf-8")
+            dll = source / "workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll"
+            dll.unlink(missing_ok=True)
+            feed = str(temporary / "feed with spaces")
+            completed = subprocess.run(
+                ["sh", str(gate)] + (["--csharp-only"] if csharp_only else []),
+                env={**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+                     "GATE_FAILURE": mode, "GATE_EVENTS": str(events),
+                     "GATE_TMP_BASE": str(temporary), "GATE_FIXTURE": fixture,
+                     "CODECLEW_TEST_CSHARP_WORKER": "/foreign/worker.dll",
+                     "CODECLEW_DOTNET_PACKAGE_SOURCE": feed},
+                capture_output=True, timeout=15, check=False,
+            )
+            rows = [json.loads(row) for row in events.read_text(encoding="utf-8").splitlines()]
+            publishes = [i for i, row in enumerate(rows) if row["name"] == "dotnet" and "publish" in row["args"]]
+            verifies = [i for i, row in enumerate(rows) if "scripts/build-trusted-worker-distributions.py" in row["args"]]
+            runs = [i for i, row in enumerate(rows) if fixture in row["args"] and "--list" not in row["args"]]
+            bootstrap = [i for i, row in enumerate(rows) if "bootstrap/test_clew_bootstrap.py" in row["args"]]
+            smoke = [i for i, row in enumerate(rows) if "scripts/usability-smoke.py" in row["args"]]
+            assert (completed.returncode == 0) == (mode == ""), (mode, completed.stderr)
+            assert len(publishes) == (0 if mode == "old-sdk" else 1)
+            assert len(verifies) == (0 if mode in ("old-sdk", "missing-dll") else 1)
+            assert len(runs) == (1 if mode == "" else 0)
+            for index in verifies:
+                assert rows[index]["args"] == ["-I", "-S", "scripts/build-trusted-worker-distributions.py", "--variant", "csharp", "--verify-only"]
+                assert publishes[0] < index
+            for index in publishes:
+                args = rows[index]["args"]
+                assert args[args.index("--source") + 1] == feed
+                assert "-p:RestoreLockedMode=true" in args
+                assert rows[index]["server"] == "0"
+            for index in runs:
+                assert verifies[0] < index
+                assert "--exact" in rows[index]["args"] and "--ignored" in rows[index]["args"]
+                assert rows[index]["worker"] == str(dll)
+            if csharp_only:
+                assert not bootstrap and not smoke
+            else:
+                clippy = next(i for i, row in enumerate(rows) if "clippy" in row["args"])
+                assert len(bootstrap) == 1 and bootstrap[0] < clippy < publishes[0]
+                if mode == "":
+                    assert len(smoke) == 1 and runs[0] < smoke[0]
+                    assert not any(row["name"] == "cargo" for row in rows[smoke[0] + 1:])
+                else:
+                    assert not smoke
+
+
 def main() -> None:
+    check_csharp_ci_order()
     qualification = (ROOT / ".github/workflows/qualification.yml").read_text(
         encoding="utf-8"
     )
