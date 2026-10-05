@@ -269,7 +269,10 @@ def _mask_rust_string_literals(content: str) -> str:
 # Only the copied native publication has embedded localization and retained code.
 # Narratives, source metadata, arbitrary JSON fields, and ordinary site pages
 # remain English. These are the producer versions in the published example.
-GENERATED_DOCS_PREFIX = "site/examples/codeclew-source/docs/"
+GENERATED_DOCS_PREFIXES = (
+    "site/examples/codeclew-source/docs/",
+    "site/examples/current-workflow/docs/",
+)
 GENERATED_SERVICE = re.compile(r"generated/[0-9a-f]{64}/services/[^/]+\.(html|json)\Z")
 GENERATED_BINDINGS = re.compile(r"generated/[0-9a-f]{64}/bindings\.json\Z")
 JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
@@ -392,9 +395,11 @@ class _ScriptAttributes(HTMLParser):
 
 
 def _mask_generated_publication(relative_path: str, content: str) -> str:
-    if not relative_path.startswith(GENERATED_DOCS_PREFIX):
+    prefix = next((value for value in GENERATED_DOCS_PREFIXES
+                   if relative_path.startswith(value)), None)
+    if prefix is None:
         return content
-    path = relative_path[len(GENERATED_DOCS_PREFIX):]
+    path = relative_path[len(prefix):]
     service = GENERATED_SERVICE.fullmatch(path)
     if path.endswith(".json"):
         kind = "bindings" if GENERATED_BINDINGS.fullmatch(path) else "service" if service else None

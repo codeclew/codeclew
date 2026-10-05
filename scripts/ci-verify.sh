@@ -125,6 +125,7 @@ cargo test --locked -p clew --lib 'csharp' -- --test-threads=1
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'cas::' -- --test-threads=1
 cargo test --locked -p clew --lib 'kotlin_engine::tests::' -- --test-threads=1
 ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1

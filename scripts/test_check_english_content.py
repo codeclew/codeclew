@@ -126,6 +126,16 @@ class GeneratedPublicationEnglishTest(unittest.TestCase):
         value["sources"]["s1"]["file"] = RUSSIAN
         self.assertTrue(self.rejected(value))
 
+    def test_current_publication_keeps_exact_sources_but_checks_prose(self) -> None:
+        path = "site/examples/current-workflow/docs/generated/" + self.bundle + "/services/example.json"
+        value = self.document()
+        self.assertEqual([], self.rejected(value, path))
+        value["operations"][0]["summary"] = RUSSIAN
+        self.assertTrue(self.rejected(value, path))
+        value["operations"][0]["summary"] = "English"
+        value["sources"]["s1"]["textDigest"] = "sha256:" + "0" * 64
+        self.assertTrue(self.rejected(value, path))
+
     def test_source_authority_identity_and_bytes_are_required(self) -> None:
         mutations = [
             lambda source: source.update(textDigest="sha256:" + "0" * 64),
