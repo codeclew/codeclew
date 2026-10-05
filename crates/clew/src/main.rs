@@ -47,7 +47,7 @@ enum Command {
         #[command(subcommand)]
         command: clew::documentation::cli::Command,
     },
-    /// Enumerate Spring HTTP, Kafka and scheduled roots in retained JVM generations.
+    /// Enumerate Spring and ASP.NET Core roots in retained JVM and C# generations.
     Entrypoints(EntrypointsArgs),
     /// Print the exact product support matrix bound to the active runtime.
     Capabilities(CapabilitiesArgs),
@@ -273,6 +273,8 @@ enum ModelCachePolicyArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SessionLanguageArg {
+    #[value(name = "csharp")]
+    CSharp,
     Java,
     #[value(name = "javascript")]
     JavaScript,
@@ -1335,6 +1337,7 @@ fn platform_label(value: &str) -> &str {
 
 fn language_label(value: &str) -> &str {
     match value {
+        "csharp" => "C#",
         "java" => "Java",
         "javascript" => "JavaScript",
         "kotlin" => "Kotlin",
@@ -1350,6 +1353,7 @@ fn build_system_label(value: &str) -> &str {
         "GRADLE_WRAPPER" => "Gradle wrapper",
         "MAVEN" => "Maven",
         "TSCONFIG" => "tsconfig",
+        "MSBUILD_SDK" => "MSBuild SDK project",
         other => other,
     }
 }
@@ -1363,6 +1367,7 @@ fn doctor_check_label(id: &str) -> &str {
         "tool.rustc" => "Rust compiler is available",
         "tool.cargo" => "Cargo is available",
         "tool.node" => "Node.js is available",
+        "tool.dotnet" => ".NET SDK is available",
         "state.free-space" => "At least 6 GiB is free in Codeclew state",
         "runtime.kotlin24" => "Qualified Kotlin 2.4 runtime is installed",
         "runtime.kotlin23" => "Kotlin 2.3 preview runtime is installed",
@@ -1392,6 +1397,10 @@ fn remediation_label(id: &str) -> &str {
         "INSTALL_JDK_21" => "install JDK 21 and make java available in PATH",
         "INSTALL_RUST_1_92" => "install the pinned Rust 1.92 toolchain",
         "INSTALL_NODE" => "install Node.js and project-local TypeScript 5.x",
+        "INSTALL_DOTNET_SDK_10" => "install a .NET 10 SDK and make dotnet available in PATH",
+        "INSTALL_CSHARP_COMPONENT" => {
+            "rebuild the runtime with dotnet available to install the C# component"
+        }
         "FREE_6_GIB_ON_STATE_VOLUME" => "free at least 6 GiB on the state volume",
         "INSTALL_QUALIFIED_RUNTIME" => "install or rebuild the qualified runtime",
         "INSTALL_KOTLIN23_PREVIEW_COMPONENT" => "install the optional Kotlin 2.3 preview component",
@@ -2125,6 +2134,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
 
 fn session_language(language: SessionLanguageArg) -> SessionLanguage {
     match language {
+        SessionLanguageArg::CSharp => SessionLanguage::CSharp,
         SessionLanguageArg::Java => SessionLanguage::Java,
         SessionLanguageArg::JavaScript => SessionLanguage::JavaScript,
         SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,

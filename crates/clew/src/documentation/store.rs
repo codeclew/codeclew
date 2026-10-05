@@ -556,6 +556,7 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
                 | "java-17plus-gradle-read-only"
                 | "java-17plus-maven-writable-then-seal"
         ),
+        "csharp" => s.profile == "csharp-dotnet-msbuild-read-only",
         "kotlin" => matches!(
             s.profile.as_str(),
             "kotlin-jvm-maven-analysis"
@@ -592,7 +593,7 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
         if !supported {
             return Err(ClewError::new(
                 ErrorCode::UnsupportedLanguage,
-                "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
+                "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile, or the C# .NET SDK profile",
             ));
         }
         // Explicit compilation selection: duplicates and empty selectors are

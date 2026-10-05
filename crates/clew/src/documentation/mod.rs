@@ -11,6 +11,7 @@ pub mod check;
 pub mod cli;
 pub mod composition;
 pub mod contracts;
+mod csharp;
 pub mod dataflow;
 mod endpoint_context;
 pub mod entities;
@@ -68,6 +69,11 @@ pub(crate) fn digest(value: &impl Serialize) -> Result<String, ClewError> {
 }
 pub(crate) fn bytes(value: &impl Serialize) -> Result<Vec<u8>, ClewError> {
     crate::canonical::bytes(value).map_err(io_error)
+}
+/// Compiler declarations in the portable JVM identity grammar: javac facts and
+/// Roslyn facts projected by `csharp::project_facts`.
+pub(crate) fn is_compiler_declaration_schema(schema: &serde_json::Value) -> bool {
+    schema == "codeclew-java-compiler-fact/1.0" || schema == csharp::CSHARP_FACT_SCHEMA
 }
 
 pub mod modules;

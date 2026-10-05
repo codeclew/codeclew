@@ -44,6 +44,7 @@ product development or CI. Preserve historical model IDs and measured results.
 
 - `crates/clew`: Rust core and CLI; use `Cargo.toml` for active workspace members.
 - `workers/kotlin*`: version-specific Kotlin compiler workers.
+- `workers/dotnet`: optional C# Roslyn worker, built only when a .NET 10+ SDK is present.
 - `bootstrap` and `clew`: source runtime bootstrap and launcher.
 - `schemas` and `fixtures`: protocol contracts and executable test inputs.
 - `scripts` and `tools`: validation, packaging, and research harnesses.

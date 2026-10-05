@@ -163,6 +163,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clew-facts",
+ "clew-framework-aspnetcore",
  "clew-framework-spring",
  "crossbeam-channel",
  "ed25519-dalek",
@@ -197,6 +198,17 @@ dependencies = [
 name = "clew-facts"
 version = "0.13.2"
 dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "clew-framework-aspnetcore"
+version = "0.13.2"
+dependencies = [
+ "clew-facts",
  "hex",
  "serde",
  "serde_json",

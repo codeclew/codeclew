@@ -170,6 +170,39 @@ pub(super) fn catalog() -> Result<Vec<Value>, ClewError> {
     kotlin["workerJavaMajor"] =
         json!(analysis_modules::kotlin_worker_jvm(KotlinSemanticEngine::Kotlin24).java_major);
     kotlin["projectCompatibility"] = json!({"minimumKotlin":"1.9","maximumKotlinLine":"2.4","gate":"EXISTING_PROJECT_SEMANTICS_OPTIONS_AND_PLUGIN_ABI_ADMISSION","workerJdkIsNotProjectTarget":true});
+    let csharp_producer = registered.iter().find(|m| m.id == "csharp-roslyn");
+    let mut roslyn = common(
+        "roslyn",
+        json!(["csharp"]),
+        "COMPILER_BACKED_ROSLYN",
+        json!([crate::csharp_project_model::CSHARP_MODEL_SCHEMA]),
+        json!([
+            crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA,
+            clew_facts::CLR_ATTRIBUTE_SCHEMA
+        ]),
+        digest(&csharp_producer)?,
+    );
+    roslyn["producer"] = csharp_producer
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(super::io_error)?
+        .unwrap_or(Value::Null);
+    roslyn["availability"] = json!(if csharp_producer.is_none() {
+        "WORKER_NOT_INSTALLED"
+    } else {
+        "PROJECT_ADMISSION_REQUIRED"
+    });
+    roslyn["projectCompatibility"] = json!({"minimumSdkMajor":10,"restore":"PROJECT_RESTORE_OUTPUT_REQUIRED","projects":"SDK_STYLE_CSPROJ_OR_SOLUTION"});
+    let mut aspnetcore = common(
+        clew_framework_aspnetcore::MODULE_ID,
+        json!(["csharp"]),
+        "DERIVED_FROM_EXPLICIT_INPUT_AUTHORITY",
+        json!([clew_facts::CLR_ATTRIBUTE_SCHEMA]),
+        json!([clew_framework_aspnetcore::OUTPUT_SCHEMA]),
+        clew_framework_aspnetcore::implementation_digest(),
+    );
+    aspnetcore["availability"] = json!("BUILT_IN_SEALED_FACTS");
+    aspnetcore["projectCompatibility"] = json!("MVC_ATTRIBUTE_ROUTING_RULES_ONLY");
     let mut spring = common(
         clew_framework_spring::MODULE_ID,
         json!(["java", "kotlin"]),
@@ -200,7 +233,9 @@ pub(super) fn catalog() -> Result<Vec<Value>, ClewError> {
         "CALLBACKS_RETAINED_NOT_SOURCE_MAPPED",
         "NO_SCHEMA_INSTANCE_VALIDATION"
     ]);
-    Ok(vec![source, java, kotlin, spring, openapi])
+    Ok(vec![
+        source, java, kotlin, roslyn, spring, aspnetcore, openapi,
+    ])
 }
 fn applicable(value: &Value, service: &Service) -> bool {
     value["languages"]
@@ -230,6 +265,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 Some("kotlin-k2") =>
                     service.language == "kotlin"
                         && (semantic(service).is_some() || service.profile != "source-syntax"),
+                Some("roslyn" | "aspnetcore") => service.language == "csharp",
                 Some("openapi") => !service.contract_files.is_empty(),
                 Some("spring") => matches!(service.language.as_str(), "java" | "kotlin"),
                 _ => false,
@@ -261,6 +297,7 @@ pub(super) fn attach(service: &Service, evidence: &mut ServiceEvidence) -> Resul
                 service.language == "kotlin"
                     && (selected.is_some() || service.profile != "source-syntax")
             }
+            Some("roslyn" | "aspnetcore") => service.language == "csharp",
             Some("openapi") => !service.contract_files.is_empty(),
             _ => matches!(service.language.as_str(), "java" | "kotlin"),
         })

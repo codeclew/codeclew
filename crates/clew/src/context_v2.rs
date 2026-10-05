@@ -332,7 +332,8 @@ fn validate_projected_subset(
 fn supported_context_language(language: &str) -> bool {
     matches!(
         language,
-        "language:java"
+        "language:csharp"
+            | "language:java"
             | "language:javascript"
             | "language:kotlin"
             | "language:python"

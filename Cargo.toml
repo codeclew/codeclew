@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/clew", "crates/clew-facts", "crates/clew-framework-spring"]
+members = ["crates/clew", "crates/clew-facts", "crates/clew-framework-aspnetcore", "crates/clew-framework-spring"]
 
 [workspace.package]
 version = "0.13.2"

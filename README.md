@@ -591,6 +591,29 @@ shapes. Project references, mixed-language files, missing dependencies, `any`
 types and unresolved calls remain named boundaries. Both profiles are read-only
 previews and reject candidate generation.
 
+C# uses an optional Roslyn worker. The runtime builds it only when a .NET 10+
+SDK (`dotnet`) is on `PATH` during bootstrap; without one, `clew capabilities`
+omits `csharp-roslyn` and C# sessions report `INSTALL_CSHARP_COMPONENT`. Open a
+session with `--language csharp`, profile `csharp-dotnet-msbuild-read-only`, and
+an exact `csproj:<path>[@<tfm>]` or `sln:<path>` (`.sln`/`.slnx`) selector. The
+worker runs the project's own SDK design-time `Compile` target in-process and
+builds Roslyn compilations from the exact csc command lines. It never restores
+packages: run `dotnet restore` first. Unrestored projects, compiled files
+outside the repository, source-generator output, and generated sources (such
+as `Connected Services` proxies) remain named boundaries. MSBuild output is
+redirected to private scratch, and a changed `obj/` or `bin/` entry fails the
+analysis. Facts include declarations with typed attributes, calls,
+constructions, overrides, implemented interface members and bounded
+documentation flow. `clew entrypoints` and `clew docs` derive ASP.NET Core MVC
+attribute routes through the `aspnetcore` package. Custom controller discovery,
+conventional routing, minimal APIs and API-version URL formats stay explicit
+boundaries. The profile is read-only and rejects candidate generation.
+
+Where `dotnet` cannot reach NuGet through its own TLS stack, populate a local
+folder feed with `scripts/fetch_dotnet_worker_packages.py --feed DIR`. Then
+bootstrap with `CODECLEW_DOTNET_PACKAGE_SOURCE=DIR`. The lock file's content
+hashes still bind every package.
+
 Rust has a bounded syntax contour. Open it with `--language rust`
 and an exact target selector such as
 `cargo:crates/clew/Cargo.toml#clew#lib#clew`. The repository must have a regular

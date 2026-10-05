@@ -30,3 +30,9 @@ preview.json
 
 # Personal agent model preferences are not release inputs.
 /.codex/config.toml
+
+# .NET worker build outputs and the optional offline NuGet folder feed.
+/workers/dotnet/**/bin/
+/workers/dotnet/**/obj/
+/workers/dotnet/publish/
+/workers/dotnet/.packages/

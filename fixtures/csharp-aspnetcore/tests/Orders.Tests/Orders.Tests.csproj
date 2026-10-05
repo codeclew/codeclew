@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Deliberately unrestorable offline: the empty package sources cannot provide xunit. -->
+  <ItemGroup>
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <ProjectReference Include="../../src/Orders.Core/Orders.Core.csproj" />
+  </ItemGroup>
+</Project>

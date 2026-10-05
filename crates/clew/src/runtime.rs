@@ -18,6 +18,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/4.0";
+/// Kotlin compiler workers speak the protobuf worker protocol; the optional C#
+/// worker is a one-shot Roslyn analyzer process.
+pub const KOTLIN_WORKER_PROTOCOL: &str = "semantic-thread.worker.v1";
+pub const CSHARP_WORKER_PROTOCOL: &str = "codeclew-csharp-analyzer.v1";
+const WORKER_PROTOCOLS: [&str; 2] = [KOTLIN_WORKER_PROTOCOL, CSHARP_WORKER_PROTOCOL];
+/// Runtime name of the optional C# worker component.
+pub const CSHARP_WORKER: &str = "csharp";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,8 +113,10 @@ impl RuntimeAuthority {
             .and_then(Value::as_object)
             .is_some_and(|workers| {
                 workers.values().all(|worker| {
-                    worker.get("protocol").and_then(Value::as_str)
-                        == Some("semantic-thread.worker.v1")
+                    worker
+                        .get("protocol")
+                        .and_then(Value::as_str)
+                        .is_some_and(|protocol| WORKER_PROTOCOLS.contains(&protocol))
                 })
             })
         {

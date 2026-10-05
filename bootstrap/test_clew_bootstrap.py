@@ -6,6 +6,7 @@ import fcntl
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import stat
 import subprocess
@@ -978,6 +979,49 @@ class BootstrapAuthorityTest(unittest.TestCase):
         self.assertIn("adapters/zeta/src/main/zeta/Main.zeta", {row["path"] for row in inputs})
         self.assertEqual(specs[-1]["componentId"], "zeta")
 
+    def test_dotnet_adapter_is_optional_and_bound_to_its_protocol(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        registry = bootstrap.load_component_registry(repository)
+        csharp = next(c for c in registry["components"] if c["componentId"] == "csharp")
+        self.assertEqual(csharp["buildContract"]["executor"], "DOTNET")
+        self.assertEqual(csharp["buildContract"]["protocol"], "codeclew-csharp-analyzer.v1")
+        inputs, _development = bootstrap.source_manifest(repository)
+        tools = {
+            "jdk": {"digest": "jdk"},
+            "platform": {"digest": "platform"},
+            "python": {"digest": "python"},
+            "rust": {"digest": "rust"},
+        }
+        without = bootstrap.runtime_component_specs("DEVELOPMENT", inputs, tools, registry)
+        self.assertNotIn("csharp", {spec["componentId"] for spec in without})
+        with_dotnet = bootstrap.runtime_component_specs(
+            "DEVELOPMENT", inputs, {**tools, "dotnet": {"sdkVersion": "10.0.100"}}, registry
+        )
+        spec = next(spec for spec in with_dotnet if spec["componentId"] == "csharp")
+        self.assertEqual(spec["authority"]["componentKind"], "language-adapter")
+        self.assertEqual(spec["toolchainKeys"], ["dotnet", "platform"])
+
+        def rejected(mutate) -> None:
+            changed = json.loads(json.dumps(registry))
+            mutate(next(c for c in changed["components"] if c["componentId"] == "csharp"))
+            with tempfile.TemporaryDirectory() as directory:
+                source = Path(directory).resolve()
+                (source / "bootstrap").mkdir()
+                (source / "bootstrap/runtime_components.json").write_bytes(
+                    bootstrap.canonical(changed) + b"\n"
+                )
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap.load_component_registry(source)
+
+        rejected(lambda c: c["buildContract"].update(protocol="semantic-thread.worker.v1"))
+        rejected(lambda c: c.update(toolchainKeys=["platform"]))
+        rejected(lambda c: c["buildContract"].update(project="workers/dotnet/src/Analyzer.fsproj"))
+        rejected(lambda c: c["buildContract"].update(task=":workers:dotnet:publish"))
+        self.assertEqual(
+            bootstrap.dotnet_publish_command(Path("/stage"), csharp["buildContract"])[:4],
+            ["env", f"HOME={Path.home()}", "dotnet", "publish"],
+        )
+
     def test_capsule_assembly_all_hit_runs_no_stage_or_toolchain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -1149,7 +1193,9 @@ class BootstrapAuthorityTest(unittest.TestCase):
             ),
         ):
             authority = bootstrap.fast_toolchain_locator_authority()
-        self.assertEqual(set(authority["executables"]), {"cargo", "java", "rustc"})
+        # dotnet is optional: located only when installed, never required.
+        expected = {"cargo", "java", "rustc"} | ({"dotnet"} if shutil.which("dotnet") else set())
+        self.assertEqual(set(authority["executables"]), expected)
 
     def test_sealed_runtime_seed_leases_external_capsule_without_copying_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

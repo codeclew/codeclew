@@ -1,8 +1,14 @@
-//! Portable, bounded JVM observations. No framework or compiler API dependencies.
+//! Portable, bounded JVM and CLR observations. No framework or compiler API dependencies.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+mod clr;
+pub use clr::{
+    CLR_ATTRIBUTE_AUTHORITY, CLR_ATTRIBUTE_SCHEMA, CLR_ATTRIBUTE_SCOPE, ClrAttributeFacts,
+    ClrAttributeUse, ClrMethod, ClrType, ClrValue,
+};
 
 pub const JVM_ANNOTATION_SCHEMA: &str = "jvm-annotation-facts/1.0";
 pub const ANNOTATION_SCOPE: &str = "REACHABLE_ANNOTATIONS_AND_HIERARCHY";

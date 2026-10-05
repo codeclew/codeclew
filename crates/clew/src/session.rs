@@ -94,6 +94,8 @@ pub struct WorkingTreeSourceBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionLanguage {
+    #[serde(rename = "CSHARP")]
+    CSharp,
     Java,
     JavaScript,
     Kotlin,
@@ -106,6 +108,7 @@ pub enum SessionLanguage {
 impl SessionLanguage {
     pub fn uri(self) -> &'static str {
         match self {
+            Self::CSharp => "language:csharp",
             Self::Java => "language:java",
             Self::JavaScript => "language:javascript",
             Self::Kotlin => "language:kotlin",
@@ -3361,6 +3364,10 @@ fn valid_compilation(language: SessionLanguage, compilation: &str) -> bool {
             )
             .is_ok();
         }
+        SessionLanguage::CSharp => {
+            return crate::csharp_project_model::CSharpCompilationSelector::parse(compilation)
+                .is_ok_and(|selector| selector.canonical() == compilation);
+        }
         SessionLanguage::Java => {
             let Some((_, source_set)) = compilation.split_once('/') else {
                 return false;
@@ -4405,6 +4412,21 @@ mod tests {
             canonical_compilations(javascript, std::slice::from_ref(&selector)).unwrap(),
             [selector.as_str()]
         );
+
+        let csharp = SessionLanguage::CSharp;
+        for selector in [
+            "csproj:src/Api/Api.csproj",
+            "csproj:Api.csproj@net8.0",
+            "sln:All.slnx",
+        ] {
+            assert_eq!(
+                canonical_compilations(csharp, &[selector.into()]).unwrap(),
+                [selector]
+            );
+        }
+        for rejected in ["csproj:../Api.csproj", "tsconfig:tsconfig.json", ":/main"] {
+            assert!(canonical_compilations(csharp, &[rejected.into()]).is_err());
+        }
     }
 
     #[test]
@@ -4419,6 +4441,7 @@ mod tests {
     #[test]
     fn read_only_languages_accept_only_non_cacheable_model_authority() {
         for language in [
+            SessionLanguage::CSharp,
             SessionLanguage::Java,
             SessionLanguage::JavaScript,
             SessionLanguage::Python,

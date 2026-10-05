@@ -47,6 +47,16 @@ COMPONENT_SCHEMA = "codeclew-runtime-component/1.0"
 COMPONENT_AUTHORITY_SCHEMA = "codeclew-runtime-component-authority/1.0"
 COMPONENT_DOMAIN = b"codeclew-runtime-component/v1\0"
 COMPONENT_REGISTRY_SCHEMA = "codeclew-runtime-component-registry/1.0"
+# Each adapter executor speaks exactly one worker protocol.
+ADAPTER_EXECUTOR_PROTOCOLS = {
+    "GRADLE": "semantic-thread.worker.v1",
+    "DOTNET": "codeclew-csharp-analyzer.v1",
+}
+WORKER_PROTOCOLS = frozenset(ADAPTER_EXECUTOR_PROTOCOLS.values())
+# Adapters whose executor toolchain is optional on a host: without the
+# toolchain the component is omitted from the capsule instead of failing.
+OPTIONAL_EXECUTOR_TOOLCHAINS = {"DOTNET": "dotnet"}
+DOTNET_SDK_MINIMUM_MAJOR = 10
 RELEASE_SOURCE_SCHEMA = "codeclew-release-source/1.0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
@@ -642,7 +652,7 @@ def toolchain_authority(source: Path) -> dict[str, object]:
         ]
         loader = next((candidate for candidate in loaders if candidate.is_file()), None)
         platform_authority["elfLoaderSha256"] = digest_file(loader) if loader else None
-    return {
+    authority = {
         "python": {
             "implementation": platform.python_implementation(),
             "version": platform.python_version(),
@@ -656,13 +666,45 @@ def toolchain_authority(source: Path) -> dict[str, object]:
         },
         "platform": platform_authority,
     }
+    dotnet = dotnet_toolchain_authority(source, environment)
+    if dotnet is not None:
+        authority["dotnet"] = dotnet
+    return authority
+
+
+def dotnet_toolchain_authority(source: Path, environment: dict[str, str]) -> dict[str, object] | None:
+    """The optional .NET SDK used to publish the C# worker, or None when unavailable."""
+    executable = shutil.which("dotnet", path=environment.get("PATH"))
+    if not executable:
+        return None
+    dotnet = Path(executable).resolve(strict=True)
+    probe_environment = {
+        **environment,
+        "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+        "DOTNET_NOLOGO": "1",
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+    }
+    try:
+        version = run([str(dotnet), "--version"], source / "workers" / "dotnet", probe_environment).decode().strip()
+    except (BootstrapError, OSError, subprocess.SubprocessError):
+        return None
+    try:
+        major = int(version.split(".", 1)[0])
+    except ValueError:
+        return None
+    if major < DOTNET_SDK_MINIMUM_MAJOR:
+        return None
+    return {"sdkVersion": version, "hostSha256": digest_file(dotnet)}
 
 
 def fast_toolchain_locator_authority() -> dict[str, object]:
     python_executable = Path(sys.executable).resolve(strict=True)
     resolved = {}
-    for name in ["rustc", "cargo", "java"]:
+    for name in ["rustc", "cargo", "java", "dotnet"]:
         executable = shutil.which(name)
+        if not executable and name == "dotnet":
+            # Optional: its presence selects whether the C# worker is built.
+            continue
         if not executable:
             raise BootstrapError(f"{name} is unavailable")
         path = Path(executable).resolve(strict=True)
@@ -1643,27 +1685,34 @@ def load_component_registry(source: Path) -> dict[str, object]:
             for field in ("artifactName", "binary", "package"):
                 _component_identifier(contract.get(field), field)
         else:
-            if set(contract) != {
+            # GRADLE adapters name a Gradle task; DOTNET adapters name a project to publish.
+            target_field = {"GRADLE": "task", "DOTNET": "project"}.get(executor)
+            if target_field is None or set(contract) != {
                 "compilerVersion",
                 "distribution",
                 "executor",
                 "manifest",
                 "protocol",
                 "runtimeName",
-                "task",
-            } or executor != "GRADLE":
+                target_field,
+            }:
                 raise BootstrapError("runtime adapter build contract is invalid")
             runtime_name = _component_identifier(contract.get("runtimeName"), "runtime name")
             distribution = _registry_relative(contract.get("distribution"), "distribution")
             _registry_relative(contract.get("manifest"), "manifest")
+            if executor == "GRADLE":
+                target_valid = isinstance(contract.get("task"), str) and contract["task"].startswith(":")
+            else:
+                target_valid = _registry_relative(contract.get("project"), "project").endswith(".csproj")
+                if OPTIONAL_EXECUTOR_TOOLCHAINS[executor] not in component["toolchainKeys"]:
+                    raise BootstrapError("runtime adapter registry authority is invalid")
             if (
                 runtime_name in runtime_names
                 or distribution in distributions
-                or contract.get("protocol") != "semantic-thread.worker.v1"
+                or contract.get("protocol") != ADAPTER_EXECUTOR_PROTOCOLS[executor]
                 or not isinstance(contract.get("compilerVersion"), str)
                 or not contract["compilerVersion"]
-                or not isinstance(contract.get("task"), str)
-                or not contract["task"].startswith(":")
+                or not target_valid
             ):
                 raise BootstrapError("runtime adapter registry authority is invalid")
             runtime_names.add(runtime_name)
@@ -1699,6 +1748,11 @@ def runtime_component_specs(
                 rows_by_root[parent][relative] = row
     specs = []
     for component in registry["components"]:
+        optional_toolchain = OPTIONAL_EXECUTOR_TOOLCHAINS.get(
+            component["buildContract"].get("executor")
+        )
+        if optional_toolchain is not None and optional_toolchain not in tools:
+            continue
         selected: dict[str, dict[str, object]] = {}
         for relative in component["inputFiles"]:
             if relative not in by_path:
@@ -2360,12 +2414,18 @@ def build_toolchains(
     *,
     cargo_required: bool = True,
     gradle_tasks: list[str] | None = None,
+    dotnet_contracts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     plan = plan or runtime_build_plan(host_cpu_count(), host_memory_bytes())
     gradle_tasks = sorted(set(gradle_tasks or []))
     evidence_profile = plan["profile"] in {"SERIAL", "PARALLEL"}
     stages: list[tuple[str, list[str]]] = []
+    for contract in sorted(dotnet_contracts or [], key=lambda value: str(value["runtimeName"])):
+        stages.append((
+            f"DOTNET_WORKER_{str(contract['runtimeName']).upper()}",
+            dotnet_publish_command(stage, contract),
+        ))
     if gradle_tasks:
         stages.append(("GRADLE_WORKERS", [
             str(stage / "gradlew"),
@@ -2447,6 +2507,52 @@ def build_toolchains(
     }
 
 
+def dotnet_restore_arguments() -> list[str]:
+    """Locked restore, optionally from an explicit local package source.
+
+    The lock file's content hashes bind every package, so a local folder feed
+    (see scripts/fetch_dotnet_worker_packages.py) cannot change worker bytes.
+    """
+    arguments = ["-p:RestoreLockedMode=true", "-nodeReuse:false", "-p:UseSharedCompilation=false"]
+    package_source = os.environ.get("CODECLEW_DOTNET_PACKAGE_SOURCE")
+    if package_source:
+        if not Path(package_source).is_absolute() or not Path(package_source).is_dir():
+            raise BootstrapError("CODECLEW_DOTNET_PACKAGE_SOURCE must be an absolute directory")
+        arguments += ["--source", package_source]
+    return arguments
+
+
+def dotnet_command(*arguments: str) -> list[str]:
+    """Run the SDK with the physical home, as Gradle uses ~/.gradle.
+
+    Capsule builds give other tools a logical, nonexistent HOME. The SDK and
+    NuGet keep first-run and package state below HOME, so they need a real one;
+    locked-mode restore still binds every package by content hash.
+    """
+    return ["env", f"HOME={Path.home()}", "dotnet", *arguments]
+
+
+def dotnet_publish_command(stage: Path, contract: dict[str, object]) -> list[str]:
+    return dotnet_command(
+        "publish", str(stage / str(contract["project"])),
+        "--configuration", "Release",
+        "--output", str(stage / str(contract["distribution"])),
+        "-p:UseAppHost=false",
+        *dotnet_restore_arguments(),
+    )
+
+
+def dotnet_build_environment(environment: dict[str, str]) -> dict[str, str]:
+    return {
+        **environment,
+        "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+        "DOTNET_NOLOGO": "1",
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+        "DOTNET_CLI_USE_MSBUILD_SERVER": "0",
+        "MSBUILDDISABLENODEREUSE": "1",
+    }
+
+
 def dependency_cache_authority(source: Path) -> dict[str, object]:
     inputs, development = source_manifest(source)
     mode = "DEVELOPMENT" if development else "RELEASE"
@@ -2517,6 +2623,18 @@ def prime_dependency_cache(source: Path, root: Path) -> dict[str, object]:
                 ],
             ),
         ]
+        dotnet_projects = sorted(
+            str(spec["buildContract"]["project"])
+            for spec in specs
+            if spec["buildContract"]["executor"] == "DOTNET"
+        )
+        if dotnet_projects:
+            environment = dotnet_build_environment(environment)
+        for project in dotnet_projects:
+            commands.append((
+                "DOTNET_DEPENDENCIES",
+                dotnet_command("restore", str(stage / project), *dotnet_restore_arguments()),
+            ))
         stage_timings = {}
         with build_signal_scope(supervisor):
             for name, arguments in commands:
@@ -2665,15 +2783,23 @@ def build_capsule(
                     for spec in missing_specs
                     if spec["buildContract"]["executor"] == "GRADLE"
                 ]
+                dotnet_contracts = [
+                    spec["buildContract"]
+                    for spec in missing_specs
+                    if spec["buildContract"]["executor"] == "DOTNET"
+                ]
                 environment = build_environment(
                     stage, root, gradle_required=bool(gradle_tasks)
                 )
+                if dotnet_contracts:
+                    environment = dotnet_build_environment(environment)
                 build_result = build_toolchains(
                     stage,
                     environment,
                     plan,
                     cargo_required=cargo_required,
                     gradle_tasks=gradle_tasks,
+                    dotnet_contracts=dotnet_contracts,
                 )
                 stage_wall_millis.update(build_result.get("stageWallMillis", {}))
                 verify_source_manifest(stage, inputs, full_closure=False)
@@ -2925,7 +3051,7 @@ def verify_capsule(
         ):
             raise BootstrapError("runtime executable authority mismatch")
     for worker in workers.values():
-        if worker.get("protocol") != "semantic-thread.worker.v1":
+        if worker.get("protocol") not in WORKER_PROTOCOLS:
             raise BootstrapError("runtime worker protocol authority mismatch")
         distribution = path / worker["distribution"]
         rows = file_rows(distribution)
