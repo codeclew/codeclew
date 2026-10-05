@@ -438,9 +438,13 @@ pub(super) fn build(work: &Work) -> Result<(Value, Value), ClewError> {
     }
     constants.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
 
-    let owner_fields = if work.request.authoring_contract.as_deref()
-        == Some(super::operation_answer::AUTHORING_CONTRACT)
-    {
+    let owner_fields = if matches!(
+        work.request.authoring_contract.as_deref(),
+        Some(
+            super::operation_answer::AUTHORING_CONTRACT
+                | super::operation_answer::EXPANDING_AUTHORING_CONTRACT
+        )
+    ) {
         let mut field_references = BTreeSet::<String>::new();
         for group in packet_record["referencedOwnerFields"]
             .as_array()
@@ -649,6 +653,18 @@ pub(super) fn audit_saved_packet(work: &Work, packet: &Value) -> Result<Value, C
             json!({"label":label,"kind":kind,"id":id,"workReference":reference,
             "recordDigest":record_digest,"deliveredToAuthor":false,"row":row}),
         );
+    }
+    for record in super::operation_context::validate_saved(work, packet)? {
+        let label = record["label"]
+            .as_str()
+            .ok_or_else(|| invalid("expanded audit record has no label"))?
+            .to_owned();
+        if labels.insert(label.clone()) {
+            selected.push(json!({"label":label,"recordDigest":record["recordDigest"]}));
+            records.push(record);
+        } else if let Some(existing) = records.iter_mut().find(|record| record["label"] == label) {
+            existing["deliveredToAuthor"] = json!(true);
+        }
     }
     let citations = packet["citations"]
         .as_object()
@@ -3122,6 +3138,13 @@ mod tests {
         assert_eq!(constants.len(), 1);
         assert_eq!(constants[0]["name"], "DEFAULT_CODE");
         assert_eq!(constants[0]["modifiers"], json!(["STATIC", "FINAL"]));
+        work.request.authoring_contract =
+            Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT.into());
+        let (expanding, _) = build(&work).unwrap();
+        assert_eq!(
+            expanding, packet,
+            "The adequate initial 1.6 endpoint packet preserves all modern 1.4 semantic fields"
+        );
         assert!(
             packet["interpretationLimits"]
                 .as_array()

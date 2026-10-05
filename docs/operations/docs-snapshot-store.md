@@ -696,6 +696,55 @@ available; saved 1.4 inputs and reviews keep their exact policy bytes. Saved
 through the same immutable bindings. This policy does not change model,
 transport, timeout or token reservations, or establish a latency guarantee.
 
+To enable grouped retained-context requests, prepare new Work with explicit
+`authoringContract: "codeclew-operation-draft-authoring/1.6"`. This opt-in works
+with `endpoint-context-v3` or a `process-graph-v1` question. The complete initial
+semantic packet retains its source identities, guards, effects and explicit
+gaps; no current-source capture is performed during expansion. Default 1.4 and
+1.5 Work and their saved results keep their original behavior.
+
+Use `codeclew-documentation-operation-draft-execution/1.1` with `author`,
+`budget` and a positive caller-selected `authorCalls`. Each model decision is
+either `{"action":"answer","answer":...}` or
+`{"action":"expand","selections":[...]}`. A selection uses native references,
+exact symbols or a query; one decision may group many references. The host
+chunks the existing native read limit and drains content pages and contiguous
+source parts. SYMBOL queries return one navigation page; navigation handles
+must be selected separately before they become citable evidence. The next
+answer binds the new packet digest. Unknown or ambiguous exact symbols return
+lookup feedback rather than fabricated evidence.
+
+Independent review uses
+`codeclew-documentation-operation-draft-review-execution/1.1` with `reviewer`,
+`budget` and positive `reviewerCalls`. It may return a grouped expand action or
+`{"action":"review","review":...}`. The inner meaning review uses schema 1.1
+and binds `reviewContextDigest`; its additional reads never rewrite the saved
+author packet or answer. Both roles reserve their entire configured finite
+call budget before execution. Reservations are maxima, not actual provider
+usage. Each role receives `roleBudget.configuredCalls` and
+`roleBudget.remainingCalls`, including the current decision, so it can return
+its terminal answer or review before exhausting the budget. Complete source
+receipts and exact saved inputs/results are validated
+when recovering or exporting an approved review without a configuration.
+
+Rerun the same command and configuration to recover a saved invocation or
+interrupted context delivery. An uncertain invocation is not automatically
+dispatched again. After a terminal unsuccessful author run, explicit
+`--new-run` permits a fresh attempt with a new finite configuration. This mode
+does not yet support `--repair-from-run` or `--repair-from-review`.
+For an original terminal uncertain review without a saved verdict or result,
+explicit `--retry-from-review FAILED_REVIEW_RUN` starts a replacement reviewer
+under a new empty account and finite configuration. Its evidence seed is bound
+to the failed checkpoint; the author answer and original accounting stay
+unchanged. Reusing an old failed selector after its child finishes is refused;
+ordinary replay selects the child. Completed or invalid results and failed
+retry children are not replaceable by this selector. Complete interrupted
+accounting with the original configuration before starting a fresh attempt.
+Inspect the original result and accounting first. A failed invocation remains
+retained and no refund or provider cancellation is implied.
+Schemas for the new configurations and meaning review have separate `-1.1`
+files in `schemas/documentation`; the original 1.0 contracts are unchanged.
+
 Existing 1.3 Work keeps its prior packet and may only replay a validated saved
 answer, including after an interrupted output write; a fresh author attempt
 requires new 1.4 Work prepared from the same saved snapshot.

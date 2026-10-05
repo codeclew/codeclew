@@ -3,7 +3,9 @@ use super::{
     bytes, digest, invalid, io_error,
     store::{self, Repository, WriteLock},
 };
-use crate::error::{ClewError, ErrorCode};
+use crate::error::ClewError;
+#[cfg(test)]
+use crate::error::ErrorCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -18,6 +20,8 @@ use std::{
 mod operation_draft;
 #[path = "agent_jobs/operation_draft_review.rs"]
 pub(super) mod operation_draft_review;
+#[path = "agent_jobs/recorded_expansion.rs"]
+pub(super) mod recorded_expansion;
 #[path = "agent_jobs/recovery.rs"]
 mod recovery;
 
@@ -213,6 +217,19 @@ pub fn reserve(repo: &Repository, config: &Config, run: &str) -> Result<Vec<Stri
 /// A fresh review retry owns its entire account. The guard and reservation
 /// mutation share the same repository lock; a per-Work lock alone is insufficient.
 fn reserve_review_retry(repo: &Repository, config: &Config, run: &str) -> Result<(), ClewError> {
+    if config.reviewer_calls != 1 {
+        return Err(invalid(
+            "DRAFT_REVIEW_RETRY_ACCOUNT_CONFLICT: the legacy retry requires exactly one reviewer reservation",
+        ));
+    }
+    reserve_with_account_guard(repo, config, run, true).map(|_| ())
+}
+
+pub(super) fn reserve_expanding_review_retry(
+    repo: &Repository,
+    config: &Config,
+    run: &str,
+) -> Result<(), ClewError> {
     reserve_with_account_guard(repo, config, run, true).map(|_| ())
 }
 
@@ -237,7 +254,7 @@ fn reserve_with_account_guard(
     let mut ledger = account(repo, &config.budget)?;
     if review_retry {
         if config.author_calls != 0
-            || config.reviewer_calls != 1
+            || config.reviewer_calls == 0
             || config.fallback_calls != 0
             || ledger
                 .reservations
@@ -324,6 +341,15 @@ fn validate_run_reservations(
     run: &str,
     existing: &BTreeMap<String, Reservation>,
 ) -> Result<(), ClewError> {
+    validate_reservation_slots(config, run, existing, false)
+}
+
+fn validate_reservation_slots(
+    config: &Config,
+    run: &str,
+    existing: &BTreeMap<String, Reservation>,
+    terminal: bool,
+) -> Result<(), ClewError> {
     let mut expected = BTreeMap::new();
     for (role, driver, count) in [
         ("author", Some(&config.author), config.author_calls),
@@ -344,14 +370,191 @@ fn validate_run_reservations(
         || existing.iter().any(|(id, reservation)| {
             expected.get(id).is_none_or(|(role, maximum)| {
                 reservation.role != *role
+                    || reservation.run != run
                     || reservation.maximum != *maximum
-                    || reservation.status == "RELEASED_NOT_DISPATCHED"
+                    || (!terminal && reservation.status == "RELEASED_NOT_DISPATCHED")
             })
         })
     {
         return Err(invalid(
             "RECOVERY_ACCOUNTING_MISMATCH: original finite reservations do not match this run config",
         ));
+    }
+    Ok(())
+}
+
+/// Replay a finished role loop without reserving or writing anything. Released
+/// unused calls remain legitimate historical slots and cannot be dispatched.
+pub(super) fn validate_terminal_reservations(
+    repo: &Repository,
+    config: &Config,
+    report: &RunReport,
+) -> Result<(), ClewError> {
+    let existing: BTreeMap<_, _> = account(repo, &config.budget)?
+        .reservations
+        .into_iter()
+        .filter(|(_, reservation)| reservation.run == report.run)
+        .collect();
+    validate_terminal_reservation_records(config, report, &existing)
+}
+
+fn validate_terminal_reservation_records(
+    config: &Config,
+    report: &RunReport,
+    existing: &BTreeMap<String, Reservation>,
+) -> Result<(), ClewError> {
+    validate_reservation_slots(config, &report.run, existing, true)?;
+    for (id, reservation) in existing {
+        let attempts: Vec<_> = report
+            .attempts
+            .iter()
+            .filter(|a| &a.reservation == id)
+            .collect();
+        if reservation.status == "RELEASED_NOT_DISPATCHED" {
+            let prepared_cancel = attempts.len() == 1
+                && report.status.ends_with("CANCELLED")
+                && attempts[0].status == "PREPARED"
+                && attempts[0].role == reservation.role
+                && attempts[0].usage.is_none()
+                && attempts[0].result_digest.is_none()
+                && attempts[0].captured_stdout_bytes == 0
+                && attempts[0].captured_stderr_bytes == 0;
+            if (!attempts.is_empty() && !prepared_cancel)
+                || reservation.charged != Amount::default()
+                || reservation.actual.is_some()
+            {
+                return Err(invalid(
+                    "RECOVERY_ACCOUNTING_MISMATCH: released call has spend or an invocation",
+                ));
+            }
+        } else if !matches!(
+            reservation.status.as_str(),
+            "DISPATCHED" | "RECONCILED" | "UNRECONCILED_MAXIMUM_RETAINED" | "BOUND_VIOLATED"
+        ) || attempts.len() != 1
+            || attempts[0].role != reservation.role
+        {
+            return Err(invalid(
+                "RECOVERY_ACCOUNTING_MISMATCH: terminal call slots differ from recorded attempts",
+            ));
+        } else {
+            let attempt = attempts[0];
+            let expected_usage = if attempt.usage_authority == "TRANSPORT_METADATA"
+                && (attempt.status == "COMPLETED" || reservation.status == "BOUND_VIOLATED")
+            {
+                attempt.usage.as_ref()
+            } else {
+                None
+            };
+            if reservation.actual.as_ref() != expected_usage {
+                return Err(invalid(
+                    "RECOVERY_ACCOUNTING_MISMATCH: terminal usage differs from the saved invocation",
+                ));
+            }
+            let driver = match reservation.role.as_str() {
+                "author" => Some(&config.author),
+                "reviewer" => Some(&config.reviewer),
+                "fallback" => config.fallback.as_ref(),
+                _ => None,
+            }
+            .ok_or_else(|| invalid("RECOVERY_ACCOUNTING_MISMATCH: unknown terminal role"))?;
+            let expected = if reservation.status == "DISPATCHED" {
+                (reservation.maximum.clone(), "DISPATCHED".to_owned())
+            } else {
+                let (charged, status, _) = reconciliation(
+                    &reservation.maximum,
+                    reservation.actual.as_ref(),
+                    driver.cap.overhead_input_tokens,
+                )?;
+                (charged, status)
+            };
+            if reservation.charged != expected.0
+                || reservation.status != expected.1
+                || (reservation.status == "DISPATCHED" && reservation.actual.is_some())
+            {
+                return Err(invalid(
+                    "RECOVERY_ACCOUNTING_MISMATCH: terminal charge differs from retained accounting",
+                ));
+            }
+        }
+    }
+    if report
+        .attempts
+        .iter()
+        .any(|attempt| !existing.contains_key(&attempt.reservation))
+    {
+        return Err(invalid(
+            "RECOVERY_ACCOUNTING_MISMATCH: terminal invocation has no configured reservation",
+        ));
+    }
+    Ok(())
+}
+
+/// Complete only the accounting tail of an interrupted terminal write. A normal
+/// replay makes no changes; neither path allocates slots or dispatches a call.
+pub(super) fn complete_terminal_accounting(
+    repo: &Repository,
+    config: &Config,
+    report: &mut RunReport,
+) -> Result<(), ClewError> {
+    let guard = repo.lock()?;
+    let mut ledger = account(repo, &config.budget)?;
+    let mut changed = false;
+    for (id, reservation) in ledger
+        .reservations
+        .iter_mut()
+        .filter(|(_, r)| r.run == report.run)
+    {
+        if reservation.status != "RESERVED" {
+            continue;
+        }
+        let attempts: Vec<_> = report
+            .attempts
+            .iter()
+            .filter(|a| a.reservation == *id)
+            .collect();
+        let prepared_cancel = attempts.len() == 1
+            && report.status.ends_with("CANCELLED")
+            && attempts[0].status == "PREPARED";
+        if (!attempts.is_empty() && !prepared_cancel)
+            || reservation.actual.is_some()
+            || reservation.charged != reservation.maximum
+        {
+            return Err(invalid(
+                "RECOVERY_ACCOUNTING_MISMATCH: terminal reserved slot was dispatched or changed",
+            ));
+        }
+        reservation.status = "RELEASED_NOT_DISPATCHED".into();
+        reservation.charged = Amount::default();
+        changed = true;
+    }
+    let existing: BTreeMap<_, _> = ledger
+        .reservations
+        .iter()
+        .filter(|(_, r)| r.run == report.run)
+        .map(|(id, r)| (id.clone(), r.clone()))
+        .collect();
+    validate_terminal_reservation_records(config, report, &existing)?;
+    let accounting = serde_json::json!(
+        existing
+            .iter()
+            .map(|(id, record)| serde_json::json!({"reservation":id,"record":record}))
+            .collect::<Vec<_>>()
+    );
+    if report
+        .accounting
+        .as_ref()
+        .is_some_and(|saved| *saved != accounting)
+    {
+        return Err(invalid(
+            "RECOVERY_ACCOUNTING_MISMATCH: terminal accounting summary differs from retained slots",
+        ));
+    }
+    if changed {
+        save_account(repo, &config.budget, &ledger)?;
+    }
+    if report.accounting.is_none() {
+        report.accounting = Some(accounting);
+        save_report_locked(repo, &guard, report)?;
     }
     Ok(())
 }
@@ -2651,111 +2854,9 @@ fn read_omitted_source_parts(
     config: &Config,
     report: &mut RunReport,
 ) -> Result<(), ClewError> {
-    let Some(omitted) = page["omitted"].as_array() else {
-        return Ok(());
-    };
-    let mut delivered = super::work_parts::delivered_source_references(
-        work,
-        &super::work::read_state(repo, &work.id)?,
-        source_parts,
-    )?;
-    for row in omitted {
-        if row["kind"] != "SOURCE" {
-            return Err(invalid(
-                "NEEDS_EVIDENCE: a non-SOURCE initial or expanded record exceeds the admitted Work byte budget",
-            ));
-        }
-        let (Some(reference), Some(id)) = (row["reference"].as_str(), row["id"].as_str()) else {
-            return Err(invalid("SOURCE omission has no exact Work reference"));
-        };
-        if !work
-            .handles
-            .get(reference)
-            .is_some_and(|handle| handle.kind == "SOURCE" && handle.id == id)
-        {
-            return Err(invalid("SOURCE omission does not match this Work handle"));
-        }
-        if delivered.contains(reference) {
-            continue;
-        }
-
-        let mut cursor: Option<String> = None;
-        let mut seen_cursors = std::collections::BTreeSet::new();
-        let mut next_offset = 0usize;
-        let mut total_bytes = None;
-        loop {
-            if let Some(value) = cursor.as_ref()
-                && !seen_cursors.insert(value.clone())
-            {
-                return Err(invalid(
-                    "SOURCE_PART_NO_PROGRESS: repeated continuation cursor",
-                ));
-            }
-            let response = super::work_parts::read_part_loaded(
-                repo,
-                work,
-                super::work::SourcePartRequest {
-                    schema: super::work_parts::REQUEST_SCHEMA.into(),
-                    reference: reference.into(),
-                    cursor: cursor.clone(),
-                },
-            )?;
-            let start = response["startByte"]
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| invalid("SOURCE_PART returned an invalid start offset"))?;
-            let end = response["endByte"]
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| invalid("SOURCE_PART returned an invalid end offset"))?;
-            let total = response["totalTextBytes"]
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| invalid("SOURCE_PART returned an invalid total byte count"))?;
-            let text_bytes = response["text"]
-                .as_str()
-                .ok_or_else(|| invalid("SOURCE_PART returned no text fragment"))?
-                .len();
-            if start != next_offset || end < start || (total > 0 && end == start) {
-                return Err(invalid(
-                    "SOURCE_PART_NO_PROGRESS: returned byte ranges do not advance contiguously",
-                ));
-            }
-            if total_bytes.is_some_and(|expected| expected != total) {
-                return Err(invalid("SOURCE_PART changed total source byte count"));
-            }
-            total_bytes = Some(total);
-            if end > total || end - start != text_bytes {
-                return Err(invalid(
-                    "SOURCE_PART returned an out-of-range byte interval",
-                ));
-            }
-            next_offset = end;
-            cursor = response["nextCursor"].as_str().map(str::to_owned);
-            let final_part = cursor.is_none();
-            if final_part != (end == total) {
-                return Err(invalid(
-                    "SOURCE_PART continuation cursor does not match the returned range",
-                ));
-            }
-            source_parts.push(response);
-            check_source_part_lower_bound(config, report, source_parts)?;
-            if final_part {
-                break;
-            }
-        }
-        delivered = super::work_parts::delivered_source_references(
-            work,
-            &super::work::read_state(repo, &work.id)?,
-            source_parts,
-        )?;
-        if !delivered.contains(reference) {
-            return Err(invalid(
-                "SOURCE_PART did not deliver complete retained source",
-            ));
-        }
-    }
-    Ok(())
+    recorded_expansion::read_omitted_source_parts(repo, work, page, source_parts, |parts| {
+        check_source_part_lower_bound(config, report, parts)
+    })
 }
 fn check_source_part_lower_bound(
     config: &Config,
@@ -2814,59 +2915,17 @@ enum ExpansionOutcome {
     SymbolLookupFeedback(Value),
 }
 
+#[cfg(test)]
 fn symbol_lookup_feedback(
     result: &Value,
     selection: &super::work::Selection,
     error: &ClewError,
 ) -> Option<Value> {
-    let result = result.as_object()?;
-    if result
-        .keys()
-        .any(|key| !matches!(key.as_str(), "action" | "selection"))
-        || selection.cursor.is_some()
-        || !selection.references.is_empty()
-        || selection.query.is_some()
-        || selection.untracked_reads
-        || selection.symbols.is_empty()
-        || selection.symbols.len() > 8
-        || selection
-            .symbols
-            .iter()
-            .any(|symbol| symbol.trim().is_empty())
-    {
-        return None;
-    }
-    let status = match &error.code {
-        ErrorCode::SymbolNotFound => "NOT_FOUND",
-        ErrorCode::AmbiguousSymbol => "AMBIGUOUS",
-        _ => return None,
-    };
-    let selector = error.relevant_anchors_or_symbols.first()?;
-    if !selection.symbols.contains(selector) {
-        return None;
-    }
-    let message = if status == "NOT_FOUND" {
-        "No captured declaration matches this selector in the selected Work. This lookup result is not proof that code is absent. Use a bounded SYMBOL query, then select only exact identities shown in returned records; do not guess a package, owner, or signature."
-    } else {
-        "This selector matches multiple captured declarations in the selected Work. Use a bounded SYMBOL query, then select only an exact identity shown in returned records; do not guess a package, owner, or signature."
-    };
-    Some(serde_json::json!({
-        "kind":"SYMBOL_LOOKUP",
-        "status":status,
-        "requestedSelector":selector,
-        "navigationOnly":true,
-        "message":message
-    }))
+    recorded_expansion::symbol_lookup_feedback(result, selection, error)
 }
 
 fn effective_expansion_selection(requested: &super::work::Selection) -> super::work::Selection {
-    let mut effective = requested.clone();
-    if let Some(query) = effective.query.as_mut()
-        && query.kind == "SYMBOL"
-    {
-        query.projection = super::work::QueryProjection::Navigation;
-    }
-    effective
+    recorded_expansion::effective_expansion_selection(requested)
 }
 
 fn add_expansion(
@@ -2911,76 +2970,30 @@ fn add_expansion(
         attempt.expansion_selection = Some(selection_audit);
         save_report(repo, context.report)?;
     }
-    let mut cursor = selection.cursor.clone();
-    let navigation_page = selection.query.as_ref().is_some_and(|query| {
-        query.kind == "SYMBOL" && query.projection == super::work::QueryProjection::Navigation
-    });
-    let mut seen_cursors = std::collections::BTreeSet::new();
-    loop {
-        if let Some(current) = cursor.as_ref()
-            && !seen_cursors.insert(current.clone())
-        {
-            return Err(invalid("NEEDS_EVIDENCE: expansion cursor repeated"));
-        }
-        let mut page_selection = selection.clone();
-        page_selection.cursor = cursor.clone();
-        let mut requested_page_selection = requested_selection.clone();
-        requested_page_selection.cursor = cursor.clone();
-        let page = match super::work::read_loaded_with_requested(
-            repo,
-            work,
-            page_selection.clone(),
-            Some(requested_page_selection),
-        ) {
-            Ok(page) => page,
-            Err(error) => {
-                if page_selection.cursor.is_none()
-                    && let Some(feedback) = symbol_lookup_feedback(result, &selection, &error)
-                {
-                    return Ok(ExpansionOutcome::SymbolLookupFeedback(feedback));
-                }
-                return Err(error);
+    super::work::validate_selection(&selection)?;
+    let retrieved = recorded_expansion::retrieve(
+        repo,
+        work,
+        &[requested_selection],
+        context.pages,
+        context.source_parts,
+        |stage, pages, parts| match stage {
+            recorded_expansion::ProgressStage::SourcePart => {
+                check_source_part_lower_bound(context.config, context.report, parts)
             }
-        };
-        let next_cursor = page["nextCursor"].as_str().map(str::to_owned);
-        if next_cursor
-            .as_deref()
-            .is_some_and(|next| cursor.as_deref() == Some(next))
-        {
-            return Err(invalid("NEEDS_EVIDENCE: expansion cursor made no progress"));
-        }
-        read_omitted_source_parts(
-            repo,
-            work,
-            &page,
-            context.source_parts,
-            context.config,
-            context.report,
-        )?;
-        let page_digest = digest(&page)?;
-        if !context
-            .pages
-            .iter()
-            .any(|existing| digest(existing).ok().as_deref() == Some(page_digest.as_str()))
-        {
-            context.pages.push(page);
-        }
-        preflight_initial_context(
-            repo,
-            context.report,
-            work,
-            context.config,
-            context.pages,
-            context.source_parts,
-            *context.remaining,
-        )?;
-        if navigation_page {
-            break;
-        }
-        cursor = next_cursor;
-        if cursor.is_none() {
-            break;
-        }
+            recorded_expansion::ProgressStage::Page => preflight_initial_context(
+                repo,
+                context.report,
+                work,
+                context.config,
+                pages,
+                parts,
+                *context.remaining,
+            ),
+        },
+    )?;
+    if let Some(feedback) = retrieved.lookup_feedback.into_iter().next() {
+        return Ok(ExpansionOutcome::SymbolLookupFeedback(feedback));
     }
     Ok(ExpansionOutcome::Added)
 }
@@ -5113,6 +5126,309 @@ mod input_cap_tests {
         assert_eq!(*context.remaining, 0);
     }
 
+    #[test]
+    fn recorded_grouped_retrieval_chunks_large_batches_drains_pages_and_is_idempotent() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Grouped retrieval").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut work = overview_work();
+        work.id = "d".repeat(64);
+        work.request.entrypoint = None;
+        work.request.max_items = 2;
+        work.request.max_bytes = 8192;
+        let mut references = Vec::new();
+        for index in 0..19 {
+            let id = format!("dependency-{index}");
+            let reference = format!("reference-{index}");
+            let normalized = json!({"name": format!("method-{index}"), "value": index});
+            let observation = super::super::model::Observation {
+                id: id.clone(),
+                kind: "SYMBOL".into(),
+                service: "orders".into(),
+                symbol: format!("method-{index}"),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: Vec::new(),
+            };
+            work.influence
+                .insert(id.clone(), observation.digest.clone());
+            work.checked.dependencies.insert(id.clone(), observation);
+            work.handles.insert(
+                reference.clone(),
+                super::super::work::Handle {
+                    kind: "DEPENDENCY".into(),
+                    id,
+                },
+            );
+            references.push(reference);
+        }
+        let selections = [super::super::work::Selection {
+            references: references.clone(),
+            ..Default::default()
+        }];
+        let mut pages = Vec::new();
+        let mut parts = Vec::new();
+        let mut page_checks = 0;
+        let first = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |stage, _, _| {
+                assert_eq!(stage, recorded_expansion::ProgressStage::Page);
+                page_checks += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(first.selections.len(), 3);
+        assert_eq!(page_checks, 10);
+        assert_eq!(pages.len(), 10);
+        let supplied: BTreeSet<_> = pages
+            .iter()
+            .flat_map(|page| page["items"].as_array().unwrap())
+            .map(|item| item["reference"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(supplied, references.into_iter().collect());
+        assert!(parts.is_empty());
+        let state = super::super::work::read_state(&repo, &work.id).unwrap();
+        let frozen_pages = pages.clone();
+        let second = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(pages, frozen_pages);
+        assert_eq!(first.selections, second.selections);
+        assert_eq!(first.receipts, second.receipts);
+        assert_eq!(
+            digest(&state).unwrap(),
+            digest(&super::super::work::read_state(&repo, &work.id).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn recorded_retrieval_assembles_complete_source_parts_and_preserves_replayed_receipts() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Grouped source parts").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let text = "é".repeat(4000);
+        let work = source_work(text.clone(), 2048);
+        let selections = [super::super::work::Selection {
+            references: vec!["source-ref".into()],
+            ..Default::default()
+        }];
+        let mut pages = Vec::new();
+        let mut parts = Vec::new();
+        let mut part_checks = 0;
+        let first = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |stage, _, _| {
+                if stage == recorded_expansion::ProgressStage::SourcePart {
+                    part_checks += 1;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(part_checks > 1);
+        assert_eq!(part_checks, parts.len());
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part["text"].as_str().unwrap())
+                .collect::<String>(),
+            text
+        );
+        assert!(
+            parts
+                .iter()
+                .all(|part| part["snapshot"] == work.snapshot.as_deref().unwrap())
+        );
+        let state = super::super::work::read_state(&repo, &work.id).unwrap();
+        let frozen_pages = pages.clone();
+        let frozen_parts = parts.clone();
+        let second = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(pages, frozen_pages);
+        assert_eq!(parts, frozen_parts);
+        assert_eq!(first.receipts, second.receipts);
+        assert_eq!(
+            digest(&state).unwrap(),
+            digest(&super::super::work::read_state(&repo, &work.id).unwrap()).unwrap()
+        );
+        assert_eq!(
+            super::super::work_parts::delivered_source_references(&work, &state, &parts).unwrap(),
+            BTreeSet::from(["source-ref".to_owned()])
+        );
+    }
+
+    #[test]
+    fn recorded_retrieval_resumes_a_durable_source_prefix_without_duplicates() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Interrupted parts").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let text = "é".repeat(4000);
+        let work = source_work(text.clone(), 2048);
+        let selections = [super::super::work::Selection {
+            references: vec!["source-ref".into()],
+            ..Default::default()
+        }];
+        let mut pages = Vec::new();
+        let mut parts = Vec::new();
+        let interrupted = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |stage, _, _| {
+                if stage == recorded_expansion::ProgressStage::SourcePart {
+                    return Err(invalid(
+                        "fixture interruption after checkpointing the first part",
+                    ));
+                }
+                Ok(())
+            },
+        );
+        assert!(interrupted.is_err());
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0]["nextCursor"].is_string());
+        let first_part = parts[0].clone();
+        let mut resumed_parts = 0;
+        let completed = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |stage, _, _| {
+                if stage == recorded_expansion::ProgressStage::SourcePart {
+                    resumed_parts += 1;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(parts[0], first_part);
+        assert_eq!(parts.len(), resumed_parts + 1);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part["text"].as_str().unwrap())
+                .collect::<String>(),
+            text
+        );
+        let state = super::super::work::read_state(&repo, &work.id).unwrap();
+        assert_eq!(state.source_part_receipts.len(), parts.len());
+        let frozen_parts = parts.clone();
+        let replayed = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut pages,
+            &mut parts,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(parts, frozen_parts);
+        assert_eq!(completed.receipts, replayed.receipts);
+        assert_eq!(
+            digest(&state).unwrap(),
+            digest(&super::super::work::read_state(&repo, &work.id).unwrap()).unwrap()
+        );
+        // A receipt may reach disk before its array checkpoint. Reconstructing
+        // packet text from that same deterministic plan must not duplicate receipts.
+        let mut reconstructed_pages = Vec::new();
+        let mut reconstructed_parts = Vec::new();
+        let reconstructed = recorded_expansion::retrieve(
+            &repo,
+            &work,
+            &selections,
+            &mut reconstructed_pages,
+            &mut reconstructed_parts,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(reconstructed_parts, parts);
+        assert_eq!(reconstructed_pages, pages);
+        assert_eq!(reconstructed.receipts, completed.receipts);
+        assert_eq!(
+            digest(&state).unwrap(),
+            digest(&super::super::work::read_state(&repo, &work.id).unwrap()).unwrap()
+        );
+        let mut forged_prefix = vec![first_part];
+        forged_prefix[0]["text"] = json!("forged");
+        assert!(
+            recorded_expansion::retrieve(
+                &repo,
+                &work,
+                &selections,
+                &mut Vec::new(),
+                &mut forged_prefix,
+                |_, _, _| Ok(())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recorded_retrieval_rejects_foreign_handles_and_untracked_reads() {
+        let temporary = tempfile::tempdir().unwrap();
+        super::super::store::Repository::init(temporary.path(), "Invalid retrieval").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let work = source_work("saved source".into(), 8192);
+        for selection in [
+            super::super::work::Selection {
+                references: vec!["foreign-ref".into()],
+                ..Default::default()
+            },
+            super::super::work::Selection {
+                references: vec!["source-ref".into()],
+                untracked_reads: true,
+                ..Default::default()
+            },
+        ] {
+            let mut pages = Vec::new();
+            let mut parts = Vec::new();
+            assert!(
+                recorded_expansion::retrieve(
+                    &repo,
+                    &work,
+                    &[selection],
+                    &mut pages,
+                    &mut parts,
+                    |_, _, _| Ok(())
+                )
+                .is_err()
+            );
+            assert!(pages.is_empty());
+            assert!(parts.is_empty());
+            assert!(
+                super::super::work::read_state(&repo, &work.id)
+                    .unwrap()
+                    .receipts
+                    .is_empty()
+            );
+        }
+    }
+
     fn overview_work() -> super::super::work::Work {
         let mut checked = super::super::check::assemble(
             "input".into(),
@@ -5557,6 +5873,100 @@ mod input_cap_tests {
         assert_eq!(loaded.run, run);
         assert_eq!(loaded.work, work);
         assert_eq!(loaded.phase, "AUTHOR");
+    }
+
+    #[test]
+    fn terminal_reservation_audit_preserves_released_slots_and_rejects_forged_usage() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Terminal accounting").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let maximum = json!({"inputTokens":100,"outputTokens":10,"costUnits":1});
+        let role = json!({"adapter":"test-only","model":"fixture",
+            "usageAuthority":"TRANSPORT_METADATA","command":[],"runtimeReads":[],
+            "environment":[],"network":false,"cap":{"maximum":maximum,
+                "overheadInputTokens":2,"timeoutMs":1000,"outputBytes":1024}});
+        let config: Config = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-execution/1.0","author":role,"reviewer":role,
+            "authorCalls":2,"reviewerCalls":0,"fallbackCalls":0,"repairAttempts":0,"expansions":0,
+            "budget":{"account":"terminal-audit","costUnit":"fixture-unit",
+                "ceiling":{"inputTokens":1000,"outputTokens":100,"costUnits":10},
+                "stopLoss":{"inputTokens":900,"outputTokens":90,"costUnits":9}}
+        }))
+        .unwrap();
+        let run = "a".repeat(32);
+        let ids = reserve(&repo, &config, &run).unwrap();
+        let used = &ids[0];
+        dispatch_reserved(&repo, &config.budget, used, &run, "author").unwrap();
+        let usage = Usage {
+            input_tokens: Some(50),
+            output_tokens: Some(5),
+            cost_units: Some(1),
+        };
+        reconcile(&repo, &config.budget, used, Some(usage.clone()), 2).unwrap();
+        release_unused(&repo, &config.budget, &run).unwrap();
+        let report: RunReport = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-work-run/1.0","run":run,"work":"b".repeat(64),"status":"DRAFT",
+            "attempts":[{"invocation":"c".repeat(32),"model":"fixture","usageAuthority":"TRANSPORT_METADATA",
+                "role":"author","inputDigest":"sha256:fixture","reservation":used,"status":"COMPLETED",
+                "admission":{},"usage":usage,"capturedStdoutBytes":0,"capturedStderrBytes":0}]
+        })).unwrap();
+        let path = repo
+            .path(&account_path(&config.budget.account).unwrap())
+            .unwrap();
+        let original = fs::read(&path).unwrap();
+        validate_terminal_reservations(&repo, &config, &report).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(ensure_reserved(&repo, &config, &run).is_err());
+
+        let mut cancelled = report.clone();
+        cancelled.status = "DRAFT_CANCELLED".into();
+        let mut prepared = cancelled.attempts[0].clone();
+        prepared.invocation = "d".repeat(32);
+        prepared.reservation = ids[1].clone();
+        prepared.status = "PREPARED".into();
+        prepared.usage = None;
+        prepared.result_digest = None;
+        cancelled.attempts.push(prepared);
+        validate_terminal_reservations(&repo, &config, &cancelled).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        cancelled.attempts[1].status = "COMPLETED".into();
+        assert!(validate_terminal_reservations(&repo, &config, &cancelled).is_err());
+
+        let mut interrupted = account(&repo, &config.budget).unwrap();
+        let unused = interrupted.reservations.get_mut(&ids[1]).unwrap();
+        unused.status = "RESERVED".into();
+        unused.charged = unused.maximum.clone();
+        save_account(&repo, &config.budget, &interrupted).unwrap();
+        let mut recovered = report.clone();
+        complete_terminal_accounting(&repo, &config, &mut recovered).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(recovered.checkpoint, report.checkpoint);
+        assert!(recovered.accounting.is_some());
+        let report_path = repo
+            .path(&super::report_path(&report.run).unwrap())
+            .unwrap();
+        let report_bytes = fs::read(&report_path).unwrap();
+        complete_terminal_accounting(&repo, &config, &mut recovered).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read(&report_path).unwrap(), report_bytes);
+
+        let mut forged = account(&repo, &config.budget).unwrap();
+        let reservation = forged.reservations.get_mut(used).unwrap();
+        reservation.actual.as_mut().unwrap().input_tokens = Some(1);
+        reservation.charged.input_tokens = 3;
+        save_account(&repo, &config.budget, &forged).unwrap();
+        assert!(validate_terminal_reservations(&repo, &config, &report).is_err());
+        repo.atomic(&account_path(&config.budget.account).unwrap(), &original)
+            .unwrap();
+        let mut forged = account(&repo, &config.budget).unwrap();
+        forged
+            .reservations
+            .get_mut(&ids[1])
+            .unwrap()
+            .charged
+            .cost_units = 1;
+        save_account(&repo, &config.budget, &forged).unwrap();
+        assert!(validate_terminal_reservations(&repo, &config, &report).is_err());
     }
 
     #[test]

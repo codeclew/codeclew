@@ -265,9 +265,10 @@
             "codeclew-operation-draft-authoring/1.2",
             "codeclew-operation-draft-authoring/1.3",
             "codeclew-operation-draft-authoring/1.4",
-            "codeclew-operation-draft-authoring/1.5"
+            "codeclew-operation-draft-authoring/1.5",
+            "codeclew-operation-draft-authoring/1.6"
           ],
-          "description": "Immutable author-policy identity. New sourceDataContext process questions default to 1.5; other operation Work defaults to generic 1.4. Explicit 1.4 remains available. Older values describe saved Work, not admission for fresh author calls; the host validates replay eligibility."
+          "description": "Immutable author-policy identity. New sourceDataContext process questions default to 1.5; other operation Work defaults to generic 1.4. Explicit 1.4 remains available; explicit 1.6 enables versioned grouped author/reviewer context decisions. Older values describe saved Work, not admission for fresh author calls; the host validates replay eligibility."
         },
         "contextProfile": {
           "type": "string",

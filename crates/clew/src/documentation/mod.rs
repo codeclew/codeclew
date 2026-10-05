@@ -28,6 +28,7 @@ pub mod model;
 pub mod notes;
 pub mod object_layout;
 mod operation_answer;
+mod operation_context;
 mod operation_packet;
 pub mod plantuml;
 pub mod process_candidates;

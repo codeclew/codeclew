@@ -26,6 +26,9 @@ const CONFIG_SCHEMA: &str = "codeclew-documentation-operation-draft-review-execu
 pub(super) const ORIGIN_SCHEMA: &str = "codeclew-operation-draft-review-origin/1.0";
 const REVIEW_SCHEMA: &str = "codeclew-operation-draft-meaning-review/1.0";
 
+#[path = "operation_draft_review_context.rs"]
+mod context_mode;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Origin {
@@ -176,6 +179,7 @@ fn load_terminal_review(
     super::operation_draft::validate_run_id(review_run)?;
     super::operation_draft::validate_work(work)?;
     let report = super::load_report_by_id(repo, &work.id, review_run)?;
+    let expanding = report.execution_mode.as_deref() == Some(context_mode::MODE);
     let origin = report.draft_review.as_ref().ok_or_else(|| {
         invalid("REVIEWED_EXPORT_INELIGIBLE: selected run is not an operation draft review")
     })?;
@@ -189,8 +193,10 @@ fn load_terminal_review(
         .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISSING: review has no selected checkpoint"))?;
     let checkpoint: RunCheckpoint = super::recovery::load_checkpoint(repo, reference)?;
     checkpoint.validate(&report, config_digest, &checkpoint.driver_digests)?;
-    if report.execution_mode.as_deref() != Some(MODE)
-        || report.status != verdict_status(&verdict)
+    if !matches!(
+        report.execution_mode.as_deref(),
+        Some(MODE | context_mode::MODE)
+    ) || report.status != verdict_status(&verdict)
         || checkpoint.phase != "TERMINAL"
         || report.proposal.is_some()
         || checkpoint.proposal_id.is_some()
@@ -263,7 +269,20 @@ fn load_terminal_review(
     ]
     .into_iter()
     .collect();
-    if saved_payload
+    if expanding {
+        context_mode::validate_saved_payload(
+            repo,
+            work,
+            origin,
+            &packet,
+            &answer,
+            &blocks,
+            &author_contract,
+            &report,
+            &checkpoint,
+            saved_payload,
+        )?;
+    } else if saved_payload
         .as_object()
         .is_none_or(|p| p.keys().map(String::as_str).collect::<BTreeSet<_>>() != required)
         || saved_payload["instruction"]
@@ -286,7 +305,18 @@ fn load_terminal_review(
         validate_retry_origin(repo, work, retry, origin, &answer, &blocks, saved_payload)?;
     }
     let value = validate_saved_review(repo, &report, &checkpoint, saved_payload)?;
-    let validated = validate_review(value.clone(), work, origin, &packet, &blocks)?;
+    let validated = if expanding {
+        context_mode::validate_context_review(
+            value.clone(),
+            work,
+            origin,
+            &packet,
+            &blocks,
+            &saved_payload["reviewContext"],
+        )?
+    } else {
+        validate_review(value.clone(), work, origin, &packet, &blocks)?
+    };
     if validated.verdict != verdict
         || report.review.as_ref() != Some(&value)
         || checkpoint.review.as_ref() != Some(&value)
@@ -310,6 +340,13 @@ fn load_terminal_review(
     if let Some(retry) = &report.draft_review_retry {
         provenance["reviewRetry"] = json!(retry);
     }
+    if expanding {
+        provenance["reviewContextDigest"] =
+            saved_payload["reviewContext"]["deliveredDigest"].clone();
+        provenance["reviewerEvidence"] = saved_payload["reviewContext"].clone();
+        provenance["reviewer"]["resultDigest"] =
+            json!(super::recovery::load_result(repo, &reviewer_input)?.result_digest);
+    }
     let repair_origin = super::DraftRepairOrigin {
         schema: super::DRAFT_REPAIR_SCHEMA.into(),
         source_run: origin.source_run.clone(),
@@ -325,7 +362,11 @@ fn load_terminal_review(
             review_checkpoint: reference.clone(),
             reviewer_invocation: reviewer_identity.invocation.clone(),
             reviewer_input_digest: reviewer_identity.input_digest.clone(),
-            reviewer_result_digest: digest(&value)?,
+            reviewer_result_digest: if expanding {
+                super::recovery::load_result(repo, &reviewer_input)?.result_digest
+            } else {
+                digest(&value)?
+            },
             coverage_digest: validated.coverage_digest,
         }),
     };
@@ -383,6 +424,10 @@ fn run_loaded_selection(
     config_path: &Path,
     retry_from_review: Option<&str>,
 ) -> Result<Value, ClewError> {
+    let selected_config: Value = store::read(config_path, store::MAX_RECORD)?;
+    if selected_config["schema"] == context_mode::CONFIG_SCHEMA {
+        return context_mode::run(repo, work, source_run, config_path, retry_from_review);
+    }
     super::operation_draft::validate_work(work)?;
     let source = super::load_report_by_id(repo, &work.id, source_run)?;
     let (packet, audit) = progress::run("BUILD_OPERATION_REVIEW_PACKET", || {
@@ -403,7 +448,7 @@ fn run_loaded_selection(
             let audit = super::super::operation_packet::audit_saved_packet(work, &packet)?;
             Ok((packet, audit))
         } else {
-            super::super::operation_packet::build(work)
+            super::operation_draft::review_packet(repo, work, &source)
         }
     })?;
     let (origin, answer, author_contract) =
@@ -782,6 +827,9 @@ fn validate_retry_origin(
 ) -> Result<(), ClewError> {
     super::operation_draft::validate_run_id(&retry.review_run)?;
     let failed = super::load_report_by_id(repo, &work.id, &retry.review_run)?;
+    if failed.execution_mode.as_deref() == Some(context_mode::MODE) {
+        return context_mode::validate_retry_lineage(repo, work, retry, origin, answer, blocks);
+    }
     let expected = validate_uncertain_review(repo, work, &failed, origin, answer, blocks, payload)?;
     if retry != &expected {
         return Err(invalid(
@@ -801,11 +849,13 @@ fn validate_saved_review(
         .pending_call
         .as_ref()
         .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: terminal review has no invocation"))?;
+    let expanding = report.execution_mode.as_deref() == Some(context_mode::MODE);
     let attempt = report
         .attempts
-        .first()
+        .iter()
+        .find(|attempt| !expanding || attempt.invocation == pending.identity.invocation)
         .ok_or_else(|| invalid("RECOVERY_REPORT_MISMATCH: terminal review has no attempt"))?;
-    if report.attempts.len() != 1
+    if (!expanding && report.attempts.len() != 1)
         || pending.status != "RESULT_SAVED"
         || pending.identity.role != "reviewer"
         || attempt.invocation != pending.identity.invocation
@@ -833,7 +883,11 @@ fn validate_saved_review(
             "RECOVERY_RESULT_MISMATCH: terminal review differs from its immutable reviewer result",
         ));
     }
-    Ok(result.result)
+    if expanding {
+        context_mode::unwrap_review_action(&result.result)
+    } else {
+        Ok(result.result)
+    }
 }
 
 fn verdict_status(verdict: &Verdict) -> &'static str {

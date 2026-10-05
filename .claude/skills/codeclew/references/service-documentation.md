@@ -514,7 +514,34 @@ Work from the same saved snapshot; this does not capture source again.
 }
 ```
 
-Use the author-only configuration schema
+For grouped retained-context decisions, explicitly add
+`"authoringContract": "codeclew-operation-draft-authoring/1.6"` to a new endpoint
+request or `process-graph-v1` question. Use the separate
+`operation-draft-execution-1.1.schema.json` configuration with schema
+`codeclew-documentation-operation-draft-execution/1.1`, `author`, `budget` and
+positive caller-selected `authorCalls`. Every decision is an answer action or
+one expand action grouping native selections. The coordinator chunks native
+read limits and drains content pages and source parts from the saved snapshot;
+SYMBOL navigation is not citable until full records are delivered. The final
+answer binds the updated packet digest. Keep unavailable evidence explicit.
+
+Independent expanding review uses
+`operation-draft-review-execution-1.1.schema.json`, schema
+`codeclew-documentation-operation-draft-review-execution/1.1`, `reviewer`,
+`budget` and positive `reviewerCalls`. Its separate context may expand without
+changing the original author packet or answer. Both configurations reserve all
+configured calls before execution. Repeating the same command recovers saved
+work and never automatically replaces an uncertain invocation. After a terminal
+unsuccessful author run, explicit `--new-run` admits a fresh finite attempt.
+For an original terminal uncertain review without a saved result, explicit
+`--retry-from-review FAILED_REVIEW_RUN` uses a new empty reviewer account and
+the exact previously delivered evidence seed. Original accounting and author
+bytes are preserved; no refund or provider cancellation is implied. Complete
+interrupted accounting by replaying its original configuration first. A
+completed result or failed retry child is not replaceable by this selector.
+The older defaults and saved results retain their existing policies.
+
+For the default single-call path, use the author-only configuration schema
 `schemas/documentation/operation-draft-execution.schema.json`.
 It contains `schema`, one existing isolated `author` role, and a finite
 `budget`; it has no reviewer, fallback or repair settings. The role shape is

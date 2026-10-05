@@ -15,6 +15,9 @@ use std::{collections::BTreeMap, path::Path};
 const MODE: &str = "OPERATION_DRAFT/1.0";
 const CONFIG_SCHEMA: &str = "codeclew-documentation-operation-draft-execution/1.0";
 
+#[path = "operation_draft_context.rs"]
+mod context_mode;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DraftConfig {
@@ -87,10 +90,37 @@ pub(super) fn run_loaded_selection(
     }
     validate_work(work)?;
     let config_path = config_path.ok_or_else(|| {
-        invalid(format!(
-            "MISSING_DRAFT_EXECUTION_CONFIGURATION: provide --config with schema {CONFIG_SCHEMA}, author and budget"
-        ))
+        if work.request.authoring_contract.as_deref()
+            == Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
+        {
+            invalid(format!(
+                "MISSING_DRAFT_EXECUTION_CONFIGURATION: provide --config with schema {}, author, positive finite authorCalls and budget",
+                context_mode::CONFIG_SCHEMA
+            ))
+        } else {
+            invalid(format!(
+                "MISSING_DRAFT_EXECUTION_CONFIGURATION: provide --config with schema {CONFIG_SCHEMA}, author and budget"
+            ))
+        }
     })?;
+    let selected_config: Value = store::read(config_path, store::MAX_RECORD)?;
+    if selected_config["schema"] == context_mode::CONFIG_SCHEMA {
+        return context_mode::run(
+            repo,
+            work,
+            selected_config,
+            new_run,
+            repair_from_run,
+            repair_from_review,
+        );
+    }
+    if work.request.authoring_contract.as_deref()
+        == Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
+    {
+        return Err(invalid(
+            "OPERATION_DRAFT_CONFIG_UNSUPPORTED: authoring contract 1.6 requires operation-draft-execution/1.1 with explicit authorCalls",
+        ));
+    }
     let draft_config: DraftConfig = store::read(config_path, store::MAX_RECORD)?;
     validate_config(&draft_config)?;
 
@@ -661,6 +691,9 @@ pub(super) fn review_source(
     packet: &Value,
     audit: &Value,
 ) -> Result<(super::operation_draft_review::Origin, Value, Value), ClewError> {
+    if report.execution_mode.as_deref() == Some(context_mode::MODE) {
+        return context_mode::review_source(repo, work, report, packet, audit);
+    }
     validate_run_id(&report.run)?;
     if report
         .draft_repair
@@ -808,6 +841,19 @@ pub(super) fn review_source(
         saved.result,
         author_contract,
     ))
+}
+
+/// Recover the exact terminal author packet for independent review.
+pub(super) fn review_packet(
+    repo: &Repository,
+    work: &super::super::work::Work,
+    report: &RunReport,
+) -> Result<(Value, Value), ClewError> {
+    if report.execution_mode.as_deref() == Some(context_mode::MODE) {
+        context_mode::review_packet(repo, work, report)
+    } else {
+        super::super::operation_packet::build(work)
+    }
 }
 
 fn load_repair_source(
@@ -1262,6 +1308,7 @@ pub(super) fn validate_work(work: &super::super::work::Work) -> Result<(), ClewE
         Some(super::super::operation_answer::AUTHORING_CONTRACT)
             | Some(super::super::operation_answer::PREVIOUS_AUTHORING_CONTRACT)
             | Some(super::super::operation_answer::QUESTION_AUTHORING_CONTRACT)
+            | Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
     ) {
         return Err(invalid(format!(
             "OPERATION_AUTHORING_CONTRACT_REQUIRED: this Work lacks the supported immutable answer and author-instruction identity {}; prepare new Work from the same saved snapshot before running a draft",
@@ -1839,6 +1886,16 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
         )
         .unwrap();
         (temporary, repo, work, config_path)
+    }
+
+    pub(in crate::documentation::agent_jobs) fn authored_context() -> (
+        TempDir,
+        Repository,
+        super::super::super::work::Work,
+        PathBuf,
+        String,
+    ) {
+        super::context_mode::authored_context()
     }
 
     fn collect_progress<T>(action: impl FnOnce() -> T) -> (T, Vec<Value>) {

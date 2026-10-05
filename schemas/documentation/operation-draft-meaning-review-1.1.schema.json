@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/operation-draft-meaning-review-1.1.schema.json",
+  "title": "Codeclew operation answer review with independent retained context",
+  "description": "Host binds exact source identities, complete coverage paths and delivered evidence keys per invocation. Every verdict is unpublished. Coverage acknowledgments do not prove semantic correctness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "work",
+    "sourceRun",
+    "sourceInvocation",
+    "snapshot",
+    "packetDigest",
+    "answerDigest",
+    "coverageDigest",
+    "verdict",
+    "assessedBlocks",
+    "assessedEvidence",
+    "issues",
+    "limitations",
+    "reviewContextDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-operation-draft-meaning-review/1.1"
+    },
+    "work": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sourceRun": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "sourceInvocation": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "snapshot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packetDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "answerDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "coverageDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "verdict": {
+      "enum": [
+        "APPROVE",
+        "REJECT",
+        "NEEDS_EVIDENCE"
+      ]
+    },
+    "assessedBlocks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "assessedEvidence": {
+      "type": "array",
+      "maxItems": 8192,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      }
+    },
+    "reviewContextDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Exact independently delivered reviewer context, separate from the frozen author packet and answer."
+    }
+  },
+  "$defs": {
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "severity",
+        "block",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "severity": {
+          "enum": [
+            "ERROR",
+            "LIMITATION"
+          ]
+        },
+        "block": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

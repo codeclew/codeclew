@@ -23,6 +23,16 @@ pub(super) const AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/
 pub(super) const PREVIOUS_AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.3";
 // A separate policy for bounded source-data questions; generic 1.4 stays immutable.
 pub(super) const QUESTION_AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.5";
+pub(super) const EXPANDING_AUTHORING_CONTRACT: &str = "codeclew-operation-draft-authoring/1.6";
+
+pub(super) fn expanding_authoring_eligible(request: &super::work::Request) -> bool {
+    request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
+        || (request.context_profile.as_deref() == Some("process-graph-v1")
+            && request
+                .question
+                .as_deref()
+                .is_some_and(|question| !question.trim().is_empty()))
+}
 
 pub(super) fn question_authoring_eligible(request: &super::work::Request) -> bool {
     request.context_profile.as_deref() == Some("process-graph-v1")
@@ -36,6 +46,13 @@ pub(super) fn question_authoring_eligible(request: &super::work::Request) -> boo
 pub(super) fn validate_authoring_request(
     request: &super::work::Request,
 ) -> Result<(), crate::error::ClewError> {
+    if request.authoring_contract.as_deref() == Some(EXPANDING_AUTHORING_CONTRACT)
+        && !expanding_authoring_eligible(request)
+    {
+        return Err(invalid(
+            "OPERATION_AUTHORING_CONTRACT_PROFILE_MISMATCH: authoring contract 1.6 requires endpoint-context-v3 or process-graph-v1 with a non-empty question",
+        ));
+    }
     if request.authoring_contract.as_deref() == Some(QUESTION_AUTHORING_CONTRACT)
         && !question_authoring_eligible(request)
     {
@@ -776,7 +793,7 @@ fn validate_and_render_with_review(
         .as_object()
         .ok_or_else(|| invalid("reader packet has no citation-label map"))?;
     let known_labels: BTreeSet<_> = citations.keys().cloned().collect();
-    if packet_displayed_citation_labels(packet)? != known_labels {
+    if packet_displayed_citation_labels(packet, audit)? != known_labels {
         return Err(invalid(
             "reader packet citation labels do not match its displayed evidence labels",
         ));
@@ -1533,6 +1550,31 @@ fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
             );
         }
     }
+    if packet["contextDelivery"]["schema"] == super::operation_context::DELIVERY_SCHEMA {
+        for row in packet["contextDelivery"]["pages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|page| page["items"].as_array().into_iter().flatten())
+        {
+            let normalized = &row["record"]["normalized"];
+            if row["kind"] != "DEPENDENCY" || row["record"]["kind"] != "SYMBOL" {
+                continue;
+            }
+            if let (Some(reference), Some(identity), Some(owner), Some(scope)) = (
+                row["reference"].as_str(),
+                normalized["symbolIdentity"].as_str(),
+                normalized["ownerIdentity"].as_str(),
+                normalized["scope"].as_str(),
+            ) && packet["contextDelivery"]["citations"]
+                .get(reference)
+                .is_some()
+                && packet["citations"].get(reference).is_some()
+            {
+                insert(reference, identity, Some(owner), Some(scope));
+            }
+        }
+    }
     subjects
         .into_iter()
         .filter_map(|(reference, subject)| {
@@ -1557,6 +1599,7 @@ fn packet_subject_references(packet: &Value) -> BTreeMap<String, String> {
 
 fn packet_displayed_citation_labels(
     packet: &Value,
+    audit: &Value,
 ) -> Result<BTreeSet<String>, crate::error::ClewError> {
     fn visit(value: &Value, labels: &mut BTreeSet<String>) -> Result<(), crate::error::ClewError> {
         match value {
@@ -1596,8 +1639,16 @@ fn packet_displayed_citation_labels(
     let mut compiler_packet = packet.clone();
     if let Some(fields) = compiler_packet.as_object_mut() {
         fields.remove("maintainedContext");
+        // Raw delivery contains navigation and receipt metadata. Its actual
+        // complete records are checked against the saved audit separately.
+        fields.remove("contextDelivery");
     }
     visit(&compiler_packet, &mut labels)?;
+    for record in super::operation_context::displayed_records(packet, audit)? {
+        if let Some(label) = record["label"].as_str() {
+            labels.insert(label.to_owned());
+        }
+    }
     if let Some(process_intent) = packet.get("processIntent") {
         let process_intent = process_intent
             .as_object()
@@ -2855,6 +2906,12 @@ fn source_navigation(
         .iter()
         .cloned()
         .chain(root_references.iter().cloned())
+        .chain(
+            super::operation_context::displayed_records(packet, audit)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|row| row["label"].as_str().map(str::to_owned)),
+        )
         .collect();
     let mut locations_by_evidence = BTreeMap::<String, BTreeSet<SourceLocation>>::new();
     for label in &navigation_labels {
@@ -6873,6 +6930,35 @@ mod tests {
         let mut legacy_with_new_id = simple_answer(&packet, "d1");
         legacy_with_new_id["steps"][0]["id"] = json!("step\" onclick=\"alert(1)");
         assert!(validate_and_render(&packet, &audit(&packet), legacy_with_new_id).is_err());
+    }
+
+    #[test]
+    fn expanded_symbol_subjects_require_delivered_identity_and_keep_conflicts_sticky() {
+        let symbol = json!({"kind":"DEPENDENCY","reference":"expanded-method",
+            "record":{"kind":"SYMBOL","normalized":{"symbolIdentity":"method:class:orders.Helper#run()V",
+            "ownerIdentity":"class:orders.Helper","scope":":main"}}});
+        let mut packet = json!({"citations":{"expanded-method":"delivered symbol"},
+            "contextDelivery":{"schema":super::super::operation_context::DELIVERY_SCHEMA,
+                "citations":{"expanded-method":"delivered symbol"},"pages":[{"items":[symbol.clone()]}]}});
+        assert!(packet_subject_references(&packet).contains_key("expanded-method"));
+        packet["contextDelivery"]["citations"] = serde_json::json!({});
+        assert!(!packet_subject_references(&packet).contains_key("expanded-method"));
+        packet["contextDelivery"]["citations"] =
+            serde_json::json!({"expanded-method":"delivered symbol"});
+        for field in ["symbolIdentity", "ownerIdentity", "scope"] {
+            let mut conflicting = symbol.clone();
+            conflicting["record"]["normalized"][field] = json!("different exact identity");
+            packet["contextDelivery"]["pages"][0]["items"] =
+                json!([symbol.clone(), conflicting, symbol.clone()]);
+            assert!(
+                !packet_subject_references(&packet).contains_key("expanded-method"),
+                "{field}"
+            );
+        }
+        let mut navigation = symbol.clone();
+        navigation["kind"] = json!("SYMBOL_NAVIGATION");
+        packet["contextDelivery"]["pages"][0]["items"] = json!([navigation]);
+        assert!(!packet_subject_references(&packet).contains_key("expanded-method"));
     }
 
     #[test]

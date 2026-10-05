@@ -1337,7 +1337,8 @@ fn normalize_operation_authoring_contract(request: &mut Request) -> Result<(), C
             true,
             Some(
                 super::operation_answer::AUTHORING_CONTRACT
-                | super::operation_answer::QUESTION_AUTHORING_CONTRACT,
+                | super::operation_answer::QUESTION_AUTHORING_CONTRACT
+                | super::operation_answer::EXPANDING_AUTHORING_CONTRACT,
             ),
         ) => {
             super::operation_answer::validate_authoring_request(request)?;
@@ -2475,6 +2476,12 @@ fn compact_section_rows(
     }
     rows.push(json!({"kind":"EVIDENCE_DISCOVERY","id":format!("evidence-index:{service}"),"record":discovery}));
     Ok(rows)
+}
+
+/// Reconstruct exact immutable selection rows for saved delivery validation.
+/// This performs no reads, ledger writes, source refresh or compiler work.
+pub(super) fn audit_rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
+    rows(work, selection)
 }
 
 fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {

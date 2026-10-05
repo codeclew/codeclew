@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/operation-draft-execution-1.1.schema.json",
+  "title": "Codeclew expanding operation author execution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "author",
+    "budget",
+    "authorCalls"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-operation-draft-execution/1.1"
+    },
+    "author": {
+      "$ref": "agent-job.schema.json#/$defs/role"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account",
+        "costUnit",
+        "ceiling",
+        "stopLoss"
+      ],
+      "properties": {
+        "account": {
+          "type": "string",
+          "minLength": 1
+        },
+        "costUnit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "ceiling": {
+          "$ref": "agent-job.schema.json#/$defs/amount"
+        },
+        "stopLoss": {
+          "$ref": "agent-job.schema.json#/$defs/amount"
+        }
+      }
+    },
+    "authorCalls": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295,
+      "description": "Caller-selected total model invocation budget, including initial and follow-up decisions."
+    }
+  },
+  "description": "Explicit finite role decisions over one retained Work snapshot. Each grouped expansion consumes one role decision; the coordinator drains native content pages and source parts. Requires authoring contract1.6. Call maxima must fit the configured budget before any allocation."
+}
