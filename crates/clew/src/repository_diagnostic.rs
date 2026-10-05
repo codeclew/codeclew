@@ -1,4 +1,5 @@
 use crate::canonical;
+use crate::csharp_project_model::CSharpCompilationSelector;
 use crate::error::{ClewError, ErrorCode};
 use crate::repository_snapshot::isolated_git_command;
 use crate::runtime::RuntimeAuthority;
@@ -26,11 +27,13 @@ struct RepositoryInventory {
     java: bool,
     typescript: bool,
     javascript: bool,
+    csharp: bool,
     gradle: bool,
     maven: bool,
     python_compilations: BTreeSet<String>,
     jvm_compilations: BTreeMap<&'static str, BTreeSet<String>>,
     tsconfig_compilations: BTreeSet<String>,
+    csharp_compilations: BTreeSet<String>,
     unsupported_languages: BTreeSet<&'static str>,
 }
 
@@ -243,6 +246,30 @@ fn diagnose_repository_with_selection(
                 ));
             }
         }
+    }
+    if inventory.csharp {
+        let mut blockers = common_blockers.clone();
+        if inventory.csharp_compilations.is_empty() {
+            blockers.push(blocker(
+                "SELECT_EXACT_COMPILATION",
+                "no exact C# project or solution selector was discovered",
+            ));
+        }
+        if let Some(repository) = normalized.as_deref() {
+            add_csharp_sdk_blocker(
+                &mut blockers,
+                Command::new("dotnet").current_dir(repository),
+            );
+        }
+        contours.extend(profile_contours(
+            matrix_profiles,
+            "csharp",
+            Some("MSBUILD_SDK"),
+            inventory.csharp_compilations.clone(),
+            blockers,
+            &state,
+            runtime,
+        ));
     }
     for (language, present) in [
         ("typescript", inventory.typescript),
@@ -529,6 +556,13 @@ fn profile_contours(
                     ));
                 }
             }
+            if language == "csharp" && !runtime.workers.contains_key(crate::runtime::CSHARP_WORKER)
+            {
+                blockers.push(blocker(
+                    "INSTALL_CSHARP_COMPONENT",
+                    "the active runtime has no C# Roslyn worker",
+                ));
+            }
             let mut operations = vec!["ANALYSIS"];
             let mut mutation_blockers = Vec::new();
             if profile["mutation"].as_bool() == Some(true) {
@@ -601,6 +635,15 @@ fn add_build_tool_blockers(
     }
 }
 
+fn add_csharp_sdk_blocker(blockers: &mut Vec<Value>, command: &mut Command) {
+    if !crate::csharp_project_model::dotnet_sdk_available(command) {
+        blockers.push(blocker(
+            "INSTALL_DOTNET_SDK_10",
+            "C# Roslyn analysis requires an installed .NET SDK 10 or newer on PATH; repository discovery does not restore or evaluate projects",
+        ));
+    }
+}
+
 fn scan_repository(repository: &Path) -> RepositoryInventory {
     let mut inventory = RepositoryInventory {
         scan_complete: true,
@@ -666,6 +709,24 @@ fn scan_repository(repository: &Path) -> RepositoryInventory {
             }
             Some("ts" | "tsx" | "mts" | "cts") => inventory.typescript = true,
             Some("js" | "jsx" | "mjs" | "cjs") => inventory.javascript = true,
+            Some("cs") if csharp_source_path(&relative) => inventory.csharp = true,
+            Some(extension @ ("csproj" | "sln" | "slnx")) if csharp_source_path(&relative) => {
+                inventory.csharp |= extension == "csproj";
+                let prefix = if extension == "csproj" {
+                    "csproj"
+                } else {
+                    "sln"
+                };
+                match CSharpCompilationSelector::parse(&format!("{prefix}:{relative}")) {
+                    Ok(selector) => {
+                        if !insert_bounded(&mut inventory.csharp_compilations, selector.canonical())
+                        {
+                            inventory.selector_limit_exceeded = true;
+                        }
+                    }
+                    Err(_) => inventory.scan_complete = false,
+                }
+            }
             Some(extension) => {
                 if let Some(language) = unsupported_language(extension) {
                     inventory.unsupported_languages.insert(language);
@@ -678,6 +739,12 @@ fn scan_repository(repository: &Path) -> RepositoryInventory {
         inventory.python_compilations.insert("python:.#.".into());
     }
     inventory
+}
+
+fn csharp_source_path(relative: &str) -> bool {
+    !relative
+        .split('/')
+        .any(|component| matches!(component, "bin" | "obj"))
 }
 
 fn add_jvm_compilation(
@@ -823,7 +890,8 @@ fn unsupported_language(extension: &str) -> Option<&'static str> {
     match extension {
         "c" | "h" => Some("C"),
         "cc" | "cpp" | "cxx" | "hpp" => Some("C++"),
-        "cs" => Some("C_SHARP"),
+        "fs" | "fsi" | "fsx" | "fsproj" => Some("F_SHARP"),
+        "vb" | "vbproj" => Some("VISUAL_BASIC"),
         "go" => Some("GO"),
         "php" => Some("PHP"),
         "rb" => Some("RUBY"),
@@ -1038,6 +1106,228 @@ mod tests {
                 .into_iter()
                 .collect()
         );
+    }
+
+    #[test]
+    fn csharp_discovery_keeps_exact_selectors_and_ignores_only_csharp_build_outputs() {
+        let repository = tempfile::tempdir().unwrap();
+        for (path, contents) in [
+            ("src/Api/Api.csproj", "<Project />"),
+            ("src/Api/Controller.cs", "class Controller {}"),
+            ("Solutions/Orders.sln", "fixture"),
+            ("Orders.slnx", "<Solution />"),
+            ("src/Api/obj/Generated.cs", "class Generated {}"),
+            ("src/Api/bin/Generated.csproj", "<Project />"),
+            ("src/Api/obj/Generated.slnx", "<Solution />"),
+            ("src/bin/tool.py", "pass"),
+        ] {
+            let target = repository.path().join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        let inventory = scan_repository(repository.path());
+        assert!(inventory.scan_complete);
+        assert!(inventory.csharp);
+        assert!(
+            inventory.python,
+            "non-C# source in src/bin must remain discoverable"
+        );
+        assert_eq!(
+            inventory.csharp_compilations,
+            [
+                "csproj:src/Api/Api.csproj".to_owned(),
+                "sln:Orders.slnx".to_owned(),
+                "sln:Solutions/Orders.sln".to_owned(),
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(!inventory.unsupported_languages.contains("C_SHARP"));
+    }
+
+    #[test]
+    fn solutions_without_csharp_and_generated_csharp_do_not_select_csharp() {
+        let repository = tempfile::tempdir().unwrap();
+        for path in [
+            "Mixed.slnx",
+            "Library.fs",
+            "Library.vb",
+            "obj/Generated.cs",
+            "bin/Generated.csproj",
+        ] {
+            let target = repository.path().join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, "fixture").unwrap();
+        }
+        let inventory = scan_repository(repository.path());
+        assert!(!inventory.csharp);
+        assert_eq!(
+            inventory.unsupported_languages,
+            ["F_SHARP", "VISUAL_BASIC"].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn csharp_selectors_use_native_safety_and_existing_compilation_cap() {
+        let repository = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_COMPILATIONS {
+            fs::write(
+                repository.path().join(format!("Project{index}.csproj")),
+                "<Project />",
+            )
+            .unwrap();
+        }
+        let inventory = scan_repository(repository.path());
+        assert_eq!(inventory.csharp_compilations.len(), MAX_COMPILATIONS);
+        assert!(inventory.selector_limit_exceeded);
+        let invalid = tempfile::tempdir().unwrap();
+        let invalid_selector = ["Project", "invalid.csproj"].join("@");
+        fs::write(invalid.path().join(invalid_selector), "<Project />").unwrap();
+        let inventory = scan_repository(invalid.path());
+        assert!(inventory.csharp);
+        assert!(inventory.csharp_compilations.is_empty());
+        assert!(!inventory.scan_complete);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_csharp_projects_are_not_discovery_candidates() {
+        use std::os::unix::fs::symlink;
+        let repository = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        fs::write(external.path().join("Private.csproj"), "<Project />").unwrap();
+        symlink(
+            external.path().join("Private.csproj"),
+            repository.path().join("Alias.csproj"),
+        )
+        .unwrap();
+        let inventory = scan_repository(repository.path());
+        assert!(!inventory.csharp);
+        assert!(inventory.csharp_compilations.is_empty());
+    }
+
+    #[test]
+    fn csharp_contours_are_read_only_and_require_the_packaged_worker() {
+        let matrix = support_matrix().unwrap();
+        let state = super::RepositoryState {
+            available: true,
+            git: true,
+            clean: true,
+            analysis_clean: true,
+            target_ref: Some("refs/heads/main".into()),
+            mutation_ref: true,
+        };
+        let compilations = ["csproj:Api.csproj".to_owned(), "sln:Orders.slnx".to_owned()]
+            .into_iter()
+            .collect();
+        let mut active_runtime = runtime();
+        let contours = super::profile_contours(
+            matrix["profiles"].as_array().unwrap(),
+            "csharp",
+            Some("MSBUILD_SDK"),
+            compilations,
+            Vec::new(),
+            &state,
+            &active_runtime,
+        );
+        assert_eq!(contours.len(), 1);
+        assert_eq!(contours[0]["language"], "CSHARP");
+        assert_eq!(contours[0]["profileId"], "csharp-dotnet-msbuild-read-only");
+        assert_eq!(contours[0]["analysisAuthority"], "COMPILER_BACKED_ROSLYN");
+        assert_eq!(contours[0]["supportedOperations"], json!(["ANALYSIS"]));
+        assert_eq!(contours[0]["status"], "ACTION_REQUIRED");
+        assert_eq!(
+            contours[0]["blockers"][0]["remediationId"],
+            "INSTALL_CSHARP_COMPONENT"
+        );
+        active_runtime.workers.insert(
+            crate::runtime::CSHARP_WORKER.into(),
+            crate::runtime::RuntimeWorker {
+                protocol: crate::runtime::CSHARP_WORKER_PROTOCOL.into(),
+                compiler_version: "roslyn-5.9.0".into(),
+                distribution: "workers/dotnet/publish".into(),
+                tree_hash: format!("sha256:{}", "3".repeat(64)),
+                files: Vec::new(),
+            },
+        );
+        let contours = super::profile_contours(
+            matrix["profiles"].as_array().unwrap(),
+            "csharp",
+            Some("MSBUILD_SDK"),
+            ["csproj:Api.csproj".to_owned()].into_iter().collect(),
+            Vec::new(),
+            &state,
+            &active_runtime,
+        );
+        assert_eq!(contours[0]["status"], "READY_FOR_TASK_DOCTOR");
+        assert_eq!(contours[0]["supportedOperations"], json!(["ANALYSIS"]));
+    }
+
+    #[test]
+    fn csharp_repository_diagnostic_preserves_working_tree_rejection() {
+        let repository = tempfile::tempdir().unwrap();
+        fs::write(repository.path().join("Api.csproj"), "<Project />").unwrap();
+        git(repository.path(), &["init", "-b", "main"]);
+        git(repository.path(), &["add", "."]);
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=codeclew@example.invalid",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        );
+        let matrix = support_matrix().unwrap();
+        let value = diagnose_repository(&runtime(), &matrix, repository.path()).unwrap();
+        assert!(value["unsupportedLanguages"].as_array().unwrap().is_empty());
+        assert_eq!(
+            value["contours"][0]["compilations"],
+            json!(["csproj:Api.csproj"])
+        );
+        assert!(
+            value["contours"][0]["blockers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["remediationId"] == "INSTALL_CSHARP_COMPONENT")
+        );
+        let working =
+            super::diagnose_repository_with_working_tree(&runtime(), &matrix, repository.path())
+                .unwrap();
+        assert_eq!(working["contours"][0]["status"], "UNSUPPORTED");
+        assert_eq!(
+            working["contours"][0]["blockers"][0]["remediationId"],
+            "SELECT_SUPPORTED_WORKING_TREE_LANGUAGE"
+        );
+        assert!(!repository.path().join("obj").exists());
+        assert!(!repository.path().join("bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csharp_sdk_preparation_only_inventories_the_host() {
+        use std::os::unix::fs::PermissionsExt;
+        let repository = tempfile::tempdir().unwrap();
+        let host = repository.path().join("dotnet-fixture");
+        let calls = repository.path().join("calls");
+        fs::write(&host, "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$CODECLEW_TEST_DOTNET_CALLS\"\nprintf '%s\\n' '10.0.401 [/sdk]'\n").unwrap();
+        fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut blockers = Vec::new();
+        super::add_csharp_sdk_blocker(
+            &mut blockers,
+            Command::new(&host).env("CODECLEW_TEST_DOTNET_CALLS", &calls),
+        );
+        assert!(blockers.is_empty());
+        assert_eq!(fs::read_to_string(calls).unwrap(), "--list-sdks\n");
+        super::add_csharp_sdk_blocker(
+            &mut blockers,
+            &mut Command::new(repository.path().join("missing-host")),
+        );
+        assert_eq!(blockers[0]["remediationId"], "INSTALL_DOTNET_SDK_10");
     }
 
     #[test]
