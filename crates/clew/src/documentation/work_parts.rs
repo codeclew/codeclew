@@ -578,6 +578,53 @@ pub(super) fn initial_context_complete_with_parts(
 /// A complete read ledger alone is deliberately insufficient: only returned
 /// SOURCE_PART fragments count, and their text/ranges are rebound to the
 /// immutable SOURCE bytes and typed receipts recorded by `read_part_loaded`.
+/// Validate a durable delivery prefix without reading or updating the ledger.
+/// Each source may be incomplete, but its parts must be the exact deterministic
+/// responses from offset zero through the last recorded part, in delivery order.
+pub(super) fn validate_source_prefixes(
+    work: &Work,
+    state: &ReadState,
+    parts: &[Value],
+) -> Result<(), ClewError> {
+    use std::collections::BTreeMap;
+
+    if state.work != work.id {
+        return Err(invalid("SOURCE_PART prefix belongs to another Work"));
+    }
+    let mut positions: BTreeMap<&str, Option<usize>> = BTreeMap::new();
+    for response in parts {
+        let reference = response["reference"]
+            .as_str()
+            .ok_or_else(|| invalid("SOURCE_PART prefix is missing a reference"))?;
+        let source = source_for_reference(work, reference)?;
+        let start = match positions.get(reference) {
+            Some(Some(offset)) => *offset,
+            Some(None) => return Err(invalid("SOURCE_PART prefix repeats a completed SOURCE")),
+            None => 0,
+        };
+        let expected = build_part(work, reference, source, start)?;
+        if response != &expected.response
+            || state
+                .source_part_receipts
+                .get(&expected.receipt.receipt_digest)
+                != Some(&expected.receipt)
+        {
+            return Err(invalid(
+                "SOURCE_PART prefix does not match retained evidence and its recorded receipt",
+            ));
+        }
+        positions.insert(
+            reference,
+            expected
+                .receipt
+                .next_cursor
+                .as_ref()
+                .map(|_| expected.receipt.end_byte),
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn delivered_source_references(
     work: &Work,
     state: &ReadState,
@@ -1108,6 +1155,27 @@ mod tests {
             next_cursor: response["nextCursor"].as_str().map(str::to_owned),
             receipt_digest: response["receiptDigest"].as_str().unwrap().into(),
         }
+    }
+
+    #[test]
+    fn source_prefix_validation_accepts_incomplete_delivery_without_changing_receipts() {
+        let (work, source) = fixture("é".repeat(9000), 2048);
+        let (parts, receipts) = collect_packet(&work, &source);
+        let state = state_with_parts(&work, receipts);
+        let before = serde_json::to_value(&state).unwrap();
+        assert!(parts.len() > 2);
+        validate_source_prefixes(&work, &state, &parts[..2]).unwrap();
+        validate_source_prefixes(&work, &state, &parts).unwrap();
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        assert!(validate_source_prefixes(&work, &state, &parts[1..]).is_err());
+        let mut repeated = parts.clone();
+        repeated.push(parts.last().unwrap().clone());
+        assert!(validate_source_prefixes(&work, &state, &repeated).is_err());
+        let mut tampered = parts[..2].to_vec();
+        tampered[1]["text"] = json!("forged");
+        assert!(validate_source_prefixes(&work, &state, &tampered).is_err());
+        let missing_receipts = state_with_parts(&work, []);
+        assert!(validate_source_prefixes(&work, &missing_receipts, &parts[..1]).is_err());
     }
 
     #[test]

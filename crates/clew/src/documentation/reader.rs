@@ -685,7 +685,7 @@ pub(super) fn init(repo: &Repository) -> Result<(), ClewError> {
         if !repo.path(&format!("docs/{name}"))?.exists() {
             repo.atomic(
                 &format!("docs/{name}"),
-                decorate(&page(title, body), &nav).as_bytes(),
+                owned_html("guide", &decorate(&page(title, body), &nav)).as_bytes(),
             )?;
         }
     }
@@ -699,6 +699,17 @@ pub(super) fn init(repo: &Repository) -> Result<(), ClewError> {
 }
 
 fn owned_catalog(bytes: &[u8]) -> bool {
+    is_owned_html("catalog", bytes)
+}
+
+fn owned_html(kind: &str, html: &str) -> String {
+    format!(
+        "<!-- codeclew-{kind} {} -->\n{html}",
+        crate::canonical::hash_bytes(html.as_bytes())
+    )
+}
+
+fn is_owned_html(kind: &str, bytes: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
     };
@@ -707,9 +718,42 @@ fn owned_catalog(bytes: &[u8]) -> bool {
     };
     marker
         == format!(
-            "<!-- codeclew-catalog {} -->",
+            "<!-- codeclew-{kind} {} -->",
             crate::canonical::hash_bytes(body.as_bytes())
         )
+}
+
+// Older connected guides have no ownership marker. Recognize only exact
+// generated output using current assets and one of the supported navigations.
+fn unedited_legacy_guide(bytes: &[u8], title: &str, body: &str) -> bool {
+    let Ok(html) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let page = page(title, body);
+    for overview in ["help.html", "index.html"] {
+        if html == decorate(&page, &navigation("", overview, None, &[])) {
+            return true;
+        }
+    }
+    let Some(bundle) = html
+        .split_once("href=\"generated/")
+        .and_then(|(_, suffix)| suffix.split_once('/').map(|(bundle, _)| bundle))
+    else {
+        return false;
+    };
+    for language in ["en", "ru"] {
+        let nav = navigation_language(
+            &format!("generated/{bundle}/"),
+            "index.html",
+            Some("history.html"),
+            &[],
+            language,
+        );
+        if html == decorate(&page, &nav) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Upgrade only byte-identical starter output; preserve any user's guide edits.
@@ -741,10 +785,14 @@ pub(super) fn connect_starters_language(
         ("runbooks.html", "Codeclew runbooks", RUNBOOKS),
     ] {
         let path = format!("docs/{name}");
-        if std::fs::read(repo.path(&path)?).ok().as_deref()
-            == Some(decorate(&page(title, body), &starter_nav).as_bytes())
-        {
-            repo.atomic(&path, decorate(&page(title, body), &nav).as_bytes())?;
+        let existing = std::fs::read(repo.path(&path)?).ok();
+        if existing.as_deref().is_some_and(|bytes| {
+            is_owned_html("guide", bytes) || unedited_legacy_guide(bytes, title, body)
+        }) {
+            repo.atomic(
+                &path,
+                owned_html("guide", &decorate(&page(title, body), &nav)).as_bytes(),
+            )?;
         }
     }
     let catalog_path = repo.path("docs/catalog.html")?;
@@ -779,10 +827,7 @@ pub(super) fn connect_starters_language(
                 &format!("\"href\":\"generated/{bundle}/scenarios/"),
             );
         let html = decorate(&body, &nav);
-        let owned = format!(
-            "<!-- codeclew-catalog {} -->\n{html}",
-            crate::canonical::hash_bytes(html.as_bytes())
-        );
+        let owned = owned_html("catalog", &html);
         repo.atomic("docs/catalog.html", owned.as_bytes())?;
     }
     Ok(())
@@ -1163,6 +1208,38 @@ mod tests {
             .find(|row| row["kind"] == "Process" && row["id"] == "checkout")
             .unwrap();
         assert_eq!(russian_process["coverage"], "unavailable");
+    }
+
+    #[test]
+    fn guide_navigation_tracks_publications_and_preserves_human_edits() {
+        let root = tempfile::tempdir().unwrap();
+        Repository::init(root.path(), "Docs").unwrap();
+        let repo = Repository::open(root.path()).unwrap();
+        let legacy_nav = navigation("generated/legacy/", "index.html", Some("history.html"), &[]);
+        repo.atomic(
+            "docs/help.html",
+            decorate(&page("Codeclew help", HELP), &legacy_nav).as_bytes(),
+        )
+        .unwrap();
+        for (bundle, language) in [("first", "en"), ("second", "ru")] {
+            connect_starters_language(&repo, bundle, &[], language).unwrap();
+            for name in ["help.html", "runbooks.html"] {
+                let html = std::fs::read(root.path().join(format!("docs/{name}"))).unwrap();
+                assert!(is_owned_html("guide", &html));
+                let text = String::from_utf8(html).unwrap();
+                assert!(text.contains(&format!("generated/{bundle}/catalog.html")));
+                assert!(!text.contains("generated/legacy/"));
+            }
+        }
+        for name in ["help.html", "runbooks.html"] {
+            let path = root.path().join(format!("docs/{name}"));
+            let edited = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("</main>", "<p>Team instructions</p></main>");
+            std::fs::write(&path, &edited).unwrap();
+            connect_starters(&repo, "third", &[]).unwrap();
+            assert_eq!(std::fs::read_to_string(path).unwrap(), edited);
+        }
     }
 
     #[test]
