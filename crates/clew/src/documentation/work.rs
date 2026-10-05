@@ -483,6 +483,7 @@ pub struct Work {
 const SECTION_ORIENTATION_PROFILE: &str = "section-orientation-v1";
 const SECTION_ENTITIES_ORIENTATION_PROFILE: &str = "section-entities-orientation-v1";
 const HTTP_API_CONTRACT_PROFILE: &str = "http-api-contract-v1";
+#[cfg(test)]
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const MAX_DIRECT_API_TYPES: usize = 8;
 const WORK_SCHEMA: &str = "codeclew-documentation-work/1.0";
@@ -1278,7 +1279,7 @@ fn is_java_http_entrypoint(checked: &Check, subject: &str, request: &Request) ->
                 && declaration.kind == "SYMBOL"
                 && declaration.symbol == entry.symbol
                 && declaration.normalized["symbolIdentity"] == entry.symbol
-                && declaration.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                && super::is_compiler_declaration_schema(&declaration.normalized["schema"])
                 && declaration.normalized["declarationKind"] == "METHOD"
         })
     })
@@ -1503,7 +1504,7 @@ fn http_api_contract_preparation(work: &Work) -> Result<(Vec<Value>, Value), Cle
                 && declaration.kind == "SYMBOL"
                 && declaration.symbol == entry.symbol
                 && declaration.normalized["symbolIdentity"] == entry.symbol
-                && declaration.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                && super::is_compiler_declaration_schema(&declaration.normalized["schema"])
                 && declaration.normalized["declarationKind"] == "METHOD"
         })
         .collect();
@@ -1623,7 +1624,7 @@ fn http_api_contract_preparation(work: &Work) -> Result<(Vec<Value>, Value), Cle
             .filter(|candidate| {
                 candidate.service == service
                     && candidate.kind == "SYMBOL"
-                    && candidate.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                    && super::is_compiler_declaration_schema(&candidate.normalized["schema"])
                     && matches!(
                         candidate.normalized["declarationKind"].as_str(),
                         Some("CLASS" | "INTERFACE" | "ENUM" | "RECORD" | "ANNOTATION")

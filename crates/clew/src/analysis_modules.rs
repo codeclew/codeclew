@@ -71,6 +71,41 @@ pub fn registered(runtime: &RuntimeAuthority) -> Vec<AnalysisModule> {
             });
         }
     }
+    // The C# worker is an optional runtime component: registered only when the
+    // capsule was built with a .NET SDK. `unavailable` reports its absence.
+    if let Some(worker) = runtime.workers.get(crate::runtime::CSHARP_WORKER) {
+        modules.push(AnalysisModule {
+            schema: "codeclew-analysis-module/1.0",
+            id: "csharp-roslyn".into(),
+            kind: "LANGUAGE",
+            version: env!("CARGO_PKG_VERSION"),
+            implementation_digest: worker.tree_hash.clone(),
+            language: Some("csharp"),
+            compiler: Some(worker.compiler_version.clone()),
+            project_java_minimum: None,
+            worker_jvm: None,
+            input_schemas: vec![crate::csharp_project_model::CSHARP_MODEL_SCHEMA],
+            output_schemas: vec![
+                crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA,
+                clew_facts::CLR_ATTRIBUTE_SCHEMA,
+            ],
+            operation_scope: "READ_ONLY_PROJECT_ADMISSION_REQUIRED",
+        });
+    }
+    modules.push(AnalysisModule {
+        schema: "codeclew-analysis-module/1.0",
+        id: clew_framework_aspnetcore::MODULE_ID.into(),
+        kind: "FRAMEWORK",
+        version: env!("CARGO_PKG_VERSION"),
+        implementation_digest: clew_framework_aspnetcore::implementation_digest(),
+        language: None,
+        compiler: None,
+        project_java_minimum: None,
+        worker_jvm: None,
+        input_schemas: vec![clew_facts::CLR_ATTRIBUTE_SCHEMA],
+        output_schemas: vec![clew_framework_aspnetcore::OUTPUT_SCHEMA],
+        operation_scope: "DERIVATION_OVER_SEALED_FACTS",
+    });
     modules.push(AnalysisModule {
         schema: "codeclew-analysis-module/1.0",
         id: clew_framework_spring::MODULE_ID.into(),

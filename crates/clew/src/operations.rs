@@ -390,6 +390,20 @@ fn task_checks(
             true,
             "INSTALL_NODE",
         )),
+        SessionLanguage::CSharp => {
+            checks.push(check(
+                "tool.dotnet",
+                executable_available("dotnet"),
+                true,
+                "INSTALL_DOTNET_SDK_10",
+            ));
+            checks.push(check(
+                "runtime.language-adapter",
+                runtime.workers.contains_key(crate::runtime::CSHARP_WORKER),
+                true,
+                "INSTALL_CSHARP_COMPONENT",
+            ));
+        }
         SessionLanguage::Python => {}
     }
     if task.language == SessionLanguage::Kotlin {
@@ -527,13 +541,38 @@ fn repository_checks(
     let rust = regular_non_symlink(&repository.join("Cargo.toml"))
         && regular_non_symlink(&repository.join("Cargo.lock"));
     let typescript = regular_non_symlink(&repository.join("tsconfig.json"));
+    let csharp = csharp_project_marker(&repository);
     checks.push(check(
         "repository.recognized-project-marker",
-        gradle || maven || python || rust || typescript,
+        gradle || maven || python || rust || typescript || csharp,
         false,
         "SELECT_EXPLICIT_LANGUAGE_AND_COMPILATION",
     ));
     checks
+}
+
+/// A solution or C# project at the repository root or one directory below it.
+fn csharp_project_marker(repository: &Path) -> bool {
+    let marked = |directory: &Path| {
+        std::fs::read_dir(directory).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                let path = entry.path();
+                regular_non_symlink(&path)
+                    && path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| matches!(extension, "sln" | "slnx" | "csproj"))
+            })
+        })
+    };
+    marked(repository)
+        || std::fs::read_dir(repository).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && entry.file_name() != ".git"
+                    && marked(&entry.path())
+            })
+        })
 }
 
 fn check(id: &'static str, passed: bool, required: bool, remediation: &'static str) -> DoctorCheck {
@@ -1194,6 +1233,15 @@ mod tests {
         assert_eq!(mutable[1]["status"], "PILOT_READY");
         assert_eq!(mutable[2]["profileId"], "rust-syntax");
         assert_eq!(mutable[2]["status"], "PILOT_READY");
+        let csharp = matrix["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["language"] == "csharp")
+            .unwrap();
+        assert_eq!(csharp["profileId"], "csharp-dotnet-msbuild-read-only");
+        assert_eq!(csharp["analysisAuthority"], "COMPILER_BACKED_ROSLYN");
+        assert_eq!(csharp["mutation"], false);
         let java = matrix["profiles"]
             .as_array()
             .unwrap()

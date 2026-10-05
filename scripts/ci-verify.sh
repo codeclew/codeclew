@@ -64,6 +64,17 @@ cargo test --locked -p clew --lib 'generation_service::reuse_tests::' -- --test-
 cargo test --locked -p clew --lib \
   java_adapter_v2::tests::spring_entrypoints_use_resolved_annotations_on_java_17_and_21 \
   -- --exact --ignored --test-threads=1
+cargo test --locked -p clew-framework-aspnetcore
+cargo test --locked -p clew --lib 'csharp' -- --test-threads=1
+# The C# worker is an optional runtime component; qualify it where a .NET 10 SDK exists.
+if command -v dotnet >/dev/null 2>&1; then
+  dotnet publish workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj --configuration Release \
+    --output workers/dotnet/publish -p:UseAppHost=false -p:RestoreLockedMode=true \
+    ${CODECLEW_DOTNET_PACKAGE_SOURCE:+--source "$CODECLEW_DOTNET_PACKAGE_SOURCE"}
+  cargo test --locked -p clew --lib \
+    csharp_project_model::tests::fixture_solution_yields_roslyn_facts_routes_and_restore_boundaries \
+    -- --exact --ignored --test-threads=1
+fi
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1

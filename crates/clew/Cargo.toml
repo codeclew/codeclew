@@ -7,6 +7,7 @@ build = "build.rs"
 
 [dependencies]
 clew-facts = { path = "../clew-facts" }
+clew-framework-aspnetcore = { path = "../clew-framework-aspnetcore" }
 clew-framework-spring = { path = "../clew-framework-spring" }
 anyhow.workspace = true
 clap.workspace = true

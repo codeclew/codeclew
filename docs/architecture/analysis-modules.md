@@ -84,6 +84,36 @@ operations. Do not infer support solely from a version label.
 Independent installation of arbitrary modules, a plugin marketplace, dynamic
 native libraries and a Kotlin 1.9 compiler pack are outside this iteration.
 
+## Optional C# component
+
+The `csharp` runtime component (`workers/dotnet`) is the first adapter whose
+toolchain is optional. The bootstrap registry declares it with executor `DOTNET`,
+toolchain key `dotnet` and protocol `codeclew-csharp-analyzer.v1`. Without a .NET
+10+ SDK, the component is omitted from the capsule rather than failing it.
+`analysis_modules` and the documentation module catalogue then report it as not
+installed. The protocol is a one-shot process: a JSON request on stdin, and NDJSON
+facts in a private file whose trailer binds the fact count and digest.
+
+```mermaid
+flowchart LR
+  P[Project SDK design-time Compile] --> W[Roslyn worker]
+  W --> F[C# compiler facts + clr-attribute-facts/1.0]
+  F --> A[Pure Rust ASP.NET Core interpretation]
+  A --> E[Entrypoint catalogue and documentation]
+```
+
+`clew-facts` owns `clr-attribute-facts/1.0`: resolved method and containing-type
+attributes, inherited attributes allowed by `AttributeUsage`, overridden-method
+attributes, and typed constructor and named arguments. Attribute types carry their
+base classes and interfaces, so derived routing attributes are recognized
+without a compiler. `clew-framework-aspnetcore` applies the default MVC
+application model: controller and action discovery, route selectors, template
+combination and token replacement. Non-public controllers, conventional routes,
+minimal APIs and API-version segment formats remain boundaries, never guessed
+routes. C# identities use the portable JVM grammar (`method:class:Ns.Type#Name(desc)`)
+so documentation consumes them like javac facts. The erasure of CLR signatures
+into descriptor grammar is itself a recorded boundary.
+
 ## Current Rust registration seam in the source tree
 
 The Rust source path already builds a Cargo-authorized syntax index before it

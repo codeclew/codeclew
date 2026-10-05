@@ -1848,6 +1848,9 @@ fn mutation_profile_for(
         SessionLanguage::TypeScript => Err(unsupported_profile(
             "TypeScript v1 is a read-only compiler-backed profile",
         )),
+        SessionLanguage::CSharp => Err(unsupported_profile(
+            "C# v1 is a read-only compiler-backed profile",
+        )),
         SessionLanguage::Kotlin => {
             if compilations.len() != 1
                 || versions
@@ -2933,6 +2936,18 @@ mod tests {
             ErrorCode::UnsupportedProjectConfiguration
         );
         assert!(typescript_error.message.contains("read-only"));
+        let csharp_error = mutation_profile_for(
+            SessionLanguage::CSharp,
+            &["csproj:src/Api/Api.csproj".into()],
+            &versions(json!({"csproj:src/Api/Api.csproj":"roslyn-5.9.0"})),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            csharp_error.code,
+            ErrorCode::UnsupportedProjectConfiguration
+        );
+        assert!(csharp_error.message.contains("read-only"));
     }
 
     #[test]

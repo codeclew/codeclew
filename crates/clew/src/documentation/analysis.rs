@@ -239,10 +239,10 @@ fn capture_local_with_diagnostics(
             "service requires at least one compilation selector",
         ));
     }
-    let language = if service.language == "kotlin" {
-        SessionLanguage::Kotlin
-    } else {
-        SessionLanguage::Java
+    let language = match service.language.as_str() {
+        "kotlin" => SessionLanguage::Kotlin,
+        "csharp" => SessionLanguage::CSharp,
+        _ => SessionLanguage::Java,
     };
     let readiness = super::progress::run("SOURCE_ADMISSION", || {
         operations::doctor(
@@ -379,10 +379,10 @@ fn capture_session(
             serde_json::from_slice(lease.bytes()).map_err(io_error)?;
         let scope = json!({"compilation": compilation.compilation});
         generation.visit_facts(&store, |fact| {
-            let domain = if service.language == "kotlin" {
-                "analysis:kotlin-semantic-facts"
-            } else {
-                "analysis:java-compiler-facts"
+            let domain = match service.language.as_str() {
+                "kotlin" => "analysis:kotlin-semantic-facts",
+                "csharp" => super::csharp::CSHARP_FACTS_DOMAIN,
+                _ => "analysis:java-compiler-facts",
             };
             if fact.domain_uri.as_str() != domain {
                 return Ok(());
@@ -405,8 +405,10 @@ fn capture_session(
             Ok(())
         })?;
     }
-    if service.language == "kotlin" {
-        facts = super::kotlin::project_facts(facts)?;
+    match service.language.as_str() {
+        "kotlin" => facts = super::kotlin::project_facts(facts)?,
+        "csharp" => facts = super::csharp::project_facts(facts)?,
+        _ => {}
     }
     let wanted: BTreeSet<_> = facts
         .iter()
@@ -1620,6 +1622,51 @@ pub(crate) fn project_scoped(
                     },
                 );
             }
+        }
+        if service.language == "csharp" {
+            let Some(metadata) = crate::aspnetcore_entrypoints::metadata_for_fact(fact)? else {
+                continue;
+            };
+            for (ordinal, entry) in metadata.entries.iter().enumerate() {
+                let identity = format!("{symbol}/{ordinal}");
+                let eid = source_id(
+                    &service.id,
+                    &scoped_identity(&scope, &format!("entrypoint/{identity}")),
+                )?;
+                let trigger = crate::aspnetcore_entrypoints::describe_trigger(entry);
+                let route_id = dependency_id(
+                    &service.id,
+                    "entrypoint",
+                    &scoped_identity(&scope, &identity),
+                )?;
+                let mut normalized = json!({"trigger":trigger,"binding":entry,"boundaries":metadata.boundaries,"frameworkDerivation":metadata.derivation});
+                if !scope.is_empty() {
+                    normalized["scope"] = json!(scope);
+                }
+                evidence.observations.insert(
+                    route_id.clone(),
+                    Observation {
+                        id: route_id.clone(),
+                        kind: "ENTRYPOINT".into(),
+                        service: service.id.clone(),
+                        symbol: symbol.into(),
+                        digest: digest(&normalized)?,
+                        normalized,
+                        source_ids: source_ids.clone(),
+                    },
+                );
+                evidence.entrypoints.push(Entrypoint {
+                    id: eid,
+                    service: service.id.clone(),
+                    symbol: symbol.into(),
+                    kind: entry.kind.clone(),
+                    trigger,
+                    source_ids: source_ids.clone(),
+                    dependency_ids: vec![id.clone(), route_id],
+                    boundaries: metadata.boundaries.clone(),
+                });
+            }
+            continue;
         }
         let spring_fact = spring_entrypoints::with_annotation_registry(fact, &annotation_registry)?;
         if let Some(metadata) = spring_entrypoints::metadata_for_fact(

@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const PROFILE: &str = "endpoint-context-v3";
 
+#[cfg(test)]
 const JAVA_COMPILER_FACT_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 const MAX_GAP_EXAMPLES: usize = 8;
 const MAX_GAP_EXAMPLE_BYTES: usize = 512;
@@ -284,7 +285,7 @@ fn profile_rows_with_root(
                     && observation.service == service
                     && observation.kind == "SYMBOL"
                     && observation.symbol == entry.symbol
-                    && observation.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA
+                    && super::is_compiler_declaration_schema(&observation.normalized["schema"])
                     && observation.normalized["declarationKind"] == "METHOD"
                     && observation.normalized["symbolIdentity"] == entry.symbol
             })
@@ -2185,7 +2186,9 @@ fn declaration_indexes<'a>(
                     }
                 }
             }
-            "SYMBOL" if observation.normalized["schema"] == JAVA_COMPILER_FACT_SCHEMA => {
+            "SYMBOL"
+                if super::is_compiler_declaration_schema(&observation.normalized["schema"]) =>
+            {
                 let (Some(identity), Some(declaration_kind)) = (
                     observation.normalized["symbolIdentity"].as_str(),
                     observation.normalized["declarationKind"].as_str(),

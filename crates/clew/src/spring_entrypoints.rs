@@ -175,6 +175,7 @@ pub fn catalogue(
     let mut roots = Vec::new();
     let mut scopes = Vec::new();
     let mut seen_sessions = BTreeSet::new();
+    let mut csharp_sessions = false;
     let mut bytes = 0usize;
     // Lock in stable order, including requests supplied in reverse CLI order.
     sessions.sort_by(|a, b| a.1.session_id.cmp(&b.1.session_id));
@@ -184,10 +185,11 @@ pub fn catalogue(
         }
         if !matches!(
             session.language,
-            SessionLanguage::Kotlin | SessionLanguage::Java
+            SessionLanguage::Kotlin | SessionLanguage::Java | SessionLanguage::CSharp
         ) {
-            return Err(invalid("entrypoints supports Kotlin and Java sessions"));
+            return Err(invalid("entrypoints supports Kotlin, Java and C# sessions"));
         }
+        csharp_sessions |= session.language == SessionLanguage::CSharp;
         admissions.push(session.open_admission()?);
         let ready = load_session_generation(&session)?;
         for compilation in &ready.compilations {
@@ -221,6 +223,51 @@ pub fn catalogue(
                 Ok(())
             })?;
             generation.visit_facts(&store, |fact| {
+                if fact.domain_uri.as_str() == crate::aspnetcore_entrypoints::CSHARP_FACTS_DOMAIN {
+                    let lease = store.read(&fact.payload, MAX_PAYLOAD)?;
+                    let payload: Value = serde_json::from_slice(lease.bytes()).map_err(|_| invalid("entrypoint fact is invalid"))?;
+                    match payload.get("kind").and_then(Value::as_str) {
+                        Some("BOUNDARY") => {
+                            scope_boundaries.insert(payload.get("code").and_then(Value::as_str).unwrap_or("CSHARP_ANALYSIS_BOUNDARY").to_owned());
+                            return Ok(());
+                        }
+                        Some("RELATION") => {
+                            if crate::aspnetcore_entrypoints::registers_minimal_api(&payload) {
+                                scope_boundaries.insert("MINIMAL_API_ENDPOINTS_NOT_ANALYZED".to_owned());
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                    if payload.get("declarationKind").and_then(Value::as_str) != Some("METHOD") { return Ok(()); }
+                    descriptors += 1;
+                    inspected += 1;
+                    let Some(metadata) = crate::aspnetcore_entrypoints::metadata_for_fact(&payload)? else { return Ok(()); };
+                    if !metadata.entries.is_empty() { scope_boundaries.extend(metadata.boundaries.iter().cloned()); }
+                    for (ordinal, entry) in metadata.entries.iter().enumerate() {
+                        let identity = json!({"repository":session.repository_key,"revision":session.base_revision,
+                            "compilation":compilation.compilation,"member":member,"symbol":payload.get("symbolIdentity"),"ordinal":ordinal});
+                        let root = json!({
+                            "id":canonical::hash(&identity).map_err(|error| invalid(error.to_string()))?,
+                            "member":member,"repositoryKey":session.repository_key,"baseRevision":session.base_revision,
+                            "sessionId":session.session_id,"compilation":compilation.compilation,
+                            "language":session.language.uri(),"symbolIdentity":payload["symbolIdentity"],
+                            "ownerIdentity":payload.get("ownerIdentity"),"kind":entry.kind,
+                            "file":payload.get("file"),"start":payload.get("start"),"end":payload.get("end"),
+                            "coordinateUnit":"UTF16_CODE_UNITS",
+                            "startLine":payload.get("startLine"),"endLine":payload.get("endLine"),
+                            "trigger":crate::aspnetcore_entrypoints::describe_trigger(entry),"binding":entry,"boundaries":metadata.boundaries,
+                            "factKey":fact.fact_key,"evidence":fact.payload,"generation":compilation.generation,
+                            "annotationAuthority":metadata.derivation.input_authority,
+                            "frameworkDerivation":metadata.derivation,"runtimeActivation":"UNPROVEN"
+                        });
+                        bytes = bytes.checked_add(canonical::bytes(&root).map_err(|error| invalid(error.to_string()))?.len())
+                            .ok_or_else(|| invalid("entrypoint catalogue size overflow"))?;
+                        if bytes > MAX_CATALOGUE { return Err(ClewError::new(ErrorCode::SliceBudgetExceeded,"entrypoint catalogue exceeds 64 MiB; select fewer sessions or compilations")); }
+                        roots.push(root);
+                    }
+                    return Ok(());
+                }
                 let kotlin = fact.fact_key.starts_with("kotlin:descriptor:");
                 let java = fact.domain_uri.as_str() == "analysis:java-compiler-facts";
                 if !kotlin && !java {
@@ -289,7 +336,14 @@ pub fn catalogue(
     scopes.sort_by_cached_key(Value::to_string);
     let digest = canonical::hash(&json!({"roots":roots,"scopes":scopes}))
         .map_err(|error| invalid(error.to_string()))?;
-    catalogue_page(&roots, &scopes, &digest, cursor, limit)
+    let mut obligations = vec![
+        "VERIFY_BEAN_ACTIVATION_AND_RUNTIME_CONFIGURATION",
+        "VERIFY_PROGRAMMATIC_REGISTRATIONS",
+    ];
+    if csharp_sessions {
+        obligations.push("VERIFY_CONTROLLER_DISCOVERY_AND_ROUTING_CONFIGURATION");
+    }
+    catalogue_page(&roots, &scopes, &digest, cursor, limit, &obligations)
 }
 
 fn catalogue_page(
@@ -298,6 +352,7 @@ fn catalogue_page(
     digest: &str,
     cursor: Option<&str>,
     limit: usize,
+    obligations: &[&str],
 ) -> Result<Value, ClewError> {
     let offset = if let Some(cursor) = cursor {
         let (expected, offset) = cursor
@@ -321,7 +376,7 @@ fn catalogue_page(
             "total":roots.len(),"offset":offset,"entries":&roots[offset..end],"scopes":scopes,
             "nextCursor":if end < roots.len() {Some(format!("{digest}@{end}"))}else{None},
             "runtimeActivation":"UNPROVEN","scope":"ANNOTATION_DECLARED_COMPUTATION_ROOTS",
-            "obligations":["VERIFY_BEAN_ACTIVATION_AND_RUNTIME_CONFIGURATION","VERIFY_PROGRAMMATIC_REGISTRATIONS"]});
+            "obligations":obligations});
         if canonical::bytes(&result)
             .map_err(|error| invalid(error.to_string()))?
             .len()
@@ -418,7 +473,7 @@ mod tests {
         let mut cursor = None;
         let mut all = Vec::new();
         loop {
-            let page = catalogue_page(&roots, &[], &digest, cursor.as_deref(), 13).unwrap();
+            let page = catalogue_page(&roots, &[], &digest, cursor.as_deref(), 13, &[]).unwrap();
             assert_eq!(page["total"], 117);
             all.extend(page["entries"].as_array().unwrap().iter().cloned());
             cursor = page["nextCursor"].as_str().map(str::to_owned);
@@ -427,12 +482,22 @@ mod tests {
             }
         }
         assert_eq!(roots, all);
-        assert!(catalogue_page(&roots, &[], &digest, Some("wrong@13"), 13).is_err());
-        assert!(catalogue_page(&roots, &[], &digest, Some(&format!("{digest}@118")), 13).is_err());
+        assert!(catalogue_page(&roots, &[], &digest, Some("wrong@13"), 13, &[]).is_err());
+        assert!(
+            catalogue_page(
+                &roots,
+                &[],
+                &digest,
+                Some(&format!("{digest}@118")),
+                13,
+                &[]
+            )
+            .is_err()
+        );
         let large = (0..10)
             .map(|id| json!({"id":id,"metadata":"x".repeat(12000)}))
             .collect::<Vec<_>>();
-        let page = catalogue_page(&large, &[], "digest", None, 100).unwrap();
+        let page = catalogue_page(&large, &[], "digest", None, 100, &[]).unwrap();
         assert!(canonical::bytes(&page).unwrap().len() <= MAX_STDOUT);
         assert!(page["nextCursor"].as_str().is_some());
         assert!(!page["entries"].as_array().unwrap().is_empty());
