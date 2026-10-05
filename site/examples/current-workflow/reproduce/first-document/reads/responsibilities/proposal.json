@@ -1,0 +1,18 @@
+{
+  "schema": "codeclew-documentation-proposal/1.0",
+  "operations": [
+    {
+      "entrypoint": "section2",
+      "title": "Byte-binding verification and presentation",
+      "summary": {
+        "text": "This script verifies the byte bindings of recorded claims and generates their diagram and HTML presentation. It checks exact committed source, retained source digests and references; it labels the graph as agent-interpreted static flow. It does not determine whether the claims are semantically true or establish runtime behavior. Graphviz contributes SVG rendering on the generation branch. These responsibilities describe the selected source file; they do not establish deployed ownership or a successful run.",
+        "evidence": [
+          "s34",
+          "s109",
+          "s150"
+        ]
+      },
+      "steps": []
+    }
+  ]
+}

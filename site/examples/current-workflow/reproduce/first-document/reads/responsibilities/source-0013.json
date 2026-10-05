@@ -1,0 +1,35 @@
+{
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "endByte": 15,
+  "fragmentDigest": "sha256:f534a72c58d199602723840a24761409f227f4238759b1f6b1982afb8956b460",
+  "nextCursor": null,
+  "receiptDigest": "sha256:f5035705b7b769994156e51946666b08c4089a867fe9931e2fc5917675276117",
+  "receiptType": "SOURCE_PART",
+  "recordDigest": "sha256:066201fa727a0272298bba29f5429113aac9745f45619820a4069117bc58fef2",
+  "reference": "s18",
+  "schema": "codeclew-documentation-source-part/1.0",
+  "snapshot": "sha256:12d7a16bc6dbb7e9c522d3813b06dc095164a5d959c92b46d6cf39958b8e532b/4489",
+  "source": {
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "endLine": 9,
+    "evidenceDigest": "sha256:b6b46c54908589f792573a9b8d1332803d0f741dae1c4c937ea895d9e0c71389",
+    "file": "scripts/build_cli_documentation.py",
+    "id": "cli-documentation-161984359d1a5ed47c0a",
+    "occurrence": {
+      "blob": "a6352ae84b6909b7ab2aacdcf964bf679c1dff78",
+      "endByte": 361,
+      "snapshot": "sha256:c315b611c3a5c118f97f5c2d40023779b01e34138cac6334cc086550156a9262",
+      "startByte": 346
+    },
+    "revision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+    "service": "cli-documentation",
+    "startLine": 9,
+    "textDigest": "sha256:f534a72c58d199602723840a24761409f227f4238759b1f6b1982afb8956b460",
+    "url": "https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L9-L9"
+  },
+  "sourceId": "cli-documentation-161984359d1a5ed47c0a",
+  "startByte": 0,
+  "text": "import argparse",
+  "totalTextBytes": 15,
+  "work": "530cc649966e8655e58362ea7c779243626fb50977500f92b610738cca8aa724"
+}

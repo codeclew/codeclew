@@ -1,0 +1,992 @@
+{
+  "audience": "A new maintainer",
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
+  "contextProfile": "section-orientation-v1",
+  "documentationLanguage": "en",
+  "influenceCoverage": "RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED",
+  "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+  "items": [
+    {
+      "id": "cli-documentation-00669f9bc02ce4fcf667",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 150,
+        "evidenceDigest": "sha256:7b856b3cfc3c743308327784f6328329f2b055b7594b482e70a47f9d043fbeee",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-00669f9bc02ce4fcf667",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 7486,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 7445
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 150,
+        "text": "(directory / \"nav-query.dot\").read_text()",
+        "textDigest": "sha256:cd3e9c2854eaf1d143bdf7f2a0186f5e97473079afab4c8d5ffd54155a5e5670",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L150-L150"
+      },
+      "reference": "s1",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-014efb1ccc37168bd90c",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 44,
+        "evidenceDigest": "sha256:9d69545149b6ad3c988b8e2af603df79bc317b47a6043d42ac172b2b16dfec28",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-014efb1ccc37168bd90c",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 1793,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 1783
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 44,
+        "text": "len(lines)",
+        "textDigest": "sha256:c1ccee48ff83a89ac8a386125c1b4b993be301d6ffe0d0b3c4b4dbc7e78425c0",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L44-L44"
+      },
+      "reference": "s2",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-01d9882daa142120f143",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 122,
+        "evidenceDigest": "sha256:b2656f70c5bc3bb8b259641b38e09575d557430010ff3a83cdb9fccd22c12eb7",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-01d9882daa142120f143",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 6225,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 6197
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 122,
+        "text": "escape(source[\"textDigest\"])",
+        "textDigest": "sha256:8ec491c08c673665efd09e19a91630247467ccbdb06431874a0cead78049c4de",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L122-L122"
+      },
+      "reference": "s3",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-0228fe93b8de12129810",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 105,
+        "evidenceDigest": "sha256:6e9bc807b22f58f313a036b04b2b565bd2e43992d79291aa179d16529d66f6d7",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-0228fe93b8de12129810",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 5475,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 5450
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 105,
+        "text": "link.set(\"tabindex\", \"0\")",
+        "textDigest": "sha256:4dabe2870f4aad1d17c1d23c07fe1c93b4fce94ce8656bb89fde44b0079abf89",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L105-L105"
+      },
+      "reference": "s4",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-03511f960e11443b678d",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 95,
+        "evidenceDigest": "sha256:94c569d114f94aaca522bd67e7a508ab68428de9d6144d6ef4395b9ff9634bc5",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-03511f960e11443b678d",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 4821,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 4761
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 95,
+        "text": "description = ET.Element(ns + \"desc\", id=\"flow-description\")",
+        "textDigest": "sha256:39ec765509c9afdbbd99040d7b2b9d5632fb7a9771b47209e32d7d0f7e3d444a",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L95-L95"
+      },
+      "reference": "s5",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-038ba7995504caa77adc",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 106,
+        "evidenceDigest": "sha256:0405060ec35e3b42c640b5b29ff4a44a7b67b98e2006adea08528dcdd8020bdf",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-038ba7995504caa77adc",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 5523,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 5487
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 106,
+        "text": "ET.tostring(svg, encoding=\"unicode\")",
+        "textDigest": "sha256:84a95dcfb414a373dc015ab093d2533eda17701b2d5704bfbced7cfc3bc9f280",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L106-L106"
+      },
+      "reference": "s6",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-04238361c0b3e1e1a156",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 101,
+        "evidenceDigest": "sha256:d47bb21bdfb86c732213be896ce783784ba2812df22b42c145250e25b12e7a22",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-04238361c0b3e1e1a156",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 5296,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 5262
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 101,
+        "text": "id = href.rsplit(\"#claim-\", 1)[-1]",
+        "textDigest": "sha256:63fe7e34798a2a69bc22209e2dee22c7a9fd82229bb7919378ce188c6c413547",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L101-L101"
+      },
+      "reference": "s7",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-04722430706c45e0a86e",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 120,
+        "evidenceDigest": "sha256:245093e3f04ad4e72c87cec4287ee26517eae8921b7e7d0dac67ae1376252239",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-04722430706c45e0a86e",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 6074,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 6052
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 120,
+        "text": "escape(source[\"text\"])",
+        "textDigest": "sha256:0b7a1ffb8c73557dec22b7a65c7823be94a50efcea008a53639ed140ee6035e3",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L120-L120"
+      },
+      "reference": "s8",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-088521a3abab76f446d9",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 158,
+        "evidenceDigest": "sha256:abf50ebac8a1e077ac94bcebad1d153b65a92475858f3009e0eec126d1595ea0",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-088521a3abab76f446d9",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8013,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 7415
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 149,
+        "text": "if args.check:\n        assert (directory / \"nav-query.dot\").read_text() == dot\n        assert (directory / \"nav-query.mmd\").read_text() == mermaid\n        svg = (directory / \"nav-query.svg\").read_text()\n        svg_root = ET.fromstring(svg)\n        assert svg_root.tag == \"{http://www.w3.org/2000/svg}svg\", \"saved diagram is not an SVG root\"\n        assert svg in page.read_text(), \"page diagram is stale\"\n        assert render_claims(claims) in page.read_text(), \"page claims are stale\"\n        print(f\"PASS: {len(claims)} claims, pinned source digests and rendered graph bindings\")\n        return",
+        "textDigest": "sha256:afcfef00e28b126c839f6ab07b0927ad504b57288d012f72104675611e60a6f5",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L149-L158"
+      },
+      "reference": "s9",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-095564887791208ebb5f",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 166,
+        "evidenceDigest": "sha256:511bcee88f49f687a1d63825455a7e49cb8f651ea846e285766ca451a2f883dc",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-095564887791208ebb5f",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8355,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 8332
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 166,
+        "text": "remainder.split(END, 1)",
+        "textDigest": "sha256:d78e74a5ec03b873c5b305b47fb8c73c117a14fabbdb7cd4f1e1558d03e9f195",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L166-L166"
+      },
+      "reference": "s10",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-0ae41b60d2201c677100",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 157,
+        "evidenceDigest": "sha256:aaca0ddb381fe525a022a7e6eb5f0c823b737dbded2d9f6a257b01cf0f55a829",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-0ae41b60d2201c677100",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 7998,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 7911
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 157,
+        "text": "print(f\"PASS: {len(claims)} claims, pinned source digests and rendered graph bindings\")",
+        "textDigest": "sha256:63eba14478149d3254ee0246e4e7e7421e91a953f3509c78d72ca5f4fb9a6238",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L157-L157"
+      },
+      "reference": "s11",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-0b8787c8cca8aa4cbe74",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 160,
+        "evidenceDigest": "sha256:13f71309abe29cb9ce546972556c9050418a4899a46a87089bee58993aa485ab",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-0b8787c8cca8aa4cbe74",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8082,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 8059
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 160,
+        "text": "render_svg(dot, claims)",
+        "textDigest": "sha256:ace1e616f621ed6ec5abeb5fa430c50a7ecd6e78a2687e9d333c28e21e6ef235",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L160-L160"
+      },
+      "reference": "s12",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-0d8b5d572abad6b69617",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 164,
+        "evidenceDigest": "sha256:feb2fa9d39518de7f1b58eb0dee6f1b55268a93a8f67626712b955c321ac6095",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-0d8b5d572abad6b69617",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8267,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 8241
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 164,
+        "text": "content = page.read_text()",
+        "textDigest": "sha256:45e70ba67f8c43fa692c189b8d04c2caa9801196340ddcaa34093689299e2bc6",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L164-L164"
+      },
+      "reference": "s13",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-1044280a1dd8c2f92d9c",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 98,
+        "evidenceDigest": "sha256:124b498bde2cbe0fc9bea03e7795cd654fabc3415de2ca91f93b8d1a84b43982",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-1044280a1dd8c2f92d9c",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 5151,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 5131
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 98,
+        "text": "svg.insert(0, title)",
+        "textDigest": "sha256:3c41600fb03af286b6b91baa1dae26fe852e9f27fcba2dacf1c5bba30f754c52",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L98-L98"
+      },
+      "reference": "s14",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-104d704bda667a48addc",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 16,
+        "evidenceDigest": "sha256:fb9c42e573f4f979b9a947d551cb8555e1d17da6035140653abe34ab487a3784",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-104d704bda667a48addc",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 488,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 454
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 16,
+        "text": "import xml.etree.ElementTree as ET",
+        "textDigest": "sha256:925185a804f421190a7a0276a73594730bf5ea098b8fd7fb781ad42e365b8cc9",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L16-L16"
+      },
+      "reference": "s15",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-114e99cad724f46c8c0a",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 39,
+        "evidenceDigest": "sha256:bbad440c48ee425458e4aaf3ff820ea7f0ebddfd52b483e34b7d0b4046197f09",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-114e99cad724f46c8c0a",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 1440,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 1330
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 37,
+        "text": "subprocess.check_output(\n                    [\"git\", \"show\", f\"{revision}:{path}\"], cwd=ROOT\n                )",
+        "textDigest": "sha256:09e29e541b2a21e5aa31edb9978988ef50579eeeb406ec3b3a2de78d8dc7db9f",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L37-L39"
+      },
+      "reference": "s16",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-14b88800442612513f8d",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 146,
+        "evidenceDigest": "sha256:2d1e1aeb893819833a7f5867c2219926432fa8952c357c4f713c275c6269f366",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-14b88800442612513f8d",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 7331,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 7310
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 146,
+        "text": "diagram_sources(data)",
+        "textDigest": "sha256:587508125ac37f55c41371d7a3a8f98718b3ca31dd287b7ecc070ba5cb14feea",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L146-L146"
+      },
+      "reference": "s17",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-161984359d1a5ed47c0a",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 9,
+        "evidenceDigest": "sha256:b71fa08987fca694132c3d9d7a4e9b09f3bf3ebfff09d675811bff279112ddf8",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-161984359d1a5ed47c0a",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 361,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 346
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 9,
+        "text": "import argparse",
+        "textDigest": "sha256:f534a72c58d199602723840a24761409f227f4238759b1f6b1982afb8956b460",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L9-L9"
+      },
+      "reference": "s18",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-170d48b2af9e3cd1414c",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 18,
+        "evidenceDigest": "sha256:b5e6159319d39bb9ea461d8bffd7ea166444218041e2fd8bc75382ffea82e103",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-170d48b2af9e3cd1414c",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 532,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 490
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 18,
+        "text": "ROOT = Path(__file__).resolve().parents[1]",
+        "textDigest": "sha256:368e0b19b5c2054e768091e0f4a14f5009340b92571f3e578aca9185f278b094",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L18-L18"
+      },
+      "reference": "s19",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-1766d3ce513f5c3ff398",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 172,
+        "evidenceDigest": "sha256:4cb7eb8d32f009a2b81d5f5c49e02a5709e79ad44ec5fc89b68b7150b479e2f9",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-1766d3ce513f5c3ff398",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8801,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 8772
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 172,
+        "text": "len(data['diagram']['edges'])",
+        "textDigest": "sha256:af96b053ef551f6ceb9e0aca16d4f62246e266917990000ebdda7eae86853c6d",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L172-L172"
+      },
+      "reference": "s20",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-191e5e35df2acdc5fd45",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 27,
+        "evidenceDigest": "sha256:406ead5c978d127211b48c290a3f4eb26ec2b6178bda4d90a1d9675f3bdb1616",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-191e5e35df2acdc5fd45",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 859,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 802
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 27,
+        "text": "claims = {claim[\"id\"]: claim for claim in data[\"claims\"]}",
+        "textDigest": "sha256:57c8efde5227e88abd08359c723e5558ca7d57e53a59986f348af593657edf25",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L27-L27"
+      },
+      "reference": "s21",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-19521629b3a56f8c1c43",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 26,
+        "evidenceDigest": "sha256:71892818da313ef9dbefaecffd136346aa62a5fa66566a8da6bca27778b2a022",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-19521629b3a56f8c1c43",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 759,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 720
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 26,
+        "text": "re.fullmatch(r\"[a-f0-9]{40}\", revision)",
+        "textDigest": "sha256:0723bb3cf6243758c333226b45da08bfb1709ffd31a687775758f6f2adb298b4",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L26-L26"
+      },
+      "reference": "s22",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-1ad1755adb99fd8cc9d3",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 61,
+        "evidenceDigest": "sha256:971e2daa25891b3b0ee6e1d795f17cf64ab2af6a764af994e48eab16a0ba436b",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-1ad1755adb99fd8cc9d3",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 2653,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 2635
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 61,
+        "text": "quote = json.dumps",
+        "textDigest": "sha256:768dbef384567e58b9c9c5886e01bb02caa0fd404762ec5c29347df93620cb37",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L61-L61"
+      },
+      "reference": "s23",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-1c7f8e05298b57da0c7d",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 92,
+        "evidenceDigest": "sha256:302f9981d36e67b57b17cc08db8446c285055507b8f50e9c956ecf1f6ab5d7c6",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-1c7f8e05298b57da0c7d",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 4621,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 4586
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 92,
+        "text": "ns = \"{http://www.w3.org/2000/svg}\"",
+        "textDigest": "sha256:630876b580d2532fe47d9e823b264f2fe5449707bd9dd8aa6f7621dcb762c10a",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L92-L92"
+      },
+      "reference": "s24",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-1fdbd86bbda11b10fcc7",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 75,
+        "evidenceDigest": "sha256:7f1508abd616a53ff701238e59af6dc2e65b20521fb76c91f617c58411b8287d",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-1fdbd86bbda11b10fcc7",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 3668,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 3181
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 69,
+        "text": "for node in data[\"diagram\"][\"nodes\"]:\n        id = node[\"id\"]\n        shape = \"diamond\" if id == \"decision\" else \"box\"\n        color = \"#e0ae65\" if id in {\"abstain\", \"failure\"} else \"#91b774\"\n        dot.append(f'{id} [label={quote(node[\"label\"])}, shape={shape}, color=\"{color}\", id=\"node-{id}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{id}\", tooltip={quote(id)}];')\n        label = node[\"label\"].replace(\"\\n\", \"<br/>\")\n        mermaid.append(f'  {id}[\"{label}\"]')",
+        "textDigest": "sha256:e9ec94df174b1a218617534f816c2ad4db73c3de0b7df29bd9cb36a1125acc0c",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L69-L75"
+      },
+      "reference": "s25",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-27f54616c0a8bc572298",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 81,
+        "evidenceDigest": "sha256:bf55d8fee2af75d484e20fcbd50d1c3b62f3dbb0804973afb3f7e28fd33765c6",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-27f54616c0a8bc572298",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 4184,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 4166
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 81,
+        "text": "\"\\n\".join(mermaid)",
+        "textDigest": "sha256:b2e6865373f60937653a0c96c92113efddb0c740e29e5fe80b22f73813fdddc1",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L81-L81"
+      },
+      "reference": "s26",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-28935ebf123ccf889674",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 168,
+        "evidenceDigest": "sha256:e6dd01df33dd35d64973cfa13160915f3f10ccf6aa093b436104e2636de48586",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-28935ebf123ccf889674",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8506,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 8424
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 168,
+        "text": "claim_start, claim_end = \"<!-- NAV_QUERY_CLAIMS -->\", \"<!-- /NAV_QUERY_CLAIMS -->\"",
+        "textDigest": "sha256:c1ed74898336eef36c2b8db753ea3c766e74c2432780a9afd577f017ccd6c66e",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L168-L168"
+      },
+      "reference": "s27",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-298bd2928586e0edcc6f",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 81,
+        "evidenceDigest": "sha256:7a70f5bd5c89eddd12e43eed1df7e9e693c8ce3da104e68a5c263e570dcc2a6a",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-298bd2928586e0edcc6f",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 4157,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 4143
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 81,
+        "text": "\"\\n\".join(dot)",
+        "textDigest": "sha256:7bbfbdc0aa0704e21ba2f612906c3ce8770cdf4d15c089884c737f9f89a5d4f9",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L81-L81"
+      },
+      "reference": "s28",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-2b3db2e308e6f01092cb",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 52,
+        "evidenceDigest": "sha256:928a4eaa503f63e33599ff50c71f6c885bb0662c1c41ce7c656b2b8d4da06943",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-2b3db2e308e6f01092cb",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 2374,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 2361
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 52,
+        "text": "claims.keys()",
+        "textDigest": "sha256:fc2bdf5cdba7993940b990d5cb3ed1391aef170e6582cb3d8e3e5927323943c7",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L52-L52"
+      },
+      "reference": "s29",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-2bc15707cd8f19f26c74",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 79,
+        "evidenceDigest": "sha256:842b95b749671dce75ffccc68869f4fe4020d9d42bae7b927f697c7c2f2203d3",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-2bc15707cd8f19f26c74",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 4111,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 4011
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 79,
+        "text": "mermaid.append(f'  {edge[\"from\"]} -. \"{edge[\"label\"]} · claim:{edge[\"claimId\"]}\" .-> {edge[\"to\"]}')",
+        "textDigest": "sha256:0e2a49fabb3d5d261cb44451bd15c5e8a2003761e6d6a87e6151daf35936d715",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L79-L79"
+      },
+      "reference": "s30",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-2c7925b1d60989501f94",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 45,
+        "evidenceDigest": "sha256:e41d7a080859c3f19e543c434a49f9bdcefd0fcebb52ffd427516c1330c8786b",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-2c7925b1d60989501f94",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 1844,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 1806
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 45,
+        "text": "text = \"\\n\".join(lines[start - 1:end])",
+        "textDigest": "sha256:130e1b6b85b1b0d39ff35f5dda38ecd3790887c34dfeb572f262ea64ce6aba84",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L45-L45"
+      },
+      "reference": "s31",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-2e9f023f0f489a25ad5b",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 161,
+        "evidenceDigest": "sha256:c0fb501b75bc8cb5f829aa7cdd90088c1a2800c50f50c7705467dfdf4be29497",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-2e9f023f0f489a25ad5b",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 8132,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 8087
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 161,
+        "text": "(directory / \"nav-query.dot\").write_text(dot)",
+        "textDigest": "sha256:8bea58ae3f59a44fc7ed22c0ce127579a474a7df16bd5c742563512964b63713",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L161-L161"
+      },
+      "reference": "s32",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-2fc55c8fc69d73bc9684",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 47,
+        "evidenceDigest": "sha256:bf37b4434c2786a4c33abc9778266b61529edb97ca74f22e54085c548dc16794",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-2fc55c8fc69d73bc9684",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 1996,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 1983
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 47,
+        "text": "text.encode()",
+        "textDigest": "sha256:3d7a7a74251f6b7b7afe62290da113eec9d9c2e7ab849ff975b9e10b8bdfc9f0",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L47-L47"
+      },
+      "reference": "s33",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-30dea2dc5cb47627d15f",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 57,
+        "evidenceDigest": "sha256:913b8e22db63b740b8f56d4c47b3b3daf74c5707562ab8fd1612f0003e3ebb32",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-30dea2dc5cb47627d15f",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 2601,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 649
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 24,
+        "text": "def verify(data):\n    revision = data[\"repositoryRevision\"]\n    assert re.fullmatch(r\"[a-f0-9]{40}\", revision), \"expected an immutable Git revision\"\n    claims = {claim[\"id\"]: claim for claim in data[\"claims\"]}\n    assert len(claims) == len(data[\"claims\"]), \"duplicate claim IDs\"\n    blobs = {}\n    for claim in claims.values():\n        assert claim[\"narrativeAuthority\"] == \"AGENT_INFERRED\"\n        assert claim[\"evidence\"], f\"missing evidence: {claim['id']}\"\n        for source in claim[\"evidence\"]:\n            path = source[\"file\"]\n            assert not Path(path).is_absolute() and \"..\" not in Path(path).parts\n            if path not in blobs:\n                blobs[path] = subprocess.check_output(\n                    [\"git\", \"show\", f\"{revision}:{path}\"], cwd=ROOT\n                )\n            blob = blobs[path]\n            assert \"sha256:\" + hashlib.sha256(b\"codeclew-cas/v2\\0\" + b\"codeclew-repository-input-blob/2.0\\0\" + blob).hexdigest() == source[\"fileDigest\"]\n            lines = blob.decode(\"utf-8\").splitlines()\n            start, end = source[\"startLine\"], source[\"endLine\"]\n            assert 1 <= start <= end <= len(lines)\n            text = \"\\n\".join(lines[start - 1:end])\n            assert text == source[\"text\"], f\"source mismatch: {claim['id']} {path}:{start}\"\n            assert \"sha256:\" + hashlib.sha256(text.encode()).hexdigest() == source[\"textDigest\"]\n            assert source[\"authority\"] == \"EXACT_SNAPSHOT_TEXT\"\n            assert source[\"url\"] == f\"{data['repository']}/blob/{revision}/{path}#L{start}-L{end}\"\n            assert re.fullmatch(r\"sha256:[a-f0-9]{64}\", source[\"evidenceDigest\"])\n    nodes = {node[\"id\"] for node in data[\"diagram\"][\"nodes\"]}\n    assert nodes <= claims.keys()\n    for edge in data[\"diagram\"][\"edges\"]:\n        assert edge[\"from\"] in nodes and edge[\"to\"] in nodes\n        assert edge[\"claimId\"] in claims\n        assert edge[\"authority\"] == \"AGENT_INFERRED_STATIC_FLOW\"\n    return claims",
+        "textDigest": "sha256:5924ef657fba968bdbec239fa07b40f819523fdf00228944209332bcc84d79f3",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L24-L57"
+      },
+      "reference": "s34",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-30ebac43a5dfc4392028",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 130,
+        "evidenceDigest": "sha256:b191e003a2683b566fb3e9430e1ec64b14fb4e0939068a103e79f307053336cd",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-30ebac43a5dfc4392028",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 6681,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 6657
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 130,
+        "text": "escape(claim[\"summary\"])",
+        "textDigest": "sha256:b060066f4d7d02496c3a78b2a525f18b77bfa59b9dc7f7e85eb0ca960d8bf345",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L130-L130"
+      },
+      "reference": "s35",
+      "referenceRoles": [
+        "evidence"
+      ]
+    },
+    {
+      "id": "cli-documentation-31cd9f2ee8c318aa7b05",
+      "kind": "SOURCE",
+      "record": {
+        "authority": "EXACT_SNAPSHOT_TEXT",
+        "endLine": 148,
+        "evidenceDigest": "sha256:4b8dad0e4e6289eaa3707793dbb7b8a22cb1c2920b8b03064e3fb8866d99d7bb",
+        "file": "scripts/build_cli_documentation.py",
+        "id": "cli-documentation-31cd9f2ee8c318aa7b05",
+        "occurrence": {
+          "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+          "endByte": 7410,
+          "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+          "startByte": 7375
+        },
+        "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+        "service": "cli-documentation",
+        "startLine": 148,
+        "text": "page = ROOT / \"site/nav-query.html\"",
+        "textDigest": "sha256:c12e5f97d3d104cda036aab941ece9377383d13878206a3adf3539d9d807ee2d",
+        "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L148-L148"
+      },
+      "reference": "s36",
+      "referenceRoles": [
+        "evidence"
+      ]
+    }
+  ],
+  "membershipDigest": "sha256:1cbe69d7dfbe3549a67b11abc72c9609999f7844aa9676aa64b65f6935ef277a",
+  "nextCursor": "8172d33b77e5bba949f231107004ba3ff4a926525f1b19c8c5cbd7eb918ab18d:36",
+  "omitted": [],
+  "receiptDigest": "sha256:ca5e4e4150a9307c232d9421580ff730905626b7da36f3033350c00ab94df890",
+  "schema": "codeclew-documentation-work-page/1.0",
+  "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+  "subject": "service:cli-documentation",
+  "total": 180,
+  "work": "86397d7e8d97a9f2e4fe27eb486ec7b4d2e121a297dfd5ac64884ed8bb5671ba"
+}

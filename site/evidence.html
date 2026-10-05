@@ -1,119 +1,54 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Review the v0.13.1 experimental internal-process draft, its provenance, and the limits of its evidence.">
-    <meta name="theme-color" content="#fdfaf2">
-    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="./styles.css">
-    <title>Evidence — Codeclew v0.13.1</title>
-  <link rel="stylesheet" href="./theme.css?v=4922f29a1861">
-</head>
-  <body>
-    <!-- SITE_HEADER -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Check fresh task qualification status and read older examples under their original scope and authority."><meta name="theme-color" content="#fdfaf2">
+<title>Checks and limits — Codeclew</title><link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./theme.css?v=4922f29a1861"><link rel="stylesheet" href="./tasks.css?v=aa3e0669698e"></head>
+<body class="task-site"><!-- SITE_HEADER -->
 <a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-header"><div class="site-header-inner shell">
   <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
   <nav class="primary-nav" aria-label="Primary navigation">
-    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
-</div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
-</div>
-<div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html" aria-current="page">Release evidence</a>
-</div>
-<div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html">Historical Spring case</a>
-</div></div></details>
-    <a href="./documentation.html">Service docs</a>
-    <a href="./evidence.html" aria-current="page">Release evidence</a>
-    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+    <details class="site-menu"><summary>Tasks <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a></div></div></details>
+    <a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a>
+    <a href="./evidence.html" aria-current="page">Checks and limits</a>
   </nav>
-  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search</span><kbd>Ctrl / ⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “source”, “saved edits” or “document”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>
-<!-- /SITE_HEADER -->
+<!-- /SITE_HEADER --><main id="main-content" class="shell task-main"><!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Reference</span><span aria-hidden="true">/</span><span aria-current="page">Checks and limits</span></nav>
+<!-- /SITE_BREADCRUMB --><!-- SITE_SIDEBAR -->
 
-    <main class="evidence-page shell" id="main-content">
-      <section class="evidence-hero"><div class="hero-copy">
-<div class="kicker">Historical release · v0.13.1</div><h1>Inspect the result.<br><em>Know its limits.</em></h1><p class="lede">This release includes one experimental, source-local explanation of a Java method. Read its sample and provenance with the boundary between recorded source, authored interpretation and runtime claims in view.</p>
-</div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
-<!-- SITE_BREADCRUMB -->
-<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Reference</span><span aria-hidden="true">/</span><span aria-current="page">Release evidence</span></nav>
-<!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
-<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
-</div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
-</div>
-<div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html" aria-current="page">Release evidence</a>
-</div>
-<div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html">Historical Spring case</a>
-</div></nav></details>
-<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
-<!-- /SITE_SIDEBAR --><div class="page-content">
-
-
-<section class="evidence-record" id="release-0-13-1"><div><div class="kicker">Experimental release result · v0.13.1</div><h2>One source-local Java method draft.</h2></div><div><p>The public fixture selects <code>TaskStateTransitions.promote(Task, Instant)</code> in the Maven <code>:/main</code> compilation. It explains the method's local decision and repository-call boundaries. Its authored decision tree is rendered as pseudocode; the separate flow SVG is projected from retained source syntax, not from authored steps.</p><p>The saved provenance records one author call (164.078 seconds) and a replay of the same saved result with no new author dispatch. A separate source-FIT review and browser review accepted this scenario; the native result remains <code>DRAFT</code> / <code>UNREVIEWED</code>, with publication <code>NOT_PUBLISHED</code>.</p><p>This evidence covers one method and its rendered sample. It does not establish runtime activation or execution, runtime execution order, later dispatch, external effects, persistence, deployed behavior or complete-workflow qualification. The single-run timing is diagnostic, not a latency promise.</p><p><a href="https://github.com/codeclew/codeclew/releases/tag/v0.13.1">v0.13.1 release ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/releases/v0.13.1.md">Release scope and limits ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/operations/task-promotion-draft.md">Reproducible recipe ↗</a> · <a href="./examples/task-promotion/provenance.json">Sample provenance →</a></p><p><a href="./documentation.html#process-draft">Inspect the sample and output files →</a></p></div></section>
-<p class="docs-note" id="historical-records">Earlier studies and measurements remain available as immutable repository records; their results keep their original scope and are not current-release performance claims. <a href="https://github.com/codeclew/codeclew/tree/v0.13.1/site/evidence">Browse the archived evidence files at v0.13.1 ↗</a></p>
-<p id="saved-edits">Saved-edit reports: <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/site/evidence/working-tree-qualification.json">fixture measurements ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/site/evidence/working-tree-dogfood.json">repository measurements ↗</a></p>
-<p id="kotlin-checks">Earlier Kotlin study, revision 6281138: <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/site/evidence/kotlin-engineering-sample.json">source fragments and digests ↗</a></p>
-    </div></div></main>
-
-    <!-- SITE_FOOTER -->
+<!-- /SITE_SIDEBAR --><section class="task-hero"><div><div class="kicker">Assess a result</div><h1>Checks and limits</h1><p class="lede">See what was actually recorded, distinguish a current recipe from an older study, and decide what still needs verification.</p><a class="task-action" href="#current-checks">Check the task evidence <span aria-hidden="true">→</span></a></div><img src="./assets/cat.svg" width="180" height="128" alt=""></section><section class="task-section" id="current-checks"><h2>Recorded installed-release checks</h2><p>The original cases ran through official Clew 0.13.11 in <code>RELEASE</code> mode. Each result retains its source, scope and limitations. The saved-edit reader was later qualified with official installed 0.13.13: full source JSON and embedded report evidence matched the original exactly, and retained source, render and freshness calls took 5.65–5.79 seconds on existing shared state. This is an observed timing improvement, not a controlled cold benchmark or global latency guarantee.</p><div class="task-table"><table><caption>Observed task results and remaining checks</caption><thead><tr><th>Task</th><th>Status</th><th>Required result</th></tr></thead><tbody>
+<tr><th><a href="./nav-query.html">Find the code</a></th><td data-label="Status">Recorded</td><td data-label="Required result">One exact Rust declaration and source; real no-match abstention. <a href="./examples/current-workflow/reproduce/find/result.json">Result and retained windows</a>.</td></tr>
+<tr><th><a href="./documentation.html">Create a first document</a></th><td data-label="Status">Recorded</td><td data-label="Required result">First overview, saved-source question and preserved local exercise update. <code>PARTIAL / UNASSESSED</code>. <a href="./examples/current-workflow/reproduce/first-document/record.json">Observed record</a>.</td></tr>
+<tr><th><a href="./working-tree.html">Review saved edits</a></th><td data-label="Status">Recorded; retained reader qualified with 0.13.13</td><td data-label="Required result">Original 0.13.11 main/test inspection and exact retained source; 0.13.13 source/report equality and <code>LIVE_CHANGED</code> with valid retained evidence. No new analysis or test execution. <a href="./examples/current-workflow/reproduce/saved-edits/report-0.13.13.html">New native reader</a> · <a href="./examples/current-workflow/reproduce/saved-edits/report.html">Original native report</a> · <a href="./examples/current-workflow/reproduce/saved-edits/observations.json">Scopes, runtime identity and before/after timings</a>.</td></tr>
+</tbody></table></div><p>Each recorded case needs the installed version/runtime, public source revision, selected scope and returned status. A browser review verifies the reader's interactions; it does not execute or qualify the analyzed application.</p></section><section class="task-section" id="csharp-preview"><h2>C# is included in 0.13.11</h2><p>The <a href="https://github.com/codeclew/codeclew/releases/tag/v0.13.11">published release</a> includes the Roslyn worker in all six archives. CI exercised actual C# analysis on macOS arm64, macOS x86_64 and Linux x86_64, and verified the extracted launchers. This case also ran with the officially installed macOS arm64 package in <code>RELEASE</code> mode.</p><p>Select an exact repository-relative <code>csproj:&lt;path&gt;[@&lt;tfm&gt;]</code> or <code>sln:&lt;path&gt;</code>, including <code>.sln</code> and <code>.slnx</code>. The profile <code>csharp-dotnet-msbuild-read-only</code> requires a .NET 10+ SDK and caller-owned <code>dotnet restore</code>. Clew uses the selected project's design-time compiler inputs; it does not restore packages for you.</p><p><strong>What the installed case found:</strong> in the public Orders fixture, <code>OrderService.Create(string, decimal)</code> calls <code>IOrderRepository.Save(Order)</code>. Roslyn resolves that interface target as <code>COMPILER_EXACT</code> at <code>Orders.cs:45</code>. This establishes a compiler relation, not the concrete repository implementation used at runtime. <a href="https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/fixtures/csharp-aspnetcore/src/Orders.Core/Orders.cs#L45">Read the call ↗</a>.</p><p>The same solution returned seven distinct MVC method/path pairs, including <code>GET /api/Orders/{id:int}</code>, <code>POST /api/Orders</code> and <code>GET /health</code>. Authority is <code>ROSLYN_RESOLVED_ATTRIBUTES</code>; runtime activation remains <code>UNPROVEN</code>. Overall coverage is <code>PARTIAL</code> with certainty <code>UNSURE</code>. <a href="./examples/current-workflow/reproduce/csharp/result.json">Read all seven routes, source bindings and boundaries</a>.</p><p>The caller restored Orders.Api and deliberately left Orders.Tests unrestored. Returned boundaries include <code>CSHARP_PROJECT_UNRESTORED</code>, unindexed source-generator output and generated source bodies. The case left caller source and build outputs unchanged. Custom controller discovery, conventional routing, minimal APIs and API-version URL formats require additional evidence.</p><p>This release supports reading and analysis of selected C# projects. C# candidate generation, F# and Visual Basic are outside this profile. <a href="https://github.com/codeclew/codeclew/blob/v0.13.11/README.md#practical-code-navigation">Release source requirements ↗</a>.</p></section><section class="task-section" id="source-limits"><h2>What does this result establish?</h2><dl class="evidence-questions"><dt>Which source?</dt><dd>Check the repository, revision or saved-edit snapshot and selected compilation. A retained source link describes those bytes.</dd><dt>Which kind of evidence?</dt><dd>Syntax records what is written. Compiler facts support selected resolved identities and relations. Neither establishes deployment activity or runtime outcomes.</dd><dt>How complete?</dt><dd>Read scope, truncation, missing inputs and unresolved relations. An absent record is not always evidence that code is absent.</dd><dt>Who wrote the explanation?</dt><dd>An author interprets the source. Structural readiness checks shape and bindings. Meaning <code>UNASSESSED</code> has no model approval; a reviewed answer still keeps its source and runtime limits.</dd><dt>Does it match today's checkout?</dt><dd>Check freshness separately. An immutable old result can remain readable while the live checkout has changed.</dd></dl></section><section class="task-section" id="historical-studies"><h2>Choose an older study deliberately</h2><div class="history-list"><article id="self-documentation"><h3>Five Clew service sections · authored with 0.13.7</h3><p>Source revision <code>fd82a763</code>; five accepted narrative sections. Publication is <code>PARTIAL</code>, with 15 worker/NOTE gaps, pinned freshness <code>UNVERIFIED</code> and runtime <code>UNKNOWN</code>. The later reader does not change those source claims.</p><p><a href="./examples/codeclew-source/docs/index.html">Open the historical reader</a> · <a href="./examples/codeclew-source/reproduce/qualification.json">Qualification record</a> · <a href="./examples/codeclew-source/reproduce/README.md">Historical reproduction package</a></p><p>The retained root's index/catalog refer to <code>ef418…</code>, while help/runbooks refer to <code>aa52…</code>. These old entry routes and all native publication bytes are preserved. The fresh example must check coherent navigation when generated.</p></article>
+<article id="release-0-13-1"><h3>Java method draft · 0.13.1</h3><p><code>TaskStateTransitions.promote(Task, Instant)</code> is an experimental source-local method explanation. Native status remains <code>DRAFT</code> / <code>UNREVIEWED</code> / <code>NOT_PUBLISHED</code>. Its retained review notes and single-run timing establish no runtime behavior or latency promise.</p><p><a href="./examples/task-promotion/index.html">Read the historical draft</a> · <a href="./examples/task-promotion/provenance.json">Original provenance</a> · <a href="https://github.com/codeclew/codeclew/blob/v0.13.1/docs/releases/v0.13.1.md">Release scope ↗</a></p></article>
+<article id="navigation-study"><h3>Navigation implementation · 0.3.1</h3><p>A pinned Rust syntax extraction at <code>64819fd</code> explains an older navigation decision path. Its diagram relations are interpretation, not resolved Rust calls.</p><p><a href="./examples/navigation-historical/index.html">Interactive historical walkthrough</a> · <a href="./evidence/nav-query.json">Claims and source digests</a></p></article>
+<article id="saved-edits"><h3>Saved-edit qualification · development source launcher</h3><p>The Pricing fixture and repository measurements used a macOS arm64 development launcher. Main/test scope, partial Kotlin coverage and syntax-only Rust consequences remain explicit. Inspection did not execute tests; elapsed times are scoped diagnostics.</p><p><a href="./working-tree.html#example">Read the guided historical case</a> · <a href="./evidence/working-tree-qualification.json">Fixture checks</a> · <a href="./evidence/working-tree-dogfood.json">Repository measurements</a></p></article>
+<article id="spring-study"><h3>Two-service Spring source inventory · earlier pilot</h3><p>Thirty-one declared roots were checked against committed source. Source/configuration observations do not establish deployed scheduling, event delivery or runtime activation.</p><p><a href="./pilot.html">Historical Spring case</a> · <a href="./evidence/kotlin-engineering-sample.json" id="kotlin-checks">Earlier Kotlin source fragments and digests</a></p></article></div><span id="historical-records" class="legacy-anchor"></span></section></main><!-- SITE_FOOTER -->
 <footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
-<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start</p>
+<a href="./index.html">Start with Clew</a>
 </div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
+<div class="nav-group"><p>Tasks</p>
+<a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a>
 </div>
 <div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html" aria-current="page">Release evidence</a>
+<a href="./evidence.html" aria-current="page">Checks and limits</a>
 </div>
 <div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html">Historical Spring case</a>
-</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
-<!-- /SITE_FOOTER -->
-  <script src="./app.js?v=51e5e2dc14fe" defer></script></body>
-</html>
+<a href="./extend.html">Contribute</a>
+</div><div class="nav-group"><p>History</p><a href="./pilot.html">Historical Spring case</a></div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER --><script src="./app.js?v=96cc5dc96bed" defer></script></body></html>

@@ -1,0 +1,35 @@
+{
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "endByte": 1539,
+  "fragmentDigest": "sha256:5ed1c61da45493ab0dbd06bba764dfd0e35558d3e860638d11ec6b280785e5f0",
+  "nextCursor": null,
+  "receiptDigest": "sha256:a473816e7a9bdbf03143372f411938cdd23a2ace372abc43d2b0bc23348934a0",
+  "receiptType": "SOURCE_PART",
+  "recordDigest": "sha256:14c0e13600d7acb7b7473036ff36ed778d36e476968d481a86acfb64ce0e636b",
+  "reference": "s160",
+  "schema": "codeclew-documentation-source-part/1.0",
+  "snapshot": "sha256:5a9c13cb5716f6ebe4256541028e4104b5e5ba0ed6a9b26480c20a4dceb33a24/4319",
+  "source": {
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "endLine": 137,
+    "evidenceDigest": "sha256:296f403dfefb6dd9f47cc4ea6af8cc926ce62e143f795f4af7b31c61a4032c65",
+    "file": "scripts/build_cli_documentation.py",
+    "id": "cli-documentation-de4cd73046421c440a6d",
+    "occurrence": {
+      "blob": "a6352ae84b6909b7ab2aacdcf964bf679c1dff78",
+      "endByte": 7065,
+      "snapshot": "sha256:c315b611c3a5c118f97f5c2d40023779b01e34138cac6334cc086550156a9262",
+      "startByte": 5526
+    },
+    "revision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+    "service": "cli-documentation",
+    "startLine": 109,
+    "textDigest": "sha256:5ed1c61da45493ab0dbd06bba764dfd0e35558d3e860638d11ec6b280785e5f0",
+    "url": "https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L109-L137"
+  },
+  "sourceId": "cli-documentation-de4cd73046421c440a6d",
+  "startByte": 0,
+  "text": "def render_claims(claims):\n    escape = html.escape\n    articles = []\n    for claim in claims.values():\n        sources = []\n        for source in claim[\"evidence\"]:\n            label = f\"{source['file']}:{source['startLine']}–{source['endLine']}\"\n            sources.append(\n                '<div class=\"source-record\">'\n                f'<a href=\"{escape(source[\"url\"])}\">{escape(label)} ↗</a>'\n                '<p class=\"source-authority\">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p>'\n                f'<pre><code>{escape(source[\"text\"])}</code></pre>'\n                '<details><summary>Digests and evidence binding</summary>'\n                f'<p>Fragment: {escape(source[\"textDigest\"])}<br>'\n                f'File: {escape(source[\"fileDigest\"])}<br>'\n                f'Context: {escape(source[\"contextId\"])}<br>'\n                f'Evidence: {escape(source[\"evidenceDigest\"])}</p></details></div>'\n            )\n        articles.append(\n            f'<article class=\"claim-panel\" id=\"claim-{claim[\"id\"]}\">'\n            f'<p class=\"claim-id\">claim:{claim[\"id\"]}</p>'\n            f'<h2>{escape(claim[\"title\"])}</h2><p>{escape(claim[\"summary\"])}</p>'\n            f'<p class=\"mechanism\">{escape(claim[\"mechanism\"])}</p>'\n            '<div class=\"claim-boundary\"><b>Evidence boundary</b>'\n            f'<p>{escape(claim[\"boundary\"])}</p></div>'\n            '<details class=\"claim-evidence\"><summary>Inspect supporting code</summary>'\n            + \"\".join(sources) + '</details></article>'\n        )\n    return \"\\n\".join(articles)",
+  "totalTextBytes": 1539,
+  "work": "a98f588189b7468a831278c83912c87cd7eca91e956813a319a800427aa0d989"
+}

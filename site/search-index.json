@@ -1,344 +1,230 @@
 [
   {
-    "title": "Home",
+    "title": "Start with Clew",
     "url": "./index.html",
-    "description": "Install Codeclew, supported languages and the everyday analysis flow.",
-    "group": "Start here"
+    "description": "Install Clew and choose one engineering question.",
+    "group": "Start"
   },
   {
-    "title": "A clearer path through your code.",
-    "url": "./index.html#top",
-    "description": "Home",
-    "group": "Start here"
+    "title": "What do you need to do?",
+    "url": "./index.html#tasks",
+    "description": "Start with Clew",
+    "group": "Start"
   },
   {
-    "title": "Small question. Followable answer.",
-    "url": "./index.html#how",
-    "description": "Home",
-    "group": "Start here"
+    "title": "Install and check your version",
+    "url": "./index.html#install",
+    "description": "Start with Clew",
+    "group": "Start"
   },
   {
-    "title": "Different languages. Honest levels of detail.",
+    "title": "Choose the evidence your task needs",
     "url": "./index.html#support",
-    "description": "Language support: Kotlin, Java, Rust, Python, TypeScript and JavaScript; analysis and managed changes.",
-    "group": "Start here"
+    "description": "Language support: Kotlin, Java, Rust, Python, TypeScript and JavaScript; C# Roslyn read-only analysis is included since 0.13.11 and requires .NET 10+ SDK (dotnet) and caller restore.",
+    "group": "Start"
   },
   {
-    "title": "Curiosity can stay local.",
+    "title": "From selected source to an answer",
+    "url": "./index.html#how-it-works",
+    "description": "Start with Clew",
+    "group": "Start"
+  },
+  {
+    "title": "Choose what you share",
     "url": "./index.html#privacy",
-    "description": "Home",
-    "group": "Start here"
+    "description": "Start with Clew",
+    "group": "Start"
   },
   {
-    "title": "Every claim needs a place to stand.",
-    "url": "./index.html#evidence",
-    "description": "Home",
-    "group": "Start here"
-  },
-  {
-    "title": "Navigation walkthrough",
+    "title": "Find the code",
     "url": "./nav-query.html",
-    "description": "Find an exact declaration and inspect its retained source evidence.",
-    "group": "Guides"
+    "description": "Find an exact function, read its source and handle a no-match result.",
+    "group": "Tasks"
   },
   {
-    "title": "Start with a precise question",
-    "url": "./nav-query.html#claim-entry",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
+    "title": "Start with a question the source can answer",
+    "url": "./nav-query.html#question",
+    "description": "Find the code",
+    "group": "Tasks"
   },
   {
-    "title": "Check that this task can run",
-    "url": "./nav-query.html#claim-admit",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
+    "title": "Discover the repository, then query one exact name",
+    "url": "./nav-query.html#example",
+    "description": "Find the code",
+    "group": "Tasks"
   },
   {
-    "title": "Open a session and retain context",
-    "url": "./nav-query.html#claim-context",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
+    "title": "Ask for the answer with its source",
+    "url": "./nav-query.html#read-source",
+    "description": "Find the code",
+    "group": "Tasks"
   },
   {
-    "title": "Return an error; attempt cleanup",
-    "url": "./nav-query.html#claim-failure",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
+    "title": "Use a no-match result to choose the next step",
+    "url": "./nav-query.html#when-it-cannot-answer",
+    "description": "Find the code",
+    "group": "Tasks"
   },
   {
-    "title": "Separate ranking from a supported decision",
-    "url": "./nav-query.html#claim-decision",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
+    "title": "Use the result",
+    "url": "./nav-query.html#next",
+    "description": "Find the code",
+    "group": "Tasks"
   },
   {
-    "title": "One exact, fully covered identifier",
-    "url": "./nav-query.html#claim-supported",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
+    "title": "Earlier navigation evidence",
+    "url": "./nav-query.html#historical",
+    "description": "Find the code",
+    "group": "Tasks"
   },
   {
-    "title": "Keep candidates; explain what is missing",
-    "url": "./nav-query.html#claim-abstain",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
-  },
-  {
-    "title": "Return a bounded result you can continue",
-    "url": "./nav-query.html#claim-result",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
-  },
-  {
-    "title": "Optional: follow retained names",
-    "url": "./nav-query.html#claim-references",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
-  },
-  {
-    "title": "A real result, with its limits intact.",
-    "url": "./nav-query.html#reproduce",
-    "description": "Navigation walkthrough",
-    "group": "Guides"
-  },
-  {
-    "title": "Service documentation",
+    "title": "Create a first document",
     "url": "./documentation.html",
-    "description": "Maintain service explanations or draft one internal process with source, pseudocode and visible limits.",
-    "group": "Guides"
+    "description": "Write one useful overview, inspect a citation and ask the saved source a question.",
+    "group": "Tasks"
   },
   {
-    "title": "Understand Codeclew through its own source.",
-    "url": "./documentation.html#codeclew-source-docs",
-    "description": "Service documentation",
-    "group": "Guides"
+    "title": "Select one small committed source scope",
+    "url": "./documentation.html#source-snapshot",
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "Write one useful overview in four steps.",
+    "title": "1. Prepare the source and authoring files",
     "url": "./documentation.html#first-document",
-    "description": "Service documentation",
-    "group": "Guides"
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "Start with the question you need to answer.",
-    "url": "./documentation.html#task-paths",
-    "description": "Service documentation",
-    "group": "Guides"
+    "title": "2. Ask your current agent for one useful overview",
+    "url": "./documentation.html#write",
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "From service map to source code.",
-    "url": "./documentation.html#service-docs",
-    "description": "Service documentation",
-    "group": "Guides"
+    "title": "3. Submit, inspect readiness and publish locally",
+    "url": "./documentation.html#publish",
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "Start locally with one service.",
-    "url": "./documentation.html#documentation-scope",
-    "description": "Service documentation",
-    "group": "Guides"
+    "title": "4. Ask a question against the saved source",
+    "url": "./documentation.html#ask-source",
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "Describe a selected internal flow.",
-    "url": "./documentation.html#native-visuals",
-    "description": "Service documentation",
-    "group": "Guides"
+    "title": "5. Update without losing the existing explanation",
+    "url": "./documentation.html#update",
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "A fresh repository already has help.",
-    "url": "./documentation.html#offline-help",
-    "description": "Service documentation",
-    "group": "Guides"
+    "title": "Keep the first document small",
+    "url": "./documentation.html#next",
+    "description": "Create a first document",
+    "group": "Tasks"
   },
   {
-    "title": "Follow selected calls between documented processes.",
-    "url": "./documentation.html#native-source-pages",
-    "description": "Service documentation",
-    "group": "Guides"
-  },
-  {
-    "title": "Keep the answer close to the code.",
-    "url": "./documentation.html#reviewed-questions",
-    "description": "Service documentation",
-    "group": "Guides"
-  },
-  {
-    "title": "Keep the text. Select its source context.",
-    "url": "./documentation.html#maintained-explanations",
-    "description": "Service documentation",
-    "group": "Guides"
-  },
-  {
-    "title": "Export a selected flow with its source.",
-    "url": "./documentation.html#static-flow-pages",
-    "description": "Service documentation",
-    "group": "Guides"
-  },
-  {
-    "title": "Add a note to the thing it explains.",
-    "url": "./documentation.html#notes-and-comments",
-    "description": "Service documentation",
-    "group": "Guides"
-  },
-  {
-    "title": "Internal process draft: follow one Java method.",
-    "url": "./documentation.html#process-draft",
-    "description": "Service documentation",
-    "group": "Guides"
-  },
-  {
-    "title": "Saved edits guide",
+    "title": "Review saved edits",
     "url": "./working-tree.html",
-    "description": "Compare saved changes against HEAD and inspect their consequences.",
-    "group": "Guides"
+    "description": "Inspect a changed body, signature or removed call and choose the next checks.",
+    "group": "Tasks"
   },
   {
-    "title": "Inspect the method behind the example",
-    "url": "./working-tree.html#report-evidence",
-    "description": "Saved edits guide",
-    "group": "Guides"
+    "title": "Three changes, three decisions",
+    "url": "./working-tree.html#example",
+    "description": "Review saved edits",
+    "group": "Tasks"
   },
   {
-    "title": "Saved edits example",
-    "url": "./working-tree-example.html",
-    "description": "An interactive retained report with before and after source.",
-    "group": "Guides"
+    "title": "Prepare the public Pricing fixture",
+    "url": "./working-tree.html#try-it",
+    "description": "Review saved edits",
+    "group": "Tasks"
   },
   {
-    "title": "Select a declaration",
-    "url": "./working-tree-example.html#selectionTitle",
-    "description": "Saved edits example",
-    "group": "Guides"
+    "title": "Inspect the saved files and render a report",
+    "url": "./working-tree.html#inspect",
+    "description": "Review saved edits",
+    "group": "Tasks"
   },
   {
-    "title": "Architecture",
-    "url": "./architecture.html",
-    "description": "How source snapshots, language facts and bounded context support an explanation.",
-    "group": "Reference"
+    "title": "Check freshness after another saved edit",
+    "url": "./working-tree.html#freshness",
+    "description": "Review saved edits",
+    "group": "Tasks"
   },
   {
-    "title": "Each stage adds information and keeps its limits visible.",
-    "url": "./architecture.html#pipeline",
-    "description": "Architecture",
-    "group": "Reference"
+    "title": "Run the project checks you selected",
+    "url": "./working-tree.html#next",
+    "description": "Review saved edits",
+    "group": "Tasks"
   },
   {
-    "title": "Start with the trigger, then follow the callable.",
-    "url": "./architecture.html#spring",
-    "description": "Architecture",
-    "group": "Reference"
-  },
-  {
-    "title": "Select the committed snapshot. Keep local edits in place.",
-    "url": "./architecture.html#committed",
-    "description": "Architecture",
-    "group": "Reference"
-  },
-  {
-    "title": "Recover at the stage that reported the problem.",
-    "url": "./architecture.html#recovery",
-    "description": "Architecture",
-    "group": "Reference"
-  },
-  {
-    "title": "Source facts have different strengths.",
-    "url": "./architecture.html#compatibility",
-    "description": "Architecture",
-    "group": "Reference"
-  },
-  {
-    "title": "Have another thread to follow?",
-    "url": "./architecture.html#extend",
-    "description": "Architecture",
-    "group": "Reference"
-  },
-  {
-    "title": "Release evidence",
+    "title": "Checks and limits",
     "url": "./evidence.html",
-    "description": "Current release checks, the public process draft sample and qualification limits.",
+    "description": "Read current qualification status and distinguish historical evidence.",
     "group": "Reference"
   },
   {
-    "title": "One source-local Java method draft.",
-    "url": "./evidence.html#release-0-13-1",
-    "description": "Release evidence",
+    "title": "Recorded installed-release checks",
+    "url": "./evidence.html#current-checks",
+    "description": "Checks and limits",
     "group": "Reference"
   },
   {
-    "title": "Extend Codeclew",
+    "title": "C# is included in 0.13.11",
+    "url": "./evidence.html#csharp-preview",
+    "description": "Published C# Roslyn read-only analysis: installed example, .NET 10+ SDK (dotnet), exact project or solution scope and caller restore.",
+    "group": "Reference"
+  },
+  {
+    "title": "What does this result establish?",
+    "url": "./evidence.html#source-limits",
+    "description": "Checks and limits",
+    "group": "Reference"
+  },
+  {
+    "title": "Choose an older study deliberately",
+    "url": "./evidence.html#historical-studies",
+    "description": "Checks and limits",
+    "group": "Reference"
+  },
+  {
+    "title": "Contribute",
     "url": "./extend.html",
-    "description": "Contributor guide: add a capability, language adapter, build provider, framework rule or CLI workflow.",
+    "description": "Choose the source layer for a capability, adapter or build provider.",
     "group": "Contribute"
   },
   {
-    "title": "Pick a small knot to untangle.",
+    "title": "Start with a concrete engineering question",
     "url": "./extend.html#start",
-    "description": "Extend Codeclew",
+    "description": "Contribute",
     "group": "Contribute"
   },
   {
-    "title": "Where does your capability fit?",
+    "title": "Choose the owning layer",
     "url": "./extend.html#extension-points",
-    "description": "Extend Codeclew",
+    "description": "Contribute",
     "group": "Contribute"
   },
   {
-    "title": "Define what the result means.",
-    "url": "./extend.html#contract",
-    "description": "Extend Codeclew",
+    "title": "Contribute within the C# preview scope",
+    "url": "./extend.html#csharp-preview",
+    "description": "Contribute to C# Roslyn read-only analysis with .NET 10+ SDK (dotnet), restored project inputs and explicit MVC attribute-route boundaries.",
     "group": "Contribute"
   },
   {
-    "title": "Add support for a scheduling annotation.",
-    "url": "./extend.html#example",
-    "description": "Extend Codeclew",
-    "group": "Contribute"
-  },
-  {
-    "title": "Follow the new path all the way through.",
+    "title": "Verify the changed behavior",
     "url": "./extend.html#verify",
-    "description": "Extend Codeclew",
+    "description": "Contribute",
     "group": "Contribute"
   },
   {
-    "title": "Bring the capability and its proof.",
+    "title": "Make the contribution reviewable",
     "url": "./extend.html#contribute",
-    "description": "Extend Codeclew",
+    "description": "Contribute",
     "group": "Contribute"
-  },
-  {
-    "title": "Historical Spring case",
-    "url": "./pilot.html",
-    "description": "A historical two-service pilot: 31 Spring roots checked against committed source.",
-    "group": "Archive"
-  },
-  {
-    "title": "Three trigger families. One missing documentation entry.",
-    "url": "./pilot.html#result",
-    "description": "Historical Spring case",
-    "group": "Archive"
-  },
-  {
-    "title": "Bind the scope. Compare the complete inventory.",
-    "url": "./pilot.html#method",
-    "description": "Historical Spring case",
-    "group": "Archive"
-  },
-  {
-    "title": "Inspect the send. Keep the handoff conditional.",
-    "url": "./pilot.html#source-findings",
-    "description": "Historical Spring case",
-    "group": "Archive"
-  },
-  {
-    "title": "A declared trigger is a place to start investigating.",
-    "url": "./pilot.html#limits",
-    "description": "Historical Spring case",
-    "group": "Archive"
-  },
-  {
-    "title": "Read the implementation. Keep distinct studies distinct.",
-    "url": "./pilot.html#provenance",
-    "description": "Historical Spring case",
-    "group": "Archive"
   }
 ]

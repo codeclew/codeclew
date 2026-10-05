@@ -1,0 +1,311 @@
+{
+  "case": "first-document-saved-source-preserved-update",
+  "status": "EXECUTED_OFFICIAL_RELEASE",
+  "version": "0.13.11",
+  "release": "https://github.com/codeclew/codeclew/releases/tag/v0.13.11",
+  "releasePublishedAt": "2026-10-05T13:44:24Z",
+  "officialCoreRuntimeKey": "sha256:d4668b7b56f6e470dc4b1be44106a348422d68e7c55234802b488888b66e9652",
+  "publicReleaseRevision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+  "selectedSource": "scripts/build_cli_documentation.py",
+  "releasedSourceFileSha256": "63496180e6f5331bd87470d1afa822e9a8fb60e5c2b351a7887323d563bc5385",
+  "releaseCheckoutClean": true,
+  "firstUsefulOverview": {
+    "publication": {
+      "bundle": "bf1cf2b887bd2cd30062cc00d6da3ac18722ddd76f8310d1df1006f37f7310ab",
+      "contextDigest": "sha256:b861be13851f9ab21435add5830d6a028ddf1235369c2be968180a2feda8990b",
+      "documentationLanguage": "en",
+      "documentedOperations": 0,
+      "documentedSections": 1,
+      "documentedViews": 0,
+      "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+      "explicitGaps": 9,
+      "index": "docs/index.html",
+      "inputDigest": "sha256:ba8c32301a10195e202e315270326dfd14af194b0bdb2cb2642f198baa605bc0",
+      "meaningReview": "UNASSESSED",
+      "proposal": "fb3d4e02b3bfe1f82d91c2fe44c02050951ca177bb67c56770f8315e0cb54e69",
+      "released": false,
+      "runtime": "UNKNOWN",
+      "scenarios": 0,
+      "schema": "codeclew-docs-render/1.0",
+      "services": 1,
+      "snapshot": "sha256:5a9c13cb5716f6ebe4256541028e4104b5e5ba0ed6a9b26480c20a4dceb33a24/4319",
+      "status": "PARTIAL",
+      "translationComplete": true,
+      "translationGaps": 0,
+      "unresolved": {},
+      "updateFailures": {}
+    },
+    "reader": "../../docs/generated/bf1cf2b887bd2cd30062cc00d6da3ac18722ddd76f8310d1df1006f37f7310ab/services/cli-documentation.html"
+  },
+  "twoSectionBaselineBundle": "9506f3c684e16d42f212f869abeae1097cb3ed745bce6fccb685d99ca8f3cd3e",
+  "savedSourceQuestion": {
+    "readerUnchanged": true,
+    "acquisitionStageEvents": 0,
+    "publicationStageEvents": 0,
+    "work": "f3697fab1ea0d12b41567de2e5d4eef7d8c1a014f14812a34883c59c5af99aac",
+    "snapshot": "sha256:5a9c13cb5716f6ebe4256541028e4104b5e5ba0ed6a9b26480c20a4dceb33a24/4319",
+    "progressPhases": [
+      "BUILD_CONTEXT_ROWS",
+      "LOAD_RETAINED_DEPENDENCIES",
+      "LOAD_RETAINED_SERVICE",
+      "LOAD_RETAINED_SNAPSHOT",
+      "LOAD_SOURCE_INPUT_CONTRACT",
+      "LOAD_WORK_RECORD",
+      "LOAD_WORK_TABLES",
+      "SAVE_READ_RECEIPT",
+      "WAIT_READ_RECEIPT_LOCK",
+      "docs.work"
+    ]
+  },
+  "localMaintenanceExercise": {
+    "authority": "CALLER_OWNED_LOCAL_EXERCISE_NOT_RELEASED_CODECLEW_SOURCE",
+    "commit": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+    "parentPublicRevision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+    "focusedSyntheticTests": {
+      "releasedSourceExit": 1,
+      "exerciseSourceExit": 0,
+      "testCount": 2,
+      "validSvgNoSubprocessNoWrites": true,
+      "nonSvgRootRejectedAfterExercise": true,
+      "realSiteGeneratorExecuted": false
+    },
+    "sourceMirror": "../exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html",
+    "sourceLinkTemplate": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/{revision}/{file}.html",
+    "registrationInputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+    "changedCheckExit": 4,
+    "changedCheckStatus": "CHECKED",
+    "freshnessReviewRequired": true,
+    "workingPublication": {
+      "bundle": "af80c9c8e001415fe1320f68fff3015f4b347c0461d2d05cd25817349a83b711",
+      "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
+      "documentationLanguage": "en",
+      "documentedOperations": 0,
+      "documentedSections": 2,
+      "documentedViews": 0,
+      "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+      "explicitGaps": 9,
+      "index": "docs/index.html",
+      "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+      "meaningReview": "UNASSESSED",
+      "proposal": "fb1067f32778c2aed827ec15f9dad55a78263cbee72094094794500ab1764597",
+      "released": false,
+      "runtime": "UNKNOWN",
+      "scenarios": 0,
+      "schema": "codeclew-docs-render/1.0",
+      "services": 1,
+      "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+      "status": "PARTIAL",
+      "translationComplete": true,
+      "translationGaps": 0,
+      "unresolved": {},
+      "updateFailures": {}
+    }
+  },
+  "currentPublication": {
+    "bundle": "0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b",
+    "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
+    "documentationLanguage": "en",
+    "documentedOperations": 0,
+    "documentedSections": 2,
+    "documentedViews": 0,
+    "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+    "explicitGaps": 9,
+    "index": "docs/index.html",
+    "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+    "released": true,
+    "runtime": "UNKNOWN",
+    "scenarios": 0,
+    "schema": "codeclew-docs-render/1.0",
+    "services": 1,
+    "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+    "status": "PARTIAL",
+    "translationComplete": true,
+    "translationGaps": 0,
+    "unresolved": {},
+    "updateFailures": {}
+  },
+  "preservation": {
+    "responsibilitiesContentExactEqual": true,
+    "ownerNoteBytesExactEqual": true,
+    "ownerNoteSha256": "7bbddab09c36d2d1d682ce66ed5b9b932ba1fe5b319833c3f1af8b3035067cdd",
+    "previousPublicationFilesExactEqual": true,
+    "previousPublicationFileCount": 47,
+    "initialOverviewPreservedAsExactPrefix": true,
+    "retainedUnrelatedMeaningReverified": false
+  },
+  "limitations": [
+    "Meaning remains UNASSESSED; runtime remains UNKNOWN.",
+    "Python syntax capture has unresolved call targets and lexical ordering.",
+    "Unrelated responsibilities content is preserved exactly and still requires source freshness review.",
+    "Owner guidance is imported human intent, not source proof.",
+    "No provider/model driver or real Graphviz generation was run.",
+    "Static source mirror does not make the local commit an upstream release.",
+    "Native root-overview.html files are retained root restore payloads; their links assume the docs-root location."
+  ],
+  "focusedPublicChecks": "observed/focused-public-checks.json",
+  "releaseCheckpoint": {
+    "command": "clew docs render --root \"$docs\" --snapshot sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320 --language en --publish",
+    "launcherVersion": "0.13.11",
+    "publication": {
+      "bundle": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+      "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
+      "documentationLanguage": "en",
+      "documentedOperations": 0,
+      "documentedSections": 2,
+      "documentedViews": 0,
+      "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+      "explicitGaps": 9,
+      "index": "docs/index.html",
+      "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+      "released": true,
+      "runtime": "UNKNOWN",
+      "scenarios": 0,
+      "schema": "codeclew-docs-render/1.0",
+      "services": 1,
+      "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+      "status": "PARTIAL",
+      "translationComplete": true,
+      "translationGaps": 0,
+      "unresolved": {},
+      "updateFailures": {}
+    },
+    "acceptedMeaningStates": {
+      "service:cli-documentation/section-overview": "UNASSESSED",
+      "service:cli-documentation/section-responsibilities": "UNASSESSED"
+    },
+    "historyList": {
+      "items": [
+        {
+          "current": true,
+          "id": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+          "latestReleased": true,
+          "ordinal": 1,
+          "parent": null,
+          "released": true,
+          "tags": {},
+          "targets": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        }
+      ],
+      "nextCursor": null,
+      "omitted": [],
+      "schema": "codeclew-docs-page/1.0",
+      "total": 1
+    },
+    "integrity": {
+      "evidenceRetention": "COMPLETE",
+      "id": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+      "items": [
+        {
+          "id": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+          "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+          "observedTags": {},
+          "ordinal": 1,
+          "parent": null,
+          "released": true,
+          "targetRevisions": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        }
+      ],
+      "missingFiles": [],
+      "nextCursor": null,
+      "omitted": [],
+      "schema": "codeclew-docs-page/1.0",
+      "status": "FROZEN_SNAPSHOT",
+      "total": 1
+    },
+    "preservation": {
+      "previousBundleFilesExactEqual": true,
+      "previousBundleFileCount": 71,
+      "sourceAcquisitionStageEvents": 0,
+      "renderProgressPhases": [
+        "",
+        "LOAD_RETAINED_DEPENDENCIES",
+        "LOAD_RETAINED_SERVICE",
+        "LOAD_SOURCE_INPUT_CONTRACT",
+        "PUBLISH_DOCUMENTATION",
+        "docs.render"
+      ],
+      "explicitSavedSnapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320"
+    },
+    "olderWorkingSnapshotsRelabeled": false,
+    "newEmptyStateSourceFixIncludedInInstalledOutput": false
+  },
+  "rendererRefresh01313": {
+    "authority": "OFFICIAL_INSTALLED_RELEASE",
+    "version": "0.13.13",
+    "release": "https://github.com/codeclew/codeclew/releases/tag/v0.13.13",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:5670c4ad6be487938f90dc00655f2eeff807e05a35bd88db62521cdec8b9c602",
+    "runtimeManifestDigest": "sha256:f9b7f93ae1daf296ea2562490c0ed23b832fd278e4d9e11d016f316585609c37",
+    "sourceAndAuthoringRecordedWith": "0.13.11",
+    "rendererRefreshOnly": true,
+    "sourceReacquired": false,
+    "newModelReview": false,
+    "publication": {
+      "bundle": "0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b",
+      "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
+      "documentationLanguage": "en",
+      "documentedOperations": 0,
+      "documentedSections": 2,
+      "documentedViews": 0,
+      "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+      "explicitGaps": 9,
+      "index": "docs/index.html",
+      "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+      "released": true,
+      "runtime": "UNKNOWN",
+      "scenarios": 0,
+      "schema": "codeclew-docs-render/1.0",
+      "services": 1,
+      "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+      "status": "PARTIAL",
+      "translationComplete": true,
+      "translationGaps": 0,
+      "unresolved": {},
+      "updateFailures": {}
+    },
+    "history": {
+      "items": [
+        {
+          "current": true,
+          "id": "0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b",
+          "latestReleased": true,
+          "ordinal": 2,
+          "parent": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+          "released": true,
+          "tags": {},
+          "targets": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        },
+        {
+          "current": false,
+          "id": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+          "latestReleased": false,
+          "ordinal": 1,
+          "parent": null,
+          "released": true,
+          "tags": {},
+          "targets": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        }
+      ],
+      "nextCursor": null,
+      "omitted": [],
+      "schema": "codeclew-docs-page/1.0",
+      "total": 2
+    },
+    "previousBundleFilesExactEqual": true,
+    "previousBundleFileCount": 95,
+    "notesExactEqual": true,
+    "nativeProducerFilesCopiedByteExactly": 124,
+    "nativeHistoryTitle": "Released documentation snapshots",
+    "renderRecord": "observed/renderer-01313-render.json",
+    "historyRecord": "observed/renderer-01313-history.json",
+    "command": "clew docs render --root \"$docs\" --snapshot sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320 --language en --publish"
+  }
+}

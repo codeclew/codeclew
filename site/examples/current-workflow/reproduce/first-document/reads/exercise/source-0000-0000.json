@@ -1,0 +1,35 @@
+{
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "endByte": 1329,
+  "fragmentDigest": "sha256:d530422d767f53f73654d17b5ef3caf82c0221314dc8d07faf74aedc7f62d928",
+  "nextCursor": null,
+  "receiptDigest": "sha256:95260694e4f443d279fbb6139db078478ceb73abf7fd0e88ca91c8cf0f4cf109",
+  "receiptType": "SOURCE_PART",
+  "recordDigest": "sha256:61e9e979492d9f509b03b78105e574f4d37d9acb8b6ba9306830c6e70dfcf74b",
+  "reference": "s109",
+  "schema": "codeclew-documentation-source-part/1.0",
+  "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+  "source": {
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "endLine": 106,
+    "evidenceDigest": "sha256:ffb1dc63141175b26fab58fac7c2d62497116f91c9cca941ebd1aa9bd98f2023",
+    "file": "scripts/build_cli_documentation.py",
+    "id": "cli-documentation-943e7c4c9b378cf363ac",
+    "occurrence": {
+      "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+      "endByte": 5523,
+      "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+      "startByte": 4194
+    },
+    "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+    "service": "cli-documentation",
+    "startLine": 84,
+    "textDigest": "sha256:d530422d767f53f73654d17b5ef3caf82c0221314dc8d07faf74aedc7f62d928",
+    "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L84-L106"
+  },
+  "sourceId": "cli-documentation-943e7c4c9b378cf363ac",
+  "startByte": 0,
+  "text": "def render_svg(dot, claims):\n    raw = subprocess.check_output([\"dot\", \"-Tsvg\"], input=dot.encode())\n    ET.register_namespace(\"\", \"http://www.w3.org/2000/svg\")\n    ET.register_namespace(\"xlink\", \"http://www.w3.org/1999/xlink\")\n    svg = ET.fromstring(raw)\n    svg.attrib.pop(\"width\", None)\n    svg.attrib.pop(\"height\", None)\n    svg.set(\"aria-labelledby\", \"flow-title flow-description\")\n    ns = \"{http://www.w3.org/2000/svg}\"\n    title = ET.Element(ns + \"title\", id=\"flow-title\")\n    title.text = \"How nav query moves from a request to bounded source evidence\"\n    description = ET.Element(ns + \"desc\", id=\"flow-description\")\n    description.text = \"Select a step or arrow to inspect its supporting code. Task readiness precedes context creation. The decision branches into SUPPORTED or ABSTAIN. Errors leave the main path. Dashed arrows are agent-interpreted static flow, not runtime observations.\"\n    svg.insert(0, description)\n    svg.insert(0, title)\n    for link in svg.iter(ns + \"a\"):\n        href = link.get(\"{http://www.w3.org/1999/xlink}href\", \"\")\n        id = href.rsplit(\"#claim-\", 1)[-1]\n        assert id in claims\n        link.set(\"data-claim\", id)\n        link.set(\"aria-label\", claims[id][\"title\"] + \": inspect source evidence\")\n        link.set(\"tabindex\", \"0\")\n    return ET.tostring(svg, encoding=\"unicode\")",
+  "totalTextBytes": 1329,
+  "work": "86397d7e8d97a9f2e4fe27eb486ec7b4d2e121a297dfd5ac64884ed8bb5671ba"
+}

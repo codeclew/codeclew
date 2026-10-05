@@ -1,0 +1,35 @@
+{
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "endByte": 1952,
+  "fragmentDigest": "sha256:5924ef657fba968bdbec239fa07b40f819523fdf00228944209332bcc84d79f3",
+  "nextCursor": null,
+  "receiptDigest": "sha256:6b64a29400b3f390e895cb0e7ae5e12b7875fbe512b39128d171f411fb68bd60",
+  "receiptType": "SOURCE_PART",
+  "recordDigest": "sha256:1b709542cd430eecb38117bc024c229472b729a212038dd7387e2ac379002d56",
+  "reference": "s34",
+  "schema": "codeclew-documentation-source-part/1.0",
+  "snapshot": "sha256:12d7a16bc6dbb7e9c522d3813b06dc095164a5d959c92b46d6cf39958b8e532b/4489",
+  "source": {
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "endLine": 57,
+    "evidenceDigest": "sha256:df2fa9378600e189292e6a84bda987013862c3121986f27b79880eacc37ed77c",
+    "file": "scripts/build_cli_documentation.py",
+    "id": "cli-documentation-30dea2dc5cb47627d15f",
+    "occurrence": {
+      "blob": "a6352ae84b6909b7ab2aacdcf964bf679c1dff78",
+      "endByte": 2601,
+      "snapshot": "sha256:c315b611c3a5c118f97f5c2d40023779b01e34138cac6334cc086550156a9262",
+      "startByte": 649
+    },
+    "revision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+    "service": "cli-documentation",
+    "startLine": 24,
+    "textDigest": "sha256:5924ef657fba968bdbec239fa07b40f819523fdf00228944209332bcc84d79f3",
+    "url": "https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L24-L57"
+  },
+  "sourceId": "cli-documentation-30dea2dc5cb47627d15f",
+  "startByte": 0,
+  "text": "def verify(data):\n    revision = data[\"repositoryRevision\"]\n    assert re.fullmatch(r\"[a-f0-9]{40}\", revision), \"expected an immutable Git revision\"\n    claims = {claim[\"id\"]: claim for claim in data[\"claims\"]}\n    assert len(claims) == len(data[\"claims\"]), \"duplicate claim IDs\"\n    blobs = {}\n    for claim in claims.values():\n        assert claim[\"narrativeAuthority\"] == \"AGENT_INFERRED\"\n        assert claim[\"evidence\"], f\"missing evidence: {claim['id']}\"\n        for source in claim[\"evidence\"]:\n            path = source[\"file\"]\n            assert not Path(path).is_absolute() and \"..\" not in Path(path).parts\n            if path not in blobs:\n                blobs[path] = subprocess.check_output(\n                    [\"git\", \"show\", f\"{revision}:{path}\"], cwd=ROOT\n                )\n            blob = blobs[path]\n            assert \"sha256:\" + hashlib.sha256(b\"codeclew-cas/v2\\0\" + b\"codeclew-repository-input-blob/2.0\\0\" + blob).hexdigest() == source[\"fileDigest\"]\n            lines = blob.decode(\"utf-8\").splitlines()\n            start, end = source[\"startLine\"], source[\"endLine\"]\n            assert 1 <= start <= end <= len(lines)\n            text = \"\\n\".join(lines[start - 1:end])\n            assert text == source[\"text\"], f\"source mismatch: {claim['id']} {path}:{start}\"\n            assert \"sha256:\" + hashlib.sha256(text.encode()).hexdigest() == source[\"textDigest\"]\n            assert source[\"authority\"] == \"EXACT_SNAPSHOT_TEXT\"\n            assert source[\"url\"] == f\"{data['repository']}/blob/{revision}/{path}#L{start}-L{end}\"\n            assert re.fullmatch(r\"sha256:[a-f0-9]{64}\", source[\"evidenceDigest\"])\n    nodes = {node[\"id\"] for node in data[\"diagram\"][\"nodes\"]}\n    assert nodes <= claims.keys()\n    for edge in data[\"diagram\"][\"edges\"]:\n        assert edge[\"from\"] in nodes and edge[\"to\"] in nodes\n        assert edge[\"claimId\"] in claims\n        assert edge[\"authority\"] == \"AGENT_INFERRED_STATIC_FLOW\"\n    return claims",
+  "totalTextBytes": 1952,
+  "work": "530cc649966e8655e58362ea7c779243626fb50977500f92b610738cca8aa724"
+}

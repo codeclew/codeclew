@@ -1,0 +1,25 @@
+{
+  "work": "530cc649966e8655e58362ea7c779243626fb50977500f92b610738cca8aa724",
+  "snapshot": "sha256:12d7a16bc6dbb7e9c522d3813b06dc095164a5d959c92b46d6cf39958b8e532b/4489",
+  "sectionReference": "section2",
+  "sourceReferences": [
+    "s109",
+    "s126",
+    "s131",
+    "s139",
+    "s141",
+    "s143",
+    "s15",
+    "s150",
+    "s158",
+    "s159",
+    "s160",
+    "s167",
+    "s168",
+    "s18",
+    "s19",
+    "s34",
+    "s77"
+  ],
+  "publication": "NOT_PUBLISHED"
+}

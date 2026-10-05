@@ -1,0 +1,506 @@
+{
+  "schema": "saved-edits-practical-observations/1.0",
+  "artifactKind": "AUTHOR_DERIVED_PUBLIC_OBSERVATIONS",
+  "nativeOutputPolicy": "This JSON contains selected author-derived observations, not native CLI output. report.html is separately identified as an exact unchanged native report copy. Raw CLI stdout/stderr and exact command records remain private.",
+  "observedDateUtc": "2026-10-05",
+  "runtime": {
+    "productVersion": "0.13.11",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:d4668b7b56f6e470dc4b1be44106a348422d68e7c55234802b488888b66e9652",
+    "launcherAuthority": "INSTALLED_RELEASE",
+    "sourceFallbackAllowed": false
+  },
+  "fixture": {
+    "language": "KOTLIN",
+    "buildSystem": "GRADLE_WRAPPER",
+    "projectKotlinVersion": "2.4.10",
+    "jdkMajor": 21,
+    "profileId": "kotlin-2.4.10-gradle-single",
+    "headPrice": 1,
+    "stagedPrice": 2,
+    "capturedSavedPrice": 3,
+    "savedInputsSelected": true,
+    "gitIndexAndRefsPreserved": true
+  },
+  "selectedScopes": [
+    {
+      "compilations": [
+        ":/main"
+      ],
+      "admission": "PASS",
+      "comparisonStatus": "BOUNDED_COMPARISON",
+      "nativeCounts": {
+        "changedDeclarations": 10,
+        "changedFiles": 5,
+        "omittedDeclarations": 0,
+        "omittedFiles": 0,
+        "unchangedDeclarations": 3
+      },
+      "testScope": "TEST_COMPILATION_NOT_ANALYZED",
+      "testsExecuted": false,
+      "unresolvedRelations": 13,
+      "stdoutOmittedNodes": 0
+    },
+    {
+      "compilations": [
+        ":/main",
+        ":/test"
+      ],
+      "admission": "PASS",
+      "comparisonStatus": "BOUNDED_COMPARISON",
+      "nativeCounts": {
+        "changedDeclarations": 20,
+        "changedFiles": 5,
+        "omittedDeclarations": 0,
+        "omittedFiles": 0,
+        "unchangedDeclarations": 9
+      },
+      "countBoundary": "Declaration counts retain compilation identity; they are not counts of distinct source declarations across scopes.",
+      "testScope": "EXPLICIT_GRADLE_TEST_COMPILATION_SELECTED_RELATION_EVIDENCE_ONLY",
+      "testsExecuted": false,
+      "unresolvedRelations": 30,
+      "stdoutOmittedNodes": 16,
+      "stdoutOmittedEdges": 0
+    }
+  ],
+  "sourceObservations": [
+    {
+      "symbol": "Pricing.price",
+      "before": "fun price(): Int = 1",
+      "capturedAfter": "fun price(): Int = 3",
+      "classification": "DECLARATION_SOURCE_TEXT_CHANGED; projected signature unchanged; behavioral equivalence not proven"
+    },
+    {
+      "symbol": "Pricing.label",
+      "before": "fun label(x: Int): String = x.toString()",
+      "capturedAfter": "fun label(x: Long): String = x.toString()",
+      "classification": "PARTIAL_PROJECTED_SHAPE_CHANGED and DECLARATION_SOURCE_TEXT_CHANGED",
+      "beforeJvmDescriptor": "(I)Ljava/lang/String;",
+      "afterJvmDescriptor": "(J)Ljava/lang/String;"
+    },
+    {
+      "symbol": "stopCalling",
+      "before": "fun stopCalling(): Int = Pricing.price()",
+      "capturedAfter": "fun stopCalling(): Int = 0",
+      "graphBoundary": "BEFORE_ONLY; NOT_OBSERVED_AFTER_WITH_PARTIAL_COVERAGE"
+    },
+    {
+      "symbol": "documented",
+      "before": "fun documented(): Int { /* old comment */ return 7 }",
+      "capturedAfter": "fun documented(): Int { /* new comment */ return 7 }",
+      "classification": "DECLARATION_SOURCE_TEXT_CHANGED; behavioral equivalence not proven"
+    },
+    {
+      "symbol": "moved",
+      "beforeFile": "src/main/kotlin/Original.kt",
+      "afterFile": "src/main/kotlin/Renamed.kt",
+      "classification": "DECLARATION_SOURCE_MOVED; files remain DELETED plus ADDED"
+    },
+    {
+      "symbol": "removed",
+      "beforeFile": "src/main/kotlin/Deleted.kt",
+      "classification": "REMOVED"
+    },
+    {
+      "symbol": "added",
+      "afterFile": "src/main/kotlin/Added.kt",
+      "classification": "ADDED"
+    }
+  ],
+  "directConsequences": {
+    "unchangedConsumer": "consumer() source and projected shape unchanged, compiler-resolved call to changed Pricing.price remains",
+    "unchangedEntrypoint": "main() source and projected shape unchanged, compiler-resolved call to changed Pricing.price remains",
+    "test": {
+      "caller": "PriceTest.priceCheck",
+      "callee": "Pricing.price",
+      "authority": "COMPILER_RESOLVED_DIRECT_RELATION",
+      "presence": "BOTH_SNAPSHOTS",
+      "exactCallTarget": true,
+      "compilation": ":/test",
+      "source": "class PriceTest { @Test fun priceCheck() { assertEquals(1, Pricing.price()) } }",
+      "verificationMeaning": "A concrete verification candidate; relation evidence alone does not prove test execution, failure or sufficiency."
+    }
+  },
+  "earlierCallerProjectCheck": {
+    "execution": "Separate earlier native caller-project Gradle run; not run or caused by Clew, not repeated in this installed case.",
+    "command": [
+      "./gradlew",
+      "--no-daemon",
+      "check"
+    ],
+    "startUtc": "2026-10-05T11:54:54.394675+00:00",
+    "endUtc": "2026-10-05T11:55:01.616478+00:00",
+    "jdk": "Temurin 21.0.11",
+    "mainKotlinCompilation": "SUCCEEDED",
+    "testKotlinCompilation": "SUCCEEDED",
+    "tests": 1,
+    "failures": 1,
+    "skipped": 0,
+    "failureMessage": "org.opentest4j.AssertionFailedError: expected: <1> but was: <3>",
+    "exitCode": 1,
+    "elapsedSeconds": 7.209683875087649
+  },
+  "laterSavedEdit": {
+    "intentionalDelta": "stable(): 9 -> 10 in the saved file only",
+    "headAndIndexUnchanged": true,
+    "liveStatus": "LIVE_CHANGED",
+    "liveSnapshotMatches": false,
+    "retainedEvidenceValid": true,
+    "retainedSourceStable": 9,
+    "liveSourceStable": 10,
+    "retainedSourceByteIdentical": true,
+    "noNewSemanticAnalysisOrTestRunAfterDelta": true
+  },
+  "sourceDigestProvenance": {
+    "casDigestRecipe": "SHA256(codeclew-cas/v2 NUL + objectSchema UTF-8 + NUL + exact bytes); distinct from raw source SHA256",
+    "records": [
+      {
+        "record": "source-main-before.stdout",
+        "file": "src/main/kotlin/Price.kt",
+        "authority": "EXACT_RETAINED_SOURCE",
+        "fullFileReturned": true,
+        "nativeCasObjectDigest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+        "recomputedCasObjectDigest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+        "casDomainSeparatedDigestMatches": true,
+        "rawSourceSha256": "sha256:a87cea5e0ec1fe59fa6385e08b4a25ce8678972fe954ff1a6211e40a5ecc4844"
+      },
+      {
+        "record": "source-main-after.stdout",
+        "file": "src/main/kotlin/Price.kt",
+        "authority": "EXACT_RETAINED_SOURCE",
+        "fullFileReturned": true,
+        "nativeCasObjectDigest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+        "recomputedCasObjectDigest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+        "casDomainSeparatedDigestMatches": true,
+        "rawSourceSha256": "sha256:3210b779e7941af153f5d8ea3422c2dc8330249c0803ffcdb4813b626244725e"
+      },
+      {
+        "record": "source-test-after.stdout",
+        "file": "src/test/kotlin/PriceTest.kt",
+        "authority": "EXACT_RETAINED_SOURCE",
+        "fullFileReturned": true,
+        "nativeCasObjectDigest": "sha256:a0e29d20e8956a8670ff4b6f110695cc17fbc52d51067c7d9cdb66d6c9a6a809",
+        "recomputedCasObjectDigest": "sha256:a0e29d20e8956a8670ff4b6f110695cc17fbc52d51067c7d9cdb66d6c9a6a809",
+        "casDomainSeparatedDigestMatches": true,
+        "rawSourceSha256": "sha256:d92a7fef23daa532ee98abca5bded86ef295ac8dc6ab1786c3d932c4c83d508b"
+      }
+    ]
+  },
+  "coverageLimits": {
+    "beforeAndAfterDeclarationCoverage": "PARTIAL",
+    "noGlobalNoImpactVerdict": true,
+    "testsExecutedByClew": false,
+    "unresolvedDynamicExternalAndFrameworkConsumers": true,
+    "nativeObligations": [
+      "TEXT_CHANGES_DO_NOT_PROVE_BEHAVIORAL_CHANGES",
+      "UNCHANGED_PROJECTED_SHAPE_DOES_NOT_PROVE_UNCHANGED_BEHAVIOR",
+      "ONLY_SELECTED_COMPILATIONS_ARE_ANALYZED",
+      "TESTS_WERE_NOT_EXECUTED",
+      "UNMATCHED_FILE_RENAMES_REMAIN_ADDITIONS_AND_DELETIONS",
+      "DECLARATION_COVERAGE_IS_PARTIAL"
+    ]
+  },
+  "observedLatency": {
+    "measurement": "Observed wall times on inherited shared default state; not an isolated or cold benchmark.",
+    "overlap": "The first main graph/source/render calls overlapped the main-and-test inspection. Subsequent case calls were sequential. Other host work was not controlled.",
+    "commands": [
+      {
+        "record": "capabilities.command.json",
+        "startUtc": "2026-10-05T13:49:34.733210+00:00",
+        "endUtc": "2026-10-05T13:49:34.896811+00:00",
+        "cliElapsedSeconds": 0.16360541700851172,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 61
+      },
+      {
+        "record": "doctor.command.json",
+        "startUtc": "2026-10-05T13:49:34.925418+00:00",
+        "endUtc": "2026-10-05T13:49:35.124290+00:00",
+        "cliElapsedSeconds": 0.19887579209171236,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 92
+      },
+      {
+        "record": "freshness-after-saved-delta.command.json",
+        "startUtc": "2026-10-05T14:08:12.428597+00:00",
+        "endUtc": "2026-10-05T14:10:09.485943+00:00",
+        "cliElapsedSeconds": 117.05755420902278,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 116931
+      },
+      {
+        "record": "graph-main-test.command.json",
+        "startUtc": "2026-10-05T14:01:26.358198+00:00",
+        "endUtc": "2026-10-05T14:02:21.876646+00:00",
+        "cliElapsedSeconds": 55.518546708044596,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 55393
+      },
+      {
+        "record": "graph-main.command.json",
+        "startUtc": "2026-10-05T13:52:49.995221+00:00",
+        "endUtc": "2026-10-05T13:54:09.488421+00:00",
+        "cliElapsedSeconds": 79.49332087498624,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 79348
+      },
+      {
+        "record": "inspect-main-test.command.json",
+        "startUtc": "2026-10-05T13:52:18.503517+00:00",
+        "endUtc": "2026-10-05T14:00:51.458472+00:00",
+        "cliElapsedSeconds": 512.9585310419789,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 512841
+      },
+      {
+        "record": "inspect-main.command.json",
+        "startUtc": "2026-10-05T13:49:45.287884+00:00",
+        "endUtc": "2026-10-05T13:51:56.090296+00:00",
+        "cliElapsedSeconds": 130.80265591701027,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 130668
+      },
+      {
+        "record": "render-main-test.command.json",
+        "startUtc": "2026-10-05T14:05:34.978837+00:00",
+        "endUtc": "2026-10-05T14:07:27.358280+00:00",
+        "cliElapsedSeconds": 112.3796441250015,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 112249
+      },
+      {
+        "record": "render-main.command.json",
+        "startUtc": "2026-10-05T13:52:53.458715+00:00",
+        "endUtc": "2026-10-05T13:59:43.569823+00:00",
+        "cliElapsedSeconds": 410.11450345802587,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 409969
+      },
+      {
+        "record": "retained-source-after-saved-delta.command.json",
+        "startUtc": "2026-10-05T14:10:43.593725+00:00",
+        "endUtc": "2026-10-05T14:12:39.506856+00:00",
+        "cliElapsedSeconds": 115.91470974998083,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 115760
+      },
+      {
+        "record": "source-main-after.command.json",
+        "startUtc": "2026-10-05T13:52:52.308028+00:00",
+        "endUtc": "2026-10-05T13:58:48.293202+00:00",
+        "cliElapsedSeconds": 355.98848379100673,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 355854
+      },
+      {
+        "record": "source-main-before.command.json",
+        "startUtc": "2026-10-05T13:52:51.147735+00:00",
+        "endUtc": "2026-10-05T13:57:52.462268+00:00",
+        "cliElapsedSeconds": 301.31772391695995,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 301193
+      },
+      {
+        "record": "source-test-after.command.json",
+        "startUtc": "2026-10-05T14:03:28.707966+00:00",
+        "endUtc": "2026-10-05T14:05:19.561700+00:00",
+        "cliElapsedSeconds": 110.85393075004686,
+        "exitCode": 0,
+        "nativeRequestDurationMs": 110736
+      },
+      {
+        "record": "storage-dry-run.command.json",
+        "startUtc": "2026-10-05T14:13:36.350958+00:00",
+        "endUtc": "2026-10-05T14:13:36.684573+00:00",
+        "cliElapsedSeconds": 0.33361604204401374,
+        "exitCode": 2,
+        "nativeRequestDurationMs": 183
+      },
+      {
+        "record": "version.command.json",
+        "startUtc": "2026-10-05T13:49:34.568505+00:00",
+        "endUtc": "2026-10-05T13:49:34.684036+00:00",
+        "cliElapsedSeconds": 0.11553516704589128,
+        "exitCode": 0,
+        "nativeRequestDurationMs": null
+      }
+    ],
+    "practicalConcern": "Slow retained reads on this small fixture: sequential graph 55.519 s, test source 110.854 s, main-and-test render 112.380 s, freshness 117.058 s and retained post-edit source 115.915 s.",
+    "singleProcessObservation": "One source-before process snapshot reported 98.8% CPU at elapsed 4:43; sustained CPU duration was not measured."
+  },
+  "storageMetadata": {
+    "command": [
+      "clew",
+      "storage",
+      "gc"
+    ],
+    "actionRequested": "DEFAULT_DRY_RUN; never --apply",
+    "status": "UNAVAILABLE",
+    "exitCode": 2,
+    "errorCode": "INVALID_INPUT",
+    "message": "run ledger contains an invalid transition",
+    "retryable": false,
+    "casBytesAndObjectCounts": "UNKNOWN because the supported storage report failed; bounded catalog file metadata is recorded separately. No private CAS object read or mutation was performed.",
+    "boundedCatalogFilesystemMetadata": {
+      "method": "Separately authorized bounded filesystem metadata observation; not supported storage-GC totals or CAS object reads.",
+      "sampleUtc": "2026-10-05T14:15:19.281163+00:00",
+      "snapshotFiles": 1,
+      "snapshotFileBytes": 262150831,
+      "baseLookupBinaryBytes": 69954192,
+      "baseLookupManifestBytes": 1393248,
+      "baseLookupReceiptBytes": 599,
+      "tailRecordFiles": 277,
+      "tailRecordFileBytes": 74255867,
+      "tailRecordSequenceRange": [
+        365,
+        641
+      ],
+      "deferredMarkerPresent": true,
+      "countBoundary": "Journal record files are not CAS object counts. File sizes do not establish reachable or reclaimable CAS bytes."
+    }
+  },
+  "nativeReport": {
+    "artifactKind": "EXACT_NATIVE_HTML_REPORT",
+    "file": "report.html",
+    "byteForByteCopy": true,
+    "originalRawFileSha256": "sha256:31f653810ff17e28b5c6a63259a0943ef1be76b46c4c7caae254ce343fb49fc7",
+    "publicRawFileSha256": "sha256:31f653810ff17e28b5c6a63259a0943ef1be76b46c4c7caae254ce343fb49fc7",
+    "bytes": 313566,
+    "schema": "codeclew-change-explanation/1.0",
+    "narrativeAuthority": "DETERMINISTIC_EVIDENCE_LABELS",
+    "liveStatusAtRender": "NOT_CHECKED_BY_OFFLINE_RENDER",
+    "compilations": [
+      ":/main",
+      ":/test"
+    ],
+    "testsExecuted": false,
+    "comparisonId": "comparison:sha256:9dcf852b4f3ed0a80d9083b91890fa5947b458aef28e217756b96524737c4ef3",
+    "privacyReview": "PASS; raw/decoded paths, source URLs and private identity fields checked with repository privacy rules and public fixture/library allowlists. No rewriting or redaction."
+  },
+  "installedReaderQualification": {
+    "artifactKind": "AUTHOR_DERIVED_PUBLIC_READER_QUALIFICATION",
+    "status": "PASS",
+    "observedDateUtc": "2026-10-05",
+    "authority": "OFFICIAL_INSTALLED_RELEASE",
+    "runtime": {
+      "productVersion": "0.13.13",
+      "runtimeMode": "RELEASE",
+      "runtimeKey": "sha256:5670c4ad6be487938f90dc00655f2eeff807e05a35bd88db62521cdec8b9c602",
+      "runtimeManifestDigest": "sha256:f9b7f93ae1daf296ea2562490c0ed23b832fd278e4d9e11d016f316585609c37",
+      "launcherAuthority": "INSTALLED_RELEASE",
+      "sourceFallbackAllowed": false
+    },
+    "release": {
+      "tag": "v0.13.13",
+      "sourceRevision": "56a9e33af053e74c79997162e4dd84c6c3fbc0de",
+      "publishedUtc": "2026-10-05T16:18:17Z"
+    },
+    "originalAnalysis": {
+      "productVersion": "0.13.11",
+      "runtimeKey": "sha256:d4668b7b56f6e470dc4b1be44106a348422d68e7c55234802b488888b66e9652",
+      "comparisonId": "comparison:sha256:9dcf852b4f3ed0a80d9083b91890fa5947b458aef28e217756b96524737c4ef3",
+      "newSemanticAnalysisPerformed": false,
+      "testsExecutedByClew": false,
+      "earlierCallerProjectCheckRepeated": false
+    },
+    "retainedSource": {
+      "file": "src/test/kotlin/PriceTest.kt",
+      "side": "after",
+      "fullNativeSourceJsonExactlyMatchesInstalled01311": true
+    },
+    "embeddedReportEvidenceExactlyMatchesInstalled01311": true,
+    "freshness": {
+      "schema": "codeclew-change-freshness/1.0",
+      "comparisonId": "comparison:sha256:9dcf852b4f3ed0a80d9083b91890fa5947b458aef28e217756b96524737c4ef3",
+      "liveStatus": "LIVE_CHANGED",
+      "liveSnapshotMatches": false,
+      "retainedEvidenceValid": true,
+      "retainedEvidenceScope": "COMPARISON_AND_CLAIM_SOURCE_AND_FACT_OBJECTS",
+      "nextAction": "CAPTURE_NEW_COMPARISON_IF_CURRENT_EDITS_ARE_NEEDED"
+    },
+    "observedLatency": {
+      "measurement": "Sequential calls on existing shared default state; no isolated/cold benchmark",
+      "commands": [
+        {
+          "name": "version",
+          "startUtc": "2026-10-05T16:24:05.670359+00:00",
+          "endUtc": "2026-10-05T16:24:05.844808+00:00",
+          "elapsedSeconds": 0.17394374997820705,
+          "exitCode": 0
+        },
+        {
+          "name": "capabilities",
+          "startUtc": "2026-10-05T16:24:05.845023+00:00",
+          "endUtc": "2026-10-05T16:24:06.114019+00:00",
+          "elapsedSeconds": 0.26852987497113645,
+          "exitCode": 0
+        },
+        {
+          "name": "retained-test-source",
+          "startUtc": "2026-10-05T16:24:06.114334+00:00",
+          "endUtc": "2026-10-05T16:24:11.791436+00:00",
+          "elapsedSeconds": 5.676667416002601,
+          "exitCode": 0
+        },
+        {
+          "name": "retained-report",
+          "startUtc": "2026-10-05T16:24:11.791772+00:00",
+          "endUtc": "2026-10-05T16:24:17.441821+00:00",
+          "elapsedSeconds": 5.649603541009128,
+          "exitCode": 0
+        },
+        {
+          "name": "retained-freshness",
+          "startUtc": "2026-10-05T16:24:17.451468+00:00",
+          "endUtc": "2026-10-05T16:24:23.242033+00:00",
+          "elapsedSeconds": 5.790005958988331,
+          "exitCode": 0
+        }
+      ],
+      "comparisonBoundary": "The original 0.13.11 and later 0.13.13 wall times are observations on existing shared state. They are not controlled cold measurements or a global latency guarantee. Graph and main-source requests were not repeated in this reader qualification."
+    },
+    "nativeReport": {
+      "artifactKind": "EXACT_NATIVE_HTML_REPORT",
+      "file": "report-0.13.13.html",
+      "rendererProductVersion": "0.13.13",
+      "analyzedEvidenceProductVersion": "0.13.11",
+      "byteForByteCopy": true,
+      "originalRawFileSha256": "sha256:dccedb59c7bb3b17c0783351df5a7d09ac15f7522f268f74a573dfe25cd8578e",
+      "publicRawFileSha256": "sha256:dccedb59c7bb3b17c0783351df5a7d09ac15f7522f268f74a573dfe25cd8578e",
+      "bytes": 315830,
+      "schema": "codeclew-change-explanation/1.0",
+      "narrativeAuthority": "DETERMINISTIC_EVIDENCE_LABELS",
+      "liveStatusAtRender": "NOT_CHECKED_BY_OFFLINE_RENDER",
+      "compilations": [
+        ":/main",
+        ":/test"
+      ],
+      "testsExecuted": false,
+      "historicalNativeReportFile": "report.html",
+      "evidenceBoundary": "The 0.13.13 renderer reads the original retained 0.13.11 comparison. Embedded evidence JSON is exactly equal; reader changes do not update source, scope, coverage or test claims."
+    },
+    "publicRecordPolicy": "Whitelisted release identity, equality and freshness results, timing labels and report digests only. Private command arguments and filesystem paths are not copied.",
+    "storageDryRunFollowup": {
+      "productVersion": "0.13.13",
+      "runtimeMode": "RELEASE",
+      "actionRequested": "DEFAULT_DRY_RUN; never --apply",
+      "status": "UNAVAILABLE",
+      "exitCode": 2,
+      "errorSchema": "codeclew-error/2.0",
+      "errorCode": "INVALID_INPUT",
+      "retryable": false,
+      "diagnosticHasLogicalRunAndTransition": true,
+      "transition": {
+        "from": "WorktreeRecoveryRequired",
+        "to": "Cancelled",
+        "sequence": 3
+      },
+      "rootCause": "UNPROVEN",
+      "recoveryPerformed": false,
+      "cleanupPerformed": false,
+      "privateObjectsEdited": false,
+      "casBytesAndObjectCounts": "UNKNOWN; the supported storage report failed.",
+      "boundary": "One supported dry-run followup identified the inherited invalid ledger transition. Improved diagnostics do not establish storage recovery or a root cause. The logical run ID is omitted from this public record."
+    }
+  }
+}

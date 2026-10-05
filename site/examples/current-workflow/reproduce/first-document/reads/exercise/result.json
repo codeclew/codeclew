@@ -1,0 +1,26 @@
+{
+  "status": "READY_FOR_AUTHOR",
+  "work": "86397d7e8d97a9f2e4fe27eb486ec7b4d2e121a297dfd5ac64884ed8bb5671ba",
+  "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+  "sourceReferences": [
+    "s109",
+    "s126",
+    "s131",
+    "s139",
+    "s142",
+    "s144",
+    "s15",
+    "s151",
+    "s159",
+    "s160",
+    "s161",
+    "s168",
+    "s169",
+    "s18",
+    "s19",
+    "s34",
+    "s77"
+  ],
+  "overviewReference": "section1",
+  "publication": "NOT_PUBLISHED"
+}

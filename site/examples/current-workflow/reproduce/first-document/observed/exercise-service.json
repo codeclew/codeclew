@@ -1,0 +1,18 @@
+{
+  "contractFiles": [],
+  "id": "cli-documentation",
+  "language": "python",
+  "profile": "source-syntax",
+  "repository": "https://github.com/codeclew/codeclew",
+  "repositoryId": "cli-documentation",
+  "schema": "codeclew-documentation-service/1.0",
+  "source": {
+    "dialect": "3.11",
+    "roots": [
+      "scripts/build_cli_documentation.py"
+    ]
+  },
+  "targetRef": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+  "title": "CLI documentation generator",
+  "sourceLinkTemplate": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/{revision}/{file}.html"
+}

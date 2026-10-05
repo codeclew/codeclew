@@ -1,0 +1,10 @@
+{
+  "schema": "codeclew-historical-site-copy/1.0",
+  "originalRoute": "nav-query.html",
+  "originalFile": "original.html.txt",
+  "originalSha256": "f5d9546b2ac2baab2d7516828b36dedb22288d22d0e6a4676351716555c66bc6",
+  "readableFile": "index.html",
+  "readableSha256": "c41f0378117a8ed6824b4d99bb208a11623c6e39a34dde456e5b2a0c4f24ba91",
+  "transformation": "Relative ./ links rebased to ../../; source evidence and inline scripts unchanged.",
+  "authority": "Historical retained case; no fresh release execution is established."
+}

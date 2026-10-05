@@ -1,0 +1,19 @@
+{
+  "schema": "codeclew-documentation-note-association/1.0",
+  "id": "walkthrough-owner-guidance",
+  "title": "Owner guidance for the walkthrough",
+  "service": "cli-documentation",
+  "path": "notes/walkthrough-owner-guidance.md",
+  "targets": [
+    "service:cli-documentation/section-overview"
+  ],
+  "classification": "intention",
+  "period": "Practical public documentation, 2026-10-05",
+  "tags": [
+    "maintenance-exercise"
+  ],
+  "metadata": {
+    "authority": "DECLARED_EXERCISE_OWNER_GUIDANCE_NOT_SOURCE_PROOF",
+    "origin": "public-reproduction-input"
+  }
+}

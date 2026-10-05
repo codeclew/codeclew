@@ -145,7 +145,7 @@ def main():
     claims = verify(data)
     dot, mermaid = diagram_sources(data)
     directory = ROOT / "site/diagrams"
-    page = ROOT / "site/nav-query.html"
+    page = ROOT / "site/examples/navigation-historical/index.html"
     if args.check:
         assert (directory / "nav-query.dot").read_text() == dot
         assert (directory / "nav-query.mmd").read_text() == mermaid

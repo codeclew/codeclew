@@ -1,0 +1,7 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "An engineer maintaining the public source walkthrough",
+  "entrypoint": "section-responsibilities",
+  "maxItems": 100,
+  "maxBytes": 40960
+}

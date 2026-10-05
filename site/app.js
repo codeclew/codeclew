@@ -19,8 +19,38 @@ if (button && command) {
   });
 }
 
+// Copy only the command text, never the button or status message.
+document.querySelectorAll('.task-site pre > code').forEach((code, index) => {
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'copy-block';
+  copy.textContent = 'Copy commands';
+  copy.setAttribute('aria-label', `Copy command block ${index + 1}`);
+  const status = document.createElement('span');
+  status.className = 'copy-status';
+  status.setAttribute('role', 'status');
+  code.parentElement.append(copy);
+  code.parentElement.after(status);
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+      copy.textContent = 'Copied';
+      status.textContent = 'Commands copied to clipboard.';
+    } catch (_error) {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      status.textContent = 'Clipboard unavailable. Commands selected; copy them with your keyboard.';
+    }
+  });
+});
+
 // Shared progressive enhancement. Navigation itself is present in every HTML page.
 (() => {
+  const script = [...document.scripts].find(item => new URL(item.src || location.href).pathname.endsWith('/app.js'));
+  const siteBase = new URL('./', script?.src || location.href);
   const menu = document.querySelector(".site-menu");
   const sidebar = document.querySelector(".sidebar-disclosure");
   const narrow = matchMedia("(max-width: 850px)");
@@ -62,7 +92,7 @@ if (button && command) {
     for (const entry of matches.slice(0, 18)) {
       const link = document.createElement("a");
       link.className = "search-result";
-      link.href = entry.url;
+      link.href = new URL(entry.url, siteBase).href;
       const title = document.createElement("strong");
       title.textContent = entry.title;
       const description = document.createElement("small");
@@ -74,7 +104,7 @@ if (button && command) {
     }
     status.textContent = matches.length
       ? `${matches.length} results${matches.length > 18 ? " · showing the first 18" : ""}. Use Tab or arrow keys to explore.`
-      : "No matching pages. Try a shorter phrase, “Spring”, or “example”.";
+      : "No matching pages. Try “source”, “saved edits” or “document”.";
   }
 
   async function openSearch() {
@@ -84,7 +114,7 @@ if (button && command) {
     input.focus();
     status.textContent = "Loading pages and sections…";
     try {
-      pending ??= fetch("./search-index.json").then(response => {
+      pending ??= fetch(new URL('./search-index.json', siteBase)).then(response => {
         if (!response.ok) throw new Error("Search index unavailable");
         return response.json();
       });
@@ -92,7 +122,7 @@ if (button && command) {
       renderResults();
     } catch (_error) {
       pending = undefined;
-      status.textContent = "Search is unavailable. Close this window and use Explore to browse every page.";
+      status.textContent = "Search is unavailable. Close this window and use the Tasks menu or footer links.";
     }
   }
   trigger.addEventListener("click", openSearch);

@@ -1,0 +1,607 @@
+{
+  "audience": "A new maintainer",
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "contextDigest": "sha256:9bfae751e83b8dad1d27a03ec6543915a5bdd1cb254100deb964893e9a01818a",
+  "contextProfile": "section-orientation-v1",
+  "documentationLanguage": "en",
+  "influenceCoverage": "RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED",
+  "inputDigest": "sha256:ba8c32301a10195e202e315270326dfd14af194b0bdb2cb2642f198baa605bc0",
+  "items": [
+    {
+      "documentationLanguageStatus": "MATCHES_REQUEST",
+      "id": "section-overview",
+      "kind": "SECTION",
+      "record": {
+        "content": {
+          "boundaries": [],
+          "documentationLanguage": "en",
+          "events": [],
+          "explanation": [],
+          "findings": [],
+          "id": "section-overview",
+          "interfaceContracts": [],
+          "participants": [],
+          "summary": {
+            "dependencyIds": [
+              "cli-documentation:symbol:30dea2dc5cb47627d15fe5c5",
+              "cli-documentation:symbol:943e7c4c9b378cf363ac9936",
+              "cli-documentation:symbol:dd6a072510e7af3faf22eb3a"
+            ],
+            "id": "claim-55430bd5cdb903284513",
+            "sourceIds": [
+              "cli-documentation-30dea2dc5cb47627d15f",
+              "cli-documentation-943e7c4c9b378cf363ac",
+              "cli-documentation-dd6a072510e7af3faf22"
+            ],
+            "text": "The script maintains a source-linked navigation walkthrough. Before either branch, it verifies the recorded Git revision, source file and fragment digests, exact source text and line ranges, source URLs, and graph references. With --check, it compares expected DOT and Mermaid with saved files, parses the saved SVG, and checks that the SVG and rendered claims appear in the HTML page, then returns. It calls Graphviz as dot -Tsvg only in render_svg, reached by the branch without --check; that branch writes diagrams and replaces the page's diagram and claim sections. The check validates retained byte bindings and generated presentation, not the meaning of the agent-inferred claims. This selected source does not establish that a particular run passed or that the published diagram describes runtime execution. Syntax capture leaves call targets unresolved and provides lexical ordering only."
+          },
+          "title": "What --check verifies and when Graphviz runs"
+        },
+        "gap": "Describe the service purpose, scope and supported outcomes. Source-bound content has not been accepted yet.",
+        "id": "section-overview",
+        "objectId": "service:cli-documentation/section-overview",
+        "purpose": "Describe the service purpose, scope and supported outcomes.",
+        "required": true,
+        "schema": "codeclew-documentation-section/1.0",
+        "service": "cli-documentation",
+        "status": "AUTHORED",
+        "title": "Overview",
+        "workRequest": {
+          "audience": "Service maintainers and architecture readers",
+          "entrypoint": "section-overview",
+          "maxBytes": 40960,
+          "maxItems": 20,
+          "schema": "codeclew-documentation-work-request/1.0"
+        }
+      },
+      "reference": "section1",
+      "referenceRoles": [
+        "operation",
+        "gap"
+      ],
+      "requestedDocumentationLanguage": "en"
+    },
+    {
+      "id": "inventory:cli-documentation",
+      "kind": "BOUNDARY_INVENTORY",
+      "record": {
+        "gaps": [
+          "PUBLIC_BOUNDARY_INVENTORY_IS_BOUNDED_BY_SELECTED_MODULES",
+          "DYNAMIC_REGISTRATION_AND_RUNTIME_ACTIVATION_UNVERIFIED"
+        ],
+        "internalCallableCount": 5,
+        "internalCallablePreviewLimits": {
+          "maxBytes": 8192,
+          "maxItems": 8
+        },
+        "internalCallables": [
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:cd96038866bf7f18d601a02e"
+            ],
+            "id": "cli-documentation:symbol:cd96038866bf7f18d601a02e",
+            "name": "diagram_sources",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "data"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-cd96038866bf7f18d601"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/diagram_sources/1fcb8f233748fd46e02b"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:dd6a072510e7af3faf22eb3a"
+            ],
+            "id": "cli-documentation:symbol:dd6a072510e7af3faf22eb3a",
+            "name": "main",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-dd6a072510e7af3faf22"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/main/f76638a0e73f8a97a3de"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:de4cd73046421c440a6d3ef4"
+            ],
+            "id": "cli-documentation:symbol:de4cd73046421c440a6d3ef4",
+            "name": "render_claims",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "claims"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-de4cd73046421c440a6d"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/render_claims/bbe2af4e300709a41a10"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:943e7c4c9b378cf363ac9936"
+            ],
+            "id": "cli-documentation:symbol:943e7c4c9b378cf363ac9936",
+            "name": "render_svg",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "dot",
+              "claims"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-943e7c4c9b378cf363ac"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/render_svg/77befcebc84fae0ccf97"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:30dea2dc5cb47627d15fe5c5"
+            ],
+            "id": "cli-documentation:symbol:30dea2dc5cb47627d15fe5c5",
+            "name": "verify",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "data"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-30dea2dc5cb47627d15f"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/verify/e9c1167d5de6c7160235"
+          }
+        ],
+        "omittedInternalCallables": 0,
+        "omittedPublicBoundaries": 0,
+        "publicBoundaries": [],
+        "publicBoundaryCount": 0,
+        "sourceBoundaries": [
+          "CALL_TARGETS_UNRESOLVED",
+          "DIALECT_DECLARED_NOT_COMPILER_VALIDATED",
+          "ORDER_LEXICAL_ONLY",
+          "SCOPE_WATCH_CONSERVATIVE"
+        ]
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "cli-documentation:symbol:943e7c4c9b378cf363ac9936",
+      "kind": "DEPENDENCY",
+      "record": {
+        "digest": "sha256:49c7837faf7d2b790e71568b0ce65192225080cf16838ce2c8ed60e0c0ccce4c",
+        "id": "cli-documentation:symbol:943e7c4c9b378cf363ac9936",
+        "kind": "SYMBOL",
+        "normalized": {
+          "authority": "SYNTAX",
+          "documentation": {
+            "boundaries": [
+              "CALL_TARGETS_UNRESOLVED",
+              "ORDER_LEXICAL_ONLY"
+            ],
+            "events": [
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:9adb10cb791d38bf619842ec300c9e17126067f75f9de40659080c18e51257bb",
+                "kind": "CALL",
+                "nestingDepth": 3,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 0,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "subprocess.check_output([\"dot\", \"-Tsvg\"], input=dot.encode())"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:25d5577f8a53119decd82f994d6b0ccaf55d4459cf637747b30d785a997f9b48",
+                "kind": "CALL",
+                "nestingDepth": 6,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 1,
+                "parentOrdinal": 0,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "dot.encode()"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:4f3771b4ab2dc02365803a48ab9fb09af12082377bf9d873a27dce2ffac1f2c4",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 2,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "ET.register_namespace(\"\", \"http://www.w3.org/2000/svg\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:385aa11a1d4b17970e655e9e24cdf9dc1ee391edc933c5d3a3e0b5ca3a51ab4a",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 3,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "ET.register_namespace(\"xlink\", \"http://www.w3.org/1999/xlink\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:4bd6de4ac4a890d93d94179d3c88483620a100aeaefcfe3e3b1ac35f8cefad16",
+                "kind": "CALL",
+                "nestingDepth": 3,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 4,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "ET.fromstring(raw)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:afff30b5b25608dbc647ae16ccc3e9566267b23e1aa96fed0ac1bf2190503086",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 5,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "svg.attrib.pop(\"width\", None)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:8abaef6aff9b573fba6d3a0f661160bf4c352b1586d939ffc049707ff45f7e6e",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 6,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "svg.attrib.pop(\"height\", None)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:4c8960b53f165ee2439816b4a99b55c46c5e1f0eaceadac0ba83483b6643f613",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 7,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "svg.set(\"aria-labelledby\", \"flow-title flow-description\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:095497e725405a74a0982f0fab52585025a18a57d2fa4364d4100ba6b9c0c95f",
+                "kind": "CALL",
+                "nestingDepth": 3,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 8,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "ET.Element(ns + \"title\", id=\"flow-title\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:3350db7a777ecbaa1d9f81c8eb1944e866f1f2bccde2f9b18eabc2179e1973ad",
+                "kind": "CALL",
+                "nestingDepth": 3,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 9,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "ET.Element(ns + \"desc\", id=\"flow-description\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:346fcb1647023b8cc7f8dcd9c99dbe7b7e389de6fb42f0a2f5a3b703ee2f7ba9",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 10,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "svg.insert(0, description)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:5fbfdbd3c855cdb06d266038956a4d1c3641548e7f1d77faeb34e799aa5924d4",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 11,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "svg.insert(0, title)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:5968cc29c6a239ffc709d91bcfb23dc61a8182b2aba4aca9930f589a483b11d2",
+                "kind": "LOOP",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 12,
+                "parentOrdinal": null,
+                "syntaxKind": "for_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "for link in svg.iter(ns + \"a\"):\n        href = link.get(\"{http://www.w3.org/1999/xlink}href\", \"\")\n        id = href.rsplit(\"#claim-\", 1)[-1]\n        assert id in claims\n        link.set(\"data-claim\", id)\n        link.set(\"aria-label\", claims[id][\"title\"] + \": inspect source evidence\")\n        link.set(\"tabindex\", \"0\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:08459ffaa0f13732565566577f32c38a74c094e3b9524c25a12bd9e9dc02b68d",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 13,
+                "parentOrdinal": 12,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "svg.iter(ns + \"a\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:b101b93ff8f84c0c9f254300633d7f6a0810316d486420ff05e9bc60932961c0",
+                "kind": "CALL",
+                "nestingDepth": 5,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 14,
+                "parentOrdinal": 12,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "link.get(\"{http://www.w3.org/1999/xlink}href\", \"\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:7fd01de06d057da842be41cb405cb00ece92e24be72512fcc454db493661ba20",
+                "kind": "CALL",
+                "nestingDepth": 6,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 15,
+                "parentOrdinal": 12,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "href.rsplit(\"#claim-\", 1)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:25cbeac330e2e5526276718cc7a4b1602e88359c4297c69419b872a53361d5b9",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 16,
+                "parentOrdinal": 12,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "link.set(\"data-claim\", id)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:f1831d0d5b922fbfcc15b1b2531f656afff4340184e01a4a526f70a4695589ff",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 17,
+                "parentOrdinal": 12,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "link.set(\"aria-label\", claims[id][\"title\"] + \": inspect source evidence\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:8a3021cd4ee6d050b3ff7535f65b84a940445d518e2c116f233b1cea1db77bc2",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 18,
+                "parentOrdinal": 12,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "link.set(\"tabindex\", \"0\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:9bcff380df0130670cd5ed7356252782332dc2892f9c5108d135f2047a50dd59",
+                "kind": "RETURN",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 19,
+                "parentOrdinal": null,
+                "syntaxKind": "return_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "return ET.tostring(svg, encoding=\"unicode\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:dd39746a81499bda6466f463185b383feaa6cfe1e8a8c5dc4e20386416d6ebf1",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 20,
+                "parentOrdinal": 19,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "ET.tostring(svg, encoding=\"unicode\")"
+              }
+            ],
+            "parameterTypes": [
+              "dot",
+              "claims"
+            ]
+          },
+          "fingerprint": "sha256:fb5df9cfe66b7bf29d9c6a65a2df692c66828698ea3178032bdffde1be7134ac",
+          "kind": "DECLARATION",
+          "name": "render_svg",
+          "ownerIdentity": "package:scripts.build_cli_documentation",
+          "symbolIdentity": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/render_svg/77befcebc84fae0ccf97",
+          "syntaxKind": "function_definition"
+        },
+        "service": "cli-documentation",
+        "sourceIds": [
+          "cli-documentation-943e7c4c9b378cf363ac"
+        ],
+        "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/render_svg/77befcebc84fae0ccf97"
+      },
+      "reference": "d119",
+      "referenceRoles": [
+        "evidence"
+      ],
+      "selectionReason": "retained-section-summary",
+      "sourceReferences": [
+        "s109"
+      ]
+    },
+    {
+      "id": "evidence-index:cli-documentation",
+      "kind": "EVIDENCE_DISCOVERY",
+      "record": {
+        "availableDependencyCount": 182,
+        "countsByKind": {
+          "ENTITY_SCOPE": 1,
+          "FLOW": 116,
+          "NOTE_SCOPE": 1,
+          "SOURCE_SCOPE": 1,
+          "SYMBOL": 5,
+          "SYNTAX_DETAIL": 58
+        },
+        "deferredDependencyCount": 181,
+        "influenceCoverage": "Full captured Work influence is unchanged by this context preview.",
+        "nextRead": "Use sourceReferences/dependencyReferences with work expand, or a query with kind and symbolContains. Deferred facts are not absent or unsupported; read them before citing them.",
+        "previewLimits": {
+          "maxBytes": 8192,
+          "maxItems": 8
+        },
+        "section": "section-overview",
+        "selection": "Retained selected-section dependencies, then discovered entrypoint declarations. No arbitrary symbol sampling.",
+        "suppliedDependencyCount": 1
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-0",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/section-overview/claim-55430bd5cdb903284513",
+        "reasons": [
+          {
+            "reason": "INFLUENCE_SCOPE_CHANGED",
+            "scope": "sha256:59b613bfa84b6ee6ed234a97b1696c0a215c8518df5d08c843dbd74a49d51d56"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-1",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/section-overview/title",
+        "reasons": [
+          {
+            "reason": "INFLUENCE_SCOPE_CHANGED",
+            "scope": "sha256:59b613bfa84b6ee6ed234a97b1696c0a215c8518df5d08c843dbd74a49d51d56"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "notes",
+      "kind": "EXTERNAL_INPUT",
+      "record": {
+        "status": "ABSENT"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-1",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "CALL_TARGETS_UNRESOLVED",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-2",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "DIALECT_DECLARED_NOT_COMPILER_VALIDATED",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-3",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "ORDER_LEXICAL_ONLY",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-4",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "SCOPE_WATCH_CONSERVATIVE",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-5",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "Syntax evidence does not establish runtime dispatch or configuration. Expand known owners and helpers; retain explicit gaps for unresolved targets.",
+        "kind": "UNRESOLVED_CALL_AUTHORITY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    }
+  ],
+  "membershipDigest": "sha256:7f99119cc8efdfed68f86e261f7100a5a8b4de98b282938a96f3ca92687ba355",
+  "nextCursor": null,
+  "omitted": [],
+  "receiptDigest": "sha256:ad752a2b219503eb6cb0cb88fca8e133509e446f4fd7110bf0aade0514ea097c",
+  "schema": "codeclew-documentation-work-page/1.0",
+  "snapshot": "sha256:5a9c13cb5716f6ebe4256541028e4104b5e5ba0ed6a9b26480c20a4dceb33a24/4319",
+  "subject": "service:cli-documentation",
+  "total": 12,
+  "work": "f3697fab1ea0d12b41567de2e5d4eef7d8c1a014f14812a34883c59c5af99aac"
+}

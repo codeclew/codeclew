@@ -2,16 +2,20 @@
 """Check site reachability, search destinations and vector asset integrity."""
 from html.parser import HTMLParser
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import unittest
 from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 SITE = Path(__file__).resolve().parents[1] / 'site'
-GENERATED_DOCS = SITE / 'examples/codeclew-source/docs'
+GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs')
+ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html'}
+TASKS = {'./nav-query.html', './documentation.html', './working-tree.html'}
 
 
 class Page(HTMLParser):
@@ -128,6 +132,16 @@ def assert_generated_documentation(case, site, root):
                         'deployed root differs from every verified native root output')
 
 
+def generated_documentation_roots(site):
+    return [site / relative for relative in GENERATED_DOCS_PATHS if (site / relative).exists()]
+
+
+def assert_generated_documentation_roots(case, site):
+    for root in generated_documentation_roots(site):
+        with case.subTest(root=root.relative_to(site)):
+            assert_generated_documentation(case, site, root)
+
+
 class SiteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -143,14 +157,15 @@ class SiteTests(unittest.TestCase):
                 with self.subTest(page=name, url=url):
                     self.assert_destination(name, url)
 
-    def test_every_page_is_in_every_primary_and_footer_menu(self):
-        expected = {'./' + name for name in self.pages}
-        for name, page in self.pages.items():
-            for nav in ('Primary navigation', 'Footer navigation'):
-                with self.subTest(page=name, nav=nav):
-                    self.assertTrue(expected <= set(page.navigation[nav]))
-            if name != 'index.html':
-                self.assertTrue(expected <= set(page.navigation['Site navigation']))
+    def test_primary_tasks_and_secondary_routes_are_distinct(self):
+        for name in ACTIVE | {'pilot.html'}:
+            page = self.pages[name]
+            primary = set(page.navigation['Primary navigation'])
+            self.assertEqual(primary, TASKS | {'./evidence.html'}, name)
+            self.assertTrue({'./' + path for path in ACTIVE} <= set(page.navigation['Footer navigation']), name)
+            self.assertNotIn('./pilot.html', primary)
+            self.assertNotIn('./architecture.html', primary)
+            self.assertNotIn('./working-tree-example.html', primary)
 
     def test_unique_fragment_ids(self):
         for name, page in self.pages.items():
@@ -158,9 +173,63 @@ class SiteTests(unittest.TestCase):
 
     def test_search_reaches_every_page_and_real_sections(self):
         index = json.loads((SITE / 'search-index.json').read_text())
-        self.assertTrue({'./' + name for name in self.pages} <= {entry['url'] for entry in index})
+        self.assertEqual({'./' + name for name in ACTIVE},
+                         {entry['url'] for entry in index if '#' not in entry['url']})
+        self.assertEqual(ACTIVE, {urlsplit(entry['url']).path.removeprefix('./') for entry in index})
         for entry in index:
             self.assert_destination('index.html', entry['url'])
+
+    def test_redirect_targets_have_real_fallback_links(self):
+        for name in ('architecture.html', 'working-tree-example.html'):
+            markup = (SITE / name).read_text()
+            match = re.search(r'<script id="redirect-map" type="application/json">(.*?)</script>', markup, re.S)
+            self.assertIsNotNone(match, name)
+            mapping = json.loads(match[1])
+            for route in mapping.values():
+                self.assert_destination(name, './' + route)
+                self.assertIn('./' + route, self.pages[name].links)
+
+    def test_historical_relocation_preserves_evidence_and_resolves_assets(self):
+        for folder in ('navigation-historical', 'saved-edits-historical'):
+            root = SITE / 'examples' / folder
+            record = json.loads((root / 'archive.json').read_text())
+            original = (root / record['originalFile']).read_bytes()
+            readable = (root / record['readableFile']).read_bytes()
+            self.assertEqual(hashlib.sha256(original).hexdigest(), record['originalSha256'])
+            self.assertEqual(hashlib.sha256(readable).hexdigest(), record['readableSha256'])
+            rebased = re.sub(rb'((?:href|src)=["\'])\./', rb'\1../../', original)
+            self.assertEqual(readable, rebased)
+            page = Page(root / 'index.html')
+            for url in page.references:
+                assert_local_destination(self, SITE, self.destination_pages, root / 'index.html', url)
+            if folder == 'saved-edits-historical':
+                pattern = rb'<script id="change-data" type="application/json">(.*?)</script>'
+                evidence = re.search(pattern, original, re.S)[1]
+                self.assertEqual(evidence, re.search(pattern, readable, re.S)[1])
+                self.assertEqual(hashlib.sha256(evidence).hexdigest(), record['embeddedDataSha256'])
+
+    def test_public_fixture_distinguishes_head_index_saved_and_refuses_overwrite(self):
+        script = SITE / 'examples/saved-edits-fixture/setup.py'
+        spec = importlib.util.spec_from_file_location('public_fixture', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'pricing'
+            module.prepare(SITE.parent, output)
+            def git(*args):
+                return subprocess.check_output(['git', *args], cwd=output).decode()
+            path = 'src/main/kotlin/Price.kt'
+            self.assertIn('price(): Int = 1', git('show', 'HEAD:' + path))
+            self.assertIn('price(): Int = 2', git('show', ':' + path))
+            saved = (output / path).read_text()
+            self.assertIn('price(): Int = 3', saved)
+            self.assertIn('label(x: Long)', saved)
+            self.assertIn('stopCalling(): Int = 0', saved)
+            index = (output / '.git/index').read_bytes()
+            with self.assertRaisesRegex(ValueError, 'already exists'):
+                module.prepare(SITE.parent, output)
+            self.assertEqual(index, (output / '.git/index').read_bytes())
+            self.assertEqual(saved, (output / path).read_text())
 
     def test_mascots_and_favicon_are_real_vectors(self):
         for name in ('assets/cat.svg', 'assets/cat-adult.svg', 'assets/cat-face.svg', 'assets/cat-standing.svg', 'favicon.svg'):
@@ -172,9 +241,68 @@ class SiteTests(unittest.TestCase):
 
 
 class GeneratedDocumentationTests(unittest.TestCase):
-    @unittest.skipUnless(GENERATED_DOCS.exists(), 'Generated Codeclew documentation has not been copied to the site')
     def test_copied_generated_documentation_local_closure_and_anchors(self):
-        assert_generated_documentation(self, SITE, GENERATED_DOCS)
+        if not generated_documentation_roots(SITE):
+            self.skipTest('Generated documentation has not been copied to the site')
+        assert_generated_documentation_roots(self, SITE)
+
+    def test_multiple_native_roots_keep_their_own_deployment_and_source_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            roots = []
+            digest = lambda data: 'sha256:' + hashlib.sha256(data).hexdigest()
+            for number, relative in enumerate(GENERATED_DOCS_PATHS):
+                root = site / relative
+                roots.append(root)
+                bundle = str(number + 1) * 64
+                frozen = root / 'generated' / bundle
+                (frozen / 'services').mkdir(parents=True)
+                (frozen / 'assets').mkdir()
+                (frozen / 'assets/reader.js').write_text('// retained asset')
+                (root / 'history.html').write_text(f'<h1 id="history-{number}">History</h1>')
+                source = root.parent / 'reproduce/source.html'
+                source.parent.mkdir()
+                source.write_text(f'<pre id="source-{number}">Retained source</pre>')
+                (frozen / 'services/service.html').write_text(
+                    '<h1 id="section">Service</h1><script src="../assets/reader.js"></script>'
+                    f'<a href="../../../history.html#history-{number}">History</a>'
+                    f'<a href="../../../../reproduce/source.html#source-{number}">Source</a>')
+                markup = (f'<h1 id="root-{number}">Root</h1>'
+                          f'<a href="index.html#root-{number}">Home</a>'
+                          f'<a href="history.html#history-{number}">History</a>'
+                          f'<a href="generated/{bundle}/services/service.html#section">Service</a>')
+                archive = frozen / 'root-overview.html'
+                archive.write_text(markup)
+                (root / 'index.html').write_bytes(archive.read_bytes())
+                bindings = {'schema': f'codeclew-documentation-bindings/1.{4 + number}',
+                            'outputHashes': {'root-overview.html': digest(archive.read_bytes())}}
+                binding_path = frozen / 'bindings.json'
+                binding_path.write_text(json.dumps(bindings))
+                manifest = {'schema': 'codeclew-documentation-publication/1.0', 'id': bundle,
+                            'files': {'root-overview.html': digest(archive.read_bytes()),
+                                      'bindings.json': digest(binding_path.read_bytes())}}
+                (frozen / 'publication.json').write_text(json.dumps(manifest))
+            self.assertEqual(roots, generated_documentation_roots(site))
+            # Both archived roots resolve Home/History from their own deployed
+            # root, and service citations can reach retained source outside docs.
+            assert_generated_documentation_roots(unittest.TestCase(), site)
+            current = roots[1]
+            history = current / 'history.html'
+            original_history = history.read_bytes()
+            history.write_text('<h1 id="history-0">Wrong root history</h1>')
+            with self.assertRaisesRegex(AssertionError, 'missing fragment'):
+                assert_generated_documentation_roots(unittest.TestCase(), site)
+            history.write_bytes(original_history)
+            deployed = current / 'index.html'
+            original_deployed = deployed.read_bytes()
+            deployed.write_bytes(original_deployed + b'<p>Hand-edited deployed root</p>')
+            with self.assertRaisesRegex(AssertionError, 'deployed root differs'):
+                assert_generated_documentation_roots(unittest.TestCase(), site)
+            deployed.write_bytes(original_deployed)
+            asset = current / 'generated' / ('2' * 64) / 'assets/reader.js'
+            asset.unlink()
+            with self.assertRaisesRegex(AssertionError, 'missing ../assets/reader.js'):
+                assert_generated_documentation_roots(unittest.TestCase(), site)
 
     def test_nested_history_assets_and_same_named_pages_resolve_from_source(self):
         with tempfile.TemporaryDirectory() as directory:

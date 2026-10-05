@@ -1,0 +1,21 @@
+{
+  "reachableReaderHtmlAssetAndFragmentLinksVerified": 201,
+  "nativeRootRestorePayloadsRetained": 4,
+  "rootRestorePayloadDirectNavigationSupported": false,
+  "currentRootRoutesBundleCoherent": true,
+  "currentRootRoutes": [
+    "index.html",
+    "catalog.html",
+    "help.html",
+    "runbooks.html"
+  ],
+  "nativeFilesCopiedByteExactly": 100,
+  "previousPublicationFilesUnchanged": 71,
+  "sourceMirrorLinksVerified": 5,
+  "releasedPinnedGithubSourceRangesVerifiedAgainstGit": 5,
+  "completeRecordedSourcePartsVerifiedAgainstCommittedBytes": 68,
+  "contributedFilesPrivacyAndEnglishChecked": 243,
+  "publicPrivateStateObjectsCopied": false,
+  "browserAndDeploymentVerified": false,
+  "EnglishMethod": "Repository generated-publication mask recognizes the current docs prefix and exact shipped localization assets."
+}

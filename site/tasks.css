@@ -1,0 +1,41 @@
+/* Task pages keep the existing Clew palette and put the question before decoration. */
+.history-site .page-layout { display: block; }
+.history-site .architecture-table thead th,
+:is(.task-site, .history-site) .primary-nav > a[aria-current="page"] { color: #096a9d; }
+.task-main { max-width: 1080px; padding-block: 24px 56px; }
+:is(.task-site, .history-site) .breadcrumbs { padding-left: 0; }
+:is(.task-site, .history-site) .kicker { color: #216e76; }
+.task-hero { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 30px; align-items: center; padding: 26px 0 30px; }
+.task-hero h1 { font-size: clamp(32px, 4vw, 48px); line-height: 1.12; margin: 10px 0 16px; max-width: 800px; }
+.task-hero .lede { font-size: 19px; line-height: 1.55; max-width: 760px; margin: 0 0 16px; }
+.task-hero img { width: 180px; height: 128px; object-fit: contain; }
+.task-action { display: inline-block; font-weight: 650; text-decoration: underline; text-underline-offset: 4px; }
+.task-section { padding: 30px 0; border-top: 1px solid var(--line); }
+.task-section h2 { font-size: 27px; line-height: 1.3; margin: 0 0 18px; }
+.task-section h3 { font-size: 20px; line-height: 1.4; }
+.task-section p, .task-section li { max-width: 850px; line-height: 1.65; }
+.task-cards, .decision-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 20px 0; }
+.task-cards > a, .decision-cards > article { padding: 22px; background: #fffdf8; border: 1px solid var(--line); border-radius: 14px; }
+.task-cards > a { text-decoration: none; }
+.task-cards h2, .task-cards h3, .decision-cards h3 { font-size: 22px; margin: 0 0 12px; }
+.task-cards a:hover, .task-cards > a:hover { background: #eaf6f1; }
+.task-cards > a:focus-visible { outline: 3px solid #1775a4; outline-offset: 3px; }
+.case-status, .pending-output { border-left: 3px solid #b87e26; background: #fff4dc; padding: 14px 18px; font-size: 15px; line-height: 1.6; }
+.historical-label { color: #635841; font-size: 14px; }
+.historical-detail { padding: 18px; border: 1px solid var(--line); border-radius: 12px; }
+.historical-detail summary { cursor: pointer; font-weight: 650; }
+.legacy-anchor { scroll-margin-top: 110px; }
+.task-site pre { position: relative; margin: 18px 0; padding: 48px 20px 20px; border-radius: 10px; background: #edf3f1; color: #162f39; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-site pre code { font-size: inherit; background: transparent; padding: 0; }
+.copy-block { position: absolute; top: 9px; right: 10px; padding: 5px 10px; border: 1px solid #77928e; border-radius: 6px; background: #fffdf8; color: #18353d; font: inherit; cursor: pointer; }
+.copy-status { display: block; margin-top: -10px; min-height: 1.5em; font-size: 13px; color: #375d58; }
+.task-site blockquote { margin: 20px 0; padding: 18px 22px; border-left: 3px solid #228874; background: #edf5ef; line-height: 1.7; }
+.task-site table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 15px; }
+.task-site caption { text-align: left; line-height: 1.6; padding-bottom: 16px; }
+.task-site th, .task-site td { padding: 15px; vertical-align: top; text-align: left; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+:is(.task-site, .history-site) .site-menu { display: none; }
+:is(.task-site, .history-site) .primary-nav { gap: 18px; }
+:is(.task-site, .history-site) .site-header-inner { min-height: 78px; gap: 18px; }
+:is(.task-site, .history-site) .search-trigger { flex-shrink: 0; }
+@media (max-width: 1050px) { :is(.task-site, .history-site) .brand small { display: none; } :is(.task-site, .history-site) .primary-nav { gap: 12px; font-size: 13px; } :is(.task-site, .history-site) .search-trigger { gap: 8px; } :is(.task-site, .history-site) .search-trigger kbd { display: none; } }
+@media (max-width: 850px) { :is(.task-site, .history-site) .site-menu { display: block; } .task-hero { display: block; padding: 18px 0 24px; } .task-hero img { display: none; } .task-hero .lede { font-size: 17px; } .task-main { padding-top: 14px; } .task-cards, .decision-cards { grid-template-columns: 1fr; } .task-section { padding: 25px 0; } .task-section h2 { font-size: 24px; } .task-site table, .task-site caption, .task-site tbody, .task-site tr { display: block; width: 100%; } .task-site thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } .task-site tr { padding-block: 10px; border-bottom: 1px solid var(--line); } .task-site td, .task-site th { display: block; padding: 8px 0; border: 0; } .task-site td::before { content: attr(data-label); display: block; font-weight: 650; color: #296181; } }

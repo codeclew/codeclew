@@ -1,107 +1,64 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Compare saved Kotlin and Rust edits against HEAD, inspect retained source and direct consequences, and keep coverage separate from freshness."><link rel="icon" href="./favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./nav-query.css"><title>Explain saved edits — Codeclew</title><link rel="stylesheet" href="./theme.css?v=4922f29a1861">
-</head>
-<body><!-- SITE_HEADER -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Read three concrete saved-edit decisions, create a retained report and choose the next project checks."><meta name="theme-color" content="#fdfaf2">
+<title>Review saved edits — Codeclew</title><link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./theme.css?v=4922f29a1861"><link rel="stylesheet" href="./tasks.css?v=aa3e0669698e"></head>
+<body class="task-site"><!-- SITE_HEADER -->
 <a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-header"><div class="site-header-inner shell">
   <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
   <nav class="primary-nav" aria-label="Primary navigation">
-    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
-</div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html" aria-current="page">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
-</div>
-<div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html">Release evidence</a>
-</div>
-<div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html">Historical Spring case</a>
-</div></div></details>
-    <a href="./documentation.html">Service docs</a>
-    <a href="./evidence.html">Release evidence</a>
-    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+    <details class="site-menu"><summary>Tasks <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html" aria-current="page">Review saved edits</a></div></div></details>
+    <a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html" aria-current="page">Review saved edits</a>
+    <a href="./evidence.html">Checks and limits</a>
   </nav>
-  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search</span><kbd>Ctrl / ⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “source”, “saved edits” or “document”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>
-<!-- /SITE_HEADER -->
-<main class="shell navdoc" id="main-content"><section class="navdoc-hero"><div class="hero-copy"><div class="kicker">Saved-edit analysis · available since v0.4.0</div><h1>Review edits.<br><em>Inspect their consequences.</em></h1><p class="lede">Compare the files you have saved against pinned HEAD. Open changed declarations, direct consumers and the exact code supporting each finding.</p><p>Available for Kotlin and Rust. Kotlin can include supported direct consumers; Rust retains syntax-level evidence. <a href="./index.html#support">See language boundaries →</a></p><p><a class="button primary" href="./working-tree-example.html">Explore the retained example ↗</a></p></div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
-<!-- SITE_BREADCRUMB -->
-<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Guides</span><span aria-hidden="true">/</span><span aria-current="page">Saved edits guide</span></nav>
-<!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
-<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
-</div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html" aria-current="page">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
-</div>
-<div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html">Release evidence</a>
-</div>
-<div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html">Historical Spring case</a>
-</div></nav></details>
-<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
-<!-- /SITE_SIDEBAR --><div class="page-content">
-<section><h2>A body change, a signature change and a removed call</h2><p>The fixture changes <code>Pricing.price()</code> from <code>1</code> to <code>3</code>, changes <code>Pricing.label(Int)</code> to <code>Pricing.label(Long)</code>, and removes a call from <code>stopCalling()</code>. The index contains an intermediate price of <code>2</code>; analysis uses the saved price of <code>3</code>.</p><p>Select <code>consumer</code> to see an unchanged caller with before/after evidence. Select the <code>stopCalling → Pricing.price</code> relation to inspect the removed call. Its after claim stays unresolved under partial coverage. Four direct consumer candidates are retained; they are verification suggestions, not observed runtime failures.</p><p>The example selects main only. A separate qualification selects the test compilation and finds a relationship from <code>PriceTest.kt</code>. Neither inspection executes tests.</p></section>
-<section><h2>Use the same workflow on saved Kotlin edits</h2><pre><code>clew change inspect --repo &lt;repo&gt; --target-ref &lt;branch&gt; \
-  --language kotlin --profile kotlin-jvm-gradle-analysis \
-  --compilation :/main --working-tree --base HEAD
-clew change graph --comparison &lt;returned-id&gt;
-clew change render --comparison &lt;returned-id&gt; --output &lt;new-report.html&gt;
-clew change check-freshness --comparison &lt;returned-id&gt;
-clew change source --comparison &lt;returned-id&gt; \
-  --node &lt;returned-node-id&gt; --side after
-clew change forget --comparison &lt;returned-id&gt;</code></pre><p>Use repository discovery for the exact profile and compilation of your project. Add test compilations explicitly. For Rust, use the discovered syntax profile and Cargo compilation; the report does not invent compiler-resolved callers.</p></section>
-<section><h2>Three separate questions</h2><ul><li><strong>Are the retained claims readable and valid?</strong> Source, fact and comparison digests bind the evidence.</li><li><strong>Does the snapshot still match this checkout?</strong> Further saved edits produce <code>LIVE_CHANGED</code>. Create a new comparison when current edits are needed.</li><li><strong>Is the selected scope complete?</strong> Compiler failures, unresolved targets, test scope and truncation remain explicit. Valid evidence and a fresh checkout do not remove those limitations.</li></ul><p>The local report has no background watcher, network dependencies or implicit publication. Repeated rendering reads retained evidence without compiling the project. Exact source windows are bounded; follow <code>nextOffset</code> when needed.</p></section>
-<section id="report-evidence"><h2>Inspect the method behind the example</h2><p>The retained report comes from an earlier qualification fixture. Its embedded source remains readable offline; its comparison ID is no longer live. Historical fixture and repository measurements are available in the <a href="./evidence.html#saved-edits">evidence archive</a>.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.4.0/docs/releases/v0.4.0.md">Saved-edit analysis release notes ↗</a></p></section>
-</div></div></main><!-- SITE_FOOTER -->
+<!-- /SITE_HEADER --><main id="main-content" class="shell task-main"><!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Tasks</span><span aria-hidden="true">/</span><span aria-current="page">Review saved edits</span></nav>
+<!-- /SITE_BREADCRUMB --><!-- SITE_SIDEBAR -->
+
+<!-- /SITE_SIDEBAR --><section class="task-hero"><div><div class="kicker">Task 03 / Review</div><h1>Review saved edits</h1><p class="lede">See what changed, inspect a direct consumer, and choose the checks to run before committing.</p><a class="task-action" href="#example">Read the three-change case <span aria-hidden="true">→</span></a></div><img src="./assets/cat.svg" width="180" height="128" alt=""></section><aside class="case-status" data-qualification="recorded"><strong>Analysis recorded with installed Clew 0.13.11; retained reader qualified with installed 0.13.13.</strong> Source JSON and embedded report evidence are unchanged. Later source, render and freshness calls took 5.65–5.79 seconds on existing shared state. <a href="./examples/current-workflow/reproduce/saved-edits/observations.json">Read the scoped observations</a>.</aside><section class="task-section" id="example"><h2>Three changes, three decisions</h2><p class="historical-label">Public Pricing fixture · installed release 0.13.11 · main and explicit test scope</p><p>This case compares HEAD with saved files. <code>price()</code> returns <code>1</code> at HEAD, <code>2</code> in the index and <code>3</code> in the saved file. The report uses the saved <code>3</code>. It also changes <code>label(Int)</code> to <code>label(Long)</code> and removes a call from <code>stopCalling()</code>.</p><div class="decision-cards">
+<article><h3>1. The price body changed</h3><p><code>consumer()</code> is unchanged but calls <code>Pricing.price()</code>. Inspect its retained before/after source and decide which expected price values need a test.</p><p><strong>Next check:</strong> review the expectations in <code>PriceTest.kt</code> and run the relevant project tests separately.</p></article>
+<article><h3>2. The label parameter changed</h3><p>The signature moves from <code>Int</code> to <code>Long</code>. Inspect <code>labelConsumer()</code> and other returned direct candidates before deciding whether their call arguments still fit.</p><p><strong>Next check:</strong> compile the changed scope and inspect callers outside the selected scope.</p></article>
+<article><h3>3. A call disappeared</h3><p><code>stopCalling()</code> previously called <code>Pricing.price()</code>; the saved body returns <code>0</code>. The before-call evidence survives. Under partial after coverage, an unresolved relation is not proof that no call remains anywhere.</p><p><strong>Next check:</strong> read the saved body and assess the missing coverage before concluding the effect is gone.</p></article></div>
+<p>The main-only run does not analyze tests. The explicit <code>:/main</code> + <code>:/test</code> run retains a compiler-resolved <code>PriceTest.priceCheck → Pricing.price</code> call in both snapshots. The unchanged test expects <code>1</code> while the saved function returns <code>3</code>: a concrete check to run. Clew inspection does not execute it or prove that it fails. Coverage remains partial, with 30 unresolved relations and 16 nodes omitted from the bounded graph response.</p><details class="historical-detail"><summary>Open the earlier development-source report and original records</summary><p><a class="task-action" href="./examples/saved-edits-historical/index.html">Open the historical interactive report →</a></p><p>Choose <code>consumer</code> for source evidence, or the <code>stopCalling → Pricing.price</code> relation for the removed call. The retained report works offline; its old comparison ID is no longer live.</p><p><a href="./evidence/working-tree-example.json">Original comparison data</a> · <a href="./examples/saved-edits-historical/original.html.txt" download="saved-edits-original.html">Exact original report bytes</a> · <a href="./examples/saved-edits-historical/archive.json">Archive digest and relocation record</a></p></details></section><section class="task-section" id="try-it"><h2>Prepare the public Pricing fixture</h2><p>Use a caller-owned source checkout and a new fixture directory. The setup script copies the public Kotlin build fixture, creates a base commit, stages the intermediate price, then writes the three changes above plus the original added/deleted/renamed file cases. It makes no Clew or model calls. It refuses to replace an existing destination.</p><pre><code>git clone --branch v0.13.11 https://github.com/codeclew/codeclew.git codeclew-example
+curl -fsSL https://codeclew.github.io/codeclew/examples/saved-edits-fixture/setup.py -o pricing-setup.py
+python3 pricing-setup.py \
+  --checkout ./codeclew-example --output ./pricing-example
+fixture=&quot;$PWD/pricing-example&quot;
+clew doctor repository --repo &quot;$fixture&quot; --working-tree --human</code></pre><p><a href="./examples/saved-edits-fixture/setup.py" download>Download setup.py</a>. Kotlin compiler inspection needs JDK 21 and the project's Gradle wrapper. The recorded fixture uses Kotlin 2.4.10 and profile <code>kotlin-2.4.10-gradle-single</code>, with compilations <code>:/main</code> and <code>:/test</code>. Use the ready scope returned for your checkout; main alone does not include tests.</p></section><section class="task-section" id="inspect"><h2>Inspect the saved files and render a report</h2><pre><code>clew change inspect --repo &quot;$fixture&quot; --target-ref main \
+  --language kotlin --profile DISCOVERED_PROFILE \
+  --compilation DISCOVERED_COMPILATION --working-tree --base HEAD
+clew change graph --comparison RETURNED_COMPARISON
+clew change render --comparison RETURNED_COMPARISON \
+  --output ./saved-edits-report.html
+clew change source --comparison RETURNED_COMPARISON \
+  --node RETURNED_NODE --side after</code></pre><p>Use the profile and compilation returned by discovery, then the comparison and node identities from inspection. Open <code>saved-edits-report.html</code>, select a changed declaration or direct connection, and read its exact source. Add test compilations explicitly when you need their relations.</p><p><a class="task-action" href="./examples/current-workflow/reproduce/saved-edits/report-0.13.13.html">Open the 0.13.13 native reader →</a></p><p>The 0.13.13 renderer reads the original 0.13.11 retained analysis. Its embedded evidence JSON is exactly equal to the original; source, coverage and test claims are unchanged. <a href="./examples/current-workflow/reproduce/saved-edits/report.html">Original 0.13.11 native report</a>.</p><p>The main-only report records five changed files and ten declaration changes. Selecting both main and test records twenty declaration changes, retaining compilation identity; those counts are not twenty distinct source declarations. <code>price()</code>'s projected signature is unchanged, <code>label</code>'s JVM descriptor changes from <code>(I)Ljava/lang/String;</code> to <code>(J)Ljava/lang/String;</code>, and <code>stopCalling</code>'s before-only call keeps the partial-coverage boundary visible.</p><p><a href="./examples/current-workflow/reproduce/saved-edits/README.md">Reproduce the installed case</a> · <a href="./examples/current-workflow/reproduce/saved-edits/observations.json">Read exact source fragments, scopes and digest provenance</a>. The public observations are a derived summary; they are labeled separately from native output.</p></section><section class="task-section" id="freshness"><h2>Check freshness after another saved edit</h2><pre><code>clew change check-freshness --comparison RETURNED_COMPARISON
+# Save another change in the fixture, then repeat:
+clew change check-freshness --comparison RETURNED_COMPARISON</code></pre><p>A retained comparison still describes its saved evidence after the checkout changes. An observed <code>LIVE_CHANGED</code> result tells you to create a new comparison when current edits matter. It does not corrupt the old source or update the report automatically.</p><p>After inspection, the recorded case changes only saved <code>stable() = 9</code> to <code>10</code>. Freshness returns <code>LIVE_CHANGED</code>, <code>liveSnapshotMatches: false</code> and <code>retainedEvidenceValid: true</code>. Reading the old comparison still returns <code>stable() = 9</code> and <code>price() = 3</code>, byte-identical to its original retained source. HEAD, index and refs remain unchanged.</p></section><section class="task-section" id="next"><h2>Run the project checks you selected</h2><p>Use the report to choose what to inspect and test. Run the fixture's relevant compilation and tests explicitly; Clew inspection does not execute them. Compiler failures, unresolved targets and omitted scopes remain limits even when a retained report opens correctly.</p><p>A <strong>separate earlier caller-project check</strong> ran <code>./gradlew --no-daemon check</code> on this fixture: main and test compilation succeeded, and one test failed with expected <code>1</code>, actual <code>3</code>. Clew did not run that check, and the installed case did not repeat it. The compiler call identifies a verification candidate; the separate test execution supplies the observed failure.</p><details><summary>Observed retained-read timings</summary><p>The original 0.13.11 requests on inherited shared state took about 55–117 seconds sequentially; earlier overlapping calls took longer. Installed 0.13.13 then read the same retained comparison: test source took 5.677 seconds (originally 110.854), render 5.650 (112.380) and freshness 5.790 (117.058). Full source JSON and embedded report evidence matched exactly; freshness remained <code>LIVE_CHANGED</code> with valid retained evidence. These observed wall times use existing shared state; they are not a controlled cold benchmark or latency promise. Graph and main-source requests were not repeated, and there was no new analysis or test execution.</p><p>The original extra storage dry-run failed with <code>INVALID_INPUT: run ledger contains an invalid transition</code>; no cleanup or retry ran during that case. A separate 0.13.13 supported dry-run still failed, now identifying <code>WorktreeRecoveryRequired → Cancelled</code> at sequence <code>3</code>. The inherited ledger remains unrepaired; root cause is unproven and CAS totals remain unknown. No cleanup, recovery or private-object edits were performed. All original timing and failure records remain available. <a href="./examples/current-workflow/reproduce/saved-edits/observations.json">Read the full timings and boundaries</a>.</p></details><p>For Rust, use its discovered syntax profile and Cargo compilation. It can show changed declaration ranges, but it does not provide compiler-resolved direct callers.</p><pre><code>clew change forget --comparison RETURNED_COMPARISON</code></pre><p>Forget the local comparison when you no longer need the retained evidence. Keep a report or original records you intend to share before removing it. <a href="./evidence.html#saved-edits">Historical qualification and limits →</a></p><span id="report-evidence" class="legacy-anchor"></span></section></main><!-- SITE_FOOTER -->
 <footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
-<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start</p>
+<a href="./index.html">Start with Clew</a>
 </div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html" aria-current="page">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
+<div class="nav-group"><p>Tasks</p>
+<a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html" aria-current="page">Review saved edits</a>
 </div>
 <div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html">Release evidence</a>
+<a href="./evidence.html">Checks and limits</a>
 </div>
 <div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html">Historical Spring case</a>
-</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
-<!-- /SITE_FOOTER --><script src="./app.js?v=51e5e2dc14fe" defer></script></body></html>
+<a href="./extend.html">Contribute</a>
+</div><div class="nav-group"><p>History</p><a href="./pilot.html">Historical Spring case</a></div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER --><script src="./app.js?v=96cc5dc96bed" defer></script></body></html>

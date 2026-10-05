@@ -1,0 +1,18 @@
+{
+  "schema": "codeclew-documentation-proposal/1.0",
+  "operations": [
+    {
+      "entrypoint": "section1",
+      "title": "What --check verifies and when Graphviz runs",
+      "summary": {
+        "text": "The script maintains a source-linked navigation walkthrough. Before either branch, it verifies the recorded Git revision, source file and fragment digests, exact source text and line ranges, source URLs, and graph references. With --check, it compares expected DOT and Mermaid with saved files, parses the saved SVG, and checks that the SVG and rendered claims appear in the HTML page, then returns. It calls Graphviz as dot -Tsvg only in render_svg, reached by the branch without --check; that branch writes diagrams and replaces the page's diagram and claim sections. The check validates retained byte bindings and generated presentation, not the meaning of the agent-inferred claims. This selected source does not establish that a particular run passed or that the published diagram describes runtime execution. Syntax capture leaves call targets unresolved and provides lexical ordering only. In the explicitly labeled caller-owned local maintenance exercise, --check also rejects saved XML whose root is not an SVG element. This change is separate from the released Codeclew source. The unchanged generation branch still invokes Graphviz only without --check.",
+        "evidence": [
+          "s34",
+          "s160",
+          "s109"
+        ]
+      },
+      "steps": []
+    }
+  ]
+}

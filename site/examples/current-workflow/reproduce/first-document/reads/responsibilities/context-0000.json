@@ -1,0 +1,718 @@
+{
+  "audience": "An engineer maintaining the public source walkthrough",
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "contextDigest": "sha256:0ba04eb0eeff8d286e347bc9aac43b435960384cdb6ff9bf5d614bf1ee1904fc",
+  "contextProfile": "section-orientation-v1",
+  "documentationLanguage": "en",
+  "influenceCoverage": "RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED",
+  "inputDigest": "sha256:e13ce0de0ee03c8f090704a68d8156573bb59842ed406ea20463daec12ec54e2",
+  "items": [
+    {
+      "documentationLanguageStatus": "NOT_AUTHORED",
+      "id": "section-responsibilities",
+      "kind": "SECTION",
+      "record": {
+        "content": null,
+        "gap": "Required service section has not been authored in this proposal.",
+        "id": "section-responsibilities",
+        "objectId": "service:cli-documentation/section-responsibilities",
+        "purpose": "Describe responsibilities and exclusions from evidence; business intent may need a human note.",
+        "required": true,
+        "schema": "codeclew-documentation-section/1.0",
+        "service": "cli-documentation",
+        "status": "GAP",
+        "title": "Responsibilities",
+        "workRequest": {
+          "audience": "Service maintainers and architecture readers",
+          "entrypoint": "section-responsibilities",
+          "maxBytes": 40960,
+          "maxItems": 20,
+          "schema": "codeclew-documentation-work-request/1.0"
+        }
+      },
+      "reference": "section2",
+      "referenceRoles": [
+        "operation",
+        "gap"
+      ],
+      "requestedDocumentationLanguage": "en"
+    },
+    {
+      "id": "inventory:cli-documentation",
+      "kind": "BOUNDARY_INVENTORY",
+      "record": {
+        "gaps": [
+          "PUBLIC_BOUNDARY_INVENTORY_IS_BOUNDED_BY_SELECTED_MODULES",
+          "DYNAMIC_REGISTRATION_AND_RUNTIME_ACTIVATION_UNVERIFIED"
+        ],
+        "internalCallableCount": 5,
+        "internalCallablePreviewLimits": {
+          "maxBytes": 8192,
+          "maxItems": 8
+        },
+        "internalCallables": [
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:cd96038866bf7f18d601a02e"
+            ],
+            "id": "cli-documentation:symbol:cd96038866bf7f18d601a02e",
+            "name": "diagram_sources",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "data"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-cd96038866bf7f18d601"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/diagram_sources/1fcb8f233748fd46e02b"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:dd6a072510e7af3faf22eb3a"
+            ],
+            "id": "cli-documentation:symbol:dd6a072510e7af3faf22eb3a",
+            "name": "main",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-dd6a072510e7af3faf22"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/main/f76638a0e73f8a97a3de"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:de4cd73046421c440a6d3ef4"
+            ],
+            "id": "cli-documentation:symbol:de4cd73046421c440a6d3ef4",
+            "name": "render_claims",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "claims"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-de4cd73046421c440a6d"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/render_claims/bbe2af4e300709a41a10"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:943e7c4c9b378cf363ac9936"
+            ],
+            "id": "cli-documentation:symbol:943e7c4c9b378cf363ac9936",
+            "name": "render_svg",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "dot",
+              "claims"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-943e7c4c9b378cf363ac"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/render_svg/77befcebc84fae0ccf97"
+          },
+          {
+            "dependencyIds": [
+              "cli-documentation:symbol:30dea2dc5cb47627d15fe5c5"
+            ],
+            "id": "cli-documentation:symbol:30dea2dc5cb47627d15fe5c5",
+            "name": "verify",
+            "owner": "package:scripts.build_cli_documentation",
+            "parameterTypes": [
+              "data"
+            ],
+            "publicBoundary": false,
+            "scope": "",
+            "service": "cli-documentation",
+            "sourceIds": [
+              "cli-documentation-30dea2dc5cb47627d15f"
+            ],
+            "status": "RECORDED",
+            "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/verify/e9c1167d5de6c7160235"
+          }
+        ],
+        "omittedInternalCallables": 0,
+        "omittedPublicBoundaries": 0,
+        "publicBoundaries": [],
+        "publicBoundaryCount": 0,
+        "sourceBoundaries": [
+          "CALL_TARGETS_UNRESOLVED",
+          "DIALECT_DECLARED_NOT_COMPILER_VALIDATED",
+          "ORDER_LEXICAL_ONLY",
+          "SCOPE_WATCH_CONSERVATIVE"
+        ]
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "cli-documentation:symbol:cd96038866bf7f18d601a02e",
+      "kind": "DEPENDENCY",
+      "record": {
+        "digest": "sha256:218907dd1e9ed0436eece7afaea6d5fcdf3684dda25291500cf17aba6093ac56",
+        "id": "cli-documentation:symbol:cd96038866bf7f18d601a02e",
+        "kind": "SYMBOL",
+        "normalized": {
+          "authority": "SYNTAX",
+          "documentation": {
+            "boundaries": [
+              "CALL_TARGETS_UNRESOLVED",
+              "ORDER_LEXICAL_ONLY"
+            ],
+            "events": [
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:21f469e82907da0258889c5288c57aef01e5b2badaea66207c81342321493f9f",
+                "kind": "LOOP",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 0,
+                "parentOrdinal": null,
+                "syntaxKind": "for_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "for node in data[\"diagram\"][\"nodes\"]:\n        id = node[\"id\"]\n        shape = \"diamond\" if id == \"decision\" else \"box\"\n        color = \"#e0ae65\" if id in {\"abstain\", \"failure\"} else \"#91b774\"\n        dot.append(f'{id} [label={quote(node[\"label\"])}, shape={shape}, color=\"{color}\", id=\"node-{id}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{id}\", tooltip={quote(id)}];')\n        label = node[\"label\"].replace(\"\\n\", \"<br/>\")\n        mermaid.append(f'  {id}[\"{label}\"]')"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:716667eff04f2931c1f8bd137992c9eaf47072c0b1b32385b58068ae1c7c90ac",
+                "kind": "IF",
+                "nestingDepth": 5,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 1,
+                "parentOrdinal": 0,
+                "syntaxKind": "conditional_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "\"diamond\" if id == \"decision\" else \"box\""
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:2be155c0027ebe154f83f7e458af804a019857b0149fb3e2741acbbaee2d43e1",
+                "kind": "IF",
+                "nestingDepth": 5,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 2,
+                "parentOrdinal": 0,
+                "syntaxKind": "conditional_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "\"#e0ae65\" if id in {\"abstain\", \"failure\"} else \"#91b774\""
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:5eef0adfbbe031894a6ffd459d976cc8203244c7371c37349ceaef9e5c40102b",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 3,
+                "parentOrdinal": 0,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "dot.append(f'{id} [label={quote(node[\"label\"])}, shape={shape}, color=\"{color}\", id=\"node-{id}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{id}\", tooltip={quote(id)}];')"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:09338ba12ec5ac03a299af76343fb7cf005fa5244e836ffc19cc4ff2d2698758",
+                "kind": "CALL",
+                "nestingDepth": 8,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 4,
+                "parentOrdinal": 3,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "quote(node[\"label\"])"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:d84a4cf11a2a40da395c9e01398dba90f57330853e330c59cfd4f95658f011d1",
+                "kind": "CALL",
+                "nestingDepth": 8,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 5,
+                "parentOrdinal": 3,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "quote(id)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:354033df716a4031aba5571d74cef0acbc5dc188c642a7d8f6757eea983ecfd7",
+                "kind": "CALL",
+                "nestingDepth": 5,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 6,
+                "parentOrdinal": 0,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "node[\"label\"].replace(\"\\n\", \"<br/>\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:c8791f77b9e62f08173484c7ebb77a87a5f9073ba482aef9eb85f3cb5c6a2d71",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 7,
+                "parentOrdinal": 0,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "mermaid.append(f'  {id}[\"{label}\"]')"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:66ae9c2eea3052ac5e168539dc0feb7b5afa7378ef652e044ddda48863b92104",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 8,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "dot.append(\"{rank=same; supported; abstain;}\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:76d993f1839dfc599c491a50cc6e895e9215148a0d7434c69a0429f469e765a2",
+                "kind": "LOOP",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 9,
+                "parentOrdinal": null,
+                "syntaxKind": "for_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "for index, edge in enumerate(data[\"diagram\"][\"edges\"]):\n        dot.append(f'{edge[\"from\"]} -> {edge[\"to\"]} [label={quote(edge[\"label\"])}, id=\"edge-{index}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{edge[\"claimId\"]}\", tooltip={quote(edge[\"authority\"])}];')\n        mermaid.append(f'  {edge[\"from\"]} -. \"{edge[\"label\"]} · claim:{edge[\"claimId\"]}\" .-> {edge[\"to\"]}')"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:eea538506b6db0c30821373af2d27ef90c83b3ca76d15960660eb322b1562fcb",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 10,
+                "parentOrdinal": 9,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "enumerate(data[\"diagram\"][\"edges\"])"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:bd1c9cfb5f93a3b3044ff270738c27cc2e28124659ee4eb85999dd607ab99641",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 11,
+                "parentOrdinal": 9,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "dot.append(f'{edge[\"from\"]} -> {edge[\"to\"]} [label={quote(edge[\"label\"])}, id=\"edge-{index}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{edge[\"claimId\"]}\", tooltip={quote(edge[\"authority\"])}];')"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:7dec969681bc79c493b5dd0cfb94c77e33e0e111520a41b0324824d70246f723",
+                "kind": "CALL",
+                "nestingDepth": 8,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 12,
+                "parentOrdinal": 11,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "quote(edge[\"label\"])"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:052322398a92e67cf91af09763d804be29022fbe7c6b391884c179a89ed08532",
+                "kind": "CALL",
+                "nestingDepth": 8,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 13,
+                "parentOrdinal": 11,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "quote(edge[\"authority\"])"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:51c2533a73eeaf19bbf87d3752ca7e9b0eec033e5edb40af6f38fe2f3eb7f0d4",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 14,
+                "parentOrdinal": 9,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "mermaid.append(f'  {edge[\"from\"]} -. \"{edge[\"label\"]} · claim:{edge[\"claimId\"]}\" .-> {edge[\"to\"]}')"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:77099117c51555a142ec266bee2d5accfd84598e60100c64fd76eed9b3d34665",
+                "kind": "CALL",
+                "nestingDepth": 2,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 15,
+                "parentOrdinal": null,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "dot.append(\"}\")"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:7727e9f577abbacae7d057f63e2a9dfa7e4fe223664f386edeb819b3fad70aa5",
+                "kind": "RETURN",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 16,
+                "parentOrdinal": null,
+                "syntaxKind": "return_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "return \"\\n\".join(dot) + \"\\n\", \"\\n\".join(mermaid) + \"\\n\""
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:030a98e5db8defea67d28b13423b7a2030a9ffc45b13f18cde5e83f043c274d1",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 17,
+                "parentOrdinal": 16,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "\"\\n\".join(dot)"
+              },
+              {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:c6d28f157d838d7bf0696c1086354aa6e4f29ccff42ea2fc2e4411aa7d420ca5",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 18,
+                "parentOrdinal": 16,
+                "syntaxKind": "call",
+                "targetStatus": "UNRESOLVED",
+                "text": "\"\\n\".join(mermaid)"
+              }
+            ],
+            "parameterTypes": [
+              "data"
+            ]
+          },
+          "fingerprint": "sha256:178736350dc97b19f5a3c21b172b3f2e261998d2a0f4f83218922cfc6f873a3e",
+          "kind": "DECLARATION",
+          "name": "diagram_sources",
+          "ownerIdentity": "package:scripts.build_cli_documentation",
+          "symbolIdentity": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/diagram_sources/1fcb8f233748fd46e02b",
+          "syntaxKind": "function_definition"
+        },
+        "service": "cli-documentation",
+        "sourceIds": [
+          "cli-documentation-cd96038866bf7f18d601"
+        ],
+        "symbol": "source:scripts/build_cli_documentation.py/package:scripts.build_cli_documentation/diagram_sources/1fcb8f233748fd46e02b"
+      },
+      "reference": "d120",
+      "referenceRoles": [
+        "evidence"
+      ],
+      "selectionReason": "discovered-entrypoint-declaration",
+      "sourceReferences": [
+        "s150"
+      ]
+    },
+    {
+      "id": "evidence-index:cli-documentation",
+      "kind": "EVIDENCE_DISCOVERY",
+      "record": {
+        "availableDependencyCount": 183,
+        "countsByKind": {
+          "ENTITY_SCOPE": 1,
+          "FLOW": 116,
+          "NOTE_ASSOCIATION": 1,
+          "NOTE_SCOPE": 1,
+          "SOURCE_SCOPE": 1,
+          "SYMBOL": 5,
+          "SYNTAX_DETAIL": 58
+        },
+        "deferredDependencyCount": 182,
+        "influenceCoverage": "Full captured Work influence is unchanged by this context preview.",
+        "nextRead": "Use sourceReferences/dependencyReferences with work expand, or a query with kind and symbolContains. Deferred facts are not absent or unsupported; read them before citing them.",
+        "previewLimits": {
+          "maxBytes": 8192,
+          "maxItems": 8
+        },
+        "section": "section-responsibilities",
+        "selection": "Retained selected-section dependencies, then discovered entrypoint declarations. No arbitrary symbol sampling.",
+        "suppliedDependencyCount": 1
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-0",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/cli-documentation-4c4e5646fc3afe399640/entrypoint",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-1",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/cli-documentation-53b99d0f35fa55badac7/entrypoint",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-2",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/cli-documentation-672ee5015ada81ec8d40/entrypoint",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-3",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/cli-documentation-6d1878f45ec2b985c9a6/entrypoint",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-4",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/cli-documentation-7368fc134a99e3cdace1/entrypoint",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-5",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/entity-catalogue",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-6",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/note-catalogue",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-7",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/section-overview/claim-55430bd5cdb903284513",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          },
+          {
+            "reason": "INFLUENCE_SCOPE_CHANGED",
+            "scope": "sha256:59b613bfa84b6ee6ed234a97b1696c0a215c8518df5d08c843dbd74a49d51d56"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-8",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/section-overview/title",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          },
+          {
+            "reason": "INFLUENCE_SCOPE_CHANGED",
+            "scope": "sha256:59b613bfa84b6ee6ed234a97b1696c0a215c8518df5d08c843dbd74a49d51d56"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "review-9",
+      "kind": "REVIEW_REASON",
+      "record": {
+        "fragment": "service:cli-documentation/source-scope",
+        "reasons": [
+          {
+            "after": "sha256:2632b450359a1428f22f6768eecca6e20aad8672c66f58bb2b7fbf6f504cc6a6",
+            "before": "sha256:668a9516b3d5b3fd12ed418b7161a944ad13eb7312c3090b74c73fc4e27ce156",
+            "dependency": "note-scope:cli-documentation",
+            "reason": "SUPPORTED_BEHAVIOR_CHANGED"
+          }
+        ],
+        "requiredAction": "REVIEW_AND_REGENERATE_FRAGMENT",
+        "subject": "service:cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "notes/walkthrough-owner-guidance.md",
+      "kind": "EXTERNAL_INPUT",
+      "record": {
+        "authority": "HUMAN_OR_IMPORTED_UNVERIFIED",
+        "digest": "sha256:e6715808230e8eff2c7c5cca7be919ddca02bf33fcba7a2ed0b5748e9c1e5b1c",
+        "status": "CAPTURED",
+        "text": "# Owner guidance for this walkthrough\n\nPreserve the byte-binding verification explanation and the responsibilities section when updating the overview. Label the follow-up SVG-root validation as a caller-owned local maintenance exercise, not a feature of the released Codeclew source. Runtime behavior and semantic correctness of agent-inferred claims remain outside this note.\n"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-1",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "CALL_TARGETS_UNRESOLVED",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-2",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "DIALECT_DECLARED_NOT_COMPILER_VALIDATED",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-3",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "ORDER_LEXICAL_ONLY",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-4",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "SCOPE_WATCH_CONSERVATIVE",
+        "kind": "EVIDENCE_BOUNDARY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    },
+    {
+      "id": "obligation-5",
+      "kind": "OBLIGATION",
+      "record": {
+        "detail": "Syntax evidence does not establish runtime dispatch or configuration. Expand known owners and helpers; retain explicit gaps for unresolved targets.",
+        "kind": "UNRESOLVED_CALL_AUTHORITY",
+        "service": "cli-documentation"
+      },
+      "referenceRoles": []
+    }
+  ],
+  "membershipDigest": "sha256:c679484f323f748e93d61524a65e77976d92cc230498ff48bc84264ac3e8d404",
+  "nextCursor": null,
+  "omitted": [],
+  "receiptDigest": "sha256:21f101e4681e350144e745990a78293b01bd24adb96407bedb4301a6a9716acc",
+  "schema": "codeclew-documentation-work-page/1.0",
+  "snapshot": "sha256:12d7a16bc6dbb7e9c522d3813b06dc095164a5d959c92b46d6cf39958b8e532b/4489",
+  "subject": "service:cli-documentation",
+  "total": 20,
+  "work": "530cc649966e8655e58362ea7c779243626fb50977500f92b610738cca8aa724"
+}

@@ -1,0 +1,14 @@
+{
+  "schema": "codeclew-documentation-proposal/1.0",
+  "operations": [
+    {
+      "entrypoint": "section1",
+      "title": "REPLACE WITH SOURCE-SUPPORTED TITLE",
+      "summary": {
+        "text": "REPLACE WITH YOUR EXPLANATION (max 2048 UTF-8 bytes)",
+        "evidence": []
+      },
+      "steps": []
+    }
+  ]
+}

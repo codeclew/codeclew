@@ -1,0 +1,134 @@
+{
+  "recordKind": "DERIVED_SUMMARY_OF_ACTUAL_INSTALLED_CLI_RESPONSES",
+  "version": "0.13.11",
+  "runtimeMode": "RELEASE",
+  "publicSourceRevision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+  "compiler": "roslyn-5.9.0",
+  "profile": "csharp-dotnet-msbuild-read-only",
+  "compilation": "sln:fixtures/csharp-aspnetcore/Orders.slnx",
+  "callerPreparation": "Caller restored Orders.Api; Orders.Tests deliberately remains unrestored.",
+  "resolvedCall": {
+    "kind": "RELATION",
+    "relationKind": "CALLS",
+    "resolution": "COMPILER_EXACT",
+    "sourceIdentity": "method:class:Orders.Core.OrderService#Create(LSystem/String;LSystem/Decimal;)LOrders/Core/Order;",
+    "targetIdentity": "method:class:Orders.Core.IOrderRepository#Save(LOrders/Core/Order;)V",
+    "file": "fixtures/csharp-aspnetcore/src/Orders.Core/Orders.cs",
+    "startLine": 45,
+    "endLine": 45,
+    "exactSourceText": "_repository.Save(order)"
+  },
+  "routes": [
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/AdminControllers.cs",
+      "startLine": 20,
+      "endLine": 22,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "DELETE",
+      "path": "/internal/audit/{id}",
+      "frameworkCoverage": "COMPLETE"
+    },
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/AdminControllers.cs",
+      "startLine": 12,
+      "endLine": 13,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "GET",
+      "path": "/admin/Reports/Daily",
+      "frameworkCoverage": "COMPLETE"
+    },
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/OrdersController.cs",
+      "startLine": 19,
+      "endLine": 28,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "GET",
+      "path": "/api/Orders/{id:int}",
+      "frameworkCoverage": "COMPLETE"
+    },
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/AdminControllers.cs",
+      "startLine": 30,
+      "endLine": 31,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "GET",
+      "path": "/api/v{version:apiVersion}/quotes",
+      "frameworkCoverage": "COMPLETE"
+    },
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/OrdersController.cs",
+      "startLine": 45,
+      "endLine": 47,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "GET",
+      "path": "/health",
+      "frameworkCoverage": "COMPLETE"
+    },
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/OrdersController.cs",
+      "startLine": 30,
+      "endLine": 35,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "POST",
+      "path": "/api/Orders",
+      "frameworkCoverage": "COMPLETE"
+    },
+    {
+      "file": "fixtures/csharp-aspnetcore/src/Orders.Api/Controllers/OrdersController.cs",
+      "startLine": 37,
+      "endLine": 43,
+      "annotationAuthority": "ROSLYN_RESOLVED_ATTRIBUTES",
+      "runtimeActivation": "UNPROVEN",
+      "method": "PUT",
+      "path": "/api/Orders/{id}",
+      "frameworkCoverage": "COMPLETE"
+    }
+  ],
+  "scopes": [
+    {
+      "baseRevision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+      "compilation": "sln:fixtures/csharp-aspnetcore/Orders.slnx",
+      "declarations": 23,
+      "inspectedDeclarations": 23,
+      "generationCoverage": "PARTIAL",
+      "generationCertainty": "UNSURE",
+      "generationObligations": [
+        "REVIEW_CSHARP_ANALYSIS_BOUNDARIES"
+      ],
+      "boundaries": [
+        "ACTION_NAME_ASYNC_SUFFIX_DEFAULT_ASSUMED",
+        "API_VERSION_ROUTE_SEGMENT_FORMAT_RUNTIME_CONFIGURED",
+        "CONTROLLER_DISCOVERY_REQUIRES_CUSTOM_FEATURE_PROVIDER",
+        "CSHARP_PROJECT_UNRESTORED",
+        "CSHARP_SOURCE_GENERATED_DOCUMENTS_NOT_INDEXED",
+        "GENERATED_SOURCE_BODIES_NOT_INDEXED"
+      ]
+    }
+  ],
+  "retainedSource": {
+    "name": "IOrderRepository",
+    "file": "fixtures/csharp-aspnetcore/src/Orders.Core/Orders.cs",
+    "nativeContentDigest": "sha256:f9d0acb8e37772a9c4b9d33097c2f68e6febfa6a4940da2072d3dfb5e18b2d57",
+    "fileSha256": "5965791e846b66fe0cdd084a37a40e04e050f20ba4a8cac0465cf233a699e502",
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "completeFile": false,
+    "windows": [
+      {
+        "endLine": 33,
+        "startLine": 1,
+        "text": "namespace Orders.Core;\n\npublic sealed record Order(int Id, string Customer, decimal Total);\n\npublic interface IOrderRepository\n{\n    Order? Find(int id);\n    void Save(Order order);\n}\n\npublic interface IOrderService\n{\n    Task<Order?> GetAsync(int id);\n    Order Create(string customer, decimal total);\n    Order Create(string customer);\n}\n\npublic abstract class AuditedService\n{\n    protected virtual string Describe(Order order) => $\"order {order.Id}\";\n}\n\npublic sealed partial class OrderService : AuditedService, IOrderService\n{\n    private readonly IOrderRepository _repository;\n\n    public OrderService(IOrderRepository repository)\n    {\n        _repository = repository;\n    }\n\n    public Task<Order?> GetAsync(int id)\n    {"
+      }
+    ]
+  },
+  "callerSourceAndBuildOutputs": "UNCHANGED",
+  "limits": [
+    "Routes describe resolved MVC attributes, not demonstrated server activation.",
+    "This read-only preview does not enable C# candidate generation or all .NET languages."
+  ]
+}

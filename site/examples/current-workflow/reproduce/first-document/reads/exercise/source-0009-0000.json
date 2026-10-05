@@ -1,0 +1,35 @@
+{
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "endByte": 1758,
+  "fragmentDigest": "sha256:a95c0b6cdefbe709a780ac8aeb87c964d41d276ef462e976cf1590eadb9bdf28",
+  "nextCursor": null,
+  "receiptDigest": "sha256:54de6c62bd2f9df222f13023220ca70bbcab494171324c83b4acdedd0c0d0810",
+  "receiptType": "SOURCE_PART",
+  "recordDigest": "sha256:b078b2e1ebefd75727d7082ba016a2b387141b1dc9007d5190b20892994f68da",
+  "reference": "s160",
+  "schema": "codeclew-documentation-source-part/1.0",
+  "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+  "source": {
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "endLine": 172,
+    "evidenceDigest": "sha256:5432b89711bc1dd616e542aaf52c435783998701e6f7282a836388af6d9b5b2e",
+    "file": "scripts/build_cli_documentation.py",
+    "id": "cli-documentation-dd6a072510e7af3faf22",
+    "occurrence": {
+      "blob": "b4cd07679fdea0f45bf7442d22a435508769dd37",
+      "endByte": 8826,
+      "snapshot": "sha256:d23df0b60e4c27c772417788010174947b141dacad689325c9b98e089d6dde04",
+      "startByte": 7068
+    },
+    "revision": "54597f963f2cadf2ac02e5e48987ab1505111ad8",
+    "service": "cli-documentation",
+    "startLine": 140,
+    "textDigest": "sha256:a95c0b6cdefbe709a780ac8aeb87c964d41d276ef462e976cf1590eadb9bdf28",
+    "url": "https://codeclew.github.io/codeclew/examples/current-workflow/reproduce/exercise-source/54597f963f2cadf2ac02e5e48987ab1505111ad8/scripts/build_cli_documentation.py.html#L140-L172"
+  },
+  "sourceId": "cli-documentation-dd6a072510e7af3faf22",
+  "startByte": 0,
+  "text": "def main():\n    parser = argparse.ArgumentParser(description=__doc__)\n    parser.add_argument(\"--check\", action=\"store_true\")\n    args = parser.parse_args()\n    data = json.loads(DATA.read_text())\n    claims = verify(data)\n    dot, mermaid = diagram_sources(data)\n    directory = ROOT / \"site/diagrams\"\n    page = ROOT / \"site/nav-query.html\"\n    if args.check:\n        assert (directory / \"nav-query.dot\").read_text() == dot\n        assert (directory / \"nav-query.mmd\").read_text() == mermaid\n        svg = (directory / \"nav-query.svg\").read_text()\n        svg_root = ET.fromstring(svg)\n        assert svg_root.tag == \"{http://www.w3.org/2000/svg}svg\", \"saved diagram is not an SVG root\"\n        assert svg in page.read_text(), \"page diagram is stale\"\n        assert render_claims(claims) in page.read_text(), \"page claims are stale\"\n        print(f\"PASS: {len(claims)} claims, pinned source digests and rendered graph bindings\")\n        return\n    directory.mkdir(exist_ok=True)\n    svg = render_svg(dot, claims)\n    (directory / \"nav-query.dot\").write_text(dot)\n    (directory / \"nav-query.mmd\").write_text(mermaid)\n    (directory / \"nav-query.svg\").write_text(svg)\n    content = page.read_text()\n    prefix, remainder = content.split(START, 1)\n    _, suffix = remainder.split(END, 1)\n    content = prefix + START + \"\\n\" + svg + \"\\n\" + END + suffix\n    claim_start, claim_end = \"<!-- NAV_QUERY_CLAIMS -->\", \"<!-- /NAV_QUERY_CLAIMS -->\"\n    prefix, remainder = content.split(claim_start, 1)\n    _, suffix = remainder.split(claim_end, 1)\n    page.write_text(prefix + claim_start + \"\\n\" + render_claims(claims) + \"\\n\" + claim_end + suffix)\n    print(f\"Rendered {len(data['diagram']['nodes'])} nodes and {len(data['diagram']['edges'])} evidence-bound arrows\")",
+  "totalTextBytes": 1758,
+  "work": "86397d7e8d97a9f2e4fe27eb486ec7b4d2e121a297dfd5ac64884ed8bb5671ba"
+}

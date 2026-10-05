@@ -1,0 +1,9 @@
+# What does --check verify, and when does Graphviz run?
+
+Before either branch, `main` calls `verify` and constructs the expected DOT and Mermaid. `verify` checks the recorded immutable revision, unique claims and evidence, exact committed source bytes, file and fragment digests, text and line ranges, source URL and authority labels, and graph node/edge references. [Read verify](https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L24-L57).
+
+With `--check`, the script compares expected DOT and Mermaid with saved files, parses the saved SVG as XML, checks that the SVG and rendered claims occur in the HTML, prints its PASS message and returns. This branch does not invoke Graphviz or write regenerated files. Released source parses XML here without requiring an SVG root. [Read the check branch](https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L140-L158).
+
+`render_svg` invokes `dot -Tsvg`; `main` reaches it only without `--check`, then writes DOT, Mermaid and SVG and replaces the page diagram and claim sections. [Read Graphviz rendering](https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L84-L106) and [the generation branch](https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L159-L171).
+
+This answer uses the saved release-source Work. It did not recapture source or publish another document. The native retained source has exact snapshot authority, while its call targets remain unresolved and ordering is lexical. This static interpretation does not establish a successful real generator run or the semantic correctness or runtime behavior of the diagram's agent-inferred claims.

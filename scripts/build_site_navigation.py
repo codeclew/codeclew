@@ -14,16 +14,14 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 PAGES = [
-    ("index.html", "Home", "Start here", "Install Codeclew, supported languages and the everyday analysis flow."),
-    ("nav-query.html", "Navigation walkthrough", "Guides", "Find an exact declaration and inspect its retained source evidence."),
-    ("documentation.html", "Service documentation", "Guides", "Maintain service explanations or draft one internal process with source, pseudocode and visible limits."),
-    ("working-tree.html", "Saved edits guide", "Guides", "Compare saved changes against HEAD and inspect their consequences."),
-    ("working-tree-example.html", "Saved edits example", "Guides", "An interactive retained report with before and after source."),
-    ("architecture.html", "Architecture", "Reference", "How source snapshots, language facts and bounded context support an explanation."),
-    ("evidence.html", "Release evidence", "Reference", "Current release checks, the public process draft sample and qualification limits."),
-    ("extend.html", "Extend Codeclew", "Contribute", "Contributor guide: add a capability, language adapter, build provider, framework rule or CLI workflow."),
-    ("pilot.html", "Historical Spring case", "Archive", "A historical two-service pilot: 31 Spring roots checked against committed source."),
+    ("index.html", "Start with Clew", "Start", "Install Clew and choose one engineering question."),
+    ("nav-query.html", "Find the code", "Tasks", "Find an exact function, read its source and handle a no-match result."),
+    ("documentation.html", "Create a first document", "Tasks", "Write one useful overview, inspect a citation and ask the saved source a question."),
+    ("working-tree.html", "Review saved edits", "Tasks", "Inspect a changed body, signature or removed call and choose the next checks."),
+    ("evidence.html", "Checks and limits", "Reference", "Read current qualification status and distinguish historical evidence."),
+    ("extend.html", "Contribute", "Contribute", "Choose the source layer for a capability, adapter or build provider."),
 ]
+HISTORICAL_PAGES = [("pilot.html", "Historical Spring case", "History", "A pinned two-service source study.")]
 
 
 def link(file, label, current, **attrs):
@@ -38,37 +36,33 @@ def grouped(current):
     for group in dict.fromkeys(page[2] for page in PAGES):
         result.append(f'<div class="nav-group"><p>{group}</p>')
         result.extend(link(file, label, current) for file, label, category, _ in PAGES if category == group)
-        if group == "Start here":
-            result.extend([link("index.html#install", "Installation", current), link("index.html#support", "Language support", current)])
-        if group == "Guides":
-            result.append(link("documentation.html#process-draft", "Internal process draft", current))
         result.append('</div>')
     return '\n'.join(result)
 
 
 def blocks(file, label, group):
     menu = grouped(file)
+    tasks = '\n'.join(link(path, title, file) for path, title, category, _ in PAGES if category == 'Tasks')
     header = f'''<a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-header"><div class="site-header-inner shell">
   <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
   <nav class="primary-nav" aria-label="Primary navigation">
-    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel">{menu}</div></details>
-    {link('documentation.html', 'Service docs', file)}
-    {link('evidence.html', 'Release evidence', file)}
-    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+    <details class="site-menu"><summary>Tasks <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group">{tasks}</div></div></details>
+    {tasks}
+    {link('evidence.html', 'Checks and limits', file)}
   </nav>
-  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search</span><kbd>Ctrl / ⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “source”, “saved edits” or “document”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>'''
-    sidebar = f'''<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation">{menu}</nav></details>
-<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>'''
-    breadcrumb = f'<nav class="breadcrumbs" aria-label="Breadcrumb">{link("index.html", "Home", "")}<span aria-hidden="true">/</span><span>{group}</span><span aria-hidden="true">/</span><span aria-current="page">{label}</span></nav>'
+    sidebar = ''
+    category = f'<span>{group}</span><span aria-hidden="true">/</span>' if group != label else ''
+    breadcrumb = f'<nav class="breadcrumbs" aria-label="Breadcrumb">{link("index.html", "Home", "")}<span aria-hidden="true">/</span>{category}<span aria-current="page">{label}</span></nav>'
     footer = f'''<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
-<nav class="footer-nav" aria-label="Footer navigation">{menu}<div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>'''
+<nav class="footer-nav" aria-label="Footer navigation">{menu}<div class="nav-group"><p>History</p>{link('pilot.html', 'Historical Spring case', file)}</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>'''
     return {'HEADER': header, 'SIDEBAR': sidebar, 'BREADCRUMB': breadcrumb, 'FOOTER': footer}
 
 
@@ -111,7 +105,7 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     stale, index = [], []
-    for file, label, group, description in PAGES:
+    for file, label, group, description in PAGES + HISTORICAL_PAGES:
         path = SITE / file
         original = path.read_text()
         content = original
@@ -120,7 +114,7 @@ def main():
             if name in ('HEADER', 'FOOTER') or file != 'index.html':
                 assert re.search(pattern, content, flags=re.S), f'{file}: missing {name} slot'
             content = re.sub(pattern, f'<!-- SITE_{name} -->\n{block}\n<!-- /SITE_{name} -->', content, flags=re.S)
-        for asset in ('theme.css', 'app.js'):
+        for asset in ('theme.css', 'tasks.css', 'app.js'):
             version = hashlib.sha256((SITE / asset).read_bytes()).hexdigest()[:12]
             pattern = rf'((?:href|src)=["\']\./{re.escape(asset)})(?:\?v=[^"\']*)?(["\'])'
             content = re.sub(pattern, rf'\1?v={version}\2', content)
@@ -128,13 +122,19 @@ def main():
             stale.append(file)
             if not args.check:
                 path.write_text(content)
+        if (file, label, group, description) in HISTORICAL_PAGES:
+            continue
         index.append({'title': label, 'url': './' + file, 'description': description, 'group': group})
         sections = Sections()
         sections.feed(content)
         for anchor, title in sections.sections:
             description = label
             if file == 'index.html' and anchor == 'support':
-                description = 'Language support: Kotlin, Java, Rust, Python, TypeScript and JavaScript; analysis and managed changes.'
+                description = 'Language support: Kotlin, Java, Rust, Python, TypeScript and JavaScript; C# Roslyn read-only analysis is included since 0.13.11 and requires .NET 10+ SDK (dotnet) and caller restore.'
+            if file == 'evidence.html' and anchor == 'csharp-preview':
+                description = 'Published C# Roslyn read-only analysis: installed example, .NET 10+ SDK (dotnet), exact project or solution scope and caller restore.'
+            if file == 'extend.html' and anchor == 'csharp-preview':
+                description = 'Contribute to C# Roslyn read-only analysis with .NET 10+ SDK (dotnet), restored project inputs and explicit MVC attribute-route boundaries.'
             index.append({'title': title, 'url': f'./{file}#{anchor}', 'description': description, 'group': group})
     output = json.dumps(index, indent=2, ensure_ascii=False) + '\n'
     target = SITE / 'search-index.json'

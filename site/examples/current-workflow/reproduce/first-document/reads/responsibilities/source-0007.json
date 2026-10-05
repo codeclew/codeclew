@@ -1,0 +1,35 @@
+{
+  "authority": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED",
+  "endByte": 1587,
+  "fragmentDigest": "sha256:89d954721b595b0a91558e6660a5854054f8e84569c7024fefd5cb463a2d5b7c",
+  "nextCursor": null,
+  "receiptDigest": "sha256:17a27adbec8957e2daf0d20fb1d6379eaaf38c9546005041df8c31474aba76c1",
+  "receiptType": "SOURCE_PART",
+  "recordDigest": "sha256:56155707f9aeb24339a155dc5af9dcf98c9c08579d97ce0c84dea3700a570d9c",
+  "reference": "s150",
+  "schema": "codeclew-documentation-source-part/1.0",
+  "snapshot": "sha256:12d7a16bc6dbb7e9c522d3813b06dc095164a5d959c92b46d6cf39958b8e532b/4489",
+  "source": {
+    "authority": "EXACT_SNAPSHOT_TEXT",
+    "endLine": 81,
+    "evidenceDigest": "sha256:0e9f6f6375c71553d5258d55f12fae8a24a1038d1ee0235da992ea7366f308ff",
+    "file": "scripts/build_cli_documentation.py",
+    "id": "cli-documentation-cd96038866bf7f18d601",
+    "occurrence": {
+      "blob": "a6352ae84b6909b7ab2aacdcf964bf679c1dff78",
+      "endByte": 4191,
+      "snapshot": "sha256:c315b611c3a5c118f97f5c2d40023779b01e34138cac6334cc086550156a9262",
+      "startByte": 2604
+    },
+    "revision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+    "service": "cli-documentation",
+    "startLine": 60,
+    "textDigest": "sha256:89d954721b595b0a91558e6660a5854054f8e84569c7024fefd5cb463a2d5b7c",
+    "url": "https://github.com/codeclew/codeclew/blob/d91dbec1164e0601d47c221ab97c504033ce858e/scripts/build_cli_documentation.py#L60-L81"
+  },
+  "sourceId": "cli-documentation-cd96038866bf7f18d601",
+  "startByte": 0,
+  "text": "def diagram_sources(data):\n    quote = json.dumps\n    dot = [\n        \"digraph nav_query {\",\n        'graph [bgcolor=\"transparent\", rankdir=TB, pad=\"0.3\", nodesep=\"0.4\", ranksep=\"0.48\"];',\n        'node [shape=box, style=\"rounded,filled\", fillcolor=\"#151b16\", color=\"#52654b\", fontcolor=\"#f2f4ef\", fontname=\"Arial\", fontsize=15, margin=\"0.2,0.16\"];',\n        'edge [color=\"#77876c\", fontcolor=\"#bdc8b6\", fontname=\"Arial\", fontsize=11, arrowsize=0.65, style=dashed];',\n    ]\n    mermaid = [\"flowchart TD\", \"  %% Agent-interpreted static flow; no resolved Rust call graph.\"]\n    for node in data[\"diagram\"][\"nodes\"]:\n        id = node[\"id\"]\n        shape = \"diamond\" if id == \"decision\" else \"box\"\n        color = \"#e0ae65\" if id in {\"abstain\", \"failure\"} else \"#91b774\"\n        dot.append(f'{id} [label={quote(node[\"label\"])}, shape={shape}, color=\"{color}\", id=\"node-{id}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{id}\", tooltip={quote(id)}];')\n        label = node[\"label\"].replace(\"\\n\", \"<br/>\")\n        mermaid.append(f'  {id}[\"{label}\"]')\n    dot.append(\"{rank=same; supported; abstain;}\")\n    for index, edge in enumerate(data[\"diagram\"][\"edges\"]):\n        dot.append(f'{edge[\"from\"]} -> {edge[\"to\"]} [label={quote(edge[\"label\"])}, id=\"edge-{index}\", URL=\"https://codeclew.github.io/codeclew/nav-query.html#claim-{edge[\"claimId\"]}\", tooltip={quote(edge[\"authority\"])}];')\n        mermaid.append(f'  {edge[\"from\"]} -. \"{edge[\"label\"]} · claim:{edge[\"claimId\"]}\" .-> {edge[\"to\"]}')\n    dot.append(\"}\")\n    return \"\\n\".join(dot) + \"\\n\", \"\\n\".join(mermaid) + \"\\n\"",
+  "totalTextBytes": 1587,
+  "work": "530cc649966e8655e58362ea7c779243626fb50977500f92b610738cca8aa724"
+}

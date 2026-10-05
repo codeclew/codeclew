@@ -1,0 +1,12 @@
+--- a/scripts/build_cli_documentation.py
++++ b/scripts/build_cli_documentation.py
+@@ -150,7 +150,8 @@
+         assert (directory / "nav-query.dot").read_text() == dot
+         assert (directory / "nav-query.mmd").read_text() == mermaid
+         svg = (directory / "nav-query.svg").read_text()
+-        ET.fromstring(svg)
++        svg_root = ET.fromstring(svg)
++        assert svg_root.tag == "{http://www.w3.org/2000/svg}svg", "saved diagram is not an SVG root"
+         assert svg in page.read_text(), "page diagram is stale"
+         assert render_claims(claims) in page.read_text(), "page claims are stale"
+         print(f"PASS: {len(claims)} claims, pinned source digests and rendered graph bindings")

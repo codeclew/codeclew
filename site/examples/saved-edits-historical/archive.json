@@ -1,0 +1,11 @@
+{
+  "schema": "codeclew-historical-site-copy/1.0",
+  "originalRoute": "working-tree-example.html",
+  "originalFile": "original.html.txt",
+  "originalSha256": "2f7109b0a366f06dc4f34f5366e1b2dfa4278bca874e0b98ed66f0cf809e97c3",
+  "readableFile": "index.html",
+  "readableSha256": "09faea1a1350d78cfd09ee6141bd0bb5caca142447513d3fc71134641f3593ce",
+  "transformation": "Relative ./ links rebased to ../../; source evidence and inline scripts unchanged.",
+  "authority": "Historical retained case; no fresh release execution is established.",
+  "embeddedDataSha256": "4eb99501988d2ff92f759b1dfd17c6ab78e11df1118fc3acf871c517f153d54b"
+}

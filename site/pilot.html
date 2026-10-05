@@ -9,44 +9,27 @@
     <link rel="stylesheet" href="./styles.css">
     <title>Codeclew — real Spring service pilot</title>
   <link rel="stylesheet" href="./theme.css?v=4922f29a1861">
+<link rel="stylesheet" href="./tasks.css?v=aa3e0669698e">
 </head>
-  <body>
+  <body class="history-site">
     <!-- SITE_HEADER -->
 <a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-header"><div class="site-header-inner shell">
   <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
   <nav class="primary-nav" aria-label="Primary navigation">
-    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
-</div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
-</div>
-<div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html">Release evidence</a>
-</div>
-<div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html" aria-current="page">Historical Spring case</a>
-</div></div></details>
-    <a href="./documentation.html">Service docs</a>
-    <a href="./evidence.html">Release evidence</a>
-    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+    <details class="site-menu"><summary>Tasks <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a></div></div></details>
+    <a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a>
+    <a href="./evidence.html">Checks and limits</a>
   </nav>
-  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search</span><kbd>Ctrl / ⌘ K</kbd></button>
 </div></header>
 <dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
   <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
-  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “navigation” or “process draft”" autocomplete="off">
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “source”, “saved edits” or “document”" autocomplete="off">
   <p id="search-status" role="status"></p><div id="search-results"></div>
 </dialog>
 <!-- /SITE_HEADER -->
@@ -59,31 +42,9 @@
         <div class="docs-note"><b>A scoped result.</b> This pilot checks annotation-declared computation roots in two private repositories. It does not establish runtime activation, programmatic registration coverage, or general compatibility with every Kotlin and Spring project.</div>
       </div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
 <!-- SITE_BREADCRUMB -->
-<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Archive</span><span aria-hidden="true">/</span><span aria-current="page">Historical Spring case</span></nav>
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>History</span><span aria-hidden="true">/</span><span aria-current="page">Historical Spring case</span></nav>
 <!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
-<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
-</div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
-</div>
-<div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html">Release evidence</a>
-</div>
-<div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html" aria-current="page">Historical Spring case</a>
-</div></nav></details>
-<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
+
 <!-- /SITE_SIDEBAR --><div class="page-content">
 
       <section class="architecture-section" id="result">
@@ -143,28 +104,20 @@
     </div></div></main>
     <!-- SITE_FOOTER -->
 <footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
-<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
-<a href="./index.html">Home</a>
-<a href="./index.html#install">Installation</a>
-<a href="./index.html#support">Language support</a>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start</p>
+<a href="./index.html">Start with Clew</a>
 </div>
-<div class="nav-group"><p>Guides</p>
-<a href="./nav-query.html">Navigation walkthrough</a>
-<a href="./documentation.html">Service documentation</a>
-<a href="./working-tree.html">Saved edits guide</a>
-<a href="./working-tree-example.html">Saved edits example</a>
-<a href="./documentation.html#process-draft">Internal process draft</a>
+<div class="nav-group"><p>Tasks</p>
+<a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a>
 </div>
 <div class="nav-group"><p>Reference</p>
-<a href="./architecture.html">Architecture</a>
-<a href="./evidence.html">Release evidence</a>
+<a href="./evidence.html">Checks and limits</a>
 </div>
 <div class="nav-group"><p>Contribute</p>
-<a href="./extend.html">Extend Codeclew</a>
-</div>
-<div class="nav-group"><p>Archive</p>
-<a href="./pilot.html" aria-current="page">Historical Spring case</a>
-</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<a href="./extend.html">Contribute</a>
+</div><div class="nav-group"><p>History</p><a href="./pilot.html" aria-current="page">Historical Spring case</a></div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
 <!-- /SITE_FOOTER -->
-  <script src="./app.js?v=51e5e2dc14fe" defer></script></body>
+  <script src="./app.js?v=96cc5dc96bed" defer></script></body>
 </html>

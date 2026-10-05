@@ -1,0 +1,133 @@
+{
+  "recordKind": "DERIVED_SUMMARY_OF_ACTUAL_INSTALLED_CLI_RESPONSES",
+  "version": "0.13.11",
+  "runtimeMode": "RELEASE",
+  "publicSourceRevision": "d91dbec1164e0601d47c221ab97c504033ce858e",
+  "profile": "rust-syntax",
+  "compilation": "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+  "selectedDeclaration": {
+    "candidateId": "c:f22100bd7a544893",
+    "declarationKind": "function",
+    "declarationKindTruncated": false,
+    "displayName": "fair_fact_selection",
+    "displayNameTruncated": false,
+    "location": {
+      "endLine": 391,
+      "file": "crates/clew/src/query_v2.rs",
+      "fileTruncated": false,
+      "startLine": 364
+    },
+    "preview": {
+      "authority": "EXACT_SNAPSHOT_TEXT",
+      "contentDigest": "sha256:9474f2b0f83a64e0980c4d1cc6b4e0a8ac49d77f37a2a7aa37fbb38ffcd6319d",
+      "endLine": 364,
+      "startLine": 364,
+      "status": "EXACT",
+      "text": "fn fair_fact_selection(matches_by_term: &[Vec<FactHit>], limit: usize) -> Vec<FactHit> {",
+      "truncated": true
+    }
+  },
+  "decisionAuthority": {
+    "basis": "EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE",
+    "candidateId": "c:f22100bd7a544893",
+    "candidateListTruncated": false,
+    "classification": "UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE",
+    "coveredTermCount": 1,
+    "observedExactIdentifierCandidateCount": 1,
+    "observedFullCoverageCandidateCount": 1,
+    "queryCoverageTruncated": false,
+    "requiredTermCount": 1,
+    "returnedCandidateCoverage": [
+      {
+        "candidateId": "c:f22100bd7a544893",
+        "complete": true,
+        "coveredTermCount": 1,
+        "decisionIdentifierMatch": true,
+        "missingTermCount": 0
+      },
+      {
+        "candidateId": "c:f40a8b6105164c1c",
+        "complete": false,
+        "coveredTermCount": 0,
+        "decisionIdentifierMatch": false,
+        "missingTermCount": 1
+      },
+      {
+        "candidateId": "c:f7d6616e06c4b9dc",
+        "complete": false,
+        "coveredTermCount": 0,
+        "decisionIdentifierMatch": false,
+        "missingTermCount": 1
+      }
+    ],
+    "schema": "codeclew-navigation-decision-authority/1.0",
+    "status": "SUPPORTED"
+  },
+  "completeness": {
+    "certainty": "UNSURE",
+    "coverage": "QUERY_COMPLETE",
+    "status": "CONDITIONAL_TASK",
+    "support": "SUPPORTED",
+    "unmatchedTerms": []
+  },
+  "retainedSource": [
+    {
+      "name": "fair_fact_selection",
+      "file": "crates/clew/src/query_v2.rs",
+      "nativeContentDigest": "sha256:9474f2b0f83a64e0980c4d1cc6b4e0a8ac49d77f37a2a7aa37fbb38ffcd6319d",
+      "fileSha256": "0713147a0ee4178d9fa10286cc81e89dba81290bd1c1241a8491c3f917139066",
+      "authority": "EXACT_SNAPSHOT_TEXT",
+      "completeFile": false,
+      "windows": [
+        {
+          "endLine": 391,
+          "startLine": 364,
+          "text": "fn fair_fact_selection(matches_by_term: &[Vec<FactHit>], limit: usize) -> Vec<FactHit> {\n    let diversified = matches_by_term\n        .iter()\n        .map(|matches| diversify_fact_families(matches))\n        .collect::<Vec<_>>();\n    let mut selected = BTreeSet::new();\n    let mut cursors = vec![0usize; diversified.len()];\n    while selected.len() < limit {\n        let mut progressed = false;\n        for (term_matches, cursor) in diversified.iter().zip(&mut cursors) {\n            while *cursor < term_matches.len() {\n                let fact = term_matches[*cursor].clone();\n                *cursor += 1;\n                if selected.insert(fact) {\n                    progressed = true;\n                    break;\n                }\n            }\n            if selected.len() == limit {\n                break;\n            }\n        }\n        if !progressed {\n            break;\n        }\n    }\n    selected.into_iter().collect()\n}"
+        }
+      ]
+    },
+    {
+      "name": "diversify_fact_families",
+      "file": "crates/clew/src/query_v2.rs",
+      "nativeContentDigest": "sha256:9474f2b0f83a64e0980c4d1cc6b4e0a8ac49d77f37a2a7aa37fbb38ffcd6319d",
+      "fileSha256": "0713147a0ee4178d9fa10286cc81e89dba81290bd1c1241a8491c3f917139066",
+      "authority": "EXACT_SNAPSHOT_TEXT",
+      "completeFile": false,
+      "windows": [
+        {
+          "endLine": 424,
+          "startLine": 393,
+          "text": "fn diversify_fact_families(matches: &[FactHit]) -> Vec<FactHit> {\n    // Adapters that end opaque fact keys with a canonical digest get fair\n    // representation across their stable key prefixes. Other keys fall back\n    // to one deterministic family per full key, preserving prior behavior.\n    let mut families = BTreeMap::<String, BTreeSet<FactHit>>::new();\n    for fact in matches {\n        families\n            .entry(semantic_fact_key(&fact.fact_key))\n            .or_default()\n            .insert(fact.clone());\n    }\n    let families = families\n        .into_values()\n        .map(BTreeSet::into_iter)\n        .map(Iterator::collect::<Vec<_>>)\n        .collect::<Vec<_>>();\n    let mut diversified = Vec::with_capacity(matches.len());\n    let mut round = 0usize;\n    loop {\n        let before = diversified.len();\n        for family in &families {\n            if let Some(fact) = family.get(round) {\n                diversified.push(fact.clone());\n            }\n        }\n        if diversified.len() == before {\n            break;\n        }\n        round += 1;\n    }\n    diversified\n}"
+        }
+      ]
+    }
+  ],
+  "noMatch": {
+    "term": "no_such_clew_example_function",
+    "candidateCount": 0,
+    "decisionAuthority": {
+      "basis": "EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE",
+      "bestCandidateCoveredTermCount": 0,
+      "bestCandidateMissingTermCount": 1,
+      "candidateListTruncated": false,
+      "classification": "UNMATCHED_EXPLICIT_TERMS",
+      "observedExactIdentifierCandidateCount": 0,
+      "observedFullCoverageCandidateCount": 0,
+      "queryCoverageTruncated": false,
+      "refinement": {
+        "instruction": "The declared identifier did not establish one complete decision. Do not repeat it or select an analogue. Continue only after the task or an exact retained source supplies a different identifier or a known file; otherwise keep the task unresolved.",
+        "kind": "STOP_UNRESOLVED",
+        "reason": "DECLARED_IDENTIFIER_DID_NOT_ESTABLISH_UNIQUE_FULL_COVERAGE",
+        "repeatSameRequest": false
+      },
+      "requiredTermCount": 1,
+      "returnedCandidateCoverage": [],
+      "schema": "codeclew-navigation-decision-authority/1.0",
+      "status": "ABSTAIN",
+      "unmatchedTermCount": 1
+    }
+  },
+  "limits": [
+    "Exact syntax and saved source do not establish compiler call resolution or runtime behavior."
+  ]
+}
