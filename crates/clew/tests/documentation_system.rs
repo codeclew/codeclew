@@ -705,7 +705,7 @@ fn docsys_t17_render_is_working_until_explicit_release_and_release_is_immutable(
             .is_empty()
     );
     let history = fs::read_to_string(f.docs.join("docs/history.html")).unwrap();
-    assert!(history.contains("<ol></ol>"));
+    assert!(!history.contains(&format!("generated/{working_one_id}/")));
 
     narrative["operations"][0]["title"] = "Working render two".into();
     let working_two = render(&f, &narrative, "working-two.json", false);
