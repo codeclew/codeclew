@@ -1360,6 +1360,7 @@ abort "missing complete source delivery" unless packet.fetch("contextDelivery").
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn author_grouped_expansion_delivers_source_then_answers_and_replays_without_charge() {
         let (_temp, repo, work, path, _) = fixture("answer", 3);
         let result = super::super::run_loaded(&repo, &work, Some(&path), false).unwrap();
@@ -1429,6 +1430,7 @@ abort "missing complete source delivery" unless packet.fetch("contextDelivery").
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn terminal_accounting_crash_tail_recovers_once_without_author_dispatch() {
         let (_temp, repo, work, path, configured) = fixture("terminal-accounting-tail", 3);
         let original = super::super::run_loaded(&repo, &work, Some(&path), false).unwrap();
@@ -1498,6 +1500,7 @@ abort "missing complete source delivery" unless packet.fetch("contextDelivery").
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn pending_grouped_expansion_resumes_partial_parts_without_author_redispatch() {
         let (_temp, repo, work, path, configured) = fixture("pending", 3);
         let (selected, coordinated) = config(configured).unwrap();
@@ -1620,6 +1623,7 @@ abort "missing complete source delivery" unless packet.fetch("contextDelivery").
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn over_cap_saved_response_replays_failure_without_dispatch_or_charge() {
         let (_temp, repo, work, path, mut configured) = fixture("over-cap-result", 2);
         configured["author"]["usageAuthority"] = json!("TRANSPORT_METADATA");
@@ -1673,6 +1677,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn malformed_saved_action_and_foreign_expansion_are_terminal_and_replay_bound() {
         let (_temp, repo, work, path, mut configured) = fixture("malformed", 2);
         configured["author"]["command"][4] = json!(
@@ -1727,6 +1732,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn navigation_delivery_cannot_be_cited_as_author_evidence() {
         let (_temp, repo, mut work, path, mut configured) = fixture("navigation-citation", 3);
         let mut symbol = work.checked.dependencies["endpoint-declaration"].clone();
@@ -1797,6 +1803,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn author_exhaustion_is_terminal_and_requires_explicit_new_run() {
         let (_temp, repo, work, path, configured) = fixture("exhaust", 1);
         let result = super::super::run_loaded(&repo, &work, Some(&path), false).unwrap();
@@ -1827,6 +1834,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn expanded_author_requires_explicit_contract_and_preserves_legacy_mode() {
         let (_temp, repo, mut work, path, _) = fixture("contract", 2);
         work.request.authoring_contract = Some(operation_answer::AUTHORING_CONTRACT.into());

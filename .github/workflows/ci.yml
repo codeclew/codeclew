@@ -44,5 +44,9 @@ jobs:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
+      - name: Test grouped operation author on its supported isolated host
+        run: "cargo test --locked -p clew --lib 'documentation::agent_jobs::operation_draft::context_mode::tests::' -- --test-threads=1"
+      - name: Test grouped independent review and recovery on its supported isolated host
+        run: "cargo test --locked -p clew --lib 'documentation::agent_jobs::operation_draft_review::context_mode::tests::' -- --test-threads=1"
       - run: cargo test --locked -p clew --test documentation_system docsys_t04_ -- --test-threads=1
       - run: 'cargo test --locked -p clew --test documentation_system _recovery:: -- --test-threads=1'
