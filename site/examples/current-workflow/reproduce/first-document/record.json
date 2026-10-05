@@ -102,7 +102,7 @@
     }
   },
   "currentPublication": {
-    "bundle": "0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b",
+    "bundle": "55925743c99a25e7caedad2327b2998160fa0e8c1f2d9a3215f0a046faf9fd88",
     "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
     "documentationLanguage": "en",
     "documentedOperations": 0,
@@ -306,6 +306,93 @@
     "nativeHistoryTitle": "Released documentation snapshots",
     "renderRecord": "observed/renderer-01313-render.json",
     "historyRecord": "observed/renderer-01313-history.json",
+    "command": "clew docs render --root \"$docs\" --snapshot sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320 --language en --publish"
+  },
+  "rendererRefresh01314": {
+    "authority": "OFFICIAL_INSTALLED_RELEASE",
+    "version": "0.13.14",
+    "release": "https://github.com/codeclew/codeclew/releases/tag/v0.13.14",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:339e6dc8a1a6580909bc6b94838ecd9603a2b261d0018b0b0f44f6374a35e335",
+    "runtimeManifestDigest": "sha256:e5b9155e4700a69e60209673a7bb794695925b0e056dc07f0bee0bc95ebc02e6",
+    "sourceAndAuthoringRecordedWith": "0.13.11",
+    "rendererRefreshOnly": true,
+    "sourceReacquired": false,
+    "newModelReview": false,
+    "publication": {
+      "bundle": "55925743c99a25e7caedad2327b2998160fa0e8c1f2d9a3215f0a046faf9fd88",
+      "contextDigest": "sha256:304bef1419ded4929768889083567ff90983856e0ecdd3aec881f9ea8bf598ef",
+      "documentationLanguage": "en",
+      "documentedOperations": 0,
+      "documentedSections": 2,
+      "documentedViews": 0,
+      "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+      "explicitGaps": 9,
+      "index": "docs/index.html",
+      "inputDigest": "sha256:fbf8f5a0ef043377efb795e12d0b571a11ff29b0051648e02f7134e6703d7303",
+      "released": true,
+      "runtime": "UNKNOWN",
+      "scenarios": 0,
+      "schema": "codeclew-docs-render/1.0",
+      "services": 1,
+      "snapshot": "sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320",
+      "status": "PARTIAL",
+      "translationComplete": true,
+      "translationGaps": 0,
+      "unresolved": {},
+      "updateFailures": {}
+    },
+    "history": {
+      "items": [
+        {
+          "current": true,
+          "id": "55925743c99a25e7caedad2327b2998160fa0e8c1f2d9a3215f0a046faf9fd88",
+          "latestReleased": true,
+          "ordinal": 3,
+          "parent": "0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b",
+          "released": true,
+          "tags": {},
+          "targets": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        },
+        {
+          "current": false,
+          "id": "0a9a2804909f09fe7b37eba66f0411d7d7f71aea955bdb4f4c6157e3042b240b",
+          "latestReleased": false,
+          "ordinal": 2,
+          "parent": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+          "released": true,
+          "tags": {},
+          "targets": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        },
+        {
+          "current": false,
+          "id": "d506eeffe07755b1d40e930899bf828258917c987f0907f8d36ec2beba9892e9",
+          "latestReleased": false,
+          "ordinal": 1,
+          "parent": null,
+          "released": true,
+          "tags": {},
+          "targets": {
+            "cli-documentation": "54597f963f2cadf2ac02e5e48987ab1505111ad8"
+          }
+        }
+      ],
+      "nextCursor": null,
+      "omitted": [],
+      "schema": "codeclew-docs-page/1.0",
+      "total": 3
+    },
+    "previousBundleFilesExactEqual": true,
+    "previousBundleFileCount": 119,
+    "notesExactEqual": true,
+    "nativeProducerFilesCopiedByteExactly": 148,
+    "nativeHistoryTitle": "Released documentation snapshots",
+    "renderRecord": "observed/renderer-01314-render.json",
+    "historyRecord": "observed/renderer-01314-history.json",
     "command": "clew docs render --root \"$docs\" --snapshot sha256:76844266ecaf6843e15fe54ff0db45363300f0766abe2cd2aabf0072e0fb9858/4320 --language en --publish"
   }
 }
