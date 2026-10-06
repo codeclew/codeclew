@@ -117,6 +117,21 @@ clew docs render --root /work/architecture --refresh --require-complete \
   --input /work/orders-narrative.json
 ```
 
+The development candidate's retained `--dependency` drill reads the requested
+observations and a selected declaration's same-service, same-compilation-scope
+flow records before materializing unrelated observation payloads. It verifies the
+complete dependency membership inventory and the payloads it reads. Its
+`evidenceValidation` metadata explicitly reports `SELECTED_DEPENDENCY_CLOSURE`
+and `exhaustiveIntegrityAudit: false`: unread capture observation and contract
+objects, and unselected dependency payloads, have not been integrity-audited.
+Missing or corrupt required evidence fails explicitly. Source objects and the
+source-input contract still load in full; this does not claim fragment-level
+source IO. Other selectors and `--refresh` keep their existing full reads.
+Validation metadata counts toward the existing stdout budget, so page boundaries
+may differ near that budget. Continue with the returned cursor; the selection's
+complete item sequence and snapshot/selector cursor binding are preserved.
+This candidate is not included in release `0.13.14`.
+
 A qualified name must select exactly one declaration; overloads need an exact
 returned identity. Source entrypoints retain callable identities, including unannotated helpers.
 Java/Kotlin annotations with fully qualified names or explicit imports also

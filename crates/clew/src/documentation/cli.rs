@@ -774,8 +774,21 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
         let (checked, snapshot) = check::run_and_save_selected(&repo, &selected, None)?;
         (checked, snapshot, "CURRENT_SOURCE_CHECK")
     } else {
-        let (checked, snapshot) =
-            check::Check::retained(&repo, args.snapshot.as_deref(), &selected)?;
+        let (checked, snapshot) = if let Some(service) = &args.service
+            && !args.dependency_ids.is_empty()
+        {
+            if args.dependency_ids.len() > 8 {
+                return Err(invalid("select at most eight dependencies"));
+            }
+            check::Check::retained_dependency_context(
+                &repo,
+                args.snapshot.as_deref(),
+                service,
+                &args.dependency_ids.iter().cloned().collect(),
+            )?
+        } else {
+            check::Check::retained(&repo, args.snapshot.as_deref(), &selected)?
+        };
         (checked, snapshot, "PINNED_SNAPSHOT_NOT_REVERIFIED")
     };
     let subject = if let Some(id) = &args.service {
@@ -788,7 +801,22 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
         .as_ref()
         .and_then(|(_, b)| b.narratives.get(&subject));
     args.snapshot = Some(snapshot.clone());
-    context_from(&checked, &args, retained, authority)
+    let validation = if !args.refresh && !args.dependency_ids.is_empty() {
+        Some(json!({
+            "mode":"SELECTED_DEPENDENCY_CLOSURE",
+            "inventory":"COMPLETE_CHECK_DEPENDENCY_MEMBERSHIP",
+            "payloads":"REQUESTED_DEPENDENCIES_FLOW_CANDIDATES_ALL_CAPTURE_SOURCES_AND_SOURCE_INPUTS",
+            "unread":"CAPTURE_OBSERVATION_INDEXES_CONTRACTS_AND_NONCANDIDATE_DEPENDENCY_PAYLOADS",
+            "exhaustiveIntegrityAudit":false
+        }))
+    } else {
+        None
+    };
+    if let Some(validation) = validation {
+        context_from_with_validation(&checked, &args, retained, authority, Some(validation))
+    } else {
+        context_from(&checked, &args, retained, authority)
+    }
 }
 
 pub(super) fn context_from(
@@ -797,12 +825,26 @@ pub(super) fn context_from(
     retained: Option<&Narrative>,
     authority: &str,
 ) -> Result<Value, ClewError> {
+    context_from_with_validation(checked, args, retained, authority, None)
+}
+
+fn context_from_with_validation(
+    checked: &check::Check,
+    args: &ContextArgs,
+    retained: Option<&Narrative>,
+    authority: &str,
+    validation: Option<Value>,
+) -> Result<Value, ClewError> {
     let subject = args
         .service
         .as_ref()
         .map(|id| format!("service:{id}"))
         .unwrap_or_else(|| format!("scenario:{}", args.scenario.as_deref().unwrap_or("")));
     let items = context_items(checked, args, retained)?;
+    let mut metadata = json!({"subject":subject,"snapshot":args.snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","sourceAuthorities":checked.source_authorities(),"unresolved":checked.unresolved});
+    if let Some(validation) = validation {
+        metadata["evidenceValidation"] = validation;
+    }
 
     page(
         &super::digest(&(
@@ -818,7 +860,7 @@ pub(super) fn context_from(
         items,
         args.cursor.as_deref(),
         args.limit as usize,
-        json!({"subject":subject,"snapshot":args.snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","sourceAuthorities":checked.source_authorities(),"unresolved":checked.unresolved}),
+        metadata,
     )
 }
 
@@ -2762,3 +2804,7 @@ mod tests {
         assert!(missing_debug.ends_with("debug-output-does-not-exist"));
     }
 }
+
+#[cfg(test)]
+#[path = "scoped_context_tests.rs"]
+mod scoped_context_tests;

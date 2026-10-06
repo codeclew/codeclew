@@ -125,7 +125,16 @@ impl ReadSession<'_> {
                 "documentation object exceeds the read bound",
             ));
         }
-        self.store.read(&reference.digest, reference.size, limit)
+        let payload = self.store.read(&reference.digest, reference.size, limit)?;
+        #[cfg(test)]
+        if let Some(payload) = &payload {
+            READ_STATS.with(|stats| {
+                let mut stats = stats.borrow_mut();
+                stats.objects += 1;
+                stats.bytes += payload.len() as u64;
+            });
+        }
+        Ok(payload)
     }
 }
 
@@ -143,6 +152,22 @@ pub(super) fn with_read_session<T>(
 #[cfg(test)]
 thread_local! {
     static READ_ADMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static READ_STATS: std::cell::RefCell<ReadStats> = std::cell::RefCell::new(ReadStats::default());
+}
+
+/// Successful immutable-object fetches, including repeated reads, in one test
+/// thread. Reuses the read-session boundary; no production metrics or IO.
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReadStats {
+    pub objects: usize,
+    pub bytes: u64,
+}
+
+#[cfg(test)]
+pub(super) fn take_read_stats() -> ReadStats {
+    READ_STATS.with(|stats| std::mem::take(&mut *stats.borrow_mut()))
 }
 
 #[cfg(test)]

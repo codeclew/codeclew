@@ -637,6 +637,166 @@ pub fn load_snapshot_observations(
     })
 }
 
+/// Hydrate explicit context dependencies and the selected declarations' flow
+/// records from a frozen Check map. Membership pages remain a complete,
+/// verified inventory; unrelated observation payloads are never read.
+pub(super) fn load_snapshot_context_dependencies(
+    repo: &Repository,
+    reference: &cache::ObjectRef,
+    service: &str,
+    ids: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeMap<String, super::model::Observation>, ClewError> {
+    cache::with_read_session(repo, |session| {
+        let corrupt = |message: String| ClewError::new(ErrorCode::StateCorrupt, message);
+        let payload = session
+            .get(reference, super::check::PORTABLE_CACHE_MAX_BYTES)?
+            .ok_or_else(|| corrupt("fact index snapshot root is missing".into()))?;
+        let root: FactIndexRoot = serde_json::from_slice(&payload)
+            .map_err(|error| corrupt(format!("invalid fact index snapshot root: {error}")))?;
+        if reference.schema != FACT_INDEX_SCHEMA
+            || root.schema != FACT_INDEX_SCHEMA
+            || root.protocol != FACT_INDEX_SCHEMA
+            || root.buckets.len() != BUCKETS
+            || root.bucket_counts.len() != BUCKETS
+        {
+            return Err(corrupt(
+                "fact index root identity or bucket shape is invalid".into(),
+            ));
+        }
+
+        let mut bindings = std::collections::HashSet::new();
+        let mut inventory = std::collections::BTreeMap::new();
+        for bucket in 0..BUCKETS {
+            if root.buckets[bucket]
+                .as_ref()
+                .is_some_and(|reference| reference.schema != FACT_PAGE_SCHEMA)
+            {
+                return Err(corrupt(
+                    "fact index page reference schema is invalid".into(),
+                ));
+            }
+            let Some(page) = read_page_with(&root, bucket, |reference| {
+                session.get(reference, super::check::PORTABLE_CACHE_MAX_BYTES)
+            })?
+            else {
+                if root.bucket_counts[bucket] != 0 {
+                    return Err(corrupt(
+                        "fact index bucket count disagrees with a missing page".into(),
+                    ));
+                }
+                continue;
+            };
+            if page.entries.len() as u64 != root.bucket_counts[bucket] {
+                return Err(corrupt(
+                    "fact index page entry count disagrees with the root".into(),
+                ));
+            }
+            for entry in page.entries {
+                let canonical = entry.key.canonical();
+                if bucket_of(&canonical) != bucket {
+                    return Err(corrupt(
+                        "fact index membership is in the wrong bucket".into(),
+                    ));
+                }
+                if !bindings.insert(canonical) {
+                    return Err(corrupt(
+                        "fact index contains duplicate membership bindings".into(),
+                    ));
+                }
+                if entry.key.domain != OBSERVATION_DOMAIN
+                    || entry.key.scope != super::check::CHECK_DEPENDENCIES_SCOPE
+                {
+                    continue;
+                }
+                if entry.key.revision != "check-map/1.0"
+                    || entry.key.source_state != "CHECK_MAP_SLOT_V1"
+                {
+                    return Err(corrupt(
+                        "dependency membership has an invalid check-map identity".into(),
+                    ));
+                }
+                if inventory
+                    .insert(entry.key.semantic.clone(), entry)
+                    .is_some()
+                {
+                    return Err(corrupt(
+                        "dependency map contains duplicate semantic identities".into(),
+                    ));
+                }
+            }
+        }
+
+        let decode = |entry: &FactOccurrence| -> Result<super::model::Observation, ClewError> {
+            if entry.payload.schema != OBSERVATION_OBJECT_SCHEMA {
+                return Err(corrupt(
+                    "observation payload reference schema is invalid".into(),
+                ));
+            }
+            let payload = session
+                .get(&entry.payload, super::check::PORTABLE_CACHE_MAX_BYTES)?
+                .ok_or_else(|| corrupt("observation payload is missing".into()))?;
+            let observation: super::model::Observation = serde_json::from_slice(&payload)
+                .map_err(|error| corrupt(format!("invalid observation payload: {error}")))?;
+            if observation.id != entry.key.semantic
+                || observation.service != entry.key.repository
+                || observation.kind != entry.kind
+                || observation.symbol != entry.symbol
+            {
+                return Err(corrupt(
+                    "observation payload identity disagrees with its membership".into(),
+                ));
+            }
+            Ok(observation)
+        };
+        let mut out = std::collections::BTreeMap::new();
+        for id in ids {
+            // Missing selectors retain the ordinary context_items error.
+            if let Some(entry) = inventory.get(id) {
+                out.insert(id.clone(), decode(entry)?);
+            }
+        }
+        let selected_symbols: std::collections::BTreeSet<_> = out
+            .values()
+            .filter(|observation| observation.kind == "SYMBOL")
+            .map(|observation| {
+                (
+                    observation.symbol.clone(),
+                    observation.normalized["scope"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let symbols: std::collections::BTreeSet<_> = selected_symbols
+            .iter()
+            .map(|(symbol, _)| symbol.as_str())
+            .collect();
+        for (id, entry) in &inventory {
+            if out.contains_key(id)
+                || entry.key.repository != service
+                || !matches!(entry.kind.as_str(), "FLOW" | "SEMANTIC_SYMBOL")
+                || !symbols.contains(entry.symbol.as_str())
+            {
+                continue;
+            }
+            // Check-map scope identifies the storage slot; the payload's
+            // normalized scope identifies the callable's compilation scope.
+            let observation = decode(entry)?;
+            if selected_symbols.contains(&(
+                observation.symbol.clone(),
+                observation.normalized["scope"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            )) {
+                out.insert(id.clone(), observation);
+            }
+        }
+        Ok(out)
+    })
+}
+
 /// Store a scope's observations as per-fact memberships and return the
 /// immutable snapshot root object. Identical canonical payload bytes are stored
 /// once and shared across occurrences; occurrences remain distinct by
@@ -844,6 +1004,243 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    fn context_observation(
+        id: &str,
+        kind: &str,
+        service: &str,
+        symbol: &str,
+        scope: &str,
+    ) -> super::super::model::Observation {
+        let mut observation = observation(id, id);
+        observation.kind = kind.into();
+        observation.service = service.into();
+        observation.symbol = symbol.into();
+        observation.normalized = json!({"scope":scope});
+        observation.digest = crate::canonical::hash(&observation.normalized).unwrap();
+        observation
+    }
+
+    fn context_snapshot(repo: &Repository) -> (cache::ObjectRef, FactIndexRoot) {
+        let observations: BTreeMap<_, _> = [
+            context_observation("selected", "SYMBOL", "orders", "Callable", ":main"),
+            context_observation("flow", "FLOW", "orders", "Callable", ":main"),
+            context_observation("semantic", "SEMANTIC_SYMBOL", "orders", "Callable", ":main"),
+            context_observation("other-scope", "FLOW", "orders", "Callable", ":test"),
+            context_observation("other-service", "FLOW", "payments", "Callable", ":main"),
+            context_observation("other-symbol", "FLOW", "orders", "Other", ":main"),
+            context_observation("unselected", "SYMBOL", "orders", "Other", ":main"),
+            context_observation("domain", "DOMAIN_ENTITY", "payments", "Domain", ""),
+        ]
+        .into_iter()
+        .map(|observation| (observation.id.clone(), observation))
+        .collect();
+        let snapshot = store_dependency_map(repo, &observations).unwrap();
+        let root = load_snapshot_root(repo, &snapshot).unwrap();
+        (snapshot, root)
+    }
+
+    fn dependency_entry(repo: &Repository, root: &FactIndexRoot, id: &str) -> FactOccurrence {
+        root.buckets
+            .iter()
+            .flatten()
+            .flat_map(|reference| page(repo, reference).entries)
+            .find(|entry| entry.key.semantic == id)
+            .unwrap()
+    }
+
+    fn rewrite_page(
+        repo: &Repository,
+        root: &mut FactIndexRoot,
+        bucket: usize,
+        change: impl FnOnce(&mut FactPage),
+    ) {
+        let mut page = page(repo, root.buckets[bucket].as_ref().unwrap());
+        change(&mut page);
+        root.bucket_counts[bucket] = page.entries.len() as u64;
+        root.buckets[bucket] = Some(cache::put_json(repo, FACT_PAGE_SCHEMA, &page).unwrap());
+    }
+
+    #[test]
+    fn context_dependencies_select_scoped_flows_without_reading_irrelevant_payloads() {
+        let (_t, repo) = setup();
+        let (snapshot, root) = context_snapshot(&repo);
+        for id in ["other-service", "other-symbol", "unselected"] {
+            let entry = dependency_entry(&repo, &root, id);
+            corrupt_object(&repo, &entry.payload.digest, b"unread corruption");
+        }
+        let ids = std::collections::BTreeSet::from([
+            "selected".into(),
+            "domain".into(),
+            "unknown".into(),
+        ]);
+        cache::take_read_admissions();
+        reset_page_read_stats();
+        let loaded = load_snapshot_context_dependencies(&repo, &snapshot, "orders", &ids).unwrap();
+        assert_eq!(cache::take_read_admissions(), 1);
+        assert_eq!(
+            page_read_stats().attempts,
+            root.buckets.iter().flatten().count()
+        );
+        assert_eq!(
+            loaded.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["domain", "flow", "selected", "semantic"]
+        );
+        assert_eq!(loaded["domain"].service, "payments");
+    }
+
+    #[test]
+    fn context_flow_selection_uses_requested_symbol_even_from_another_service() {
+        let (_t, repo) = setup();
+        let observations: BTreeMap<_, _> = [
+            context_observation("selected", "SYMBOL", "payments", "Callable", ""),
+            context_observation("flow", "FLOW", "orders", "Callable", ""),
+        ]
+        .into_iter()
+        .map(|observation| (observation.id.clone(), observation))
+        .collect();
+        let snapshot = store_dependency_map(&repo, &observations).unwrap();
+        let loaded = load_snapshot_context_dependencies(
+            &repo,
+            &snapshot,
+            "orders",
+            &std::collections::BTreeSet::from(["selected".into()]),
+        )
+        .unwrap();
+        assert_eq!(loaded, observations);
+    }
+
+    #[test]
+    fn context_dependencies_fail_for_missing_or_corrupt_required_payloads() {
+        for id in ["selected", "flow", "semantic", "other-scope"] {
+            for missing in [false, true] {
+                let (_t, repo) = setup();
+                let (snapshot, root) = context_snapshot(&repo);
+                let entry = dependency_entry(&repo, &root, id);
+                if missing {
+                    remove_object(&repo, &entry.payload.digest);
+                } else {
+                    corrupt_object(&repo, &entry.payload.digest, b"corrupt required payload");
+                }
+                let error = load_snapshot_context_dependencies(
+                    &repo,
+                    &snapshot,
+                    "orders",
+                    &std::collections::BTreeSet::from(["selected".into()]),
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.code,
+                    ErrorCode::StateCorrupt,
+                    "id={id}, missing={missing}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn context_dependencies_validate_required_payload_identity() {
+        for field in ["id", "service", "kind", "symbol"] {
+            let (_t, repo) = setup();
+            let (_, root) = context_snapshot(&repo);
+            let mut entry = dependency_entry(&repo, &root, "flow");
+            let mut observation =
+                context_observation("flow", "FLOW", "orders", "Callable", ":main");
+            match field {
+                "id" => observation.id = "different".into(),
+                "service" => observation.service = "different".into(),
+                "kind" => observation.kind = "different".into(),
+                "symbol" => observation.symbol = "different".into(),
+                _ => unreachable!(),
+            }
+            entry.payload =
+                cache::put_json(&repo, OBSERVATION_OBJECT_SCHEMA, &observation).unwrap();
+            let root = put_membership(&repo, &root, entry).unwrap();
+            let snapshot = snapshot_for_root(&repo, &root);
+            let error = load_snapshot_context_dependencies(
+                &repo,
+                &snapshot,
+                "orders",
+                &std::collections::BTreeSet::from(["selected".into()]),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::StateCorrupt, "field={field}");
+        }
+    }
+
+    #[test]
+    fn context_dependencies_validate_complete_membership_inventory() {
+        for failure in [
+            "shape",
+            "count",
+            "missing-page",
+            "corrupt-page",
+            "page-bucket",
+            "entry-bucket",
+            "duplicate-binding",
+            "duplicate-semantic",
+            "revision",
+            "source-state",
+        ] {
+            let (_t, repo) = setup();
+            let (_, mut root) = context_snapshot(&repo);
+            let entry = dependency_entry(&repo, &root, "unselected");
+            let bucket = bucket_of(&entry.key.canonical());
+            match failure {
+                "shape" => {
+                    root.buckets.pop();
+                }
+                "count" => root.bucket_counts[bucket] += 1,
+                "missing-page" => {
+                    remove_object(&repo, &root.buckets[bucket].as_ref().unwrap().digest)
+                }
+                "corrupt-page" => corrupt_object(
+                    &repo,
+                    &root.buckets[bucket].as_ref().unwrap().digest,
+                    b"bad page",
+                ),
+                "page-bucket" => rewrite_page(&repo, &mut root, bucket, |page| {
+                    page.bucket = (bucket + 1) % BUCKETS
+                }),
+                "entry-bucket" => rewrite_page(&repo, &mut root, bucket, |page| {
+                    let mut misplaced = entry.clone();
+                    while bucket_of(&misplaced.key.canonical()) == bucket {
+                        misplaced.key.semantic.push('x');
+                    }
+                    page.entries.push(misplaced);
+                }),
+                "duplicate-binding" => rewrite_page(&repo, &mut root, bucket, |page| {
+                    page.entries.push(entry.clone())
+                }),
+                "duplicate-semantic" | "revision" | "source-state" => {
+                    let mut changed = entry.clone();
+                    if failure == "duplicate-semantic" {
+                        changed.key.repository = "other-service".into();
+                    } else {
+                        root = remove_membership(&repo, &root, &entry.key).unwrap();
+                        if failure == "revision" {
+                            changed.key.revision = "wrong".into();
+                        } else {
+                            changed.key.source_state = "wrong".into();
+                        }
+                    }
+                    root = put_membership(&repo, &root, changed).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let snapshot = snapshot_for_root(&repo, &root);
+            assert!(
+                load_snapshot_context_dependencies(
+                    &repo,
+                    &snapshot,
+                    "orders",
+                    &std::collections::BTreeSet::new(),
+                )
+                .is_err(),
+                "failure={failure}"
+            );
+        }
     }
 
     /// A payload bound under several distinct contextual memberships is stored

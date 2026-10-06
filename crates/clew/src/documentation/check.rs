@@ -975,8 +975,37 @@ impl Check {
         selector: Option<&str>,
         selected: &BTreeSet<String>,
     ) -> Result<(Check, String), ClewError> {
+        Self::retained_using(repo, selector, selected, |manifest| {
+            Self::from_manifest(repo, manifest)
+        })
+    }
+
+    /// A partial payload read for the public exact-dependency context drill.
+    /// This is not an exhaustive capture or store integrity audit.
+    pub(super) fn retained_dependency_context(
+        repo: &Repository,
+        selector: Option<&str>,
+        service: &str,
+        dependencies: &BTreeSet<String>,
+    ) -> Result<(Check, String), ClewError> {
+        Self::retained_using(
+            repo,
+            selector,
+            &BTreeSet::from([service.to_owned()]),
+            |manifest| {
+                Self::from_manifest_for_dependencies(repo, manifest, Some((service, dependencies)))
+            },
+        )
+    }
+
+    fn retained_using(
+        repo: &Repository,
+        selector: Option<&str>,
+        selected: &BTreeSet<String>,
+        hydrate: impl Fn(CheckManifest) -> Result<Check, ClewError>,
+    ) -> Result<(Check, String), ClewError> {
         let (checked, original_handle, normalized_bytes) = if let Some(handle) = selector {
-            let checked = Self::load_snapshot(repo, handle).map_err(|error| {
+            let checked = Self::load_snapshot_manifest(repo, handle).and_then(&hydrate).map_err(|error| {
                 ClewError::new(
                     crate::error::ErrorCode::StateCorrupt,
                     format!(
@@ -992,7 +1021,7 @@ impl Check {
                 crate::error::ErrorCode::StateCorrupt,
                 "latest saved documentation evidence is unavailable; run docs check explicitly or select --snapshot",
             ))?;
-            let checked = Self::decode(repo, &raw).map_err(|error| ClewError::new(error.code,
+            let checked = Self::decode_manifest(&raw).and_then(&hydrate).map_err(|error| ClewError::new(error.code,
                 format!("saved documentation evidence is corrupt; select another snapshot or run docs check explicitly: {}", error.message)))?;
             (checked, None, Some(raw))
         };
@@ -1135,6 +1164,10 @@ impl Check {
     }
 
     fn decode(repo: &Repository, raw: &[u8]) -> Result<Check, ClewError> {
+        Self::from_manifest(repo, Self::decode_manifest(raw)?)
+    }
+
+    fn decode_manifest(raw: &[u8]) -> Result<CheckManifest, ClewError> {
         if raw.len() as u64 > PORTABLE_CACHE_MAX_BYTES {
             return Err(crate::error::ClewError::new(
                 crate::error::ErrorCode::ResourceLimit,
@@ -1143,10 +1176,18 @@ impl Check {
         }
         let manifest: CheckManifest = serde_json::from_slice(raw).map_err(|error| invalid(format!(
             "DOCS_REINDEX_REQUIRED: unsupported saved check format ({error}); initialize a fresh documentation root and run docs check")))?;
-        Self::from_manifest(repo, manifest)
+        Ok(manifest)
     }
 
     fn from_manifest(repo: &Repository, manifest: CheckManifest) -> Result<Check, ClewError> {
+        Self::from_manifest_for_dependencies(repo, manifest, None)
+    }
+
+    fn from_manifest_for_dependencies(
+        repo: &Repository,
+        manifest: CheckManifest,
+        selection: Option<(&str, &BTreeSet<String>)>,
+    ) -> Result<Check, ClewError> {
         if manifest.schema != CHECK_MANIFEST_SCHEMA {
             return Err(invalid(
                 "DOCS_REINDEX_REQUIRED: unsupported documentation snapshot schema; initialize a fresh documentation root and run docs check",
@@ -1177,16 +1218,53 @@ impl Check {
             services.insert(
                 id.clone(),
                 super::progress::run("LOAD_RETAINED_SERVICE", || {
-                    super::cache::load_capture(repo, capture)
+                    if selection.is_none() {
+                        return super::cache::load_capture(repo, capture);
+                    }
+                    super::cache::validate_capture(capture)?;
+                    // Source storage is still a whole per-service object. Keep
+                    // every source available, including cross-service entity
+                    // citations, while avoiding observation/contract hydration.
+                    let sources =
+                        super::cache::get_json(repo, &capture.sources, PORTABLE_CACHE_MAX_BYTES)?
+                            .ok_or_else(|| {
+                            ClewError::new(
+                                crate::error::ErrorCode::StateCorrupt,
+                                "capture sources object is missing",
+                            )
+                        })?;
+                    Ok(ServiceEvidence {
+                        schema: "codeclew-documentation-service-evidence/1.0".into(),
+                        service: capture.service.clone(),
+                        revision: capture.revision.clone(),
+                        service_digest: capture.service_digest.clone(),
+                        extractor: capture.extractor.clone(),
+                        runtime_mode: capture.runtime_mode.clone(),
+                        coverage: capture.coverage.clone(),
+                        boundaries: capture.boundaries.clone(),
+                        entrypoints: capture.entrypoints.clone(),
+                        observations: BTreeMap::new(),
+                        sources,
+                        contracts: BTreeMap::new(),
+                    })
                 })?,
             );
         }
         let dependencies = super::progress::run("LOAD_RETAINED_DEPENDENCIES", || {
-            super::fact_index::load_snapshot_observations(
-                repo,
-                &manifest.dependencies_index,
-                CHECK_DEPENDENCIES_SCOPE,
-            )
+            if let Some((service, ids)) = selection {
+                super::fact_index::load_snapshot_context_dependencies(
+                    repo,
+                    &manifest.dependencies_index,
+                    service,
+                    ids,
+                )
+            } else {
+                super::fact_index::load_snapshot_observations(
+                    repo,
+                    &manifest.dependencies_index,
+                    CHECK_DEPENDENCIES_SCOPE,
+                )
+            }
         })?;
         let checked = Check {
             schema: "codeclew-documentation-check/1.0".into(),
@@ -1201,6 +1279,20 @@ impl Check {
             composition,
         };
         checked.validate_source_input_binding()?;
+        if selection.is_some() {
+            let sources = checked.sources();
+            if checked
+                .dependencies
+                .values()
+                .flat_map(|dependency| &dependency.source_ids)
+                .any(|id| !sources.contains_key(id))
+            {
+                return Err(ClewError::new(
+                    crate::error::ErrorCode::StateCorrupt,
+                    "selected dependency references a missing source",
+                ));
+            }
+        }
         Ok(checked)
     }
 }

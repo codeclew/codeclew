@@ -4897,6 +4897,49 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
                 .any(|i| i["kind"] == "COVERAGE")
         );
         assert_eq!(raw["contextDigest"], compact["contextDigest"]);
+        // Follow the public raw dependency drill emitted by compact context.
+        // The retained read must preserve this method's source and scope while
+        // explicitly distinguishing selected validation from a full audit.
+        let method_id = raw["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["kind"] == "DEPENDENCY"
+                    && item["record"]["kind"] == "SYMBOL"
+                    && item["record"]["symbol"] == entry.symbol
+            })
+            .unwrap()["id"]
+            .as_str()
+            .unwrap();
+        let (code, dependency) = run(&[
+            "docs",
+            "context",
+            "--root",
+            root,
+            "--service",
+            language,
+            "--dependency",
+            method_id,
+            "--snapshot",
+            raw["snapshot"].as_str().unwrap(),
+            "--format",
+            "raw",
+            "--limit",
+            "100",
+        ]);
+        assert_eq!(code, 0);
+        assert_eq!(dependency["items"], raw["items"]);
+        assert_eq!(dependency["contextDigest"], raw["contextDigest"]);
+        assert_eq!(dependency["snapshot"], raw["snapshot"]);
+        assert_eq!(
+            dependency["evidenceValidation"]["exhaustiveIntegrityAudit"],
+            false
+        );
+        assert_eq!(
+            dependency["evidenceValidation"]["mode"],
+            "SELECTED_DEPENDENCY_CLOSURE"
+        );
         let flow_ids = |page: &Value| {
             page["items"]
                 .as_array()
