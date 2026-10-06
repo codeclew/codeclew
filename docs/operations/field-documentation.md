@@ -511,6 +511,15 @@ Kotlin call-graph, CFG and data-state projection remain unsupported here.
 selections before output is created. An independent Java selection in the same
 bundle can still use the existing Java expansion features.
 
+For Docusaurus, the qualified recipe uses version 3.10.2, `baseUrl: "/"`,
+`trailingSlash: false` and the docs plugin at `routeBasePath: "/"`. Keep each
+generated MDX body unchanged and prepend frontmatter with
+`slug: /generated/ORIGINAL_FILENAME.mdx`. Copy the generated JSON, JavaScript
+and CSS sidecars into `static/generated`. These explicit routes preserve the
+relative links and source anchors emitted by the publisher. Keep broken-link
+checking enabled. The qualification covers this route layout; other base paths
+or integrations need their own link checks.
+
 ## Kotlin compiler capture
 
 For native Kotlin compiler capture, select `kotlin-jvm-gradle-analysis` and the
@@ -520,6 +529,23 @@ setting unchanged. If a compiler check remains unresolved, follow its returned
 build category and `nextAction`: known repository-access, TLS, dependency,
 JDK/toolchain, compilation, model and launcher failures retain safe
 category-specific guidance.
+
+The source candidate also retains compiler-exact Kotlin `CALLS` in a captured
+Check. Select a function by its returned full compiler identity:
+
+```sh
+./clew docs context --root /work/architecture --service orders \
+  --snapshot SOURCE_CHECK --symbol RETURNED_COMPILER_IDENTITY --format raw
+```
+
+Owned `CALL_RELATION` records include the exact target, compilation scope and
+retained call-site text with byte coordinates and source/evidence digests.
+Partial or ambiguous evidence is not promoted to an exact call. Selecting the
+caller does not recursively select the callee or establish its body, runtime
+dispatch, execution order or CFG. Native pages remain declaration-only for
+Kotlin; their graph and data-state expansion flags remain unavailable.
+Previously captured Checks are immutable and do not gain discarded relation
+records when the CLI is updated; acquiring those records requires a new Check.
 
 ## Explicit compiler enrichment afterward
 

@@ -722,6 +722,101 @@ fn add_source(
     Ok(Some(id))
 }
 
+fn add_kotlin_call_site_source(
+    evidence: &mut ServiceEvidence,
+    service: &Service,
+    sources: &CompilationSource,
+    scope: &str,
+    fact: &Value,
+    binding: &str,
+    identity: &str,
+) -> Result<Option<(String, Value)>, ClewError> {
+    let file = fact["file"]
+        .as_str()
+        .ok_or_else(|| invalid("Kotlin CALLS relation lacks its source file"))?;
+    let start = fact["byteStart"]
+        .as_u64()
+        .ok_or_else(|| invalid("Kotlin CALLS relation lacks its byte start"))?;
+    let end = fact["byteEnd"]
+        .as_u64()
+        .ok_or_else(|| invalid("Kotlin CALLS relation lacks its byte end"))?;
+    if start >= end {
+        return Err(invalid(
+            "Kotlin CALLS relation has an empty or reversed source range",
+        ));
+    }
+    let Some(blob) = sources.blob(scope, file) else {
+        return Ok(None);
+    };
+    let start = usize::try_from(start)
+        .map_err(|_| invalid("Kotlin CALLS source start exceeds addressable bytes"))?;
+    let end = usize::try_from(end)
+        .map_err(|_| invalid("Kotlin CALLS source end exceeds addressable bytes"))?;
+    if end > blob.text.len()
+        || !blob.text.is_char_boundary(start)
+        || !blob.text.is_char_boundary(end)
+    {
+        return Err(invalid(
+            "Kotlin CALLS relation source range is outside retained UTF-8 boundaries",
+        ));
+    }
+    let text = &blob.text[start..end];
+    let start_line = 1 + blob.text.as_bytes()[..start]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count() as u64;
+    let end_line = 1 + blob.text.as_bytes()[..end - 1]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count() as u64;
+    let source_id = source_id(&service.id, identity)?;
+    let transformed = sources.transformed.get(scope).copied().unwrap_or(false);
+    let (authority, url) = if transformed {
+        (
+            crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY.into(),
+            None,
+        )
+    } else {
+        (
+            "EXACT_SNAPSHOT_TEXT".into(),
+            source_link(service, &evidence.revision, file, start_line, end_line),
+        )
+    };
+    let text_digest = canonical::hash_bytes(text.as_bytes());
+    evidence.sources.insert(
+        source_id.clone(),
+        Source {
+            id: source_id.clone(),
+            service: service.id.clone(),
+            revision: evidence.revision.clone(),
+            file: file.into(),
+            start_line,
+            end_line,
+            text: text.into(),
+            text_digest: text_digest.clone(),
+            evidence_digest: binding.into(),
+            authority,
+            occurrence: None,
+            url,
+        },
+    );
+    Ok(Some((
+        source_id.clone(),
+        json!({
+            "file":file,
+            "startLine":start_line,
+            "endLine":end_line,
+            "byteStart":start,
+            "byteEnd":end,
+            "sourceId":source_id,
+            "sourceDigest":text_digest,
+            "evidenceDigest":binding,
+            "sourceStatus":"SOURCE_RETAINED",
+            "fullCompilationSourceDigest":blob.content_digest
+        }),
+    )))
+}
+
 /// Javac LineMap recognizes CR, LF and CRLF. This is intentionally separate
 /// from the historical SourceBlob/snippet contract used by older fact kinds.
 fn javac_line_ranges(text: &str) -> Vec<Range<usize>> {
@@ -1441,6 +1536,79 @@ pub(crate) fn project_scoped(
             );
             continue;
         }
+        if fact["schema"] == "codeclew-kotlin-documentation-call/1.0" {
+            let source_callable = fact["sourceCompilerCallableId"]
+                .as_str()
+                .ok_or_else(|| invalid("Kotlin CALLS relation lacks exact source callable id"))?;
+            let source_descriptor = fact["sourceJvmDescriptor"].as_str().ok_or_else(|| {
+                invalid("Kotlin CALLS relation lacks exact source JVM descriptor")
+            })?;
+            let target_callable = fact["targetCompilerCallableId"]
+                .as_str()
+                .ok_or_else(|| invalid("Kotlin CALLS relation lacks exact target callable id"))?;
+            let target_descriptor = fact["targetJvmDescriptor"].as_str().ok_or_else(|| {
+                invalid("Kotlin CALLS relation lacks exact target JVM descriptor")
+            })?;
+            let source_identity = format!("callable:{source_callable}#jvm:{source_descriptor}");
+            let target_identity = format!("callable:{target_callable}#jvm:{target_descriptor}");
+            if fact["kind"] != "RELATION"
+                || fact["relationKind"] != "CALLS"
+                || fact["resolution"] != "COMPILER_EXACT"
+                || fact["compilerResolution"] != "PROVEN"
+                || fact["provider"] != "K2_FIR"
+                || fact["compilerSchema"] != "declaration-relation/0.1"
+                || fact["sourceIdentity"] != source_identity
+                || fact["targetIdentity"] != target_identity
+                || fact["sourceProvenance"] != "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+                || fact["evidenceBinding"].as_str() != Some(binding)
+            {
+                return Err(invalid(
+                    "Kotlin CALLS relation is not compiler-exact and payload-bound",
+                ));
+            }
+            crate::semantic_validation::validate_kotlin_full_symbol_identity(&source_identity)?;
+            crate::semantic_validation::validate_kotlin_full_symbol_identity(&target_identity)?;
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            let identity = scoped_identity(&scope, &format!("kotlin-call-site:{}", digest(fact)?));
+            let Some((source_id, call_site)) = add_kotlin_call_site_source(
+                &mut evidence,
+                service,
+                sources,
+                &scope,
+                fact,
+                binding,
+                &identity,
+            )?
+            else {
+                if !evidence
+                    .boundaries
+                    .iter()
+                    .any(|boundary| boundary == "KOTLIN_CALL_SOURCE_UNAVAILABLE")
+                {
+                    evidence
+                        .boundaries
+                        .push("KOTLIN_CALL_SOURCE_UNAVAILABLE".into());
+                }
+                continue;
+            };
+            let mut normalized = strip_coordinates(fact);
+            normalized["scope"] = json!(scope);
+            normalized["callSite"] = call_site;
+            let id = dependency_id(&service.id, "call-relation", &identity)?;
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "CALL_RELATION".into(),
+                    service: service.id.clone(),
+                    symbol: source_identity,
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids: vec![source_id],
+                },
+            );
+            continue;
+        }
         // Compiler relations have independent authority and source
         // coordinates. Retain them instead of folding them into FLOW, whose
         // source-order events have different limits and control-flow
@@ -2142,6 +2310,42 @@ mod tests {
         )
     }
 
+    fn kotlin_call_relation_fact(
+        scope: &Value,
+        source: &str,
+        target: &str,
+        file: &str,
+        start: u64,
+        end: u64,
+        binding: &str,
+    ) -> (Value, String) {
+        let (target_callable, target_descriptor) = target
+            .strip_prefix("callable:")
+            .unwrap()
+            .split_once("#jvm:")
+            .unwrap();
+        let (source_callable, source_descriptor) = source
+            .strip_prefix("callable:")
+            .unwrap()
+            .split_once("#jvm:")
+            .unwrap();
+        (
+            json!({
+                "schema":"codeclew-kotlin-documentation-call/1.0",
+                "kind":"RELATION","relationKind":"CALLS",
+                "sourceIdentity":source,"targetIdentity":target,
+                "resolution":"COMPILER_EXACT","provider":"K2_FIR",
+                "compilerResolution":"PROVEN","compilerSchema":"declaration-relation/0.1",
+                "sourceCompilerCallableId":source_callable,"sourceJvmDescriptor":source_descriptor,
+                "targetCompilerCallableId":target_callable,"targetJvmDescriptor":target_descriptor,
+                "file":file,"byteStart":start,"byteEnd":end,
+                "scope":scope,"sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+                "evidenceBinding":binding
+            }),
+            binding.into(),
+        )
+    }
+
     fn compile_sources(
         scopes: Vec<(&str, BTreeMap<String, String>, bool)>,
         contracts: BTreeMap<String, String>,
@@ -2353,6 +2557,242 @@ mod tests {
         assert!(evidence.observations.values().any(|observation| {
             observation.kind == "FLOW" && observation.normalized["kind"] == "BOUNDARY"
         }));
+    }
+
+    #[test]
+    fn kotlin_call_relation_retains_exact_utf8_occurrences_and_payload_bindings() {
+        let service = projection_service();
+        let file = "src/main/kotlin/example/Service.kt";
+        let text = "fun endpoint() { val prefix = \"π🙂\"; api.pick(\"x\"); api.pick(\"x\") }\n";
+        let scope = json!({"compilation":":kotlin/main"});
+        let owner = "callable:example/Service.endpoint#jvm:()V";
+        let target = "callable:example/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;";
+        let call_text = "api.pick(\"x\")";
+        let occurrences = text.match_indices(call_text).collect::<Vec<_>>();
+        assert_eq!(
+            occurrences.len(),
+            2,
+            "fixture must have two identical calls"
+        );
+        let (first_start, first_call) = occurrences[0];
+        let (second_start, second_call) = occurrences[1];
+        let first_end = first_start + first_call.len();
+        let second_end = second_start + second_call.len();
+        let facts = vec![
+            kotlin_call_relation_fact(
+                &scope,
+                owner,
+                target,
+                file,
+                first_start as u64,
+                first_end as u64,
+                "first-call-binding",
+            ),
+            kotlin_call_relation_fact(
+                &scope,
+                owner,
+                target,
+                file,
+                second_start as u64,
+                second_end as u64,
+                "second-call-binding",
+            ),
+        ];
+        let evidence = project_scoped_ok(
+            &service,
+            facts,
+            &compile_sources(
+                vec![(
+                    ":kotlin/main",
+                    BTreeMap::from([(file.into(), text.into())]),
+                    true,
+                )],
+                BTreeMap::new(),
+            ),
+            &[":kotlin/main"],
+        );
+        let calls = evidence
+            .observations
+            .values()
+            .filter(|observation| observation.kind == "CALL_RELATION")
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        let mut spans = BTreeSet::new();
+        for call in &calls {
+            let site = &call.normalized["callSite"];
+            let start = site["byteStart"].as_u64().unwrap() as usize;
+            let end = site["byteEnd"].as_u64().unwrap() as usize;
+            assert!(
+                spans.insert((start, end)),
+                "same-line call ranges stay distinct"
+            );
+            let source = &evidence.sources[&call.source_ids[0]];
+            assert_eq!(source.text, text[start..end]);
+            assert_eq!(source.file, file);
+            assert_eq!(source.occurrence, None);
+            assert_eq!(site["sourceId"], source.id);
+            assert_eq!(site["sourceDigest"], source.text_digest);
+            assert_eq!(site["evidenceDigest"], source.evidence_digest);
+            assert_eq!(site["sourceStatus"], "SOURCE_RETAINED");
+            assert_eq!(
+                site["fullCompilationSourceDigest"],
+                crate::canonical::hash_bytes(text.as_bytes())
+            );
+            assert_eq!(site["startLine"], 1);
+            assert_eq!(site["endLine"], 1);
+            assert!(site.get("sourceOccurrence").is_none());
+        }
+        assert!(
+            !evidence
+                .observations
+                .values()
+                .any(|observation| observation.kind == "FLOW")
+        );
+        let evidence_bindings = calls
+            .iter()
+            .map(|call| {
+                evidence.sources[&call.source_ids[0]]
+                    .evidence_digest
+                    .as_str()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            evidence_bindings,
+            BTreeSet::from(["first-call-binding", "second-call-binding"])
+        );
+    }
+
+    #[test]
+    fn kotlin_call_relation_without_scoped_source_is_boundary_only_and_bad_ranges_fail_closed() {
+        let service = projection_service();
+        let file = "src/main/kotlin/example/Missing.kt";
+        let text = "fun endpoint() { api.pick() }";
+        let scope = json!({"compilation":":kotlin/main"});
+        let owner = "callable:example/Service.endpoint#jvm:()V";
+        let target = "callable:example/Api.pick#jvm:()V";
+        let relation = kotlin_call_relation_fact(
+            &scope,
+            owner,
+            target,
+            file,
+            18,
+            29,
+            "missing-source-binding",
+        );
+        let evidence = project_scoped_ok(
+            &service,
+            vec![relation],
+            &compile_sources(
+                vec![(":kotlin/main", BTreeMap::new(), false)],
+                BTreeMap::from([(file.into(), text.into())]),
+            ),
+            &[":kotlin/main"],
+        );
+        assert!(
+            !evidence
+                .observations
+                .values()
+                .any(|observation| observation.kind == "CALL_RELATION")
+        );
+        assert!(evidence.sources.is_empty());
+        assert!(
+            evidence
+                .boundaries
+                .iter()
+                .any(|boundary| boundary == "KOTLIN_CALL_SOURCE_UNAVAILABLE")
+        );
+
+        let source_text = "fun endpoint() { val s = \"🙂\"; api.pick() }";
+        let call_start = source_text.find("api.pick").unwrap() as u64;
+        let emoji_start = source_text.find("🙂").unwrap() as u64;
+        let source_len = source_text.len() as u64;
+        let sources = compile_sources(
+            vec![(
+                ":kotlin/main",
+                BTreeMap::from([(file.into(), source_text.into())]),
+                false,
+            )],
+            BTreeMap::new(),
+        );
+        for (start, end) in [
+            (call_start, call_start),
+            (source_len, source_len + 1),
+            (emoji_start + 1, emoji_start + 2),
+        ] {
+            let relation = kotlin_call_relation_fact(
+                &scope,
+                owner,
+                target,
+                file,
+                start,
+                end,
+                "bad-range-binding",
+            );
+            assert!(
+                project_scoped(
+                    &service,
+                    &"a".repeat(40),
+                    &digest(&service).unwrap(),
+                    "DEVELOPMENT",
+                    "PARTIAL",
+                    vec![relation],
+                    &sources,
+                    &known(&[":kotlin/main"]),
+                )
+                .is_err(),
+                "range {start}..{end} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn kotlin_call_site_line_end_excludes_a_trailing_lf_or_crlf_boundary() {
+        let service = projection_service();
+        let file = "src/main/kotlin/example/Multiline.kt";
+        let scope = json!({"compilation":":kotlin/main"});
+        let owner = "callable:example/Service.endpoint#jvm:()V";
+        let target = "callable:example/Api.pick#jvm:()V";
+        for (index, newline) in ["\n", "\r\n"].into_iter().enumerate() {
+            let text = format!(
+                "fun endpoint() {{{newline}  api.pick({newline}    \"x\"){newline}}}{newline}"
+            );
+            let call_text = format!("api.pick({newline}    \"x\")");
+            let start = text.find(&call_text).unwrap();
+            let end = start + call_text.len() + newline.len();
+            let binding = format!("multiline-binding-{index}");
+            let fact = kotlin_call_relation_fact(
+                &scope,
+                owner,
+                target,
+                file,
+                start as u64,
+                end as u64,
+                &binding,
+            );
+            let evidence = project_scoped_ok(
+                &service,
+                vec![fact],
+                &compile_sources(
+                    vec![(
+                        ":kotlin/main",
+                        BTreeMap::from([(file.into(), text.clone())]),
+                        true,
+                    )],
+                    BTreeMap::new(),
+                ),
+                &[":kotlin/main"],
+            );
+            let relation = evidence
+                .observations
+                .values()
+                .find(|observation| observation.kind == "CALL_RELATION")
+                .unwrap();
+            let source = &evidence.sources[&relation.source_ids[0]];
+            assert_eq!(source.text, &text[start..end]);
+            assert_eq!((source.start_line, source.end_line), (2, 3));
+            assert_eq!(relation.normalized["callSite"]["startLine"], 2);
+            assert_eq!(relation.normalized["callSite"]["endLine"], 3);
+        }
     }
 
     #[test]

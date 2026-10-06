@@ -2,7 +2,130 @@
 use super::{digest, invalid};
 use crate::error::ClewError;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+const DOCUMENTATION_CALL_SCHEMA: &str = "codeclew-kotlin-documentation-call/1.0";
+
+type CallOccurrence = (String, String, u64, u64);
+
+#[derive(Clone)]
+struct FunctionDescriptor {
+    symbol: String,
+    compiler_callable_id: String,
+    jvm_descriptor: String,
+    start: u64,
+    end: u64,
+}
+
+struct ProjectedCall {
+    occurrence: CallOccurrence,
+    fact: Value,
+    binding: String,
+}
+
+fn fact_scope(fact: &Value) -> String {
+    fact["scope"]["compilation"]
+        .as_str()
+        .or_else(|| fact["scope"].as_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn without_capture_scope(fact: &Value) -> Value {
+    let mut fact = fact.clone();
+    if let Some(object) = fact.as_object_mut() {
+        object.remove("scope");
+    }
+    fact
+}
+
+fn occurrence(fact: &Value) -> Option<CallOccurrence> {
+    Some((
+        fact_scope(fact),
+        fact["file"].as_str()?.to_owned(),
+        fact["start"].as_u64()?,
+        fact["end"].as_u64()?,
+    ))
+}
+
+fn is_target_resolution_boundary(fact: &Value) -> bool {
+    let stage = fact["stage"].as_str().unwrap_or_default();
+    let code = fact["code"].as_str().unwrap_or_default();
+    matches!(
+        stage,
+        "TARGET_IDENTITY"
+            | "CALL_RESOLUTION"
+            | "CONSTRUCTOR_RESOLUTION"
+            | "TARGET_RESOLUTION"
+            | "RELATION_RESOLUTION"
+    ) || (stage == "REFERENCE" && code == "UNRESOLVED_CALLABLE_TARGET")
+        || (stage == "NORMALIZE"
+            && code == "REFERENCE_TO_QUARANTINED_DESCRIPTOR"
+            && fact["relationKind"] == "CALLS")
+}
+
+fn boundary_applies_to_call(boundary: &Value, relation: &Value) -> bool {
+    if !is_target_resolution_boundary(boundary) {
+        return false;
+    }
+    let boundary_scope = fact_scope(boundary);
+    if !boundary_scope.is_empty() && boundary_scope != fact_scope(relation) {
+        return false;
+    }
+    if boundary["relationKind"]
+        .as_str()
+        .is_some_and(|kind| kind != "CALLS")
+    {
+        return false;
+    }
+    if boundary["owner"]
+        .as_str()
+        .is_some_and(|owner| relation["owner"].as_str() != Some(owner))
+    {
+        return false;
+    }
+    if let Some(target) = boundary["target"].as_str()
+        && relation["target"].as_str() != Some(target)
+        && relation["targetCompilerCallableId"].as_str() != Some(target)
+    {
+        return false;
+    }
+    if let Some(file) = boundary["file"].as_str()
+        && relation["file"].as_str() != Some(file)
+    {
+        return false;
+    }
+    if let (Some(start), Some(end)) = (boundary["start"].as_u64(), boundary["end"].as_u64())
+        && (relation["start"].as_u64() != Some(start) || relation["end"].as_u64() != Some(end))
+    {
+        return false;
+    }
+    true
+}
+
+fn exact_call_fact(relation: &Value, owner: &FunctionDescriptor, binding: &str) -> Value {
+    json!({
+        "schema":DOCUMENTATION_CALL_SCHEMA,
+        "kind":"RELATION",
+        "relationKind":"CALLS",
+        "sourceIdentity":owner.symbol,
+        "targetIdentity":relation["target"],
+        "resolution":"COMPILER_EXACT",
+        "provider":"K2_FIR",
+        "compilerResolution":"PROVEN",
+        "compilerSchema":"declaration-relation/0.1",
+        "sourceCompilerCallableId":owner.compiler_callable_id,
+        "sourceJvmDescriptor":owner.jvm_descriptor,
+        "targetCompilerCallableId":relation["targetCompilerCallableId"],
+        "targetJvmDescriptor":relation["targetJvmDescriptor"],
+        "file":relation["file"],
+        "byteStart":relation["start"],
+        "byteEnd":relation["end"],
+        "scope":relation["scope"],
+        "sourceProvenance":relation["sourceProvenance"],
+        "evidenceBinding":binding
+    })
+}
 
 pub(super) fn project_facts(
     facts: Vec<(Value, String)>,
@@ -28,6 +151,171 @@ pub(super) fn project_facts(
             }
         }
     }
+    let mut function_descriptors =
+        BTreeMap::<(String, String, String), Vec<FunctionDescriptor>>::new();
+    for (fact, _) in &facts {
+        if fact["schema"] != "declaration-descriptor/0.1" || fact["declarationKind"] != "FUNCTION" {
+            continue;
+        }
+        if fact.get("attributeCoverage").is_some() || fact.get("sourceRowHash").is_some() {
+            continue;
+        }
+        let checked = without_capture_scope(fact);
+        crate::semantic_validation::validate_declaration_descriptor_fact(&checked)?;
+        let (Some(file), Some(callable), Some(symbol), Some(start), Some(end)) = (
+            checked["file"].as_str(),
+            checked["compilerCallableId"].as_str(),
+            checked["symbolIdentity"].as_str(),
+            checked["start"].as_u64(),
+            checked["end"].as_u64(),
+        ) else {
+            continue;
+        };
+        let descriptor_prefix = format!("callable:{callable}#jvm:");
+        let Some(descriptor) = symbol.strip_prefix(&descriptor_prefix) else {
+            continue;
+        };
+        if start >= end
+            || checked["jvmDescriptor"]
+                .as_str()
+                .is_some_and(|declared| declared != descriptor)
+        {
+            continue;
+        }
+        crate::semantic_validation::validate_kotlin_full_symbol_identity(symbol)?;
+        function_descriptors
+            .entry((fact_scope(fact), file.to_owned(), callable.to_owned()))
+            .or_default()
+            .push(FunctionDescriptor {
+                symbol: symbol.to_owned(),
+                compiler_callable_id: callable.to_owned(),
+                jvm_descriptor: descriptor.to_owned(),
+                start,
+                end,
+            });
+    }
+
+    // Preserve occurrence-level target uncertainty before flattening typed
+    // relation boundaries to the service's stable boundary codes.
+    let mut blocked_occurrences = BTreeSet::new();
+    let mut target_resolution_boundaries = Vec::new();
+    for (fact, _) in &facts {
+        if fact["schema"] != "declaration-relation-boundary/0.1" {
+            continue;
+        }
+        let checked = without_capture_scope(fact);
+        crate::semantic_validation::validate_declaration_relation_boundary(&checked)?;
+        if is_target_resolution_boundary(fact) {
+            target_resolution_boundaries.push(fact.clone());
+        }
+    }
+
+    let mut calls_by_occurrence = BTreeMap::<CallOccurrence, Vec<ProjectedCall>>::new();
+    let mut call_boundaries = Vec::<(Value, String)>::new();
+    let mut projected_calls = Vec::new();
+    for (fact, binding) in &facts {
+        if fact["schema"] != "declaration-relation/0.1" || fact["kind"] != "CALLS" {
+            continue;
+        }
+        let checked = without_capture_scope(fact);
+        crate::semantic_validation::validate_declaration_relation_fact(&checked)?;
+        let Some(occurrence) = occurrence(fact) else {
+            return Err(invalid(
+                "Kotlin CALLS relation has no compiler source occurrence",
+            ));
+        };
+        let partial =
+            fact.get("attributeCoverage").is_some() || fact.get("sourceRowHash").is_some();
+        let target_callable = fact["targetCompilerCallableId"].as_str();
+        let target_descriptor = fact["targetJvmDescriptor"].as_str();
+        let exact_target = match (target_callable, target_descriptor) {
+            (Some(callable), Some(descriptor)) => {
+                fact["target"] == format!("callable:{callable}#jvm:{descriptor}")
+            }
+            _ => false,
+        };
+        if partial || !exact_target {
+            blocked_occurrences.insert(occurrence.clone());
+            call_boundaries.push((
+                json!({
+                    "kind":"BOUNDARY",
+                    "code":if partial { "KOTLIN_CALL_RELATION_PARTIAL" } else { "KOTLIN_CALL_TARGET_NOT_EXACT" }
+                }),
+                binding.clone(),
+            ));
+            continue;
+        }
+        if blocked_occurrences.contains(&occurrence)
+            || target_resolution_boundaries
+                .iter()
+                .any(|boundary| boundary_applies_to_call(boundary, fact))
+        {
+            continue;
+        }
+        let owner_id = fact["owner"].as_str().unwrap_or_default();
+        let (scope, file, start, end) = &occurrence;
+        let owners = function_descriptors
+            .get(&(scope.clone(), file.clone(), owner_id.to_owned()))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|descriptor| descriptor.start <= *start && *end <= descriptor.end)
+            .collect::<Vec<_>>();
+        if owners.len() != 1 {
+            blocked_occurrences.insert(occurrence.clone());
+            call_boundaries.push((
+                json!({
+                    "kind":"BOUNDARY",
+                    "code":"KOTLIN_CALL_OWNER_NOT_UNIQUE"
+                }),
+                binding.clone(),
+            ));
+            continue;
+        }
+        calls_by_occurrence
+            .entry(occurrence.clone())
+            .or_default()
+            .push(ProjectedCall {
+                occurrence,
+                fact: exact_call_fact(fact, owners[0], binding),
+                binding: binding.clone(),
+            });
+    }
+
+    for (occurrence, mut calls) in calls_by_occurrence {
+        if blocked_occurrences.contains(&occurrence) {
+            continue;
+        }
+        let targets: BTreeSet<_> = calls
+            .iter()
+            .filter_map(|call| call.fact["targetIdentity"].as_str())
+            .collect();
+        let owners: BTreeSet<_> = calls
+            .iter()
+            .filter_map(|call| call.fact["sourceIdentity"].as_str())
+            .collect();
+        if targets.len() != 1 || owners.len() != 1 {
+            blocked_occurrences.insert(occurrence);
+            if let Some(call) = calls.first() {
+                call_boundaries.push((
+                    json!({
+                        "kind":"BOUNDARY",
+                        "code":"KOTLIN_CALL_RELATION_CONFLICT"
+                    }),
+                    call.binding.clone(),
+                ));
+            }
+            continue;
+        }
+        // Identical compiler records for one occurrence share one normalized
+        // relation. Keep one original CAS evidence binding deterministically.
+        calls.sort_by(|left, right| left.binding.cmp(&right.binding));
+        let call = calls.remove(0);
+        debug_assert_eq!(call.occurrence, occurrence);
+        // Appended after the source facts below to preserve their stable order.
+        projected_calls.push((call.fact, call.binding));
+    }
+
     let mut output = Vec::new();
     for (mut fact, binding) in facts {
         let schema = fact["schema"].as_str().unwrap_or("");
@@ -59,6 +347,8 @@ pub(super) fn project_facts(
             output.push((json!({"kind":"BOUNDARY", "code":fact["code"].as_str().unwrap_or("KOTLIN_ANALYSIS_BOUNDARY")}), binding));
         }
     }
+    output.extend(projected_calls);
+    output.extend(call_boundaries);
     if !output.iter().any(|(fact, _)| fact["kind"] == "DECLARATION") {
         return Err(ClewError::new(
             crate::error::ErrorCode::IncompleteSemanticAnalysis,
@@ -72,6 +362,387 @@ pub(super) fn project_facts(
 mod tests {
     use super::*;
     use crate::documentation::{analysis, check, model::*, render, store};
+
+    fn function_descriptor(
+        callable: &str,
+        jvm: &str,
+        file: &str,
+        start: u64,
+        end: u64,
+        scope: &str,
+    ) -> (Value, String) {
+        let owner = callable
+            .rsplit_once('.')
+            .or_else(|| callable.rsplit_once('/'))
+            .unwrap()
+            .0;
+        let symbol = format!("callable:{callable}#jvm:{jvm}");
+        (
+            json!({
+                "schema":"declaration-descriptor/0.1",
+                "file":file,"start":start,"end":end,
+                "symbolIdentity":symbol,"declarationKind":"FUNCTION",
+                "ownerIdentity":format!("class:{owner}"),
+                "containment":[format!("class:{owner}")],
+                "visibility":"public","effectiveVisibility":"public",
+                "exportBoundary":"PUBLIC_API","modality":"FINAL",
+                "compilerCallableId":callable,"jvmDescriptor":jvm,
+                "isOverride":false,"returnType":"kotlin/Unit","returnNullable":false,
+                "parameterTypes":[],"typeParameters":[],
+                "module":":","sourceSet":"main",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+                "compilerAuthority":"fir-facts-extractor/0.6",
+                "resolution":"PROVEN","provider":"K2_FIR",
+                "scope":{"compilation":scope}
+            }),
+            format!("descriptor-binding:{callable}:{jvm}:{scope}"),
+        )
+    }
+
+    fn call_relation(
+        owner: &str,
+        target_callable: &str,
+        target_jvm: &str,
+        file: &str,
+        start: u64,
+        end: u64,
+        scope: &str,
+    ) -> (Value, String) {
+        (
+            json!({
+                "schema":"declaration-relation/0.1",
+                "file":file,"start":start,"end":end,
+                "kind":"CALLS","owner":owner,
+                "target":format!("callable:{target_callable}#jvm:{target_jvm}"),
+                "targetCompilerCallableId":target_callable,
+                "targetJvmDescriptor":target_jvm,
+                "resolution":"PROVEN","provider":"K2_FIR",
+                "cfgNodeIds":[],
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+                "orderProvenance":"FIR_SOURCE_RANGE",
+                "receiverSelection":"EXPLICIT","receiverType":"p/Api",
+                "argumentToParameter":[],"omittedDefaultParameterIndices":[],
+                "scope":{"compilation":scope}
+            }),
+            format!("original-call-binding:{file}:{start}:{end}:{scope}"),
+        )
+    }
+
+    fn relation_boundary(
+        stage: &str,
+        code: &str,
+        owner: &str,
+        file: &str,
+        start: u64,
+        end: u64,
+        scope: &str,
+    ) -> (Value, String) {
+        (
+            json!({
+                "schema":"declaration-relation-boundary/0.1",
+                "file":file,"start":start,"end":end,
+                "owner":owner,"stage":stage,"code":code,
+                "resolution":"UNKNOWN","provider":if stage == "ORDER_PROVENANCE" { "K2_FIR_CFG" } else { "K2_FIR" },
+                "scope":{"compilation":scope}
+            }),
+            format!("boundary-binding:{file}:{start}:{end}:{code}"),
+        )
+    }
+
+    fn wide_relation_boundary(
+        stage: &str,
+        owner: Option<&str>,
+        target: Option<&str>,
+        scope: &str,
+    ) -> (Value, String) {
+        let mut fact = json!({
+            "schema":"declaration-relation-boundary/0.1",
+            "stage":stage,"code":"UNRESOLVED_RELATION_TARGET",
+            "resolution":"UNKNOWN","provider":"K2_FIR",
+            "relationKind":"CALLS","scope":{"compilation":scope}
+        });
+        if let Some(owner) = owner {
+            fact["owner"] = json!(owner);
+        }
+        if let Some(target) = target {
+            fact["target"] = json!(target);
+        }
+        (
+            fact,
+            format!("wide-boundary:{stage}:{owner:?}:{target:?}:{scope}"),
+        )
+    }
+
+    fn projected_calls(facts: Vec<(Value, String)>) -> Vec<(Value, String)> {
+        project_facts(facts).unwrap()
+    }
+
+    #[test]
+    fn exact_calls_bind_to_the_unique_containing_function_and_preserve_original_binding() {
+        let owner = "p/caller";
+        let file = "src/main/kotlin/p/Calls.kt";
+        let scope = ":/main";
+        let (_, unrelated_binding) = function_descriptor(owner, "()V", file, 0, 10, scope);
+        let (containing, _) = function_descriptor(owner, "(I)V", file, 20, 90, scope);
+        let (call, binding) = call_relation(owner, "p/Api.pick", "()V", file, 40, 54, scope);
+        let output = projected_calls(vec![
+            (containing.clone(), "owner-second-overload".into()),
+            (
+                json!({"schema":"declaration-descriptor/0.1","declarationKind":"CLASS"}),
+                unrelated_binding,
+            ),
+            (
+                function_descriptor(owner, "()V", file, 0, 10, scope).0,
+                "owner-first-overload".into(),
+            ),
+            (call, binding.clone()),
+        ]);
+        let (adapted, adapted_binding) = output
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+            .unwrap();
+        assert_eq!(adapted["sourceIdentity"], containing["symbolIdentity"]);
+        assert_eq!(adapted["targetIdentity"], "callable:p/Api.pick#jvm:()V");
+        assert_eq!(adapted["relationKind"], "CALLS");
+        assert_eq!(adapted["resolution"], "COMPILER_EXACT");
+        assert_eq!(adapted["compilerResolution"], "PROVEN");
+        assert_eq!(adapted["provider"], "K2_FIR");
+        assert_eq!(adapted["targetCompilerCallableId"], "p/Api.pick");
+        assert_eq!(adapted["targetJvmDescriptor"], "()V");
+        assert_eq!(adapted["byteStart"], 40);
+        assert_eq!(adapted_binding, &binding);
+        assert!(!output.iter().any(|(fact, _)| fact["kind"] == "FLOW"));
+    }
+
+    #[test]
+    fn calls_reject_family_targets_ambiguous_owners_wrong_scope_and_partial_rows() {
+        let owner = "p/caller";
+        let file = "src/main/kotlin/p/Calls.kt";
+        let scope = ":/main";
+        let descriptor = function_descriptor(owner, "()V", file, 0, 100, scope);
+
+        let mut family = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        family.0["target"] = json!("p/Api.pick");
+        family
+            .0
+            .as_object_mut()
+            .unwrap()
+            .remove("targetCompilerCallableId");
+        family
+            .0
+            .as_object_mut()
+            .unwrap()
+            .remove("targetJvmDescriptor");
+        let output = projected_calls(vec![descriptor.clone(), family]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["code"] == "KOTLIN_CALL_TARGET_NOT_EXACT")
+        );
+
+        let call = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        let overlapping = function_descriptor(owner, "(I)V", file, 10, 40, scope);
+        let output = projected_calls(vec![descriptor.clone(), overlapping, call.clone()]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["code"] == "KOTLIN_CALL_OWNER_NOT_UNIQUE")
+        );
+
+        let wrong_scope = function_descriptor(owner, "()V", file, 0, 100, ":/test");
+        let wrong_scope_call = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, ":/main");
+        let output = projected_calls(vec![wrong_scope, wrong_scope_call]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+
+        let mut partial = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        for field in [
+            "receiverSelection",
+            "receiverType",
+            "argumentToParameter",
+            "omittedDefaultParameterIndices",
+        ] {
+            partial.0.as_object_mut().unwrap().remove(field);
+        }
+        partial.0["attributeCoverage"] = json!("PARTIAL");
+        partial.0["sourceRowHash"] = json!(format!("sha256:{}", "1".repeat(64)));
+        let output = projected_calls(vec![descriptor, partial]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["code"] == "KOTLIN_CALL_RELATION_PARTIAL")
+        );
+
+        let (mut partial_owner, _) = function_descriptor(owner, "()V", file, 0, 100, scope);
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            partial_owner.as_object_mut().unwrap().remove(field);
+        }
+        partial_owner["attributeCoverage"] = json!("PARTIAL");
+        partial_owner["sourceRowHash"] = json!(format!("sha256:{}", "2".repeat(64)));
+        let call = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        let output = projected_calls(vec![(partial_owner, "partial-owner".into()), call]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["code"] == "KOTLIN_CALL_OWNER_NOT_UNIQUE")
+        );
+    }
+
+    #[test]
+    fn target_conflicts_and_target_resolution_boundaries_block_calls_but_cfg_does_not() {
+        let owner = "p/caller";
+        let file = "src/main/kotlin/p/Calls.kt";
+        let scope = ":/main";
+        let descriptor = function_descriptor(owner, "()V", file, 0, 100, scope);
+        let first = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        let second = call_relation(owner, "p/Api.pick", "()I", file, 20, 30, scope);
+        let output = projected_calls(vec![descriptor.clone(), first, second]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["code"] == "KOTLIN_CALL_RELATION_CONFLICT")
+        );
+
+        let exact = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        let target_boundary = relation_boundary(
+            "TARGET_IDENTITY",
+            "UNRESOLVED_TARGET_JVM_DESCRIPTOR",
+            owner,
+            file,
+            20,
+            30,
+            scope,
+        );
+        let output = projected_calls(vec![descriptor.clone(), exact.clone(), target_boundary]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+
+        let cfg_boundary = relation_boundary(
+            "ORDER_PROVENANCE",
+            "NO_CFG_NODE_FOR_RELATION",
+            owner,
+            file,
+            20,
+            30,
+            scope,
+        );
+        let output = projected_calls(vec![descriptor, exact, cfg_boundary]);
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["code"] == "NO_CFG_NODE_FOR_RELATION")
+        );
+        assert!(!output.iter().any(|(fact, _)| fact["kind"] == "FLOW"));
+    }
+
+    #[test]
+    fn wide_target_resolution_boundaries_match_scope_owner_and_target_without_occurrences() {
+        let owner = "p/caller";
+        let file = "src/main/kotlin/p/Calls.kt";
+        let scope = ":/main";
+        let descriptor = function_descriptor(owner, "()V", file, 0, 100, scope);
+        let exact = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+
+        let unrelated_owner = wide_relation_boundary(
+            "CALL_RESOLUTION",
+            Some("p/other"),
+            Some("p/Api.pick"),
+            scope,
+        );
+        let output = projected_calls(vec![descriptor.clone(), exact.clone(), unrelated_owner]);
+        assert!(
+            output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+
+        let matching_owner = wide_relation_boundary("CALL_RESOLUTION", Some(owner), None, scope);
+        let output = projected_calls(vec![descriptor.clone(), exact.clone(), matching_owner]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+
+        let matching_target =
+            wide_relation_boundary("TARGET_RESOLUTION", None, Some("p/Api.pick"), scope);
+        let output = projected_calls(vec![descriptor.clone(), exact.clone(), matching_target]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+
+        let broad = wide_relation_boundary("RELATION_RESOLUTION", None, None, scope);
+        let output = projected_calls(vec![descriptor, exact, broad]);
+        assert!(
+            !output
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+        );
+    }
+
+    #[test]
+    fn full_function_owner_can_derive_optional_jvm_descriptor_from_identity() {
+        let owner = "p/caller";
+        let file = "src/main/kotlin/p/Calls.kt";
+        let scope = ":/main";
+        let (mut descriptor, _) = function_descriptor(owner, "()V", file, 0, 100, scope);
+        descriptor.as_object_mut().unwrap().remove("jvmDescriptor");
+        let call = call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        let output = projected_calls(vec![(descriptor, "owner-with-identity-only".into()), call]);
+        let projected = output
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+            .unwrap();
+        assert_eq!(projected.0["sourceJvmDescriptor"], "()V");
+    }
 
     #[test]
     #[ignore = "launches the trusted Kotlin worker and Maven for Kotlin 1.9 documentation"]

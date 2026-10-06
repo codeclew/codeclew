@@ -945,6 +945,26 @@ pub(super) fn context_items(
                 return Err(ClewError::new(code, message).with_relevant(symbol.clone()));
             }
             selected.insert(matches[0].id.clone());
+            let selected_symbol = matches[0].symbol.clone();
+            let selected_scope = matches[0].normalized["scope"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            selected.extend(
+                e.observations
+                    .values()
+                    .filter(|observation| {
+                        observation.service == e.service
+                            && observation.kind == "CALL_RELATION"
+                            && matches!(
+                                observation.normalized["relationKind"].as_str(),
+                                Some("CALLS" | "CONSTRUCTS")
+                            )
+                            && observation.normalized["sourceIdentity"] == selected_symbol
+                            && observation.normalized["scope"] == selected_scope
+                    })
+                    .map(|observation| observation.id.clone()),
+            );
             selected.extend(
                 e.observations
                     .values()
@@ -2493,6 +2513,110 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn symbol_context_includes_only_same_service_owned_calls_without_selecting_callees() {
+        let root = "method:pkg/orders/OrderService#helper()V";
+        let callee = "method:pkg/orders/OrderService#callee()V";
+        let mut checked = symbol_context(&[("root-main", root)]);
+        let evidence = checked.services.get_mut("orders").unwrap();
+        evidence
+            .observations
+            .get_mut("root-main")
+            .unwrap()
+            .normalized["scope"] = json!(":main");
+        let root_owner = "class:pkg/orders/OrderService";
+        let observation =
+            |id: &str, kind: &str, symbol: &str, service: &str, normalized: Value| Observation {
+                id: id.into(),
+                kind: kind.into(),
+                service: service.into(),
+                symbol: symbol.into(),
+                digest: format!("digest-{id}"),
+                normalized,
+                source_ids: Vec::new(),
+            };
+        let call = observation(
+            "call-root-main",
+            "CALL_RELATION",
+            root,
+            "orders",
+            json!({
+                "kind":"RELATION","relationKind":"CALLS","sourceIdentity":root,
+                "targetIdentity":callee,"resolution":"COMPILER_EXACT","scope":":main",
+                "callSite":{"sourceStatus":"SOURCE_UNAVAILABLE"}
+            }),
+        );
+        let wrong_scope = observation(
+            "call-root-test",
+            "CALL_RELATION",
+            root,
+            "orders",
+            json!({"relationKind":"CALLS","sourceIdentity":root,"targetIdentity":callee,"scope":":test"}),
+        );
+        let callee_observation = observation(
+            "callee-main",
+            "SYMBOL",
+            callee,
+            "orders",
+            json!({"symbolIdentity":callee,"ownerIdentity":root_owner,"scope":":main"}),
+        );
+        let flow = observation(
+            "root-flow",
+            "FLOW",
+            root,
+            "orders",
+            json!({"scope":":main"}),
+        );
+        let semantic = observation(
+            "root-semantic",
+            "SEMANTIC_SYMBOL",
+            root,
+            "orders",
+            json!({"scope":":main"}),
+        );
+        evidence.observations.extend([
+            (call.id.clone(), call.clone()),
+            (wrong_scope.id.clone(), wrong_scope.clone()),
+            (callee_observation.id.clone(), callee_observation.clone()),
+            (flow.id.clone(), flow.clone()),
+            (semantic.id.clone(), semantic.clone()),
+        ]);
+        checked.dependencies.extend([
+            (
+                "root-main".into(),
+                evidence.observations["root-main"].clone(),
+            ),
+            (call.id.clone(), call),
+            (wrong_scope.id.clone(), wrong_scope),
+            (callee_observation.id.clone(), callee_observation),
+            (flow.id.clone(), flow),
+            (semantic.id.clone(), semantic),
+            (
+                "foreign-service-call".into(),
+                observation(
+                    "foreign-service-call",
+                    "CALL_RELATION",
+                    root,
+                    "other-service",
+                    json!({"relationKind":"CALLS","sourceIdentity":root,"scope":":main"}),
+                ),
+            ),
+        ]);
+
+        let context = context_items(&checked, &symbol_context_args(root), None).unwrap();
+        let dependency_ids = context
+            .iter()
+            .filter(|item| item["kind"] == "DEPENDENCY")
+            .filter_map(|item| item["id"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(dependency_ids.contains("call-root-main"));
+        assert!(dependency_ids.contains("root-flow"));
+        assert!(dependency_ids.contains("root-semantic"));
+        assert!(!dependency_ids.contains("call-root-test"));
+        assert!(!dependency_ids.contains("callee-main"));
+        assert!(!dependency_ids.contains("foreign-service-call"));
     }
 
     #[test]
