@@ -1,6 +1,10 @@
 //! Current JVM evidence uses the normal admitted session and immutable generation.
 use super::{
     bytes, digest, invalid, io_error,
+    local_cfg::{
+        LOCAL_CFG_EVIDENCE_SCHEMA, LocalCfgBoundaryEvidence, LocalCfgEvidence,
+        LocalCfgNodeCitation, LocalCfgSourceSite,
+    },
     model::*,
     store::{self, Repository},
 };
@@ -817,6 +821,232 @@ fn add_kotlin_call_site_source(
     )))
 }
 
+fn add_kotlin_local_cfg(
+    evidence: &mut ServiceEvidence,
+    service: &Service,
+    sources: &CompilationSource,
+    known: &BTreeSet<String>,
+    fact: &Value,
+    binding: &str,
+) -> Result<Option<Observation>, ClewError> {
+    let graph: crate::thread_flow_cfg::LocalCfgPayload = serde_json::from_value(
+        fact.get("graph")
+            .cloned()
+            .ok_or_else(|| invalid("Kotlin documentation CFG lacks its compiler graph"))?,
+    )
+    .map_err(|_| invalid("Kotlin documentation CFG graph violates the closed contract"))?;
+    crate::thread_flow_cfg::validate(&graph)?;
+    let owner = fact["ownerSymbolIdentity"]
+        .as_str()
+        .ok_or_else(|| invalid("Kotlin documentation CFG lacks its exact owner"))?;
+    let graph_binding = fact["graphEvidenceBinding"]
+        .as_str()
+        .ok_or_else(|| invalid("Kotlin documentation CFG lacks its graph evidence binding"))?;
+    let descriptor_binding = fact["descriptorEvidenceBinding"]
+        .as_str()
+        .ok_or_else(|| invalid("Kotlin documentation CFG lacks its descriptor evidence binding"))?;
+    let raw_scope = fact["scope"]
+        .as_str()
+        .ok_or_else(|| invalid("Kotlin documentation CFG lacks its canonical compilation scope"))?;
+    let scope = resolve_scope_key(&json!({"compilation":raw_scope}), known)?;
+    let (Some(owner_start), Some(owner_end)) =
+        (fact["ownerStart"].as_u64(), fact["ownerEnd"].as_u64())
+    else {
+        return Err(invalid(
+            "Kotlin documentation CFG owner byte range is missing",
+        ));
+    };
+    crate::semantic_validation::validate_kotlin_full_symbol_identity(owner)?;
+    if fact["schema"] != LOCAL_CFG_EVIDENCE_SCHEMA
+        || fact["kind"] != "LOCAL_CFG"
+        || fact.get("graphEvidenceBinding").and_then(Value::as_str) != Some(binding)
+        || graph_binding != binding
+        || !super::local_cfg::canonical_evidence_binding(graph_binding)
+        || !super::local_cfg::canonical_evidence_binding(descriptor_binding)
+        || graph.owner_symbol_identity != owner
+        || fact["file"] != graph.file
+        || owner_start >= owner_end
+    {
+        return Err(invalid(
+            "Kotlin documentation CFG identity or evidence bindings disagree",
+        ));
+    }
+    store::relative(&graph.file)?;
+    let Some(blob) = sources.blob(&scope, &graph.file) else {
+        let boundary = LocalCfgBoundaryEvidence {
+            schema: super::local_cfg::LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA.into(),
+            kind: "LOCAL_CFG_BOUNDARY".into(),
+            scope: scope.clone(),
+            owner_symbol_identity: Some(owner.into()),
+            file: Some(graph.file.clone()),
+            compiler_graph_name: Some(graph.compiler_graph_name.clone()),
+            code: "KOTLIN_LOCAL_CFG_SOURCE_UNAVAILABLE".into(),
+            provider: "CODECLEW_LOCAL_CFG_NORMALIZER".into(),
+            evidence_binding: graph_binding.into(),
+            descriptor_evidence_binding: Some(descriptor_binding.into()),
+            raw_row_hash: None,
+        };
+        boundary.validate(binding)?;
+        let normalized = serde_json::to_value(boundary)
+            .map_err(|_| invalid("Kotlin local CFG source boundary cannot be retained"))?;
+        let id = dependency_id(
+            &service.id,
+            "local-cfg-boundary",
+            &scoped_identity(&scope, &digest(&normalized)?),
+        )?;
+        return Ok(Some(Observation {
+            id,
+            kind: "LOCAL_CFG_BOUNDARY".into(),
+            service: service.id.clone(),
+            symbol: owner.into(),
+            digest: digest(&normalized)?,
+            normalized,
+            source_ids: Vec::new(),
+        }));
+    };
+    let start = usize::try_from(owner_start)
+        .map_err(|_| invalid("Kotlin CFG owner start exceeds addressable bytes"))?;
+    let end = usize::try_from(owner_end)
+        .map_err(|_| invalid("Kotlin CFG owner end exceeds addressable bytes"))?;
+    if start >= end
+        || end > blob.text.len()
+        || !blob.text.is_char_boundary(start)
+        || !blob.text.is_char_boundary(end)
+    {
+        return Err(invalid(
+            "Kotlin CFG owner span is outside retained UTF-8 source boundaries",
+        ));
+    }
+    let mut node_citations = Vec::<LocalCfgNodeCitation>::new();
+    for node in &graph.nodes {
+        let Some(range) = &node.source else {
+            continue;
+        };
+        let node_start = usize::try_from(range.start)
+            .map_err(|_| invalid("Kotlin CFG node start exceeds addressable bytes"))?;
+        let node_end = usize::try_from(range.end)
+            .map_err(|_| invalid("Kotlin CFG node end exceeds addressable bytes"))?;
+        if node_start < start
+            || node_end > end
+            || node_start >= node_end
+            || !blob.text.is_char_boundary(node_start)
+            || !blob.text.is_char_boundary(node_end)
+        {
+            return Err(invalid(
+                "Kotlin CFG node source range escapes its exact owner or UTF-8 boundary",
+            ));
+        }
+        let exact = &blob.text[node_start..node_end];
+        node_citations.push(LocalCfgNodeCitation {
+            node_id: node.node_id,
+            byte_start: (node_start - start) as u64,
+            byte_end: (node_end - start) as u64,
+            text_digest: canonical::hash_bytes(exact.as_bytes()),
+        });
+    }
+    let text = &blob.text[start..end];
+    let start_line = 1 + blob.text.as_bytes()[..start]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count() as u64;
+    let end_line = 1 + blob.text.as_bytes()[..end - 1]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count() as u64;
+    let identity = scoped_identity(
+        &scope,
+        &format!(
+            "kotlin-local-cfg-owner:{owner}:{}:{owner_start}:{owner_end}",
+            graph.file
+        ),
+    );
+    let cfg_file = graph.file.clone();
+    let graph_id = graph.graph_id.clone();
+    let source = source_id(&service.id, &identity)?;
+    let transformed = sources.transformed.get(&scope).copied().unwrap_or(false);
+    let (authority, url): (String, Option<String>) = if transformed {
+        (
+            crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY.into(),
+            None,
+        )
+    } else {
+        (
+            "EXACT_SNAPSHOT_TEXT".into(),
+            source_link(
+                service,
+                &evidence.revision,
+                &graph.file,
+                start_line,
+                end_line,
+            ),
+        )
+    };
+    let source_digest = canonical::hash_bytes(text.as_bytes());
+    evidence.sources.insert(
+        source.clone(),
+        Source {
+            id: source.clone(),
+            service: service.id.clone(),
+            revision: evidence.revision.clone(),
+            file: graph.file.clone(),
+            start_line,
+            end_line,
+            text: text.into(),
+            text_digest: source_digest.clone(),
+            evidence_digest: graph_binding.into(),
+            authority: authority.clone(),
+            occurrence: None,
+            url,
+        },
+    );
+    let normalized = LocalCfgEvidence {
+        schema: LOCAL_CFG_EVIDENCE_SCHEMA.into(),
+        scope: scope.clone(),
+        owner_symbol_identity: owner.into(),
+        file: graph.file.clone(),
+        graph,
+        graph_evidence_binding: graph_binding.into(),
+        descriptor_evidence_binding: descriptor_binding.into(),
+        node_citations,
+        source_site: LocalCfgSourceSite {
+            source_id: source.clone(),
+            source_digest,
+            source_evidence_digest: graph_binding.into(),
+            source_status: "SOURCE_RETAINED".into(),
+            authority,
+            file: cfg_file,
+            start_line,
+            end_line,
+            owner_byte_start: owner_start,
+            owner_byte_end: owner_end,
+            source_content_digest: blob.content_digest.clone(),
+            full_compilation_source_digest: blob.content_digest.clone(),
+            span_digest: canonical::hash_bytes(text.as_bytes()),
+        },
+    };
+    normalized.validate_source(
+        &evidence.sources[&source],
+        &evidence.service,
+        &evidence.revision,
+    )?;
+    let normalized = serde_json::to_value(normalized)
+        .map_err(|_| invalid("Kotlin compiler CFG cannot be retained"))?;
+    let id = dependency_id(
+        &service.id,
+        "local-cfg",
+        &scoped_identity(&scope, &graph_id),
+    )?;
+    Ok(Some(Observation {
+        id,
+        kind: "LOCAL_CFG".into(),
+        service: service.id.clone(),
+        symbol: owner.into(),
+        digest: digest(&normalized)?,
+        normalized,
+        source_ids: vec![source],
+    }))
+}
+
 /// Javac LineMap recognizes CR, LF and CRLF. This is intentionally separate
 /// from the historical SourceBlob/snippet contract used by older fact kinds.
 fn javac_line_ranges(text: &str) -> Vec<Range<usize>> {
@@ -1361,6 +1591,34 @@ pub(crate) fn project_scoped(
     // rather than last-write-wins overwriting a single candidate.
     let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (fact, binding) in &facts {
+        if fact["schema"] == "codeclew-kotlin-documentation-local-cfg-boundary/1.0" {
+            let mut boundary: LocalCfgBoundaryEvidence = serde_json::from_value(fact.clone())
+                .map_err(|_| invalid("Kotlin CFG boundary violates its typed contract"))?;
+            boundary.validate(binding)?;
+            let scope = resolve_scope_key(&json!({"compilation":boundary.scope}), known)?;
+            boundary.scope = scope.clone();
+            let owner = boundary.owner_symbol_identity.clone();
+            let normalized = serde_json::to_value(boundary)
+                .map_err(|_| invalid("Kotlin CFG boundary cannot be retained"))?;
+            let id = dependency_id(
+                &service.id,
+                "local-cfg-boundary",
+                &scoped_identity(&scope, &digest(&normalized)?),
+            )?;
+            evidence.observations.insert(
+                id.clone(),
+                Observation {
+                    id,
+                    kind: "LOCAL_CFG_BOUNDARY".into(),
+                    service: service.id.clone(),
+                    symbol: owner.unwrap_or_default(),
+                    digest: digest(&normalized)?,
+                    normalized,
+                    source_ids: Vec::new(),
+                },
+            );
+            continue;
+        }
         if fact["kind"] == "BOUNDARY" {
             evidence.boundaries.push(
                 fact["code"]
@@ -1607,6 +1865,16 @@ pub(crate) fn project_scoped(
                     source_ids: vec![source_id],
                 },
             );
+            continue;
+        }
+        if fact["schema"] == "codeclew-kotlin-documentation-local-cfg/1.0" {
+            if let Some(observation) =
+                add_kotlin_local_cfg(&mut evidence, service, sources, known, fact, binding)?
+            {
+                evidence
+                    .observations
+                    .insert(observation.id.clone(), observation);
+            }
             continue;
         }
         // Compiler relations have independent authority and source
@@ -2035,6 +2303,26 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
     for o in e.observations.values() {
         if matches!(o.kind.as_str(), "VARIABLE_ACCESS" | "VARIABLE_DECLARATION") {
             verify_variable_site(e, o)?;
+        }
+        if o.kind == "LOCAL_CFG" {
+            let source = match o.source_ids.as_slice() {
+                [source_id] => e
+                    .sources
+                    .get(source_id)
+                    .filter(|source| source.service == e.service && source.revision == e.revision)
+                    .ok_or_else(|| invalid("portable Kotlin CFG source is unavailable"))?,
+                _ => return Err(invalid("portable Kotlin CFG source binding is ambiguous")),
+            };
+            if !super::local_cfg::LocalCfgEvidence::source_bound(
+                &o.normalized,
+                source,
+                &e.service,
+                &e.revision,
+            ) {
+                return Err(invalid(
+                    "portable Kotlin CFG source binding is inconsistent",
+                ));
+            }
         }
         if digest(&o.normalized)? != o.digest
             || o.source_ids.iter().any(|id| !e.sources.contains_key(id))

@@ -1,10 +1,12 @@
 //! Project retained K2 descriptors and compiler-linked PSI flow into documentation.
+use super::local_cfg::{LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA, LocalCfgBoundaryEvidence};
 use super::{digest, invalid};
 use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 const DOCUMENTATION_CALL_SCHEMA: &str = "codeclew-kotlin-documentation-call/1.0";
+const DOCUMENTATION_LOCAL_CFG_SCHEMA: &str = "codeclew-kotlin-documentation-local-cfg/1.0";
 
 type CallOccurrence = (String, String, u64, u64);
 
@@ -15,12 +17,55 @@ struct FunctionDescriptor {
     jvm_descriptor: String,
     start: u64,
     end: u64,
+    binding: String,
 }
 
 struct ProjectedCall {
     occurrence: CallOccurrence,
     fact: Value,
     binding: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectedLocalCfg {
+    schema: &'static str,
+    kind: &'static str,
+    graph: crate::thread_flow_cfg::LocalCfgPayload,
+    owner_symbol_identity: String,
+    file: String,
+    scope: String,
+    owner_start: u64,
+    owner_end: u64,
+    graph_evidence_binding: String,
+    descriptor_evidence_binding: String,
+}
+
+fn local_cfg_boundary(
+    scope: String,
+    owner: Option<String>,
+    file: Option<String>,
+    graph_name: Option<String>,
+    code: impl Into<String>,
+    binding: String,
+    provider: &str,
+    raw_row_hash: Option<String>,
+) -> Result<(Value, String), ClewError> {
+    let fact = serde_json::to_value(LocalCfgBoundaryEvidence {
+        schema: LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA.into(),
+        kind: "LOCAL_CFG_BOUNDARY".into(),
+        scope,
+        owner_symbol_identity: owner,
+        file,
+        compiler_graph_name: graph_name,
+        code: code.into(),
+        provider: provider.into(),
+        evidence_binding: binding.clone(),
+        descriptor_evidence_binding: None,
+        raw_row_hash,
+    })
+    .map_err(|_| invalid("Kotlin local CFG boundary cannot be serialized"))?;
+    Ok((fact, binding))
 }
 
 fn fact_scope(fact: &Value) -> String {
@@ -153,7 +198,7 @@ pub(super) fn project_facts(
     }
     let mut function_descriptors =
         BTreeMap::<(String, String, String), Vec<FunctionDescriptor>>::new();
-    for (fact, _) in &facts {
+    for (fact, descriptor_binding) in &facts {
         if fact["schema"] != "declaration-descriptor/0.1" || fact["declarationKind"] != "FUNCTION" {
             continue;
         }
@@ -192,6 +237,7 @@ pub(super) fn project_facts(
                 jvm_descriptor: descriptor.to_owned(),
                 start,
                 end,
+                binding: descriptor_binding.clone(),
             });
     }
 
@@ -213,7 +259,38 @@ pub(super) fn project_facts(
     let mut calls_by_occurrence = BTreeMap::<CallOccurrence, Vec<ProjectedCall>>::new();
     let mut call_boundaries = Vec::<(Value, String)>::new();
     let mut projected_calls = Vec::new();
+    let mut local_cfg_candidates = BTreeMap::<
+        (String, String, String),
+        Vec<(crate::thread_flow_cfg::LocalCfgPayload, String)>,
+    >::new();
+    let mut local_cfg_boundaries = Vec::<(Value, String)>::new();
+    let mut raw_local_cfg_boundaries = Vec::<(Value, String)>::new();
     for (fact, binding) in &facts {
+        if fact["schema"] == crate::thread_flow_cfg::LOCAL_CFG_SCHEMA {
+            let checked = without_capture_scope(fact);
+            let graph: crate::thread_flow_cfg::LocalCfgPayload = serde_json::from_value(checked)
+                .map_err(|_| {
+                    invalid("Kotlin local CFG does not match the closed compiler graph contract")
+                })?;
+            crate::thread_flow_cfg::validate(&graph)?;
+            let scope = fact_scope(fact);
+            let key = (
+                scope,
+                graph.file.clone(),
+                graph.owner_symbol_identity.clone(),
+            );
+            local_cfg_candidates
+                .entry(key)
+                .or_default()
+                .push((graph, binding.clone()));
+            continue;
+        }
+        if fact["schema"] == crate::thread_flow_cfg::LOCAL_CFG_BOUNDARY_SCHEMA {
+            let checked = without_capture_scope(fact);
+            crate::thread_flow_cfg::validate_boundary(&checked)?;
+            raw_local_cfg_boundaries.push((fact.clone(), binding.clone()));
+            continue;
+        }
         if fact["schema"] != "declaration-relation/0.1" || fact["kind"] != "CALLS" {
             continue;
         }
@@ -316,6 +393,105 @@ pub(super) fn project_facts(
         projected_calls.push((call.fact, call.binding));
     }
 
+    let mut projected_local_cfg = Vec::<(Value, String)>::new();
+    for (fact, binding) in &raw_local_cfg_boundaries {
+        let provider = match fact["provider"].as_str() {
+            Some("K2_FIR_CFG") => "K2_FIR_CFG",
+            Some("CODECLEW_LOCAL_CFG_NORMALIZER") => "CODECLEW_LOCAL_CFG_NORMALIZER",
+            _ => return Err(invalid("Kotlin local CFG boundary has unknown provider")),
+        };
+        local_cfg_boundaries.push(local_cfg_boundary(
+            fact_scope(fact),
+            fact["ownerSymbolIdentity"].as_str().map(str::to_owned),
+            fact["file"].as_str().map(str::to_owned),
+            fact["compilerGraphName"].as_str().map(str::to_owned),
+            fact["code"]
+                .as_str()
+                .unwrap_or("LOCAL_CFG_NORMALIZATION_FAILED"),
+            binding.clone(),
+            provider,
+            fact["rawRowHash"].as_str().map(str::to_owned),
+        )?);
+    }
+    for ((scope, file, owner), mut candidates) in local_cfg_candidates {
+        let unknown_boundary_applies = raw_local_cfg_boundaries.iter().any(|(boundary, _)| {
+            let boundary_scope = fact_scope(boundary);
+            let scope_matches = boundary_scope == scope;
+            let owner_matches = boundary["ownerSymbolIdentity"]
+                .as_str()
+                .is_none_or(|value| value == owner);
+            let file_matches = boundary["file"].as_str().is_none_or(|value| value == file);
+            scope_matches && owner_matches && file_matches
+        });
+        if unknown_boundary_applies {
+            continue;
+        }
+        let scoped_owner_descriptors = function_descriptors
+            .iter()
+            .filter(|((candidate_scope, _, _), _)| candidate_scope == &scope)
+            .flat_map(|((_, candidate_file, _), descriptors)| {
+                descriptors
+                    .iter()
+                    .filter(|descriptor| descriptor.symbol == owner)
+                    .map(move |descriptor| (candidate_file, descriptor))
+            })
+            .collect::<Vec<_>>();
+        let descriptors = exact_function_descriptors(&function_descriptors, &scope, &file, &owner);
+        if descriptors.len() != 1
+            || scoped_owner_descriptors.len() != 1
+            || scoped_owner_descriptors[0].0 != &file
+            || candidates.len() != 1
+        {
+            let binding = candidates
+                .first()
+                .map(|(_, binding)| binding.clone())
+                .unwrap_or_default();
+            let graph_name = candidates
+                .first()
+                .map(|(graph, _)| graph.compiler_graph_name.clone());
+            local_cfg_boundaries.push(local_cfg_boundary(
+                scope,
+                Some(owner),
+                Some(file),
+                graph_name,
+                "KOTLIN_LOCAL_CFG_OWNER_NOT_UNIQUE",
+                binding,
+                "CODECLEW_LOCAL_CFG_NORMALIZER",
+                None,
+            )?);
+            continue;
+        }
+        let descriptor = descriptors[0];
+        let (graph, graph_binding) = candidates.pop().expect("one CFG candidate");
+        if graph.owner_symbol_identity != descriptor.symbol || graph.file != file {
+            local_cfg_boundaries.push(local_cfg_boundary(
+                scope,
+                Some(owner),
+                Some(file),
+                Some(graph.compiler_graph_name),
+                "KOTLIN_LOCAL_CFG_OWNER_MISMATCH",
+                graph_binding,
+                "CODECLEW_LOCAL_CFG_NORMALIZER",
+                None,
+            )?);
+            continue;
+        }
+        let fact = serde_json::to_value(ProjectedLocalCfg {
+            schema: DOCUMENTATION_LOCAL_CFG_SCHEMA,
+            kind: "LOCAL_CFG",
+            graph,
+            owner_symbol_identity: descriptor.symbol.clone(),
+            file: file.clone(),
+            scope,
+            owner_start: descriptor.start,
+            owner_end: descriptor.end,
+            graph_evidence_binding: graph_binding.clone(),
+            descriptor_evidence_binding: descriptor.binding.clone(),
+        })
+        .map_err(|_| invalid("Kotlin local CFG projection cannot be serialized"))?;
+        projected_local_cfg.push((fact, graph_binding));
+    }
+
     let mut output = Vec::new();
     for (mut fact, binding) in facts {
         let schema = fact["schema"].as_str().unwrap_or("");
@@ -349,6 +525,8 @@ pub(super) fn project_facts(
     }
     output.extend(projected_calls);
     output.extend(call_boundaries);
+    output.extend(projected_local_cfg);
+    output.extend(local_cfg_boundaries);
     if !output.iter().any(|(fact, _)| fact["kind"] == "DECLARATION") {
         return Err(ClewError::new(
             crate::error::ErrorCode::IncompleteSemanticAnalysis,
@@ -358,10 +536,30 @@ pub(super) fn project_facts(
     Ok(output)
 }
 
+fn exact_function_descriptors<'a>(
+    descriptors: &'a BTreeMap<(String, String, String), Vec<FunctionDescriptor>>,
+    scope: &str,
+    file: &str,
+    symbol: &str,
+) -> Vec<&'a FunctionDescriptor> {
+    let Some(identity) = symbol.strip_prefix("callable:") else {
+        return Vec::new();
+    };
+    let Some((callable, descriptor)) = identity.split_once("#jvm:") else {
+        return Vec::new();
+    };
+    descriptors
+        .get(&(scope.to_owned(), file.to_owned(), callable.to_owned()))
+        .into_iter()
+        .flatten()
+        .filter(|candidate| candidate.symbol == symbol && candidate.jvm_descriptor == descriptor)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::documentation::{analysis, check, model::*, render, store};
+    use crate::documentation::{analysis, check, cli, model::*, render, store};
 
     fn function_descriptor(
         callable: &str,
@@ -426,6 +624,545 @@ mod tests {
             }),
             format!("original-call-binding:{file}:{start}:{end}:{scope}"),
         )
+    }
+
+    fn local_cfg_fact(
+        owner: &str,
+        graph_name: &str,
+        file: &str,
+        scope: &str,
+    ) -> (Value, String, crate::thread_flow_cfg::LocalCfgPayload) {
+        use crate::thread_flow_cfg::{
+            LOCAL_CFG_SCHEMA, LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNode, LocalCfgNodeRole,
+            LocalCfgPayload, LocalCfgSourceRange,
+        };
+        let mut graph = LocalCfgPayload {
+            schema: LOCAL_CFG_SCHEMA.into(),
+            graph_id: String::new(),
+            owner_symbol_identity: owner.into(),
+            file: file.into(),
+            compiler_graph_name: graph_name.into(),
+            provider: "K2_FIR_CFG".into(),
+            source_provenance: "COMPILER_UTF16_RANGE_TO_UTF8_BYTES".into(),
+            nodes: vec![
+                LocalCfgNode {
+                    node_id: 0,
+                    role: LocalCfgNodeRole::Entry,
+                    source: Some(LocalCfgSourceRange { start: 12, end: 80 }),
+                },
+                LocalCfgNode {
+                    node_id: 1,
+                    role: LocalCfgNodeRole::Return,
+                    source: Some(LocalCfgSourceRange { start: 60, end: 66 }),
+                },
+            ],
+            edges: vec![LocalCfgEdge {
+                source_node_id: 0,
+                target_node_id: 1,
+                kind: LocalCfgEdgeKind::Return,
+                label: Some("CompilerReturn".into()),
+            }],
+        };
+        graph.graph_id = crate::canonical::hash(&graph).unwrap();
+        let mut fact = serde_json::to_value(&graph).unwrap();
+        fact["scope"] = json!({"compilation":scope});
+        (fact, format!("graph-binding:{owner}:{scope}"), graph)
+    }
+
+    fn local_cfg_boundary_fact(
+        owner: Option<&str>,
+        file: Option<&str>,
+        scope: &str,
+        provider: &str,
+        code: &str,
+    ) -> (Value, String) {
+        (
+            json!({
+                "schema":"local-cfg-boundary/0.1",
+                "ownerSymbolIdentity":owner,
+                "file":file,
+                "compilerGraphName":"opaque compiler display name",
+                "stage":"NORMALIZE",
+                "code":code,
+                "resolution":"UNKNOWN",
+                "provider":provider,
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+                "rawRowHash":format!("sha256:{}", "a".repeat(64)),
+                "scope":{"compilation":scope}
+            }),
+            format!("sha256:{}", "b".repeat(64)),
+        )
+    }
+
+    #[test]
+    fn local_cfg_projects_only_with_exact_scoped_function_binding() {
+        let (descriptor, descriptor_binding) = function_descriptor(
+            "p/Answer.next",
+            "(I)I",
+            "src/main/kotlin/Answer.kt",
+            10,
+            90,
+            "scope-a",
+        );
+        let symbol = descriptor["symbolIdentity"].as_str().unwrap();
+        let (graph, graph_binding, original) =
+            local_cfg_fact(symbol, "next", "src/main/kotlin/Answer.kt", "scope-a");
+        let projected = project_facts(vec![
+            (descriptor, descriptor_binding.clone()),
+            (graph, graph_binding.clone()),
+        ])
+        .unwrap();
+        let (local_cfg, binding) = projected
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+            .expect("exact function CFG is retained");
+        assert_eq!(binding, &graph_binding);
+        assert_eq!(local_cfg["kind"], "LOCAL_CFG");
+        assert_eq!(local_cfg["scope"], "scope-a");
+        assert_eq!(local_cfg["ownerStart"], 10);
+        assert_eq!(local_cfg["ownerEnd"], 90);
+        assert_eq!(local_cfg["graphEvidenceBinding"], graph_binding);
+        assert_eq!(local_cfg["descriptorEvidenceBinding"], descriptor_binding);
+        assert_eq!(
+            serde_json::from_value::<crate::thread_flow_cfg::LocalCfgPayload>(
+                local_cfg["graph"].clone()
+            )
+            .unwrap(),
+            original,
+            "the compiler graph remains unchanged"
+        );
+    }
+
+    #[test]
+    fn local_cfg_with_wrong_scope_or_duplicate_owner_fails_closed() {
+        let (descriptor, _) = function_descriptor(
+            "p/Answer.next",
+            "(I)I",
+            "src/main/kotlin/Answer.kt",
+            10,
+            90,
+            "scope-a",
+        );
+        let symbol = descriptor["symbolIdentity"].as_str().unwrap();
+        let (wrong_scope, binding, _) =
+            local_cfg_fact(symbol, "next", "src/main/kotlin/Answer.kt", "scope-b");
+        let wrong_scope = project_facts(vec![
+            (descriptor.clone(), "descriptor-binding".into()),
+            (wrong_scope, binding),
+        ])
+        .unwrap();
+        assert!(
+            !wrong_scope
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+        );
+        assert!(wrong_scope.iter().any(|(fact, _)| {
+            fact["kind"] == "LOCAL_CFG_BOUNDARY"
+                && fact["code"] == "KOTLIN_LOCAL_CFG_OWNER_NOT_UNIQUE"
+        }));
+
+        let (graph, binding, _) =
+            local_cfg_fact(symbol, "next", "src/main/kotlin/Answer.kt", "scope-a");
+        let duplicated = project_facts(vec![
+            (descriptor.clone(), "descriptor-binding".into()),
+            (graph.clone(), binding.clone()),
+            (graph, binding),
+        ])
+        .unwrap();
+        assert!(
+            !duplicated
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+        );
+        assert!(duplicated.iter().any(|(fact, _)| {
+            fact["kind"] == "LOCAL_CFG_BOUNDARY"
+                && fact["code"] == "KOTLIN_LOCAL_CFG_OWNER_NOT_UNIQUE"
+        }));
+
+        let file_a = "src/main/kotlin/p/Answer.kt";
+        let file_b = "src/test/kotlin/p/Answer.kt";
+        let (other_scope_exact, _) =
+            function_descriptor("p/Answer.next", "(I)I", file_b, 10, 90, "scope-b");
+        let (same_bucket_other_overload, _) = function_descriptor(
+            "p/Answer.next",
+            "(Ljava/lang/String;)I",
+            file_a,
+            10,
+            90,
+            "scope-a",
+        );
+        let (graph, binding, _) =
+            local_cfg_fact(symbol, "opaque compiler label", file_a, "scope-a");
+        let cross_scope_borrow = project_facts(vec![
+            (other_scope_exact, "other-scope-descriptor".into()),
+            (same_bucket_other_overload, "same-bucket-overload".into()),
+            (graph, binding),
+        ])
+        .unwrap();
+        assert!(
+            !cross_scope_borrow
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+        );
+
+        let (exact_a, _) = function_descriptor("p/Answer.next", "(I)I", file_a, 10, 90, "scope-a");
+        let (same_owner_other_file, _) =
+            function_descriptor("p/Answer.next", "(I)I", file_b, 10, 90, "scope-a");
+        let (graph, binding, _) = local_cfg_fact(symbol, "opaque", file_a, "scope-a");
+        let cross_file_duplicate = project_facts(vec![
+            (exact_a, "exact-file-descriptor".into()),
+            (same_owner_other_file, "other-file-descriptor".into()),
+            (graph, binding),
+        ])
+        .unwrap();
+        assert!(
+            !cross_file_duplicate
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+        );
+    }
+
+    #[test]
+    fn matching_local_cfg_boundary_vetoes_graph_and_keeps_provider() {
+        let file = "src/main/kotlin/p/Answer.kt";
+        let (descriptor, _) = function_descriptor("p/Answer.next", "(I)I", file, 10, 90, "scope-a");
+        let owner = descriptor["symbolIdentity"].as_str().unwrap();
+        let (graph, graph_binding, _) = local_cfg_fact(owner, "opaque", file, "scope-a");
+        let (boundary, _) = local_cfg_boundary_fact(
+            Some(owner),
+            Some(file),
+            "scope-a",
+            "CODECLEW_LOCAL_CFG_NORMALIZER",
+            "INVALID_LOCAL_CFG",
+        );
+        let projected = project_facts(vec![
+            (descriptor.clone(), "descriptor-binding".into()),
+            (graph, graph_binding),
+            (boundary, "boundary-binding".into()),
+        ])
+        .unwrap();
+        assert!(
+            !projected
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+        );
+        let boundary = projected
+            .iter()
+            .find(|(fact, _)| fact["schema"] == LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA)
+            .expect("matching UNKNOWN boundary is retained");
+        assert_eq!(boundary.0["kind"], "LOCAL_CFG_BOUNDARY");
+        assert_eq!(boundary.0["provider"], "CODECLEW_LOCAL_CFG_NORMALIZER");
+        assert_eq!(boundary.0["ownerSymbolIdentity"], owner);
+        assert_eq!(boundary.0["scope"], "scope-a");
+
+        let (graph, graph_binding, _) = local_cfg_fact(owner, "opaque", file, "scope-a");
+        let (unrelated, _) = local_cfg_boundary_fact(
+            Some("callable:p/Other.next#jvm:(I)I"),
+            Some(file),
+            "scope-b",
+            "CODECLEW_LOCAL_CFG_NORMALIZER",
+            "INVALID_LOCAL_CFG",
+        );
+        let unrelated = project_facts(vec![
+            (descriptor, "descriptor-binding".into()),
+            (graph, graph_binding),
+            (unrelated, "unrelated-boundary-binding".into()),
+        ])
+        .unwrap();
+        assert!(
+            unrelated
+                .iter()
+                .any(|(fact, _)| fact["schema"] == DOCUMENTATION_LOCAL_CFG_SCHEMA)
+        );
+    }
+
+    #[test]
+    fn local_cfg_flows_from_compiler_fact_to_compact_exact_symbol_context() {
+        use crate::thread_flow_cfg::{
+            LOCAL_CFG_SCHEMA, LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNode, LocalCfgNodeRole,
+            LocalCfgPayload, LocalCfgSourceRange,
+        };
+
+        let file = "src/main/kotlin/p/Answer.kt";
+        let scope = "scope-a";
+        let source = "package p\r\n// π prefix\r\nclass Answer {\r\n  fun next(value: Int): Int {\r\n    return value + 1\r\n  }\r\n}\r\n";
+        let owner_start = source.find("  fun next").unwrap();
+        let owner_end = owner_start + source[owner_start..].find("\r\n  }\r\n}").unwrap() + 5;
+        let return_start = source.find("    return value + 1").unwrap();
+        let return_end = return_start + "    return value + 1".len();
+        let (mut descriptor, _) = function_descriptor(
+            "p/Answer.next",
+            "(I)I",
+            file,
+            owner_start as u64,
+            owner_end as u64,
+            scope,
+        );
+        descriptor["startLine"] = json!(4);
+        descriptor["endLine"] = json!(6);
+        descriptor["lineProvenance"] = json!("UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE");
+        let descriptor_binding = format!("sha256:{}", "1".repeat(64));
+        let mut graph = LocalCfgPayload {
+            schema: LOCAL_CFG_SCHEMA.into(),
+            graph_id: String::new(),
+            owner_symbol_identity: descriptor["symbolIdentity"].as_str().unwrap().into(),
+            file: file.into(),
+            compiler_graph_name: "opaque compiler display name".into(),
+            provider: "K2_FIR_CFG".into(),
+            source_provenance: "COMPILER_UTF16_RANGE_TO_UTF8_BYTES".into(),
+            nodes: vec![
+                LocalCfgNode {
+                    node_id: 0,
+                    role: LocalCfgNodeRole::Entry,
+                    source: Some(LocalCfgSourceRange {
+                        start: owner_start as u64,
+                        end: owner_end as u64,
+                    }),
+                },
+                LocalCfgNode {
+                    node_id: 1,
+                    role: LocalCfgNodeRole::Return,
+                    source: Some(LocalCfgSourceRange {
+                        start: return_start as u64,
+                        end: return_end as u64,
+                    }),
+                },
+            ],
+            edges: vec![LocalCfgEdge {
+                source_node_id: 0,
+                target_node_id: 1,
+                kind: LocalCfgEdgeKind::Return,
+                label: Some("CompilerReturn".into()),
+            }],
+        };
+        graph.graph_id = crate::canonical::hash(&graph).unwrap();
+        let graph_binding = format!("sha256:{}", "2".repeat(64));
+        let mut graph_fact = serde_json::to_value(&graph).unwrap();
+        graph_fact["scope"] = json!({"compilation":scope});
+
+        let projected = project_facts(vec![
+            (descriptor, descriptor_binding.clone()),
+            (graph_fact, graph_binding.clone()),
+        ])
+        .unwrap();
+        let mut service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0",
+            "id":"svc","title":"Answer service",
+            "repositoryId":"svc","repository":"https://example.invalid/svc",
+            "language":"kotlin","profile":"kotlin-jvm-maven-analysis",
+            "compilations":[scope],"targetRef":"main"
+        }))
+        .unwrap();
+        service.source_link_template = Some("{repository}/blob/{revision}/{file}".into());
+        let files = BTreeMap::from([(file.into(), source.into())]);
+        let revision = "a".repeat(40);
+        let evidence = analysis::project(
+            &service,
+            &revision,
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            projected.clone(),
+            &files,
+            false,
+        )
+        .unwrap();
+        let owner = graph.owner_symbol_identity.clone();
+        let cfg = evidence
+            .observations
+            .values()
+            .find(|observation| observation.kind == "LOCAL_CFG")
+            .expect("validated local CFG is retained");
+        assert_eq!(cfg.symbol, owner);
+        assert_eq!(
+            cfg.normalized["graph"],
+            serde_json::to_value(&graph).unwrap()
+        );
+        assert_eq!(cfg.normalized["graphEvidenceBinding"], graph_binding);
+        assert_eq!(
+            cfg.normalized["descriptorEvidenceBinding"],
+            descriptor_binding
+        );
+        assert_eq!(cfg.normalized["nodeCitations"][0]["byteStart"], 0);
+        let source_record = &evidence.sources[&cfg.source_ids[0]];
+        assert_eq!(source_record.text, &source[owner_start..owner_end]);
+        assert_eq!(source_record.authority, "EXACT_SNAPSHOT_TEXT");
+        assert!(source_record.occurrence.is_none());
+        assert!(
+            !crate::documentation::local_cfg::LocalCfgEvidence::source_bound(
+                &cfg.normalized,
+                source_record,
+                "other-service",
+                &revision
+            )
+        );
+        assert!(
+            !crate::documentation::local_cfg::LocalCfgEvidence::source_bound(
+                &cfg.normalized,
+                source_record,
+                &service.id,
+                &"c".repeat(40)
+            )
+        );
+        let mut wrong_authority = source_record.clone();
+        wrong_authority.authority = "UNPROVEN_SOURCE".into();
+        assert!(
+            !crate::documentation::local_cfg::LocalCfgEvidence::source_bound(
+                &cfg.normalized,
+                &wrong_authority,
+                &service.id,
+                &revision
+            )
+        );
+        let mut wrong_site_authority = cfg.normalized.clone();
+        wrong_site_authority["sourceSite"]["authority"] = json!("UNPROVEN_SOURCE");
+        assert!(
+            !crate::documentation::local_cfg::LocalCfgEvidence::source_bound(
+                &wrong_site_authority,
+                &wrong_authority,
+                &service.id,
+                &revision
+            )
+        );
+
+        let transformed = analysis::project(
+            &service,
+            &revision,
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            projected.clone(),
+            &files,
+            true,
+        )
+        .unwrap();
+        let transformed_cfg = transformed
+            .observations
+            .values()
+            .find(|observation| observation.kind == "LOCAL_CFG")
+            .unwrap();
+        let transformed_source = &transformed.sources[&transformed_cfg.source_ids[0]];
+        assert_eq!(
+            transformed_source.authority,
+            crate::generation_service::TRANSFORMED_SOURCE_AUTHORITY
+        );
+        assert!(transformed_source.url.is_none());
+        assert!(
+            crate::documentation::local_cfg::LocalCfgEvidence::source_bound(
+                &transformed_cfg.normalized,
+                transformed_source,
+                &service.id,
+                &revision
+            )
+        );
+
+        let source_missing = analysis::project(
+            &service,
+            &revision,
+            &digest(&service).unwrap(),
+            "DEVELOPMENT",
+            "PARTIAL",
+            projected,
+            &BTreeMap::new(),
+            false,
+        )
+        .unwrap();
+        let source_boundary = source_missing
+            .observations
+            .values()
+            .find(|observation| observation.kind == "LOCAL_CFG_BOUNDARY")
+            .expect("missing retained source is an owner-scoped boundary");
+        assert!(
+            source_missing
+                .observations
+                .values()
+                .all(|observation| observation.kind != "LOCAL_CFG")
+        );
+        assert_eq!(
+            source_boundary.normalized["provider"],
+            "CODECLEW_LOCAL_CFG_NORMALIZER"
+        );
+        assert_eq!(source_boundary.normalized["evidenceBinding"], graph_binding);
+
+        let checked = check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "synthetic-input".into(),
+            context_digest: "synthetic-context".into(),
+            services: BTreeMap::from([(service.id.clone(), evidence.clone())]),
+            dependencies: evidence.observations.clone(),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let args = cli::ContextArgs {
+            root: std::path::PathBuf::new(),
+            service: Some(service.id.clone()),
+            scenario: None,
+            entrypoint: None,
+            symbols: vec![owner],
+            source_ids: Vec::new(),
+            dependency_ids: Vec::new(),
+            format: cli::ContextFormat::Compact,
+            refresh: false,
+            snapshot: None,
+            cursor: None,
+            limit: 20,
+        };
+        let context = cli::context_items(&checked, &args, None).unwrap();
+        let dependency = context
+            .iter()
+            .find(|item| item["kind"] == "DEPENDENCY" && item["record"]["kind"] == "LOCAL_CFG")
+            .expect("the exact symbol selects its owned local CFG");
+        assert!(dependency["record"]["normalized"].get("graph").is_none());
+        assert_eq!(
+            dependency["record"]["normalized"]["graphSummary"]["graphId"],
+            graph.graph_id
+        );
+        assert_eq!(
+            dependency["record"]["normalized"]["graphSummary"]["provider"],
+            "K2_FIR_CFG"
+        );
+        assert_eq!(
+            dependency["record"]["normalized"]["graphSummary"]["nodeCount"],
+            2
+        );
+        assert_eq!(
+            dependency["record"]["normalized"]["graphSummary"]["edgeCount"],
+            1
+        );
+        assert_eq!(
+            dependency["record"]["normalized"]["graphSummary"]["nodeCitationCount"],
+            2
+        );
+        assert!(
+            dependency["record"]["normalized"]
+                .get("nodeCitations")
+                .is_none()
+        );
+        assert!(context.iter().any(|item| {
+            item["kind"] == "SOURCE" && item["record"]["text"] == &source[owner_start..owner_end]
+        }));
+        let source_missing_check = check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: "synthetic-input".into(),
+            context_digest: "synthetic-context".into(),
+            services: BTreeMap::from([(service.id.clone(), source_missing.clone())]),
+            dependencies: source_missing.observations.clone(),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            source_inputs: None,
+            composition: None,
+        };
+        let missing_context = cli::context_items(&source_missing_check, &args, None).unwrap();
+        assert!(missing_context.iter().any(|item| {
+            item["kind"] == "DEPENDENCY"
+                && item["record"]["kind"] == "LOCAL_CFG_BOUNDARY"
+                && item["record"]["normalized"]["ownerSymbolIdentity"]
+                    == graph.owner_symbol_identity
+        }));
     }
 
     fn relation_boundary(

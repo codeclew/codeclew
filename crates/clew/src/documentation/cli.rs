@@ -950,6 +950,12 @@ pub(super) fn context_items(
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
+            let selected_source_files: BTreeSet<_> = matches[0]
+                .source_ids
+                .iter()
+                .filter_map(|source_id| e.sources.get(source_id))
+                .map(|source| source.file.as_str())
+                .collect();
             selected.extend(
                 e.observations
                     .values()
@@ -962,6 +968,38 @@ pub(super) fn context_items(
                             )
                             && observation.normalized["sourceIdentity"] == selected_symbol
                             && observation.normalized["scope"] == selected_scope
+                    })
+                    .map(|observation| observation.id.clone()),
+            );
+            selected.extend(
+                e.observations
+                    .values()
+                    .filter(|observation| {
+                        observation.service == e.service
+                            && matches!(
+                                observation.kind.as_str(),
+                                "LOCAL_CFG" | "LOCAL_CFG_BOUNDARY"
+                            )
+                            && observation.normalized["scope"] == selected_scope
+                            && if observation.kind == "LOCAL_CFG" {
+                                observation.normalized["ownerSymbolIdentity"] == selected_symbol
+                                    && source_bound_local_cfg(e, observation)
+                            } else {
+                                let exact_owner = observation.normalized["ownerSymbolIdentity"]
+                                    == selected_symbol;
+                                let ownerless_scope_boundary =
+                                    observation.normalized["ownerSymbolIdentity"].is_null();
+                                let file = observation.normalized["file"].as_str();
+                                (exact_owner
+                                    && file.is_none_or(|file| {
+                                        selected_source_files.is_empty()
+                                            || selected_source_files.contains(file)
+                                    }))
+                                    || (ownerless_scope_boundary
+                                        && file.is_none_or(|file| {
+                                            selected_source_files.contains(file)
+                                        }))
+                            }
                     })
                     .map(|observation| observation.id.clone()),
             );
@@ -1550,6 +1588,31 @@ fn compact(items: Vec<Value>) -> Vec<Value> {
                 if record["kind"] == "FLOW" && record["sourceIds"].as_array().is_some_and(|s|!s.is_empty()) {
                     record["normalized"].as_object_mut().map(|m|m.remove("text"));
                 }
+                if record["kind"] == "LOCAL_CFG"
+                    && let Some(graph) = record["normalized"].get("graph").cloned()
+                {
+                    let node_citation_count = record["normalized"]["nodeCitations"]
+                        .as_array()
+                        .map_or(0, Vec::len);
+                    let summary = json!({
+                        "graphId":graph["graphId"],
+                        "ownerSymbolIdentity":graph["ownerSymbolIdentity"],
+                        "file":graph["file"],
+                        "compilerGraphName":graph["compilerGraphName"],
+                        "provider":graph["provider"],
+                        "sourceProvenance":graph["sourceProvenance"],
+                        "nodeCount":graph["nodes"].as_array().map_or(0,Vec::len),
+                        "edgeCount":graph["edges"].as_array().map_or(0,Vec::len),
+                        "graphEvidenceBinding":record["normalized"]["graphEvidenceBinding"],
+                        "descriptorEvidenceBinding":record["normalized"]["descriptorEvidenceBinding"],
+                        "nodeCitationCount":node_citation_count
+                    });
+                    if let Some(normalized) = record["normalized"].as_object_mut() {
+                        normalized.remove("graph");
+                        normalized.remove("nodeCitations");
+                        normalized.insert("graphSummary".into(), summary);
+                    }
+                }
                 item["projection"]=json!("COMPACT_EVIDENCE_1");
                 item["fullRecord"]=json!({"command":"docs context","format":"raw","service":item["record"]["service"],"dependency":item["id"]});
             },
@@ -1582,6 +1645,28 @@ fn source_bound_relation(evidence: &ServiceEvidence, relation: &Observation) -> 
                 source.service == evidence.service
                     && site["sourceDigest"] == source.text_digest
                     && site["evidenceDigest"] == source.evidence_digest
+            })
+        }
+        _ => false,
+    }
+}
+
+fn source_bound_local_cfg(evidence: &ServiceEvidence, relation: &Observation) -> bool {
+    match relation.source_ids.as_slice() {
+        [source_id]
+            if relation.service == evidence.service
+                && relation.normalized["ownerSymbolIdentity"] == relation.symbol =>
+        {
+            evidence.sources.get(source_id).is_some_and(|source| {
+                source.id == *source_id
+                    && source.service == evidence.service
+                    && source.revision == evidence.revision
+                    && super::local_cfg::LocalCfgEvidence::source_bound(
+                        &relation.normalized,
+                        source,
+                        &evidence.service,
+                        &evidence.revision,
+                    )
             })
         }
         _ => false,

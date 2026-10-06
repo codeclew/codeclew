@@ -556,6 +556,15 @@ or invalid ranges produce a boundary instead of an inferred graph. Constructor
 capture can still report `NO_SOURCE_FUNCTION`. This retained compiler capability
 does not enable Kotlin CFG projection in native documentation pages.
 
+New Checks also retain supported `LOCAL_CFG` evidence for the exact function.
+Use `docs context --symbol` to select its graph and available source bindings.
+Compact context summarizes the graph and offers the existing raw dependency
+read; raw context preserves the compiler graph, including node byte ranges.
+Source ranges are checked against the retained function text. Nodes without
+ranges have no invented source citation. Graph topology and compiler path labels
+do not establish runtime execution, branch predicates or statement order.
+Old Checks remain unchanged; create a new Check to retain this evidence.
+
 ## Explicit compiler enrichment afterward
 
 
