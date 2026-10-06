@@ -496,6 +496,72 @@ flow, type and configuration references where required; preserve unresolved
 boundary obligations. No agent may promote syntax or imported claims to runtime
 proof. Human input is retained verbatim with its separate authority.
 
+## Find an approved answer before preparing new Work
+
+This is a source candidate for upcoming 0.13.16. Installed 0.13.15 does not
+include `docs work find-answer`; check the selected launcher's version and help
+before using it. Select an existing saved Check explicitly and supply the exact
+subject and original Work request. Normalization applies the Work defaults; it
+does not search for similar questions or choose an answer by recency.
+
+For the supported native method case, the request uses `process-graph-v1`, an
+exact compiler METHOD declaration, authoring 1.6 and source-data context:
+
+```json
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Service maintainers",
+  "contextProfile": "process-graph-v1",
+  "rootDeclaration": "EXACT_SCOPED_CALLABLE_SYMBOL_OBSERVATION_ID",
+  "question": "How does this internal service operation decide what to do?",
+  "authoringContract": "codeclew-operation-draft-authoring/1.6",
+  "sourceDataContext": true,
+  "maxItems": 100,
+  "maxBytes": 49152
+}
+```
+
+Use the same request that was approved, including its question, audience,
+language and scope choices:
+
+```sh
+clew docs work find-answer --root /work/architecture --subject service:orders --snapshot COMPARED_SNAPSHOT --input /work/internal-operation-request-1.6.json
+```
+
+`FOUND` returns `selected.answer`, its original review, provenance, packet and
+audit. Keep those historical citations and bindings unchanged. If status is
+`SELECTION_REQUIRED`, inspect the applicable candidates and save one returned
+`candidate.selection` object verbatim, then repeat the exact lookup:
+
+```sh
+clew docs work find-answer --root /work/architecture --subject service:orders --snapshot COMPARED_SNAPSHOT --input /work/internal-operation-request-1.6.json --select /work/answer-selection.json
+```
+
+A unique `CURRENT` approval is selected automatically. Multiple applicable
+approvals require explicit selection; none is ranked by recency or preferred.
+`NO_MATCH` means there is no exact historical approval; `NO_REUSABLE_MATCH` means the matching history
+does not pass applicability. Inspect each candidate's `applicability` and reasons:
+`CURRENT`, `STALE` and `UNKNOWN` are separate from its frozen historical approval.
+`CURRENT` compares against the selected saved Check plus a read-only protected
+notes membership check. It is not a new meaning review or verification of live
+checkout bytes. Lookup makes no captures or model calls and creates no new Work,
+job, review or publication records. Existing CAS and locking infrastructure may
+still perform operational filesystem IO.
+
+The initial reuse boundary requires absent protected notes, no actual author or
+reviewer expansion, no repair, and no maintained, retained or admitted external
+context. Portable evidence expectations and `EVIDENCE_PACKAGE` authority are
+unsupported. The replay compares selected facts and source text, complete initial
+selection membership, negative/ambiguous/frontier results, derived source-data
+context and producer/selection/review policy. Valid receipt changes across
+revisions can remain applicable when these semantic inputs are unchanged;
+unrelated file changes alone need not invalidate the answer. Changed guards,
+new matching callees, or newly present notes refuse reuse. Missing or corrupt
+bindings are explicit errors, not an empty search. `answer-context` retains its
+existing stricter comparison policy. When lookup cannot reuse an answer, acquire
+a new Check separately if needed, then explicitly prepare, author and review
+new Work; lookup never starts that work automatically.
+
 ## Draft one Java endpoint explanation
 
 For a captured Java HTTP endpoint, select `endpoint-context-v3` in the request
@@ -540,6 +606,80 @@ bytes are preserved; no refund or provider cancellation is implied. Complete
 interrupted accounting by replaying its original configuration first. A
 completed result or failed retry child is not replaceable by this selector.
 The older defaults and saved results retain their existing policies.
+
+### Opt into typed model IDs with a compatible driver
+
+This source candidate is intended for upcoming 0.13.16 and is absent from
+installed 0.13.15. For native authoring 1.6 and its independent reviewer, set
+`"modelRepresentation": "codeclew-model-ids/1.1"` on the selected `author` or
+`reviewer` role only when its driver implements that carrier contract. Omit the
+field for an existing driver; its canonical stdin format and configuration
+serialization remain unchanged. The selected mode is part of driver admission
+and configuration identity.
+
+The host retains the unchanged canonical job and exact versioned carrier before
+dispatch. The carrier contains `schema`, `canonicalJob` and `preparedModel`;
+`schema` matches the selected and retained representation version.
+the prepared form includes the model payload, output schema, scoped map and
+digest bindings. Validate the canonical job and packet first, then use the
+[public Rust API and serializer contract](https://github.com/codeclew/codeclew/blob/main/docs/operations/model-id-serializer.md)
+and [executable serializer example](https://github.com/codeclew/codeclew/blob/main/crates/clew/examples/model_ids_serializer.rs).
+These source links describe the candidate once published.
+`clew::documentation::model_ids::forward_model_input` invokes the canonical
+validation callback before checking the frozen prepared projection. Forward only
+its returned `payload` and `output_schema` to the model. Keep the canonical job,
+host map and carrier metadata outside the prompt and strict output schema.
+Do not recompute canonical packet digests from aliased content.
+
+Version 1.1 keeps all native evidence presentation in model input. Before alias
+projection, it checks each presentation against the native builder using the
+canonical pages and source parts. It then omits only the duplicate raw `pages`
+and `sourceParts` siblings in `packet.contextDelivery` and `reviewContext`.
+Read complete evidence and retained-reference links from the presentation.
+Canonical raw arrays, metadata, receipts, citations and host maps remain retained;
+delivery metadata and bindings remain in model input. A missing presentation
+keeps raw arrays; a mismatched or incomplete presentation refuses preparation.
+
+Version 1.0 remains supported with its original raw-plus-presentation behavior,
+map identities and carrier bytes. Recovery validates the saved version; changing
+a role's mode cannot migrate an existing run. The public `prepare` API still
+prepares version 1.0. Use `prepare_with_version` for explicit version 1.1
+preparation, and validate a frozen carrier through `forward_model_input`.
+
+Input admission and reservation still conservatively account for the complete
+serialized carrier plus configured transport overhead. A smaller model payload
+can require a larger explicit carrier cap and budget. Typed aliases remain
+stable as grouped expansion appends to that Work/run/role/version map. Review
+uses its own map and read delivery. Source text, semantic symbols, paths, native
+evidence references and query selections retain their canonical values.
+
+Return the existing outer Reply with canonical invocation, role and model; use
+the prepared typed bindings in its inner answer or review. The host retains the
+parsed raw JSON and any adapter failure before fallible Reply validation or alias
+decoding. Unknown, wrong-domain or foreign-scope aliases fail closed. Aliases are
+decoded before existing semantic answer/review checks, and successful saved
+results remain canonical. Resume consumes retained output without another
+dispatch, including failed decoding. Parseable JSON from a failed driver cannot
+be promoted to success or perform an expansion; malformed JSON remains an
+adapter failure. Byte-for-byte stdout retention is not claimed.
+
+The [version 1.0 prepared-input assessment](https://github.com/codeclew/codeclew/blob/e729cd2e6a5f46957255b17ff0f9007a072a2d52/docs/product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06)
+measured two retained first-call jobs through the native API and example:
+combined prompt and strict-schema reference text fell from 26,716 to 25,402
+`o200k_base` tokens, a 4.9184% reduction including encoding guidance. This is
+reference text counting, not measured provider usage or billing, answer quality,
+or a general or grouped-expansion savings claim. No model calls were made for
+that assessment.
+
+The [version 1.1 compact-delivery assessment](https://github.com/codeclew/codeclew/blob/main/docs/plans/question-results-and-incremental-evidence.md#compact-role-evidence-representation-candidate-2026-10-06)
+measured all four actual author and reviewer inputs from one generated grouped
+fixture. Combined prompt and strict-schema `o200k_base` reference text counts
+fell from 163,106 to 104,051 (36.2065%) including representation guidance.
+Within that total, the two expanded calls fell from 113,714 to 69,559 (38.8299%).
+The initial author input had no duplicate delivery to omit and increased by
+18 reference tokens (0.2547%). This is a
+bounded reference-count comparison, not general savings, provider billing or
+answer-quality evidence; no model calls were made for the assessment.
 
 For the default single-call path, use the author-only configuration schema
 `schemas/documentation/operation-draft-execution.schema.json`.

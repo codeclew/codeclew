@@ -119,6 +119,8 @@ missing evidence never causes implicit acquisition. `context`, `work prepare`,
 `render`, `changes`, interaction candidates, process inspection and update-queue
 work all consume saved evidence. `docs check` and explicit `context --refresh`
 remain acquisition boundaries; portable evidence capture is also explicit.
+For the practical route from capture and source questions through method review,
+exact discovery and updates, see [capture, question, review and exact reuse](field-documentation.md#capture-question-review-and-exact-reuse).
 `render --refresh` is the one explicit render acquisition route: it runs the
 ordinary current-source check, saves that result, and publishes only after the
 fresh evidence passes the same completeness gate. It may run Maven/compiler
@@ -461,6 +463,31 @@ composite captures: the syntax key lacks complete provider input authority.
 They write `NON_CACHEABLE` with a reason. Pure
 syntax retains its cache path; explicit historical snapshot reads remain
 available independently of current provider admission.
+
+### Exact per-file syntax reuse (source candidate)
+
+The accepted development candidate `1db703a` adds a second reuse boundary inside
+syntax capture. Successful extraction is keyed by service, relative path, exact
+file bytes, language/dialect and the complete bundled producer, including its
+parser inputs and pinned Rust toolchain. Equal content at a different path or in
+another service does not reuse that result. Whole-capture admission also binds
+the producer, so an older keyed capture cannot bypass its changed identity.
+
+Replay rebuilds Source occurrences against the current revision, snapshot, blob,
+ranges and URL. It preserves inventory, FILE_ONLY sources, annotations, coverage
+and overlapping aggregate source/fact budgets; a hit does not admit a larger
+scope. Failed extraction and parse-error trees are never stored in the per-file
+cache; they require parsing again when a later capture runs per-file extraction
+rather than reusing a complete keyed capture. Corrupt stored bindings fail
+closed. This is syntax extraction
+reuse, not compiler-result reuse or a source-currentness certificate.
+
+The [bounded capture-cost measurement](field-documentation.md#incremental-capture-cost-source-candidate)
+found 21.863% incremental native capture/Check savings on one worker corpus after
+cache seeding, with complete evidence/Check equality and retained partial
+coverage. Startup, changed-file parsing and IO still cost time. It is not a
+general CLI, compiler or documentation-task speedup. The candidate targets
+v0.13.16 pending its release gate; it is absent from released v0.13.15.
 
 ## Initial model-request preflight
 
@@ -1164,11 +1191,17 @@ approval. The comparison creates no new cache, review or publication baseline.
   --input question.json --snapshot SAVED_CHECK
 ```
 
-This source candidate is separate from release 0.13.15. It searches immutable
+Accepted source candidate `c15fecd` targets v0.13.16 pending its release gate and
+is absent from released v0.13.15. It searches immutable
 Work manifests and every historical approved run, without needing saved Work or
 review IDs. Matching uses the complete normalized request: question, audience,
 language, root declaration, profile, authoring contract, context bounds and
 external-input selectors. Similar question wording does not match.
+Keep the original request file and exact subject. The compared Check is a
+separate required immutable handle, not a latest pointer or an implicit capture.
+Request normalization resolves the same preparation defaults; changing audience,
+language, bounds or selectors can change the match even when question text stays
+equal. For a complete executable sequence, see the [method-answer route](field-documentation.md#capture-question-review-and-exact-reuse).
 
 The first supported shape is a method question using `process-graph-v1`,
 authoring contract `codeclew-operation-draft-authoring/1.6`, and
@@ -1192,7 +1225,8 @@ Validated receipt/revision changes can appear as link changes only after the
 complete initial semantic replay matches. Any changed delivered source fragment
 still invalidates reuse, including unrelated code inside a delivered class.
 
-`FOUND` returns `selected.answer` with its historical review and provenance.
+`FOUND` returns `selected.answer` with its historical review and provenance; one
+`CURRENT` candidate is selected directly.
 `SELECTION_REQUIRED` returns eligible candidates without ranking them. Save one
 candidate's `selection` object and supply `--select selection.json` to choose
 explicitly. The closed selector binds the exact request and compared snapshot.
@@ -1203,3 +1237,73 @@ Work preparation, export or publication; acquire new evidence separately.
 Zero writes refers to durable Work, job, review, publication and source records.
 Existing object-store reads and locking may still perform operational filesystem
 IO; this command does not introduce a separate read-only storage implementation.
+
+To choose among eligible approvals, copy one candidate's complete `selection`
+object into a JSON file and rerun:
+
+```sh
+./clew docs work find-answer --root DOCS --subject service:ID \
+  --input question.json --snapshot SAVED_CHECK --select answer-selection.json
+```
+
+The selector freezes subject, request digest, compared Check, Work and review run.
+It cannot carry a choice over to another request or Check. Unsupported historical
+approvals remain visible with `UNKNOWN` applicability; explicit selection cannot
+make them current. Search validates all known historical report/Work bindings,
+including history outside the matching request, before claiming completeness.
+
+Locate the corresponding candidate by matching its `selection` to
+`selected.selection`. Inspect that candidate's `selectedEvidence.linkChanges`
+for validated source receipt or presentation movement and
+`initialPreparationReplay` for the selection
+comparison. Read current source records using the explicit compared Check;
+historical answer citations, exports and published reader links stay frozen.
+`CURRENT` allows using that historical answer with a separately stated current
+applicability result. It creates no new approval, source capture or publication.
+For changed or unknown inputs, prepare/review a replacement against explicitly
+acquired evidence and use the existing [publication baseline and admission](#review-a-saved-operation-draft)
+when a catalogue update is intended. Generic service narratives continue through
+their Work/proposal path.
+
+### Compatible model ID representation (source candidate)
+
+Accepted candidate `e729cd2` introduced the frozen
+`modelRepresentation: "codeclew-model-ids/1.0"` option for native 1.6 method
+authoring and independent review. The subsequent compact candidate recommends
+`modelRepresentation: "codeclew-model-ids/1.1"` for compatible new drivers;
+existing 1.0 representations remain supported unchanged. The
+[serializer contract and public Rust example](model-id-serializer.md)
+require unchanged canonical validation before forwarding only the frozen model
+payload and strict schema. Typed maps remain host/driver metadata; expansion
+extends a role's map without renumbering, and the reviewer has an independent
+scope. Canonical saved answers/reviews remain compatible with discovery, but an
+actual expansion still falls outside the initial exact-reuse boundary above.
+
+Before typed alias projection, 1.1 checks the complete delivery presentation
+against the unchanged native presenter over canonical pages and source parts,
+including its duplicate-row retention links. It removes only raw `pages` and
+`sourceParts` siblings under the model payload's `packet.contextDelivery` and
+`reviewContext`. Complete presentation, receipts, citations, bindings and the
+canonical raw archive remain. `savedAuthorContract` is outside this removal
+scope. A missing presentation keeps raw delivery; a mismatched or incomplete
+presentation fails closed. Drivers must consume the presentation when raw
+siblings are absent. Frozen carriers and recovery records validate by their
+saved version; selecting 1.1 cannot rewrite or migrate an existing 1.0 run.
+
+The [paired compact measurement](../plans/question-results-and-incremental-evidence.md#compact-role-evidence-representation-candidate-2026-10-06)
+uses a generated grouped-read fixture and supported 1.0/1.1 model forms for the
+same canonical jobs and scopes. Across all four initial/expanded role contexts,
+combined prompt plus strict-schema reference counts were **163,106 to 104,051:
+36.2065% fewer than 1.0**, including actual protocol overhead. The expanded pair
+alone fell from 113,714 to 69,559 (38.8299%): author counts were 39,274 to 24,818
+and reviewer counts were 74,440 to 44,741. The initial author grew by 18 tokens
+(0.2547%). This comparison did not repeat dispatch for an invocation and does not
+compare compact input to a canonical baseline. These are reference text measurements, not
+general-corpus savings, provider usage/billing, quality or verified delivery.
+
+The earlier [two-retained-first-call measurement](../product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06)
+remains a separate 1.0 result: 4.9184% fewer combined reference tokens against
+canonical input. Complete carrier bytes, including canonical input and host-only
+map, still participate in conservative admission and reservation for both modes.
+The candidates target v0.13.16; the release gate remains pending and released
+v0.13.15 contains neither mode.
