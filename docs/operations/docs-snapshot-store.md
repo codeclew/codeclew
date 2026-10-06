@@ -468,7 +468,7 @@ available independently of current provider admission.
 
 ### Exact per-file syntax reuse
 
-Version 0.13.16 includes a second reuse boundary inside syntax capture. Successful extraction is keyed by service, relative path, exact
+Version 0.13.17 includes a second reuse boundary inside syntax capture. Successful extraction is keyed by service, relative path, exact
 file bytes, language/dialect and the complete bundled producer, including its
 parser inputs and pinned Rust toolchain. Equal content at a different path or in
 another service does not reuse that result. Whole-capture admission also binds
@@ -488,7 +488,7 @@ found 21.863% incremental native capture/Check savings on one worker corpus afte
 cache seeding, with complete evidence/Check equality and retained partial
 coverage. Startup, changed-file parsing and IO still cost time. It is not a
 general CLI, compiler or documentation-task speedup. Exact per-file syntax reuse
-is included in v0.13.16.
+is included in v0.13.17.
 
 ## Initial model-request preflight
 
@@ -1194,7 +1194,7 @@ clew docs work find-answer --root DOCS --subject service:ID \
   --input question.json --snapshot SAVED_CHECK
 ```
 
-Exact approved-answer discovery is included in v0.13.16. It searches immutable
+Exact approved-answer discovery is included in v0.13.17. It searches immutable
 Work manifests and every historical approved run, without needing saved Work or
 review IDs. Matching uses the complete normalized request: question, audience,
 language, root declaration, profile, authoring contract, context bounds and
@@ -1271,7 +1271,7 @@ their Work/proposal path.
 
 ### Compatible model ID representation
 
-Version 0.13.16 includes the frozen
+Version 0.13.17 includes the frozen
 `modelRepresentation: "codeclew-model-ids/1.0"` option for native 1.6 method
 authoring and independent review, and recommends compact
 `modelRepresentation: "codeclew-model-ids/1.1"` for compatible new drivers;
@@ -1309,4 +1309,4 @@ The earlier [two-retained-first-call measurement](../product/validation/model-id
 remains a separate 1.0 result: 4.9184% fewer combined reference tokens against
 canonical input. Complete carrier bytes, including canonical input and host-only
 map, still participate in conservative admission and reservation for both modes.
-Both modes are included in v0.13.16. Historical v0.13.15 contains neither mode.
+Both modes are included in v0.13.17. Historical v0.13.15 contains neither mode.

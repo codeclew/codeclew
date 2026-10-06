@@ -23,15 +23,15 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.16
+## Current release: v0.13.17
 
-Version 0.13.16 includes exact approved-answer discovery, exact per-file syntax
+Version 0.13.17 includes exact approved-answer discovery, exact per-file syntax
 reuse and an opt-in model serializer with compact evidence presentation for
-compatible drivers. See the [v0.13.16 release notes](docs/releases/v0.13.16.md).
+compatible drivers. See the [v0.13.17 release notes](docs/releases/v0.13.17.md).
 
 <a id="accepted-source-candidates-for-v01316"></a>
 
-### Included in v0.13.16
+### Included in v0.13.17
 
 `docs work find-answer` searches historical approved method answers by the exact
 normalized request and subject, then checks applicability against an explicitly
@@ -131,7 +131,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.16 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.17 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -160,7 +160,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.16 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.17 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a

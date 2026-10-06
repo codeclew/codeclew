@@ -498,7 +498,7 @@ proof. Human input is retained verbatim with its separate authority.
 
 ## Find an approved answer before preparing new Work
 
-Codeclew 0.13.16 includes `docs work find-answer`. Use the installed `clew`
+Codeclew 0.13.17 includes `docs work find-answer`. Use the installed `clew`
 launcher and check its version and help; older releases need an update before
 using this command. Select an existing saved Check explicitly and supply the exact
 subject and original Work request. Normalization applies the Work defaults; it
@@ -609,7 +609,7 @@ The older defaults and saved results retain their existing policies.
 
 ### Opt into typed model IDs with a compatible driver
 
-Codeclew 0.13.16 includes both model-ID modes. Use the installed `clew`
+Codeclew 0.13.17 includes both model-ID modes. Use the installed `clew`
 launcher; older releases need an update before selecting a mode. For native
 authoring 1.6 and its independent reviewer, set
 `"modelRepresentation": "codeclew-model-ids/1.1"` on the selected `author` or

@@ -215,8 +215,8 @@ document alone is not completion.
 | Content-keyed syntax reuse | Implementation accepted; release pending | Independently accepted `1db703a`: same-service/path exact-byte extraction reuse with complete producer admission and current source receipts. Two-revision full evidence/Check equality and 21.863% measured incremental native benefit; 16 final syntax tests including nine cache regressions passed. Compiler reuse is outside this slice. |
 | Role evidence representation | Compact native 1.1 independently accepted; release pending | Checked native presentation replaces only duplicate raw model-facing pages/source parts. Actual grouped author/reviewer delivery, canonical approval, both-version recovery and frozen 1.0 compatibility passed. The complete four-call generated Java fixture decreases paired prompt/schema reference counts 163,106 to 104,051 (36.2065%); expanded calls decrease 38.8299%. Initial author without duplication grows by 18 reference tokens. Initial semantic selection remains deferred. |
 | Short opaque model IDs | Implementation independently accepted; release pending | Accepted `e729cd2`: explicit host-prepared native author/reviewer carrier, stable typed expansion maps, durable raw JSON/failure recovery and supported public serializer. Actual first-call prompts plus strict schemas decrease reference `o200k_base` text counts by 4.9184% including protocol. The earlier 10.26% remains a historical prospective upper bound, not delivered benefit. See the [assessment and actual measurement](../product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06). |
-| Incremental releases | 0.13.15 published and installed; 0.13.16 full local CI passed | The 0.13.15 local/hosted gates, 14 published assets and official installed retained-context equivalence remain recorded below. Integrated 0.13.16 local CI passed on `e2542efd33f193eb9e7f6e126b3f31f535fd66ce` in 4,173.985 seconds, including real C# qualification and a RELEASE usability smoke. Documentation promotion, exact release-revision hosted gates, publication and official installed verification follow. |
-| Documentation and cleanup | Cleanup accepted and published; final product documentation prepared for release | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links. README, practical workflow, snapshot-store reference, mirrored portable guide and public task page describe the accepted candidates without changing historical example qualification. Publication follows the coherent 0.13.16 release gate. |
+| Incremental releases | 0.13.15 published and installed; 0.13.16 aborted; 0.13.17 final gates pending | The 0.13.15 local/hosted gates, 14 published assets and official installed retained-context equivalence remain recorded below. Integrated 0.13.16 local CI passed on `e2542efd33f193eb9e7f6e126b3f31f535fd66ce` in 4,173.985 seconds, including real C# qualification and a RELEASE usability smoke. The 0.13.16 tag remains immutable without assets after Linux test-helper lint failures. Version 0.13.17 carries the narrow fix; exact release-revision hosted gates, publication and official installed verification follow. |
+| Documentation and cleanup | Cleanup accepted and published; final product documentation prepared for release | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links. README, practical workflow, snapshot-store reference, mirrored portable guide and public task page describe the accepted candidates without changing historical example qualification. Current guides and installation pins target 0.13.17; historical source and renderer receipts retain their original versions. |
 
 ### First scoped-read candidate (2026-10-06)
 
@@ -637,14 +637,14 @@ claimed. Existing 1.0 recovery tests and production read-only record validators
 qualify current recovery; newly captured chain artifacts are labeled current
 compatibility captures. Temporary measurement examples were removed. Integrated
 full local CI subsequently passed on `e2542ef`; publication and official installed
-verification of 0.13.16 remain pending.
+verification proceed with 0.13.17 after the aborted 0.13.16 attempt recorded below.
 
 The research root independently accepted the 1.1 implementation, focused gate,
 frozen-carrier compatibility and paired model-facing benefit after material
 delta review. No further efficiency scope is scheduled before publication.
 Task-specific initial semantic selection, cross-role sharing and broader role
 contract unification remain explicitly deferred. Finish the current product
-documentation and one coherent full-CI/0.13.16 qualification gate.
+documentation and the final 0.13.17 hosted qualification and installed checks.
 
 
 ### Integrated 0.13.16 local qualification (2026-10-06)
@@ -674,3 +674,29 @@ installed checks of exact lookup, current syntax receipts and both 1.1 roles.
 The installed role smoke uses local deterministic fixtures without provider
 calls, expansion, publication or a review-quality claim. Expanded compaction
 and frozen-1.0 compatibility remain the accepted source evidence above.
+
+
+### Aborted 0.13.16 tag and 0.13.17 continuation (2026-10-06)
+
+The immutable `v0.13.16` tag points at merge commit
+`d69ed3b3273422b2c9239284865b4c412c41adc8`, whose tree exactly matches the
+qualified feature branch after documentation promotion. Its RELEASE mutation
+pilot passed 6/6 (Rust 3/3, Python 3/3). The hosted
+[Linux CI job](https://github.com/codeclew/codeclew/actions/runs/37447748129/job/112216555094)
+then failed at Clippy because 15 test helpers were compiled on Linux although
+only macOS tests call them. The
+[release attempt](https://github.com/codeclew/codeclew/actions/runs/37447759517)
+was cancelled before assets were published. The tag is preserved without
+release assets; it must not be used as an installation target.
+
+Commit `96b360ac610eedc3e78ed8fbff60dcc28ddfc2a5` changes exactly 15 test-only
+`cfg(test)` guards to `cfg(all(test, target_os = "macos"))`. It changes no
+function body or production algorithm and adds no warning suppression.
+The original local full-CI receipt above remains bound to its original source.
+Current guides, installation pins and release notes move to 0.13.17, retaining
+the 0.13.16 public section anchor for existing links. Focused source and
+documentation checks, a RELEASE mutation pilot, exact-head Linux/macOS hosted
+gates and platform release qualification are required before publication.
+Official installed lookup, current syntax receipts and independent 1.1 role
+smokes then verify the published package. These local deterministic role
+fixtures make no paid provider calls or review-quality claim.

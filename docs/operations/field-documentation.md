@@ -15,7 +15,7 @@ source-question packet lets your current agent answer with file/line references;
 it is separate from a saved operation answer with an independent meaning review.
 
 Exact approved-answer discovery, syntax-file reuse and model ID representation
-are included in v0.13.16. Use installed `clew` for the method workflow below;
+are included in v0.13.17. Use installed `clew` for the method workflow below;
 use `./clew` when developing this checkout.
 
 For a saved Java method answer, select an exact callable declaration from a
@@ -109,7 +109,7 @@ reference links; receipts, citations and canonical archives remain intact. A
 missing presentation retains raw arrays, while a mismatched presentation fails.
 Version 1.0 remains supported unchanged; changing the selected mode cannot
 migrate an existing run. Both versions preserve canonical answers and independent
-reviewer scope, and both are included in v0.13.16.
+reviewer scope, and both are included in v0.13.17.
 
 In a generated grouped-read fixture, paired supported 1.0/1.1 model forms for the
 same canonical jobs and scopes measured **163,106 to 104,051 combined prompt plus
@@ -433,7 +433,7 @@ When another projection is needed, run `docs recompose` from the original source
 
 ## Incremental capture cost
 
-Version 0.13.16 reuses successful syntax extraction for the same
+Version 0.13.17 reuses successful syntax extraction for the same
 service and relative file path when exact source bytes, language/dialect and the
 complete bundled producer match. It reconstructs Source receipts for the current
 revision, snapshot, blob, ranges and URL. Scope acquisition, file inventory,
@@ -457,7 +457,7 @@ seconds; these are different operations, not a paired cold-start comparison.
 Account for startup and new/changed files before expecting a warm incremental
 benefit. The [accepted measurement and exclusions](../plans/question-results-and-incremental-evidence.md#measured-syntax-file-reuse-candidate-2026-10-06)
 describe the selected corpus and five pairs. This behavior is included in
-v0.13.16.
+v0.13.17.
 
 ## Explicit compiler enrichment afterward
 
@@ -478,7 +478,7 @@ Keep the same service ID, `profile: "source-syntax"`, source roots/dialect and f
 Use the actual qualified profile and compilation selector; writable/AP projects require their own explicit supported profile/admission. Configure the provider only through `modules.semantic`. Then run `clew docs check --root /work/architecture --service orders`. This is synchronous and may run Maven/compiler work for that provider's selected compilation and its build dependencies. It retains compatible saved sibling services; it does not guarantee no reactor work. Ordinary `context`, Work and `render` consume saved evidence; avoid `--refresh` and unscoped `docs check` when no acquisition is intended.
 
 This is a new capture, not an in-place enrichment of the old snapshot. Released
-v0.13.15 reparses source when semantic execution is enabled. Version 0.13.16
+v0.13.15 reparses source when semantic execution is enabled. Version 0.13.17
 can reuse exact per-file syntax extraction while acquiring the
 compiler provider separately; composite semantic captures remain non-cacheable.
 Enrichment attaches only unique equal-revision/name/file/line `SEMANTIC_SYMBOL`
