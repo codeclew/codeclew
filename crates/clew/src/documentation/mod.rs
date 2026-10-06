@@ -30,6 +30,9 @@ mod kotlin;
 mod language;
 pub mod maintained_context;
 pub mod model;
+pub mod model_ids;
+#[cfg(test)]
+mod model_ids_integration_tests;
 pub mod notes;
 pub mod object_layout;
 mod operation_answer;

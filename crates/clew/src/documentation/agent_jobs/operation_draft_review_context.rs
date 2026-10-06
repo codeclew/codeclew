@@ -1608,6 +1608,11 @@ fn validate_terminal(
 }
 
 #[cfg(test)]
+pub(super) fn model_ids_grouped_review_config(path: &Path, author: &Path) -> Value {
+    serde_json::to_value(tests::config(path, author, "approve", 3)).unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{fs, path::PathBuf};
@@ -1649,7 +1654,7 @@ reply["usage"] = {"inputTokens" => 600001, "outputTokens" => 1, "costUnits" => 1
 puts JSON.generate(reply)
 "#;
 
-    fn config(path: &Path, author: &Path, mode: &str, calls: u32) -> ContextConfig {
+    pub(super) fn config(path: &Path, author: &Path, mode: &str, calls: u32) -> ContextConfig {
         let original: Value = store::read(author, store::MAX_RECORD).unwrap();
         let mut reviewer = original["author"].clone();
         reviewer["model"] = json!(format!("synthetic-independent-review-{mode}"));

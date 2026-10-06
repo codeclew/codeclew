@@ -1961,6 +1961,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                 adapter: "macos-seatbelt-stdio/1.0".into(),
                 model: format!("operation-draft-{mode}"),
                 usage_authority: "MAXIMUM_ONLY".into(),
+                model_representation: None,
                 command,
                 runtime_reads: vec![PathBuf::from("/usr/lib/ruby")],
                 environment: Vec::new(),
@@ -4288,4 +4289,15 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                 .exists()
         );
     }
+}
+
+#[cfg(test)]
+pub(super) fn model_ids_grouped_fixture_setup() -> (
+    tempfile::TempDir,
+    Repository,
+    super::super::work::Work,
+    std::path::PathBuf,
+    Value,
+) {
+    context_mode::model_ids_grouped_fixture_setup()
 }

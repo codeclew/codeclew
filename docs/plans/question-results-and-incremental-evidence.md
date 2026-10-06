@@ -470,3 +470,37 @@ tests (including nine cache regressions), formatting, diff, English and privacy.
 The nine focused cache tests also passed after the final selector correction and
 repository formatting. Integrated release qualification remains pending; this
 behavior is not part of released `0.13.15`.
+
+
+### Supported model ID representation candidate (2026-10-06)
+
+The source candidate now provides an explicit `codeclew-model-ids/1.0` role
+opt-in for native method authoring 1.6 and independent review. It retains the
+unchanged canonical request plus an immutable prepared model payload, strict
+schema and typed Work/run/role map before dispatch. Compatible drivers validate
+canonical input first and use the public pure serializer API/example to forward
+only the model payload and schema. Legacy role bytes and driver identity remain
+unchanged when the mode is absent.
+
+Grouped expansion preserves old aliases; reviewer scope remains independent.
+The host retains parsed outer JSON and adapter failure before fallible Reply or
+identity decoding. Unknown or foreign aliases fail closed, and recovery after
+map-head publication or result-save interruption never repeats an already
+received dispatch. Saved successful answers/reviews retain canonical identity.
+Malformed JSON remains an adapter failure rather than a byte-level output record.
+
+The [actual two-job measurement](../product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06)
+reduces combined prompt and strict-schema reference tokens from 26,716 to 25,402
+(4.9184%, including protocol overhead), versus the earlier prospective 10.26%
+upper bound. Canonical input and protected source/semantic/evidence/query leaves
+are exact. Whole carriers are 80,371/118,031 bytes with 2,759/3,908-byte host-only
+maps; host admission/reservation still charges these complete carriers although
+they are excluded from model input. This is reference `o200k_base` text counting,
+not provider usage, billing, quality or a grouped-expansion savings claim.
+
+All six codec tests and four native host scenarios passed across the initial
+focused run and one corrected grouped-review fixture rerun. Two legacy tests
+passed separately, and the public serializer example compiled and returned the
+exact prepared payload/schema for both retained jobs. No provider traffic, paid
+model call or broad qualification run was needed. Full CI and the next release
+remain pending; released `0.13.15` does not contain this candidate.

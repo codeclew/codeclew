@@ -85,6 +85,10 @@
           ],
           "default": "MAXIMUM_ONLY"
         },
+        "modelRepresentation": {
+          "const": "codeclew-model-ids/1.0",
+          "description": "Opt in to the versioned host-prepared carrier forwarding contract for native method authors and reviewers. Omit for canonical legacy stdin."
+        },
         "command": {
           "type": "array",
           "maxItems": 32,

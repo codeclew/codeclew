@@ -1237,6 +1237,17 @@ pub(super) fn authored_context() -> (
 }
 
 #[cfg(test)]
+pub(super) fn model_ids_grouped_fixture_setup() -> (
+    tempfile::TempDir,
+    Repository,
+    work::Work,
+    std::path::PathBuf,
+    Value,
+) {
+    tests::fixture("answer", 3)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::documentation::{agent_jobs::Amount, work::Handle};
