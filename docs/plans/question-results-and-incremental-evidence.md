@@ -210,10 +210,11 @@ document alone is not completion.
 
 | Slice | Status | Result / next decision |
 | --- | --- | --- |
-| Baseline and first scoped read | Candidate; independent acceptance pending | Public retained `docs context --dependency`: exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Focused regressions and CLI integration passed. |
+| Baseline and first scoped read | Accepted implementation; release pending | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full CI and official installed verification remain release gates. |
 | Precise question-result reuse | Pending | Build on existing answer-context after first cost/result findings. |
 | Content-keyed syntax reuse | Pending | Proceed after a bounded baseline; compiler reuse conditional. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
+| Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
 | Incremental releases | Pending | Next version follows the current release registry. |
 | Documentation and cleanup | Pending | Final inventory and published removal diff required. |
 
@@ -244,8 +245,9 @@ completed its two launcher-inclusive pages in 275.28 / 266.69 ms; its release
 profile and launcher differ from the debug measurement, so those times are not
 compared against the candidate.
 
-Disposition: retain this bounded candidate for independent acceptance. Full CI
-and release follow acceptance of the integrated candidate. Do not widen this
+Disposition: accepted implementation at `30c837d`, release pending. The research
+chat independently accepted the bounded behavior and measurements. Full CI and
+official installed verification remain gates for the integrated release. Do not widen this
 slice into Work, symbol/endpoint adjacency, source-fragment storage, question
 reuse, model aliases or a general benchmark controller. Relevant payload and
 source corruption, missing inputs, inventory consistency, service/scope
@@ -256,3 +258,14 @@ Housekeeping completed by the research chat reclaimed 3,041,956 KiB (about
 2.90 GiB) from obsolete build outputs in completed checkouts. The active coding
 checkout's incremental `target` was preserved; source, CAS, evidence and the
 installed release were unchanged.
+
+### Model ID representation assessment (2026-10-06)
+
+The [separate feasibility assessment](../product/validation/model-id-alias-feasibility.md)
+records actual retained prompt and strict-schema sizes, reference-token counts,
+protocol overhead and the canonical-versus-model representation seam. Defer
+implementation from the immediate scoped-read release; retain aliases as a
+promising follow-up rather than rejecting them on byte savings or old-driver
+refusal. The latter only rejects changing the canonical packet before validation.
+No alias behavior is included in `30c837d` or installed `0.13.14`. No paid model
+calls, repeated scoped-read measurements or full CI ran for this assessment.
