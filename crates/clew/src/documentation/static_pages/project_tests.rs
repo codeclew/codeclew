@@ -906,6 +906,8 @@ fn kotlin_source_escapes_to_paired_mdx_and_html_with_citation_links() {
     assert!(mdx.contains("Selected declarations are retained without inferring behavior or a relationship between them."));
     assert!(mdx.contains("sources.mdx#ref-"));
     assert!(mdx.contains("KOTLIN&#95;BEHAVIOR&#95;PROJECTION&#95;UNAVAILABLE"));
+    assert!(sources.contains("All selected declarations"));
+    assert!(!sources.contains("All processes"));
     assert!(sources.contains("$&#123;value&#125;"));
     assert!(sources.contains("&#96;literal&#96;"));
     assert!(!sources.contains("${value}") && !sources.contains("`literal`"));

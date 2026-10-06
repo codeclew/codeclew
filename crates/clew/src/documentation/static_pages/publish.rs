@@ -917,9 +917,24 @@ fn page(
     out
 }
 fn appendix(p: &BundleProjection, ext: &str) -> String {
+    let has_declaration_only = p
+        .pages
+        .iter()
+        .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
+    let all_declaration_only = p
+        .pages
+        .iter()
+        .all(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
+    let index_label = if !has_declaration_only {
+        "All processes"
+    } else if all_declaration_only {
+        "All selected declarations"
+    } else {
+        "All selected pages"
+    };
     let mut out = format!(
         "<main><h1>Retained source appendix</h1><p>{}</p>\n",
-        link(&format!("index.{ext}"), "All processes")
+        link(&format!("index.{ext}"), index_label)
     );
     let mut citations = BTreeMap::new();
     for page in &p.pages {
