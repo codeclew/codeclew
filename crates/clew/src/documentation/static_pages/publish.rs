@@ -1941,6 +1941,12 @@ pub(super) fn write(
         "projectionDigest":digest(p)?, "mdxProfile":"MDX 3; inert native JSX; no imports, executable expressions, scripts or network dependencies",
         "pages":page_rows,
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    if let Some(policy_digest) = &p.endpoint_publication_policy_digest {
+        manifest["endpointPublicationPolicyDigest"] = json!(policy_digest);
+        manifest["requestedSelectionDigest"] = json!(p.requested_selection_digest);
+        manifest["effectiveSelectionIds"] =
+            json!(p.pages.iter().map(|page| &page.id).collect::<Vec<_>>());
+    }
     let selected_notes: Vec<_> = p
         .pages
         .iter()
@@ -2030,6 +2036,8 @@ mod tests {
             input_digest: "input".into(),
             context_digest: "context".into(),
             selection_digest: "selection".into(),
+            endpoint_publication_policy_digest: None,
+            requested_selection_digest: None,
             pages: vec![],
             source_call_graph: None,
         };
@@ -2136,6 +2144,8 @@ mod tests {
             input_digest: "input".into(),
             context_digest: "context".into(),
             selection_digest: "selection".into(),
+            endpoint_publication_policy_digest: None,
+            requested_selection_digest: None,
             pages: vec![make("alpha-flow"), make("Alpha-flow")],
             source_call_graph: None,
         };

@@ -310,6 +310,8 @@ mod tests {
             input_digest: "input".into(),
             context_digest: "context".into(),
             selection_digest: "selection".into(),
+            endpoint_publication_policy_digest: None,
+            requested_selection_digest: None,
             pages: vec![
                 page("parent-b", ":/main"),
                 page("parent-a", ":/main"),
@@ -417,6 +419,8 @@ mod tests {
             input_digest: "input".into(),
             context_digest: "context".into(),
             selection_digest: "selection".into(),
+            endpoint_publication_policy_digest: None,
+            requested_selection_digest: None,
             pages: vec![selected.clone()],
             source_call_graph: Some(SourceCallGraph {
                 schema: "synthetic".into(),

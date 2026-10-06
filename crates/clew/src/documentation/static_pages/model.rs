@@ -229,6 +229,12 @@ pub struct BundleProjection {
     pub input_digest: String,
     pub context_digest: String,
     pub selection_digest: String,
+    /// Explicit publication policy is independent of frozen source inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_publication_policy_digest: Option<String>,
+    /// With a nonempty policy, selection_digest binds only retained selections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_selection_digest: Option<String>,
     pub pages: Vec<PageContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_call_graph: Option<SourceCallGraph>,

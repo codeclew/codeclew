@@ -557,6 +557,16 @@ pub fn observe(repo: &Repository, binding: &mut Bindings) -> Result<Value, ClewE
 pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
     let previous = bindings::baseline(repo)?
         .ok_or_else(|| invalid("no retained publication; run docs render first"))?;
+    let policy = super::endpoint_publication::load(repo)?;
+    let expected_policy_digest = previous
+        .1
+        .endpoint_publication
+        .as_ref()
+        .map(|selection| Ok(selection.policy_digest.clone()))
+        .unwrap_or_else(|| super::endpoint_publication::Policy::default().digest())?;
+    if policy.digest()? != expected_policy_digest {
+        return Err(endpoint_selection_changed());
+    }
     bindings::verify_outputs(repo, &previous.0, &previous.1)?;
     let previous_bytes = fs::read(repo.path("docs/index.html")?).map_err(io_error)?;
     let mut binding = previous.1.clone();
@@ -568,6 +578,9 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
         && binding.target_revisions == previous.1.target_revisions
     {
         let _lock = repo.lock()?;
+        if super::endpoint_publication::load(repo)?.digest()? != expected_policy_digest {
+            return Err(endpoint_selection_changed());
+        }
         if repo.input_digest()? != input_digest
             || fs::read(repo.path("docs/index.html")?).map_err(io_error)? != previous_bytes
         {
@@ -607,6 +620,12 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
             check::PORTABLE_CACHE_MAX_BYTES,
         )?;
         attach(&mut data, subject, &binding);
+        let hidden = binding
+            .endpoint_publication
+            .as_ref()
+            .map(|selection| selection.hidden(&policy, subject))
+            .unwrap_or_default();
+        super::endpoint_display::filter_page(&mut data, &hidden);
         data["statusAuthority"] = json!("TARGET_OBSERVATION_NOT_SEMANTIC_RECHECK");
         if let Some(notes) = data["notes"].as_array_mut() {
             for note in notes {
@@ -641,11 +660,12 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
             Freshness::Unverified => "UNVERIFIED",
         };
         let title = data["title"].as_str().unwrap_or(id);
-        let body = render::markdown(title, &binding.narratives[subject], &binding.section_states)
+        let displayed = super::endpoint_display::narrative(&binding.narratives[subject], &hidden);
+        let body = render::markdown(title, &displayed, &binding.section_states)
             + &super::explanation_authorship::markdown(&data)
             + &super::notes::markdown(&data["notes"])
             + &super::processes::markdown(&data["process"])
-            + &super::dataflow::markdown(&data["view"], &binding.narratives[subject]);
+            + &super::dataflow::markdown(&data["view"], &displayed);
         let status_text = format!(
             "Source freshness: {state_label}. Meaning review: {}.\n\nContent revisions: {}\n\nTarget revisions: {}\n\n",
             state.verification,
@@ -659,7 +679,15 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
         cards.push_str(&format!("<article class=\"gap-card\"><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p class=\"freshness-status\">{state_label}</p><p>Retained explanation; source status checked independently.</p><details><summary>Revisions and missing information</summary><pre>{}</pre></details></article>",render::escape(id),render::escape(data["title"].as_str().unwrap_or(id)),render::escape(&serde_json::to_string_pretty(state).map_err(io_error)?)));
     }
     for (subject, narrative) in &binding.narratives {
+        let hidden = binding
+            .endpoint_publication
+            .as_ref()
+            .map(|selection| selection.hidden(&policy, subject))
+            .unwrap_or_default();
         for operation in &narrative.operations {
+            if hidden.contains(&operation.id) {
+                continue;
+            }
             let state = &binding.section_states[&format!("{subject}/{}", operation.id)];
             let label = match state.freshness {
                 Freshness::Current => "CURRENT",
@@ -701,5 +729,12 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
     )?;
     Ok(
         json!({"schema":"codeclew-docs-refresh/1.0","status":"PUBLISHED","statusOnly":true,"bundle":bundle,"index":"docs/index.html","sections":sections,"observation":observation,"agentInvocations":0,"captures":0}),
+    )
+}
+
+fn endpoint_selection_changed() -> ClewError {
+    ClewError::new(
+        ErrorCode::WwConflict,
+        "endpoint publication selection changed; run docs render --snapshot <snapshot> --publish to apply it",
     )
 }

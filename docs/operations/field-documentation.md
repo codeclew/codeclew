@@ -100,6 +100,11 @@ content against the new Check, and publish explicitly through the existing
 proposal or approved-answer route. Preserve the old publication in history.
 Neither finding an answer nor checking applicability updates `docs/index.html`.
 
+To omit an endpoint without discarding analysis or accepted explanations, use
+[persistent endpoint publication selection](endpoint-publication-selection.md).
+The explicit choice applies to all registrations of one exact scoped callable;
+ordinary and native renderers share the policy.
+
 For compatible new drivers, use `modelRepresentation:
 "codeclew-model-ids/1.1"`; see the [public serializer example and contract](model-id-serializer.md).
 This compact representation verifies the complete native presentation against the

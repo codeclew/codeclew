@@ -12,12 +12,29 @@ use super::{
     invalid,
     store::{self, Repository},
 };
-use crate::error::ClewError;
+use crate::error::{ClewError, ErrorCode};
 use clap::Subcommand;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use project::project;
+
+fn write_if_policy_current(
+    repo: &Repository,
+    policy_digest: &str,
+    output: &Path,
+    snapshot: &str,
+    projection: &model::BundleProjection,
+) -> Result<Value, ClewError> {
+    let _lock = repo.lock()?;
+    if super::endpoint_publication::load(repo)?.digest()? != policy_digest {
+        return Err(ClewError::new(
+            ErrorCode::WwConflict,
+            "endpoint publication policy changed during native render; retry with a new output directory",
+        ));
+    }
+    publish::write(output, snapshot, projection)
+}
 
 /// Callable-only projection used by opt-in immutable model Work. Unlike pages,
 /// it makes no endpoint/worker/handoff association and selects no live state.
@@ -93,16 +110,26 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     "native pages require 1 to 128 exact declaration selections",
                 ));
             }
-            let mut projection = project::project_unresolved(&checked, &selections)?;
+            let policy = super::endpoint_publication::load(&repo)?;
+            let policy_digest = policy.digest()?;
+            let mut projection = project::project_with_policy(&checked, &selections, &policy)?;
             authored::attach(&repo, &checked, &mut projection)?;
-            let manifest = publish::write(&output, &snapshot, &projection)?;
+            let manifest =
+                write_if_policy_current(&repo, &policy_digest, &output, &snapshot, &projection)?;
             Ok(
                 json!({"schema":"codeclew-native-pages-render/1.0", "status":"RENDERED",
                 "snapshot":snapshot, "inputDigest":projection.input_digest,
                 "contextDigest":projection.context_digest, "selectionDigest":projection.selection_digest,
+                "endpointPublicationPolicyDigest":policy_digest,
+                "selectedSelections":projection.pages.len(),
+                "excludedSelections":selections.len() - projection.pages.len(),
                 "projectionDigest":super::digest(&projection)?, "output":output,
                 "files":manifest["files"], "manifest":"manifest.json"}),
             )
         }
     }
 }
+
+#[cfg(test)]
+#[path = "static_pages/publication_tests.rs"]
+mod publication_tests;

@@ -1392,6 +1392,7 @@ fn make_bindings_with_retained(
         .filter(|(id, _)| reachable_sources.contains(id))
         .collect();
     let mut binding = Bindings {
+        endpoint_publication: None,
         reviewed_answers: retained
             .map(|b| b.reviewed_answers.clone())
             .unwrap_or_default(),
@@ -2755,7 +2756,12 @@ fn publish_internal_phases(
     before_switch: Option<BeforePublicationSwitch<'_>>,
 ) -> Result<Value, ClewError> {
     super::language::validate(language)?;
-    let previous = bindings::baseline(repo)?;
+    let endpoint_policy = super::endpoint_publication::load(repo)?;
+    let captured_baseline = bindings::capture_baseline(repo)?;
+    let expected_baseline = captured_baseline
+        .as_ref()
+        .map(|(receipt, _)| receipt.clone());
+    let previous = captured_baseline.map(|(receipt, binding)| (receipt.bundle, binding));
     let requested_language = language.map(str::to_owned).or_else(|| {
         previous
             .as_ref()
@@ -3189,7 +3195,45 @@ fn publish_internal_phases(
             }
         }
     }
-    let translation_gap_count = requested_language
+    let mut previous_pages = BTreeMap::new();
+    if let Some((bundle, binding)) = &previous {
+        for subject in binding.narratives.keys() {
+            let (kind, id) = subject
+                .split_once(':')
+                .ok_or_else(|| invalid("invalid retained subject"))?;
+            let folder = if kind == "service" {
+                "services"
+            } else {
+                "scenarios"
+            };
+            previous_pages.insert(
+                subject.clone(),
+                store::read(
+                    &repo.path(&format!("docs/generated/{bundle}/{folder}/{id}.json"))?,
+                    check::PORTABLE_CACHE_MAX_BYTES,
+                )?,
+            );
+        }
+    }
+    let mut endpoint_selection = super::endpoint_display::PublicationSelection::prepare(
+        &endpoint_policy,
+        &checked,
+        previous.as_ref().map(|(_, b)| b),
+        &previous_pages,
+    )?;
+    let published_narratives: BTreeMap<_, _> = narratives
+        .iter()
+        .map(|(subject, n)| {
+            (
+                subject.clone(),
+                super::endpoint_display::narrative(
+                    n,
+                    &endpoint_selection.hidden(&endpoint_policy, subject),
+                ),
+            )
+        })
+        .collect();
+    let analysis_translation_gap_count = requested_language
         .as_deref()
         .map(|language| {
             narratives
@@ -3199,7 +3243,17 @@ fn publish_internal_phases(
                 .count()
         })
         .unwrap_or(0);
-    let incomplete = translation_gap_count > 0
+    let translation_gap_count = requested_language
+        .as_deref()
+        .map(|language| {
+            published_narratives
+                .values()
+                .flat_map(|n| &n.operations)
+                .filter(|o| o.documentation_language.as_deref() != Some(language))
+                .count()
+        })
+        .unwrap_or(0);
+    let incomplete = analysis_translation_gap_count > 0
         || !checked.unresolved.is_empty()
         || !failures.is_empty()
         || narratives.values().any(|n| !n.gaps.is_empty())
@@ -3240,18 +3294,11 @@ fn publish_internal_phases(
         } else {
             "scenarios"
         };
-        let old_data: Option<Value> = if let Some((bundle, b)) = &previous {
-            if b.narratives.contains_key(subject) {
-                Some(store::read(
-                    &repo.path(&format!("docs/generated/{bundle}/{folder}/{id}.json"))?,
-                    check::PORTABLE_CACHE_MAX_BYTES,
-                )?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let hidden = endpoint_selection.hidden(&endpoint_policy, subject);
+        let mut old_data = previous_pages.remove(subject);
+        if let Some(data) = &mut old_data {
+            endpoint_selection.restore(subject, data);
+        }
         let title = services
             .get(id)
             .filter(|_| kind == "service")
@@ -3483,6 +3530,11 @@ fn publish_internal_phases(
         );
         super::status::attach(&mut data, subject, &binding);
         super::explanation_authorship::project(&mut data, subject, &binding, Some(&checked));
+        // Retain delivery before filtering, so re-inclusion restores accepted
+        // source/contract versions even after an excluded endpoint disappears.
+        endpoint_selection.retain(subject, &data, &hidden);
+        super::endpoint_display::filter_page(&mut data, &hidden);
+        let n = &published_narratives[subject];
         pending_pages.push((folder.to_owned(), id.to_owned(), data.clone()));
         let state = &binding.section_states[subject];
         let displayed = super::language::display_narrative(n, requested_language.as_deref());
@@ -3672,6 +3724,13 @@ fn publish_internal_phases(
     // diagrams), so any change to the rendered output produces a fresh
     // immutable bundle instead of conflicting with an existing one.
     super::reviewed_answers::retain_files(repo, previous.as_ref(), &binding, &mut files)?;
+    if !endpoint_policy.exclusions.is_empty()
+        || previous
+            .as_ref()
+            .is_some_and(|(_, b)| b.endpoint_publication.is_some())
+    {
+        binding.endpoint_publication = Some(endpoint_selection.clone());
+    }
     let output_digest = digest(
         &files
             .iter()
@@ -3687,13 +3746,24 @@ fn publish_internal_phases(
         .to_owned();
     let cards = cards.replace("__BUNDLE__", &bundle);
     let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><details><summary>{}</summary><p>{}</p><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),super::reader::text(ui_language,"Original declaration and source checks","Исходная декларация и проверки по коду"),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
-    let update_gaps = if failures.is_empty() {
+    let mut reader_failures = failures.clone();
+    reader_failures.retain(|key, value| {
+        let Some((subject, _)) = key.split_once('/') else {
+            return true;
+        };
+        !super::endpoint_display::failure_is_hidden(
+            key,
+            value,
+            &endpoint_selection.hidden(&endpoint_policy, subject),
+        )
+    });
+    let update_gaps = if reader_failures.is_empty() {
         String::new()
     } else {
         format!(
             "<section><h2>{}</h2><pre>{}</pre></section>",
             super::reader::text(ui_language, "Update gaps", "Пробелы обновления"),
-            escape(&serde_json::to_string_pretty(&failures).map_err(io_error)?)
+            escape(&serde_json::to_string_pretty(&reader_failures).map_err(io_error)?)
         )
     };
     let overview = format!(
@@ -3716,7 +3786,7 @@ fn publish_internal_phases(
             "Заявленные связи сервисов"
         ),
     );
-    let gap_count: usize = narratives.values().map(|n| n.gaps.len()).sum();
+    let gap_count: usize = published_narratives.values().map(|n| n.gaps.len()).sum();
     commit_bundle_with_mode(
         repo,
         &bundle,
@@ -3729,10 +3799,10 @@ fn publish_internal_phases(
         released,
         receipt_request.as_ref(),
         before_switch,
-        None,
+        Some(expected_baseline.as_ref()),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
+        json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"analysisGaps":narratives.values().map(|n|n.gaps.len()).sum::<usize>(),"endpointPublicationPolicyDigest":endpoint_policy.digest()?,"excludedEndpoints":endpoint_selection.selectors.keys().map(|id|endpoint_selection.hidden(&endpoint_policy,&format!("service:{id}")).len()).sum::<usize>(),"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
     )
 }
 
@@ -3894,6 +3964,17 @@ fn commit_bundle_with_mode(
         ));
     }
     let lock = repo.lock()?;
+    let expected_policy = binding
+        .endpoint_publication
+        .as_ref()
+        .map(|s| s.policy_digest.clone())
+        .unwrap_or(super::endpoint_publication::Policy::default().digest()?);
+    if super::endpoint_publication::load(repo)?.digest()? != expected_policy {
+        return Err(ClewError::new(
+            ErrorCode::WwConflict,
+            "endpoint publication selection changed during rendering; render again using the selected snapshot",
+        ));
+    }
     if repo.input_digest()? != input_digest {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
@@ -5276,6 +5357,7 @@ mod publication_receipt_tests {
 
     fn binding(repo: &Repository, language: Option<&str>, gap: &str) -> Bindings {
         Bindings {
+            endpoint_publication: None,
             reviewed_answers: BTreeMap::new(),
             documentation_language: language.map(str::to_owned),
             influence_scopes: BTreeMap::new(),
@@ -5346,6 +5428,61 @@ mod publication_receipt_tests {
             requested_language: language.map(str::to_owned),
             affected_subjects: BTreeSet::from([SUBJECT.into()]),
         }
+    }
+
+    #[test]
+    fn endpoint_policy_change_rejects_commit_before_reader_pointer_or_bundle() {
+        let (_directory, repo) = repository();
+        let original_bundle = "a".repeat(64);
+        commit(
+            &repo,
+            &original_bundle,
+            binding(&repo, None, "original"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let previous = bindings::baseline(&repo).unwrap().unwrap();
+        let previous_bytes = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+        let prepared = previous.1.clone();
+        let mut policy = super::super::endpoint_publication::Policy::default();
+        policy
+            .exclusions
+            .insert(super::super::endpoint_publication::Selector {
+                service: "fixture".into(),
+                scope: "main".into(),
+                symbol: "method:Fixture#submit()V".into(),
+            });
+        repo.atomic(
+            "publication/endpoint-selection.json",
+            &bytes(&policy).unwrap(),
+        )
+        .unwrap();
+        let new_bundle = "b".repeat(64);
+        let error = commit(
+            &repo,
+            &new_bundle,
+            prepared,
+            Some(&previous),
+            Some(&previous_bytes),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::WwConflict);
+        assert_eq!(
+            fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+            previous_bytes
+        );
+        assert!(
+            !repo
+                .path(&format!("docs/generated/{new_bundle}"))
+                .unwrap()
+                .exists()
+        );
+        bindings::verify_outputs(&repo, &previous.0, &previous.1).unwrap();
     }
 
     #[test]

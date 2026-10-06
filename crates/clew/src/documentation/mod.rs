@@ -19,6 +19,12 @@ pub mod contracts;
 mod csharp;
 pub mod dataflow;
 mod endpoint_context;
+mod endpoint_display;
+pub mod endpoint_publication;
+#[cfg(test)]
+mod endpoint_publication_tests;
+#[cfg(test)]
+mod endpoint_render_tests;
 pub mod entities;
 pub mod evidence_package;
 mod explanation_authorship;

@@ -154,6 +154,9 @@ fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Bindings {
+    /// Publication selection never removes retained authoring or source facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_publication: Option<super::endpoint_display::PublicationSelection>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reviewed_answers: BTreeMap<String, super::reviewed_answers::PublishedAnswer>,
     /// Presentation target only; does not change source-analysis identity.
@@ -1117,6 +1120,7 @@ mod tests {
             ),
         ]);
         Bindings {
+            endpoint_publication: None,
             reviewed_answers: BTreeMap::new(),
             documentation_language: None,
             influence_scopes: BTreeMap::new(),

@@ -33,6 +33,11 @@ struct CheckReportBinding {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Select which exact endpoint callables appear in published documentation.
+    Endpoint {
+        #[command(subcommand)]
+        command: super::endpoint_publication::Command,
+    },
     /// Project selected retained native declarations into linked static documentation.
     Pages {
         #[command(subcommand)]
@@ -333,6 +338,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
 
 fn run_inner(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Endpoint { command } => super::endpoint_publication::run(command),
         Command::Pages { command } => super::static_pages::run(command),
         Command::Dsl { command } => super::flow_dsl::run(command),
         Command::Snapshot { command } => super::snapshot_pins::run(command),

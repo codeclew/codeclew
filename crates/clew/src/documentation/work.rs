@@ -4353,6 +4353,7 @@ mod section_context_tests {
         .unwrap();
         assert_eq!(fragment.dependencies, work.influence);
         let binding = bindings::Bindings {
+            endpoint_publication: None,
             reviewed_answers: BTreeMap::new(),
             documentation_language: None,
             influence_scopes: BTreeMap::new(),

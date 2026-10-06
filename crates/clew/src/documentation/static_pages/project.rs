@@ -7,7 +7,7 @@ use crate::documentation::{
     check::Check, digest, invalid, notes::Association, store::RepositoryInputs,
 };
 use crate::error::ClewError;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjection, ClewError> {
     if selections.iter().any(|s| !s.authored_paragraphs.is_empty()) {
@@ -18,6 +18,85 @@ pub fn project(checked: &Check, selections: &[Selection]) -> Result<BundleProjec
     project_unresolved(checked, selections)
 }
 pub(super) fn project_unresolved(
+    checked: &Check,
+    selections: &[Selection],
+) -> Result<BundleProjection, ClewError> {
+    let mut projection = project_declarations(checked, selections)?;
+    attach(checked, &mut projection)?;
+    Ok(projection)
+}
+
+pub(super) fn project_with_policy(
+    checked: &Check,
+    selections: &[Selection],
+    policy: &crate::documentation::endpoint_publication::Policy,
+) -> Result<BundleProjection, ClewError> {
+    // Validate every requested declaration and captured note against this Check
+    // before exclusions can hide an invalid selection.
+    let mut projection = project_declarations(checked, selections)?;
+    let mut names = BTreeSet::new();
+    for page in &projection.pages {
+        if !crate::documentation::store::valid_id(&page.id)
+            || !names.insert(page.id.to_ascii_lowercase())
+        {
+            return Err(invalid(
+                "native page IDs must be safe and unique ignoring ASCII case",
+            ));
+        }
+    }
+    if !policy.exclusions.is_empty() {
+        let selectors: BTreeMap<_, _> = selections
+            .iter()
+            .map(|selection| selection.service.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|service| {
+                (
+                    service,
+                    crate::documentation::endpoint_publication::selectors_for_declarations(
+                        &checked.services[service],
+                    ),
+                )
+            })
+            .collect();
+        let mut retained = Vec::new();
+        for page in projection.pages {
+            let excluded = selectors[page.selection.service.as_str()]
+                .get(&page.selection.endpoint_declaration)
+                .is_some_and(|selector| policy.excludes(selector));
+            // Native syntax projections can lack an admitted publication scope.
+            // Only a resolved exact identity may match an explicit exclusion.
+            if !excluded {
+                retained.push(page);
+            }
+        }
+        projection.requested_selection_digest = Some(projection.selection_digest.clone());
+        projection.endpoint_publication_policy_digest = Some(policy.digest()?);
+        projection.selection_digest = digest(
+            &retained
+                .iter()
+                .map(|page| &page.selection)
+                .collect::<Vec<_>>(),
+        )?;
+        projection.pages = retained;
+        projection.schema = base_projection_shape(&mut projection.pages).into();
+    }
+    // Linked process navigation and reverse memberships see only effective pages;
+    // the immutable Check still supplies excluded callable bodies as callees.
+    attach(checked, &mut projection)?;
+    Ok(projection)
+}
+
+fn attach(checked: &Check, projection: &mut BundleProjection) -> Result<(), ClewError> {
+    super::linked::attach(checked, projection)?;
+    super::data_state::attach(checked, projection)?;
+    if uses_source_invocations(projection) {
+        projection.schema = SOURCE_INVOCATION_SCHEMA.into();
+    }
+    Ok(())
+}
+
+fn project_declarations(
     checked: &Check,
     selections: &[Selection],
 ) -> Result<BundleProjection, ClewError> {
@@ -204,44 +283,42 @@ pub(super) fn project_unresolved(
             data_state: None,
         });
     }
-    let has_declaration_only = pages.iter().any(|page| {
-        page.projection_kind
-            .is_some_and(ProjectionKind::is_declaration_view)
-    });
-    let has_compiler_control_flow = pages
-        .iter()
-        .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow));
-    if has_declaration_only {
-        for page in &mut pages {
-            page.projection_kind
-                .get_or_insert(ProjectionKind::SourceBehavior);
-        }
-    } else {
-        for page in &mut pages {
-            page.projection_kind = None;
-        }
-    }
-    let mut projection = BundleProjection {
-        schema: if has_compiler_control_flow {
-            CONTROL_FLOW_SCHEMA
-        } else if has_declaration_only {
-            DECLARATION_SCHEMA
-        } else {
-            SCHEMA
-        }
-        .into(),
+    let schema = base_projection_shape(&mut pages);
+    Ok(BundleProjection {
+        schema: schema.into(),
         input_digest: checked.input_digest.clone(),
         context_digest: checked.context_digest.clone(),
         selection_digest: digest(&selections)?,
+        endpoint_publication_policy_digest: None,
+        requested_selection_digest: None,
         pages,
         source_call_graph: None,
-    };
-    super::linked::attach(checked, &mut projection)?;
-    super::data_state::attach(checked, &mut projection)?;
-    if uses_source_invocations(&projection) {
-        projection.schema = SOURCE_INVOCATION_SCHEMA.into();
+    })
+}
+
+fn base_projection_shape(pages: &mut [PageContent]) -> &'static str {
+    let declaration_view = pages.iter().any(|page| {
+        page.projection_kind
+            .is_some_and(ProjectionKind::is_declaration_view)
+    });
+    let compiler_control_flow = pages
+        .iter()
+        .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow));
+    for page in pages {
+        if declaration_view {
+            page.projection_kind
+                .get_or_insert(ProjectionKind::SourceBehavior);
+        } else {
+            page.projection_kind = None;
+        }
     }
-    Ok(projection)
+    if compiler_control_flow {
+        CONTROL_FLOW_SCHEMA
+    } else if declaration_view {
+        DECLARATION_SCHEMA
+    } else {
+        SCHEMA
+    }
 }
 
 pub(super) fn uses_source_invocations(projection: &BundleProjection) -> bool {
