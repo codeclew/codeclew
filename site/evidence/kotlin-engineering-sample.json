@@ -64,5 +64,5 @@
       "code": "val manifest = unhashed[\"semanticInputManifest\"] ?: unhashed\nval digest = MessageDigest.getInstance(\"SHA-256\")\n    .digest(canonicalSemanticJson(manifest).toByteArray())\n...\nput(\"semanticInputManifestHash\", digest)"
     }
   ],
-  "methodology": "https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf"
+  "methodology": "https://github.com/codeclew/codeclew/raw/f0b874f5f8e0d6e5b96a2f5f65592c7c4e07cb0a/output/pdf/codeclew-kotlin-evidence-study.pdf"
 }
