@@ -207,7 +207,11 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
             .filter_map(|d| d.citation_id.as_deref())
             .chain(state.gaps.iter().filter_map(|g| g.citation_id.as_deref()))
             .collect();
-        used_spans.extend(node.calls.iter().map(|call| call.call.citation_id.as_str()));
+        used_spans.extend(
+            node.calls
+                .iter()
+                .filter_map(|edge| edge.call.as_ref().map(|call| call.citation_id.as_str())),
+        );
         if let Some(citation) = node.callable.citation_id.as_deref() {
             used_spans.insert(citation);
         }
@@ -268,10 +272,15 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
                 .map(|id| reference(work, "DEPENDENCY", id))
                 .collect::<Result<Vec<_>, _>>()?
         );
-        let call_sites:Vec<_>=node.calls.iter().map(|call| {
-            let span=&call.call.citation_id;
-            Ok(json!({"occurrence":call.occurrence_path,"sourceSpan":span,"citationId":bindings.get(span).and_then(|b|b["reference"].as_str()).ok_or_else(||invalid("sourceDataContext unknown call span"))?,"status":call.status,"targetNode":call.target_node,"targetAuthority":"DECLARED_TARGET_SOURCE_CONDITIONAL"}))
-        }).collect::<Result<_,ClewError>>()?;
+        let call_sites: Vec<_> = node
+            .calls
+            .iter()
+            .filter_map(|call| call.call.as_ref().map(|projection| (call, projection)))
+            .map(|(call, projection)| {
+                let span = &projection.citation_id;
+                Ok(json!({"occurrence":call.occurrence_path,"sourceSpan":span,"citationId":bindings.get(span).and_then(|b|b["reference"].as_str()).ok_or_else(||invalid("sourceDataContext unknown call span"))?,"status":call.status,"targetNode":call.target_node,"targetAuthority":"DECLARED_TARGET_SOURCE_CONDITIONAL"}))
+            })
+            .collect::<Result<_, ClewError>>()?;
         compact_state(&mut state)?;
         let variable_bindings: Vec<_> = observations
             .values()

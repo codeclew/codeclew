@@ -471,7 +471,7 @@ fn derive_tree(
     )
 }
 
-fn validate_source_outline(
+pub(in crate::documentation::static_pages) fn validate_source_outline(
     service: &str,
     revision: &str,
     observations: &std::collections::BTreeMap<String, Observation>,

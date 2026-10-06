@@ -84,9 +84,9 @@ pub(super) fn project_unresolved(
             .flatten()
             .any(|callable| callable.kind == ProjectionKind::CompilerControlFlow);
         let declaration_view = declaration_only || compiler_control_flow;
-        if declaration_view && selection.expand_source_calls {
+        if declaration_view && selection.expand_source_calls && !selected_kotlin {
             return Err(invalid(
-                "expandSourceCalls is unavailable for declaration-only and compiler-control-flow pages",
+                "expandSourceCalls on declaration-only pages requires an admitted Kotlin function",
             ));
         }
         if declaration_view && selection.expand_data_state {

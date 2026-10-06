@@ -390,7 +390,7 @@ fn citation_id(source: &Source, start: usize, end: usize) -> String {
     )
 }
 
-fn expected_citation(source: &Source) -> Citation {
+pub(in crate::documentation::static_pages) fn expected_citation(source: &Source) -> Citation {
     let start = 0;
     let end = source.text.len();
     let start_line = source.start_line;
@@ -426,11 +426,28 @@ pub(in crate::documentation::static_pages) fn validate_page(
     page: &super::super::model::PageContent,
     callable: &CallableProjection,
 ) -> Result<(), ClewError> {
+    validate_node(
+        &page.selection.service,
+        &page.service_revision,
+        &page.observations,
+        &page.sources,
+        &page.citations,
+        callable,
+    )
+}
+
+pub(in crate::documentation::static_pages) fn validate_node(
+    service: &str,
+    revision: &str,
+    observations: &BTreeMap<String, Observation>,
+    sources: &BTreeMap<String, Source>,
+    citations: &BTreeMap<String, Citation>,
+    callable: &CallableProjection,
+) -> Result<(), ClewError> {
     let Some(retained) = &callable.retained_call_sites else {
         return Ok(());
     };
-    let owner = page
-        .observations
+    let owner = observations
         .get(&callable.declaration_id)
         .ok_or_else(|| invalid("retained Kotlin call-site owner is not retained"))?;
     let is_kotlin_function = owner.normalized["schema"] == DECLARATION_SCHEMA
@@ -444,23 +461,23 @@ pub(in crate::documentation::static_pages) fn validate_page(
         .as_str()
         .ok_or_else(|| invalid("retained Kotlin call-site owner scope is missing"))?;
     let owner_key = NeutralExactCallSiteOwnerKey {
-        service: page.selection.service.clone(),
+        service: service.to_owned(),
         scope: scope.to_owned(),
         symbol: callable.symbol.clone(),
     };
     let owner_source = match owner.source_ids.as_slice() {
-        [id] => page.sources.get(id).filter(|source| source.id == *id),
+        [id] => sources.get(id).filter(|source| source.id == *id),
         _ => None,
     };
-    let candidates = candidate_relations(&page.observations, &callable.symbol, scope);
+    let candidates = candidate_relations(observations, &callable.symbol, scope);
     let expected = derive_projection(
-        &page.selection.service,
-        &page.service_revision,
+        service,
+        revision,
         &owner_key,
         owner,
         owner_source,
         &candidates,
-        &page.sources,
+        sources,
         callable.citation_id.clone(),
     )?;
     if retained != &expected {
@@ -470,11 +487,10 @@ pub(in crate::documentation::static_pages) fn validate_page(
     }
     if expected.gaps.is_empty() {
         for site in &expected.sites {
-            let source = page
-                .sources
+            let source = sources
                 .get(&site.source_id)
                 .ok_or_else(|| invalid("retained Kotlin call-site source is missing"))?;
-            if page.citations.get(&site.citation_id) != Some(&expected_citation(source)) {
+            if citations.get(&site.citation_id) != Some(&expected_citation(source)) {
                 return Err(invalid(
                     "retained Kotlin call-site citation differs from its exact source text",
                 ));
@@ -483,7 +499,7 @@ pub(in crate::documentation::static_pages) fn validate_page(
     } else if expected.gaps[0]
         .citation_id
         .as_deref()
-        .is_none_or(|id| page.citations.get(id).is_none())
+        .is_none_or(|id| citations.get(id).is_none())
     {
         return Err(invalid(
             "retained Kotlin call-site limitation has no declaration citation",

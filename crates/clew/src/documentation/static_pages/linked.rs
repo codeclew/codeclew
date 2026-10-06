@@ -11,7 +11,8 @@ use crate::{
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-const GRAPH_SCHEMA: &str = "codeclew-native-source-calls/1.0";
+const GRAPH_SCHEMA_JAVA: &str = "codeclew-native-source-calls/1.0";
+const GRAPH_SCHEMA_KOTLIN: &str = "codeclew-native-source-calls/1.1";
 const EXAMINED_SCHEMA: &str = "codeclew-native-examined-source/1.0";
 const AUTHORITY: &str = "EXAMINED_DOCUMENTATION_CONTEXT_NOT_RUNTIME_IMPACT";
 const MAX_DEPTH: usize = 2;
@@ -39,17 +40,43 @@ fn key(identity: &CallableKey) -> Result<String, ClewError> {
 
 fn node(evidence: &ServiceEvidence, declaration: &str) -> Result<SourceCallNode, ClewError> {
     let mut ctx = Context::new(evidence);
-    let callable = source::project_java(&mut ctx, declaration)?;
+    let callable = source::project_callable(&mut ctx, declaration, false)?;
     let id = key(&callable.key)?;
+    let kotlin = source::is_kotlin_candidate(&evidence.observations[declaration]);
     let mut calls = Vec::new();
-    edges(
-        &callable.projection.steps,
-        "body",
-        &callable.key.symbol,
-        &callable.key.scope,
-        &ctx.observations,
-        &mut calls,
-    );
+    if kotlin {
+        if let Some(retained) = &callable.projection.retained_call_sites {
+            for site in &retained.sites {
+                calls.push(SourceCallEdge {
+                    occurrence_path: None,
+                    statement_id: None,
+                    source_identity: callable.key.symbol.clone(),
+                    target_scope: callable.key.scope.clone(),
+                    call_source_ids: vec![site.source_id.clone()],
+                    relation_digest: Some(site.normalized_digest.clone()),
+                    call: None,
+                    conditions: None,
+                    reachable: None,
+                    exact_call_site: Some(site.clone()),
+                    target_declaration: None,
+                    target_node: None,
+                    status: "UNEXPANDED".into(),
+                    receiver_lineage: "UNRESOLVED".into(),
+                    runtime_dispatch: "UNRESOLVED".into(),
+                    frontiers: vec![],
+                });
+            }
+        }
+    } else {
+        edges(
+            &callable.projection.steps,
+            "body",
+            &callable.key.symbol,
+            &callable.key.scope,
+            &ctx.observations,
+            &mut calls,
+        );
+    }
     Ok(SourceCallNode {
         id,
         service: callable.key.service,
@@ -60,6 +87,7 @@ fn node(evidence: &ServiceEvidence, declaration: &str) -> Result<SourceCallNode,
         observations: ctx.observations,
         sources: ctx.sources,
         examined_source_digest: String::new(),
+        node_projection_kind: kotlin.then_some(callable.kind),
         data_state: None,
     })
 }
@@ -80,15 +108,16 @@ fn edges(
                 .as_ref()
                 .and_then(|id| observations.get(id));
             out.push(SourceCallEdge {
-                occurrence_path: format!("{path}/call/{ordinal}"),
-                statement_id: statement.id.clone(),
+                occurrence_path: Some(format!("{path}/call/{ordinal}")),
+                statement_id: Some(statement.id.clone()),
                 source_identity: owner.into(),
                 target_scope: scope.into(),
                 call_source_ids: relation.map(|r| r.source_ids.clone()).unwrap_or_default(),
                 relation_digest: relation.map(|r| r.digest.clone()),
-                call: call.clone(),
-                conditions: statement.conditions.clone(),
-                reachable: statement.reachable,
+                call: Some(call.clone()),
+                conditions: Some(statement.conditions.clone()),
+                reachable: Some(statement.reachable),
+                exact_call_site: None,
                 target_declaration: None,
                 target_node: None,
                 status: "UNEXPANDED".into(),
@@ -227,7 +256,7 @@ pub(super) fn build_roots(
     roots: &[(String, String)],
 ) -> Result<SourceCallGraph, ClewError> {
     let mut graph = SourceCallGraph {
-        schema: GRAPH_SCHEMA.into(),
+        schema: GRAPH_SCHEMA_JAVA.into(),
         authority: AUTHORITY.into(),
         max_depth: MAX_DEPTH,
         max_additional_bodies: MAX_ADDITIONAL_BODIES,
@@ -257,22 +286,39 @@ pub(super) fn build_roots(
         let mut current = graph.nodes[&id].clone();
         let evidence = &checked.services[&current.service];
         for edge in &mut current.calls {
-            let citation = edge.call.citation_id.clone();
-            if edge.call.phase == "CREATION" {
+            if edge.exact_call_site.is_some() {
+                expand_kotlin_edge(
+                    evidence,
+                    edge,
+                    depth,
+                    &mut graph,
+                    &mut additional_bodies,
+                    &mut additional_bytes,
+                    &mut pending,
+                )?;
+                continue;
+            }
+            let Some(call) = edge.call.as_mut() else {
+                return Err(crate::documentation::invalid(
+                    "source-call edge has neither Java call nor Kotlin exact site",
+                ));
+            };
+            let citation = call.citation_id.clone();
+            if call.phase == "CREATION" {
                 edge.status = "CONSTRUCTION_NOT_EXPANDED".into();
                 continue;
             }
-            if edge.call.authority != "COMPILER_EXACT_CALL_RELATION" {
+            if call.authority != "COMPILER_EXACT_CALL_RELATION" {
                 edge.status = "EXACT_CALL_UNAVAILABLE".into();
                 edge.frontiers.push(frontier("EXACT_CALL_UNAVAILABLE", "No unique retained compiler call occurrence; no target body or process is inferred.", &citation));
                 continue;
             }
-            if edge.call.external_boundary.is_some() {
+            if call.external_boundary.is_some() {
                 edge.status = "DEPENDENCY_BOUNDARY".into();
                 edge.frontiers.push(frontier("DEPENDENCY_BODY_NOT_EXPANDED", "Dependency source availability does not establish an implementation body or runtime dispatch.", &citation));
                 continue;
             }
-            let target = edge.call.target.as_deref().unwrap_or("");
+            let target = call.target.as_deref().unwrap_or("");
             let candidates: Vec<_> = evidence
                 .observations
                 .values()
@@ -387,11 +433,16 @@ pub(super) fn build_roots(
             }
             edge.target_node = Some(target_id);
             edge.status = "RETAINED_DECLARED_BODY".into();
-            edge.call
-                .gaps
-                .retain(|g| g.code != "HELPER_BODY_NOT_EXPANDED");
+            call.gaps.retain(|g| g.code != "HELPER_BODY_NOT_EXPANDED");
         }
         graph.nodes.insert(id, current);
+    }
+    if graph
+        .nodes
+        .values()
+        .any(|node| node.node_projection_kind.is_some())
+    {
+        graph.schema = GRAPH_SCHEMA_KOTLIN.into();
     }
     // Back edges remain explicit. Cached records are never recursively copied.
     let mut active = BTreeSet::new();
@@ -401,15 +452,157 @@ pub(super) fn build_roots(
         cycles_from(id, &graph, &mut active, &mut complete, &mut cycles);
     }
     for (id, path) in cycles {
-        if let Some(edge) = graph
-            .nodes
-            .get_mut(&id)
-            .and_then(|n| n.calls.iter_mut().find(|e| e.occurrence_path == path))
-        {
-            edge.frontiers.push(frontier("SOURCE_CALL_CYCLE_FRONTIER", "The retained source graph returns to an already active callable; this back edge is navigation, not recursive body expansion or runtime recursion proof.", &edge.call.citation_id));
+        if let Some(edge) = graph.nodes.get_mut(&id).and_then(|n| {
+            n.calls.iter_mut().find(|e| {
+                e.occurrence_path.as_deref() == Some(path.as_str())
+                    || e.exact_call_site
+                        .as_ref()
+                        .is_some_and(|site| site.relation_id == path)
+            })
+        }) {
+            let citation = edge
+                .call
+                .as_ref()
+                .map(|call| call.citation_id.as_str())
+                .or_else(|| {
+                    edge.exact_call_site
+                        .as_ref()
+                        .map(|site| site.citation_id.as_str())
+                })
+                .unwrap_or("");
+            edge.frontiers.push(frontier("SOURCE_CALL_CYCLE_FRONTIER", "The retained source graph returns to an already active callable; this back edge is navigation, not recursive body expansion or runtime recursion proof.", citation));
         }
     }
     Ok(graph)
+}
+
+fn kotlin_body_envelope(observation: &crate::documentation::model::Observation) -> bool {
+    let documentation = &observation.normalized["documentation"];
+    documentation["schema"] == "codeclew-kotlin-documentation-flow/1.0"
+        && documentation["authority"] == "KOTLIN_PSI_WITH_K2_CALL_TARGETS"
+        && documentation["events"].is_array()
+        && documentation["boundaries"].is_array()
+}
+
+pub(super) fn expand_kotlin_edge(
+    evidence: &ServiceEvidence,
+    edge: &mut SourceCallEdge,
+    depth: usize,
+    graph: &mut SourceCallGraph,
+    additional_bodies: &mut usize,
+    additional_bytes: &mut usize,
+    pending: &mut VecDeque<(String, usize)>,
+) -> Result<(), ClewError> {
+    let site = edge
+        .exact_call_site
+        .as_ref()
+        .ok_or_else(|| crate::documentation::invalid("Kotlin exact call site disappeared"))?;
+    let citation = site.citation_id.as_str();
+    let target = site.target_identity.as_str();
+    let candidates: Vec<_> = evidence
+        .observations
+        .values()
+        .filter(|observation| {
+            source::is_kotlin_candidate(observation)
+                && observation.kind == "SYMBOL"
+                && observation.service == evidence.service
+                && observation.normalized["schema"] == "declaration-descriptor/0.1"
+                && observation.normalized["resolution"] == "PROVEN"
+                && observation.normalized["declarationKind"] == "FUNCTION"
+                && observation.normalized["symbolIdentity"] == target
+                && observation.symbol == target
+                && observation.normalized["scope"] == edge.target_scope
+        })
+        .collect();
+    let ambiguous = evidence
+        .boundaries
+        .iter()
+        .any(|boundary| boundary == &format!("SCOPE_AMBIGUOUS:{target}"));
+    let declaration = match candidates.as_slice() {
+        [observation] if !ambiguous => *observation,
+        _ => {
+            let (code, detail) = if ambiguous || candidates.len() > 1 {
+                (
+                    "CALL_TARGET_AMBIGUOUS",
+                    "The exact Kotlin target has no unique admitted function declaration in this compilation scope.",
+                )
+            } else if evidence.observations.values().any(|observation| {
+                source::is_kotlin_candidate(observation) && observation.symbol == target
+            }) {
+                (
+                    "CALL_TARGET_SCOPE_MISMATCH",
+                    "A Kotlin declaration in another compilation scope is not a substitute for the exact target.",
+                )
+            } else {
+                (
+                    "CALL_TARGET_BODY_NOT_CAPTURED",
+                    "The exact Kotlin target has no retained repository function declaration.",
+                )
+            };
+            edge.status = code.into();
+            edge.frontiers.push(frontier(code, detail, citation));
+            return Ok(());
+        }
+    };
+    edge.target_declaration = Some(declaration.id.clone());
+    if !kotlin_body_envelope(declaration) {
+        edge.status = "CALL_TARGET_BODY_NOT_CAPTURED".into();
+        edge.frontiers.push(frontier(
+            "CALL_TARGET_BODY_NOT_CAPTURED",
+            "The exact Kotlin declaration has no intact admitted documentation-flow body envelope; its declaration identity is retained without examining a body.",
+            citation,
+        ));
+        return Ok(());
+    }
+
+    let target_id = root_key(evidence, &declaration.id)?;
+    if !graph.nodes.contains_key(&target_id) {
+        if depth >= MAX_DEPTH {
+            edge.status = "DEPTH_FRONTIER".into();
+            edge.frontiers.push(frontier("SOURCE_CALL_DEPTH_FRONTIER", "The fixed source-call expansion depth was reached; the target body remains unexamined.", citation));
+            return Ok(());
+        }
+        if *additional_bodies >= MAX_ADDITIONAL_BODIES {
+            edge.status = "BODY_BUDGET_FRONTIER".into();
+            edge.frontiers.push(frontier("SOURCE_CALL_BODY_BUDGET_FRONTIER", "The fixed additional-body budget was reached; this target is not silently omitted.", citation));
+            return Ok(());
+        }
+        let target_node = match node(evidence, &declaration.id) {
+            Ok(node) => node,
+            Err(error)
+                if error.code == crate::error::ErrorCode::InvalidInput
+                    && (error.message.starts_with("Kotlin ")
+                        || error.message.starts_with("retained Kotlin ")) =>
+            {
+                edge.status = "BODY_UNAVAILABLE".into();
+                edge.frontiers.push(frontier(
+                    "CALL_TARGET_BODY_UNAVAILABLE",
+                    "The exact Kotlin declaration was identified, but its retained source evidence did not pass body admission.",
+                    citation,
+                ));
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let bytes: usize = target_node
+            .sources
+            .values()
+            .map(|source| source.text.len())
+            .sum();
+        if bytes > MAX_ADDITIONAL_SOURCE_BYTES.saturating_sub(*additional_bytes) {
+            edge.status = "SOURCE_BYTES_FRONTIER".into();
+            edge.frontiers.push(frontier("SOURCE_CALL_BYTES_FRONTIER", "The fixed additional retained-source byte budget was reached; this target remains unexamined.", citation));
+            return Ok(());
+        }
+        *additional_bodies += 1;
+        *additional_bytes += bytes;
+        graph.nodes.insert(target_id.clone(), target_node);
+        graph.schema = GRAPH_SCHEMA_KOTLIN.into();
+        pending.push_back((target_id.clone(), depth + 1));
+    }
+    edge.target_node = Some(target_id);
+    edge.status = "RETAINED_DECLARED_BODY".into();
+    Ok(())
 }
 
 fn cycles_from(
@@ -426,7 +619,16 @@ fn cycles_from(
     for edge in &graph.nodes[id].calls {
         if let Some(target) = &edge.target_node {
             if active.contains(target) {
-                cycles.insert((id.into(), edge.occurrence_path.clone()));
+                let occurrence = edge
+                    .occurrence_path
+                    .clone()
+                    .or_else(|| {
+                        edge.exact_call_site
+                            .as_ref()
+                            .map(|site| site.relation_id.clone())
+                    })
+                    .unwrap_or_default();
+                cycles.insert((id.into(), occurrence));
             } else {
                 cycles_from(target, graph, active, complete, cycles);
             }
@@ -460,7 +662,10 @@ fn decorate(steps: &mut [Statement], path: &str, calls: &[SourceCallEdge]) {
         let path = format!("{path}/{index}");
         for (ordinal, call) in row.calls.iter_mut().enumerate() {
             let occurrence = format!("{path}/call/{ordinal}");
-            if let Some(edge) = calls.iter().find(|e| e.occurrence_path == occurrence) {
+            if let Some(edge) = calls
+                .iter()
+                .find(|e| e.occurrence_path.as_deref() == Some(occurrence.as_str()))
+            {
                 call.expanded_node = edge.target_node.clone();
                 if call.expanded_node.is_some() {
                     call.gaps.retain(|g| g.code != "HELPER_BODY_NOT_EXPANDED");
@@ -513,6 +718,8 @@ pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
         .collect();
     let conditions = |edge: &SourceCallEdge| {
         edge.conditions
+            .as_deref()
+            .unwrap_or_default()
             .iter()
             .map(|c| {
                 // Only projector-generated opaque continuation labels contain step IDs.
@@ -527,27 +734,411 @@ pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
             })
             .collect::<Vec<_>>()
     };
-    let calls: Vec<_> = node.calls.iter().map(|e| json!({
-        "occurrencePath":e.occurrence_path,"expression":e.call.expression,"receiver":e.call.receiver,
-        "arguments":e.call.arguments,"target":e.call.target,"scope":e.target_scope,
-        "authority":e.call.authority,"phase":e.call.phase,"conditions":conditions(e),"reachable":e.reachable,
-        "bodyStatus":e.status,"targetNode":e.target_node,
-        "frontiers":e.frontiers.iter().map(|g|g.code.as_str()).collect::<Vec<_>>(),
-        "callGaps":e.call.gaps.iter().map(|g|g.code.as_str()).collect::<Vec<_>>()
-    })).collect();
-    digest(&(
-        EXAMINED_SCHEMA,
-        &node.service,
-        &node.scope,
-        &node.callable.symbol,
-        declarations.into_iter().collect::<Vec<_>>(),
-        calls,
-        node.callable
-            .gaps
+    let calls: Vec<_> = node
+        .calls
+        .iter()
+        .map(|edge| {
+            if let Some(call) = &edge.call {
+                json!({
+                    "occurrencePath":edge.occurrence_path,"expression":call.expression,"receiver":call.receiver,
+                    "arguments":call.arguments,"target":call.target,"scope":edge.target_scope,
+                    "authority":call.authority,"phase":call.phase,"conditions":conditions(edge),"reachable":edge.reachable,
+                    "bodyStatus":edge.status,"targetNode":edge.target_node,
+                    "frontiers":edge.frontiers.iter().map(|g|g.code.as_str()).collect::<Vec<_>>(),
+                    "callGaps":call.gaps.iter().map(|g|g.code.as_str()).collect::<Vec<_>>()
+                })
+            } else {
+                let site = edge.exact_call_site.as_ref().unwrap();
+                json!({
+                    "relationId":site.relation_id,"relationDigest":site.normalized_digest,
+                    "expression":site.expression,"target":site.target_identity,"scope":edge.target_scope,
+                    "sourceDigest":site.source_digest,"byteStart":site.compilation_byte_start,
+                    "byteEnd":site.compilation_byte_end,"bodyStatus":edge.status,
+                    "targetNode":edge.target_node,
+                    "frontiers":edge.frontiers.iter().map(|g|g.code.as_str()).collect::<Vec<_>>()
+                })
+            }
+        })
+        .collect();
+    if let Some(kind) = node.node_projection_kind {
+        let kotlin_sites = node
+            .calls
             .iter()
-            .map(|g| g.code.as_str())
-            .collect::<Vec<_>>(),
-    ))
+            .filter_map(|edge| edge.exact_call_site.as_ref())
+            .map(|site| {
+                (
+                    site.relation_id.as_str(),
+                    site.normalized_digest.as_str(),
+                    site.target_identity.as_str(),
+                    site.source_digest.as_str(),
+                    site.compilation_byte_start,
+                    site.compilation_byte_end,
+                )
+            })
+            .collect::<Vec<_>>();
+        digest(&(
+            EXAMINED_SCHEMA,
+            &node.service,
+            &node.scope,
+            &node.callable.symbol,
+            declarations.into_iter().collect::<Vec<_>>(),
+            calls,
+            node.callable
+                .gaps
+                .iter()
+                .map(|g| g.code.as_str())
+                .collect::<Vec<_>>(),
+            kind,
+            &node.callable.source_outline,
+            &node.callable.control_flow,
+            kotlin_sites,
+        ))
+    } else {
+        // Keep the frozen Java digest input byte-for-byte unchanged.
+        digest(&(
+            EXAMINED_SCHEMA,
+            &node.service,
+            &node.scope,
+            &node.callable.symbol,
+            declarations.into_iter().collect::<Vec<_>>(),
+            calls,
+            node.callable
+                .gaps
+                .iter()
+                .map(|g| g.code.as_str())
+                .collect::<Vec<_>>(),
+        ))
+    }
+}
+
+/// Revalidate the portable graph envelope before publishing it. This checks
+/// Kotlin’s copied exact-site records independently of the selected-page copy
+/// and leaves the frozen Java edge representation intact.
+pub(super) fn validate_graph(
+    graph: &SourceCallGraph,
+    pages: &[PageContent],
+) -> Result<(), ClewError> {
+    if graph.authority != AUTHORITY
+        || graph.max_depth != MAX_DEPTH
+        || graph.max_additional_bodies != MAX_ADDITIONAL_BODIES
+        || graph.max_additional_source_bytes != MAX_ADDITIONAL_SOURCE_BYTES
+    {
+        return Err(crate::documentation::invalid(
+            "source-call graph authority or fixed expansion limits are inconsistent",
+        ));
+    }
+    let has_kotlin = graph
+        .nodes
+        .values()
+        .any(|node| node.node_projection_kind.is_some());
+    if (has_kotlin && graph.schema != GRAPH_SCHEMA_KOTLIN)
+        || (!has_kotlin && graph.schema != GRAPH_SCHEMA_JAVA)
+    {
+        return Err(crate::documentation::invalid(
+            "source-call graph schema does not match its retained node shapes",
+        ));
+    }
+    let mut service_revisions = BTreeMap::new();
+    for page in pages {
+        if service_revisions
+            .insert(
+                page.selection.service.as_str(),
+                page.service_revision.as_str(),
+            )
+            .is_some_and(|revision| revision != page.service_revision)
+        {
+            return Err(crate::documentation::invalid(
+                "source-call graph pages disagree on a service revision",
+            ));
+        }
+    }
+    for (id, node) in &graph.nodes {
+        let owner = node.observations.get(&node.callable.declaration_id);
+        let kotlin =
+            node.node_projection_kind.is_some() || owner.is_some_and(source::is_kotlin_candidate);
+        if !kotlin {
+            for edge in &node.calls {
+                if edge.call.is_none()
+                    || edge.exact_call_site.is_some()
+                    || edge.occurrence_path.is_none()
+                    || edge.statement_id.is_none()
+                    || edge.conditions.is_none()
+                    || edge.reachable.is_none()
+                {
+                    return Err(crate::documentation::invalid(
+                        "Java source-call edge has an incomplete or Kotlin-shaped record",
+                    ));
+                }
+            }
+            continue;
+        }
+        let owner = owner.ok_or_else(|| {
+            crate::documentation::invalid("Kotlin source-call node owner is not retained")
+        })?;
+        let computed_id = key(&CallableKey {
+            service: node.service.clone(),
+            scope: node.scope.clone(),
+            symbol: node.callable.symbol.clone(),
+        })?;
+        if node.id != *id
+            || computed_id != *id
+            || owner.id != node.callable.declaration_id
+            || owner.kind != "SYMBOL"
+            || owner.service != node.service
+            || owner.symbol != node.callable.symbol
+            || owner.digest != digest(&owner.normalized)?
+            || owner.normalized["scope"].as_str() != Some(node.scope.as_str())
+            || !source::is_kotlin_candidate(owner)
+            || node.node_projection_kind.is_none_or(|kind| {
+                !matches!(
+                    kind,
+                    ProjectionKind::DeclarationOnly | ProjectionKind::CompilerControlFlow
+                ) || (kind == ProjectionKind::CompilerControlFlow)
+                    != node.callable.control_flow.is_some()
+            })
+        {
+            return Err(crate::documentation::invalid(
+                "Kotlin source-call node key, projection kind or owner differs from its admitted declaration",
+            ));
+        }
+        let revision = service_revisions
+            .get(node.service.as_str())
+            .copied()
+            .ok_or_else(|| {
+                crate::documentation::invalid("Kotlin graph node has no selected service revision")
+            })?;
+        let [owner_source_id] = owner.source_ids.as_slice() else {
+            return Err(crate::documentation::invalid(
+                "Kotlin graph owner source is ambiguous",
+            ));
+        };
+        let owner_source = node
+            .sources
+            .get(owner_source_id)
+            .filter(|source| {
+                source.id == *owner_source_id
+                    && source.service == node.service
+                    && source.revision == revision
+            })
+            .ok_or_else(|| {
+                crate::documentation::invalid(
+                    "Kotlin graph owner source revision differs from its selected page",
+                )
+            })?;
+        let citation_id = node.callable.citation_id.as_deref().ok_or_else(|| {
+            crate::documentation::invalid("Kotlin graph owner citation is missing")
+        })?;
+        if node.citations.get(citation_id)
+            != Some(&source::call_sites::expected_citation(owner_source))
+        {
+            return Err(crate::documentation::invalid(
+                "Kotlin graph owner citation differs from its exact retained source text",
+            ));
+        }
+        source::outline::validate_source_outline(
+            &node.service,
+            revision,
+            &node.observations,
+            &node.sources,
+            &node.citations,
+            &node.callable,
+        )?;
+        source::call_sites::validate_node(
+            &node.service,
+            revision,
+            &node.observations,
+            &node.sources,
+            &node.citations,
+            &node.callable,
+        )?;
+        source::control_flow::validate_callable(
+            &node.service,
+            revision,
+            &node.observations,
+            &node.sources,
+            &node.citations,
+            &node.callable,
+        )?;
+
+        let expected_sites = node
+            .callable
+            .retained_call_sites
+            .as_ref()
+            .map(|sites| &sites.sites[..])
+            .unwrap_or_default();
+        let graph_sites: Vec<_> = node
+            .calls
+            .iter()
+            .filter_map(|edge| edge.exact_call_site.as_ref())
+            .collect();
+        if kotlin
+            && (graph_sites.len() != expected_sites.len()
+                || expected_sites
+                    .iter()
+                    .any(|site| !graph_sites.iter().any(|candidate| *candidate == site)))
+        {
+            return Err(crate::documentation::invalid(
+                "Kotlin graph exact-site edges differ from the admitted owner call-site projection",
+            ));
+        }
+        for edge in &node.calls {
+            match (&edge.call, &edge.exact_call_site) {
+                (Some(call), None)
+                    if !kotlin
+                        && edge.occurrence_path.is_some()
+                        && edge.statement_id.is_some()
+                        && edge.conditions.is_some()
+                        && edge.reachable.is_some()
+                        && edge.source_identity == node.callable.symbol =>
+                {
+                    if !node.citations.contains_key(&call.citation_id) {
+                        return Err(crate::documentation::invalid(
+                            "Java source-call edge citation is not retained on its owner node",
+                        ));
+                    }
+                }
+                (None, Some(site))
+                    if kotlin
+                        && edge.occurrence_path.is_none()
+                        && edge.statement_id.is_none()
+                        && edge.conditions.is_none()
+                        && edge.reachable.is_none()
+                        && edge.source_identity == node.callable.symbol
+                        && edge.target_scope == node.scope
+                        && edge.call_source_ids == [site.source_id.clone()]
+                        && edge.relation_digest.as_deref()
+                            == Some(site.normalized_digest.as_str())
+                        && node
+                            .citations
+                            .get(&site.citation_id)
+                            .is_some_and(|citation| citation.source_id == site.source_id) =>
+                {
+                    if let Some(target_id) = &edge.target_node {
+                        let Some(target) = graph.nodes.get(target_id) else {
+                            return Err(crate::documentation::invalid(
+                                "Kotlin source-call edge target node is missing",
+                            ));
+                        };
+                        if target.service != node.service
+                            || target.scope != edge.target_scope
+                            || target.callable.symbol != site.target_identity
+                            || target.callable.declaration_id
+                                != edge.target_declaration.as_deref().unwrap_or("")
+                            || target.node_projection_kind.is_none()
+                            || target
+                                .observations
+                                .get(&target.callable.declaration_id)
+                                .is_none_or(|owner| !kotlin_body_envelope(owner))
+                        {
+                            return Err(crate::documentation::invalid(
+                                "Kotlin source-call edge target differs from its exact compiler identity",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(crate::documentation::invalid(
+                        "source-call edge mixes Java structural and Kotlin exact-site fields",
+                    ));
+                }
+            }
+        }
+        if node.examined_source_digest != node_digest(node)? {
+            return Err(crate::documentation::invalid(
+                "source-call node digest differs from its retained examined semantics",
+            ));
+        }
+    }
+    for link in &graph.process_links {
+        if graph
+            .nodes
+            .get(&link.caller_node)
+            .is_some_and(|node| node.node_projection_kind.is_some())
+        {
+            return Err(crate::documentation::invalid(
+                "Kotlin exact source-call sites cannot create selected-process links",
+            ));
+        }
+    }
+    validate_selected_kotlin_roots(graph, pages)?;
+    Ok(())
+}
+
+fn validate_selected_kotlin_roots(
+    graph: &SourceCallGraph,
+    pages: &[PageContent],
+) -> Result<(), ClewError> {
+    for page in pages
+        .iter()
+        .filter(|page| page.selection.expand_source_calls)
+    {
+        let selected = [
+            (&page.selection.endpoint_declaration, &page.endpoint),
+            (&page.selection.worker_declaration, &page.worker),
+        ]
+        .into_iter()
+        .chain(
+            page.selection
+                .wiring_declaration
+                .as_ref()
+                .zip(page.wiring.as_ref()),
+        );
+        for (declaration_id, callable) in selected {
+            let owner = page.observations.get(declaration_id).ok_or_else(|| {
+                crate::documentation::invalid(
+                    "expanded page selected declaration evidence is not retained",
+                )
+            })?;
+            if !source::is_kotlin_candidate(owner) {
+                continue;
+            }
+            let scope = owner.normalized["scope"].as_str().ok_or_else(|| {
+                crate::documentation::invalid("selected Kotlin declaration scope is missing")
+            })?;
+            let node_id = key(&CallableKey {
+                service: page.selection.service.clone(),
+                scope: scope.to_owned(),
+                symbol: owner.symbol.clone(),
+            })?;
+            let graph_node = graph.nodes.get(&node_id).filter(|node| {
+                node.service == page.selection.service
+                    && node.scope == scope
+                    && node.callable.declaration_id == *declaration_id
+                    && node.node_projection_kind.is_some()
+            }).ok_or_else(|| {
+                crate::documentation::invalid(
+                    "expanded page selected Kotlin declaration has no matching source-call graph root",
+                )
+            })?;
+            let graph_owner = graph_node.observations.get(declaration_id).ok_or_else(|| {
+                crate::documentation::invalid(
+                    "selected Kotlin graph root owner evidence is missing",
+                )
+            })?;
+            let [source_id] = owner.source_ids.as_slice() else {
+                return Err(crate::documentation::invalid(
+                    "selected Kotlin graph root owner source is ambiguous",
+                ));
+            };
+            if graph_owner != owner
+                || graph_node.sources.get(source_id) != page.sources.get(source_id)
+                || graph_node.callable.citation_id != callable.citation_id
+                || callable
+                    .citation_id
+                    .as_ref()
+                    .and_then(|id| graph_node.citations.get(id))
+                    != callable
+                        .citation_id
+                        .as_ref()
+                        .and_then(|id| page.citations.get(id))
+            {
+                return Err(crate::documentation::invalid(
+                    "selected Kotlin graph root differs from its page owner evidence, source or citation",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Result<(), ClewError> {
@@ -613,11 +1204,18 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
                 let Some(processes) = endpoint_processes.get(target) else {
                     continue;
                 };
+                let (Some(call), Some(occurrence_path)) =
+                    (edge.call.as_ref(), edge.occurrence_path.as_ref())
+                else {
+                    // Kotlin exact sites describe source navigation only and
+                    // never establish process links.
+                    continue;
+                };
                 if processes.len() != 1 {
                     let gap = frontier(
                         "SELECTED_PROCESS_AMBIGUOUS",
                         "More than one opted-in process selects this endpoint; no canonical child process is inferred.",
-                        &edge.call.citation_id,
+                        &call.citation_id,
                     );
                     if !edge.frontiers.contains(&gap) {
                         edge.frontiers.push(gap);
@@ -629,8 +1227,8 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
                     continue;
                 }
                 graph.process_links.push(ProcessCallLink { from_process: page.id.clone(), to_process: child.clone(),
-                    caller_node: id.clone(), occurrence_path: edge.occurrence_path.clone(),
-                    relation_id: edge.call.relation_id.clone().unwrap(), citation_id: edge.call.citation_id.clone(),
+                    caller_node: id.clone(), occurrence_path: occurrence_path.clone(),
+                    relation_id: call.relation_id.clone().unwrap(), citation_id: call.citation_id.clone(),
                     authority: "SOURCE_CALL_TO_SELECTED_ENDPOINT".into(),
                     limitation: "The child worker is selected process context. This call link proves neither receiver instance lineage, enqueue success, worker scheduling, runtime dispatch nor delivery.".into() });
             }
@@ -652,6 +1250,13 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
     });
     graph.process_links.dedup();
     for n in graph.nodes.values_mut() {
+        if n.node_projection_kind.is_some()
+            && n.calls.iter().any(|edge| edge.exact_call_site.is_some())
+        {
+            n.callable
+                .gaps
+                .retain(|gap| gap.code != "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE");
+        }
         n.examined_source_digest = node_digest(n)?;
         decorate(&mut n.callable.steps, "body", &n.calls);
     }
@@ -718,6 +1323,14 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
             .chain(page.wiring.iter_mut())
         {
             let id = root_key(evidence, &callable.declaration_id)?;
+            if graph.nodes.get(&id).is_some_and(|node| {
+                node.node_projection_kind.is_some()
+                    && node.calls.iter().any(|edge| edge.exact_call_site.is_some())
+            }) {
+                callable
+                    .gaps
+                    .retain(|gap| gap.code != "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE");
+            }
             decorate(&mut callable.steps, "body", &graph.nodes[&id].calls);
         }
         page.examined_sources = Some(ExaminedSources {

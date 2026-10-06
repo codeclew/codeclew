@@ -541,11 +541,27 @@ Missing or rejected call-site evidence is reported as a limitation, not proof
 that the function makes no calls. This panel does not include callee bodies or
 establish runtime dispatch, execution order, reachability or state effects.
 
-Kotlin call-graph expansion, structured activity diagrams, handoffs and
-data-state projection remain unsupported here. `expandSourceCalls` and
-`expandDataState` are rejected for declaration-only and compiler control-flow
-selections before output is created. An independent Java selection in the same
-bundle can still use the existing Java expansion features.
+Set `expandSourceCalls: true` to follow retained exact Kotlin call sites to
+admitted function bodies in the same Check, service and compilation scope.
+Targets are resolved by their complete compiler identities, including the JVM
+descriptor. Two call occurrences can link to one retained target body; neither
+the function name alone nor a receiver type selects an implementation. The
+shared graph reuses its depth, body-count and source-byte limits and reports
+cycles and unavailable targets explicitly. A declaration without body evidence
+is not presented as an examined implementation. Retained target bodies show
+their own sources, available outlines and compiler control-flow panels.
+
+Graphs containing Kotlin nodes use graph schema `/1.1`; Java-only graphs retain
+`/1.0`. Kotlin edges retain their exact call-site evidence and omit Java-specific
+statement paths, conditions and structural reachability. Navigation does not
+establish runtime dispatch, invocation order or a process relationship between
+selected functions.
+
+Kotlin structured activity diagrams, handoffs and data-state projection remain
+unsupported here. `expandDataState` is rejected for Kotlin selections before
+output is created, including when `expandSourceCalls` is enabled. An independent
+Java selection in the same bundle can still use the existing Java expansion
+features.
 
 For Docusaurus, the qualified recipe uses version 3.10.2, `baseUrl: "/"`,
 `trailingSlash: false` and the docs plugin at `routeBasePath: "/"`. Keep each
@@ -579,8 +595,8 @@ retained call-site text with byte coordinates and source/evidence digests.
 Partial or ambiguous evidence is not promoted to an exact call. Selecting the
 caller does not recursively select the callee or establish its body, runtime
 dispatch, execution order or CFG. Kotlin native pages can separately display
-an admitted local compiler graph; call and data-state expansion remain
-unavailable.
+an admitted local compiler graph and explicitly expand retained exact call
+targets. Data-state expansion remains unavailable.
 Previously captured Checks are immutable and do not gain discarded relation
 records when the CLI is updated; acquiring those records requires a new Check.
 

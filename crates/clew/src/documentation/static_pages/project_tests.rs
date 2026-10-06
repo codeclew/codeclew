@@ -121,6 +121,53 @@ fn add_kotlin_declaration(e: &mut ServiceEvidence, id: &str, kind: &str, text: &
     symbol
 }
 
+fn configure_kotlin_function(
+    e: &mut ServiceEvidence,
+    id: &str,
+    callable_id: &str,
+    descriptor: &str,
+    scope: &str,
+) -> String {
+    let symbol = format!("callable:{callable_id}#jvm:{descriptor}");
+    let observation = e.observations.get_mut(id).unwrap();
+    observation.symbol = symbol.clone();
+    observation.normalized["symbolIdentity"] = json!(symbol);
+    observation.normalized["compilerCallableId"] = json!(callable_id);
+    observation.normalized["jvmDescriptor"] = json!(descriptor);
+    observation.normalized["ownerIdentity"] = json!(
+        callable_id
+            .split_once('.')
+            .map(|(owner, _)| format!("class:{owner}"))
+            .unwrap_or_else(|| "class:parity/Api".into())
+    );
+    observation.normalized["scope"] = json!(scope);
+    observation.digest = digest(&observation.normalized).unwrap();
+    symbol
+}
+
+fn add_kotlin_target(
+    e: &mut ServiceEvidence,
+    id: &str,
+    callable_id: &str,
+    descriptor: &str,
+    scope: &str,
+    source_text: &str,
+    documentation: Option<serde_json::Value>,
+) -> String {
+    add_kotlin_declaration(e, id, "FUNCTION", source_text);
+    let symbol = configure_kotlin_function(e, id, callable_id, descriptor, scope);
+    let source_id = e.observations[id].source_ids[0].clone();
+    let source = e.sources.get_mut(&source_id).unwrap();
+    source.evidence_digest = format!("sha256:{}", "a".repeat(64));
+    source.occurrence = None;
+    if let Some(documentation) = documentation {
+        let owner = e.observations.get_mut(id).unwrap();
+        owner.normalized["documentation"] = documentation;
+        owner.digest = digest(&owner.normalized).unwrap();
+    }
+    symbol
+}
+
 fn add_local_cfg(
     evidence: &mut ServiceEvidence,
     declaration_id: &str,
@@ -462,8 +509,17 @@ fn add_kotlin_exact_call_relations(e: &mut ServiceEvidence, declaration_id: &str
         .into_iter()
         .enumerate()
         .map(|(ordinal, byte_start)| {
-            let relation_id = format!("call-relation-{ordinal}");
-            let source_id = format!("call-source-{ordinal}");
+            let (relation_id, source_id) = if declaration_id == "answer-next" {
+                (
+                    format!("call-relation-{ordinal}"),
+                    format!("call-source-{ordinal}"),
+                )
+            } else {
+                (
+                    format!("call-relation-{declaration_id}-{ordinal}"),
+                    format!("call-source-{declaration_id}-{ordinal}"),
+                )
+            };
             let evidence_binding = format!(
                 "sha256:{}",
                 (if ordinal == 0 { "c" } else { "d" }).repeat(64)
@@ -488,8 +544,8 @@ fn add_kotlin_exact_call_relations(e: &mut ServiceEvidence, declaration_id: &str
                 "compilerSchema":"declaration-relation/0.1",
                 "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "sourceIdentity":owner.symbol,
-                "sourceCompilerCallableId":"parity/Answer.next",
-                "sourceJvmDescriptor":"(I)I",
+                "sourceCompilerCallableId":owner.normalized["compilerCallableId"],
+                "sourceJvmDescriptor":owner.normalized["jvmDescriptor"],
                 "targetCompilerCallableId":"parity/Api.pick",
                 "targetJvmDescriptor":"(Ljava/lang/String;)Ljava/lang/String;",
                 "targetIdentity":"callable:parity/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;",
@@ -1160,6 +1216,601 @@ fn kotlin_retained_call_sites_keep_exact_same_line_byte_occurrences() {
     assert!(!output.exists());
 }
 
+#[test]
+fn kotlin_exact_source_calls_expand_two_sites_to_one_cached_function_body() {
+    use crate::thread_flow_cfg::{LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNodeRole};
+
+    let mut evidence = kotlin_retained_call_sites_evidence();
+    let target_symbol = add_kotlin_declaration(
+        &mut evidence,
+        "api-pick",
+        "FUNCTION",
+        "    fun pick(value: String): String = value",
+    );
+    {
+        let target = evidence.observations.get_mut("api-pick").unwrap();
+        target.symbol =
+            "callable:parity/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;".into();
+        target.normalized["symbolIdentity"] = json!(target.symbol);
+        target.normalized["compilerCallableId"] = json!("parity/Api.pick");
+        target.normalized["ownerIdentity"] = json!("class:parity/Api");
+        target.normalized["documentation"] = json!({
+            "schema":"codeclew-kotlin-documentation-flow/1.0",
+            "authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS",
+            "events":[{"kind":"RETURN"}],
+            "boundaries":[]
+        });
+        target.digest = digest(&target.normalized).unwrap();
+    }
+    assert_ne!(target_symbol, evidence.observations["api-pick"].symbol);
+    let owner_source_id = evidence.observations["api-pick"].source_ids[0].clone();
+    let revision = evidence.revision.clone();
+    {
+        let source = evidence.sources.get_mut(&owner_source_id).unwrap();
+        source.file = "src/main/kotlin/parity/Api.kt".into();
+        source.start_line = 4;
+        source.end_line = 4;
+        source.evidence_digest = format!("sha256:{}", "d".repeat(64));
+        source.occurrence = None;
+        source.url = Some(format!(
+            "https://example.invalid/sample/blob/{}/{}#L4",
+            revision, source.file
+        ));
+    }
+    let flow_source_id = "api-pick-return-source".to_owned();
+    let mut flow_source = evidence.sources[&owner_source_id].clone();
+    flow_source.id = flow_source_id.clone();
+    evidence.sources.insert(flow_source_id.clone(), flow_source);
+    let flow_id = "api-pick-return".to_owned();
+    let flow = json!({"kind":"RETURN","ordinal":0,"scope":":/main"});
+    evidence.observations.insert(
+        flow_id.clone(),
+        Observation {
+            id: flow_id,
+            kind: "FLOW".into(),
+            service: evidence.service.clone(),
+            symbol: evidence.observations["api-pick"].symbol.clone(),
+            digest: digest(&flow).unwrap(),
+            normalized: flow,
+            source_ids: vec![flow_source_id],
+        },
+    );
+    let source_text = evidence.sources[&owner_source_id].text.clone();
+    add_local_cfg(
+        &mut evidence,
+        "api-pick",
+        "pick-target-graph",
+        &[
+            LocalCfgNodeRole::Entry,
+            LocalCfgNodeRole::Operation,
+            LocalCfgNodeRole::Return,
+        ],
+        &[None, Some((4, 7)), Some((0, source_text.len()))],
+        vec![
+            LocalCfgEdge {
+                source_node_id: 0,
+                target_node_id: 1,
+                kind: LocalCfgEdgeKind::Next,
+                label: None,
+            },
+            LocalCfgEdge {
+                source_node_id: 1,
+                target_node_id: 2,
+                kind: LocalCfgEdgeKind::Return,
+                label: Some("CompilerReturn".into()),
+            },
+        ],
+    );
+
+    let checked = kotlin_check(evidence.clone());
+    let baseline = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    assert!(baseline.source_call_graph.is_none());
+    assert!(
+        baseline.pages[0]
+            .endpoint
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE")
+    );
+    let graph =
+        super::super::linked::build_roots(&checked, &[("sample".into(), "answer-next".into())])
+            .unwrap();
+    assert_eq!(graph.schema, "codeclew-native-source-calls/1.1");
+    assert_eq!(graph.nodes.len(), 2);
+    let caller = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    assert_eq!(caller.calls.len(), 2);
+    assert!(caller.calls.iter().all(|edge| {
+        edge.call.is_none()
+            && edge.occurrence_path.is_none()
+            && edge.conditions.is_none()
+            && edge.reachable.is_none()
+            && edge.exact_call_site.is_some()
+            && edge.target_node.is_some()
+            && edge.status == "RETAINED_DECLARED_BODY"
+    }));
+    assert_eq!(caller.calls[0].target_node, caller.calls[1].target_node);
+    let target = &graph.nodes[caller.calls[0].target_node.as_ref().unwrap()];
+    assert_eq!(target.callable.declaration_id, "api-pick");
+    assert_eq!(target.callable.symbol, evidence_symbol_for_kotlin_pick());
+    assert_eq!(
+        target.node_projection_kind,
+        Some(ProjectionKind::CompilerControlFlow)
+    );
+    assert!(target.sources.values().any(|source| {
+        source.file == "src/main/kotlin/parity/Api.kt"
+            && source.start_line == 4
+            && source.text == "    fun pick(value: String): String = value"
+    }));
+    assert_eq!(
+        target
+            .callable
+            .source_outline
+            .as_ref()
+            .unwrap()
+            .events
+            .len(),
+        1,
+        "{:?}",
+        target.callable.source_outline
+    );
+    assert!(target.callable.control_flow.is_some());
+    assert!(graph.process_links.is_empty());
+
+    let mut selection = kotlin_selection("answer-next", "answer-next");
+    selection.expand_source_calls = true;
+    let expanded = project(&checked, &[selection.clone()]).unwrap();
+    let expanded_graph = expanded.source_call_graph.as_ref().unwrap();
+    let expanded_caller = expanded_graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    assert_eq!(expanded_caller.calls.len(), 2);
+    assert!(
+        !expanded.pages[0]
+            .endpoint
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE")
+    );
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &expanded).unwrap();
+    let overview = std::fs::read_to_string(temp.path().join("kotlin-page-overview.html")).unwrap();
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    let source_calls = std::fs::read_to_string(temp.path().join("source-calls.html")).unwrap();
+    assert_eq!(overview.matches("href=\"source-calls.html#ref-").count(), 2);
+    assert_eq!(endpoint.matches("href=\"source-calls.html#ref-").count(), 2);
+    assert!(source_calls.contains("Exact Kotlin source site"));
+    assert!(source_calls.contains("Retained Kotlin declaration"));
+    assert!(source_calls.contains("Retained target body"));
+    assert!(source_calls.contains("compiler"));
+
+    let mut bodyless_evidence = evidence;
+    let bodyless_target = bodyless_evidence.observations.get_mut("api-pick").unwrap();
+    bodyless_target
+        .normalized
+        .as_object_mut()
+        .unwrap()
+        .remove("documentation");
+    bodyless_target.digest = digest(&bodyless_target.normalized).unwrap();
+    let bodyless_checked = kotlin_check(bodyless_evidence);
+    let bodyless_projection = project(&bodyless_checked, &[selection]).unwrap();
+    let bodyless_graph = bodyless_projection.source_call_graph.as_ref().unwrap();
+    assert_eq!(bodyless_graph.nodes.len(), 1);
+    let bodyless_caller = bodyless_graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    assert_eq!(bodyless_caller.calls.len(), 2);
+    assert!(bodyless_caller.calls.iter().all(|edge| {
+        edge.target_declaration.as_deref() == Some("api-pick")
+            && edge.target_node.is_none()
+            && edge.status == "CALL_TARGET_BODY_NOT_CAPTURED"
+            && edge
+                .frontiers
+                .iter()
+                .any(|gap| gap.code == "CALL_TARGET_BODY_NOT_CAPTURED")
+    }));
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &bodyless_projection).unwrap();
+
+    let mut missing_target_source = kotlin_retained_call_sites_evidence();
+    add_exact_kotlin_pick_target(
+        &mut missing_target_source,
+        "api-pick",
+        ":/main",
+        "fun pick(value: String): String = value",
+        json!([]),
+    );
+    let source_id = missing_target_source.observations["api-pick"].source_ids[0].clone();
+    missing_target_source.sources.remove(&source_id);
+    let missing_source_graph = expanded_kotlin_projection(missing_target_source)
+        .source_call_graph
+        .unwrap();
+    let missing_source_edges = &missing_source_graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap()
+        .calls;
+    assert!(missing_source_edges.iter().all(|edge| {
+        edge.target_declaration.as_deref() == Some("api-pick")
+            && edge.target_node.is_none()
+            && edge.status == "BODY_UNAVAILABLE"
+            && edge
+                .frontiers
+                .iter()
+                .any(|gap| gap.code == "CALL_TARGET_BODY_UNAVAILABLE")
+    }));
+}
+
+fn evidence_symbol_for_kotlin_pick() -> String {
+    "callable:parity/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;".into()
+}
+
+fn expanded_kotlin_projection(evidence: ServiceEvidence) -> BundleProjection {
+    let checked = kotlin_check(evidence);
+    let mut selection = kotlin_selection("answer-next", "answer-next");
+    selection.expand_source_calls = true;
+    project(&checked, &[selection]).unwrap()
+}
+
+fn kotlin_pick_documentation(events: serde_json::Value) -> serde_json::Value {
+    json!({
+        "schema":"codeclew-kotlin-documentation-flow/1.0",
+        "authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS",
+        "events":events,
+        "boundaries":[]
+    })
+}
+
+fn add_exact_kotlin_pick_target(
+    evidence: &mut ServiceEvidence,
+    id: &str,
+    scope: &str,
+    body: &str,
+    events: serde_json::Value,
+) -> String {
+    add_kotlin_target(
+        evidence,
+        id,
+        "parity/Api.pick",
+        "(Ljava/lang/String;)Ljava/lang/String;",
+        scope,
+        body,
+        Some(kotlin_pick_documentation(events)),
+    )
+}
+
+#[test]
+fn kotlin_exact_target_resolution_and_outline_gaps_preserve_admitted_bodies() {
+    let body = "fun pick(value: String): String = value";
+    let mut overloaded = kotlin_retained_call_sites_evidence();
+    add_exact_kotlin_pick_target(&mut overloaded, "api-pick", ":/main", body, json!([]));
+    add_kotlin_target(
+        &mut overloaded,
+        "api-pick-int",
+        "parity/Api.pick",
+        "(I)Ljava/lang/String;",
+        ":/main",
+        "fun pick(value: Int): String = value.toString()",
+        Some(kotlin_pick_documentation(json!([]))),
+    );
+    let projection = expanded_kotlin_projection(overloaded);
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let caller = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    assert_eq!(caller.calls.len(), 2);
+    assert!(caller.calls.iter().all(|edge| {
+        edge.target_declaration.as_deref() == Some("api-pick")
+            && edge.status == "RETAINED_DECLARED_BODY"
+    }));
+    assert!(
+        graph
+            .nodes
+            .values()
+            .any(|node| node.callable.declaration_id == "api-pick")
+    );
+    assert!(
+        !graph
+            .nodes
+            .values()
+            .any(|node| node.callable.declaration_id == "api-pick-int")
+    );
+
+    let missing = expanded_kotlin_projection(kotlin_retained_call_sites_evidence());
+    let missing_edges = missing
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap()
+        .calls
+        .clone();
+    assert!(missing_edges.iter().all(|edge| {
+        edge.target_declaration.is_none()
+            && edge.target_node.is_none()
+            && edge.status == "CALL_TARGET_BODY_NOT_CAPTURED"
+    }));
+
+    let mut wrong_scope = kotlin_retained_call_sites_evidence();
+    add_exact_kotlin_pick_target(&mut wrong_scope, "api-pick", ":/test", body, json!([]));
+    let scope_graph = expanded_kotlin_projection(wrong_scope)
+        .source_call_graph
+        .unwrap();
+    assert!(
+        scope_graph
+            .nodes
+            .values()
+            .find(|node| node.callable.declaration_id == "answer-next")
+            .unwrap()
+            .calls
+            .iter()
+            .all(|edge| edge.status == "CALL_TARGET_SCOPE_MISMATCH")
+    );
+
+    let mut duplicate = kotlin_retained_call_sites_evidence();
+    add_exact_kotlin_pick_target(&mut duplicate, "api-pick", ":/main", body, json!([]));
+    add_exact_kotlin_pick_target(
+        &mut duplicate,
+        "api-pick-duplicate",
+        ":/main",
+        body,
+        json!([]),
+    );
+    let duplicate_graph = expanded_kotlin_projection(duplicate)
+        .source_call_graph
+        .unwrap();
+    assert!(
+        duplicate_graph
+            .nodes
+            .values()
+            .find(|node| node.callable.declaration_id == "answer-next")
+            .unwrap()
+            .calls
+            .iter()
+            .all(|edge| edge.status == "CALL_TARGET_AMBIGUOUS")
+    );
+
+    let mut unsupported_outline = kotlin_retained_call_sites_evidence();
+    add_exact_kotlin_pick_target(
+        &mut unsupported_outline,
+        "api-pick",
+        ":/main",
+        "fun pick(value: String): String {\n  // retained body\n  return value\n}",
+        json!([]),
+    );
+    set_kotlin_outline_events(
+        &mut unsupported_outline,
+        "api-pick",
+        vec![json!({"kind":"LOOP"})],
+    );
+    let outline_projection = expanded_kotlin_projection(unsupported_outline);
+    let graph = outline_projection.source_call_graph.as_ref().unwrap();
+    let caller = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    let target_id = caller.calls[0].target_node.as_ref().unwrap();
+    let target = &graph.nodes[target_id];
+    assert_eq!(caller.calls[0].status, "RETAINED_DECLARED_BODY");
+    assert!(
+        target
+            .callable
+            .source_outline
+            .as_ref()
+            .unwrap()
+            .gaps
+            .iter()
+            .any(|gap| { gap.code == "KOTLIN_SOURCE_OUTLINE_CONTROL_FORM_UNSUPPORTED" })
+    );
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &outline_projection).unwrap();
+}
+
+#[test]
+fn kotlin_call_graph_enqueues_nested_cycles_and_exposes_each_fixed_frontier() {
+    use std::collections::VecDeque;
+
+    let mut evidence = kotlin_retained_call_sites_evidence();
+    let recursive_body = "fun pick(value: String): String {\n  // retained\n  val first = api.pick(\"x\"); val second = api.pick(\"x\"); return value\n}";
+    add_exact_kotlin_pick_target(
+        &mut evidence,
+        "api-pick",
+        ":/main",
+        recursive_body,
+        json!([]),
+    );
+    add_kotlin_exact_call_relations(&mut evidence, "api-pick");
+    let checked = kotlin_check(evidence);
+    let mut selection = kotlin_selection("answer-next", "answer-next");
+    selection.expand_source_calls = true;
+    let projection = project(&checked, &[selection]).unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    assert_eq!(graph.nodes.len(), 2);
+    let target = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "api-pick")
+        .unwrap();
+    assert_eq!(
+        target.calls.len(),
+        2,
+        "{:?}",
+        target.callable.retained_call_sites
+    );
+    assert!(target.calls.iter().all(|edge| {
+        edge.target_node.as_deref() == Some(target.id.as_str())
+            && edge
+                .frontiers
+                .iter()
+                .any(|gap| gap.code == "SOURCE_CALL_CYCLE_FRONTIER")
+    }));
+    assert!(graph.process_links.is_empty());
+
+    let root = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    let mut template = root.calls[0].clone();
+    template.target_declaration = None;
+    template.target_node = None;
+    template.status = "UNEXPANDED".into();
+    template.frontiers.clear();
+    let evidence = &checked.services["sample"];
+    let mut empty_graph = graph.clone();
+    empty_graph.nodes.clear();
+
+    let mut depth_edge = template.clone();
+    let mut depth_graph = empty_graph.clone();
+    let mut depth_bodies = 0;
+    let mut depth_bytes = 0;
+    let mut depth_pending = VecDeque::new();
+    super::super::linked::expand_kotlin_edge(
+        evidence,
+        &mut depth_edge,
+        usize::MAX,
+        &mut depth_graph,
+        &mut depth_bodies,
+        &mut depth_bytes,
+        &mut depth_pending,
+    )
+    .unwrap();
+    assert_eq!(depth_edge.status, "DEPTH_FRONTIER");
+
+    let mut body_edge = template.clone();
+    let mut body_graph = empty_graph.clone();
+    let mut body_count = usize::MAX;
+    let mut body_bytes = 0;
+    let mut body_pending = VecDeque::new();
+    super::super::linked::expand_kotlin_edge(
+        evidence,
+        &mut body_edge,
+        0,
+        &mut body_graph,
+        &mut body_count,
+        &mut body_bytes,
+        &mut body_pending,
+    )
+    .unwrap();
+    assert_eq!(body_edge.status, "BODY_BUDGET_FRONTIER");
+
+    let mut bytes_edge = template;
+    let mut bytes_graph = empty_graph;
+    let mut bytes_bodies = 0;
+    let mut bytes_count = usize::MAX;
+    let mut bytes_pending = VecDeque::new();
+    super::super::linked::expand_kotlin_edge(
+        evidence,
+        &mut bytes_edge,
+        0,
+        &mut bytes_graph,
+        &mut bytes_bodies,
+        &mut bytes_count,
+        &mut bytes_pending,
+    )
+    .unwrap();
+    assert_eq!(bytes_edge.status, "SOURCE_BYTES_FRONTIER");
+}
+
+fn assert_source_call_preflight_rejects_before_output(projection: &BundleProjection) {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("pages");
+    assert!(super::super::publish::write(&output, "snapshot", projection).is_err());
+    assert!(!output.exists());
+}
+
+#[test]
+fn kotlin_source_call_preflight_rejects_mixed_edges_owner_citation_and_missing_root() {
+    let mut evidence = kotlin_retained_call_sites_evidence();
+    add_exact_kotlin_pick_target(
+        &mut evidence,
+        "api-pick",
+        ":/main",
+        "fun pick(value: String): String = value",
+        json!([]),
+    );
+    add_kotlin_target(
+        &mut evidence,
+        "spare-root",
+        "parity/Api.spare",
+        "()Ljava/lang/String;",
+        ":/main",
+        "fun spare(): String = \"unused\"",
+        Some(kotlin_pick_documentation(json!([]))),
+    );
+    let checked = kotlin_check(evidence);
+    let mut selection = kotlin_selection("answer-next", "answer-next");
+    selection.expand_source_calls = true;
+    selection.wiring_declaration = Some("spare-root".into());
+    let baseline = project(&checked, &[selection]).unwrap();
+    let root_id = baseline
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "spare-root")
+        .unwrap()
+        .id
+        .clone();
+
+    let mut mixed_edge = baseline.clone();
+    let caller_id = mixed_edge
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap()
+        .id
+        .clone();
+    mixed_edge
+        .source_call_graph
+        .as_mut()
+        .unwrap()
+        .nodes
+        .get_mut(&caller_id)
+        .unwrap()
+        .calls[0]
+        .occurrence_path = Some("body/0/call/0".into());
+    assert_source_call_preflight_rejects_before_output(&mixed_edge);
+
+    let mut bad_owner_citation = baseline.clone();
+    let root = bad_owner_citation
+        .source_call_graph
+        .as_mut()
+        .unwrap()
+        .nodes
+        .get_mut(&caller_id)
+        .unwrap();
+    let citation_id = root.callable.citation_id.clone().unwrap();
+    root.citations.get_mut(&citation_id).unwrap().start_byte = 1;
+    assert_source_call_preflight_rejects_before_output(&bad_owner_citation);
+
+    let mut missing_root = baseline;
+    missing_root
+        .source_call_graph
+        .as_mut()
+        .unwrap()
+        .nodes
+        .remove(&root_id);
+    assert_source_call_preflight_rejects_before_output(&missing_root);
+}
+
 fn assert_kotlin_callsite_gap(evidence: ServiceEvidence, expected: &str) {
     let checked = kotlin_check(evidence);
     let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
@@ -1186,6 +1837,42 @@ fn assert_kotlin_callsite_gap(evidence: ServiceEvidence, expected: &str) {
             "{expected}"
         );
     }
+}
+
+fn assert_expanded_kotlin_rejected_callsite_keeps_raw_gap(evidence: ServiceEvidence) {
+    let checked = kotlin_check(evidence);
+    let mut selection = kotlin_selection("answer-next", "answer-next");
+    selection.expand_source_calls = true;
+    let projection = project(&checked, &[selection]).unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let caller = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    assert!(caller.calls.is_empty());
+    assert!(caller.observations.contains_key("call-relation-0"));
+    assert!(
+        caller
+            .callable
+            .retained_call_sites
+            .as_ref()
+            .unwrap()
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "KOTLIN_RETAINED_CALL_SITES_REJECTED")
+    );
+    assert!(
+        caller
+            .callable
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE")
+    );
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let source_calls = std::fs::read_to_string(temp.path().join("source-calls.html")).unwrap();
+    assert!(source_calls.contains("KOTLIN&#95;RETAINED&#95;CALL&#95;SITES&#95;REJECTED"));
 }
 
 #[test]
@@ -1245,7 +1932,13 @@ fn kotlin_retained_call_sites_reject_unbound_evidence_and_publish_gaps() {
         .get_mut("call-relation-0")
         .unwrap()
         .digest = "sha256:invalid".into();
-    assert_kotlin_callsite_gap(bad_digest, REJECTED);
+    assert_kotlin_callsite_gap(bad_digest.clone(), REJECTED);
+    assert_expanded_kotlin_rejected_callsite_keeps_raw_gap(bad_digest);
+
+    let mut missing_source = kotlin_retained_call_sites_evidence();
+    let source_id = missing_source.observations["call-relation-0"].source_ids[0].clone();
+    missing_source.sources.remove(&source_id);
+    assert_expanded_kotlin_rejected_callsite_keeps_raw_gap(missing_source);
 
     let mut bad_evidence_binding = kotlin_retained_call_sites_evidence();
     let relation = bad_evidence_binding
@@ -1721,11 +2414,19 @@ fn kotlin_additional_only_control_flow_uses_declaration_sources_view() {
     selection.wiring_declaration = Some("additional".into());
     let mut expanded = selection.clone();
     expanded.expand_source_calls = true;
+    let expanded_projection = project(&checked, &[expanded]).unwrap();
+    let expanded_graph = expanded_projection.source_call_graph.as_ref().unwrap();
     assert!(
-        project(&checked, &[expanded])
-            .unwrap_err()
-            .message
-            .contains("expandSourceCalls is unavailable for declaration-only")
+        expanded_graph
+            .nodes
+            .values()
+            .any(|node| node.callable.declaration_id == "render")
+    );
+    assert!(
+        expanded_graph
+            .nodes
+            .values()
+            .any(|node| node.callable.declaration_id == "additional")
     );
     let mut expanded_state = selection.clone();
     expanded_state.expand_data_state = true;
@@ -2049,23 +2750,26 @@ fn kotlin_graph_expansion_flags_are_rejected_during_projection() {
     let mut evidence = evidence();
     add_kotlin_declaration(&mut evidence, "render", "FUNCTION", "fun render() = 1");
     let checked = kotlin_check(evidence);
-    for (source_calls, data_state, expected) in [
-        (
-            true,
-            false,
-            "expandSourceCalls is unavailable for declaration-only",
-        ),
-        (
-            false,
-            true,
-            "expandDataState is unavailable for declaration-only",
-        ),
-    ] {
+    let mut expanded = kotlin_selection("render", "render");
+    expanded.expand_source_calls = true;
+    assert!(
+        project(&checked, &[expanded])
+            .unwrap()
+            .source_call_graph
+            .is_some()
+    );
+    for source_calls in [false, true] {
         let mut selection = kotlin_selection("render", "render");
         selection.expand_source_calls = source_calls;
-        selection.expand_data_state = data_state;
+        selection.expand_data_state = true;
         let error = project(&checked, &[selection]).unwrap_err();
-        assert!(error.message.contains(expected), "{}", error.message);
+        assert!(
+            error
+                .message
+                .contains("expandDataState is unavailable for declaration-only"),
+            "{}",
+            error.message
+        );
     }
 }
 
@@ -2172,7 +2876,7 @@ fn mixed_java_and_kotlin_selection_never_runs_the_java_handoff_proof() {
 
 #[test]
 fn separate_java_graph_page_does_not_expand_a_kotlin_declaration_page() {
-    let mut evidence = evidence();
+    let mut evidence = kotlin_retained_call_sites_evidence();
     add_declaration(
         &mut evidence,
         "java-endpoint",
@@ -2189,14 +2893,14 @@ fn separate_java_graph_page_does_not_expand_a_kotlin_declaration_page() {
         "METHOD",
         "void tick() {}",
     );
-    add_kotlin_declaration(&mut evidence, "kotlin-entry", "FUNCTION", "fun entry() = 1");
     let checked = kotlin_check(evidence);
 
     let mut java = kotlin_selection("java-endpoint", "java-worker");
     java.id = "java-page".into();
     java.expand_source_calls = true;
-    let mut kotlin = kotlin_selection("kotlin-entry", "kotlin-entry");
+    let mut kotlin = kotlin_selection("answer-next", "answer-next");
     kotlin.id = "kotlin-page".into();
+    kotlin.expand_source_calls = true;
     let projection = project(&checked, &[java, kotlin]).unwrap();
     assert_eq!(projection.schema, DECLARATION_SCHEMA);
     assert_eq!(
@@ -2215,8 +2919,27 @@ fn separate_java_graph_page_does_not_expand_a_kotlin_declaration_page() {
             .all(|node| !node.callable.symbol.contains("kotlin-entry"))
     );
     assert!(projection.pages[0].examined_sources.is_some());
-    assert!(projection.pages[1].examined_sources.is_none());
+    assert!(projection.pages[1].examined_sources.is_some());
     assert!(projection.pages[1].data_state.is_none());
+    assert!(
+        graph
+            .nodes
+            .values()
+            .any(|node| node.node_projection_kind.is_none())
+    );
+    let kotlin_caller = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "answer-next")
+        .unwrap();
+    assert_eq!(kotlin_caller.calls.len(), 2);
+    assert!(
+        kotlin_caller
+            .calls
+            .iter()
+            .all(|edge| edge.exact_call_site.is_some())
+    );
+    assert!(graph.process_links.is_empty());
 }
 
 #[test]
@@ -3548,7 +4271,11 @@ fn identical_calls_keep_distinct_body_paths_and_occurrence_provenance() {
     assert_eq!(
         calls
             .iter()
-            .filter(|c| c.call.expression == "child.submit(task)" && c.target_node.is_some())
+            .filter(|c| c
+                .call
+                .as_ref()
+                .is_some_and(|call| call.expression == "child.submit(task)")
+                && c.target_node.is_some())
             .count(),
         2
     );
@@ -3577,11 +4304,13 @@ fn unsupported_no_call_continuation_uses_stable_statement_path_after_source_iden
     let original_edge = baseline.source_call_graph.as_ref().unwrap().nodes[&original.caller_node]
         .calls
         .iter()
-        .find(|e| e.occurrence_path == original.occurrence_path)
+        .find(|e| e.occurrence_path == Some(original.occurrence_path.clone()))
         .unwrap();
     assert!(
         original_edge
             .conditions
+            .as_ref()
+            .unwrap()
             .iter()
             .any(|c| c.expression.starts_with("unsupported statement step-"))
     );

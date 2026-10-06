@@ -402,7 +402,12 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
     out
 }
 
-fn retained_call_sites_panel(c: &CallableProjection, ext: &str) -> String {
+fn retained_call_sites_panel(
+    c: &CallableProjection,
+    ext: &str,
+    service: &str,
+    graph: Option<&SourceCallGraph>,
+) -> String {
     let Some(retained) = &c.retained_call_sites else {
         return String::new();
     };
@@ -415,10 +420,18 @@ fn retained_call_sites_panel(c: &CallableProjection, ext: &str) -> String {
     if retained.sites.is_empty() {
         out += &format!("<ul>{}</ul>\n", gaps(&retained.gaps, ext));
     } else {
+        let owner_node = graph.and_then(|graph| {
+            graph.nodes.values().find(|node| {
+                node.service == service
+                    && node.callable.declaration_id == c.declaration_id
+                    && node.callable.symbol == c.symbol
+                    && node.node_projection_kind.is_some()
+            })
+        });
         out += "<ol aria-label=\"Retained exact call sites\">\n";
         for site in &retained.sites {
             out += &format!(
-                "<li><p>Target identity: {}. Source: {}:{}-{}. Captured source span bytes [{}, {}). Relation: {}. {}</p><pre>{}</pre></li>\n",
+                "<li><p>Target identity: {}. Source: {}:{}-{}. Captured source span bytes [{}, {}). Relation: {}. {}",
                 escape(&site.target_identity),
                 escape(&site.file),
                 site.start_line,
@@ -426,9 +439,43 @@ fn retained_call_sites_panel(c: &CallableProjection, ext: &str) -> String {
                 site.compilation_byte_start,
                 site.compilation_byte_end,
                 escape(&site.relation_id),
-                cite(&site.citation_id, ext),
-                escape(&site.expression)
+                cite(&site.citation_id, ext)
             );
+            if let Some(edge) = owner_node.and_then(|node| {
+                node.calls.iter().find(|edge| {
+                    edge.exact_call_site
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.relation_id == site.relation_id)
+                })
+            }) {
+                if let Some(target_node) = &edge.target_node {
+                    out += &format!(
+                        " Navigation: {}.",
+                        link(
+                            &format!("source-calls.{ext}#{}", anchor(target_node)),
+                            "Retained target body"
+                        )
+                    );
+                } else {
+                    let frontier_codes = edge
+                        .frontiers
+                        .iter()
+                        .map(|gap| gap.code.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out += &format!(
+                        " Navigation status: {}. Target declaration: {}. Frontiers: {}.",
+                        escape(&edge.status),
+                        escape(edge.target_declaration.as_deref().unwrap_or("unavailable")),
+                        escape(if frontier_codes.is_empty() {
+                            "none"
+                        } else {
+                            &frontier_codes
+                        })
+                    );
+                }
+            }
+            out += &format!("</p><pre>{}</pre></li>\n", escape(&site.expression));
         }
         out += "</ol>\n";
     }
@@ -441,6 +488,8 @@ fn selected_declaration(
     label: &str,
     ext: &str,
     full_control_flow: bool,
+    service: &str,
+    graph: Option<&SourceCallGraph>,
 ) -> String {
     let mut out = format!("<section><h2>{}</h2>\n", escape(label));
     out += &paragraph(&format!(
@@ -452,7 +501,7 @@ fn selected_declaration(
     }
     out += &control_flow_panel(c, ext, full_control_flow);
     out += &source_outline_panel(c, ext);
-    out += &retained_call_sites_panel(c, ext);
+    out += &retained_call_sites_panel(c, ext, service, graph);
     if !c.gaps.is_empty() {
         out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext));
     }
@@ -501,7 +550,9 @@ fn declaration_only_page(
     title: &str,
     snapshot: &str,
     ext: &str,
+    graph: Option<&SourceCallGraph>,
 ) -> String {
+    let graph = p.selection.expand_source_calls.then_some(graph).flatten();
     let same_declaration = p.endpoint.declaration_id == p.worker.declaration_id;
     let has_control_flow = p.projection_kind == Some(ProjectionKind::CompilerControlFlow);
     let mut out = format!(
@@ -528,13 +579,41 @@ fn declaration_only_page(
                 "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations."
             });
             if same_declaration {
-                out += &selected_declaration(&p.endpoint, "Selected declaration", ext, false);
+                out += &selected_declaration(
+                    &p.endpoint,
+                    "Selected declaration",
+                    ext,
+                    false,
+                    &p.selection.service,
+                    graph,
+                );
             } else {
-                out += &selected_declaration(&p.endpoint, "First selected declaration", ext, false);
-                out += &selected_declaration(&p.worker, "Second selected declaration", ext, false);
+                out += &selected_declaration(
+                    &p.endpoint,
+                    "First selected declaration",
+                    ext,
+                    false,
+                    &p.selection.service,
+                    graph,
+                );
+                out += &selected_declaration(
+                    &p.worker,
+                    "Second selected declaration",
+                    ext,
+                    false,
+                    &p.selection.service,
+                    graph,
+                );
             }
             if let Some(wiring) = &p.wiring {
-                out += &selected_declaration(wiring, "Additional selected declaration", ext, false);
+                out += &selected_declaration(
+                    wiring,
+                    "Additional selected declaration",
+                    ext,
+                    false,
+                    &p.selection.service,
+                    graph,
+                );
             }
             out += &paragraph(&p.handoff.limitation);
         }
@@ -548,6 +627,8 @@ fn declaration_only_page(
                 },
                 ext,
                 true,
+                &p.selection.service,
+                graph,
             );
         }
         "worker" => {
@@ -560,18 +641,41 @@ fn declaration_only_page(
                 },
                 ext,
                 true,
+                &p.selection.service,
+                graph,
             );
         }
         "fields-state" => {
             out += &paragraph(
                 "Field and data-state analysis is unavailable for declaration-only pages.",
             );
-            out += &selected_declaration(&p.endpoint, "First retained declaration", ext, false);
+            out += &selected_declaration(
+                &p.endpoint,
+                "First retained declaration",
+                ext,
+                false,
+                &p.selection.service,
+                graph,
+            );
             if !same_declaration {
-                out += &selected_declaration(&p.worker, "Second retained declaration", ext, false);
+                out += &selected_declaration(
+                    &p.worker,
+                    "Second retained declaration",
+                    ext,
+                    false,
+                    &p.selection.service,
+                    graph,
+                );
             }
             if let Some(wiring) = &p.wiring {
-                out += &selected_declaration(wiring, "Additional retained declaration", ext, true);
+                out += &selected_declaration(
+                    wiring,
+                    "Additional retained declaration",
+                    ext,
+                    true,
+                    &p.selection.service,
+                    graph,
+                );
             }
         }
         "diagnostic" => {
@@ -609,6 +713,15 @@ fn declaration_only_page(
                 )
             );
         }
+    }
+    if p.selection.expand_source_calls && graph.is_some() {
+        out += &format!(
+            "<p>{}</p>\n",
+            link(
+                &format!("source-calls.{ext}"),
+                "Expanded exact source-call context"
+            )
+        );
     }
     out += &format!(
         "<details><summary>Sources and version</summary>{}</details>\n",
@@ -721,29 +834,38 @@ fn process_calls(p: &PageContent, graph: &SourceCallGraph, ext: &str) -> String 
         let edge = node
             .calls
             .iter()
-            .find(|e| e.occurrence_path == relation.occurrence_path)
+            .find(|e| e.occurrence_path.as_deref() == Some(relation.occurrence_path.as_str()))
             .unwrap();
+        let call = edge
+            .call
+            .as_ref()
+            .expect("process links are Java call edges");
+        let occurrence = edge
+            .occurrence_path
+            .as_deref()
+            .expect("process links have Java occurrence paths");
+        let path_conditions = edge.conditions.as_deref().unwrap_or_default();
         out += &format!(
             "<article><h3>{}</h3><pre>{}</pre><p>{} · {}</p><ul>{}</ul>\n",
             link(
                 &format!("{}-overview.{ext}", relation.to_process),
                 &format!("Selected process {}", relation.to_process)
             ),
-            escape(&edge.call.expression),
+            escape(&call.expression),
             cite(&relation.citation_id, ext),
             link(
                 &format!("source-calls.{ext}#{}", anchor(&relation.caller_node)),
                 "Caller body and exact occurrence"
             ),
-            conditions(&edge.conditions, ext)
+            conditions(path_conditions, ext)
         );
         out += &paragraph(&format!(
             "Arguments: {}. Target: {}. Scope: {}. Source occurrence: {}. Structurally reachable: {}. Receiver lineage: {}. Runtime dispatch: {}.",
-            edge.call.arguments.join(", "),
-            edge.call.target.as_deref().unwrap_or("unresolved"),
+            call.arguments.join(", "),
+            call.target.as_deref().unwrap_or("unresolved"),
             edge.target_scope,
-            edge.occurrence_path,
-            edge.reachable,
+            occurrence,
+            edge.reachable.unwrap_or(false),
             edge.receiver_lineage,
             edge.runtime_dispatch
         ));
@@ -804,7 +926,18 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
             "Service: {}. Compiler scope: {}. Examined source digest: {}.",
             node.service, node.scope, node.examined_source_digest
         ));
-        out += &callable(&node.callable, ext);
+        if node.node_projection_kind.is_some() {
+            out += &selected_declaration(
+                &node.callable,
+                "Retained Kotlin declaration",
+                ext,
+                true,
+                &node.service,
+                Some(graph),
+            );
+        } else {
+            out += &callable(&node.callable, ext);
+        }
         if let Some(state) = &node.data_state {
             out += &format!(
                 "<details id=\"{}-data\"><summary>Source data transformations</summary><h3>Guarded definitions and call prerequisites</h3>",
@@ -834,22 +967,55 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
             );
         }
         for edge in &node.calls {
-            out += &format!(
-                "<details><summary>Source call {}</summary><pre>{}</pre><ul>{}</ul>\n",
-                escape(&edge.occurrence_path),
-                escape(&edge.call.expression),
-                conditions(&edge.conditions, ext)
-            );
-            out += &paragraph(&format!(
-                "Status: {}. Source identity: {}. Target scope: {}. Target declaration: {}. Relation digest: {}. Receiver lineage: {}. Runtime dispatch: {}.",
-                edge.status,
-                edge.source_identity,
-                edge.target_scope,
-                edge.target_declaration.as_deref().unwrap_or("unavailable"),
-                edge.relation_digest.as_deref().unwrap_or("unavailable"),
-                edge.receiver_lineage,
-                edge.runtime_dispatch
-            ));
+            if let Some(call) = &edge.call {
+                out += &format!(
+                    "<details><summary>Source call {}</summary><pre>{}</pre><ul>{}</ul>\n",
+                    escape(edge.occurrence_path.as_deref().unwrap_or("")),
+                    escape(&call.expression),
+                    conditions(edge.conditions.as_deref().unwrap_or_default(), ext)
+                );
+                out += &paragraph(&format!(
+                    "Status: {}. Source identity: {}. Target scope: {}. Target declaration: {}. Relation digest: {}. Receiver lineage: {}. Runtime dispatch: {}.",
+                    edge.status,
+                    edge.source_identity,
+                    edge.target_scope,
+                    edge.target_declaration.as_deref().unwrap_or("unavailable"),
+                    edge.relation_digest.as_deref().unwrap_or("unavailable"),
+                    edge.receiver_lineage,
+                    edge.runtime_dispatch
+                ));
+            } else if let Some(site) = &edge.exact_call_site {
+                out += &format!(
+                    "<details><summary>Exact Kotlin source site {}</summary><pre>{}</pre>",
+                    escape(&site.relation_id),
+                    escape(&site.expression)
+                );
+                out += &format!(
+                    "<p>Status: {}. Source identity: {}. Target scope: {}. Target declaration: {}. Normalized relation digest: {}. Captured bytes [{}, {}). {}</p>\n",
+                    escape(&edge.status),
+                    escape(&edge.source_identity),
+                    escape(&edge.target_scope),
+                    escape(edge.target_declaration.as_deref().unwrap_or("unavailable")),
+                    escape(&site.normalized_digest),
+                    site.compilation_byte_start,
+                    site.compilation_byte_end,
+                    cite(&site.citation_id, ext)
+                );
+                if let Some(target) = &edge.target_node {
+                    out += &format!(
+                        "<p>{}</p>\n",
+                        link(
+                            &format!("source-calls.{ext}#{}", anchor(target)),
+                            "Cached target declaration",
+                        )
+                    );
+                }
+                out += &format!(
+                    "<p>Receiver lineage: {}. Runtime dispatch: {}.</p>\n",
+                    escape(&edge.receiver_lineage),
+                    escape(&edge.runtime_dispatch)
+                );
+            }
             out += &format!("<ul>{}</ul></details>\n", gaps(&edge.frontiers, ext));
         }
         out += "<h3>Examined documentation context</h3><ul>\n";
@@ -912,7 +1078,7 @@ fn page(
     if p.projection_kind
         .is_some_and(ProjectionKind::is_declaration_view)
     {
-        return declaration_only_page(p, view, title, snapshot, ext);
+        return declaration_only_page(p, view, title, snapshot, ext, graph);
     }
     let mut out = format!(
         "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
@@ -1347,10 +1513,43 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
         if page
             .projection_kind
             .is_some_and(ProjectionKind::forbids_expansion)
-            && (page.selection.expand_source_calls || page.selection.expand_data_state)
+            && page.selection.expand_data_state
         {
             return Err(invalid(
-                "declaration and compiler control-flow pages cannot request source-call or data-state expansion",
+                "declaration and compiler control-flow pages cannot request data-state expansion",
+            ));
+        }
+        if page.selection.expand_source_calls
+            && page
+                .projection_kind
+                .is_some_and(ProjectionKind::forbids_expansion)
+        {
+            let graph = projection.source_call_graph.as_ref();
+            let has_selected_kotlin_node = graph.is_some_and(|graph| {
+                [
+                    Some(page.selection.endpoint_declaration.as_str()),
+                    Some(page.selection.worker_declaration.as_str()),
+                    page.selection.wiring_declaration.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|declaration| {
+                    graph.nodes.values().any(|node| {
+                        node.service == page.selection.service
+                            && node.callable.declaration_id == declaration
+                            && node.node_projection_kind.is_some()
+                    })
+                })
+            });
+            if !has_selected_kotlin_node {
+                return Err(invalid(
+                    "declaration page source-call expansion requires an admitted Kotlin graph root",
+                ));
+            }
+        }
+        if page.selection.expand_source_calls && projection.source_call_graph.is_none() {
+            return Err(invalid(
+                "source-call expansion selection has no retained source-call graph",
             ));
         }
     }
@@ -1364,6 +1563,9 @@ pub(super) fn write(
 ) -> Result<Value, ClewError> {
     // Portable preflight before constructing or creating any output files.
     validate_projection_kind(p)?;
+    if let Some(graph) = &p.source_call_graph {
+        super::linked::validate_graph(graph, &p.pages)?;
+    }
     let mut names = BTreeSet::new();
     for page in &p.pages {
         if !store::valid_id(&page.id) || !names.insert(page.id.to_ascii_lowercase()) {

@@ -420,19 +420,22 @@ impl Flow<'_> {
             "method_invocation" | "object_creation_expression" => {
                 let range = self.parsed.range(n);
                 let edge = self.node.calls.iter().find(|e| {
-                    self.node
-                        .citations
-                        .get(&e.call.citation_id)
-                        .is_some_and(|c| {
+                    e.call.as_ref().is_some_and(|call| {
+                        self.node.citations.get(&call.citation_id).is_some_and(|c| {
                             c.source_id == self.source_id && (c.start_byte, c.end_byte) == range
                         })
+                    })
                 });
                 let Some(edge) = edge else {
                     self.frontier("CALL_OCCURRENCE_UNAVAILABLE","No unique retained call occurrence is available; result and effects remain opaque.");
                     path.terminated = true;
                     return opaque(self.parsed.text(n), "CALL_OCCURRENCE_UNAVAILABLE");
                 };
-                let occurrence = edge.occurrence_path.clone();
+                let occurrence = edge
+                    .occurrence_path
+                    .as_ref()
+                    .expect("Java data-state edges have occurrence paths")
+                    .clone();
                 let target = edge.target_node.clone();
                 let status = edge.status.clone();
                 let receiver = n
@@ -1166,6 +1169,7 @@ mod tests {
             observations: BTreeMap::new(),
             sources: BTreeMap::new(),
             examined_source_digest: "old".into(),
+            node_projection_kind: None,
             data_state: None,
         }
     }

@@ -232,7 +232,7 @@ fn same_node(left: &CompilerControlFlowNode, right: &LocalCfgNode) -> bool {
 
 /// Publisher preflight rechecks the copied panel against the exact typed graph
 /// and retained source bindings before any files are created.
-pub(super) fn validate_callable(
+pub(in crate::documentation::static_pages) fn validate_callable(
     service: &str,
     revision: &str,
     observations: &std::collections::BTreeMap<String, Observation>,

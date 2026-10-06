@@ -259,6 +259,9 @@ pub struct SourceCallNode {
     pub sources: BTreeMap<String, Source>,
     /// Local examined text and call semantics; excludes global capture provenance.
     pub examined_source_digest: String,
+    /// Present only for compiler-admitted Kotlin declaration nodes in the graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_projection_kind: Option<ProjectionKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_state: Option<NodeDataState>,
 }
@@ -267,15 +270,24 @@ pub struct SourceCallNode {
 #[serde(rename_all = "camelCase")]
 pub struct SourceCallEdge {
     /// Stable structural path within the caller body, including call ordinal.
-    pub occurrence_path: String,
-    pub statement_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_id: Option<String>,
     pub source_identity: String,
     pub target_scope: String,
     pub call_source_ids: Vec<String>,
     pub relation_digest: Option<String>,
-    pub call: CallProjection,
-    pub conditions: Vec<PathCondition>,
-    pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<Vec<PathCondition>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reachable: Option<bool>,
+    /// Kotlin compiler-exact source site; its schema intentionally carries no
+    /// Java statement path, ordering, conditions or reachability facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_call_site: Option<NeutralExactCallSite>,
     pub target_declaration: Option<String>,
     pub target_node: Option<String>,
     pub status: String,

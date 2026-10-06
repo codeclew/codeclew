@@ -391,6 +391,7 @@ mod tests {
                 observations: BTreeMap::new(),
                 sources: BTreeMap::new(),
                 examined_source_digest: "synthetic".into(),
+                node_projection_kind: None,
                 data_state: None,
             }
         };
