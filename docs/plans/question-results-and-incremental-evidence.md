@@ -212,9 +212,9 @@ document alone is not completion.
 | --- | --- | --- |
 | Baseline and first scoped read | Accepted and shipped in 0.13.15 | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full local and exact-release hosted CI passed; official installed verification preserves all 75 items and both pages. |
 | Precise question-result reuse | Implementation accepted; release pending | Accepted `c15fecd`: exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
-| Content-keyed syntax reuse | Bounded candidate in progress | Warm native measurement supports same-service/path extraction reuse on the 21-file Kotlin corpus. Exact-byte and complete-producer binding, current source receipts, correctness equivalence and measured total benefit remain acceptance gates. Compiler reuse is outside this slice. |
+| Content-keyed syntax reuse | Implementation accepted; release pending | Independently accepted `1db703a`: same-service/path exact-byte extraction reuse with complete producer admission and current source receipts. Two-revision full evidence/Check equality and 21.863% measured incremental native benefit; 16 final syntax tests including nine cache regressions passed. Compiler reuse is outside this slice. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
-| Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
+| Short opaque model IDs | Host-prepared native path in progress | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
 | Incremental releases | 0.13.15 published and installed | Full local CI passed on `b3eb735`; hosted CI and release qualification passed on the exact tagged commit `bad1e0c`. All 14 assets are published. Official installation and installed retained-context equivalence passed. |
 | Documentation and cleanup | Bounded tracked-artifact cleanup accepted and published; product docs pending | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links to their archived revision. Final product documentation must reflect subsequent accepted improvements. |
 
@@ -464,5 +464,9 @@ also gained the pinned Rust toolchain input, whose Unicode classification can
 affect declaration identity. The measured and final builds use the same pin;
 this changes admission keys without changing the measured extraction/replay
 algorithm. Final native regression checks qualify the corrected producer binding.
-Independent acceptance and integrated release qualification remain pending;
-this behavior is not part of released `0.13.15`.
+The research root independently accepted final commit `1db703a` after reviewing
+the complete paired measurements, producer closure and final checks: 16 syntax
+tests (including nine cache regressions), formatting, diff, English and privacy.
+The nine focused cache tests also passed after the final selector correction and
+repository formatting. Integrated release qualification remains pending; this
+behavior is not part of released `0.13.15`.
