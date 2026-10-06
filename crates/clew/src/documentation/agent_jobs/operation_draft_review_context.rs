@@ -1312,6 +1312,56 @@ pub(super) fn validate_saved_payload(
     Ok(())
 }
 
+pub(super) fn reusable_reviewer_policy(
+    repo: &Repository,
+    work: &Work,
+    report: &RunReport,
+    origin: &Origin,
+    author: &Value,
+) -> Result<(), ClewError> {
+    let reference = report.checkpoint.as_ref().ok_or_else(|| {
+        invalid("RECOVERY_CHECKPOINT_MISSING: reusable reviewer has no checkpoint")
+    })?;
+    let checkpoint: RunCheckpoint = recovery::load_checkpoint(repo, reference)?;
+    let delivery = state(&checkpoint)?;
+    if delivery.seed.is_some()
+        || !delivery.steps.is_empty()
+        || delivery.pending.is_some()
+        || !checkpoint.pages.is_empty()
+        || !checkpoint.source_parts.is_empty()
+        || report.attempts.len() != 1
+    {
+        return Err(invalid(
+            "ANSWER_REUSE_UNSUPPORTED: reviewer expansions or retry seed require new Work",
+        ));
+    }
+    let identity = &checkpoint
+        .pending_call
+        .as_ref()
+        .ok_or_else(|| {
+            invalid("RECOVERY_REPORT_MISMATCH: reusable reviewer invocation is missing")
+        })?
+        .identity;
+    let input = recovery::load_input(repo, identity)?;
+    let saved = &input.request["payload"];
+    let blocks = crate::documentation::operation_answer::review_blocks(&saved["answer"])?;
+    let expected = context_payload(
+        repo,
+        work,
+        origin,
+        &saved["packet"],
+        &saved["answer"],
+        &blocks,
+        author,
+        &[],
+        &[],
+        &[],
+        delivery.configured_calls,
+        0,
+    )?;
+    agent_jobs::validate_reuse_policy(saved, &expected, "reviewer")
+}
+
 fn uncertain_source(
     material: &Material<'_>,
     failed: &RunReport,

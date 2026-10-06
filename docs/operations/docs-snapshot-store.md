@@ -1156,3 +1156,50 @@ state. Human/imported maintained prose remains unverified and UNASSESSED.
 Saved answer/packet/review/provenance files and historical publications stay frozen.
 A different question or scope requires new Work and cannot inherit this saved
 approval. The comparison creates no new cache, review or publication baseline.
+
+## Find an approved answer by exact request (source candidate)
+
+```sh
+./clew docs work find-answer --root DOCS --subject service:ID \
+  --input question.json --snapshot SAVED_CHECK
+```
+
+This source candidate is separate from release 0.13.15. It searches immutable
+Work manifests and every historical approved run, without needing saved Work or
+review IDs. Matching uses the complete normalized request: question, audience,
+language, root declaration, profile, authoring contract, context bounds and
+external-input selectors. Similar question wording does not match.
+
+The first supported shape is a method question using `process-graph-v1`,
+authoring contract `codeclew-operation-draft-authoring/1.6`, and
+`sourceDataContext: true`. It requires no actual author or reviewer expansions,
+repair, maintained context or admitted external inputs, and absent protected
+notes. Other retained approvals remain historical; unsupported chains never
+become reusable by default.
+This first boundary supports native capture. Portable evidence expectations or
+`EVIDENCE_PACKAGE` producer authority in either saved or compared service are
+explicitly unsupported.
+
+The lookup compares complete selected source/compiler bindings and replays the
+initial graph selection, including membership, unavailable targets and derived
+source-data context. A new matching callee can invalidate a saved answer even
+when its old cited records are unchanged. A read-only protected-notes check
+detects newly present notes; the compared Check alone does not freeze all notes
+membership. Historical answer bytes, citations, snapshot and model approval
+remain unchanged. `CURRENT` describes applicability to those explicit inputs;
+it is neither new meaning review nor live runtime verification.
+Validated receipt/revision changes can appear as link changes only after the
+complete initial semantic replay matches. Any changed delivered source fragment
+still invalidates reuse, including unrelated code inside a delivered class.
+
+`FOUND` returns `selected.answer` with its historical review and provenance.
+`SELECTION_REQUIRED` returns eligible candidates without ranking them. Save one
+candidate's `selection` object and supply `--select selection.json` to choose
+explicitly. The closed selector binds the exact request and compared snapshot.
+`NO_MATCH` and `NO_REUSABLE_MATCH` give a next action and applicability reasons.
+Missing or corrupt bound records fail the search rather than silently becoming
+an empty or uniquely matched result. Lookup performs no capture, model call,
+Work preparation, export or publication; acquire new evidence separately.
+Zero writes refers to durable Work, job, review, publication and source records.
+Existing object-store reads and locking may still perform operational filesystem
+IO; this command does not introduce a separate read-only storage implementation.

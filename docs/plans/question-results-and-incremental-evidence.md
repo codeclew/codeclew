@@ -211,7 +211,7 @@ document alone is not completion.
 | Slice | Status | Result / next decision |
 | --- | --- | --- |
 | Baseline and first scoped read | Accepted implementation; release pending | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full CI and official installed verification remain release gates. |
-| Precise question-result reuse | Pending | Build on existing answer-context after first cost/result findings. |
+| Precise question-result reuse | Implementation candidate; independent acceptance pending | Exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
 | Content-keyed syntax reuse | Pending | Proceed after a bounded baseline; compiler reuse conditional. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
 | Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
@@ -286,3 +286,44 @@ current outputs. The research chat separately verified and removed an ignored,
 inactive `0.13.1` checkout's debug output, reclaiming 27,800,948,736 bytes
 (about 25.9 GiB). Current CI, source, private CAS, evidence and installed releases
 were preserved. This is build housekeeping, not the final tracked-content cleanup.
+
+### Exact approved-answer discovery candidate (2026-10-06)
+
+The source candidate adds `docs work find-answer` for an exact normalized request,
+subject and explicitly selected Check. It searches every retained approved run,
+preserves historical answer/review/provenance, requires explicit selection among
+multiple applicable approvals and explains stale or unsupported context. Missing
+report/checkpoint-history bindings or a missing Work cannot silently become a
+complete empty or unique search. No database, source acquisition, model call or
+publication path was added.
+
+The first supported boundary is native method `process-graph-v1`, authoring 1.6,
+source-data context, no actual role expansions/repair/maintained or external
+context, and absent protected notes. Initial preparation replay compares stable
+semantic membership, graph/frontier/negative results, derived source-data and
+producer/selection policy. Notes get a separate read-only membership probe.
+Portable expectations and `EVIDENCE_PACKAGE` authority explicitly remain
+unsupported. Complete verified replay can accept valid source/compiler receipt
+changes across revisions; existing `answer-context` keeps its strict policy.
+Changed delivered source content and newly matching callees remain invalidating.
+
+Seventeen focused tests passed, including genuine deterministic local approvals,
+historical ambiguity, missing nonlatest/latest reports, missing Work with both
+matching and nonmatching requests, corruption, new notes, changed guard/callee,
+new-revision receipt equivalence through the production comparison wrapper,
+producer-policy refusal and actual expansion refusal. These are synthetic host
+correctness fixtures, not new compiler qualification or model-quality evidence.
+
+One actual retained `prepare-null-boundaries` lookup found its original 1.6
+zero-expansion approval. Answer, meaning review, provenance, packet and audit
+equaled the prior retained export, and all 351 documentation-root files remained
+unchanged across the fresh CLI process. It took 4.228 seconds on the warm
+unoptimized source CLI, including cargo launch overhead, with zero captures and
+model invocations. The historical author/reviewer pair's roughly 148 seconds and
+45,505 successful-role CLI input tokens are context for this saved result only,
+not a general latency, billing or pricing comparison. No paid pilot was rerun.
+
+Zero writes describes durable Work/job/review/publication/source mutations;
+existing CAS/locking infrastructure may perform operational filesystem IO.
+Independent acceptance and the next release remain pending. This candidate is
+not included in the frozen 0.13.15 tag, and no new full CI gate was run for it.

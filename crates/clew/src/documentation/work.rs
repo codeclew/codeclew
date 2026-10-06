@@ -103,6 +103,20 @@ pub enum Command {
         #[arg(long)]
         snapshot: String,
     },
+    /// Find historical approved answers for an exact request and compare with saved evidence.
+    FindAnswer {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        snapshot: String,
+        /// Select one candidate using the closed selection returned by discovery.
+        #[arg(long)]
+        select: Option<PathBuf>,
+    },
     Status {
         #[arg(long)]
         root: PathBuf,
@@ -760,6 +774,35 @@ fn load_stored(repo: &Repository, id: &str) -> Result<StoredWork, ClewError> {
     Ok(stored)
 }
 
+/// Read all immutable manifest identities without loading unrelated snapshots.
+/// Corruption is an incomplete search, never an empty or uniquely matched answer.
+pub(super) fn request_manifests(
+    repo: &Repository,
+) -> Result<Vec<(String, String, Request)>, ClewError> {
+    let path = repo.path(".codeclew/work")?;
+    if !path.try_exists().map_err(io_error)? {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::new();
+    for entry in fs::read_dir(path).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let id = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("invalid Work directory name"))?;
+        directory(&id)?;
+        if result.len() >= store::MAX_RECORDS {
+            return Err(invalid(
+                "too many saved Work manifests for complete answer discovery",
+            ));
+        }
+        let stored = load_stored(repo, &id)?;
+        result.push((id, stored.subject, stored.request));
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(result)
+}
+
 pub(super) fn load_influence(
     repo: &Repository,
     id: &str,
@@ -880,6 +923,22 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             review_run,
             snapshot,
         } => super::answer_context::run(&Repository::open(&root)?, &work, &review_run, &snapshot),
+        Command::FindAnswer {
+            root,
+            subject,
+            input,
+            snapshot,
+            select,
+        } => super::answer_reuse::find(
+            &Repository::open(&root)?,
+            &subject,
+            store::read(&input, store::MAX_RECORD)?,
+            &snapshot,
+            select
+                .as_deref()
+                .map(|path| store::read(path, 4096))
+                .transpose()?,
+        ),
         Command::Status {
             root,
             work,
@@ -1358,6 +1417,133 @@ fn normalize_operation_authoring_contract(request: &mut Request) -> Result<(), C
         }
     }
     Ok(())
+}
+
+/// Normalize a replay request against already hydrated immutable evidence. This
+/// does not select latest evidence, capture inputs or publish a Work.
+pub(super) fn normalize_replay_request(
+    subject: &str,
+    mut request: Request,
+    checked: &Check,
+    baseline_language: Option<String>,
+) -> Result<Request, ClewError> {
+    if request.schema != "codeclew-documentation-work-request/1.0"
+        || request.audience.trim().is_empty()
+        || request.audience.len() > 512
+        || !(1..=100).contains(&request.max_items)
+        || !(2048..=48 * 1024).contains(&request.max_bytes)
+        || request.maintained_paragraph.is_some()
+        || request.maintained_from_bundle.is_some()
+        || !request.external_inputs.is_empty()
+    {
+        return Err(invalid(
+            "ANSWER_REUSE_REQUEST_UNSUPPORTED: select a bounded operation request without maintained or external inputs",
+        ));
+    }
+    request.validate_documentation_language()?;
+    normalize_section_profile(subject, &mut request);
+    normalize_http_api_contract_profile(subject, &mut request, checked);
+    validate_context_profile(subject, &request)?;
+    validate_http_api_contract_profile(subject, &request, checked)?;
+    validate_endpoint_context_profile(subject, &request, checked)?;
+    validate_process_graph_root(subject, &request, checked)?;
+    super::source_data_context::validate_request(&request)?;
+    normalize_operation_authoring_contract(&mut request)?;
+    if request.documentation_language.is_none() {
+        request.documentation_language = baseline_language;
+    }
+    request.normalize_documentation_language()?;
+    Ok(request)
+}
+
+/// Rebuild the initial operation selection using a compared Check. Auxiliary
+/// human context stays frozen; callers must establish its applicability first.
+pub(super) fn replay_process_work(saved: &Work, checked: &Check) -> Result<Work, ClewError> {
+    let mut replay = saved.clone();
+    replay.checked = checked.clone();
+    replay.handles.clear();
+    for (prefix, kind, ids) in [
+        (
+            "e",
+            "ENTRYPOINT",
+            checked
+                .services
+                .values()
+                .flat_map(|s| s.entrypoints.iter().map(|e| e.id.clone()))
+                .collect::<BTreeSet<_>>(),
+        ),
+        (
+            "d",
+            "DEPENDENCY",
+            checked
+                .dependencies
+                .iter()
+                .filter(|(_, d)| !(d.kind.starts_with("PROCESS_") || d.kind.starts_with("VIEW_")))
+                .map(|(id, _)| id.clone())
+                .collect(),
+        ),
+        ("s", "SOURCE", checked.sources().keys().cloned().collect()),
+    ] {
+        for (index, id) in ids.into_iter().enumerate() {
+            replay.handles.insert(
+                format!("{prefix}{}", index + 1),
+                Handle {
+                    kind: kind.into(),
+                    id,
+                },
+            );
+        }
+    }
+    if let Some(service) = saved.subject.strip_prefix("service:") {
+        for (index, id) in super::sections::ids().enumerate() {
+            replay.handles.insert(
+                format!("section{}", index + 1),
+                Handle {
+                    kind: "SECTION".into(),
+                    id,
+                },
+            );
+        }
+        for (index, note) in super::notes::for_service(checked, service).enumerate() {
+            replay.handles.insert(
+                format!("note{}", index + 1),
+                Handle {
+                    kind: "NOTE".into(),
+                    id: note.id.clone(),
+                },
+            );
+        }
+    }
+    replay.influence = checked
+        .dependencies
+        .iter()
+        .filter(|(_, d)| !(d.kind.starts_with("PROCESS_") || d.kind.starts_with("VIEW_")))
+        .map(|(id, d)| (id.clone(), d.digest.clone()))
+        .collect();
+    replay.influence.insert(
+        "documentation:external-inputs".into(),
+        digest(&replay.external_inputs)?,
+    );
+    replay.obligations.clear();
+    for (service, failure) in &checked.unresolved {
+        if failure["reason"] != "SERVICE_NOT_SELECTED" {
+            replay
+                .obligations
+                .push(json!({"kind":"MISSING_SERVICE","service":service,"detail":failure}));
+        }
+    }
+    for (service, evidence) in &checked.services {
+        for boundary in &evidence.boundaries {
+            replay
+                .obligations
+                .push(json!({"kind":"EVIDENCE_BOUNDARY","service":service,"detail":boundary}));
+        }
+        if evidence.extractor == SOURCE_EXTRACTOR {
+            replay.obligations.push(json!({"kind":"UNRESOLVED_CALL_AUTHORITY","service":service,"detail":"Syntax evidence does not establish runtime dispatch or configuration. Expand known owners and helpers; retain explicit gaps for unresolved targets."}));
+        }
+    }
+    validate_process_graph_root(&replay.subject, &replay.request, checked)?;
+    Ok(replay)
 }
 
 fn validate_http_api_contract_profile(

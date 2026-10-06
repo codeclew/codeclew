@@ -1171,6 +1171,51 @@ pub(super) fn review_source(
     ))
 }
 
+/// This first reuse slice accepts an original answer decision only. Keep the
+/// saved call budget: policy comparison must not invent a different prompt.
+pub(super) fn reusable_author_policy(
+    repo: &Repository,
+    work: &work::Work,
+    report: &RunReport,
+) -> Result<Value, ClewError> {
+    if report.execution_mode.as_deref() != Some(MODE) || report.draft_repair.is_some() {
+        return Err(invalid(
+            "ANSWER_REUSE_UNSUPPORTED: reuse requires original author execution/1.1 without repair",
+        ));
+    }
+    let reference = report
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| invalid("RECOVERY_CHECKPOINT_MISSING: reusable author has no checkpoint"))?;
+    let checkpoint: RunCheckpoint = recovery::load_checkpoint(repo, reference)?;
+    let state = state(&checkpoint)?;
+    if state.calls.len() != 1
+        || report.attempts.len() != 1
+        || state.pending.is_some()
+        || !state.lookup_feedback.is_empty()
+        || !checkpoint.pages.is_empty()
+        || !checkpoint.source_parts.is_empty()
+        || state.calls[0].retrieval.is_some()
+        || state.calls[0].pages_before != 0
+        || state.calls[0].parts_before != 0
+        || state.calls[0].pages_after != 0
+        || state.calls[0].parts_after != 0
+        || state.base_packet != state.packet
+    {
+        return Err(invalid(
+            "ANSWER_REUSE_UNSUPPORTED: author expansions, repairs or a non-original context chain require new Work",
+        ));
+    }
+    let input = recovery::load_input(repo, &state.calls[0].identity)?;
+    let expected = payload(work, &state.packet, &[], state.configured_calls, 0);
+    super::super::validate_reuse_policy(&input.request["payload"], &expected, "author")?;
+    Ok(
+        json!({"instruction":expected["instruction"],"packetGuide":expected["packetGuide"],
+        "outputSchema":expected["outputSchema"],"authoringContract":operation_answer::EXPANDING_AUTHORING_CONTRACT,
+        "executionMode":MODE,"selectionGuidance":expected["selectionGuidance"]}),
+    )
+}
+
 #[cfg(test)]
 pub(super) fn authored_context() -> (
     tempfile::TempDir,
@@ -1196,6 +1241,37 @@ mod tests {
     use super::*;
     use crate::documentation::{agent_jobs::Amount, work::Handle};
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn answer_reuse_policy_comparison_detects_changes_to_current_author_inputs() {
+        // Compare in-memory policy snapshots; never alter durable invocation
+        // records to make an integrity failure look like supported history.
+        let (_temp, _repo, work, _config, _) = fixture("reuse-policy", 3);
+        let (packet, _) = operation_context::initial(&work).unwrap();
+        let current = payload(&work, &packet, &[], 3, 0);
+        assert_eq!(
+            current["roleBudget"],
+            json!({"configuredCalls":3,"remainingCalls":3})
+        );
+        super::super::super::validate_reuse_policy(&current, &current, "author").unwrap();
+        for field in [
+            "instruction",
+            "outputSchema",
+            "packetGuide",
+            "selectionGuidance",
+            "roleBudget",
+        ] {
+            let mut historical = current.clone();
+            historical[field] = json!({"historicalPolicy":"different"});
+            let error = super::super::super::validate_reuse_policy(&historical, &current, "author")
+                .unwrap_err();
+            assert!(
+                error.message.starts_with("ANSWER_REUSE_UNSUPPORTED:"),
+                "{field}: {}",
+                error.message
+            );
+        }
+    }
 
     pub(super) fn fixture(
         mode: &str,

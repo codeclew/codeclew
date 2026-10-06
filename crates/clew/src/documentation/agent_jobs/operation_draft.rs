@@ -843,6 +843,14 @@ pub(super) fn review_source(
     ))
 }
 
+pub(super) fn reusable_author_policy(
+    repo: &Repository,
+    work: &super::super::work::Work,
+    report: &RunReport,
+) -> Result<Value, ClewError> {
+    context_mode::reusable_author_policy(repo, work, report)
+}
+
 /// Recover the exact terminal author packet for independent review.
 pub(super) fn review_packet(
     repo: &Repository,

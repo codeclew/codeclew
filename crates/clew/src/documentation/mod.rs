@@ -4,6 +4,10 @@ mod agent_adapter;
 pub mod agent_jobs;
 pub mod analysis;
 mod answer_context;
+mod answer_reuse;
+mod answer_reuse_projection;
+#[cfg(test)]
+mod answer_reuse_tests;
 pub mod bindings;
 pub mod cache;
 mod capture_export;

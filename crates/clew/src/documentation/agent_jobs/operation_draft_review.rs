@@ -139,6 +139,30 @@ pub(in crate::documentation) fn load_approved_answer(
     Ok(load_terminal_review(repo, work, review_run, Verdict::Approve)?.selected)
 }
 
+pub(super) fn validate_reusable_chain(
+    repo: &Repository,
+    work: &Work,
+    review_run: &str,
+) -> Result<(), ClewError> {
+    let report = super::load_report_by_id(repo, &work.id, review_run)?;
+    let origin = report.draft_review.as_ref().ok_or_else(|| {
+        invalid("RECOVERY_REPORT_MISMATCH: reusable review has no bound author origin")
+    })?;
+    if work.request.authoring_contract.as_deref()
+        != Some(super::super::operation_answer::EXPANDING_AUTHORING_CONTRACT)
+        || report.execution_mode.as_deref() != Some(context_mode::MODE)
+        || report.draft_review_retry.is_some()
+        || report.draft_repair.is_some()
+    {
+        return Err(invalid(
+            "ANSWER_REUSE_UNSUPPORTED: reuse requires original authoring/1.6 and reviewer execution/1.1 without repair or retry",
+        ));
+    }
+    let source = super::load_report_by_id(repo, &work.id, &origin.source_run)?;
+    let author = super::operation_draft::reusable_author_policy(repo, work, &source)?;
+    context_mode::reusable_reviewer_policy(repo, work, &report, origin, &author)
+}
+
 pub(super) struct RejectedAnswer {
     pub(super) packet: Value,
     pub(super) audit: Value,
@@ -1128,6 +1152,20 @@ fn summary(report: &RunReport) -> Value {
 }
 
 #[cfg(test)]
+pub(super) fn write_reusable_review_fixture_config(path: &Path, author: &Path, mode: &str) {
+    tests::config(path, author, mode);
+    let mut config: Value = store::read(path, store::MAX_RECORD).unwrap();
+    config["schema"] = json!(context_mode::CONFIG_SCHEMA);
+    config["reviewerCalls"] = json!(1);
+    let driver = config["reviewer"]["command"][4].as_str().unwrap()
+        .replace("p.fetch(\"outputSchema\").fetch(\"properties\")", "p.fetch(\"outputSchema\").fetch(\"$defs\").fetch(\"review\").fetch(\"properties\")")
+        .replace("a[\"schema\"] = \"codeclew-operation-draft-meaning-review/1.0\"", "a[\"schema\"] = \"codeclew-operation-draft-meaning-review/1.1\"\na[\"reviewContextDigest\"] = p.fetch(\"reviewContext\").fetch(\"deliveredDigest\")")
+        .replace("\"result\" => a", "\"result\" => {\"action\" => \"review\", \"review\" => a}");
+    config["reviewer"]["command"][4] = json!(driver);
+    std::fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -1136,6 +1174,50 @@ mod tests {
         sync::mpsc,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn answer_reuse_refuses_a_durable_approved_author_expansion_chain() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (temp, repo, work, author, source_run) =
+            super::super::operation_draft::tests::authored_context();
+        let source = super::super::load_report_by_id(&repo, &work.id, &source_run).unwrap();
+        assert!(
+            source.attempts.len() > 1,
+            "fixture must execute an actual expansion"
+        );
+        assert_eq!(
+            work.request.authoring_contract.as_deref(),
+            Some("codeclew-operation-draft-authoring/1.6")
+        );
+        let path = temp.path().join("reuse-expansion-review.json");
+        write_reusable_review_fixture_config(&path, &author, "approve");
+        let reviewed = run_loaded(&repo, &work, &source_run, &path).unwrap();
+        assert_eq!(reviewed["status"], "DRAFT_REVIEW_APPROVED", "{reviewed}");
+        let review_run = reviewed["run"].as_str().unwrap();
+        let approved = load_approved_answer(&repo, &work, review_run).unwrap();
+        assert!(approved.packet["contextDelivery"].is_object());
+        let mut before = BTreeMap::new();
+        files(&repo.root, &mut before);
+        let error = super::super::validate_reusable_chain(&repo, &work, review_run).unwrap_err();
+        assert!(
+            error.message.starts_with("ANSWER_REUSE_UNSUPPORTED:"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("author expansions"),
+            "{}",
+            error.message
+        );
+        let mut after = BTreeMap::new();
+        files(&repo.root, &mut after);
+        assert_eq!(
+            before, after,
+            "refusal must preserve the approved historical chain"
+        );
+    }
 
     const REVIEW_DRIVER: &str = r#"
 require "json"
@@ -1162,7 +1244,7 @@ a["proposal"] = "not-a-proposal" if mode == "unknown-field"
 puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invocation" => r.fetch("invocation"), "role" => r.fetch("role"), "model" => r.fetch("model"), "result" => a})
 "#;
 
-    fn config(path: &Path, author_config: &Path, mode: &str) -> ReviewConfig {
+    pub(super) fn config(path: &Path, author_config: &Path, mode: &str) -> ReviewConfig {
         let original: Value = store::read(author_config, store::MAX_RECORD).unwrap();
         let mut reviewer = original["author"].clone();
         reviewer["model"] = json!(format!("synthetic-operation-review-{mode}"));
