@@ -59,6 +59,9 @@ pub mod static_pages;
 pub mod status;
 pub mod store;
 mod syntax;
+mod syntax_file_cache;
+#[cfg(test)]
+mod syntax_file_cache_tests;
 pub mod updates;
 pub mod visuals;
 pub mod work;

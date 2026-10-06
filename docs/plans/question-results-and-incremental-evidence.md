@@ -212,11 +212,11 @@ document alone is not completion.
 | --- | --- | --- |
 | Baseline and first scoped read | Accepted and shipped in 0.13.15 | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full local and exact-release hosted CI passed; official installed verification preserves all 75 items and both pages. |
 | Precise question-result reuse | Implementation accepted; release pending | Accepted `c15fecd`: exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
-| Content-keyed syntax reuse | Pending | Proceed after a bounded baseline; compiler reuse conditional. |
+| Content-keyed syntax reuse | Bounded candidate in progress | Warm native measurement supports same-service/path extraction reuse on the 21-file Kotlin corpus. Exact-byte and complete-producer binding, current source receipts, correctness equivalence and measured total benefit remain acceptance gates. Compiler reuse is outside this slice. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
 | Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
 | Incremental releases | 0.13.15 published and installed | Full local CI passed on `b3eb735`; hosted CI and release qualification passed on the exact tagged commit `bad1e0c`. All 14 assets are published. Official installation and installed retained-context equivalence passed. |
-| Documentation and cleanup | Pending | Final inventory and published removal diff required. |
+| Documentation and cleanup | Bounded tracked-artifact cleanup accepted and published; product docs pending | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links to their archived revision. Final product documentation must reflect subsequent accepted improvements. |
 
 ### First scoped-read candidate (2026-10-06)
 
@@ -349,3 +349,120 @@ exercise. The next release and agreed integrated final gate remain pending.
 This implementation is not included in the frozen 0.13.15 tag, and no new full CI
 gate was run for it. Next, measure the actual syntax path before deciding whether
 per-file extraction reuse merits implementation; short model IDs stay queued.
+
+
+### Syntax extraction cost and bounded decision (2026-10-06)
+
+A temporary test-only harness measured actual committed-source extraction at
+public source revision `fd82a763fb5b38083fc3f298aee5ee116c906e21` (`v0.13.7`).
+Each corpus used one warmup and five measured warm samples, an optimized native
+build, a fresh isolated CAS and direct capture bypassing whole-capture reuse.
+The final observation-to-dependency Check assembly was included with service-only
+inputs; no interactions, scenarios or semantic compiler provider were configured.
+Temporary instrumentation was removed after preserving the private raw results.
+
+| Median phase (ms) | Public workflow scope | Kotlin worker source scope |
+| --- | ---: | ---: |
+| Git acquisition and CAS write | 36.285 | 35.801 |
+| CAS read | 3.230 | 2.491 |
+| Parse | 2.476 | 50.031 |
+| Root syntax fingerprint | 1.434 | 30.008 |
+| Extraction including nested fingerprints | 26.301 | 818.269 |
+| Nested fingerprints, subset of extraction | 8.398 | 200.922 |
+| File-only extraction | 6.287 | 0.110 |
+| Finalize and verify evidence | 9.671 | 131.564 |
+| Check assembly | 1.481 | 35.023 |
+| Total capture and Check assembly | 87.431 | 1,104.181 |
+
+The public workflow scope contains ten files (1,130,647 bytes), with one supported
+Kotlin file (15,266 bytes), 928 observations and 936 sources. The worker scope is
+`workers/kotlin/src/main`: 24 files (483,650 bytes), including 21 Kotlin files
+(468,583 bytes), 16,954 observations and 16,956 sources. Evidence identities and
+counts were deterministic across all samples. Worker coverage is `PARTIAL`:
+`FirFactsPlugin.kt` retains a parse-error boundary, which must remain uncached.
+
+The single supported file has low absolute extraction cost. The worker scope
+spends about 898 ms in parsing, root fingerprinting and extraction; this supports
+one bounded same-service, same-path, exact-byte reuse candidate across revisions.
+It is an eligible-phase upper bound, not a measured cache gain. Actual cache IO,
+current occurrence reconstruction, uncached parse-error work, scope acquisition,
+verification and Check assembly still contribute to total time. Accept only if
+the candidate preserves complete current evidence and delivers useful measured
+net benefit against forced full extraction on the same build and revision.
+
+This profile excludes initial Git resolution, CAS opening, compiler capture,
+whole CLI startup, cold IO and model time. Nested fingerprint timings overlap
+extraction and must not be added again. Service-only Check assembly is a lower
+bound for richer documentation. No general documentation or model speedup follows
+from these measurements. No paid call or repeated compiler qualification ran.
+
+
+### Accepted tracked-artifact cleanup (2026-10-06)
+
+The independently accepted cleanup removes exactly three generated historical
+files (435,397 bytes): the multi-service plan PDF, the Kotlin evidence-study PDF,
+and the marketing sample JSON. Their bytes were verified against archived public
+revision `f0b874f5f8e0d6e5b96a2f5f65592c7c4e07cb0a` before removal. Public methodology
+links now use that immutable revision; affected PDF and sample URLs return HTTP
+200. The benchmark README preserves the sample's date, source revision, five
+concerns, 16 successful checks, 784 ms warm time, 160 lexical matches, one retained
+release receipt and the fresh `RESOURCE_LIMIT` attempt that produced no facts.
+
+The source PDF generator, planning Markdown and DOT, public evidence JSON and all
+Q1 material remain. Site checks passed (16 tests), as did English, JSON syntax,
+diff and privacy checks. The documentation-only cleanup was published as
+`f570dba` and integrated as `f622083`; it required no runtime build or repeated
+release qualification. This closes the agreed artifact-removal scope. Final
+product documentation for subsequent accepted improvements remains unfinished.
+
+
+### Measured syntax-file reuse candidate (2026-10-06)
+
+The candidate reuses successful syntax extraction for the same service and path
+only when exact bytes, language/dialect and the complete bundled producer match.
+Source occurrences are rebuilt with the current revision, snapshot, blob, ranges
+and URL. Scope acquisition and membership, file-only handling, annotations and
+aggregate source/fact budgets remain active. Parse-error trees and failed
+extractions are not cached; corrupted cache bindings fail explicitly. Whole
+capture admission also includes the producer identity, preventing older keyed
+captures from bypassing this policy. No compiler-result reuse is added.
+
+A private isolated Git fixture copied the real 24-file worker scope from public
+`v0.13.7`. Revision A was `4ac63dfc987f129e7a1d4e70baffe16ce854dd46`; revision B,
+`64b988cd8bc12298357261a285b4e3d978831513`, adds one 52-byte marker declaration to
+`CompilerCfgLabels.kt`. One optimized build measured one warmup and five paired
+B captures, alternating cached/full order. Each pair used a fresh documentation
+root seeded from A outside timing, so every cached B capture had 19 hits and two
+parses: the changed file and the persistent `FirFactsPlugin.kt` parse error.
+Forced full extraction parsed all 21 supported files at the same B revision.
+
+| Median measured phase (ms) | Cached B | Forced full B |
+| --- | ---: | ---: |
+| Capture, including cache IO, replay and changed-file writes | 834.439 | 1,071.716 |
+| Check assembly and source-input binding | 29.894 | 35.151 |
+| Total | 865.107 | 1,107.166 |
+
+The measured total reduction is 242.058 ms (21.863%; 1.280x). Cache envelope/CAS
+IO and deserialization take 114.236 ms; validation and current-source replay take
+531.945 ms. These are subsets of capture time and must not be added again.
+All five pairs preserve the complete `ServiceEvidence` and full serialized Check,
+including current sources and all boundaries; identity digests remain stable.
+The result retains `PARTIAL` coverage, 16,955 observations, 16,957 sources and 339
+entrypoints. This is observed incremental native benefit, not a general CLI,
+compiler, cold IO, model-time or documentation-task speedup.
+
+Initial A cache seeding took about 2.27 seconds including documentation-root
+initialization, versus about 1.1 seconds for the measured full B capture. Those
+are different operations, so this reports startup cost rather than a paired cold
+benchmark. Git fixture setup, revision validation, CAS opening, producer
+initialization, A seeding, equality assertions and report writes are excluded
+from measured B totals. Actual service-only Check assembly is included; richer
+interactions/scenarios or compiler-provider merges are not configured.
+
+Temporary profiling hooks were removed. After measurement, producer admission
+also gained the pinned Rust toolchain input, whose Unicode classification can
+affect declaration identity. The measured and final builds use the same pin;
+this changes admission keys without changing the measured extraction/replay
+algorithm. Final native regression checks qualify the corrected producer binding.
+Independent acceptance and integrated release qualification remain pending;
+this behavior is not part of released `0.13.15`.
