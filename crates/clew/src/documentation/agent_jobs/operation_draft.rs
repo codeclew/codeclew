@@ -1795,7 +1795,7 @@ fn run_summary(report: &RunReport) -> Value {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn model_ids_grouped_fixture_setup() -> (
     tempfile::TempDir,
     Repository,

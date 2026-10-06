@@ -1165,7 +1165,7 @@ pub(super) fn write_reusable_review_fixture_config(path: &Path, author: &Path, m
     std::fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn model_ids_grouped_review_config(path: &Path, author: &Path) -> Value {
     context_mode::model_ids_grouped_review_config(path, author)
 }

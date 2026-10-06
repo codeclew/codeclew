@@ -1197,7 +1197,7 @@ fn validate_reuse_policy(saved: &Value, current: &Value, role: &str) -> Result<(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn reusable_author_fixture_setup()
 -> (tempfile::TempDir, Repository, super::work::Work, PathBuf) {
     let (temp, repo, work, path) = operation_draft::tests::setup("success");
@@ -1213,7 +1213,7 @@ pub(in crate::documentation) fn reusable_author_fixture_setup()
     (temp, repo, work, path)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn model_ids_grouped_author_fixture_setup() -> (
     tempfile::TempDir,
     Repository,
@@ -1224,7 +1224,7 @@ pub(in crate::documentation) fn model_ids_grouped_author_fixture_setup() -> (
     operation_draft::model_ids_grouped_fixture_setup()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn write_model_ids_grouped_review_fixture_config(
     path: &std::path::Path,
     author: &std::path::Path,
@@ -1232,17 +1232,17 @@ pub(in crate::documentation) fn write_model_ids_grouped_review_fixture_config(
     operation_draft_review::model_ids_grouped_review_config(path, author)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn interrupt_model_head_publication_once_for_test() {
     recovery::interrupt_model_head_once();
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn interrupt_raw_model_result_once_for_test() {
     recovery::interrupt_raw_model_result_once();
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn validate_frozen_model_records_for_test(
     repo: &Repository,
     invocation: &str,
@@ -1250,7 +1250,7 @@ pub(in crate::documentation) fn validate_frozen_model_records_for_test(
     recovery::validate_frozen_model_records(repo, invocation)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(in crate::documentation) fn write_reusable_review_fixture_config(
     path: &std::path::Path,
     author: &std::path::Path,

@@ -27,11 +27,11 @@ thread_local! {
     static INTERRUPT_MODEL_HEAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static INTERRUPT_RAW_MODEL_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn interrupt_model_head_once() {
     INTERRUPT_MODEL_HEAD.with(|flag| flag.set(true));
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn interrupt_raw_model_result_once() {
     INTERRUPT_RAW_MODEL_RESULT.with(|flag| flag.set(true));
 }
@@ -684,7 +684,7 @@ fn record_without_result_digest(record: &SavedResult) -> SavedResult {
 
 /// Save validated transport output before reconciling its account reservation.
 /// Existing content is accepted only when the entire canonical record matches.
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn save_result(
     repo: &Repository,
     input: &InputRecord,
@@ -796,7 +796,7 @@ pub(super) fn load_result(
 
 /// Read-only admission of a retained successful model call, including a later
 /// append-only head for the same role. This does not regenerate or save records.
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn validate_frozen_model_records(
     repo: &Repository,
     invocation: &str,

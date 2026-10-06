@@ -1236,7 +1236,7 @@ pub(super) fn authored_context() -> (
     (temp, repo, work, path, run)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn model_ids_grouped_fixture_setup() -> (
     tempfile::TempDir,
     Repository,

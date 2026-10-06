@@ -1607,7 +1607,7 @@ fn validate_terminal(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn model_ids_grouped_review_config(path: &Path, author: &Path) -> Value {
     serde_json::to_value(tests::config(path, author, "approve", 3)).unwrap()
 }
