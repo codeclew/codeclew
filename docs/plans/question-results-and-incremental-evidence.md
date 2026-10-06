@@ -210,12 +210,12 @@ document alone is not completion.
 
 | Slice | Status | Result / next decision |
 | --- | --- | --- |
-| Baseline and first scoped read | Accepted implementation; release pending | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full CI and official installed verification remain release gates. |
+| Baseline and first scoped read | Accepted and shipped in 0.13.15 | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full local and exact-release hosted CI passed; official installed verification preserves all 75 items and both pages. |
 | Precise question-result reuse | Pending | Build on existing answer-context after first cost/result findings. |
 | Content-keyed syntax reuse | Pending | Proceed after a bounded baseline; compiler reuse conditional. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
 | Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
-| Incremental releases | 0.13.15 qualification in progress | Full local CI passed on `b3eb735`, including RELEASE-mode usability smoke; no functional fixes. Hosted CI for the exact release commit, all platform assets and official installed verification remain publication gates. |
+| Incremental releases | 0.13.15 published and installed | Full local CI passed on `b3eb735`; hosted CI and release qualification passed on the exact tagged commit `bad1e0c`. All 14 assets are published. Official installation and installed retained-context equivalence passed. |
 | Documentation and cleanup | Pending | Final inventory and published removal diff required. |
 
 ### First scoped-read candidate (2026-10-06)
@@ -272,13 +272,31 @@ calls, repeated scoped-read measurements or full CI ran for this assessment.
 
 ### Release qualification and housekeeping (2026-10-06)
 
-The next unused version is `0.13.15`. Full `scripts/ci-verify.sh` passed on
+Release `0.13.15` was published on 2026-10-06 at 07:12 UTC. Full
+`scripts/ci-verify.sh` passed on
 `b3eb735`, including the actual C# fixture, required Java/Kotlin checks and
 RELEASE-mode usability smoke. No functional correction was needed. The final
 metadata-only adjustment links the site installer to the latest published
 release, avoiding advertising an unpublished version during platform builds.
-Hosted CI still qualifies the exact tagged commit before publication; assets
-and official installed retained-context verification are pending.
+Hosted [CI](https://github.com/codeclew/codeclew/actions/runs/37423184253)
+and [release qualification](https://github.com/codeclew/codeclew/actions/runs/37423190012)
+passed on the exact tagged commit
+`bad1e0ca8bd804f2bce61a8a7ec93ed9a9bcc1ba`. The
+[published release](https://github.com/codeclew/codeclew/releases/tag/v0.13.15)
+contains all 14 expected assets: six platform/profile archives, their checksums,
+and the installer with its checksum. Published checksum files match GitHub asset
+digests. The official installer downloaded and verified the macOS arm64 core
+archive; the other five archives were qualified by the release workflow, not
+independently downloaded in the installed-launcher check.
+
+The official site installer activated `clew 0.13.15` in RELEASE mode. Its installed
+manifest binds the exact tagged source revision and tree
+`04a1b8ee553dc8d4931df503d12b5a2e2f64970a`. On the original saved public question,
+the installed launcher returned the same 75 canonical items in two pages (40 and
+35), preserving existing metadata, source citations, scope, boundaries and cursor
+scope. The additional selected-validation metadata remains explicit. This was a
+correctness check, not a comparative performance benchmark; no capture, refresh
+or model call was needed. Existing C# Roslyn capability remains present.
 
 During this gate, eight obsolete pre-run clew library/metadata/test/CLI outputs
 were removed, reclaiming about 1.39 GiB while preserving the active target and
