@@ -635,6 +635,130 @@ fn kotlin_answer_next_outline_evidence() -> ServiceEvidence {
     evidence
 }
 
+fn kotlin_argument_bindings_evidence() -> ServiceEvidence {
+    let retained = concat!(
+        "fun invoke(): String {\r\n",
+        "  // π🙂\r\n",
+        "  val first = api.pick(last = \"π🙂\", first = \"x\"); val second = api.pick(last = \"🌙\", first = \"y\")\r\n",
+        "  return first + second\r\n",
+        "}"
+    );
+    let mut evidence = evidence();
+    add_kotlin_declaration(&mut evidence, "bindings-owner", "FUNCTION", retained);
+    let owner = evidence.observations["bindings-owner"].clone();
+    let mut owner_source = evidence.sources[&owner.source_ids[0]].clone();
+    owner_source.evidence_digest = format!("sha256:{}", "b".repeat(64));
+    owner_source.occurrence = None;
+    evidence
+        .sources
+        .insert(owner_source.id.clone(), owner_source.clone());
+    let prefix = "\n".repeat(22);
+    let full_compilation_source = format!("{prefix}{}", owner_source.text);
+    let full_compilation_source_digest =
+        crate::canonical::hash_bytes(full_compilation_source.as_bytes());
+    let target_callable = "parity/Api.pick";
+    let target_descriptor = "(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;";
+    let target_identity = format!("callable:{target_callable}#jvm:{target_descriptor}");
+    let calls = [
+        (
+            "api.pick(last = \"π🙂\", first = \"x\")",
+            [("\"π🙂\"", "last", 2_u64), ("\"x\"", "first", 0_u64)],
+        ),
+        (
+            "api.pick(last = \"🌙\", first = \"y\")",
+            [("\"🌙\"", "last", 2_u64), ("\"y\"", "first", 0_u64)],
+        ),
+    ];
+    for (ordinal, (expression, mapped_arguments)) in calls.into_iter().enumerate() {
+        let relative_call_start = owner_source.text.find(expression).unwrap();
+        let byte_start = prefix.len() + relative_call_start;
+        let byte_end = byte_start + expression.len();
+        let start_line = owner_source.start_line
+            + owner_source.text.as_bytes()[..relative_call_start]
+                .iter()
+                .filter(|byte| **byte == b'\n')
+                .count() as u64;
+        let source_id = format!("bindings-call-source-{ordinal}");
+        let relation_id = format!("bindings-call-relation-{ordinal}");
+        let evidence_binding =
+            format!("sha256:{}", if ordinal == 0 { "e" } else { "f" }.repeat(64));
+        let mut source = owner_source.clone();
+        source.id = source_id.clone();
+        source.start_line = start_line;
+        source.end_line = start_line;
+        source.text = expression.to_owned();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.evidence_digest = evidence_binding.clone();
+        source.occurrence = None;
+        evidence.sources.insert(source_id.clone(), source.clone());
+
+        let argument_to_parameter = mapped_arguments
+            .into_iter()
+            .map(|(argument_expression, parameter, parameter_index)| {
+                let relative_start = expression.find(argument_expression).unwrap();
+                let start = byte_start + relative_start;
+                let end = start + argument_expression.len();
+                json!({
+                    "argumentStart":start,
+                    "argumentEnd":end,
+                    "argumentType":"kotlin/String",
+                    "parameter":parameter,
+                    "parameterIndex":parameter_index,
+                    "parameterType":"kotlin/String"
+                })
+            })
+            .collect::<Vec<_>>();
+        let normalized = json!({
+            "schema":"codeclew-kotlin-documentation-call/1.0",
+            "kind":"RELATION",
+            "relationKind":"CALLS",
+            "resolution":"COMPILER_EXACT",
+            "compilerResolution":"PROVEN",
+            "provider":"K2_FIR",
+            "compilerSchema":"declaration-relation/0.1",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "sourceIdentity":owner.symbol,
+            "sourceCompilerCallableId":owner.normalized["compilerCallableId"],
+            "sourceJvmDescriptor":owner.normalized["jvmDescriptor"],
+            "targetCompilerCallableId":target_callable,
+            "targetJvmDescriptor":target_descriptor,
+            "targetIdentity":target_identity,
+            "scope":owner.normalized["scope"],
+            "evidenceBinding":evidence_binding,
+            "argumentBindings":{
+                "schema":"codeclew-call-argument-bindings/1.0",
+                "argumentToParameter":argument_to_parameter,
+                "omittedDefaultParameterIndices":[1]
+            },
+            "callSite":{
+                "file":owner_source.file,
+                "startLine":start_line,
+                "endLine":start_line,
+                "byteStart":byte_start,
+                "byteEnd":byte_end,
+                "sourceId":source_id,
+                "sourceDigest":source.text_digest,
+                "sourceStatus":"SOURCE_RETAINED",
+                "evidenceDigest":evidence_binding,
+                "fullCompilationSourceDigest":full_compilation_source_digest
+            }
+        });
+        evidence.observations.insert(
+            relation_id.clone(),
+            Observation {
+                id: relation_id,
+                kind: "CALL_RELATION".into(),
+                service: evidence.service.clone(),
+                symbol: owner.symbol.clone(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: vec![source_id],
+            },
+        );
+    }
+    evidence
+}
+
 fn kotlin_selection(endpoint: &str, worker: &str) -> Selection {
     Selection {
         id: "kotlin-page".into(),
@@ -1147,6 +1271,13 @@ fn kotlin_retained_call_sites_keep_exact_same_line_byte_occurrences() {
             .collect::<Vec<_>>(),
         vec!["api.pick(\"x\")", "api.pick(\"x\")"]
     );
+    assert!(sites.iter().all(|site| site.argument_bindings.is_none()));
+    assert!(
+        serde_json::to_value(&sites[0])
+            .unwrap()
+            .get("argumentBindings")
+            .is_none()
+    );
     assert_eq!(sites[0].target_identity, sites[1].target_identity);
     assert_eq!(sites[0].file, "src/main/kotlin/parity/Answer.kt");
     assert_eq!((sites[0].start_line, sites[0].end_line), (25, 25));
@@ -1195,6 +1326,7 @@ fn kotlin_retained_call_sites_keep_exact_same_line_byte_occurrences() {
     super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
     let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
     assert!(endpoint.contains("Retained exact call sites"));
+    assert!(!endpoint.contains("Compiler argument bindings"));
     assert!(endpoint.contains("do not establish runtime execution, invocation count"));
     assert!(endpoint.contains("Target identity: callable:parity/Api.pick#jvm:"));
     assert!(endpoint.contains("Captured source span bytes ["));
@@ -1214,6 +1346,290 @@ fn kotlin_retained_call_sites_keep_exact_same_line_byte_occurrences() {
     let output = temp.path().join("tampered-call-site");
     assert!(super::super::publish::write(&output, "snapshot", &tampered).is_err());
     assert!(!output.exists());
+}
+
+#[test]
+fn kotlin_argument_bindings_keep_source_order_defaults_and_utf8_subspan_citations() {
+    let mut selection = kotlin_selection("bindings-owner", "bindings-owner");
+    selection.expand_source_calls = true;
+    let checked = kotlin_check(kotlin_argument_bindings_evidence());
+    let projection = project(&checked, &[selection]).unwrap();
+    let page = &projection.pages[0];
+    let retained = page.endpoint.retained_call_sites.as_ref().unwrap();
+    assert_eq!(retained.sites.len(), 2, "{:#?}", retained.gaps);
+    assert_eq!(
+        retained.sites[0].start_line, retained.sites[1].start_line,
+        "the retained calls share one CRLF source line"
+    );
+
+    for site in &retained.sites {
+        let bindings = site.argument_bindings.as_ref().unwrap();
+        assert_eq!(bindings.schema, "codeclew-call-argument-bindings/1.0");
+        assert!(bindings.gaps.is_empty());
+        assert_eq!(bindings.omitted_default_parameter_indices, vec![1]);
+        assert_eq!(
+            bindings
+                .arguments
+                .iter()
+                .map(|argument| argument.parameter_index)
+                .collect::<Vec<_>>(),
+            vec![2, 0],
+            "mapping rows preserve the compiler's source order rather than formal order"
+        );
+        assert!(
+            bindings
+                .arguments
+                .iter()
+                .all(|argument| argument.argument_name.is_none())
+        );
+        let source = &page.sources[&site.source_id];
+        for argument in &bindings.arguments {
+            let start =
+                usize::try_from(argument.compilation_byte_start - site.compilation_byte_start)
+                    .unwrap();
+            let end = usize::try_from(argument.compilation_byte_end - site.compilation_byte_start)
+                .unwrap();
+            assert_eq!(
+                source.text.get(start..end),
+                Some(argument.expression.as_str())
+            );
+            let citation = &page.citations[&argument.citation_id];
+            assert_eq!((citation.start_byte, citation.end_byte), (start, end));
+            assert_eq!(
+                &source.text[citation.start_byte..citation.end_byte],
+                argument.expression
+            );
+        }
+    }
+    assert_ne!(
+        retained.sites[0]
+            .argument_bindings
+            .as_ref()
+            .unwrap()
+            .arguments[0]
+            .citation_id,
+        retained.sites[1]
+            .argument_bindings
+            .as_ref()
+            .unwrap()
+            .arguments[0]
+            .citation_id
+    );
+    assert!(
+        retained.sites[0]
+            .argument_bindings
+            .as_ref()
+            .unwrap()
+            .arguments[0]
+            .expression
+            .contains('π')
+    );
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let graph_owner = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "bindings-owner")
+        .unwrap();
+    let graph_sites = graph_owner
+        .calls
+        .iter()
+        .filter_map(|edge| edge.exact_call_site.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(graph_sites.len(), 2);
+    assert!(
+        retained
+            .sites
+            .iter()
+            .all(|site| graph_sites.contains(&site))
+    );
+
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "snapshot", &projection).unwrap();
+    let endpoint =
+        std::fs::read_to_string(output.path().join("kotlin-page-endpoint.html")).unwrap();
+    let source_calls = std::fs::read_to_string(output.path().join("source-calls.html")).unwrap();
+    assert!(endpoint.contains("Compiler argument bindings"));
+    assert!(endpoint.contains("Formal parameter last (index 2): kotlin/String"));
+    assert!(endpoint.contains("Omitted default parameter indices reported by the compiler: 1"));
+    assert!(source_calls.contains("Compiler argument bindings"));
+    assert!(source_calls.contains("Formal parameter first (index 0): kotlin/String"));
+}
+
+#[test]
+fn kotlin_malformed_argument_binding_children_keep_exact_sites_and_reject_tampering() {
+    #[derive(Clone, Copy, Debug)]
+    enum Mutation {
+        UnsupportedSchema,
+        OutOfRangeParameter,
+        OutOfCallRange,
+        NonUtf8Boundary,
+        OverlappingRanges,
+        IncompletePartition,
+    }
+    let cases = [
+        (Mutation::UnsupportedSchema, "ARGUMENT_BINDINGS_UNSUPPORTED"),
+        (Mutation::OutOfRangeParameter, "ARGUMENT_BINDINGS_REJECTED"),
+        (Mutation::OutOfCallRange, "ARGUMENT_BINDINGS_REJECTED"),
+        (Mutation::NonUtf8Boundary, "ARGUMENT_BINDINGS_REJECTED"),
+        (Mutation::OverlappingRanges, "ARGUMENT_BINDINGS_REJECTED"),
+        (Mutation::IncompletePartition, "ARGUMENT_BINDINGS_REJECTED"),
+    ];
+    for (mutation, expected_gap) in cases {
+        let mut evidence = kotlin_argument_bindings_evidence();
+        let relation = evidence
+            .observations
+            .get_mut("bindings-call-relation-0")
+            .unwrap();
+        match mutation {
+            Mutation::UnsupportedSchema => {
+                relation.normalized["argumentBindings"]["schema"] =
+                    json!("codeclew-call-argument-bindings/2.0");
+            }
+            Mutation::OutOfRangeParameter => {
+                relation.normalized["argumentBindings"]["argumentToParameter"][0]["parameterIndex"] =
+                    json!(3);
+            }
+            Mutation::OutOfCallRange => {
+                let call_end = relation.normalized["callSite"]["byteEnd"].as_u64().unwrap();
+                relation.normalized["argumentBindings"]["argumentToParameter"][0]["argumentEnd"] =
+                    json!(call_end + 1);
+            }
+            Mutation::NonUtf8Boundary => {
+                let call_start = relation.normalized["callSite"]["byteStart"]
+                    .as_u64()
+                    .unwrap();
+                let source = &evidence.sources["bindings-call-source-0"];
+                let value_start = source.text.find("\"π🙂\"").unwrap();
+                relation.normalized["argumentBindings"]["argumentToParameter"][0]["argumentStart"] =
+                    json!(call_start + value_start as u64 + 2);
+            }
+            Mutation::OverlappingRanges => {
+                let second_start = relation.normalized["argumentBindings"]["argumentToParameter"]
+                    [1]["argumentStart"]
+                    .as_u64()
+                    .unwrap();
+                relation.normalized["argumentBindings"]["argumentToParameter"][0]["argumentEnd"] =
+                    json!(second_start + 1);
+            }
+            Mutation::IncompletePartition => {
+                relation.normalized["argumentBindings"]["omittedDefaultParameterIndices"] =
+                    json!([]);
+            }
+        }
+        relation.digest = digest(&relation.normalized).unwrap();
+
+        let mut selection = kotlin_selection("bindings-owner", "bindings-owner");
+        selection.expand_source_calls = true;
+        let checked = kotlin_check(evidence);
+        let projection = project(&checked, &[selection]).unwrap();
+        let sites = &projection.pages[0]
+            .endpoint
+            .retained_call_sites
+            .as_ref()
+            .unwrap()
+            .sites;
+        assert_eq!(
+            sites.len(),
+            2,
+            "{mutation:?} rejected a child, not its call site"
+        );
+        let rejected = sites
+            .iter()
+            .find(|site| site.relation_id == "bindings-call-relation-0")
+            .unwrap();
+        let bindings = rejected.argument_bindings.as_ref().unwrap();
+        assert!(bindings.arguments.is_empty());
+        assert_eq!(bindings.gaps[0].code, expected_gap);
+        assert_eq!(
+            rejected.expression,
+            "api.pick(last = \"π🙂\", first = \"x\")"
+        );
+
+        let graph = projection.source_call_graph.as_ref().unwrap();
+        let graph_owner = graph
+            .nodes
+            .values()
+            .find(|node| node.callable.declaration_id == "bindings-owner")
+            .unwrap();
+        assert_eq!(
+            graph_owner
+                .calls
+                .iter()
+                .filter(|edge| edge.exact_call_site.is_some())
+                .count(),
+            2,
+            "{mutation:?} must preserve the exact graph edge"
+        );
+    }
+
+    let mut selection = kotlin_selection("bindings-owner", "bindings-owner");
+    selection.expand_source_calls = true;
+    let checked = kotlin_check(kotlin_argument_bindings_evidence());
+    let mut valid = project(&checked, &[selection]).unwrap();
+    valid.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_mut()
+        .unwrap()
+        .sites[0]
+        .argument_bindings
+        .as_mut()
+        .unwrap()
+        .arguments[0]
+        .expression
+        .push('!');
+    let output = tempfile::tempdir().unwrap();
+    let tampered_binding = output.path().join("tampered-binding");
+    assert!(super::super::publish::write(&tampered_binding, "snapshot", &valid).is_err());
+    assert!(!tampered_binding.exists());
+
+    let mut valid = project(
+        &checked,
+        &[kotlin_selection("bindings-owner", "bindings-owner")],
+    )
+    .unwrap();
+    valid.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_mut()
+        .unwrap()
+        .sites[0]
+        .argument_bindings
+        .as_mut()
+        .unwrap()
+        .arguments[0]
+        .citation_id = "citation-forged".into();
+    let tampered_citation = output.path().join("tampered-citation");
+    assert!(super::super::publish::write(&tampered_citation, "snapshot", &valid).is_err());
+    assert!(!tampered_citation.exists());
+
+    let mut valid = project(
+        &checked,
+        &[kotlin_selection("bindings-owner", "bindings-owner")],
+    )
+    .unwrap();
+    let argument_citation_id = valid.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_ref()
+        .unwrap()
+        .sites[0]
+        .argument_bindings
+        .as_ref()
+        .unwrap()
+        .arguments[0]
+        .citation_id
+        .clone();
+    valid.pages[0]
+        .citations
+        .get_mut(&argument_citation_id)
+        .unwrap()
+        .start_byte += 1;
+    let tampered_argument_subcitation = output.path().join("tampered-argument-subcitation");
+    assert!(
+        super::super::publish::write(&tampered_argument_subcitation, "snapshot", &valid).is_err()
+    );
+    assert!(!tampered_argument_subcitation.exists());
 }
 
 #[test]

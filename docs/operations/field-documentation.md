@@ -541,6 +541,19 @@ Missing or rejected call-site evidence is reported as a limitation, not proof
 that the function makes no calls. This panel does not include callee bodies or
 establish runtime dispatch, execution order, reachability or state effects.
 
+When the Check also retains compiler argument bindings, the shared call-site
+panel pairs each captured argument with its formal parameter index, name and
+type. Argument citations address exact UTF-8 subspans of the retained call
+expression. Named arguments keep their source order while identifying their
+formal parameter slots. Omitted-default indices distinguish omitted arguments
+from a function with no parameters; they do not establish evaluated default
+values. These bindings do not establish evaluation order or state effects.
+
+Argument evidence is optional and separate from the exact call target. Older
+Checks without that evidence remain unavailable for argument mapping; absence
+does not mean zero arguments. Previously discarded metadata requires a new
+Check and is not reconstructed from outline events or current source files.
+
 Set `expandSourceCalls: true` to follow retained exact Kotlin call sites to
 admitted function bodies in the same Check, service and compilation scope.
 Targets are resolved by their complete compiler identities, including the JVM

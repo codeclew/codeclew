@@ -2866,26 +2866,38 @@ mod tests {
         let (second_start, second_call) = occurrences[1];
         let first_end = first_start + first_call.len();
         let second_end = second_start + second_call.len();
-        let facts = vec![
-            kotlin_call_relation_fact(
-                &scope,
-                owner,
-                target,
-                file,
-                first_start as u64,
-                first_end as u64,
-                "first-call-binding",
-            ),
-            kotlin_call_relation_fact(
-                &scope,
-                owner,
-                target,
-                file,
-                second_start as u64,
-                second_end as u64,
-                "second-call-binding",
-            ),
-        ];
+        let mut first = kotlin_call_relation_fact(
+            &scope,
+            owner,
+            target,
+            file,
+            first_start as u64,
+            first_end as u64,
+            "first-call-binding",
+        );
+        let argument_start = first_start + first_call.find("\"x\"").unwrap();
+        first.0["argumentBindings"] = json!({
+            "schema":"codeclew-call-argument-bindings/1.0",
+            "argumentToParameter":[{
+                "argumentStart":argument_start,
+                "argumentEnd":argument_start + 3,
+                "argumentType":"kotlin/String",
+                "parameter":"value",
+                "parameterIndex":0,
+                "parameterType":"kotlin/String"
+            }],
+            "omittedDefaultParameterIndices":[]
+        });
+        let second = kotlin_call_relation_fact(
+            &scope,
+            owner,
+            target,
+            file,
+            second_start as u64,
+            second_end as u64,
+            "second-call-binding",
+        );
+        let facts = vec![first, second];
         let evidence = project_scoped_ok(
             &service,
             facts,
@@ -2905,6 +2917,18 @@ mod tests {
             .filter(|observation| observation.kind == "CALL_RELATION")
             .collect::<Vec<_>>();
         assert_eq!(calls.len(), 2);
+        let bound_call = calls
+            .iter()
+            .find(|call| call.normalized.get("argumentBindings").is_some())
+            .unwrap();
+        assert_eq!(
+            bound_call.normalized["argumentBindings"]["schema"],
+            "codeclew-call-argument-bindings/1.0"
+        );
+        assert_eq!(
+            bound_call.normalized["argumentBindings"]["argumentToParameter"][0]["argumentStart"],
+            first_start + first_call.find("\"x\"").unwrap()
+        );
         let mut spans = BTreeSet::new();
         for call in &calls {
             let site = &call.normalized["callSite"];

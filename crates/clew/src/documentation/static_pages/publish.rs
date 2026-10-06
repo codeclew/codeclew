@@ -475,11 +475,64 @@ fn retained_call_sites_panel(
                     );
                 }
             }
-            out += &format!("</p><pre>{}</pre></li>\n", escape(&site.expression));
+            out += &format!("</p><pre>{}</pre>", escape(&site.expression));
+            out += &argument_bindings_panel(site, ext);
+            out += "</li>\n";
         }
         out += "</ol>\n";
     }
     out += "</section>\n";
+    out
+}
+
+fn argument_bindings_panel(site: &NeutralExactCallSite, ext: &str) -> String {
+    let Some(bindings) = &site.argument_bindings else {
+        return String::new();
+    };
+    let mut out = String::from("<div><h4>Compiler argument bindings</h4>\n");
+    if !bindings.gaps.is_empty() {
+        out += &format!("<ul>{}</ul>\n", gaps(&bindings.gaps, ext));
+        out += "</div>\n";
+        return out;
+    }
+    if bindings.arguments.is_empty() {
+        out += "<p>No explicit argument mappings were reported by the retained compiler payload.</p>\n";
+    } else {
+        out += "<ul aria-label=\"Compiler argument-to-parameter mappings\">\n";
+        for argument in &bindings.arguments {
+            let named = argument
+                .argument_name
+                .as_deref()
+                .map(|name| format!(" Named argument: {}.", escape(name)))
+                .unwrap_or_default();
+            out += &format!(
+                "<li>Captured argument bytes [{}, {}).{} Argument type: {}. Formal parameter {} (index {}): {}. {}<pre>{}</pre></li>\n",
+                argument.compilation_byte_start,
+                argument.compilation_byte_end,
+                named,
+                escape(&argument.argument_type),
+                escape(&argument.parameter),
+                argument.parameter_index,
+                escape(&argument.parameter_type),
+                cite(&argument.citation_id, ext),
+                escape(&argument.expression)
+            );
+        }
+        out += "</ul>\n";
+    }
+    if !bindings.omitted_default_parameter_indices.is_empty() {
+        let indices = bindings
+            .omitted_default_parameter_indices
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        out += &format!(
+            "<p>Omitted default parameter indices reported by the compiler: {}.</p>\n",
+            escape(&indices)
+        );
+    }
+    out += "</div>\n";
     out
 }
 
@@ -1001,6 +1054,7 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                     site.compilation_byte_end,
                     cite(&site.citation_id, ext)
                 );
+                out += &argument_bindings_panel(site, ext);
                 if let Some(target) = &edge.target_node {
                     out += &format!(
                         "<p>{}</p>\n",

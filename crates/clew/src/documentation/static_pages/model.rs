@@ -102,6 +102,34 @@ pub struct NeutralExactCallSiteOwnerKey {
     pub symbol: String,
 }
 
+/// Typed exact argument-to-formal mappings attached to a retained Kotlin call.
+/// The envelope is optional on the parent site: absence means mapping metadata
+/// was not captured, while an empty, gap-free envelope proves an empty mapping.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NeutralCallArgumentBindings {
+    pub schema: String,
+    pub arguments: Vec<NeutralCallArgumentBinding>,
+    pub omitted_default_parameter_indices: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NeutralCallArgumentBinding {
+    pub compilation_byte_start: u64,
+    pub compilation_byte_end: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_name: Option<String>,
+    pub argument_type: String,
+    pub parameter: String,
+    pub parameter_index: u64,
+    pub parameter_type: String,
+    pub expression: String,
+    pub citation_id: String,
+}
+
 /// One captured compiler call relation and its exact retained source span.
 /// Byte offsets address the full compilation source recorded by the call-site
 /// envelope; `expression` and its citation are relative to the retained Source.
@@ -122,6 +150,8 @@ pub struct NeutralExactCallSite {
     pub full_compilation_source_digest: String,
     pub expression: String,
     pub citation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_bindings: Option<NeutralCallArgumentBindings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

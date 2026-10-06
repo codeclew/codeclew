@@ -993,6 +993,26 @@ fn validate_argument_payloads(
     Ok(())
 }
 
+/// Validate the portable argument metadata copied onto an exact documentation
+/// call. Keep this grammar shared with declaration-relation validation so the
+/// documentation projection cannot loosen the compiler payload contract.
+pub(crate) fn validate_kotlin_call_argument_bindings(
+    call_start: u64,
+    call_end: u64,
+    target_jvm_descriptor: &str,
+    argument_to_parameter: &Value,
+    omitted_default_parameter_indices: &Value,
+) -> Result<(), ClewError> {
+    let parsed = parse_jvm_method_descriptor(target_jvm_descriptor)?;
+    let payload = serde_json::json!({
+        "start": call_start,
+        "end": call_end,
+        "argumentToParameter": argument_to_parameter,
+        "omittedDefaultParameterIndices": omitted_default_parameter_indices
+    });
+    validate_argument_payloads(&payload, Some(parsed.parameter_count))
+}
+
 pub(crate) fn validate_declaration_relation_fact(value: &Value) -> Result<(), ClewError> {
     if value.get("schema").and_then(Value::as_str) != Some("declaration-relation/0.1")
         || value.get("resolution").and_then(Value::as_str) != Some("PROVEN")

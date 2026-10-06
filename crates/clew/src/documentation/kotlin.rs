@@ -148,8 +148,12 @@ fn boundary_applies_to_call(boundary: &Value, relation: &Value) -> bool {
     true
 }
 
-fn exact_call_fact(relation: &Value, owner: &FunctionDescriptor, binding: &str) -> Value {
-    json!({
+fn exact_call_fact(
+    relation: &Value,
+    owner: &FunctionDescriptor,
+    binding: &str,
+) -> Result<Value, ClewError> {
+    let mut fact = json!({
         "schema":DOCUMENTATION_CALL_SCHEMA,
         "kind":"RELATION",
         "relationKind":"CALLS",
@@ -169,7 +173,34 @@ fn exact_call_fact(relation: &Value, owner: &FunctionDescriptor, binding: &str) 
         "scope":relation["scope"],
         "sourceProvenance":relation["sourceProvenance"],
         "evidenceBinding":binding
-    })
+    });
+    if let (Some(argument_to_parameter), Some(omitted_default_parameter_indices)) = (
+        relation.get("argumentToParameter"),
+        relation.get("omittedDefaultParameterIndices"),
+    ) {
+        let call_start = relation["start"].as_u64().ok_or_else(|| {
+            invalid("Kotlin exact call has no source start for argument bindings")
+        })?;
+        let call_end = relation["end"]
+            .as_u64()
+            .ok_or_else(|| invalid("Kotlin exact call has no source end for argument bindings"))?;
+        let descriptor = relation["targetJvmDescriptor"].as_str().ok_or_else(|| {
+            invalid("Kotlin exact call has no target descriptor for argument bindings")
+        })?;
+        crate::semantic_validation::validate_kotlin_call_argument_bindings(
+            call_start,
+            call_end,
+            descriptor,
+            argument_to_parameter,
+            omitted_default_parameter_indices,
+        )?;
+        fact["argumentBindings"] = json!({
+            "schema":"codeclew-call-argument-bindings/1.0",
+            "argumentToParameter":argument_to_parameter,
+            "omittedDefaultParameterIndices":omitted_default_parameter_indices
+        });
+    }
+    Ok(fact)
 }
 
 pub(super) fn project_facts(
@@ -354,7 +385,7 @@ pub(super) fn project_facts(
             .or_default()
             .push(ProjectedCall {
                 occurrence,
-                fact: exact_call_fact(fact, owners[0], binding),
+                fact: exact_call_fact(fact, owners[0], binding)?,
                 binding: binding.clone(),
             });
     }
@@ -1249,6 +1280,121 @@ mod tests {
         assert_eq!(adapted["byteStart"], 40);
         assert_eq!(adapted_binding, &binding);
         assert!(!output.iter().any(|(fact, _)| fact["kind"] == "FLOW"));
+    }
+
+    #[test]
+    fn exact_call_argument_binding_envelope_preserves_source_order_and_optional_names() {
+        let owner = "p/caller";
+        let file = "src/main/kotlin/p/Calls.kt";
+        let scope = ":/main";
+        let (containing, _) = function_descriptor(owner, "()V", file, 0, 100, scope);
+        let descriptor = "(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;";
+        let (mut call, binding) =
+            call_relation(owner, "p/Api.pick", descriptor, file, 40, 90, scope);
+        call["argumentToParameter"] = json!([
+            {
+                "argumentStart":50,"argumentEnd":53,
+                "argumentType":"kotlin/String","parameter":"last",
+                "parameterIndex":2,"parameterType":"kotlin/String"
+            },
+            {
+                "argumentStart":70,"argumentEnd":73,
+                "argumentType":"kotlin/String","parameter":"first",
+                "parameterIndex":0,"parameterType":"kotlin/String"
+            }
+        ]);
+        call["omittedDefaultParameterIndices"] = json!([1]);
+        let output = projected_calls(vec![
+            (containing.clone(), "owner-binding".into()),
+            (call, binding),
+        ]);
+        let (adapted, _) = output
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+            .unwrap();
+        assert_eq!(
+            adapted["argumentBindings"]["schema"],
+            "codeclew-call-argument-bindings/1.0"
+        );
+        assert_eq!(
+            adapted["argumentBindings"]["argumentToParameter"][0]["parameterIndex"],
+            2
+        );
+        assert_eq!(
+            adapted["argumentBindings"]["argumentToParameter"][1]["parameterIndex"],
+            0
+        );
+        assert_eq!(
+            adapted["argumentBindings"]["omittedDefaultParameterIndices"],
+            json!([1])
+        );
+        assert!(
+            adapted["argumentBindings"]["argumentToParameter"][0]
+                .get("argumentName")
+                .is_none()
+        );
+
+        let (mut without_mapping, binding) =
+            call_relation(owner, "p/Api.pick", "()V", file, 20, 30, scope);
+        without_mapping
+            .as_object_mut()
+            .unwrap()
+            .remove("argumentToParameter");
+        let output = projected_calls(vec![
+            (containing.clone(), "owner-binding".into()),
+            (without_mapping, binding),
+        ]);
+        let (adapted, _) = output
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+            .unwrap();
+        assert!(adapted.get("argumentBindings").is_none());
+
+        let (zero_argument_call, binding) =
+            call_relation(owner, "p/Api.zero", "()V", file, 20, 21, scope);
+        let output = projected_calls(vec![
+            (containing.clone(), "owner-binding".into()),
+            (zero_argument_call, binding),
+        ]);
+        let (adapted, _) = output
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+            .unwrap();
+        assert_eq!(
+            adapted["argumentBindings"]["argumentToParameter"],
+            json!([])
+        );
+        assert_eq!(
+            adapted["argumentBindings"]["omittedDefaultParameterIndices"],
+            json!([])
+        );
+
+        let (mut all_default_call, binding) = call_relation(
+            owner,
+            "p/Api.defaulted",
+            "(Ljava/lang/String;)V",
+            file,
+            30,
+            31,
+            scope,
+        );
+        all_default_call["omittedDefaultParameterIndices"] = json!([0]);
+        let output = projected_calls(vec![
+            (containing, "owner-binding".into()),
+            (all_default_call, binding),
+        ]);
+        let (adapted, _) = output
+            .iter()
+            .find(|(fact, _)| fact["schema"] == DOCUMENTATION_CALL_SCHEMA)
+            .unwrap();
+        assert_eq!(
+            adapted["argumentBindings"]["argumentToParameter"],
+            json!([])
+        );
+        assert_eq!(
+            adapted["argumentBindings"]["omittedDefaultParameterIndices"],
+            json!([0])
+        );
     }
 
     #[test]

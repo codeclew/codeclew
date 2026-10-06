@@ -1,7 +1,7 @@
 //! Neutral exact call-site facts admitted from retained Kotlin compiler relations.
 use super::super::model::{
-    CallableProjection, Citation, NeutralExactCallSite, NeutralExactCallSiteOwnerKey,
-    RetainedCallSites,
+    CallableProjection, Citation, NeutralCallArgumentBinding, NeutralCallArgumentBindings,
+    NeutralExactCallSite, NeutralExactCallSiteOwnerKey, RetainedCallSites,
 };
 use super::{Context, gap};
 use crate::documentation::model::{Observation, ServiceEvidence, Source};
@@ -14,6 +14,7 @@ const CALL_SCHEMA: &str = "codeclew-kotlin-documentation-call/1.0";
 const NO_CALL_SITES: &str = "KOTLIN_RETAINED_CALL_SITES_NOT_PROVEN";
 const REJECTED_CALL_SITES: &str = "KOTLIN_RETAINED_CALL_SITES_REJECTED";
 const CONFLICTING_CALL_SITES: &str = "KOTLIN_RETAINED_CALL_SITE_CONFLICT";
+const ARGUMENT_BINDINGS_SCHEMA: &str = "codeclew-call-argument-bindings/1.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnavailableReason {
@@ -86,6 +87,20 @@ pub(super) fn attach(
                 return Err(invalid(
                     "Kotlin call-site citation differs from its validated retained span",
                 ));
+            }
+            if let Some(bindings) = &site.argument_bindings
+                && bindings.gaps.is_empty()
+            {
+                for argument in &bindings.arguments {
+                    let (start, end) = argument_source_range(site, argument).ok_or_else(|| {
+                        invalid("Kotlin argument source range is invalid after admission")
+                    })?;
+                    if context.citation(source, start, end) != argument.citation_id {
+                        return Err(invalid(
+                            "Kotlin argument citation differs from its validated retained subspan",
+                        ));
+                    }
+                }
             }
         }
     }
@@ -171,7 +186,7 @@ fn derive_projection(
     }
     let mut sites = Vec::with_capacity(relations.len());
     for (map_key, relation) in relations {
-        let Some(site) = relation_site(
+        let Some((site, argument_gaps)) = relation_site(
             service,
             revision,
             map_key,
@@ -184,6 +199,16 @@ fn derive_projection(
         else {
             return Ok(unavailable(UnavailableReason::Rejected));
         };
+        if !argument_gaps.is_empty() {
+            // Argument mappings are a child of the exact site. An unsupported
+            // or malformed child never invalidates the compiler-exact call.
+            let mut site = site;
+            if let Some(bindings) = &mut site.argument_bindings {
+                bindings.gaps = argument_gaps;
+            }
+            sites.push(site);
+            continue;
+        }
         sites.push(site);
     }
     sites.sort_by(|left, right| {
@@ -223,7 +248,7 @@ fn relation_site(
     owner: &Observation,
     owner_source: &Source,
     sources: &BTreeMap<String, Source>,
-) -> Result<Option<NeutralExactCallSite>, ClewError> {
+) -> Result<Option<(NeutralExactCallSite, Vec<super::super::model::Gap>)>, ClewError> {
     let normalized = &relation.normalized;
     let Some(source_callable) = normalized["sourceCompilerCallableId"].as_str() else {
         return Ok(None);
@@ -336,7 +361,7 @@ fn relation_site(
     }
 
     let citation_id = citation_id(source, 0, source.text.len());
-    Ok(Some(NeutralExactCallSite {
+    let mut neutral_site = NeutralExactCallSite {
         relation_id: relation.id.clone(),
         normalized_digest: relation.digest.clone(),
         target_identity: target_identity.to_owned(),
@@ -351,7 +376,238 @@ fn relation_site(
         full_compilation_source_digest: full_source_digest.to_owned(),
         expression: source.text.clone(),
         citation_id,
-    }))
+        argument_bindings: None,
+    };
+    let (argument_bindings, argument_gaps) = project_argument_bindings(
+        normalized.get("argumentBindings"),
+        site,
+        target_descriptor,
+        source,
+        &neutral_site,
+    );
+    neutral_site.argument_bindings = argument_bindings;
+    Ok(Some((neutral_site, argument_gaps)))
+}
+
+fn project_argument_bindings(
+    raw: Option<&serde_json::Value>,
+    site: &serde_json::Value,
+    target_descriptor: &str,
+    source: &Source,
+    neutral_site: &NeutralExactCallSite,
+) -> (
+    Option<NeutralCallArgumentBindings>,
+    Vec<super::super::model::Gap>,
+) {
+    let Some(raw) = raw else {
+        return (None, Vec::new());
+    };
+    let gap_for =
+        |code: &str, detail: &str| super::gap(code, detail, Some(neutral_site.citation_id.clone()));
+    let unsupported = || {
+        let gap = gap_for(
+            "ARGUMENT_BINDINGS_UNSUPPORTED",
+            "The retained compiler argument-binding schema is not supported; the exact call site remains available.",
+        );
+        (
+            Some(NeutralCallArgumentBindings {
+                schema: raw["schema"].as_str().unwrap_or_default().to_owned(),
+                arguments: Vec::new(),
+                omitted_default_parameter_indices: Vec::new(),
+                gaps: vec![gap.clone()],
+            }),
+            vec![gap],
+        )
+    };
+    match raw.get("schema").and_then(serde_json::Value::as_str) {
+        Some(ARGUMENT_BINDINGS_SCHEMA) => {}
+        Some(_) => return unsupported(),
+        None => {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "The retained compiler argument-binding schema is missing.",
+            );
+        }
+    }
+    let valid_shape = raw.as_object().is_some_and(|object| {
+        object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "schema" | "argumentToParameter" | "omittedDefaultParameterIndices"
+            )
+        })
+    });
+    let Some(arguments) = raw.get("argumentToParameter") else {
+        return rejected_argument_bindings(
+            raw,
+            &gap_for,
+            "The retained compiler argument mapping is missing.",
+        );
+    };
+    let Some(omitted) = raw.get("omittedDefaultParameterIndices") else {
+        return rejected_argument_bindings(
+            raw,
+            &gap_for,
+            "The retained omitted-default parameter set is missing.",
+        );
+    };
+    let (Some(call_start), Some(call_end)) = (site["byteStart"].as_u64(), site["byteEnd"].as_u64())
+    else {
+        return rejected_argument_bindings(
+            raw,
+            &gap_for,
+            "The exact call-site range is unavailable.",
+        );
+    };
+    if !valid_shape
+        || crate::semantic_validation::validate_kotlin_call_argument_bindings(
+            call_start,
+            call_end,
+            target_descriptor,
+            arguments,
+            omitted,
+        )
+        .is_err()
+    {
+        return rejected_argument_bindings(
+            raw,
+            &gap_for,
+            "The retained compiler argument mapping is malformed or does not match the exact target.",
+        );
+    }
+    let Some(rows) = arguments.as_array() else {
+        return rejected_argument_bindings(
+            raw,
+            &gap_for,
+            "The retained compiler argument mapping is not an array.",
+        );
+    };
+    let Some(omitted_rows) = omitted.as_array() else {
+        return rejected_argument_bindings(
+            raw,
+            &gap_for,
+            "The retained omitted-default parameter set is not an array.",
+        );
+    };
+    let mut projected = Vec::with_capacity(rows.len());
+    let mut previous_end = 0_usize;
+    for row in rows {
+        let (Some(start), Some(end)) = (row["argumentStart"].as_u64(), row["argumentEnd"].as_u64())
+        else {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "A retained argument source range is incomplete.",
+            );
+        };
+        let Some(relative_start) = start
+            .checked_sub(call_start)
+            .and_then(|offset| usize::try_from(offset).ok())
+        else {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "A retained argument begins outside its call site.",
+            );
+        };
+        let Some(relative_end) = end
+            .checked_sub(call_start)
+            .and_then(|offset| usize::try_from(offset).ok())
+        else {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "A retained argument ends outside its call site.",
+            );
+        };
+        if relative_start < previous_end || relative_start >= relative_end {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "Retained argument source spans overlap or are empty.",
+            );
+        }
+        let Some(expression) = source.text.get(relative_start..relative_end) else {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "A retained argument source span is not a UTF-8 boundary in the exact call site.",
+            );
+        };
+        let (Some(argument_type), Some(parameter), Some(parameter_index), Some(parameter_type)) = (
+            row["argumentType"].as_str(),
+            row["parameter"].as_str(),
+            row["parameterIndex"].as_u64(),
+            row["parameterType"].as_str(),
+        ) else {
+            return rejected_argument_bindings(
+                raw,
+                &gap_for,
+                "A retained argument mapping lacks typed formal-parameter metadata.",
+            );
+        };
+        projected.push(NeutralCallArgumentBinding {
+            compilation_byte_start: start,
+            compilation_byte_end: end,
+            argument_name: row["argumentName"].as_str().map(str::to_owned),
+            argument_type: argument_type.to_owned(),
+            parameter: parameter.to_owned(),
+            parameter_index,
+            parameter_type: parameter_type.to_owned(),
+            expression: expression.to_owned(),
+            citation_id: citation_id(source, relative_start, relative_end),
+        });
+        previous_end = relative_end;
+    }
+    let omitted_default_parameter_indices = omitted_rows
+        .iter()
+        .filter_map(serde_json::Value::as_u64)
+        .collect::<Vec<_>>();
+    (
+        Some(NeutralCallArgumentBindings {
+            schema: ARGUMENT_BINDINGS_SCHEMA.to_owned(),
+            arguments: projected,
+            omitted_default_parameter_indices,
+            gaps: Vec::new(),
+        }),
+        Vec::new(),
+    )
+}
+
+fn rejected_argument_bindings(
+    raw: &serde_json::Value,
+    gap_for: &impl Fn(&str, &str) -> super::super::model::Gap,
+    detail: &str,
+) -> (
+    Option<NeutralCallArgumentBindings>,
+    Vec<super::super::model::Gap>,
+) {
+    let gap = gap_for("ARGUMENT_BINDINGS_REJECTED", detail);
+    (
+        Some(NeutralCallArgumentBindings {
+            schema: raw["schema"].as_str().unwrap_or_default().to_owned(),
+            arguments: Vec::new(),
+            omitted_default_parameter_indices: Vec::new(),
+            gaps: vec![gap.clone()],
+        }),
+        vec![gap],
+    )
+}
+
+fn argument_source_range(
+    site: &NeutralExactCallSite,
+    argument: &NeutralCallArgumentBinding,
+) -> Option<(usize, usize)> {
+    let start = argument
+        .compilation_byte_start
+        .checked_sub(site.compilation_byte_start)
+        .and_then(|offset| usize::try_from(offset).ok())?;
+    let end = argument
+        .compilation_byte_end
+        .checked_sub(site.compilation_byte_start)
+        .and_then(|offset| usize::try_from(offset).ok())?;
+    (start < end).then_some((start, end))
 }
 
 fn valid_source(service: &str, revision: &str, source: &Source) -> bool {
@@ -391,9 +647,17 @@ fn citation_id(source: &Source, start: usize, end: usize) -> String {
 }
 
 pub(in crate::documentation::static_pages) fn expected_citation(source: &Source) -> Citation {
-    let start = 0;
-    let end = source.text.len();
-    let start_line = source.start_line;
+    expected_citation_range(source, 0, source.text.len())
+        .expect("full retained source range must be valid UTF-8")
+}
+
+fn expected_citation_range(source: &Source, start: usize, end: usize) -> Option<Citation> {
+    let text = source.text.get(start..end)?;
+    let start_line = source.start_line
+        + source.text.as_bytes()[..start]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count() as u64;
     let end_line = source.start_line
         + source.text.as_bytes()[..end.saturating_sub(1).max(start)]
             .iter()
@@ -405,7 +669,7 @@ pub(in crate::documentation::static_pages) fn expected_citation(source: &Source)
             url.split('#').next().unwrap_or(url)
         )
     });
-    Citation {
+    Some(Citation {
         id: citation_id(source, start, end),
         source_id: source.id.clone(),
         service: source.service.clone(),
@@ -415,11 +679,11 @@ pub(in crate::documentation::static_pages) fn expected_citation(source: &Source)
         end_line,
         start_byte: start,
         end_byte: end,
-        text_digest: crate::canonical::hash_bytes(source.text.as_bytes()),
+        text_digest: crate::canonical::hash_bytes(text.as_bytes()),
         evidence_digest: source.evidence_digest.clone(),
         authority: source.authority.clone(),
         url,
-    }
+    })
 }
 
 pub(in crate::documentation::static_pages) fn validate_page(
@@ -494,6 +758,22 @@ pub(in crate::documentation::static_pages) fn validate_node(
                 return Err(invalid(
                     "retained Kotlin call-site citation differs from its exact source text",
                 ));
+            }
+            if let Some(bindings) = &site.argument_bindings
+                && bindings.gaps.is_empty()
+            {
+                for argument in &bindings.arguments {
+                    let (start, end) = argument_source_range(site, argument).ok_or_else(|| {
+                        invalid("retained Kotlin argument citation range is invalid")
+                    })?;
+                    if citations.get(&argument.citation_id)
+                        != expected_citation_range(source, start, end).as_ref()
+                    {
+                        return Err(invalid(
+                            "retained Kotlin argument citation differs from its exact source subspan",
+                        ));
+                    }
+                }
             }
         }
     } else if expected.gaps[0]

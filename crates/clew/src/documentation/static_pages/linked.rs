@@ -749,14 +749,18 @@ pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
                 })
             } else {
                 let site = edge.exact_call_site.as_ref().unwrap();
-                json!({
+                let mut summary = json!({
                     "relationId":site.relation_id,"relationDigest":site.normalized_digest,
                     "expression":site.expression,"target":site.target_identity,"scope":edge.target_scope,
                     "sourceDigest":site.source_digest,"byteStart":site.compilation_byte_start,
                     "byteEnd":site.compilation_byte_end,"bodyStatus":edge.status,
                     "targetNode":edge.target_node,
                     "frontiers":edge.frontiers.iter().map(|g|g.code.as_str()).collect::<Vec<_>>()
-                })
+                });
+                if let Some(bindings) = &site.argument_bindings {
+                    summary["argumentBindings"] = json!(bindings);
+                }
+                summary
             }
         })
         .collect();
