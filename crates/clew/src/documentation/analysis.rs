@@ -187,6 +187,7 @@ fn capture_local_with_diagnostics(
             &revision,
             &service_digest,
             SOURCE_EXTRACTOR,
+            super::syntax_file_cache::producer_identity(),
             service.language
         ]))?;
         let semantic = super::modules::semantic(service);
@@ -198,7 +199,7 @@ fn capture_local_with_diagnostics(
             return Ok(reused);
         }
         let mut source = super::progress::run("ACQUIRE_SYNTAX_EVIDENCE", || {
-            super::syntax::capture(service, &repo)
+            super::syntax::capture_cached(service, &repo, repository)
         })?;
         if let Some(semantic) = semantic {
             let mut provider = service.clone();

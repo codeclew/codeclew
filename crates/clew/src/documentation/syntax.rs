@@ -1,5 +1,5 @@
 //! Committed-source documentation. No project code, compiler, or build is executed.
-use super::{analysis, digest, invalid, model::*, store};
+use super::{analysis, digest, invalid, model::*, store, syntax_file_cache};
 use crate::{
     canonical,
     cas::CasStore,
@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     path::Path,
     time::{Duration, Instant},
@@ -19,6 +19,22 @@ use tree_sitter::{Node, ParseOptions, Parser};
 const MAX_FILE: usize = 2 * 1024 * 1024;
 const MAX_NODES: usize = 200_000;
 const MAX_FACTS: usize = 32_768;
+#[cfg(test)]
+#[derive(Default, Debug)]
+pub(super) struct FileCacheStats {
+    pub hits: usize,
+    pub misses: usize,
+    pub parses: usize,
+    pub parse_errors: usize,
+}
+#[cfg(test)]
+thread_local! {
+    static FILE_CACHE_STATS: RefCell<FileCacheStats> = RefCell::new(FileCacheStats::default());
+}
+#[cfg(test)]
+pub(super) fn take_file_cache_stats() -> FileCacheStats {
+    FILE_CACHE_STATS.with(|s| std::mem::take(&mut *s.borrow_mut()))
+}
 fn budget() -> ClewError {
     ClewError::new(
         ErrorCode::SliceBudgetExceeded,
@@ -26,7 +42,19 @@ fn budget() -> ClewError {
     )
 }
 
-pub fn capture(service: &Service, repo: &Path) -> Result<ServiceEvidence, ClewError> {
+pub(super) fn capture_cached(
+    service: &Service,
+    repo: &Path,
+    output: &store::Repository,
+) -> Result<ServiceEvidence, ClewError> {
+    capture_selected(service, repo, Some(output))
+}
+
+fn capture_selected(
+    service: &Service,
+    repo: &Path,
+    output: Option<&store::Repository>,
+) -> Result<ServiceEvidence, ClewError> {
     store::validate_service(service)?;
     let revision = analysis::git(
         repo,
@@ -38,14 +66,36 @@ pub fn capture(service: &Service, repo: &Path) -> Result<ServiceEvidence, ClewEr
     )?;
     let state = StateAuthority::process_default()?;
     let cas = CasStore::open(&state)?;
-    capture_with_store(service, repo, &revision, &cas)
+    capture_with_store_selected(service, repo, &revision, &cas, output)
 }
 
-fn capture_with_store(
+#[cfg(test)]
+pub(super) fn capture_with_store(
     service: &Service,
     repo: &Path,
     revision: &str,
     cas: &CasStore,
+) -> Result<ServiceEvidence, ClewError> {
+    capture_with_store_selected(service, repo, revision, cas, None)
+}
+
+#[cfg(test)]
+pub(super) fn capture_with_store_cached(
+    service: &Service,
+    repo: &Path,
+    revision: &str,
+    cas: &CasStore,
+    output: &store::Repository,
+) -> Result<ServiceEvidence, ClewError> {
+    capture_with_store_selected(service, repo, revision, cas, Some(output))
+}
+
+fn capture_with_store_selected(
+    service: &Service,
+    repo: &Path,
+    revision: &str,
+    cas: &CasStore,
+    output: Option<&store::Repository>,
 ) -> Result<ServiceEvidence, ClewError> {
     let config = service
         .source
@@ -117,12 +167,73 @@ fn capture_with_store(
             snapshot: &snapshot.snapshot_id,
             blob: &entry.git_oid,
             source_bytes: &source_bytes,
+            recipes: None,
         };
         if supported {
-            let tree = parse(&service.language, text)?;
-            let fingerprint = fingerprint(tree.root_node(), text)?;
-            inventory.insert(entry.path.clone(), json!({"digest":fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
-            extract(&file, tree.root_node(), &mut e)?;
+            if let Some(output) = output {
+                let key = syntax_file_cache::producer_key(service, &entry.path, text)?;
+                if let Some(payload) =
+                    syntax_file_cache::load(output, &key, &service.id, &entry.path)?
+                {
+                    replay_file(&file, &payload, &mut e)?;
+                    inventory.insert(
+                        entry.path.clone(),
+                        json!({"digest":payload.fingerprint,"coverage":"SYNTAX"}),
+                    );
+                    #[cfg(test)]
+                    FILE_CACHE_STATS.with(|s| s.borrow_mut().hits += 1);
+                    continue;
+                }
+                #[cfg(test)]
+                FILE_CACHE_STATS.with(|s| s.borrow_mut().misses += 1);
+                let tree = parse(&service.language, text)?;
+                let root_fingerprint = fingerprint(tree.root_node(), text)?;
+                inventory.insert(entry.path.clone(), json!({"digest":root_fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
+                if tree.root_node().has_error() {
+                    // Preserve the complete partial analysis and never publish it as a hit.
+                    extract(&file, tree.root_node(), &mut e)?;
+                    #[cfg(test)]
+                    FILE_CACHE_STATS.with(|s| s.borrow_mut().parse_errors += 1);
+                } else {
+                    let local_bytes = Cell::new(0);
+                    let recipes = RefCell::new(Vec::new());
+                    let local_file = File {
+                        source_bytes: &local_bytes,
+                        recipes: Some(&recipes),
+                        ..file
+                    };
+                    let mut local = ServiceEvidence {
+                        schema: e.schema.clone(),
+                        service: e.service.clone(),
+                        revision: e.revision.clone(),
+                        service_digest: e.service_digest.clone(),
+                        extractor: e.extractor.clone(),
+                        runtime_mode: e.runtime_mode.clone(),
+                        coverage: "SYNTAX".into(),
+                        boundaries: vec![],
+                        entrypoints: vec![],
+                        observations: BTreeMap::new(),
+                        sources: BTreeMap::new(),
+                        contracts: BTreeMap::new(),
+                    };
+                    extract(&local_file, tree.root_node(), &mut local)?;
+                    analysis::verify_evidence(&local)?;
+                    let payload = syntax_file_cache::payload(
+                        key,
+                        &entry.path,
+                        root_fingerprint,
+                        recipes.into_inner(),
+                        local,
+                    );
+                    replay_file(&file, &payload, &mut e)?;
+                    syntax_file_cache::save(output, &payload)?;
+                }
+            } else {
+                let tree = parse(&service.language, text)?;
+                let fingerprint = fingerprint(tree.root_node(), text)?;
+                inventory.insert(entry.path.clone(), json!({"digest":fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
+                extract(&file, tree.root_node(), &mut e)?;
+            }
         } else {
             inventory.insert(
                 entry.path.clone(),
@@ -166,6 +277,8 @@ fn capture_with_store(
 }
 
 fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
+    #[cfg(test)]
+    FILE_CACHE_STATS.with(|s| s.borrow_mut().parses += 1);
     let mut parser = Parser::new();
     let grammar = match language {
         "python" => tree_sitter_python::LANGUAGE.into(),
@@ -248,6 +361,7 @@ fn body(node: Node<'_>) -> Option<Node<'_>> {
     })
 }
 
+#[derive(Clone, Copy)]
 struct File<'a> {
     service: &'a Service,
     path: &'a str,
@@ -255,6 +369,7 @@ struct File<'a> {
     snapshot: &'a str,
     blob: &'a str,
     source_bytes: &'a Cell<usize>,
+    recipes: Option<&'a RefCell<Vec<syntax_file_cache::SourceRecipe>>>,
 }
 impl File<'_> {
     fn source(
@@ -264,16 +379,29 @@ impl File<'_> {
         start: usize,
         end: usize,
     ) -> Result<String, ClewError> {
+        let length = end
+            .checked_sub(start)
+            .ok_or_else(|| invalid("invalid source recipe range"))?;
         if e.sources.len() >= MAX_FACTS
-            || end - start > MAX_FILE
-            || self.source_bytes.get().saturating_add(end - start) > 32 * 1024 * 1024
+            || length > MAX_FILE
+            || self.source_bytes.get().saturating_add(length) > 32 * 1024 * 1024
         {
             return Err(budget());
         }
-        self.source_bytes.set(self.source_bytes.get() + end - start);
-        let exact = &self.text[start..end];
+        self.source_bytes.set(self.source_bytes.get() + length);
+        let exact = self
+            .text
+            .get(start..end)
+            .ok_or_else(|| invalid("invalid source recipe range"))?;
         if exact.is_empty() {
             return Err(invalid("empty source occurrence"));
+        }
+        if let Some(recipes) = self.recipes {
+            recipes.borrow_mut().push(syntax_file_cache::SourceRecipe {
+                identity: identity.into(),
+                start,
+                end,
+            });
         }
         let id = analysis::source_id(&self.service.id, identity)?;
         let start_line = self.text[..start].bytes().filter(|&b| b == b'\n').count() as u64 + 1;
@@ -308,6 +436,132 @@ impl File<'_> {
         );
         Ok(id)
     }
+}
+
+fn replay_file(
+    file: &File<'_>,
+    payload: &syntax_file_cache::Payload,
+    e: &mut ServiceEvidence,
+) -> Result<(), ClewError> {
+    let corrupt = || {
+        ClewError::new(
+            ErrorCode::StateCorrupt,
+            "invalid syntax-file extraction payload",
+        )
+    };
+    if payload.service != file.service.id
+        || payload.path != file.path
+        || payload.observations.len() > MAX_FACTS
+        || payload
+            .boundaries
+            .iter()
+            .any(|b| b.starts_with("PARSE_ERROR:"))
+        || !payload.fingerprint.starts_with("sha256:")
+        || payload.fingerprint.len() != 71
+        || !payload.fingerprint[7..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(corrupt());
+    }
+    let mut source_ids = BTreeMap::new();
+    for recipe in &payload.sources {
+        if !(recipe
+            .identity
+            .starts_with(&format!("source:{}/", file.path))
+            || recipe
+                .identity
+                .starts_with(&format!("syntax:{}/", file.path)))
+        {
+            return Err(corrupt());
+        }
+        source_ids.insert(
+            analysis::source_id(&file.service.id, &recipe.identity)?,
+            &recipe.identity,
+        );
+    }
+    for (id, observation) in &payload.observations {
+        if observation.id != *id
+            || observation.service != file.service.id
+            || !matches!(
+                observation.kind.as_str(),
+                "SYMBOL" | "FLOW" | "SYNTAX_DETAIL" | "SOURCE_ANNOTATIONS"
+            )
+            || digest(&observation.normalized)? != observation.digest
+            || observation
+                .source_ids
+                .iter()
+                .any(|id| !source_ids.contains_key(id))
+        {
+            return Err(corrupt());
+        }
+        let identity = if observation.kind == "FLOW" {
+            observation
+                .source_ids
+                .first()
+                .and_then(|id| source_ids.get(id))
+                .map(|identity| identity.as_str())
+                .ok_or_else(corrupt)?
+        } else {
+            observation.symbol.as_str()
+        };
+        if analysis::dependency_id(&file.service.id, &observation.kind.to_lowercase(), identity)?
+            != *id
+        {
+            return Err(corrupt());
+        }
+    }
+    for entry in &payload.entrypoints {
+        if entry.service != file.service.id
+            || analysis::source_id(&file.service.id, &format!("entry:{}", entry.symbol))?
+                != entry.id
+            || entry
+                .source_ids
+                .iter()
+                .any(|id| !source_ids.contains_key(id))
+            || entry
+                .dependency_ids
+                .iter()
+                .any(|id| !payload.observations.contains_key(id))
+        {
+            return Err(corrupt());
+        }
+    }
+    for recipe in &payload.sources {
+        file.source(e, &recipe.identity, recipe.start, recipe.end)?;
+    }
+    e.observations.extend(payload.observations.clone());
+    e.entrypoints.extend(payload.entrypoints.clone());
+    e.boundaries.extend(payload.boundaries.clone());
+    if e.observations.len() > MAX_FACTS || e.sources.len() > MAX_FACTS {
+        return Err(budget());
+    }
+    Ok(())
+}
+
+/// Focused budget tests use the exact hit path with already consumed aggregate budgets.
+#[cfg(test)]
+pub(super) fn replay_file_for_test(
+    service: &Service,
+    path: &str,
+    text: &str,
+    source_bytes: &Cell<usize>,
+    payload: &syntax_file_cache::Payload,
+    evidence: &mut ServiceEvidence,
+) -> Result<(), ClewError> {
+    replay_file(
+        &File {
+            service,
+            path,
+            text,
+            snapshot: "test-current-snapshot",
+            blob: "test-current-blob",
+            source_bytes,
+            recipes: None,
+        },
+        payload,
+        evidence,
+    )
 }
 fn observe(
     e: &mut ServiceEvidence,
@@ -713,6 +967,7 @@ pub(super) fn source_for_provider_test(
                 snapshot: "fixture-snapshot",
                 blob: &canonical::hash_bytes(text.as_bytes()),
                 source_bytes: &bytes,
+                recipes: None,
             },
             parse(&service.language, text).unwrap().root_node(),
             &mut source,
@@ -774,6 +1029,7 @@ mod tests {
                 snapshot: "snapshot",
                 blob: "blob",
                 source_bytes: &Cell::new(0),
+                recipes: None,
             },
             tree.root_node(),
             &mut e,

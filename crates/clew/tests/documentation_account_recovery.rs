@@ -26,6 +26,7 @@ impl Fixture {
             adapter: "fixture-stdio/1.0".into(),
             model: "account-recovery-test".into(),
             usage_authority: "TRANSPORT_METADATA".into(),
+            model_representation: None,
             command: Vec::new(),
             runtime_reads: Vec::new(),
             environment: Vec::new(),

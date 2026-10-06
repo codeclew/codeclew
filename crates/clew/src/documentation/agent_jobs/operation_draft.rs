@@ -843,6 +843,14 @@ pub(super) fn review_source(
     ))
 }
 
+pub(super) fn reusable_author_policy(
+    repo: &Repository,
+    work: &super::super::work::Work,
+    report: &RunReport,
+) -> Result<Value, ClewError> {
+    context_mode::reusable_author_policy(repo, work, report)
+}
+
 /// Recover the exact terminal author packet for independent review.
 pub(super) fn review_packet(
     repo: &Repository,
@@ -1788,6 +1796,17 @@ fn run_summary(report: &RunReport) -> Value {
 }
 
 #[cfg(test)]
+pub(super) fn model_ids_grouped_fixture_setup() -> (
+    tempfile::TempDir,
+    Repository,
+    super::super::work::Work,
+    std::path::PathBuf,
+    Value,
+) {
+    context_mode::model_ids_grouped_fixture_setup()
+}
+
+#[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::documentation::agent_jobs::Amount;
@@ -1953,6 +1972,7 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                 adapter: "macos-seatbelt-stdio/1.0".into(),
                 model: format!("operation-draft-{mode}"),
                 usage_authority: "MAXIMUM_ONLY".into(),
+                model_representation: None,
                 command,
                 runtime_reads: vec![PathBuf::from("/usr/lib/ruby")],
                 environment: Vec::new(),

@@ -120,6 +120,12 @@
     "group": "Tasks"
   },
   {
+    "title": "Included in release 0.13.16",
+    "url": "./documentation.html#release-0-13-16",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
     "title": "Keep the first document small",
     "url": "./documentation.html#next",
     "description": "Create a first document",

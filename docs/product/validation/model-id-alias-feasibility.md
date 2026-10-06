@@ -155,3 +155,86 @@ Another measured representation opportunity is the reviewer's 16,158-byte
 schema representations. Its size does not prove that all of it is redundant or
 removable. Priority between these slices belongs to the research chat; neither
 an alternative implementation nor a broad protocol rewrite was started here.
+
+## Supported native candidate (2026-10-06)
+
+A subsequent source candidate implements the complete opt-in host path for
+native method authoring 1.6 and its independent reviewer. The
+[compatible serializer contract](../../operations/model-id-serializer.md)
+provides the public pure Rust API and executable driver example. Canonical
+jobs, Work, packets, saved answers and reviews remain canonical. A frozen
+versioned carrier and typed, role-scoped map are retained before dispatch;
+grouped expansion extends the existing map. Parsed driver JSON and any adapter
+failure are retained before fallible Reply validation or identity decoding.
+Recovery consumes this record without dispatching again, including unknown or
+foreign-scope aliases and valid JSON from a failed driver. Malformed JSON remains
+an adapter failure; byte-for-byte stdout retention is not claimed.
+
+The same two retained first-call jobs were passed through the actual native
+`prepare` and `forward_model_input` APIs. Their original Work and approved
+author/reviewer run scopes were retained. The public serializer example then
+produced exactly the prepared model payload and schema for both carriers. The
+frozen prompt formatter and pure strict-provider schema projection were applied
+after canonical validation. The baseline projection equals the saved provider
+schema exactly; JSON property ordering gives the same baseline token counts.
+
+| Actual representation | Role | Prompt bytes | Prompt reference tokens | Strict-schema bytes | Strict-schema reference tokens | Combined reference tokens |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Canonical retained baseline | Author | 36,605 | 9,525 | 5,647 | 1,555 | 11,080 |
+| Native prepared model input | Author | 35,726 | 8,970 | 5,688 | 1,581 | 10,551 |
+| Canonical retained baseline | Reviewer | 55,769 | 14,378 | 3,901 | 1,258 | 15,636 |
+| Native prepared model input | Reviewer | 54,329 | 13,565 | 3,923 | 1,286 | 14,851 |
+
+The joint reference-text reduction is **26,716 to 25,402: 1,314 tokens, or
+4.9184%**. Author reduction is 4.7744%; reviewer reduction is 5.0205%. The
+complete prepared encoding guidance and changed schema are included. Typed
+aliases contain a scope tag, and strict-schema sizes increase slightly. This is
+smaller than the earlier 10.26% prospective upper bound; the implementation does
+not promise that bound or optimize away scope isolation to approach it.
+
+The author map contains 20 entries and 2,759 bytes; the reviewer map contains
+29 entries and 3,908 bytes. Complete serialized carriers are 80,371 and 118,031
+bytes, versus model input payload/schema pairs of 40,513 and 57,858 bytes. Maps
+and unchanged canonical jobs stay outside model input, but conservative host
+admission and reservation still account for the complete carrier and configured
+overhead. Operators may need higher explicit role byte caps and budgets. These
+byte admission bounds do not measure provider tokens or billing.
+
+The actual canonical jobs and all 96 author / 146 reviewer protected leaf values
+checked remain exact, including source text/tokens, semantic symbols, names,
+paths, evidence and query selections. Counts use the same `tiktoken` 0.14.0
+reference `o200k_base` encoding; target-model encoding remains unresolved. Chat
+framing and provider schema wrappers are excluded on both sides. This two-job
+result establishes neither general or grouped-expansion savings nor model
+quality, billing or actual provider delivery. No model calls, capture or refresh
+were performed.
+
+Six pure codec regressions and four actual native host scenarios passed. Host
+coverage includes grouped author/reviewer expansion with canonical saved
+results, unknown/foreign-scope alias failure without redispatch, missing map-head
+publication plus raw-result crash recovery, and a retained driver-exit failure
+that cannot become a successful expansion. The grouped-review fixture initially
+failed conservative carrier admission; increasing only that synthetic fixture's
+explicit cap/budget made the focused rerun pass. Production bounds were retained.
+Legacy role serialization and saved-author replay tests also passed. Integrated
+release qualification remains pending; this candidate is not in `0.13.15`.
+
+
+## Compact native delivery follow-up
+
+A later source candidate adds explicit `codeclew-model-ids/1.1`, retaining
+version 1.0's frozen behavior. It verifies complete native presentation with the
+existing pure builder, then excludes duplicate raw delivery arrays solely from
+model input. Canonical archives, presentation, receipts, citations and separate
+author/reviewer deliveries remain intact.
+
+The [actual grouped comparison and compatibility checks](../../plans/question-results-and-incremental-evidence.md#compact-role-evidence-representation-candidate-2026-10-06)
+record both initial and expanded calls on identical canonical jobs/scopes.
+The complete four-call generated Java fixture decreases prompt plus strict-schema
+reference counts 163,106 to 104,051 (36.2065%), including protocol; expanded
+calls alone decrease 113,714 to 69,559 (38.8299%). The first author call without
+duplicate delivery grows by 18 reference tokens (0.2547%).
+These are reference text counts, not general production, provider billing or
+quality results. The previous actual 4.9184% measurement remains specific to
+version 1.0's two retained real first-call jobs. Frozen 1.0 carriers remain
+compatible; integrated release qualification is pending.

@@ -1312,6 +1312,56 @@ pub(super) fn validate_saved_payload(
     Ok(())
 }
 
+pub(super) fn reusable_reviewer_policy(
+    repo: &Repository,
+    work: &Work,
+    report: &RunReport,
+    origin: &Origin,
+    author: &Value,
+) -> Result<(), ClewError> {
+    let reference = report.checkpoint.as_ref().ok_or_else(|| {
+        invalid("RECOVERY_CHECKPOINT_MISSING: reusable reviewer has no checkpoint")
+    })?;
+    let checkpoint: RunCheckpoint = recovery::load_checkpoint(repo, reference)?;
+    let delivery = state(&checkpoint)?;
+    if delivery.seed.is_some()
+        || !delivery.steps.is_empty()
+        || delivery.pending.is_some()
+        || !checkpoint.pages.is_empty()
+        || !checkpoint.source_parts.is_empty()
+        || report.attempts.len() != 1
+    {
+        return Err(invalid(
+            "ANSWER_REUSE_UNSUPPORTED: reviewer expansions or retry seed require new Work",
+        ));
+    }
+    let identity = &checkpoint
+        .pending_call
+        .as_ref()
+        .ok_or_else(|| {
+            invalid("RECOVERY_REPORT_MISMATCH: reusable reviewer invocation is missing")
+        })?
+        .identity;
+    let input = recovery::load_input(repo, identity)?;
+    let saved = &input.request["payload"];
+    let blocks = crate::documentation::operation_answer::review_blocks(&saved["answer"])?;
+    let expected = context_payload(
+        repo,
+        work,
+        origin,
+        &saved["packet"],
+        &saved["answer"],
+        &blocks,
+        author,
+        &[],
+        &[],
+        &[],
+        delivery.configured_calls,
+        0,
+    )?;
+    agent_jobs::validate_reuse_policy(saved, &expected, "reviewer")
+}
+
 fn uncertain_source(
     material: &Material<'_>,
     failed: &RunReport,
@@ -1558,6 +1608,11 @@ fn validate_terminal(
 }
 
 #[cfg(test)]
+pub(super) fn model_ids_grouped_review_config(path: &Path, author: &Path) -> Value {
+    serde_json::to_value(tests::config(path, author, "approve", 3)).unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{fs, path::PathBuf};
@@ -1566,8 +1621,14 @@ mod tests {
 r = JSON.parse(STDIN.read)
 p = r.fetch("payload")
 mode = ARGV.fetch(0)
+review_context = p.fetch("reviewContext")
+review_pages = if defined?(FIXTURE_VERSION) && FIXTURE_VERSION == "codeclew-model-ids/1.1"
+  review_context.fetch("presentation").fetch("pages")
+else
+  review_context.fetch("pages")
+end
 exit 7 if mode == "uncertain"
-exit 7 if mode == "uncertain-after-expand" && !p.fetch("reviewContext").fetch("pages").empty?
+exit 7 if mode == "uncertain-after-expand" && !review_pages.empty?
 refs = (0...19).map { |i| "expanded-ref-%02d" % i }
 action = if mode == "empty"
   {"action" => "expand", "selections" => []}
@@ -1577,9 +1638,9 @@ elsif mode == "foreign"
   {"action" => "expand", "selections" => [{"references" => ["FOREIGN"]}]}
 elsif mode == "untracked"
   {"action" => "expand", "selections" => [{"references" => refs, "untrackedReads" => true}]}
-elsif mode == "feedback" && p.fetch("reviewContext").fetch("pages").empty? && p.fetch("lookupFeedback").empty?
+elsif mode == "feedback" && review_pages.empty? && p.fetch("lookupFeedback").empty?
   {"action" => "expand", "selections" => [{"symbols" => ["missing-review-only-symbol"]}]}
-elsif p.fetch("reviewContext").fetch("pages").empty?
+elsif review_pages.empty?
   if mode == "feedback"
     abort "missing bounded lookup feedback" unless p.fetch("lookupFeedback").first.fetch("status") == "NOT_FOUND"
   end
@@ -1599,7 +1660,7 @@ reply["usage"] = {"inputTokens" => 600001, "outputTokens" => 1, "costUnits" => 1
 puts JSON.generate(reply)
 "#;
 
-    fn config(path: &Path, author: &Path, mode: &str, calls: u32) -> ContextConfig {
+    pub(super) fn config(path: &Path, author: &Path, mode: &str, calls: u32) -> ContextConfig {
         let original: Value = store::read(author, store::MAX_RECORD).unwrap();
         let mut reviewer = original["author"].clone();
         reviewer["model"] = json!(format!("synthetic-independent-review-{mode}"));

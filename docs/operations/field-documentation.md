@@ -6,6 +6,124 @@ not literal values to copy unchanged. Use installed `clew`, or `./clew` when
 developing this checkout. See [snapshot storage](docs-snapshot-store.md) for pins
 and retention, and [source profiles](source-documentation.md) for evidence limits.
 
+## Capture, question, review and exact reuse
+
+Start with the first-overview recipe below: capture an explicit committed scope,
+save its returned Check handle, prepare Work and finish the registered source
+reads. A question against that saved snapshot needs no new capture. The starter's
+source-question packet lets your current agent answer with file/line references;
+it is separate from a saved operation answer with an independent meaning review.
+
+Exact approved-answer discovery, syntax-file reuse and model ID representation
+are included in v0.13.16. Use installed `clew` for the method workflow below;
+use `./clew` when developing this checkout.
+
+For a saved Java method answer, select an exact callable declaration from a
+native captured Check admitted for `process-graph-v1`. If compiler evidence is
+needed, acquire it through the explicit enrichment route below. Save one request
+file and keep it for later discovery; example `/work/method-question.json`:
+
+```json
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Service maintainers",
+  "contextProfile": "process-graph-v1",
+  "rootDeclaration": "RETURNED_CALLABLE_DECLARATION_ID",
+  "question": "What rejects an invalid quantity, and what happens afterwards?",
+  "authoringContract": "codeclew-operation-draft-authoring/1.6",
+  "sourceDataContext": true,
+  "documentationLanguage": "en",
+  "maxItems": 100,
+  "maxBytes": 49152
+}
+```
+
+Replace the declaration placeholder with its exact retained observation ID; omit
+`entrypoint`. Prepare, author and independently review the method:
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders \
+  --input /work/method-question.json --snapshot SOURCE_CHECK
+clew docs work run --root /work/architecture --work RETURNED_WORK \
+  --config /operator/method-author.json --draft
+clew docs work review-draft --root /work/architecture --work RETURNED_WORK \
+  --source-run RETURNED_AUTHOR_RUN --config /operator/method-reviewer.json
+```
+
+The author configuration uses
+`codeclew-documentation-operation-draft-execution/1.1` with `authorCalls`; the
+reviewer uses `codeclew-documentation-operation-draft-review-execution/1.1` with
+`reviewerCalls`. Both require explicit finite role-call budgets.
+These commands execute configured drivers; they require operator-owned
+configuration and may incur model charges. See the [author/reviewer contracts](docs-snapshot-store.md#opt-in-section-author-contract).
+An approved review covers the saved packet. It does not publish the answer or
+verify present source or runtime behavior. For export or deliberate catalogue
+publication, follow [review and publication](docs-snapshot-store.md#review-a-saved-operation-draft).
+
+To ask the same question later, choose an explicit Check. Reuse the saved Check
+when no new acquisition is intended; run `docs check --service orders` separately
+when a new captured comparison is needed. Then use the original request file
+and exact subject without remembering Work or review IDs:
+
+```sh
+clew docs work find-answer --root /work/architecture --subject service:orders \
+  --input /work/method-question.json --snapshot COMPARED_CHECK
+```
+
+`FOUND` supplies `selected.answer`, its original review/provenance and the
+candidate's current applicability. `SELECTION_REQUIRED` supplies candidates;
+save the chosen candidate's complete `selection` object, then rerun the same
+command with `--select /work/answer-selection.json`. Multiple applicable
+approvals are never ranked or chosen automatically; a single `CURRENT` candidate
+returns `FOUND` directly. Changing the request, subject or compared Check requires
+another lookup and selection. Similar wording is not an exact request match.
+
+This first reuse boundary requires native 1.6 method Work with source-data
+context, no actual author/reviewer expansion or repair, no maintained/external
+context and absent protected notes. A 1.6 approval that used expansion remains
+historical but is outside this reusable shape. See the [complete discovery contract](docs-snapshot-store.md#find-an-approved-answer-by-exact-request-source-candidate).
+
+Keep the original answer's citations and approval intact. Identify the matching
+entry in `candidates` using `selected.selection`, then inspect that candidate's
+`selectedEvidence.linkChanges` and the current source records from
+`docs context --root /work/architecture --service orders --snapshot COMPARED_CHECK`
+for compared revision/line links. A `CURRENT` result does not rewrite the frozen
+reader or create a new review. `STALE`, `UNKNOWN` or `NO_REUSABLE_MATCH` requires
+reading the reported changes/limits and preparing new Work when a replacement
+answer is wanted. Missing/corrupt history is an error, not permission to choose
+the remaining answer.
+
+For published service documentation, `docs refresh --status-only` observes target
+changes without acquisition; a selected-service `docs check` captures new
+evidence. Inspect affected/unaffected content and link changes, reauthor affected
+content against the new Check, and publish explicitly through the existing
+proposal or approved-answer route. Preserve the old publication in history.
+Neither finding an answer nor checking applicability updates `docs/index.html`.
+
+For compatible new drivers, use `modelRepresentation:
+"codeclew-model-ids/1.1"`; see the [public serializer example and contract](model-id-serializer.md).
+This compact representation verifies the complete native presentation against the
+canonical pages/source parts, then omits only duplicate raw delivery arrays from
+the model form. The model reads the preserved presentation, including retained
+reference links; receipts, citations and canonical archives remain intact. A
+missing presentation retains raw arrays, while a mismatched presentation fails.
+Version 1.0 remains supported unchanged; changing the selected mode cannot
+migrate an existing run. Both versions preserve canonical answers and independent
+reviewer scope, and both are included in v0.13.16.
+
+In a generated grouped-read fixture, paired supported 1.0/1.1 model forms for the
+same canonical jobs and scopes measured **163,106 to 104,051 combined prompt plus
+strict-schema reference text tokens: 36.2065% fewer** across all four
+initial/expanded role contexts, including protocol overhead. The expanded pair
+alone fell from 113,714 to 69,559 (38.8299%); the initial author grew from 7,066 to
+7,084 tokens, an 18-token (0.2547%) instruction cost. The comparison did not
+dispatch the same invocation again. These are bounded fixture text counts, not general
+corpus savings, provider billing, model quality or observed provider delivery.
+See the [compact measurement and limits](../plans/question-results-and-incremental-evidence.md#compact-role-evidence-representation-candidate-2026-10-06).
+The earlier 4.9184% result describes 1.0's separate two-retained-first-call
+measurement against canonical input. Conservative admission still includes the
+entire carrier and host-only map.
+
 ## Executable first overview and source questions
 
 For a first overview, initialize a separate root and use its bundled starter.
@@ -311,6 +429,36 @@ Configuration, driver, evidence, read-ledger or publication mismatches return an
 
 When another projection is needed, run `docs recompose` from the original source-capture snapshot after publication, then render its newly returned snapshot. Both operations use saved evidence without capture. Keep the frozen publication ID/path. Pin the source parent with `clew docs snapshot pin --root /work/architecture --name orders-source-first --snapshot SOURCE_SNAPSHOT` before changing service configuration.
 
+<a id="incremental-capture-cost-source-candidate"></a>
+
+## Incremental capture cost
+
+Version 0.13.16 reuses successful syntax extraction for the same
+service and relative file path when exact source bytes, language/dialect and the
+complete bundled producer match. It reconstructs Source receipts for the current
+revision, snapshot, blob, ranges and URL. Scope acquisition, file inventory,
+annotations, FILE_ONLY evidence and aggregate source/fact budgets still apply.
+Failed extraction and parse-error trees are not cached; corrupt cache bindings
+fail explicitly. A new path, changed bytes, dialect or producer requires parsing.
+This does not reuse compiler results or establish currentness without a check.
+
+One bounded public worker corpus measured five paired incremental captures after
+one changed file. Each cached capture reused 19 files and parsed the changed file
+plus one persistent parse-error file; forced full extraction parsed all 21
+supported files. Complete ServiceEvidence and serialized Check remained equal.
+Median native capture plus Check assembly fell from 1,107.166 to 865.107 ms,
+**21.863%**, including cache IO and replay. The result retained partial coverage.
+It does not establish a general corpus, CLI, compiler, cold-IO or model-time
+speedup. Full request/source equality remains required for approved-answer reuse.
+
+Initial cache seeding took about 2.27 seconds including documentation-root
+initialization. The measured forced-full incremental capture took about 1.1
+seconds; these are different operations, not a paired cold-start comparison.
+Account for startup and new/changed files before expecting a warm incremental
+benefit. The [accepted measurement and exclusions](../plans/question-results-and-incremental-evidence.md#measured-syntax-file-reuse-candidate-2026-10-06)
+describe the selected corpus and five pairs. This behavior is included in
+v0.13.16.
+
 ## Explicit compiler enrichment afterward
 
 Keep the same service ID, `profile: "source-syntax"`, source roots/dialect and fixed commit. Add this object to the complete service JSON, then update through `service show` / `service add` with its current input digest:
@@ -329,7 +477,15 @@ Keep the same service ID, `profile: "source-syntax"`, source roots/dialect and f
 
 Use the actual qualified profile and compilation selector; writable/AP projects require their own explicit supported profile/admission. Configure the provider only through `modules.semantic`. Then run `clew docs check --root /work/architecture --service orders`. This is synchronous and may run Maven/compiler work for that provider's selected compilation and its build dependencies. It retains compatible saved sibling services; it does not guarantee no reactor work. Ordinary `context`, Work and `render` consume saved evidence; avoid `--refresh` and unscoped `docs check` when no acquisition is intended.
 
-This is a new capture, not an in-place enrichment of the old snapshot. Current code reparses source when semantic execution is enabled, then attaches only unique equal-revision/name/file/line `SEMANTIC_SYMBOL` observations. Source identities remain source-based, and lexical FLOW targets are not upgraded. Provider failure is explicitly recorded as unavailable while source evidence remains readable in this intentionally selected source profile. A native-only failed capture is never silently substituted with syntax evidence.
+This is a new capture, not an in-place enrichment of the old snapshot. Released
+v0.13.15 reparses source when semantic execution is enabled. Version 0.13.16
+can reuse exact per-file syntax extraction while acquiring the
+compiler provider separately; composite semantic captures remain non-cacheable.
+Enrichment attaches only unique equal-revision/name/file/line `SEMANTIC_SYMBOL`
+observations. Source identities remain source-based, and lexical FLOW targets are
+not upgraded. Provider failure is explicitly recorded as unavailable while
+source evidence remains readable in this intentionally selected source profile.
+A native-only failed capture is never silently substituted with syntax evidence.
 
 ## Profile changes and historical access
 

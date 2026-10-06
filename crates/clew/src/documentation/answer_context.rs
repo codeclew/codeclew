@@ -37,7 +37,7 @@ pub(super) fn run(
     }))
 }
 
-fn compare(work: &Work, audit: &Value, current: &Check) -> Result<Value, ClewError> {
+pub(super) fn compare(work: &Work, audit: &Value, current: &Check) -> Result<Value, ClewError> {
     let records = audit["records"]
         .as_array()
         .ok_or_else(|| invalid("saved answer audit records are unavailable"))?;
@@ -146,6 +146,34 @@ fn compare(work: &Work, audit: &Value, current: &Check) -> Result<Value, ClewErr
         "selectedSourceCount":source_count,"selectedDependencyCount":dependency_count,"services":services,
         "changedPins":changed_pins,"changedSources":changed_sources,"missingPinsOrBindings":missing,"linkChanges":links}),
     )
+}
+
+/// Only the reuse path may interpret a dependency digest change as provenance.
+/// Its complete, validated initial semantic projection must already be equal;
+/// the known-ID answer-context command retains its strict digest policy.
+pub(super) fn compare_with_verified_replay(
+    work: &Work,
+    audit: &Value,
+    current: &Check,
+    replay: &Value,
+) -> Result<Value, ClewError> {
+    let mut delta = compare(work, audit, current)?;
+    let pins = delta["changedPins"].as_array().cloned().unwrap_or_default();
+    if super::answer_reuse_projection::selected_provenance_only(&delta, replay) {
+        delta["strictDependencyDigestChanges"] = json!(pins);
+        let links = delta["linkChanges"].as_array_mut().unwrap();
+        for mut pin in pins {
+            pin["reason"] =
+                json!("DEPENDENCY_PROVENANCE_CHANGED_WITH_VERIFIED_EQUAL_INITIAL_REPLAY");
+            links.push(pin);
+        }
+        delta["changedPins"] = json!([]);
+        delta["status"] = json!("CURRENT");
+        delta["dependencyComparison"] = json!(
+            "STRICT_IDENTITY_AND_DIGEST_VALIDATION_WITH_EQUAL_COMPLETE_INITIAL_SEMANTIC_REPLAY"
+        );
+    }
+    Ok(delta)
 }
 
 #[cfg(test)]

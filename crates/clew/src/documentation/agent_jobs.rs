@@ -99,6 +99,8 @@ pub(super) fn selection_guidance(work: &super::work::Work) -> Value {
 pub struct Role {
     pub adapter: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_representation: Option<String>,
     #[serde(default = "maximum_only")]
     pub usage_authority: String,
     pub command: Vec<String>,
@@ -1093,6 +1095,170 @@ fn report_path(run: &str) -> Result<String, ClewError> {
     }
     Ok(format!(".codeclew/jobs/{run}.json"))
 }
+
+/// Discover historical approvals without using the mutable latest pointer to
+/// select candidates. A retained pointer is still checked for damaged history.
+/// Every report is decoded and identity-checked, including unrelated Work, so a
+/// damaged history cannot silently turn an incomplete search into a unique hit.
+pub(in crate::documentation) fn historical_approved_runs(
+    repo: &Repository,
+    work_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Vec<String>>, ClewError> {
+    // A missing report must not disappear from discovery merely because its
+    // checkpoint directory was also lost. The pointer is an integrity locator,
+    // never the source of the candidate set or a preference between answers.
+    // Callers supply every validated manifest identity, before filtering by
+    // request. An unrelated broken pointer also makes the history incomplete.
+    for work in work_ids {
+        super::work::directory(work)?;
+        latest_report(repo, work)?;
+    }
+    let path = repo.path(".codeclew/jobs")?;
+    if !path.try_exists().map_err(io_error)? {
+        return Ok(BTreeMap::new());
+    }
+    let mut runs = BTreeSet::new();
+    let mut retained_run_directories = BTreeSet::new();
+    for entry in fs::read_dir(path).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Err(invalid(
+                "RECOVERY_REPORT_CORRUPT: report filename is not UTF-8",
+            ));
+        };
+        let Some(run) = name.strip_suffix(".json") else {
+            if name.len() == 32 && name.bytes().all(|c| c.is_ascii_hexdigit()) {
+                let path = repo.path(&format!(".codeclew/jobs/{name}"))?;
+                if fs::metadata(path).map_err(io_error)?.is_dir() {
+                    if retained_run_directories.len() >= store::MAX_RECORDS {
+                        return Err(invalid(
+                            "RECOVERY_REPORT_CORRUPT: excessive retained run directories",
+                        ));
+                    }
+                    retained_run_directories.insert(name.to_owned());
+                }
+            }
+            continue;
+        };
+        report_path(run)?;
+        if runs.len() >= store::MAX_RECORDS {
+            return Err(invalid(
+                "RECOVERY_REPORT_CORRUPT: excessive historical reports",
+            ));
+        }
+        runs.insert(run.to_owned());
+    }
+    if let Some(run) = retained_run_directories.difference(&runs).next() {
+        return Err(invalid(format!(
+            "RECOVERY_REPORT_CORRUPT: retained run directory {run} has no historical report; restore complete documentation-root history before discovery"
+        )));
+    }
+    let mut approved: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for run in runs {
+        let report: RunReport = store::read(&repo.path(&report_path(&run)?)?, 4 * 1024 * 1024)
+            .map_err(|error| {
+                invalid(format!(
+                    "RECOVERY_REPORT_CORRUPT: historical report cannot be decoded ({})",
+                    error.message
+                ))
+            })?;
+        super::work::directory(&report.work)?;
+        validate_report_identity(&report, &report.work, &run)?;
+        if !work_ids.contains(&report.work) {
+            return Err(invalid(format!(
+                "RECOVERY_REPORT_MISMATCH: historical report {run} binds unavailable Work {}; restore complete documentation-root history before discovery",
+                report.work
+            )));
+        }
+        if report.status == "DRAFT_REVIEW_APPROVED" {
+            approved.entry(report.work).or_default().push(run);
+        }
+    }
+    Ok(approved)
+}
+
+/// Additional current-policy admission after `load_approved_answer` establishes
+/// the durable historical approval. Unsupported history remains historical.
+pub(in crate::documentation) fn validate_reusable_chain(
+    repo: &Repository,
+    work: &super::work::Work,
+    review_run: &str,
+) -> Result<(), ClewError> {
+    operation_draft_review::validate_reusable_chain(repo, work, review_run)
+}
+
+fn validate_reuse_policy(saved: &Value, current: &Value, role: &str) -> Result<(), ClewError> {
+    if saved != current {
+        return Err(invalid(format!(
+            "ANSWER_REUSE_UNSUPPORTED: saved {role} input differs from current {role} policy"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn reusable_author_fixture_setup()
+-> (tempfile::TempDir, Repository, super::work::Work, PathBuf) {
+    let (temp, repo, work, path) = operation_draft::tests::setup("success");
+    let mut config: Value = store::read(&path, store::MAX_RECORD).unwrap();
+    config["schema"] = serde_json::json!("codeclew-documentation-operation-draft-execution/1.1");
+    config["authorCalls"] = serde_json::json!(1);
+    let driver = config["author"]["command"][4].as_str().unwrap().replace(
+        "\"result\" => answer",
+        "\"result\" => {\"action\" => \"answer\", \"answer\" => answer}",
+    );
+    config["author"]["command"][4] = serde_json::json!(driver);
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    (temp, repo, work, path)
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn model_ids_grouped_author_fixture_setup() -> (
+    tempfile::TempDir,
+    Repository,
+    super::work::Work,
+    PathBuf,
+    Value,
+) {
+    operation_draft::model_ids_grouped_fixture_setup()
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn write_model_ids_grouped_review_fixture_config(
+    path: &std::path::Path,
+    author: &std::path::Path,
+) -> Value {
+    operation_draft_review::model_ids_grouped_review_config(path, author)
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn interrupt_model_head_publication_once_for_test() {
+    recovery::interrupt_model_head_once();
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn interrupt_raw_model_result_once_for_test() {
+    recovery::interrupt_raw_model_result_once();
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn validate_frozen_model_records_for_test(
+    repo: &Repository,
+    invocation: &str,
+) -> Result<Value, crate::error::ClewError> {
+    recovery::validate_frozen_model_records(repo, invocation)
+}
+
+#[cfg(test)]
+pub(in crate::documentation) fn write_reusable_review_fixture_config(
+    path: &std::path::Path,
+    author: &std::path::Path,
+    mode: &str,
+) {
+    operation_draft_review::write_reusable_review_fixture_config(path, author, mode);
+}
+
 fn latest_report(repo: &Repository, work: &str) -> Result<Option<RunReport>, ClewError> {
     let pointer_path = repo.path(&format!(".codeclew/work/{work}/latest-run.json"))?;
     if !pointer_path.exists() {
@@ -1122,6 +1288,11 @@ pub(super) fn load_report_by_id(
                 error.message
             ))
         })?;
+    validate_report_identity(&report, work, run)?;
+    Ok(report)
+}
+
+fn validate_report_identity(report: &RunReport, work: &str, run: &str) -> Result<(), ClewError> {
     if report.schema != "codeclew-documentation-work-run/1.0"
         || report.work != work
         || report.run != run
@@ -1130,7 +1301,7 @@ pub(super) fn load_report_by_id(
             "RECOVERY_REPORT_MISMATCH: selected report belongs to another Work or run",
         ));
     }
-    Ok(report)
+    Ok(())
 }
 fn save_report(repo: &Repository, report: &RunReport) -> Result<(), ClewError> {
     let guard = repo.lock()?;
@@ -2305,6 +2476,93 @@ fn call(
         )));
     }
 
+    let model_input = match driver.model_representation.as_deref() {
+        None => None,
+        Some(version) if super::model_ids::supported_version(version) => {
+            if resumed
+                && checkpoint
+                    .pending_call
+                    .as_ref()
+                    .is_some_and(|pending| pending.status != "PREPARED")
+            {
+                Some(recovery::try_load_model_input(repo,&input)?.ok_or_else(||invalid("RECOVERY_MODEL_INPUT_MISSING: dispatched call requires exact retained model carrier"))?)
+            } else {
+                let previous = report.attempts[..attempt_index]
+                    .iter()
+                    .rev()
+                    .find(|attempt| attempt.role == role_name)
+                    .map(|attempt| attempt.invocation.as_str());
+                Some(recovery::prepare_model_input(
+                    repo, &input, previous, version,
+                )?)
+            }
+        }
+        Some(_) => {
+            return Err(invalid(
+                "MODEL_REPRESENTATION_UNSUPPORTED: select a compatible versioned driver representation",
+            ));
+        }
+    };
+    if let Some(model) = &model_input
+        && driver.model_representation.as_deref() != Some(model.prepared.version.as_str())
+    {
+        return Err(invalid(
+            "RECOVERY_MODEL_INPUT_VERSION_MISMATCH: selected role mode differs from its frozen carrier",
+        ));
+    }
+    let wire_request = model_input
+        .as_ref()
+        .map_or(&request, |model| &model.carrier);
+    let delivered_bytes = ensure_input_cap(driver, wire_request)?;
+    if model_input.is_some() {
+        report.attempts[attempt_index].request_bytes = Some(delivered_bytes);
+    }
+
+    // A crash after receiving wire output but before decoding cannot turn into
+    // an uncertain dispatch retry. Recover that exact delivered output first.
+    if recovery::try_load_result(repo, &input)?.is_none()
+        && let Some(model) = &model_input
+        && let Some(raw) = recovery::try_load_raw_model_result(repo, model)?
+    {
+        if let Some(failure) = &raw.failure {
+            return fail_call(
+                repo,
+                c,
+                report,
+                checkpoint,
+                attempt_index,
+                &identity,
+                driver,
+                failure.clone(),
+            );
+        }
+        let reply =
+            match decode_delivered_reply(raw.output.clone(), &identity, model_input.as_ref()) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    return fail_call(
+                        repo,
+                        c,
+                        report,
+                        checkpoint,
+                        attempt_index,
+                        &identity,
+                        driver,
+                        error.message,
+                    );
+                }
+            };
+        recovery::save_result_with_model_binding(
+            repo,
+            &input,
+            reply.usage,
+            reply.result,
+            raw.stdout_bytes,
+            raw.stderr_bytes,
+            Some(raw.binding(model)),
+        )?;
+    }
+
     if let Some(saved) = recovery::try_load_result(repo, &input)? {
         if checkpoint
             .pending_call
@@ -2415,7 +2673,7 @@ fn call(
     }
     save_run_checkpoint(repo, report, checkpoint)?;
 
-    let executed = super::agent_adapter::execute(repo, driver, &request, &cancel_path);
+    let executed = super::agent_adapter::execute(repo, driver, wire_request, &cancel_path);
     let (reply, failure) = match executed {
         Ok(result) => {
             report.attempts[attempt_index].admission = result.admission;
@@ -2424,16 +2682,23 @@ fn call(
             let mut reply = None;
             let mut failure = result.failure;
             if let Some(output) = result.output {
-                match serde_json::from_value::<Reply>(output) {
-                    Ok(value)
-                        if value.schema == "codeclew-documentation-agent-result/1.0"
-                            && value.invocation == identity.invocation
-                            && value.role == role_name
-                            && value.model == driver.model =>
-                    {
-                        reply = Some(value);
+                if let Some(model) = &model_input {
+                    recovery::save_raw_model_result(
+                        repo,
+                        model,
+                        output.clone(),
+                        result.stdout_bytes,
+                        result.stderr_bytes,
+                        failure.clone(),
+                    )?;
+                }
+                if failure.is_none() || model_input.is_none() {
+                    match decode_delivered_reply(output, &identity, model_input.as_ref()) {
+                        Ok(value) => {
+                            reply = Some(value);
+                        }
+                        Err(error) => failure = Some(error.message),
                     }
-                    _ => failure = Some("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH".into()),
                 }
             } else if failure.is_none() {
                 failure = Some("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH".into());
@@ -2444,13 +2709,27 @@ fn call(
     };
 
     if let Some(value) = &reply {
-        recovery::save_result(
+        let model_binding = if let Some(model) = &model_input {
+            Some(
+                recovery::try_load_raw_model_result(repo, model)?
+                    .ok_or_else(|| {
+                        invalid(
+                            "RECOVERY_MODEL_RESULT_MISSING: delivered wire output was not retained",
+                        )
+                    })?
+                    .binding(model),
+            )
+        } else {
+            None
+        };
+        recovery::save_result_with_model_binding(
             repo,
             &input,
             value.usage.clone(),
             value.result.clone(),
             report.attempts[attempt_index].captured_stdout_bytes,
             report.attempts[attempt_index].captured_stderr_bytes,
+            model_binding,
         )?;
         report.attempts[attempt_index].usage = value.usage.clone();
         report.attempts[attempt_index].result_digest = Some(digest(&value.result)?);
@@ -2460,22 +2739,16 @@ fn call(
         save_run_checkpoint(repo, report, checkpoint)?;
     }
     if let Some(failure) = failure {
-        report.attempts[attempt_index].status = "FAILED".into();
-        report.attempts[attempt_index].failure = Some(failure.clone());
-        if let Some(pending) = checkpoint.pending_call.as_mut() {
-            pending.status = "FAILED".into();
-            pending.failure = Some(failure.clone());
-        }
-        save_run_checkpoint(repo, report, checkpoint)?;
-        reconcile(
+        return fail_call(
             repo,
-            &c.budget,
-            &identity.reservation,
-            None,
-            driver.cap.overhead_input_tokens,
-        )?;
-        save_report(repo, report)?;
-        return Err(invalid(failure));
+            c,
+            report,
+            checkpoint,
+            attempt_index,
+            &identity,
+            driver,
+            failure,
+        );
     }
     finish_saved_result(
         repo,
@@ -2488,6 +2761,55 @@ fn call(
         &driver_digest,
         driver,
     )
+}
+
+fn decode_delivered_reply(
+    output: Value,
+    identity: &recovery::CallIdentity,
+    model: Option<&recovery::ModelInputRecord>,
+) -> Result<Reply, ClewError> {
+    let mut reply: Reply = serde_json::from_value(output)
+        .map_err(|_| invalid("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH"))?;
+    if reply.schema != "codeclew-documentation-agent-result/1.0"
+        || reply.invocation != identity.invocation
+        || reply.role != identity.role
+        || reply.model != identity.model
+    {
+        return Err(invalid("ROLE_MODEL_OR_DISPATCH_PROTOCOL_MISMATCH"));
+    }
+    if let Some(model) = model {
+        reply.result = super::model_ids::decode_result(&reply.result, &model.prepared)?;
+    }
+    Ok(reply)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fail_call(
+    repo: &Repository,
+    config: &Config,
+    report: &mut RunReport,
+    checkpoint: &mut RunCheckpoint,
+    attempt_index: usize,
+    identity: &recovery::CallIdentity,
+    driver: &Role,
+    failure: String,
+) -> Result<(Value, String, String), ClewError> {
+    report.attempts[attempt_index].status = "FAILED".into();
+    report.attempts[attempt_index].failure = Some(failure.clone());
+    if let Some(pending) = checkpoint.pending_call.as_mut() {
+        pending.status = "FAILED".into();
+        pending.failure = Some(failure.clone());
+    }
+    save_run_checkpoint(repo, report, checkpoint)?;
+    reconcile(
+        repo,
+        &config.budget,
+        &identity.reservation,
+        None,
+        driver.cap.overhead_input_tokens,
+    )?;
+    save_report(repo, report)?;
+    Err(invalid(failure))
 }
 
 // Saved-result reconciliation deliberately receives the complete run state.
@@ -4877,6 +5199,20 @@ fn finalize_failed_run(
 #[cfg(test)]
 mod input_cap_tests {
     use super::*;
+
+    #[test]
+    fn absent_model_representation_preserves_legacy_role_bytes() {
+        let legacy = serde_json::json!({"adapter":"local-command","model":"fixture","usageAuthority":"MAXIMUM_ONLY",
+            "command":["/usr/bin/false"],"runtimeReads":[],"environment":[],"network":false,
+            "cap":{"maximum":{"inputTokens":1000,"outputTokens":100,"costUnits":1},"overheadInputTokens":0,"timeoutMs":1000,"outputBytes":1000}});
+        let role: Role = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(role.model_representation.is_none());
+        assert_eq!(bytes(&role).unwrap(), bytes(&legacy).unwrap());
+        assert_eq!(digest(&role).unwrap(), digest(&legacy).unwrap());
+        let mut selected = role.clone();
+        selected.model_representation = Some(super::super::model_ids::VERSION.into());
+        assert_ne!(digest(&selected).unwrap(), digest(&role).unwrap());
+    }
     use serde_json::json;
 
     #[test]
@@ -4972,6 +5308,7 @@ mod input_cap_tests {
             );
         }
         let driver = Role {
+            model_representation: None,
             adapter: "test-only".into(),
             model: "fixture".into(),
             usage_authority: "MAXIMUM_ONLY".into(),
@@ -5980,6 +6317,7 @@ mod input_cap_tests {
             cost_units: 1,
         };
         let role = Role {
+            model_representation: None,
             adapter: "macos-seatbelt-stdio/1.0".into(),
             model: "resume-fixture".into(),
             usage_authority: "MAXIMUM_ONLY".into(),
@@ -7744,6 +8082,7 @@ mod input_cap_tests {
             checkpoint: None,
         };
         let mut driver = Role {
+            model_representation: None,
             adapter: "test-only".into(),
             model: "fixture".into(),
             usage_authority: "MAXIMUM_ONLY".into(),
@@ -7839,6 +8178,7 @@ mod input_cap_tests {
             cost_units: 10,
         };
         let driver = Role {
+            model_representation: None,
             adapter: "macos-seatbelt-stdio/1.0".into(),
             model: "recovery-fixture".into(),
             usage_authority: "TRANSPORT_METADATA".into(),

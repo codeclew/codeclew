@@ -16,11 +16,52 @@ checkout for source development; direct capsule binaries are unsupported.
 | Create or refresh service documentation | [Durable service documentation](#durable-service-documentation) and the [service workflow](skills/codeclew/references/service-documentation.md) |
 | Export linked pages from selected Java source | [Native source pages](docs/guides/native-static-pages.md) |
 | Ask and review a question about retained Java source | [Draft review and explicit publication](docs/operations/docs-snapshot-store.md#review-a-saved-operation-draft) and [compare a saved answer with a new Check](docs/operations/docs-snapshot-store.md#compare-a-saved-answer-with-an-explicit-captured-check) |
+| Find a previously approved method answer after a source update | [Capture, question, review and exact reuse](docs/operations/field-documentation.md#capture-question-review-and-exact-reuse) and [discovery limits](docs/operations/docs-snapshot-store.md#find-an-approved-answer-by-exact-request-source-candidate) |
 | Try the internal Java process draft | [historical v0.13.1 example and limits](#historical-v0131-example-and-limits), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.15
+<a id="current-release-v01315"></a>
+
+## Current release: v0.13.16
+
+Version 0.13.16 includes exact approved-answer discovery, exact per-file syntax
+reuse and an opt-in model serializer with compact evidence presentation for
+compatible drivers. See the [v0.13.16 release notes](docs/releases/v0.13.16.md).
+
+<a id="accepted-source-candidates-for-v01316"></a>
+
+### Included in v0.13.16
+
+`docs work find-answer` searches historical approved method answers by the exact
+normalized request and subject, then checks applicability against an explicitly
+saved Check. Multiple eligible approvals require explicit selection. Historical
+approval stays frozen; `CURRENT` is a separate evidence comparison. Follow the
+[complete retained-evidence route](docs/operations/field-documentation.md#capture-question-review-and-exact-reuse)
+for preparation, independent review, reuse and updates.
+
+Syntax extraction can reuse successful results for the same service/path,
+exact bytes, dialect and complete producer while rebuilding current source
+receipts. One bounded worker corpus measured 21.863% incremental native
+capture/Check savings; initial cache seeding has a cost. This is not a general
+CLI or compiler speedup. See the [capture-cost boundary](docs/operations/field-documentation.md#incremental-capture-cost-source-candidate).
+
+For compatible new drivers, the [opt-in model serializer](docs/operations/model-id-serializer.md)
+recommends `codeclew-model-ids/1.1`; frozen 1.0 carriers remain supported unchanged.
+Version 1.1 checks the native presentation against canonical pages/source parts
+and omits only their duplicate raw siblings from model input. Receipts, citations,
+presentation and canonical archives stay intact. Across a generated grouped-read
+fixture's four initial/expanded role contexts, paired 1.0/1.1 model forms for the
+same canonical jobs and scopes measured **163,106 to 104,051 reference text
+tokens: 36.2065% fewer**, including protocol/schema overhead. The expanded pair
+alone fell 38.8299%; the initial author grew by 18 tokens (0.2547%). This is not a
+general, quality or billing saving, or repeated dispatch of the same invocation.
+See the [bounded compact measurement](docs/plans/question-results-and-incremental-evidence.md#compact-role-evidence-representation-candidate-2026-10-06).
+The earlier 4.9184% result remains the separate 1.0 measurement of two retained
+first calls against canonical input. Maps and canonical jobs stay outside model
+input in both versions.
+
+### Included from v0.13.15
 
 Retained `docs context --dependency` reads the selected evidence closure before
 materializing unrelated observation payloads. The response explicitly identifies
@@ -90,7 +131,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.15 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.16 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -119,7 +160,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.15 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.16 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a

@@ -33,10 +33,15 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 }
 
 fn validate_role(role: &Role) -> Result<(), ClewError> {
-    if !matches!(
-        role.usage_authority.as_str(),
-        "MAXIMUM_ONLY" | "TRANSPORT_METADATA"
-    ) || role.model.trim().is_empty()
+    if role
+        .model_representation
+        .as_deref()
+        .is_some_and(|mode| !super::model_ids::supported_version(mode))
+        || !matches!(
+            role.usage_authority.as_str(),
+            "MAXIMUM_ONLY" | "TRANSPORT_METADATA"
+        )
+        || role.model.trim().is_empty()
         || role.model.len() > 256
         || role.command.is_empty()
         || role.command.len() > 32
@@ -133,9 +138,26 @@ pub fn admit(repo: &Repository, role: &Role) -> Result<Value, ClewError> {
             ));
         }
     }
-    Ok(
-        json!({"schema":"codeclew-documentation-isolation/1.0","adapter":role.adapter,"driverDigest":digest(&(role.command.clone(),&inventory,&role.environment,role.network,&role.model,&role.usage_authority))?,"capabilities":{"workInput":"IMMUTABLE_STDIN","expansion":"COORDINATOR_REGISTERED_ONLY","result":"ROLE_STDOUT_ONLY","sourceWrites":false,"humanWrites":false,"coordinatorWrites":false,"crossRoleWrites":false,"unregisteredFileReads":false,"subprocessTools":false,"network":role.network}}),
-    )
+    // Keep legacy admission identities byte-for-byte stable. The explicit
+    // forwarding contract becomes part of identity only for opted-in drivers.
+    let canonical_driver = json!((
+        &role.command,
+        &inventory,
+        &role.environment,
+        role.network,
+        &role.model,
+        &role.usage_authority
+    ));
+    let driver_digest = if let Some(mode) = &role.model_representation {
+        digest(&json!({"canonicalDriver":canonical_driver,"modelRepresentation":mode}))?
+    } else {
+        digest(&canonical_driver)?
+    };
+    let mut admitted = json!({"schema":"codeclew-documentation-isolation/1.0","adapter":role.adapter,"driverDigest":driver_digest,"capabilities":{"workInput":"IMMUTABLE_STDIN","expansion":"COORDINATOR_REGISTERED_ONLY","result":"ROLE_STDOUT_ONLY","sourceWrites":false,"humanWrites":false,"coordinatorWrites":false,"crossRoleWrites":false,"unregisteredFileReads":false,"subprocessTools":false,"network":role.network}});
+    if let Some(mode) = &role.model_representation {
+        admitted["modelRepresentation"] = json!(mode);
+    }
+    Ok(admitted)
 }
 fn profile(role: &Role, cwd: &Path) -> Result<String, ClewError> {
     let mut clauses = Vec::new();
@@ -364,6 +386,11 @@ pub fn execute(
                 None
             }
         }
+    } else if role.model_representation.is_some() {
+        // Opted-in recovery keeps parseable wire JSON with its transport
+        // failure. The coordinator must never promote that failed delivery to
+        // success after a crash. Legacy drivers retain their existing path.
+        serde_json::from_slice(&output).ok()
     } else {
         None
     };
@@ -398,6 +425,7 @@ mod tests {
             adapter: "macos-seatbelt-stdio/1.0".into(),
             model: "adapter-timeout-test".into(),
             usage_authority: "MAXIMUM_ONLY".into(),
+            model_representation: None,
             command: vec!["/usr/bin/true".into()],
             runtime_reads: Vec::new(),
             environment: Vec::new(),

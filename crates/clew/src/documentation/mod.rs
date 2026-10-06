@@ -4,6 +4,10 @@ mod agent_adapter;
 pub mod agent_jobs;
 pub mod analysis;
 mod answer_context;
+mod answer_reuse;
+mod answer_reuse_projection;
+#[cfg(test)]
+mod answer_reuse_tests;
 pub mod bindings;
 pub mod cache;
 mod capture_export;
@@ -26,6 +30,9 @@ mod kotlin;
 mod language;
 pub mod maintained_context;
 pub mod model;
+pub mod model_ids;
+#[cfg(test)]
+mod model_ids_integration_tests;
 pub mod notes;
 pub mod object_layout;
 mod operation_answer;
@@ -55,6 +62,9 @@ pub mod static_pages;
 pub mod status;
 pub mod store;
 mod syntax;
+mod syntax_file_cache;
+#[cfg(test)]
+mod syntax_file_cache_tests;
 pub mod updates;
 pub mod visuals;
 pub mod work;
