@@ -531,6 +531,16 @@ does not establish execution order, reachability, state changes or a relationshi
 between selected functions. It does not change the page's projection kind or
 promote a declaration to `SOURCE_BEHAVIOR`.
 
+Kotlin function pages can also show retained exact call sites. Each site has its
+captured expression, complete compiler target identity and an individual source
+citation. Identical calls on the same line remain separate occurrences with
+their original compilation-source byte spans and evidence bindings. These
+expression citations are independent of the outline's whole-line event
+citations; the publisher does not infer a correspondence between them.
+Missing or rejected call-site evidence is reported as a limitation, not proof
+that the function makes no calls. This panel does not include callee bodies or
+establish runtime dispatch, execution order, reachability or state effects.
+
 Kotlin call-graph expansion, structured activity diagrams, handoffs and
 data-state projection remain unsupported here. `expandSourceCalls` and
 `expandDataState` are rejected for declaration-only and compiler control-flow

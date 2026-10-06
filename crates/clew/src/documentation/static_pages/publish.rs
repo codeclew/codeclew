@@ -402,6 +402,40 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
     out
 }
 
+fn retained_call_sites_panel(c: &CallableProjection, ext: &str) -> String {
+    let Some(retained) = &c.retained_call_sites else {
+        return String::new();
+    };
+    let mut out = format!(
+        "<section><h3>Retained exact call sites</h3>\n{}",
+        paragraph(
+            "These are retained compiler call relations with their captured source snippets. They do not establish runtime execution, invocation count, ordering, or reachability."
+        )
+    );
+    if retained.sites.is_empty() {
+        out += &format!("<ul>{}</ul>\n", gaps(&retained.gaps, ext));
+    } else {
+        out += "<ol aria-label=\"Retained exact call sites\">\n";
+        for site in &retained.sites {
+            out += &format!(
+                "<li><p>Target identity: {}. Source: {}:{}-{}. Captured source span bytes [{}, {}). Relation: {}. {}</p><pre>{}</pre></li>\n",
+                escape(&site.target_identity),
+                escape(&site.file),
+                site.start_line,
+                site.end_line,
+                site.compilation_byte_start,
+                site.compilation_byte_end,
+                escape(&site.relation_id),
+                cite(&site.citation_id, ext),
+                escape(&site.expression)
+            );
+        }
+        out += "</ol>\n";
+    }
+    out += "</section>\n";
+    out
+}
+
 fn selected_declaration(
     c: &CallableProjection,
     label: &str,
@@ -418,6 +452,7 @@ fn selected_declaration(
     }
     out += &control_flow_panel(c, ext, full_control_flow);
     out += &source_outline_panel(c, ext);
+    out += &retained_call_sites_panel(c, ext);
     if !c.gaps.is_empty() {
         out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext));
     }
@@ -1620,6 +1655,7 @@ mod tests {
             citation_id: None,
             control_flow: None,
             source_outline: None,
+            retained_call_sites: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],

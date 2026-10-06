@@ -94,6 +94,45 @@ pub struct SourceOutline {
     pub gaps: Vec<Gap>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NeutralExactCallSiteOwnerKey {
+    pub service: String,
+    pub scope: String,
+    pub symbol: String,
+}
+
+/// One captured compiler call relation and its exact retained source span.
+/// Byte offsets address the full compilation source recorded by the call-site
+/// envelope; `expression` and its citation are relative to the retained Source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NeutralExactCallSite {
+    pub relation_id: String,
+    pub normalized_digest: String,
+    pub target_identity: String,
+    pub source_id: String,
+    pub file: String,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub compilation_byte_start: u64,
+    pub compilation_byte_end: u64,
+    pub source_digest: String,
+    pub evidence_binding: String,
+    pub full_compilation_source_digest: String,
+    pub expression: String,
+    pub citation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedCallSites {
+    pub owner_key: NeutralExactCallSiteOwnerKey,
+    pub sites: Vec<NeutralExactCallSite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
+}
+
 /// Inputs select retained declarations. They never supply conclusions or labels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -342,6 +381,8 @@ pub struct CallableProjection {
     pub control_flow: Option<CompilerControlFlowProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_outline: Option<SourceOutline>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_call_sites: Option<RetainedCallSites>,
     pub steps: Vec<Statement>,
     pub state: Vec<StateRow>,
     pub gaps: Vec<Gap>,

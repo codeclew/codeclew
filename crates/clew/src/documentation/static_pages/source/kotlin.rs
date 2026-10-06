@@ -155,6 +155,7 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
         citation_id: Some(citation_id.clone()),
         control_flow: None,
         source_outline: None,
+        retained_call_sites: None,
         steps: vec![],
         state: vec![],
         gaps: vec![
@@ -177,6 +178,7 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
     };
     super::control_flow::attach(context, &observation, scope, &mut projection)?;
     super::outline::attach(context, &observation, scope, &mut projection)?;
+    super::call_sites::attach(context, &observation, scope, &mut projection)?;
     let kind = if projection.control_flow.is_some() {
         ProjectionKind::CompilerControlFlow
     } else {

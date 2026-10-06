@@ -443,6 +443,101 @@ fn set_kotlin_outline_events(
         .collect()
 }
 
+fn add_kotlin_exact_call_relations(e: &mut ServiceEvidence, declaration_id: &str) -> Vec<String> {
+    let owner = e.observations[declaration_id].clone();
+    let owner_source = e.sources[&owner.source_ids[0]].clone();
+    let expression = "api.pick(\"x\")";
+    let prefix = "\n".repeat(22);
+    let full_compilation_source = format!("{prefix}{}", owner_source.text);
+    let full_compilation_source_digest =
+        crate::canonical::hash_bytes(full_compilation_source.as_bytes());
+    let positions = owner_source
+        .text
+        .match_indices(expression)
+        .map(|(start, _)| prefix.len() + start)
+        .collect::<Vec<_>>();
+    assert_eq!(positions.len(), 2);
+
+    positions
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, byte_start)| {
+            let relation_id = format!("call-relation-{ordinal}");
+            let source_id = format!("call-source-{ordinal}");
+            let evidence_binding = format!(
+                "sha256:{}",
+                (if ordinal == 0 { "c" } else { "d" }).repeat(64)
+            );
+            let mut source = owner_source.clone();
+            source.id = source_id.clone();
+            source.start_line = owner_source.start_line + 2;
+            source.end_line = source.start_line;
+            source.text = expression.into();
+            source.text_digest = crate::canonical::hash_bytes(expression.as_bytes());
+            source.evidence_digest = evidence_binding.clone();
+            source.occurrence = None;
+            e.sources.insert(source_id.clone(), source.clone());
+
+            let normalized = json!({
+                "schema":"codeclew-kotlin-documentation-call/1.0",
+                "kind":"RELATION",
+                "relationKind":"CALLS",
+                "resolution":"COMPILER_EXACT",
+                "compilerResolution":"PROVEN",
+                "provider":"K2_FIR",
+                "compilerSchema":"declaration-relation/0.1",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+                "sourceIdentity":owner.symbol,
+                "sourceCompilerCallableId":"parity/Answer.next",
+                "sourceJvmDescriptor":"(I)I",
+                "targetCompilerCallableId":"parity/Api.pick",
+                "targetJvmDescriptor":"(Ljava/lang/String;)Ljava/lang/String;",
+                "targetIdentity":"callable:parity/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+                "scope":owner.normalized["scope"],
+                "evidenceBinding":evidence_binding,
+                "callSite":{
+                    "file":owner_source.file,
+                    "startLine":source.start_line,
+                    "endLine":source.end_line,
+                    "byteStart":byte_start,
+                    "byteEnd":byte_start + expression.len(),
+                    "sourceId":source_id,
+                    "sourceDigest":source.text_digest,
+                    "sourceStatus":"SOURCE_RETAINED",
+                    "evidenceDigest":source.evidence_digest,
+                    "fullCompilationSourceDigest":full_compilation_source_digest
+                }
+            });
+            let relation = Observation {
+                id: relation_id.clone(),
+                kind: "CALL_RELATION".into(),
+                service: e.service.clone(),
+                symbol: owner.symbol.clone(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: vec![source_id],
+            };
+            e.observations.insert(relation_id.clone(), relation);
+            relation_id
+        })
+        .collect()
+}
+
+fn kotlin_retained_call_sites_evidence() -> ServiceEvidence {
+    let retained = concat!(
+        "fun next(value: Int): String {\r\n",
+        "  // π🙂\r\n",
+        "  val marker = \"π🙂\"; val first = api.pick(\"x\"); val second = api.pick(\"x\")\r\n",
+        "  return marker + first + second\r\n",
+        "}"
+    );
+    let mut evidence = evidence();
+    add_kotlin_declaration(&mut evidence, "answer-next", "FUNCTION", retained);
+    add_kotlin_return_outline(&mut evidence, "answer-next");
+    add_kotlin_exact_call_relations(&mut evidence, "answer-next");
+    evidence
+}
+
 fn kotlin_answer_next_outline_evidence() -> ServiceEvidence {
     use crate::thread_flow_cfg::{LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNodeRole};
 
@@ -963,6 +1058,262 @@ fn kotlin_answer_next_outline_is_cited_noncausal_and_keeps_cfg_independent() {
     let output = temp.path().join("tampered-outline");
     assert!(super::super::publish::write(&output, "snapshot", &tampered).is_err());
     assert!(!output.exists());
+}
+
+#[test]
+fn kotlin_retained_call_sites_keep_exact_same_line_byte_occurrences() {
+    let mut evidence = kotlin_retained_call_sites_evidence();
+    let relation_ids = vec!["call-relation-0".to_owned(), "call-relation-1".to_owned()];
+    let owner = evidence.observations.get_mut("answer-next").unwrap();
+    owner
+        .normalized
+        .as_object_mut()
+        .unwrap()
+        .remove("jvmDescriptor");
+    owner.digest = digest(&owner.normalized).unwrap();
+
+    let checked = kotlin_check(evidence);
+    let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    let page = &projection.pages[0];
+    let sites = &page.endpoint.retained_call_sites.as_ref().unwrap().sites;
+    assert_eq!(sites.len(), 2);
+    assert_eq!(
+        sites
+            .iter()
+            .map(|site| site.relation_id.as_str())
+            .collect::<Vec<_>>(),
+        relation_ids.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        sites
+            .iter()
+            .map(|site| site.expression.as_str())
+            .collect::<Vec<_>>(),
+        vec!["api.pick(\"x\")", "api.pick(\"x\")"]
+    );
+    assert_eq!(sites[0].target_identity, sites[1].target_identity);
+    assert_eq!(sites[0].file, "src/main/kotlin/parity/Answer.kt");
+    assert_eq!((sites[0].start_line, sites[0].end_line), (25, 25));
+    assert_eq!((sites[1].start_line, sites[1].end_line), (25, 25));
+    assert_eq!(
+        sites[0].compilation_byte_end - sites[0].compilation_byte_start,
+        13
+    );
+    assert_eq!(
+        sites[1].compilation_byte_end - sites[1].compilation_byte_start,
+        13
+    );
+    assert!(sites[0].compilation_byte_start < sites[1].compilation_byte_start);
+    assert_ne!(sites[0].source_id, sites[1].source_id);
+    assert_ne!(sites[0].evidence_binding, sites[1].evidence_binding);
+    assert_eq!(
+        sites[0].full_compilation_source_digest,
+        sites[1].full_compilation_source_digest
+    );
+    assert_ne!(
+        sites[0].evidence_binding,
+        page.sources[&page.observations["answer-next"].source_ids[0]].evidence_digest
+    );
+    assert!(
+        sites
+            .iter()
+            .all(|site| page.sources[&site.source_id].occurrence.is_none())
+    );
+    assert!(page.endpoint.steps.is_empty());
+    assert_eq!(page.handoff.status, "DECLARATION_ONLY");
+    assert_eq!(
+        page.endpoint.source_outline.as_ref().unwrap().events.len(),
+        1
+    );
+    assert_eq!(
+        page.endpoint
+            .retained_call_sites
+            .as_ref()
+            .unwrap()
+            .gaps
+            .len(),
+        0
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    assert!(endpoint.contains("Retained exact call sites"));
+    assert!(endpoint.contains("do not establish runtime execution, invocation count"));
+    assert!(endpoint.contains("Target identity: callable:parity/Api.pick#jvm:"));
+    assert!(endpoint.contains("Captured source span bytes ["));
+    assert!(
+        endpoint.contains("api.pick(&quot;x&quot;)") || endpoint.contains("api.pick(&#34;x&#34;)")
+    );
+    assert!(endpoint.contains("sources.html#ref-"));
+
+    let mut tampered = projection.clone();
+    tampered.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_mut()
+        .unwrap()
+        .sites[0]
+        .compilation_byte_end += 1;
+    let output = temp.path().join("tampered-call-site");
+    assert!(super::super::publish::write(&output, "snapshot", &tampered).is_err());
+    assert!(!output.exists());
+}
+
+fn assert_kotlin_callsite_gap(evidence: ServiceEvidence, expected: &str) {
+    let checked = kotlin_check(evidence);
+    let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    let retained = projection.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_ref()
+        .unwrap();
+    assert!(retained.sites.is_empty(), "{expected}");
+    assert_eq!(retained.gaps.len(), 1, "{expected}");
+    assert_eq!(retained.gaps[0].code, expected, "{expected}");
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    assert!(endpoint.contains("Retained exact call sites"), "{expected}");
+    assert!(
+        endpoint.contains(&expected.replace('_', "&#95;")),
+        "{expected}"
+    );
+    assert!(!endpoint.contains("<pre>api.pick"), "{expected}");
+    if expected == "KOTLIN_RETAINED_CALL_SITES_NOT_PROVEN" {
+        assert!(
+            endpoint.contains("absence does not establish that this declaration has no calls"),
+            "{expected}"
+        );
+    }
+}
+
+#[test]
+fn kotlin_retained_call_sites_reject_unbound_evidence_and_publish_gaps() {
+    use super::super::source::call_sites;
+
+    const REJECTED: &str = "KOTLIN_RETAINED_CALL_SITES_REJECTED";
+    const NOT_PROVEN: &str = "KOTLIN_RETAINED_CALL_SITES_NOT_PROVEN";
+    const CONFLICT: &str = "KOTLIN_RETAINED_CALL_SITE_CONFLICT";
+
+    let mut no_data = kotlin_retained_call_sites_evidence();
+    no_data
+        .observations
+        .retain(|id, _| !id.starts_with("call-relation-"));
+    no_data
+        .sources
+        .retain(|id, _| !id.starts_with("call-source-"));
+    assert_kotlin_callsite_gap(no_data, NOT_PROVEN);
+
+    let mut wrong_owner = kotlin_retained_call_sites_evidence();
+    wrong_owner
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap()
+        .symbol = "callable:parity/Other.call#jvm:()V".into();
+    assert_kotlin_callsite_gap(wrong_owner, REJECTED);
+
+    let mut wrong_scope = kotlin_retained_call_sites_evidence();
+    for id in ["call-relation-0", "call-relation-1"] {
+        let relation = wrong_scope.observations.get_mut(id).unwrap();
+        relation.normalized["scope"] = json!(":/test");
+        relation.digest = digest(&relation.normalized).unwrap();
+    }
+    assert_kotlin_callsite_gap(wrong_scope, NOT_PROVEN);
+
+    let mut wrong_identity = kotlin_retained_call_sites_evidence();
+    let relation = wrong_identity
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap();
+    relation.normalized["sourceIdentity"] = json!("callable:parity/Other.call#jvm:()V");
+    relation.digest = digest(&relation.normalized).unwrap();
+    assert_kotlin_callsite_gap(wrong_identity, REJECTED);
+
+    let mut wrong_target = kotlin_retained_call_sites_evidence();
+    let relation = wrong_target
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap();
+    relation.normalized["targetIdentity"] = json!("callable:parity/Api.other#jvm:()V");
+    relation.digest = digest(&relation.normalized).unwrap();
+    assert_kotlin_callsite_gap(wrong_target, REJECTED);
+
+    let mut bad_digest = kotlin_retained_call_sites_evidence();
+    bad_digest
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap()
+        .digest = "sha256:invalid".into();
+    assert_kotlin_callsite_gap(bad_digest, REJECTED);
+
+    let mut bad_evidence_binding = kotlin_retained_call_sites_evidence();
+    let relation = bad_evidence_binding
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap();
+    relation.normalized["evidenceBinding"] = json!(format!("sha256:{}", "e".repeat(64)));
+    relation.digest = digest(&relation.normalized).unwrap();
+    assert_kotlin_callsite_gap(bad_evidence_binding, REJECTED);
+
+    let mut bad_source_binding = kotlin_retained_call_sites_evidence();
+    let relation = bad_source_binding
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap();
+    relation.normalized["callSite"]["sourceId"] = json!("missing-source");
+    relation.digest = digest(&relation.normalized).unwrap();
+    assert_kotlin_callsite_gap(bad_source_binding, REJECTED);
+
+    let mut bad_text_binding = kotlin_retained_call_sites_evidence();
+    let relation = bad_text_binding
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap();
+    let source_id = relation.source_ids[0].clone();
+    let changed_text = "api.pock(\"x\")";
+    let source = bad_text_binding.sources.get_mut(&source_id).unwrap();
+    source.text = changed_text.into();
+    source.text_digest = crate::canonical::hash_bytes(changed_text.as_bytes());
+    let relation = bad_text_binding
+        .observations
+        .get_mut("call-relation-0")
+        .unwrap();
+    relation.digest = digest(&relation.normalized).unwrap();
+    assert_kotlin_callsite_gap(bad_text_binding, REJECTED);
+
+    let mut bad_range = kotlin_retained_call_sites_evidence();
+    let relation = bad_range.observations.get_mut("call-relation-0").unwrap();
+    relation.normalized["callSite"]["byteEnd"] =
+        json!(relation.normalized["callSite"]["byteEnd"].as_u64().unwrap() + 1);
+    relation.digest = digest(&relation.normalized).unwrap();
+    assert_kotlin_callsite_gap(bad_range, REJECTED);
+
+    let mut duplicate_occurrence = kotlin_retained_call_sites_evidence();
+    let mut duplicate = duplicate_occurrence.observations["call-relation-0"].clone();
+    duplicate.id = "call-relation-duplicate".into();
+    duplicate.digest = digest(&duplicate.normalized).unwrap();
+    duplicate_occurrence
+        .observations
+        .insert(duplicate.id.clone(), duplicate);
+    assert_kotlin_callsite_gap(duplicate_occurrence, CONFLICT);
+
+    let mut legacy_projection = project(
+        &kotlin_check(kotlin_retained_call_sites_evidence()),
+        &[kotlin_selection("answer-next", "answer-next")],
+    )
+    .unwrap();
+    legacy_projection.pages[0].endpoint.retained_call_sites = None;
+    legacy_projection.pages[0]
+        .observations
+        .remove("answer-next");
+    assert!(
+        call_sites::validate_page(
+            &legacy_projection.pages[0],
+            &legacy_projection.pages[0].endpoint
+        )
+        .is_ok()
+    );
 }
 
 fn assert_kotlin_outline_gap(evidence: ServiceEvidence, expected: &str) {

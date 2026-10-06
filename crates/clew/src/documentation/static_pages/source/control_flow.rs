@@ -417,6 +417,7 @@ pub(in crate::documentation::static_pages) fn validate_page(
         .chain(std::iter::once(&page.worker))
         .chain(page.wiring.iter())
     {
+        super::call_sites::validate_page(page, callable)?;
         count += usize::from(validate_callable(
             &page.selection.service,
             &page.service_revision,

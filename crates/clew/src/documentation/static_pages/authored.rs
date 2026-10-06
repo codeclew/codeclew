@@ -271,6 +271,7 @@ mod tests {
             citation_id: None,
             control_flow: None,
             source_outline: None,
+            retained_call_sites: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],
