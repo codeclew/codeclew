@@ -317,18 +317,47 @@ internal class CompilerUtf16ToUtf8ByteMap private constructor(
     }
 
     internal companion object {
-        fun from(source: String): CompilerUtf16ToUtf8ByteMap? {
+        fun from(source: String): CompilerUtf16ToUtf8ByteMap? = build(source, normalizeLineSeparators = false)
+
+        /** Maps compiler offsets (after line-separator normalization) to original-source bytes. */
+        fun fromCompilerInput(source: String): CompilerUtf16ToUtf8ByteMap? =
+            build(source, normalizeLineSeparators = true)
+
+        /** Selects the coordinate domain actually used by a PSI text view of original source. */
+        fun forSourceText(
+            originalSource: String,
+            sourceText: String,
+        ): CompilerUtf16ToUtf8ByteMap? = when (sourceText) {
+            originalSource -> from(originalSource)
+            compilerLineNormalizedText(originalSource) -> fromCompilerInput(originalSource)
+            else -> null
+        }
+
+        private fun build(
+            source: String,
+            normalizeLineSeparators: Boolean,
+        ): CompilerUtf16ToUtf8ByteMap? {
             if (source.length == Int.MAX_VALUE) return null
             val byteOffsets = IntArray(source.length + 1) { -1 }
             var utf16Offset = 0
+            var sourceOffset = 0
             var byteOffset = 0
             byteOffsets[0] = 0
-            while (utf16Offset < source.length) {
-                val current = source[utf16Offset]
+            while (sourceOffset < source.length) {
+                val current = source[sourceOffset]
+                if (normalizeLineSeparators && current == '\r') {
+                    val width = if (source.getOrNull(sourceOffset + 1) == '\n') 2 else 1
+                    if (byteOffset > Int.MAX_VALUE - width) return null
+                    byteOffset += width
+                    sourceOffset += width
+                    utf16Offset++
+                    byteOffsets[utf16Offset] = byteOffset
+                    continue
+                }
                 val byteWidth = when {
                     Character.isHighSurrogate(current) -> {
-                        if (utf16Offset + 1 >= source.length ||
-                            !Character.isLowSurrogate(source[utf16Offset + 1])
+                        if (sourceOffset + 1 >= source.length ||
+                            !Character.isLowSurrogate(source[sourceOffset + 1])
                         ) {
                             return null
                         }
@@ -342,21 +371,39 @@ internal class CompilerUtf16ToUtf8ByteMap private constructor(
                 }
                 if (byteOffset > Int.MAX_VALUE - byteWidth) return null
                 byteOffset += byteWidth
-                utf16Offset += if (Character.isHighSurrogate(current)) 2 else 1
+                val width = if (Character.isHighSurrogate(current)) 2 else 1
+                utf16Offset += width
+                sourceOffset += width
                 byteOffsets[utf16Offset] = byteOffset
             }
-            return CompilerUtf16ToUtf8ByteMap(byteOffsets)
+            val mappedOffsets = if (utf16Offset + 1 == byteOffsets.size) {
+                byteOffsets
+            } else {
+                byteOffsets.copyOf(utf16Offset + 1)
+            }
+            return CompilerUtf16ToUtf8ByteMap(mappedOffsets)
         }
     }
 }
 
+private fun compilerLineNormalizedText(source: String): String {
+    if ('\r' !in source) return source
+    val normalized = StringBuilder(source.length)
+    var index = 0
+    while (index < source.length) {
+        if (source[index] == '\r') {
+            normalized.append('\n')
+            index += if (source.getOrNull(index + 1) == '\n') 2 else 1
+        } else {
+            normalized.append(source[index++])
+        }
+    }
+    return normalized.toString()
+}
+
 internal fun compilerRangeToUtf8Bytes(source: String, start: Int, end: Int): IntRange? {
-    if (start < 0 || end < start || end > source.length) return null
-    if (start > 0 && start < source.length && Character.isLowSurrogate(source[start]) && Character.isHighSurrogate(source[start - 1])) return null
-    if (end > 0 && end < source.length && Character.isLowSurrogate(source[end]) && Character.isHighSurrogate(source[end - 1])) return null
-    val byteStart = source.substring(0, start).toByteArray(Charsets.UTF_8).size
-    val byteEnd = byteStart + source.substring(start, end).toByteArray(Charsets.UTF_8).size
-    return byteStart until byteEnd
+    if (start < 0 || end < start) return null
+    return CompilerUtf16ToUtf8ByteMap.fromCompilerInput(source)?.range(start, end)
 }
 
 internal data class Utf8LineIndex(
@@ -398,7 +445,7 @@ internal fun normalizeDeclarationRelationAttributeCoordinatesToUtf8(
     source: String,
     payload: JsonObject,
 ): JsonObject? {
-    val coordinates = CompilerUtf16ToUtf8ByteMap.from(source) ?: return null
+    val coordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(source) ?: return null
     return normalizeDeclarationRelationAttributeCoordinatesToUtf8(coordinates, payload)
 }
 
@@ -1560,14 +1607,26 @@ internal class Worker(
                     val results = indexed["files"]!!.jsonArray.flatMap { fileValue ->
                         val relative = fileValue.jsonObject["path"]!!.jsonPrimitive.content
                         val path = repo.resolve(relative).normalize().toRealPath()
-                        val kt = parse(path)
+                        val originalBytes = path.readBytes()
+                        val originalSource = originalBytes.toString(Charsets.UTF_8)
+                        val kt = parse(path, originalBytes)
                         val functions = PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java)
                             .sortedBy { it.textRange.startOffset }
+                        val compilerCoordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(originalSource)
+                        val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, kt.text)
                         cfgRecords(repo, path, analysis).map { cfg ->
                             val start = cfg["start"]?.jsonPrimitive?.intOrNull
                             val end = cfg["end"]?.jsonPrimitive?.intOrNull
-                            val fn = functions.singleOrNull {
-                                start == it.textRange.startOffset && end == it.textRange.endOffset
+                            val compilerRange = if (start != null && end != null) {
+                                compilerCoordinates?.range(start, end)
+                            } else null
+                            val fn = compilerRange?.let { expectedRange ->
+                                functions.singleOrNull { function ->
+                                    psiCoordinates?.range(
+                                        function.textRange.startOffset,
+                                        function.textRange.endOffset,
+                                    ) == expectedRange
+                                }
                             }
                             val symbol = cfg["symbol"]?.jsonPrimitive?.contentOrNull
                             val jvmDescriptor = cfg["jvmDescriptor"]?.jsonPrimitive?.contentOrNull
@@ -1592,9 +1651,9 @@ internal class Worker(
                                             cfg,
                                             owner.orEmpty(),
                                             relative,
-                                            fn.textRange.startOffset,
-                                            fn.textRange.endOffset,
-                                            kt.text,
+                                            start!!,
+                                            end!!,
+                                            originalSource,
                                         ),
                                         owner,
                                         relative,
@@ -2447,7 +2506,13 @@ internal class Worker(
         val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path, bytes); val pkg = kt.packageFqName.asString()
             val relative = repo.relativize(path).invariantSeparatorsPathString
-            val documentation = KotlinDocumentationSource(relative, kt, documentationDescriptors[relative].orEmpty(), documentationCalls[relative].orEmpty())
+            val documentation = KotlinDocumentationSource(
+                relative,
+                kt,
+                bytes.toString(Charsets.UTF_8),
+                documentationDescriptors[relative].orEmpty(),
+                documentationCalls[relative].orEmpty(),
+            )
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
                 .sortedBy { it.textOffset }.map { documentation.enrich(it, declarationJson(repo, path, pkg, it, analysis, module, sourceSet)) }
@@ -2520,7 +2585,7 @@ internal class Worker(
         fun sourceCoordinates(file: String): CompilerUtf16ToUtf8ByteMap? {
             if (file !in sourceCoordinatesByFile) {
                 sourceCoordinatesByFile[file] = sourceTextByFile[file]
-                    ?.let(CompilerUtf16ToUtf8ByteMap::from)
+                    ?.let(CompilerUtf16ToUtf8ByteMap::fromCompilerInput)
             }
             return sourceCoordinatesByFile[file]
         }

@@ -171,7 +171,7 @@ class KotlinDocumentationFlowTest {
                 }
             }
             assertEquals(0, status.code, output.toString())
-            val coordinates = assertNotNull(CompilerUtf16ToUtf8ByteMap.from(source))
+            val coordinates = assertNotNull(CompilerUtf16ToUtf8ByteMap.fromCompilerInput(source))
             val rows = Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }.mapNotNull { row ->
                 val start = row["start"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
                 val end = row["end"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
@@ -181,7 +181,7 @@ class KotlinDocumentationFlowTest {
             }.distinct()
             val environment = KotlinCoreEnvironment.createForProduction(disposable, CompilerConfiguration(), EnvironmentConfigFiles.JVM_CONFIG_FILES)
             val file = KtPsiFactory(environment.project, markGenerated = false).createFile("Importer.kt", source)
-            val documentation = KotlinDocumentationSource("src/Importer.kt", file,
+            val documentation = KotlinDocumentationSource("src/Importer.kt", file, source,
                 rows.filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" },
                 rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" })
             return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).map { declaration ->

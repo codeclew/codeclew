@@ -9,21 +9,24 @@ import org.jetbrains.kotlin.psi.*
 internal class KotlinDocumentationSource(
     private val file: String,
     private val source: KtFile,
+    originalSource: String,
     descriptors: List<JsonObject>,
     relations: List<JsonObject>,
 ) {
-    private val coordinates = CompilerUtf16ToUtf8ByteMap.from(source.text)
+    private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, source.text)
+    private val compilerCoordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(originalSource)
     private val declarations = descriptors.groupBy { it["start"]?.jsonPrimitive?.intOrNull to it["end"]?.jsonPrimitive?.intOrNull }
     private val calls = relations.mapNotNull { row ->
         val start = row["start"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
         val end = row["end"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
-        val range = coordinates?.range(start, end) ?: return@mapNotNull null
+        val range = compilerCoordinates?.range(start, end) ?: return@mapNotNull null
         JsonObject(row + mapOf("start" to JsonPrimitive(range.first), "end" to JsonPrimitive(range.last + 1)))
     }.groupBy { it["owner"]?.jsonPrimitive?.content }
 
     fun enrich(declaration: KtNamedDeclaration, row: JsonObject): JsonObject {
         if (declaration !is KtNamedFunction || declaration.bodyExpression == null) return row
-        val range = coordinates?.range(declaration.textRange.startOffset, declaration.textRange.endOffset) ?: return row
+        val coordinates = psiCoordinates ?: return row
+        val range = coordinates.range(declaration.textRange.startOffset, declaration.textRange.endOffset) ?: return row
         val descriptor = declarations[range.first to range.last + 1]?.singleOrNull {
             it["declarationKind"]?.jsonPrimitive?.content == "FUNCTION"
         } ?: return row

@@ -74,6 +74,72 @@ class DeclarationRelationCoordinateNormalizationTest {
     }
 
     @Test
+    fun normalizedCompilerRangesMapToOriginalMixedLineEndingUtf8Bytes() {
+        val source = "// π🙂\r\nval chosen = api.pick(\"π🙂\")\rfun label(): String = \"ready\"\r\n"
+        val compilerText = source.replace("\r\n", "\n").replace('\r', '\n')
+        val callText = "api.pick(\"π🙂\")"
+        val argumentText = "\"π🙂\""
+        val descriptorText = "fun label(): String = \"ready\""
+        val callStart = compilerText.indexOf(callText)
+        val callEnd = callStart + callText.length
+        val argumentStart = compilerText.indexOf(argumentText, callStart)
+        val argumentEnd = argumentStart + argumentText.length
+        val descriptorStart = compilerText.indexOf(descriptorText)
+        val descriptorEnd = descriptorStart + descriptorText.length
+        val raw = buildJsonObject {
+            put("schema", "declaration-relation/0.1")
+            put("kind", "CALLS")
+            put("start", callStart)
+            put("end", callEnd)
+            put("orderKey", callStart)
+            putJsonArray("argumentToParameter") {
+                add(buildJsonObject {
+                    put("argumentStart", argumentStart)
+                    put("argumentEnd", argumentEnd)
+                    put("parameterIndex", 0)
+                    put("parameterType", "kotlin/String")
+                })
+            }
+        }
+
+        val normalized = assertNotNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, raw))
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        fun byteOffset(text: String, from: Int = 0): Int =
+            source.substring(0, source.indexOf(text, from)).toByteArray(Charsets.UTF_8).size
+
+        val callRange = assertNotNull(compilerRangeToUtf8Bytes(source, callStart, callEnd))
+        assertEquals(byteOffset(callText), callRange.first)
+        assertEquals(callText, bytes.copyOfRange(callRange.first, callRange.last + 1).decodeToString())
+        val argument = normalized["argumentToParameter"]!!.jsonArray.single().jsonObject
+        val argumentByteStart = argument["argumentStart"]!!.jsonPrimitive.content.toInt()
+        val argumentByteEnd = argument["argumentEnd"]!!.jsonPrimitive.content.toInt()
+        assertEquals(byteOffset(argumentText, callStart), argumentByteStart)
+        assertEquals(argumentText, bytes.copyOfRange(argumentByteStart, argumentByteEnd).decodeToString())
+        val descriptorRange = assertNotNull(compilerRangeToUtf8Bytes(source, descriptorStart, descriptorEnd))
+        assertEquals(byteOffset(descriptorText), descriptorRange.first)
+        assertEquals(
+            descriptorText,
+            bytes.copyOfRange(descriptorRange.first, descriptorRange.last + 1).decodeToString(),
+        )
+        assertEquals(
+            byteOffset(callText),
+            normalized["orderKey"]?.jsonPrimitive?.content?.toInt(),
+        )
+
+        val emojiOffset = compilerText.indexOf("🙂")
+        assertNull(compilerRangeToUtf8Bytes(source, emojiOffset + 1, emojiOffset + 2))
+
+        val lfSource = "// π🙂\nfun answer(): String = \"ok\"\n"
+        val lfCall = lfSource.indexOf("answer")
+        val lfRange = assertNotNull(compilerRangeToUtf8Bytes(lfSource, lfCall, lfCall + "answer".length))
+        assertEquals(
+            lfSource.substring(0, lfCall).toByteArray(Charsets.UTF_8).size,
+            lfRange.first,
+            "line-feed-only input keeps the existing coordinate mapping",
+        )
+    }
+
+    @Test
     fun orderedRelationsIncludingReadSurviveWithoutAnOptionalArgumentMap() {
         val source = "// 😀 \u0447\u0442\u0435\u043d\u0438\u0435\nfun run() = state\n"
         val relationStart = source.indexOf("state")

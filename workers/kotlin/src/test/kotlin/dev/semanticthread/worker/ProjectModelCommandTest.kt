@@ -1001,6 +1001,129 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun crlfCompilerRangesRetainCallsDescriptorsDocumentationAndCfg() {
+        val repo = Files.createTempDirectory("worker-k2-crlf-coordinates").toRealPath()
+        val root = Files.createTempDirectory("worker-k2-crlf-coordinate-state").toRealPath()
+        try {
+            val sourcePath = repo.resolve("src/main/kotlin/repro/Answer.kt")
+            sourcePath.parent.createDirectories()
+            val source = """
+                package repro
+
+                // π🙂 before the declarations exercises UTF-8 and compiler UTF-16 ranges.
+                class Api {
+                    fun echo(value: String): String = value
+                }
+
+                class Answer {
+                    fun next(api: Api): String {
+                        val marker = "π🙂"
+                        return api.echo(marker)
+                    }
+                }
+            """.trimIndent().replace("\n", "\r\n") + "\r\n"
+            val compilerText = source.replace("\r\n", "\n").replace('\r', '\n')
+            Files.write(sourcePath, source.toByteArray(Charsets.UTF_8))
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"k2-crlf-coordinates\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            val classpath = System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)
+                .map(java.nio.file.Path::of)
+                .filter { path ->
+                    path.fileName.toString().let { name ->
+                        name.startsWith("kotlin-stdlib-") || name.startsWith("annotations-")
+                    }
+                }
+                .map { it.toAbsolutePath().normalize().toString() }
+                .distinct()
+            assertTrue(classpath.any { it.contains("kotlin-stdlib-") })
+            val modelLine = "__SEMANTIC_THREAD_MODEL__${gradleFixtureModel(repo, sourcePath, "21", classpath)}"
+            require('\'' !in modelLine) { "fixture model cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText("#!/bin/sh\nprintf '%s\\n' '$modelLine'\n")
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            prepareFixtureBuildState(root)
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            val index = Worker(root).use { worker ->
+                Json.parseToJsonElement(worker.handle(3, request)).jsonObject
+            }
+            assertEquals(true, index["k2Validated"]?.jsonPrimitive?.boolean)
+            val sourceBytes = source.toByteArray(Charsets.UTF_8)
+            fun byteOffset(charOffset: Int): Int =
+                source.substring(0, charOffset).toByteArray(Charsets.UTF_8).size
+            fun sourceSlice(start: Int, end: Int): String =
+                sourceBytes.copyOfRange(start, end).decodeToString()
+            fun lineAt(charOffset: Int): Int = source.substring(0, charOffset).count { it == '\n' } + 1
+
+            val callText = "api.echo(marker)"
+            val compilerCallStart = compilerText.indexOf(callText)
+            val compilerCallEnd = compilerCallStart + callText.length
+            val call = index["declarationRelations"]!!.jsonObject["relations"]!!.jsonArray
+                .map { it.jsonObject }
+                .single {
+                    it["kind"]?.jsonPrimitive?.content == "CALLS" &&
+                        it["targetCompilerCallableId"]?.jsonPrimitive?.content == "repro/Api.echo"
+                }
+            val callStart = call["start"]!!.jsonPrimitive.content.toInt()
+            val callEnd = call["end"]!!.jsonPrimitive.content.toInt()
+            assertEquals(byteOffset(source.indexOf(callText)), callStart)
+            assertEquals(callText, sourceSlice(callStart, callEnd))
+            val argument = call["argumentToParameter"]!!.jsonArray.single().jsonObject
+            val argumentStart = argument["argumentStart"]!!.jsonPrimitive.content.toInt()
+            val argumentEnd = argument["argumentEnd"]!!.jsonPrimitive.content.toInt()
+            val compilerArgumentStart = compilerText.indexOf("marker", compilerCallStart)
+            assertEquals(byteOffset(source.indexOf("marker", source.indexOf(callText))), argumentStart)
+            assertEquals("marker", sourceSlice(argumentStart, argumentEnd))
+            assertTrue(compilerCallEnd > compilerCallStart)
+            assertTrue(compilerArgumentStart > compilerCallStart)
+
+            val descriptor = index["declarationDescriptors"]!!.jsonObject["descriptors"]!!.jsonArray
+                .map { it.jsonObject }
+                .single { it["compilerCallableId"]?.jsonPrimitive?.content == "repro/Answer.next" }
+            val functionStart = source.indexOf("fun next")
+            val functionClose = source.indexOf("\r\n    }", functionStart) + "\r\n    }".length
+            val descriptorStart = descriptor["start"]!!.jsonPrimitive.content.toInt()
+            val descriptorEnd = descriptor["end"]!!.jsonPrimitive.content.toInt()
+            assertEquals(byteOffset(functionStart), descriptorStart)
+            assertEquals(source.substring(functionStart, functionClose), sourceSlice(descriptorStart, descriptorEnd))
+            assertEquals(lineAt(functionStart), descriptor["startLine"]!!.jsonPrimitive.content.toInt())
+            assertEquals(lineAt(functionClose - 1), descriptor["endLine"]!!.jsonPrimitive.content.toInt())
+
+            val file = index["files"]!!.jsonArray.map { it.jsonObject }
+                .single { it["path"]?.jsonPrimitive?.content == "src/main/kotlin/repro/Answer.kt" }
+            val declaration = file["declarations"]!!.jsonArray.map { it.jsonObject }
+                .single { it["name"]?.jsonPrimitive?.content == "next" }
+            val documentation = declaration["documentation"]!!.jsonObject
+            val documentedCall = documentation["events"]!!.jsonArray.map { it.jsonObject }
+                .single { it["kind"]?.jsonPrimitive?.content == "CALL" }
+            assertEquals(
+                "callable:repro/Api.echo#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+                documentedCall["target"]?.jsonPrimitive?.content,
+            )
+
+            val owner = "callable:repro/Answer.next#jvm:(Lrepro/Api;)Ljava/lang/String;"
+            val graph = index["localCfgs"]!!.jsonArray.map { it.jsonObject }
+                .single { it["ownerSymbolIdentity"]?.jsonPrimitive?.content == owner }
+            val graphSnippets = graph["nodes"]!!.jsonArray.mapNotNull { node ->
+                node.jsonObject["source"]?.jsonObject?.let { range ->
+                    sourceSlice(
+                        range["start"]!!.jsonPrimitive.content.toInt(),
+                        range["end"]!!.jsonPrimitive.content.toInt(),
+                    )
+                }
+            }
+            assertTrue(graphSnippets.isNotEmpty())
+            assertTrue(graphSnippets.any { it == callText }, graphSnippets.joinToString())
+        } finally {
+            repo.toFile().deleteRecursively()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun externalGradleEnvironmentPinsWrapperBootstrapToItsRuntimeHome() {
         val repo = Files.createTempDirectory("worker-gradle-env-repo").toRealPath()
         val runtimeHome = Files.createTempDirectory("worker-gradle-env-home").toRealPath()
@@ -1437,8 +1560,13 @@ class ProjectModelCommandTest {
         )
 
         val multiline = "val marker = \"😀\"\r\nfun answer() =\r\n    42\r\n"
-        val multilineStart = multiline.indexOf("fun")
-        val multilineBytes = compilerRangeToUtf8Bytes(multiline, multilineStart, multiline.length)!!
+        val multilineCompilerText = multiline.replace("\r\n", "\n").replace('\r', '\n')
+        val multilineStart = multilineCompilerText.indexOf("fun")
+        val multilineBytes = compilerRangeToUtf8Bytes(
+            multiline,
+            multilineStart,
+            multilineCompilerText.length,
+        )!!
         val multilineIndex = utf8LineIndex(multiline)
         assertEquals(
             2..3,

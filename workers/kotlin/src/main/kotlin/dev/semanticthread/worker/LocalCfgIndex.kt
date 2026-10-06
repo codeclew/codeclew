@@ -100,17 +100,18 @@ internal fun normalizeRetainedCompilerFirCfg(
 ): JsonObject {
     val identity = Regex("^callable:(.+)#jvm:(.+)$").matchEntire(ownerSymbolIdentity)
         ?: error("invalid compiler CFG owner identity")
+    val coordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(source)
+        ?: error("compiler CFG source cannot be mapped to UTF-8 bytes")
+    val ownerRange = coordinates.range(functionStart, functionEnd)
     if (raw["symbol"]?.jsonPrimitive?.contentOrNull != identity.groupValues[1] ||
         raw["jvmDescriptor"]?.jsonPrimitive?.contentOrNull != identity.groupValues[2] ||
         raw["file"]?.jsonPrimitive?.contentOrNull != file ||
         raw["start"]?.jsonPrimitive?.intOrNull != functionStart ||
         raw["end"]?.jsonPrimitive?.intOrNull != functionEnd ||
-        functionStart < 0 || functionEnd <= functionStart || functionEnd > source.length
+        functionStart < 0 || functionEnd <= functionStart || ownerRange == null
     ) {
         error("compiler CFG owner or source bounds do not match the retained function")
     }
-    val coordinates = CompilerUtf16ToUtf8ByteMap.from(source)
-        ?: error("compiler CFG source cannot be mapped to UTF-8 bytes")
     val rawNodes = raw["nodes"]?.jsonArray ?: error("compiler CFG nodes are missing")
     val rawEdges = raw["edges"]?.jsonArray ?: error("compiler CFG edges are missing")
     if (rawNodes.isEmpty() || rawNodes.size > 4_096 || rawEdges.size > 8_192) {
@@ -134,15 +135,15 @@ internal fun normalizeRetainedCompilerFirCfg(
         if (rawStart != null && (startValue == null || endValue == null)) {
             error("compiler CFG node source range is malformed")
         }
-        val startByte = if (startValue != null && endValue != null) {
+        val byteRange = if (startValue != null && endValue != null) {
             if (startValue < functionStart || endValue > functionEnd || endValue <= startValue) {
                 error("compiler CFG node source range is outside the owning function")
             }
-            coordinates.offset(startValue)?.toLong() ?: error("compiler CFG node start splits a UTF-16 surrogate pair")
+            coordinates.range(startValue, endValue)
+                ?: error("compiler CFG node source range cannot map to original UTF-8 bytes")
         } else null
-        val endByte = if (startValue != null && endValue != null) {
-            coordinates.offset(endValue)?.toLong() ?: error("compiler CFG node end splits a UTF-16 surrogate pair")
-        } else null
+        val startByte = byteRange?.first?.toLong()
+        val endByte = byteRange?.last?.plus(1)?.toLong()
         buildJsonObject {
             put("id", id)
             put("kind", role)
