@@ -369,6 +369,39 @@ fn control_flow_panel(c: &CallableProjection, ext: &str, full: bool) -> String {
     out
 }
 
+fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
+    let Some(outline) = &c.source_outline else {
+        return String::new();
+    };
+    let mut out = format!(
+        "<section><h3>Cited Kotlin source outline</h3>\n{}",
+        paragraph(
+            "This tree preserves retained Kotlin PSI structure and exact K2 call-target metadata. It is not an execution trace: PSI conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
+        )
+    );
+    if let Some(tree) = &outline.tree {
+        out += &format!("<pre>{}</pre>\n", escape(tree));
+    } else {
+        out += &format!("<ul>{}</ul>\n", gaps(&outline.gaps, ext));
+    }
+    if !outline.events.is_empty() {
+        out += "<ul aria-label=\"Retained PSI event citations\">\n";
+        for event in &outline.events {
+            out += &format!(
+                "<li>PSI event ordinal {} · {} · {}-{}: {}</li>\n",
+                event.ordinal,
+                escape(&event.kind),
+                event.start_line,
+                event.end_line,
+                cite(&event.citation_id, ext)
+            );
+        }
+        out += "</ul>\n";
+    }
+    out += "</section>\n";
+    out
+}
+
 fn selected_declaration(
     c: &CallableProjection,
     label: &str,
@@ -384,6 +417,7 @@ fn selected_declaration(
         out += &format!("<p>Retained source: {}</p>\n", cite(id, ext));
     }
     out += &control_flow_panel(c, ext, full_control_flow);
+    out += &source_outline_panel(c, ext);
     if !c.gaps.is_empty() {
         out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext));
     }
@@ -1585,6 +1619,7 @@ mod tests {
             authority: "SOURCE".into(),
             citation_id: None,
             control_flow: None,
+            source_outline: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],

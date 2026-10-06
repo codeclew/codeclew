@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 pub(super) mod control_flow;
 pub(super) mod java;
 pub(super) mod kotlin;
+pub(super) mod outline;
 pub(super) use java::{Parsed, all_steps, compiler, handoff as java_handoff};
 
 pub(super) fn gap(code: &str, detail: impl Into<String>, citation_id: Option<String>) -> Gap {

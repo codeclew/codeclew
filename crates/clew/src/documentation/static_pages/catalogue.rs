@@ -253,6 +253,7 @@ mod tests {
             authority: "SYNTHETIC_TEST".into(),
             citation_id: None,
             control_flow: None,
+            source_outline: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],

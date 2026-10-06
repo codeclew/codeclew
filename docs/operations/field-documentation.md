@@ -513,6 +513,24 @@ order is not execution order, and compiler labels are not inferred predicates.
 authority and gaps. Pure Java bundles retain schema `/1.0` and omit the field.
 Capture and Check contracts are unchanged.
 
+An admitted function can also display a Kotlin source outline from retained
+`KOTLIN_PSI_WITH_K2_CALL_TARGETS` documentation events. The outline reuses the
+common tree renderer and shows structural `IF`/plain `ELSE` blocks, calls,
+construction and returns. Local declarations and statements appear as explicit
+markers, without invented expression text. Each event retains its ordinal and
+source citation. Two calls on one line remain separate events with whole-line
+citations; those citations do not identify individual call-expression ranges.
+Condition labels describe captured source structure, not evaluated predicates.
+
+The publisher checks the event sequence and retained sources against the owning
+declaration before publishing the outline. Unsupported control structures,
+control-flow boundaries, malformed nesting or incomplete event bindings make
+the entire outline unavailable with an explicit reason. They do not produce a
+partial tree. The outline is separate from the compiler control-flow panel and
+does not establish execution order, reachability, state changes or a relationship
+between selected functions. It does not change the page's projection kind or
+promote a declaration to `SOURCE_BEHAVIOR`.
+
 Kotlin call-graph expansion, structured activity diagrams, handoffs and
 data-state projection remain unsupported here. `expandSourceCalls` and
 `expandDataState` are rejected for declaration-only and compiler control-flow

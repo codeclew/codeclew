@@ -354,6 +354,136 @@ fn refresh_observation_digest(e: &mut ServiceEvidence, id: &str) {
     observation.digest = digest(&observation.normalized).unwrap();
 }
 
+fn add_kotlin_return_outline(e: &mut ServiceEvidence, declaration_id: &str) -> String {
+    let binding = format!("sha256:{}", "b".repeat(64));
+    let owner = e.observations.get_mut(declaration_id).unwrap();
+    owner.symbol = "callable:parity/Answer.next#jvm:(I)I".into();
+    owner.normalized["symbolIdentity"] = json!(owner.symbol);
+    owner.normalized["compilerCallableId"] = json!("parity/Answer.next");
+    owner.normalized["jvmDescriptor"] = json!("(I)I");
+    owner.normalized["ownerIdentity"] = json!("class:parity/Answer");
+    let owner_source_id = owner.source_ids[0].clone();
+    let owner_source = e.sources.get_mut(&owner_source_id).unwrap();
+    owner_source.file = "src/main/kotlin/parity/Answer.kt".into();
+    owner_source.url = Some(format!(
+        "https://example.invalid/sample/blob/{}/{}#L23",
+        e.revision, owner_source.file
+    ));
+    owner_source.evidence_digest = binding.clone();
+    owner_source.occurrence = None;
+    set_kotlin_outline_events(e, declaration_id, vec![json!({"kind":"RETURN"})]).remove(0)
+}
+
+fn set_kotlin_outline_events(
+    e: &mut ServiceEvidence,
+    declaration_id: &str,
+    events: Vec<serde_json::Value>,
+) -> Vec<String> {
+    let owner = e.observations.get_mut(declaration_id).unwrap();
+    let symbol = owner.symbol.clone();
+    let owner_source_id = owner.source_ids[0].clone();
+    owner.normalized["documentation"] = json!({
+        "schema":"codeclew-kotlin-documentation-flow/1.0",
+        "authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS",
+        "boundaries":[],
+        "events":events
+    });
+    owner.digest = digest(&owner.normalized).unwrap();
+    let owner_source = e.sources[&owner_source_id].clone();
+    let event_text = owner_source.text.lines().nth(2).unwrap().to_owned();
+    e.observations.retain(|_, observation| {
+        observation.kind != "FLOW"
+            || observation.service != e.service
+            || observation.symbol != symbol
+    });
+    e.sources
+        .retain(|id, _| !id.starts_with("flow-source-answer-next-"));
+
+    events
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, event)| {
+            let flow_id = if ordinal == 0 {
+                "flow-answer-next-return".to_owned()
+            } else {
+                format!("flow-answer-next-event-{ordinal}")
+            };
+            let source_id = if ordinal == 0 {
+                "flow-source-answer-next-return".to_owned()
+            } else {
+                format!("flow-source-answer-next-event-{ordinal}")
+            };
+            let mut source = owner_source.clone();
+            source.id = source_id.clone();
+            source.start_line = owner_source.start_line + 2;
+            source.end_line = source.start_line;
+            source.text = event_text.clone();
+            source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+            source.occurrence = None;
+            e.sources.insert(source_id.clone(), source);
+
+            let mut normalized = event;
+            let object = normalized.as_object_mut().unwrap();
+            object.insert("ordinal".into(), json!(ordinal));
+            object.insert("scope".into(), json!(":/main"));
+            e.observations.insert(
+                flow_id.clone(),
+                Observation {
+                    id: flow_id.clone(),
+                    kind: "FLOW".into(),
+                    service: e.service.clone(),
+                    symbol: symbol.clone(),
+                    digest: digest(&normalized).unwrap(),
+                    normalized,
+                    source_ids: vec![source_id],
+                },
+            );
+            flow_id
+        })
+        .collect()
+}
+
+fn kotlin_answer_next_outline_evidence() -> ServiceEvidence {
+    use crate::thread_flow_cfg::{LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNodeRole};
+
+    let mut evidence = evidence();
+    let retained = "fun next(value: Int): Int {\r\n  // π\r\n  return value\r\n}";
+    add_kotlin_declaration(&mut evidence, "answer-next", "FUNCTION", retained);
+    let comment_start = retained.find("// π").unwrap();
+    let return_start = retained.find("return value").unwrap();
+    add_kotlin_return_outline(&mut evidence, "answer-next");
+    add_local_cfg(
+        &mut evidence,
+        "answer-next",
+        "next-outline-graph",
+        &[
+            LocalCfgNodeRole::Entry,
+            LocalCfgNodeRole::Operation,
+            LocalCfgNodeRole::Return,
+        ],
+        &[
+            None,
+            Some((comment_start, comment_start + "// π".len())),
+            Some((return_start, return_start + "return value".len())),
+        ],
+        vec![
+            LocalCfgEdge {
+                source_node_id: 0,
+                target_node_id: 1,
+                kind: LocalCfgEdgeKind::Next,
+                label: None,
+            },
+            LocalCfgEdge {
+                source_node_id: 1,
+                target_node_id: 2,
+                kind: LocalCfgEdgeKind::Return,
+                label: Some("CompilerReturn".into()),
+            },
+        ],
+    );
+    evidence
+}
+
 fn kotlin_selection(endpoint: &str, worker: &str) -> Selection {
     Selection {
         id: "kotlin-page".into(),
@@ -767,6 +897,272 @@ fn kotlin_function_projection_uses_compiler_bound_source_and_explicit_gaps() {
         "DECLARATION_ONLY_NO_RELATIONSHIP"
     );
     assert_eq!(page.title, format!("Selected functions: {symbol}"));
+}
+
+#[test]
+fn kotlin_answer_next_outline_is_cited_noncausal_and_keeps_cfg_independent() {
+    let checked = kotlin_check(kotlin_answer_next_outline_evidence());
+    let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    assert_eq!(projection.schema, CONTROL_FLOW_SCHEMA);
+    let page = &projection.pages[0];
+    assert_eq!(
+        page.projection_kind,
+        Some(ProjectionKind::CompilerControlFlow)
+    );
+    let outline = page.endpoint.source_outline.as_ref().unwrap();
+    assert_eq!(outline.authority, "KOTLIN_PSI_WITH_K2_CALL_TARGETS");
+    assert_eq!(outline.owner_key.scope, ":/main");
+    assert_eq!(
+        outline.owner_key.symbol,
+        "callable:parity/Answer.next#jvm:(I)I"
+    );
+    assert_eq!(outline.events.len(), 1);
+    assert_eq!(outline.events[0].observation_id, "flow-answer-next-return");
+    assert_eq!(outline.events[0].ordinal, 0);
+    assert_eq!(outline.events[0].kind, "RETURN");
+    assert_eq!(outline.events[0].start_line, 25);
+    assert_eq!(
+        outline.tree.as_deref(),
+        Some("Entry: parity/Answer.next\nreturn\n")
+    );
+    assert!(outline.gaps.is_empty());
+    assert!(page.endpoint.steps.is_empty());
+    assert!(page.endpoint.state.is_empty());
+    let graph = page.endpoint.control_flow.as_ref().unwrap();
+    assert_eq!(graph.graph_observation_id, "cfg-answer-next");
+    assert_eq!(graph.nodes.len(), 3);
+    assert_eq!(graph.edges.len(), 2);
+    let owner_source_id = page.observations["answer-next"].source_ids[0].clone();
+    assert!(page.sources[&owner_source_id].occurrence.is_none());
+    let citation = &page.citations[&outline.events[0].citation_id];
+    assert_eq!(citation.file, "src/main/kotlin/parity/Answer.kt");
+    assert_eq!((citation.start_line, citation.end_line), (25, 25));
+    assert_eq!(citation.start_byte, 0);
+    assert_eq!(citation.end_byte, "  return value".len());
+    assert!(page.sources[&citation.source_id].occurrence.is_none());
+
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    assert!(endpoint.contains("Cited Kotlin source outline"));
+    assert!(endpoint.contains("PSI conditions do not establish predicate truth"));
+    assert!(endpoint.contains("Entry: parity/Answer.next&#10;return&#10;"));
+    assert!(endpoint.contains("PSI event ordinal 0 · RETURN · 25-25"));
+    assert!(endpoint.contains("sources.html#ref-"));
+
+    let mut tampered = projection.clone();
+    tampered.pages[0]
+        .endpoint
+        .source_outline
+        .as_mut()
+        .unwrap()
+        .tree
+        .as_mut()
+        .unwrap()
+        .push_str("invented text\n");
+    let output = temp.path().join("tampered-outline");
+    assert!(super::super::publish::write(&output, "snapshot", &tampered).is_err());
+    assert!(!output.exists());
+}
+
+fn assert_kotlin_outline_gap(evidence: ServiceEvidence, expected: &str) {
+    let checked = kotlin_check(evidence);
+    let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    let outline = projection.pages[0]
+        .endpoint
+        .source_outline
+        .as_ref()
+        .unwrap();
+    assert!(outline.tree.is_none(), "{expected}");
+    assert_eq!(outline.gaps.len(), 1, "{expected}");
+    assert_eq!(outline.gaps[0].code, expected);
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    let escaped_code = expected.replace('_', "&#95;");
+    assert!(endpoint.contains(&escaped_code), "{expected}");
+    assert!(!endpoint.contains("<pre>Entry:"), "{expected}");
+}
+
+#[test]
+fn kotlin_source_outline_keeps_same_line_call_citations_and_vetoes_incomplete_forms() {
+    let mut call_evidence = evidence();
+    let retained =
+        "fun next(value: Int): Int {\r\n  // π\r\n  client.first(); client.second()\r\n}";
+    add_kotlin_declaration(&mut call_evidence, "answer-next", "FUNCTION", retained);
+    add_kotlin_return_outline(&mut call_evidence, "answer-next");
+    let flow_ids = set_kotlin_outline_events(
+        &mut call_evidence,
+        "answer-next",
+        vec![
+            json!({"kind":"CALL","resolution":"COMPILER_EXACT","target":"<script>&"}),
+            json!({"kind":"CALL","resolution":"COMPILER_EXACT","target":"callable:example/Client.second#jvm:()V"}),
+        ],
+    );
+    let checked = kotlin_check(call_evidence);
+    let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    let page = &projection.pages[0];
+    let outline = page.endpoint.source_outline.as_ref().unwrap();
+    assert_eq!(outline.events.len(), 2);
+    assert_eq!(outline.events[0].observation_id, flow_ids[0]);
+    assert_eq!(outline.events[1].observation_id, flow_ids[1]);
+    assert_eq!(
+        (outline.events[0].ordinal, outline.events[1].ordinal),
+        (0, 1)
+    );
+    assert_ne!(outline.events[0].citation_id, outline.events[1].citation_id);
+    let first_citation = &page.citations[&outline.events[0].citation_id];
+    let second_citation = &page.citations[&outline.events[1].citation_id];
+    assert_eq!(first_citation.file, second_citation.file);
+    assert_eq!(
+        (first_citation.start_line, first_citation.end_line),
+        (25, 25)
+    );
+    assert_eq!(
+        (second_citation.start_line, second_citation.end_line),
+        (25, 25)
+    );
+    let first_source = &page.sources[&first_citation.source_id];
+    let second_source = &page.sources[&second_citation.source_id];
+    assert_eq!(first_source.text, "  client.first(); client.second()");
+    assert_eq!(first_source.text, second_source.text);
+    assert!(first_source.occurrence.is_none());
+    assert!(second_source.occurrence.is_none());
+    assert_eq!(
+        outline.tree.as_deref(),
+        Some(concat!(
+            "Entry: parity/Answer.next\n",
+            "CALL target metadata: <script>&\n",
+            "CALL target metadata: callable:example/Client.second#jvm:()V\n"
+        ))
+    );
+    assert!(page.endpoint.steps.is_empty());
+    assert!(page.endpoint.control_flow.is_none());
+    assert_eq!(page.handoff.status, "DECLARATION_ONLY");
+
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    assert!(endpoint.contains("&lt;script&gt;&amp;"));
+    assert!(!endpoint.contains("<script>"));
+
+    let mut missing_kind = evidence();
+    add_kotlin_declaration(
+        &mut missing_kind,
+        "answer-next",
+        "FUNCTION",
+        "fun next() {\r\n  // π\r\n  return\r\n}",
+    );
+    add_kotlin_return_outline(&mut missing_kind, "answer-next");
+    set_kotlin_outline_events(&mut missing_kind, "answer-next", vec![json!({})]);
+    assert_kotlin_outline_gap(missing_kind, "KOTLIN_SOURCE_OUTLINE_EVENT_KIND_UNAVAILABLE");
+
+    let mut unsupported = kotlin_answer_next_outline_evidence();
+    set_kotlin_outline_events(
+        &mut unsupported,
+        "answer-next",
+        vec![json!({"kind":"LOOP"})],
+    );
+    assert_kotlin_outline_gap(
+        unsupported,
+        "KOTLIN_SOURCE_OUTLINE_CONTROL_FORM_UNSUPPORTED",
+    );
+
+    let mut malformed = kotlin_answer_next_outline_evidence();
+    set_kotlin_outline_events(
+        &mut malformed,
+        "answer-next",
+        vec![json!({"kind":"IF","condition":"untrusted <condition>"})],
+    );
+    assert_kotlin_outline_gap(malformed, "KOTLIN_SOURCE_OUTLINE_MALFORMED_STRUCTURE");
+
+    let mut absent_boundaries = kotlin_answer_next_outline_evidence();
+    set_kotlin_outline_events(
+        &mut absent_boundaries,
+        "answer-next",
+        vec![json!({"kind":"RETURN"})],
+    );
+    absent_boundaries
+        .observations
+        .get_mut("answer-next")
+        .unwrap()
+        .normalized["documentation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("boundaries");
+    refresh_observation_digest(&mut absent_boundaries, "answer-next");
+    assert_kotlin_outline_gap(
+        absent_boundaries,
+        "KOTLIN_SOURCE_OUTLINE_BOUNDARIES_UNAVAILABLE",
+    );
+
+    let mut missing_flow = kotlin_answer_next_outline_evidence();
+    let ids = set_kotlin_outline_events(
+        &mut missing_flow,
+        "answer-next",
+        vec![json!({"kind":"RETURN"})],
+    );
+    missing_flow.observations.remove(&ids[0]);
+    assert_kotlin_outline_gap(missing_flow, "KOTLIN_SOURCE_OUTLINE_EVENT_SET_MISMATCH");
+
+    let mut extra_flow = kotlin_answer_next_outline_evidence();
+    let ids = set_kotlin_outline_events(
+        &mut extra_flow,
+        "answer-next",
+        vec![json!({"kind":"RETURN"})],
+    );
+    let mut extra = extra_flow.observations[&ids[0]].clone();
+    extra.id = "flow-answer-next-extra".into();
+    extra.normalized["ordinal"] = json!(1);
+    extra.digest = digest(&extra.normalized).unwrap();
+    extra_flow.observations.insert(extra.id.clone(), extra);
+    assert_kotlin_outline_gap(extra_flow, "KOTLIN_SOURCE_OUTLINE_EVENT_SET_MISMATCH");
+
+    let mut wrong_scope = kotlin_answer_next_outline_evidence();
+    let ids = set_kotlin_outline_events(
+        &mut wrong_scope,
+        "answer-next",
+        vec![json!({"kind":"RETURN"})],
+    );
+    let flow = wrong_scope.observations.get_mut(&ids[0]).unwrap();
+    flow.normalized["scope"] = json!(":/other");
+    flow.digest = digest(&flow.normalized).unwrap();
+    assert_kotlin_outline_gap(wrong_scope, "KOTLIN_SOURCE_OUTLINE_EVENT_SET_MISMATCH");
+
+    let mut bad_digest = kotlin_answer_next_outline_evidence();
+    let ids = set_kotlin_outline_events(
+        &mut bad_digest,
+        "answer-next",
+        vec![json!({"kind":"RETURN"})],
+    );
+    bad_digest.observations.get_mut(&ids[0]).unwrap().digest = "sha256:bad".into();
+    assert_kotlin_outline_gap(bad_digest, "KOTLIN_SOURCE_OUTLINE_EVENT_BINDING_MISMATCH");
+
+    let mut bad_source = kotlin_answer_next_outline_evidence();
+    let ids = set_kotlin_outline_events(
+        &mut bad_source,
+        "answer-next",
+        vec![json!({"kind":"RETURN"})],
+    );
+    let source_id = bad_source.observations[&ids[0]].source_ids[0].clone();
+    let source = bad_source.sources.get_mut(&source_id).unwrap();
+    source.evidence_digest = format!("sha256:{}", "c".repeat(64));
+    assert_kotlin_outline_gap(bad_source, "KOTLIN_SOURCE_OUTLINE_EVENT_SOURCE_MISMATCH");
+
+    let mut duplicate_ordinal = kotlin_answer_next_outline_evidence();
+    let ids = set_kotlin_outline_events(
+        &mut duplicate_ordinal,
+        "answer-next",
+        vec![
+            json!({"kind":"CALL","resolution":"COMPILER_EXACT","target":"a"}),
+            json!({"kind":"CALL","resolution":"COMPILER_EXACT","target":"b"}),
+        ],
+    );
+    let first_event = duplicate_ordinal.observations[&ids[0]].normalized.clone();
+    let duplicate = duplicate_ordinal.observations.get_mut(&ids[1]).unwrap();
+    duplicate.normalized = first_event;
+    duplicate.digest = digest(&duplicate.normalized).unwrap();
+    assert_kotlin_outline_gap(duplicate_ordinal, "KOTLIN_SOURCE_OUTLINE_ORDINAL_MISMATCH");
 }
 
 #[test]

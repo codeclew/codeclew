@@ -411,6 +411,7 @@ pub(super) fn validate_callable(
 pub(in crate::documentation::static_pages) fn validate_page(
     page: &super::super::model::PageContent,
 ) -> Result<usize, ClewError> {
+    super::outline::validate_page(page)?;
     let mut count = 0usize;
     for callable in std::iter::once(&page.endpoint)
         .chain(std::iter::once(&page.worker))

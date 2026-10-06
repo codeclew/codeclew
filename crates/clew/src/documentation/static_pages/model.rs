@@ -59,6 +59,41 @@ pub struct CompilerControlFlowProjection {
     pub edges: Vec<crate::thread_flow_cfg::LocalCfgEdge>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceOutlineOwnerKey {
+    pub service: String,
+    pub scope: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceOutlineEvent {
+    pub observation_id: String,
+    pub ordinal: u64,
+    pub kind: String,
+    pub file: String,
+    pub start_line: u64,
+    pub end_line: u64,
+    /// The documented PSI event with capture coordinates removed.
+    pub event: serde_json::Value,
+    pub citation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceOutline {
+    pub authority: String,
+    pub owner_key: SourceOutlineOwnerKey,
+    pub events: Vec<SourceOutlineEvent>,
+    /// Indented common projection tree, or absent when the whole outline is vetoed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
+}
+
 /// Inputs select retained declarations. They never supply conclusions or labels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -305,6 +340,8 @@ pub struct CallableProjection {
     pub citation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control_flow: Option<CompilerControlFlowProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_outline: Option<SourceOutline>,
     pub steps: Vec<Statement>,
     pub state: Vec<StateRow>,
     pub gaps: Vec<Gap>,

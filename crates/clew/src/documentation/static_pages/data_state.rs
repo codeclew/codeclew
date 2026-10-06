@@ -1155,6 +1155,7 @@ mod tests {
                 authority: "COMPILER_EXACT".into(),
                 citation_id: None,
                 control_flow: None,
+                source_outline: None,
                 steps: vec![],
                 state: vec![],
                 gaps: vec![],

@@ -420,55 +420,11 @@ pub(crate) fn render_validated(
     if projection.steps.is_empty() {
         return None;
     }
-    let mut tree = format!("Entry: {}\n", projection.entry);
+    let tree = render_tree(&projection.entry, &projection.steps);
     let causal = projection
         .steps
         .iter()
         .any(|step| !matches!(step, ProjectionStep::Gap(_)));
-    let mut depth = 0usize;
-    for step in &projection.steps {
-        let indent = "  ".repeat(depth);
-        match step {
-            ProjectionStep::Action {
-                tree: label,
-                category,
-                ..
-            } => {
-                let label = flatten_tree_text(label);
-                tree.push_str(&format!(
-                    "{indent}{}{label}\n",
-                    category.map(|c| format!("[{c}] ")).unwrap_or_default()
-                ));
-            }
-            ProjectionStep::If(condition) => {
-                tree.push_str(&format!(
-                    "{indent}[D] if ({}) then\n",
-                    flatten_tree_text(condition)
-                ));
-                depth += 1;
-            }
-            ProjectionStep::Else => {
-                depth = depth.saturating_sub(1);
-                tree.push_str(&format!("{}else\n", "  ".repeat(depth)));
-                depth += 1;
-            }
-            ProjectionStep::End => {
-                depth = depth.saturating_sub(1);
-            }
-            ProjectionStep::MethodReturn(value) => {
-                let line = if value.is_empty() {
-                    "return".to_string()
-                } else {
-                    format!("return {value}")
-                };
-                tree.push_str(&format!("{indent}{}\n", flatten_tree_text(&line)));
-            }
-            ProjectionStep::Gap(reason) => {
-                let reason = flatten_tree_text(reason);
-                tree.push_str(&format!("{indent}... (not established: {reason})\n"));
-            }
-        }
-    }
     let steps_puml = if causal {
         render_puml_steps(&projection.steps)
     } else {
@@ -512,6 +468,58 @@ pub(crate) fn render_validated(
         tree,
         origin: projection.origin,
     })
+}
+
+/// Render the common indented outline tree without producing an activity
+/// diagram. Source-backed, non-causal outlines use this exact vocabulary and
+/// formatting while retaining their independent evidence and citations.
+pub(crate) fn render_tree(entry: &str, steps: &[ProjectionStep]) -> String {
+    let mut tree = format!("Entry: {entry}\n");
+    let mut depth = 0usize;
+    for step in steps {
+        let indent = "  ".repeat(depth);
+        match step {
+            ProjectionStep::Action {
+                tree: label,
+                category,
+                ..
+            } => {
+                let label = flatten_tree_text(label);
+                tree.push_str(&format!(
+                    "{indent}{}{label}\n",
+                    category.map(|c| format!("[{c}] ")).unwrap_or_default()
+                ));
+            }
+            ProjectionStep::If(condition) => {
+                tree.push_str(&format!(
+                    "{indent}[D] if ({}) then\n",
+                    flatten_tree_text(condition)
+                ));
+                depth += 1;
+            }
+            ProjectionStep::Else => {
+                depth = depth.saturating_sub(1);
+                tree.push_str(&format!("{}else\n", "  ".repeat(depth)));
+                depth += 1;
+            }
+            ProjectionStep::End => {
+                depth = depth.saturating_sub(1);
+            }
+            ProjectionStep::MethodReturn(value) => {
+                let line = if value.is_empty() {
+                    "return".to_string()
+                } else {
+                    format!("return {value}")
+                };
+                tree.push_str(&format!("{indent}{}\n", flatten_tree_text(&line)));
+            }
+            ProjectionStep::Gap(reason) => {
+                let reason = flatten_tree_text(reason);
+                tree.push_str(&format!("{indent}... (not established: {reason})\n"));
+            }
+        }
+    }
+    tree
 }
 
 fn render_puml_steps(steps: &[ProjectionStep]) -> String {
@@ -870,6 +878,40 @@ fn step_kind(kind: &str, target: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+
+    #[test]
+    fn shared_tree_renderer_keeps_outline_format_exact() {
+        let steps = vec![
+            super::ProjectionStep::If("allowed".to_string()),
+            super::ProjectionStep::Action {
+                diagram: "Inventory#reserve".to_string(),
+                tree: "Inventory#reserve".to_string(),
+                category: Some("W"),
+            },
+            super::ProjectionStep::MethodReturn(String::new()),
+            super::ProjectionStep::Else,
+            super::ProjectionStep::Action {
+                diagram: "Audit#record".to_string(),
+                tree: "Audit#record".to_string(),
+                category: Some("R"),
+            },
+            super::ProjectionStep::Gap("SOURCE_TEXT_UNAVAILABLE".to_string()),
+            super::ProjectionStep::End,
+        ];
+
+        assert_eq!(
+            super::render_tree("Checkout#checkout", &steps),
+            concat!(
+                "Entry: Checkout#checkout\n",
+                "[D] if (allowed) then\n",
+                "  [W] Inventory#reserve\n",
+                "  return\n",
+                "else\n",
+                "  [R] Audit#record\n",
+                "  ... (not established: SOURCE_TEXT_UNAVAILABLE)\n",
+            )
+        );
+    }
 
     fn qualified(events: Value, boundaries: Value) -> super::ValidatedProjection {
         let symbol = "method:class:svc.Checkout#checkout()Ljava/lang/String;";

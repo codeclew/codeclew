@@ -270,6 +270,7 @@ mod tests {
             authority: "COMPILER_DECLARATION".into(),
             citation_id: None,
             control_flow: None,
+            source_outline: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],
