@@ -1250,9 +1250,7 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
     });
     graph.process_links.dedup();
     for n in graph.nodes.values_mut() {
-        if n.node_projection_kind.is_some()
-            && n.calls.iter().any(|edge| edge.exact_call_site.is_some())
-        {
+        if n.node_projection_kind.is_some() {
             n.callable
                 .gaps
                 .retain(|gap| gap.code != "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE");
@@ -1323,10 +1321,11 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
             .chain(page.wiring.iter_mut())
         {
             let id = root_key(evidence, &callable.declaration_id)?;
-            if graph.nodes.get(&id).is_some_and(|node| {
-                node.node_projection_kind.is_some()
-                    && node.calls.iter().any(|edge| edge.exact_call_site.is_some())
-            }) {
+            if graph
+                .nodes
+                .get(&id)
+                .is_some_and(|node| node.node_projection_kind.is_some())
+            {
                 callable
                     .gaps
                     .retain(|gap| gap.code != "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE");

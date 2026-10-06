@@ -1370,6 +1370,18 @@ fn kotlin_exact_source_calls_expand_two_sites_to_one_cached_function_body() {
         .find(|node| node.callable.declaration_id == "answer-next")
         .unwrap();
     assert_eq!(expanded_caller.calls.len(), 2);
+    let expanded_target = expanded_graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == "api-pick")
+        .unwrap();
+    assert!(
+        !expanded_target
+            .callable
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE")
+    );
     assert!(
         !expanded.pages[0]
             .endpoint
@@ -1863,7 +1875,7 @@ fn assert_expanded_kotlin_rejected_callsite_keeps_raw_gap(evidence: ServiceEvide
             .any(|gap| gap.code == "KOTLIN_RETAINED_CALL_SITES_REJECTED")
     );
     assert!(
-        caller
+        !caller
             .callable
             .gaps
             .iter()
@@ -2752,11 +2764,14 @@ fn kotlin_graph_expansion_flags_are_rejected_during_projection() {
     let checked = kotlin_check(evidence);
     let mut expanded = kotlin_selection("render", "render");
     expanded.expand_source_calls = true;
+    let expanded = project(&checked, &[expanded]).unwrap();
+    assert!(expanded.source_call_graph.is_some());
     assert!(
-        project(&checked, &[expanded])
-            .unwrap()
-            .source_call_graph
-            .is_some()
+        !expanded.pages[0]
+            .endpoint
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE")
     );
     for source_calls in [false, true] {
         let mut selection = kotlin_selection("render", "render");
