@@ -8,7 +8,7 @@
     "focusedChecksPassed": 16,
     "focusedChecksFailed": 0,
     "codeFragmentsVisible": true,
-    "methodology": "https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf"
+    "methodology": "https://github.com/codeclew/codeclew/raw/f0b874f5f8e0d6e5b96a2f5f65592c7c4e07cb0a/output/pdf/codeclew-kotlin-evidence-study.pdf"
   },
   "nodes": [
     {"id":"admit","authority":"RELEASED_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L20-L43"},
