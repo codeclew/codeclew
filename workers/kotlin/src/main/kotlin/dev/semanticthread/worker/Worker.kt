@@ -1588,7 +1588,14 @@ internal class Worker(
                             } else {
                                 runCatching {
                                     sealCompilerLocalCfg(
-                                        normalizeFirCfg(repo, relative, owner.orEmpty(), kt, fn, cfg, analysis, selected),
+                                        normalizeRetainedCompilerFirCfg(
+                                            cfg,
+                                            owner.orEmpty(),
+                                            relative,
+                                            fn.textRange.startOffset,
+                                            fn.textRange.endOffset,
+                                            kt.text,
+                                        ),
                                         owner,
                                         relative,
                                         graphName,

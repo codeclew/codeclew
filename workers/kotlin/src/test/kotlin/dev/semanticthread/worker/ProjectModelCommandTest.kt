@@ -904,6 +904,103 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun retainedCompilerCfgSealsRawFirNodesForUnicodePrefixedFunction() {
+        val repo = Files.createTempDirectory("worker-k2-retained-cfg").toRealPath()
+        val root = Files.createTempDirectory("worker-k2-retained-cfg-state").toRealPath()
+        try {
+            val sourcePath = repo.resolve("src/main/kotlin/repro/Answer.kt")
+            sourcePath.parent.createDirectories()
+            val source = """
+                package repro
+
+                // π🙂 keeps compiler UTF-16 ranges distinct from UTF-8 byte ranges.
+                class Answer {
+                    fun next(value: Int): Int {
+                        return value + 1
+                    }
+                }
+            """.trimIndent() + "\n"
+            sourcePath.writeText(source)
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"k2-retained-cfg\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            val classpath = System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)
+                .map(java.nio.file.Path::of)
+                .filter { path ->
+                    path.fileName.toString().let { name ->
+                        name.startsWith("kotlin-stdlib-") || name.startsWith("annotations-")
+                    }
+                }
+                .map { it.toAbsolutePath().normalize().toString() }
+                .distinct()
+            assertTrue(classpath.any { it.contains("kotlin-stdlib-") })
+            val modelLine = "__SEMANTIC_THREAD_MODEL__${gradleFixtureModel(repo, sourcePath, "21", classpath)}"
+            require('\'' !in modelLine) { "fixture model cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText("#!/bin/sh\nprintf '%s\\n' '$modelLine'\n")
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            prepareFixtureBuildState(root)
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            val index = Worker(root).use { worker ->
+                Json.parseToJsonElement(worker.handle(3, request)).jsonObject
+            }
+            assertEquals(true, index["k2Validated"]?.jsonPrimitive?.boolean)
+            val owner = "callable:repro/Answer.next#jvm:(I)I"
+            val graphs = index["localCfgs"]!!.jsonArray.map { it.jsonObject }
+            val graph = assertNotNull(
+                graphs.singleOrNull { it["ownerSymbolIdentity"]?.jsonPrimitive?.content == owner },
+                "Worker.handle(3) must retain raw FIR_CFG for $owner; boundaries=${index["localCfgBoundaries"]}",
+            )
+            assertEquals("src/main/kotlin/repro/Answer.kt", graph["file"]?.jsonPrimitive?.content)
+            val nodes = graph["nodes"]!!.jsonArray.map { it.jsonObject }
+            val edges = graph["edges"]!!.jsonArray.map { it.jsonObject }
+            assertTrue(nodes.isNotEmpty())
+            assertEquals(1, nodes.count { it["role"]?.jsonPrimitive?.content == "ENTRY" })
+            val terminals = nodes.filter {
+                it["role"]?.jsonPrimitive?.content in setOf("EXIT", "RETURN", "THROW")
+            }.map { it["nodeId"]!!.jsonPrimitive.content.toLong() }.toSet()
+            assertTrue(terminals.isNotEmpty())
+            val entry = nodes.single { it["role"]?.jsonPrimitive?.content == "ENTRY" }
+                .getValue("nodeId").jsonPrimitive.content.toLong()
+            val adjacency = edges.groupBy(
+                { it["sourceNodeId"]!!.jsonPrimitive.content.toLong() },
+                { it["targetNodeId"]!!.jsonPrimitive.content.toLong() },
+            )
+            val reachable = mutableSetOf(entry)
+            val pending = ArrayDeque<Long>().apply { add(entry) }
+            while (pending.isNotEmpty()) {
+                adjacency[pending.removeFirst()].orEmpty().forEach { target ->
+                    if (reachable.add(target)) pending.add(target)
+                }
+            }
+            assertTrue(terminals.any { it in reachable }, "no compiler terminal is reachable from entry")
+            assertTrue(nodes.all { it["nodeId"]?.jsonPrimitive?.content?.toLongOrNull() != null })
+            assertTrue(nodes.none { it["role"]?.jsonPrimitive?.content in setOf("PARAMETER", "CAPTURE") })
+            assertTrue(edges.none { it["kind"]?.jsonPrimitive?.content in setOf("ARG_PARAM", "RECEIVER") })
+            val sourceBytes = source.toByteArray(Charsets.UTF_8)
+            nodes.mapNotNull { it["source"]?.jsonObject }.forEach { range ->
+                val start = range["start"]!!.jsonPrimitive.content.toInt()
+                val end = range["end"]!!.jsonPrimitive.content.toInt()
+                assertTrue(start >= 0 && start < end && end <= sourceBytes.size)
+                assertTrue(sourceBytes.copyOfRange(start, end).decodeToString().isNotEmpty())
+            }
+            val labels = edges.mapNotNull { it["label"]?.jsonPrimitive?.content }.toSet()
+            assertTrue("NormalPath" in labels, "compiler labels must remain stable: $labels")
+            assertTrue(graph["graphId"]!!.jsonPrimitive.content.startsWith("sha256:"))
+            assertTrue(index["localCfgBoundaries"]!!.jsonArray.none { boundary ->
+                boundary.jsonObject["ownerSymbolIdentity"]?.jsonPrimitive?.content == owner &&
+                    boundary.jsonObject["stage"]?.jsonPrimitive?.content == "NORMALIZE"
+            })
+        } finally {
+            repo.toFile().deleteRecursively()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun externalGradleEnvironmentPinsWrapperBootstrapToItsRuntimeHome() {
         val repo = Files.createTempDirectory("worker-gradle-env-repo").toRealPath()
         val runtimeHome = Files.createTempDirectory("worker-gradle-env-home").toRealPath()

@@ -547,6 +547,15 @@ Kotlin; their graph and data-state expansion flags remain unavailable.
 Previously captured Checks are immutable and do not gain discarded relation
 records when the CLI is updated; acquiring those records requires a new Check.
 
+The source candidate also seals supported raw FIR control-flow graphs directly
+into retained `local-cfg/0.1` facts. These graphs preserve compiler node IDs,
+explicit control edges and compiler path labels, with source spans converted
+from UTF-16 offsets to UTF-8 byte ranges inside the owning function. Data-only
+edges do not become control edges. Unsupported kinds, inconsistent ownership
+or invalid ranges produce a boundary instead of an inferred graph. Constructor
+capture can still report `NO_SOURCE_FUNCTION`. This retained compiler capability
+does not enable Kotlin CFG projection in native documentation pages.
+
 ## Explicit compiler enrichment afterward
 
 
