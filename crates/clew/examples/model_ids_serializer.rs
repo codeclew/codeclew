@@ -85,8 +85,9 @@ fn main() -> anyhow::Result<()> {
     let value = canonical::parse_json_strict(&bytes)?;
     let carrier: Carrier = serde_json::from_value(value)?;
     anyhow::ensure!(
-        carrier.schema == model_ids::VERSION,
-        "unsupported model representation"
+        model_ids::supported_version(&carrier.schema)
+            && carrier.schema == carrier.prepared_model.version,
+        "unsupported or inconsistent model representation"
     );
     let input = model_ids::forward_model_input(
         &carrier.canonical_job,

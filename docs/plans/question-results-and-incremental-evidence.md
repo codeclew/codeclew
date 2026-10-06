@@ -213,10 +213,10 @@ document alone is not completion.
 | Baseline and first scoped read | Accepted and shipped in 0.13.15 | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full local and exact-release hosted CI passed; official installed verification preserves all 75 items and both pages. |
 | Precise question-result reuse | Implementation accepted; release pending | Accepted `c15fecd`: exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
 | Content-keyed syntax reuse | Implementation accepted; release pending | Independently accepted `1db703a`: same-service/path exact-byte extraction reuse with complete producer admission and current source receipts. Two-revision full evidence/Check equality and 21.863% measured incremental native benefit; 16 final syntax tests including nine cache regressions passed. Compiler reuse is outside this slice. |
-| Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
-| Short opaque model IDs | Host-prepared native path in progress | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
+| Role evidence representation | Compact native 1.1 independently accepted; release pending | Checked native presentation replaces only duplicate raw model-facing pages/source parts. Actual grouped author/reviewer delivery, canonical approval, both-version recovery and frozen 1.0 compatibility passed. The complete four-call generated Java fixture decreases paired prompt/schema reference counts 163,106 to 104,051 (36.2065%); expanded calls decrease 38.8299%. Initial author without duplication grows by 18 reference tokens. Initial semantic selection remains deferred. |
+| Short opaque model IDs | Implementation independently accepted; release pending | Accepted `e729cd2`: explicit host-prepared native author/reviewer carrier, stable typed expansion maps, durable raw JSON/failure recovery and supported public serializer. Actual first-call prompts plus strict schemas decrease reference `o200k_base` text counts by 4.9184% including protocol. The earlier 10.26% remains a historical prospective upper bound, not delivered benefit. See the [assessment and actual measurement](../product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06). |
 | Incremental releases | 0.13.15 published and installed | Full local CI passed on `b3eb735`; hosted CI and release qualification passed on the exact tagged commit `bad1e0c`. All 14 assets are published. Official installation and installed retained-context equivalence passed. |
-| Documentation and cleanup | Bounded tracked-artifact cleanup accepted and published; product docs pending | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links to their archived revision. Final product documentation must reflect subsequent accepted improvements. |
+| Documentation and cleanup | Cleanup accepted and published; final product documentation prepared for release | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links. README, practical workflow, snapshot-store reference, mirrored portable guide and public task page describe the accepted candidates without changing historical example qualification. Publication follows the coherent 0.13.16 release gate. |
 
 ### First scoped-read candidate (2026-10-06)
 
@@ -504,3 +504,143 @@ passed separately, and the public serializer example compiled and returned the
 exact prepared payload/schema for both retained jobs. No provider traffic, paid
 model call or broad qualification run was needed. Full CI and the next release
 remain pending; released `0.13.15` does not contain this candidate.
+
+The research root independently accepted implementation and measured bounded
+benefit at final commit `e729cd2`. The final formatting, English, privacy and diff
+checks passed before commit; their private logs retain the
+`codeclew-model-id-final-{fmt,english,privacy,diff}-20261006` names. The public
+serializer example was compiled and exercised on both actual retained carriers.
+The private `native-candidate/validation-summary.json` distinguishes the initial
+nine passes from the independently corrected grouped-review rerun, and retains
+the two separate legacy compatibility logs. No unchanged successful tests were
+repeated to create a new acceptance layer. Proceed with the agreed final product
+documentation and one coherent full-CI/release gate.
+
+
+### Actual grouped role delivery and selection disposition (2026-10-06)
+
+The existing deterministic native grouped fixture was run once more solely to
+retain its previously unavailable actual dispatched inputs. Optional test-only
+artifact output saved both initial and expanded author/reviewer carriers and
+`forward_model_input` results; no production behavior, role cap or model pilot
+was changed. The same focused test passed with four actual loopback-observed
+driver dispatches and a canonical approved saved answer/review. The public
+serializer example independently returned the exact expanded payload/schema
+for both roles. No remote provider or paid model call was made.
+
+| Actual delivered model form | Payload bytes | Native schema bytes | Complete carrier bytes | Registered pages / source parts |
+| --- | ---: | ---: | ---: | --- |
+| Author initial | 23,117 | 5,250 | 52,592 | No additional grouped delivery |
+| Author expanded | 154,471 | 5,250 | 339,235 | 13 / 6 |
+| Reviewer initial | 167,398 | 3,782 | 365,091 | Author packet retains 13 / 6; independent reviewer delivery 0 / 0 |
+| Reviewer expanded | 296,910 | 3,781 | 640,512 | Author packet retains 13 / 6; independent reviewer delivery 13 / 6 |
+
+All pages/source parts retain their matching receipt counts. Expanded author
+and reviewer representations preserve all 249 and 459 checked source, semantic,
+evidence and selection leaf values, respectively. Maps preserve the exact
+initial prefix: the author map grows from one to 55 identities; the reviewer
+map stays at 62 identities while independently requested evidence is delivered.
+Complete instructions and schemas remain in model input; raw native pages and
+receipts remain in the retained host carrier. No evidence was dropped to obtain
+these sizes. This generated Java fixture establishes actual native delivery
+shape and recovery/identity correctness, not a production workload, provider
+prompt observation or grouped token, latency, billing or quality saving.
+
+Defer task-specific initial selection and broader role-selection contract
+unification. Evaluate the observed raw/presentation duplicate delivery separately. The accepted five-question comparison had
+no expansions and establishes no net benefit or quality preservation for those
+changes. The expanded reviewer carries both historical author delivery and its
+independent review delivery; those separate authorities cannot simply be removed
+because their sizes overlap. Within each role, however, raw delivery and
+presentation contain exact model-facing source-part duplicates. A narrow review
+is evaluating whether those raw copies can be excluded solely from the model
+projection while keeping canonical archives, presentation, schema and citations.
+No new arbitrary context/call caps, paid pilot or protocol rewrite is justified.
+The initial inspection is recorded below as its own evidence stage. The
+subsequent compact candidate closes that specific duplication deliverable.
+Initial semantic selection and broader role-contract unification remain deferred.
+
+
+### Compact role evidence representation candidate (2026-10-06)
+
+Representation `codeclew-model-ids/1.1` closes the observed duplicate-delivery
+problem through the existing opt-in driver path. Version 1.0 and public `prepare`
+retain their original behavior. New explicit `prepare_with_version` and saved
+version selection preserve frozen 1.0 carriers rather than reinterpreting them.
+Carrier, map, scope tag, map head, selected role mode and saved result binding
+agree on the selected version; raw-result record format remains unchanged.
+
+For 1.1, the pure host codec checks each complete canonical native delivery's
+presentation against existing `job_context::present(raw_pages, raw_source_parts)`
+before projecting identities. After that proof and the existing typed alias walk,
+only raw `pages` and `sourceParts` siblings are removed from the model form in
+`packet.contextDelivery` and `reviewContext`. Complete presentation, callable
+metadata, retained-reference links, receipts, citations and delivery bindings
+remain. A missing presentation retains raw data; incomplete/changed presentation
+fails. Canonical jobs, input archives, saved answers and reviewer authority remain
+unchanged. There is no cross-role evidence sharing or initial-selection change.
+
+The native builder preserves duplicate coverage rows through `retainedAt` and
+can project source/text/token/event references. Literal raw-page equality would
+therefore reject valid actual deliveries. Reusing the checked existing builder
+proves the complete representation without introducing a new reconstruction
+engine or weakening receipt validators. Opted-in fixture consumers read
+presentation; canonical and version 1.0 consumers retain their previous paths.
+
+The same existing grouped fixture produced actual 1.1 author/reviewer calls,
+complete 13-page/six-source-part delivery per role and a canonical approved
+saved answer/review. For comparison, those exact canonical jobs and Work/run/role
+scopes were prepared through both versioned APIs with stable first-call map
+prefixes and passed through the public serializer. The 1.1 projections equal
+the actual retained dispatch records exactly. The 1.0 paired view is prepared
+from those same jobs; it is not claimed to be a second dispatch of the same
+immutable invocation. Independent 1.0 grouped/recovery tests also passed.
+
+The frozen prompt formatter and strict-provider schema projection were identical
+on both sides. Counts include complete protocol guidance and schema, with maps
+excluded from model input. Reference encoding remains `o200k_base` from
+`tiktoken` 0.14.0, excluding chat framing and provider schema wrappers.
+
+| Actual input stage | 1.0 prompt bytes / reference tokens | 1.1 prompt bytes / reference tokens | Strict schema bytes (both) | 1.0 / 1.1 strict-schema reference tokens | Combined reference change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Author initial | 23,608 / 5,483 | 23,783 / 5,505 | 5,688 | 1,583 / 1,579 | 7,066 to 7,084 (+18) |
+| Author expanded | 154,962 / 37,691 | 95,562 / 23,239 | 5,688 | 1,583 / 1,579 | 39,274 to 24,818 (-36.8081%) |
+| Reviewer initial | 167,891 / 41,154 | 108,464 / 26,284 | 3,711 | 1,172 / 1,124 | 42,326 to 27,408 (-35.2455%) |
+| Reviewer expanded | 297,403 / 73,268 | 178,430 / 43,617 | 3,710 | 1,172 / 1,124 | 74,440 to 44,741 (-39.8966%) |
+
+The complete four-call fixture context decreases from **163,106 to 104,051
+reference text tokens (36.2065%)**. This accounts for both initial and expanded
+author and reviewer inputs. The two expanded calls alone decrease from
+113,714 to 69,559 (38.8299%). The author initial call has no duplicate delivery
+to remove and grows by 18 reference tokens (0.2547%) from guidance and version-scoped alias differences; this overhead is
+reported rather than omitted. Native model input pairs decrease from 159,749 to
+100,349 bytes for expanded author and from 300,719 to 181,746 for expanded
+reviewer. Complete carriers decrease from 339,235 to 279,835 and 640,512 to
+521,539 bytes, respectively. Their 7,743/8,627-byte maps stay outside model
+input while conservative host admission/reservation still accounts for the
+complete carrier and configured overhead.
+
+This generated Java fixture establishes complete native delivery and an observed
+reference-text reduction, not general workload performance, provider usage,
+billing or model quality. No paid or remote-provider calls, new context/call
+caps or qualification pilot were added. The previous 4.9184% two-real-first-call
+measurement belongs to the accepted 1.0 ID projection; the earlier prospective
+10.26% remains historical. Neither is substituted for this expanded-delivery
+comparison.
+
+The final focused gate passed **16 tests: 11 codec and five host test names**,
+including parameterized unknown-alias and head/raw crash scenarios for both
+versions. Six genuine pre-change 1.0 carriers passed the new public serializer;
+the two original real-work outputs remain byte-identical. Complete pre-change
+recovery-record chains were not retained, so no historical full-chain replay is
+claimed. Existing 1.0 recovery tests and production read-only record validators
+qualify current recovery; newly captured chain artifacts are labeled current
+compatibility captures. Temporary measurement examples were removed. Integrated
+full CI and release 0.13.16 remain pending.
+
+The research root independently accepted the 1.1 implementation, focused gate,
+frozen-carrier compatibility and paired model-facing benefit after material
+delta review. No further efficiency scope is scheduled before publication.
+Task-specific initial semantic selection, cross-role sharing and broader role
+contract unification remain explicitly deferred. Finish the current product
+documentation and one coherent full-CI/0.13.16 qualification gate.

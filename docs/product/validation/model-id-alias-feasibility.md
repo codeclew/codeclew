@@ -218,3 +218,23 @@ failed conservative carrier admission; increasing only that synthetic fixture's
 explicit cap/budget made the focused rerun pass. Production bounds were retained.
 Legacy role serialization and saved-author replay tests also passed. Integrated
 release qualification remains pending; this candidate is not in `0.13.15`.
+
+
+## Compact native delivery follow-up
+
+A later source candidate adds explicit `codeclew-model-ids/1.1`, retaining
+version 1.0's frozen behavior. It verifies complete native presentation with the
+existing pure builder, then excludes duplicate raw delivery arrays solely from
+model input. Canonical archives, presentation, receipts, citations and separate
+author/reviewer deliveries remain intact.
+
+The [actual grouped comparison and compatibility checks](../../plans/question-results-and-incremental-evidence.md#compact-role-evidence-representation-candidate-2026-10-06)
+record both initial and expanded calls on identical canonical jobs/scopes.
+The complete four-call generated Java fixture decreases prompt plus strict-schema
+reference counts 163,106 to 104,051 (36.2065%), including protocol; expanded
+calls alone decrease 113,714 to 69,559 (38.8299%). The first author call without
+duplicate delivery grows by 18 reference tokens (0.2547%).
+These are reference text counts, not general production, provider billing or
+quality results. The previous actual 4.9184% measurement remains specific to
+version 1.0's two retained real first-call jobs. Frozen 1.0 carriers remain
+compatible; integrated release qualification is pending.

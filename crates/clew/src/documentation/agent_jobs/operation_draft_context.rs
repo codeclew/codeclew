@@ -1360,7 +1360,13 @@ if packet["contextDelivery"].nil? || {always}
   puts JSON.generate({{"schema" => "codeclew-documentation-agent-result/1.0", "invocation" => request.fetch("invocation"), "role" => request.fetch("role"), "model" => request.fetch("model"), "result" => result}})
   exit
 end
-abort "missing complete source delivery" unless packet.fetch("contextDelivery").fetch("sourceParts").length > 1
+delivery = packet.fetch("contextDelivery")
+source_parts = if defined?(FIXTURE_VERSION) && FIXTURE_VERSION == "codeclew-model-ids/1.1"
+  delivery.fetch("presentation").fetch("sourceParts")
+else
+  delivery.fetch("sourceParts")
+end
+abort "missing complete source delivery" unless source_parts.length > 1
 "#,
             always = if mode == "exhaust" { "true" } else { "false" }
         );

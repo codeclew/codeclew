@@ -1243,6 +1243,14 @@ pub(in crate::documentation) fn interrupt_raw_model_result_once_for_test() {
 }
 
 #[cfg(test)]
+pub(in crate::documentation) fn validate_frozen_model_records_for_test(
+    repo: &Repository,
+    invocation: &str,
+) -> Result<Value, crate::error::ClewError> {
+    recovery::validate_frozen_model_records(repo, invocation)
+}
+
+#[cfg(test)]
 pub(in crate::documentation) fn write_reusable_review_fixture_config(
     path: &std::path::Path,
     author: &std::path::Path,
@@ -2470,7 +2478,7 @@ fn call(
 
     let model_input = match driver.model_representation.as_deref() {
         None => None,
-        Some(super::model_ids::VERSION) => {
+        Some(version) if super::model_ids::supported_version(version) => {
             if resumed
                 && checkpoint
                     .pending_call
@@ -2484,7 +2492,9 @@ fn call(
                     .rev()
                     .find(|attempt| attempt.role == role_name)
                     .map(|attempt| attempt.invocation.as_str());
-                Some(recovery::prepare_model_input(repo, &input, previous)?)
+                Some(recovery::prepare_model_input(
+                    repo, &input, previous, version,
+                )?)
             }
         }
         Some(_) => {
@@ -2493,6 +2503,13 @@ fn call(
             ));
         }
     };
+    if let Some(model) = &model_input
+        && driver.model_representation.as_deref() != Some(model.prepared.version.as_str())
+    {
+        return Err(invalid(
+            "RECOVERY_MODEL_INPUT_VERSION_MISMATCH: selected role mode differs from its frozen carrier",
+        ));
+    }
     let wire_request = model_input
         .as_ref()
         .map_or(&request, |model| &model.carrier);
@@ -2542,7 +2559,7 @@ fn call(
             reply.result,
             raw.stdout_bytes,
             raw.stderr_bytes,
-            Some(raw.binding()),
+            Some(raw.binding(model)),
         )?;
     }
 
@@ -2700,7 +2717,7 @@ fn call(
                             "RECOVERY_MODEL_RESULT_MISSING: delivered wire output was not retained",
                         )
                     })?
-                    .binding(),
+                    .binding(model),
             )
         } else {
             None

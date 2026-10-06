@@ -286,6 +286,8 @@ impl ModelInputRecord {
             || self.identity != input.identity
             || self.canonical_record_digest != input.record_digest
             || self.prepared.scope != scope
+            || !super::super::model_ids::supported_version(&self.prepared.version)
+            || self.prepared.map.version != self.prepared.version
             || self.carrier != model_carrier(&input.request, &self.prepared)
             || digest(&unsigned)? != self.record_digest
         {
@@ -299,7 +301,7 @@ impl ModelInputRecord {
 }
 
 fn model_carrier(canonical: &Value, prepared: &super::super::model_ids::Prepared) -> Value {
-    json!({"schema":super::super::model_ids::VERSION,"canonicalJob":canonical,"preparedModel":prepared})
+    json!({"schema":prepared.version,"canonicalJob":canonical,"preparedModel":prepared})
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,8 +353,19 @@ pub(super) fn prepare_model_input(
     repo: &Repository,
     input: &InputRecord,
     previous_invocation: Option<&str>,
+    version: &str,
 ) -> Result<ModelInputRecord, crate::error::ClewError> {
+    if !super::super::model_ids::supported_version(version) {
+        return Err(invalid(
+            "MODEL_REPRESENTATION_UNSUPPORTED: unsupported retained carrier version",
+        ));
+    }
     if let Some(saved) = try_load_model_input(repo, input)? {
+        if saved.prepared.version != version {
+            return Err(invalid(
+                "RECOVERY_MODEL_INPUT_VERSION_MISMATCH: selected role mode differs from its frozen carrier",
+            ));
+        }
         publish_model_head(repo, input, &saved)?;
         return Ok(saved);
     }
@@ -365,7 +378,7 @@ pub(super) fn prepare_model_input(
     let previous = if let Some(head) =
         read_optional::<ModelMapHead>(repo, &head_path, "model map head")?
     {
-        if head.schema != super::super::model_ids::VERSION
+        if head.schema != version
             || head.scope != scope
             || head.config_digest != input.identity.config_digest
             || head.driver_digest != input.identity.driver_digest
@@ -384,6 +397,7 @@ pub(super) fn prepare_model_input(
         if saved.record_digest != head.model_input_digest
             || saved.prepared.map_digest != head.map_digest
             || saved.prepared.scope != scope
+            || saved.prepared.version != version
             || saved.identity.config_digest != head.config_digest
             || saved.identity.driver_digest != head.driver_digest
         {
@@ -409,6 +423,7 @@ pub(super) fn prepare_model_input(
         let canonical = load_input(repo, &prior.identity)?;
         prior.validate(&canonical)?;
         if prior.prepared.scope != scope
+            || prior.prepared.version != version
             || prior.identity.config_digest != input.identity.config_digest
             || prior.identity.driver_digest != input.identity.driver_digest
             || previous
@@ -420,7 +435,12 @@ pub(super) fn prepare_model_input(
             ));
         }
     }
-    let prepared = super::super::model_ids::prepare(&input.request, &scope, previous.as_ref())?;
+    let prepared = super::super::model_ids::prepare_with_version(
+        &input.request,
+        &scope,
+        previous.as_ref(),
+        version,
+    )?;
     let mut record = ModelInputRecord {
         schema: MODEL_INPUT_SCHEMA.into(),
         identity: input.identity.clone(),
@@ -456,7 +476,7 @@ fn publish_model_head(
     let head_path = model_head_path(&input.identity)?;
     let _guard = repo.lock()?;
     if let Some(previous) = read_optional::<ModelMapHead>(repo, &head_path, "model map head")? {
-        if previous.schema != super::super::model_ids::VERSION
+        if previous.schema != record.prepared.version
             || previous.scope != scope
             || previous.config_digest != input.identity.config_digest
             || previous.driver_digest != input.identity.driver_digest
@@ -475,6 +495,7 @@ fn publish_model_head(
         if saved.record_digest != previous.model_input_digest
             || saved.prepared.map_digest != previous.map_digest
             || saved.prepared.scope != scope
+            || saved.prepared.version != record.prepared.version
             || saved.identity.config_digest != input.identity.config_digest
             || saved.identity.driver_digest != input.identity.driver_digest
         {
@@ -494,7 +515,7 @@ fn publish_model_head(
         }
     }
     let head = ModelMapHead {
-        schema: super::super::model_ids::VERSION.into(),
+        schema: record.prepared.version.clone(),
         scope,
         config_digest: input.identity.config_digest.clone(),
         driver_digest: input.identity.driver_digest.clone(),
@@ -532,9 +553,9 @@ pub(super) struct RawModelResult {
 }
 
 impl RawModelResult {
-    pub(super) fn binding(&self) -> ModelResultBinding {
+    pub(super) fn binding(&self, model: &ModelInputRecord) -> ModelResultBinding {
         ModelResultBinding {
-            version: super::super::model_ids::VERSION.into(),
+            version: model.prepared.version.clone(),
             model_input_digest: self.model_input_digest.clone(),
             map_digest: self.map_digest.clone(),
             raw_record_digest: self.record_digest.clone(),
@@ -726,7 +747,7 @@ pub(super) fn try_load_result(
         (None, None) => {}
         (Some(binding), Some(model)) => {
             let raw=try_load_raw_model_result(repo,&model)?.ok_or_else(||invalid("RECOVERY_MODEL_RESULT_MISSING: canonical result requires retained raw wire output"))?;
-            if *binding != raw.binding() {
+            if *binding != raw.binding(&model) {
                 return Err(invalid(
                     "RECOVERY_MODEL_RESULT_CORRUPT: canonical result is bound to another raw wire result",
                 ));
@@ -771,6 +792,69 @@ pub(super) fn load_result(
     try_load_result(repo, input)?.ok_or_else(|| {
         invalid("RECOVERY_RESULT_MISSING: checkpoint requires a durable result that is absent")
     })
+}
+
+/// Read-only admission of a retained successful model call, including a later
+/// append-only head for the same role. This does not regenerate or save records.
+#[cfg(test)]
+pub(super) fn validate_frozen_model_records(
+    repo: &Repository,
+    invocation: &str,
+) -> Result<Value, crate::error::ClewError> {
+    let retained: InputRecord = read_required(repo, &input_path(invocation)?, "input")?;
+    if retained.identity.invocation != invocation {
+        return Err(invalid(
+            "RECOVERY_INPUT_BINDING_MISMATCH: frozen input belongs to another invocation",
+        ));
+    }
+    let input = load_input(repo, &retained.identity)?;
+    let model = try_load_model_input(repo, &input)?.ok_or_else(|| {
+        invalid("RECOVERY_MODEL_INPUT_MISSING: frozen chain requires a model input")
+    })?;
+    let raw = try_load_raw_model_result(repo, &model)?.ok_or_else(|| {
+        invalid("RECOVERY_MODEL_RESULT_MISSING: frozen chain requires a raw wire result")
+    })?;
+    let saved = load_result(repo, &input)?;
+    let head: ModelMapHead =
+        read_required(repo, &model_head_path(&input.identity)?, "model map head")?;
+    let head_model: ModelInputRecord = read_required(
+        repo,
+        &model_input_path(&head.invocation)?,
+        "head model input",
+    )?;
+    let head_input = load_input(repo, &head_model.identity)?;
+    head_model.validate(&head_input)?;
+    if head.schema != model.prepared.version
+        || head.scope != model.prepared.scope
+        || head.config_digest != input.identity.config_digest
+        || head.driver_digest != input.identity.driver_digest
+        || head.model_input_digest != head_model.record_digest
+        || head.map_digest != head_model.prepared.map_digest
+        || head_model.prepared.version != head.schema
+        || head_model.prepared.scope != head.scope
+        || head_model.identity.config_digest != head.config_digest
+        || head_model.identity.driver_digest != head.driver_digest
+        || !head_model
+            .prepared
+            .map
+            .entries
+            .starts_with(&model.prepared.map.entries)
+    {
+        return Err(invalid(
+            "RECOVERY_MODEL_MAP_MISMATCH: frozen chain head binding or append-only history changed",
+        ));
+    }
+    Ok(json!({
+        "version": model.prepared.version,
+        "inputRecordDigest": input.record_digest,
+        "modelInputRecordDigest": model.record_digest,
+        "mapDigest": model.prepared.map_digest,
+        "rawRecordDigest": raw.record_digest,
+        "resultRecordDigest": saved.record_digest,
+        "resultDigest": saved.result_digest,
+        "headModelInputRecordDigest": head_model.record_digest,
+        "headMapDigest": head.map_digest
+    }))
 }
 
 fn validate_request_binding(

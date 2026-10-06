@@ -36,7 +36,7 @@ fn validate_role(role: &Role) -> Result<(), ClewError> {
     if role
         .model_representation
         .as_deref()
-        .is_some_and(|mode| mode != "codeclew-model-ids/1.0")
+        .is_some_and(|mode| !super::model_ids::supported_version(mode))
         || !matches!(
             role.usage_authority.as_str(),
             "MAXIMUM_ONLY" | "TRANSPORT_METADATA"

@@ -13,6 +13,11 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 pub const VERSION: &str = "codeclew-model-ids/1.0";
+pub const COMPACT_VERSION: &str = "codeclew-model-ids/1.1";
+
+pub fn supported_version(version: &str) -> bool {
+    matches!(version, VERSION | COMPACT_VERSION)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,15 +99,19 @@ fn hash(value: &impl Serialize) -> Result<String, ClewError> {
     canonical::hash(value).map_err(|error| invalid(error.to_string()))
 }
 
-fn scope_tag(scope: &Scope) -> Result<String, ClewError> {
+fn scope_tag(scope: &Scope, version: &str) -> Result<String, ClewError> {
     // A scope tag is part of every alias, including aliases reused in later
     // calls. Full scope equality is additionally required for map extension.
-    Ok(hash(&json!({"version":VERSION,"scope":scope}))?[7..23].to_owned())
+    Ok(hash(&json!({"version":version,"scope":scope}))?[7..23].to_owned())
 }
 
 impl AliasMap {
-    fn validate(&self, scope: &Scope) -> Result<(), ClewError> {
-        if self.version != VERSION || self.scope != *scope || self.scope_tag != scope_tag(scope)? {
+    fn validate(&self, scope: &Scope, version: &str) -> Result<(), ClewError> {
+        if !supported_version(version)
+            || self.version != version
+            || self.scope != *scope
+            || self.scope_tag != scope_tag(scope, version)?
+        {
             return Err(invalid("map version or scope differs"));
         }
         let mut canonical = BTreeSet::new();
@@ -503,6 +512,21 @@ pub fn prepare(
     scope: &Scope,
     previous: Option<&AliasMap>,
 ) -> Result<Prepared, ClewError> {
+    prepare_with_version(canonical_job, scope, previous, VERSION)
+}
+
+/// Prepare either the immutable 1.0 encoding or the explicitly selected 1.1
+/// encoding. Version 1.1 additionally removes raw delivery arrays preserved by
+/// the checked native presentation builder.
+pub fn prepare_with_version(
+    canonical_job: &Value,
+    scope: &Scope,
+    previous: Option<&AliasMap>,
+    version: &str,
+) -> Result<Prepared, ClewError> {
+    if !supported_version(version) {
+        return Err(invalid("unsupported representation version"));
+    }
     if canonical_job["schema"] != "codeclew-documentation-agent-job/1.0"
         || canonical_job["work"] != scope.work
         || canonical_job["role"] != scope.role
@@ -527,12 +551,20 @@ pub fn prepare(
         ));
     }
     let mut map = previous.cloned().unwrap_or(AliasMap {
-        version: VERSION.into(),
+        version: version.into(),
         scope: scope.clone(),
-        scope_tag: scope_tag(scope)?,
+        scope_tag: scope_tag(scope, version)?,
         entries: vec![],
     });
-    map.validate(scope)?;
+    map.validate(scope, version)?;
+    // Verify the canonical presentation before typed IDs are projected. The
+    // native builder validates exact source/token/event aliases using canonical
+    // provenance; invoking it on model aliases would change those checks.
+    let compact_paths = if version == COMPACT_VERSION {
+        checked_compact_deliveries(canonical_payload)?
+    } else {
+        vec![]
+    };
     let mut payload = canonical_payload.clone();
     contract(&mut payload, &mut map)?;
     if let Some(source) = payload.get_mut("source") {
@@ -571,16 +603,33 @@ pub fn prepare(
         let alias = payload["packet"]["packetDigest"].clone();
         bind_packet_schema(&mut payload["outputSchema"], &alias);
     }
+    if version == COMPACT_VERSION {
+        for pointer in compact_paths {
+            let delivery = payload
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            delivery.remove("pages");
+            delivery.remove("sourceParts");
+        }
+    }
     let instruction = payload["instruction"]
         .as_str()
         .ok_or_else(|| invalid("missing host instruction"))?;
     payload["instruction"] = json!(format!(
-        "{instruction}\n\nModel identity encoding {VERSION}: copy typed opaque identity aliases exactly from this payload and outputSchema. Aliases are scoped to this Work, run and role. Evidence labels, code, semantic symbols, native references, queries and source text keep their original meaning. Never invent or translate an identity alias."
+        "{instruction}\n\nModel identity encoding {version}: copy typed opaque identity aliases exactly from this payload and outputSchema. Aliases are scoped to this Work, run and role. Evidence labels, code, semantic symbols, native references, queries and source text keep their original meaning. Never invent or translate an identity alias."
     ));
+    if version == COMPACT_VERSION {
+        let instruction = payload["instruction"].as_str().unwrap();
+        payload["instruction"] = json!(format!(
+            "{instruction} When raw delivery arrays are omitted, read complete pages and sourceParts from that delivery's presentation. Its receipts, citations and deliveredDigest retain their binding."
+        ));
+    }
     let output_schema = payload["outputSchema"].clone();
-    map.validate(scope)?;
+    map.validate(scope, version)?;
     Ok(Prepared {
-        version: VERSION.into(),
+        version: version.into(),
         scope: scope.clone(),
         canonical_job_digest: hash(canonical_job)?,
         model_payload_digest: hash(&payload)?,
@@ -590,6 +639,42 @@ pub fn prepare(
         output_schema,
         map,
     })
+}
+
+fn checked_compact_deliveries(payload: &Value) -> Result<Vec<&'static str>, ClewError> {
+    let mut paths = Vec::new();
+    for pointer in ["/packet/contextDelivery", "/reviewContext"] {
+        if let Some(delivery) = payload.pointer(pointer)
+            && checked_compact_delivery(delivery)?
+        {
+            paths.push(pointer);
+        }
+    }
+    Ok(paths)
+}
+
+fn checked_compact_delivery(delivery: &Value) -> Result<bool, ClewError> {
+    // A delivery without presentation keeps its original evidence. An existing
+    // presentation must equal the existing pure native builder exactly,
+    // including retainedAt and all
+    // checked source/token/event aliases. Never rewrite a supplied presentation.
+    let Some(presentation) = delivery.get("presentation") else {
+        return Ok(false);
+    };
+    let pages = delivery
+        .get("pages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("compact delivery requires canonical pages"))?;
+    let source_parts = delivery
+        .get("sourceParts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("compact delivery requires canonical sourceParts"))?;
+    if *presentation != super::job_context::present(pages, source_parts) {
+        return Err(invalid(
+            "compact delivery presentation differs from checked native presentation",
+        ));
+    }
+    Ok(true)
 }
 
 fn bind_packet_schema(value: &mut Value, alias: &Value) {
@@ -618,7 +703,12 @@ fn bind_packet_schema(value: &mut Value, alias: &Value) {
 /// Verify the frozen model form against unchanged canonical input. This checks
 /// representation integrity, not canonical packet correctness or model delivery.
 pub fn validate(canonical_job: &Value, prepared: &Prepared) -> Result<(), ClewError> {
-    let expected = prepare(canonical_job, &prepared.scope, Some(&prepared.map))?;
+    let expected = prepare_with_version(
+        canonical_job,
+        &prepared.scope,
+        Some(&prepared.map),
+        &prepared.version,
+    )?;
     if *prepared != expected {
         return Err(invalid("frozen prepared representation differs"));
     }
@@ -643,8 +733,8 @@ pub fn forward_model_input(
 /// Decode only result binding fields, before the existing semantic validator.
 /// Callers must durably retain delivered raw output before invoking this method.
 pub fn decode_result(wire_result: &Value, prepared: &Prepared) -> Result<Value, ClewError> {
-    prepared.map.validate(&prepared.scope)?;
-    if prepared.version != VERSION || prepared.map_digest != hash(&prepared.map)? {
+    prepared.map.validate(&prepared.scope, &prepared.version)?;
+    if !supported_version(&prepared.version) || prepared.map_digest != hash(&prepared.map)? {
         return Err(invalid("prepared result map differs"));
     }
     let mut result = wire_result.clone();
@@ -944,5 +1034,260 @@ mod tests {
         let restored: Prepared = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(restored, prepared);
         validate(&job, &restored).unwrap();
+    }
+
+    fn complete_delivery() -> Value {
+        let pages = json!([{"work":"a".repeat(64),"snapshot":digest('f'),"receiptDigest":digest('1'),
+            "items":[{"kind":"SOURCE","reference":"c1","recordDigest":digest('2'),
+                "record":{"text":"def result():\n    return 7\n","file":"orders.py","textDigest":digest('3'),
+                    "evidenceDigest":digest('4'),"occurrence":{"snapshot":digest('f'),"blob":digest('5'),"startByte":0,"endByte":27}}}]}]);
+        let parts = json!([{"work":"a".repeat(64),"snapshot":digest('f'),"reference":"c1","text":"return 7",
+            "recordDigest":digest('6'),"fragmentDigest":digest('7'),"receiptDigest":digest('8'),"startByte":18,"endByte":26,
+            "source":{"textDigest":digest('3'),"evidenceDigest":digest('4'),"file":"orders.py"}}]);
+        let presentation = super::super::job_context::present(
+            pages.as_array().unwrap(),
+            parts.as_array().unwrap(),
+        );
+        json!({"work":"a".repeat(64),"snapshot":digest('f'),"deliveredDigest":digest('9'),
+            "pages":pages,"sourceParts":parts,
+            "presentation":presentation,
+            "pageReceipts":[{"resultDigest":digest('1'),"membershipDigest":digest('a'),"supplied":["c1"]}],
+            "sourcePartReceipts":[{"work":"a".repeat(64),"snapshot":digest('f'),"receiptDigest":digest('8'),"reference":"c1"}],
+            "citations":{"c1":"SOURCE"}})
+    }
+
+    #[test]
+    fn legacy_version_retains_exact_arrays_and_frozen_records_remain_replayable() {
+        let mut job = author_job();
+        job["payload"]["packet"]["contextDelivery"] = complete_delivery();
+        let legacy = prepare(&job, &scope("author"), None).unwrap();
+        assert_eq!(legacy.version, VERSION);
+        assert_eq!(legacy.map.version, VERSION);
+        // Frozen 1.0 scope hashing keeps its original versioned hash preimage.
+        assert_eq!(legacy.map.scope_tag, "7f2ef0d6a8f07c76");
+        let delivery = &legacy.model_payload["packet"]["contextDelivery"];
+        assert_eq!(delivery["pages"], delivery["presentation"]["pages"]);
+        assert_eq!(
+            delivery["sourceParts"],
+            delivery["presentation"]["sourceParts"]
+        );
+        let bytes = canonical::bytes(&legacy).unwrap();
+        let frozen: Prepared = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            legacy,
+            prepare_with_version(&job, &scope("author"), None, VERSION).unwrap()
+        );
+        assert_eq!(
+            legacy,
+            prepare(&job, &scope("author"), Some(&frozen.map)).unwrap()
+        );
+        validate(&job, &frozen).unwrap();
+        let forwarded = forward_model_input(&job, &frozen, |_| Ok(())).unwrap();
+        assert_eq!(
+            canonical::bytes(&forwarded.payload).unwrap(),
+            canonical::bytes(&legacy.model_payload).unwrap()
+        );
+        assert_eq!(
+            canonical::bytes(&forwarded.output_schema).unwrap(),
+            canonical::bytes(&legacy.output_schema).unwrap()
+        );
+        assert!(
+            !forwarded.payload["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("When raw delivery arrays are omitted")
+        );
+    }
+
+    #[test]
+    fn compact_version_preserves_complete_presentation_metadata_and_canonical_results() {
+        for role in ["author", "reviewer"] {
+            let mut job = if role == "author" {
+                author_job()
+            } else {
+                reviewer_job()
+            };
+            job["payload"]["packet"]["contextDelivery"] = complete_delivery();
+            if role == "reviewer" {
+                job["payload"]["reviewContext"] = complete_delivery();
+            }
+            let unchanged = job.clone();
+            let legacy = prepare(&job, &scope(role), None).unwrap();
+            let compact = prepare_with_version(&job, &scope(role), None, COMPACT_VERSION).unwrap();
+            assert_eq!(job, unchanged);
+            assert_eq!(compact.version, COMPACT_VERSION);
+            assert_eq!(compact.map.version, COMPACT_VERSION);
+            for pointer in ["/packet/contextDelivery", "/reviewContext"] {
+                if job["payload"].pointer(pointer).is_none() {
+                    continue;
+                }
+                // Use the same typed projection to establish the complete
+                // expected evidence, then remove only its redundant raw arrays.
+                let mut expected = job["payload"].pointer(pointer).unwrap().clone();
+                delivery(&mut expected, &mut compact.map.clone()).unwrap();
+                expected.as_object_mut().unwrap().remove("pages");
+                expected.as_object_mut().unwrap().remove("sourceParts");
+                let projected = compact.model_payload.pointer(pointer).unwrap();
+                assert_eq!(projected, &expected);
+                assert!(projected.get("pages").is_none());
+                assert!(projected.get("sourceParts").is_none());
+                assert_eq!(
+                    projected["presentation"]["pages"][0]["items"][0]["record"]["text"],
+                    "def result():\n    return 7\n"
+                );
+                assert_eq!(
+                    projected["presentation"]["sourceParts"][0]["text"],
+                    "return 7"
+                );
+                assert_eq!(projected["citations"], json!({"c1":"SOURCE"}));
+            }
+            assert_eq!(compact.canonical_job_digest, legacy.canonical_job_digest);
+            let result_key = if role == "author" { "answer" } else { "review" };
+            let make_result = |prepared: &Prepared| {
+                let mut result = json!({"action":result_key,result_key:{"packetDigest":prepared.model_payload["packet"]["packetDigest"],"title":"unchanged candidate"}});
+                if role == "reviewer" {
+                    let properties = &prepared.output_schema["$defs"]["review"]["properties"];
+                    for field in [
+                        "work",
+                        "sourceRun",
+                        "sourceInvocation",
+                        "snapshot",
+                        "answerDigest",
+                        "coverageDigest",
+                        "reviewContextDigest",
+                    ] {
+                        result[result_key][field] = properties[field]["const"].clone();
+                    }
+                }
+                result
+            };
+            assert_eq!(
+                decode_result(&make_result(&compact), &compact).unwrap(),
+                decode_result(&make_result(&legacy), &legacy).unwrap()
+            );
+            validate(&job, &compact).unwrap();
+            let forwarded = forward_model_input(&job, &compact, |_| Ok(())).unwrap();
+            assert_eq!(forwarded.payload, compact.model_payload);
+            assert_eq!(forwarded.output_schema, compact.output_schema);
+            assert!(
+                compact.model_payload["instruction"]
+                    .as_str()
+                    .unwrap()
+                    .contains("When raw delivery arrays are omitted")
+            );
+        }
+    }
+
+    #[test]
+    fn compact_version_refuses_incomplete_or_changed_presentations_and_retains_absent_ones() {
+        for malformed in 0..5 {
+            let mut job = author_job();
+            let mut context = complete_delivery();
+            match malformed {
+                0 => {
+                    context["presentation"]["pages"][0]["items"][0]["record"]["text"] =
+                        json!("different source")
+                }
+                1 => context["presentation"]["sourceParts"] = json!([]),
+                2 => {
+                    context["presentation"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("pages");
+                }
+                3 => context["presentation"] = Value::Null,
+                _ => context["presentation"]["callablesMeaning"] = json!("unverified metadata"),
+            }
+            job["payload"]["packet"]["contextDelivery"] = context;
+            let unchanged = job.clone();
+            assert!(prepare_with_version(&job, &scope("author"), None, COMPACT_VERSION).is_err());
+            assert_eq!(job, unchanged);
+            // Unsupported compaction never affects legacy decoding or replay.
+            let legacy = prepare(&job, &scope("author"), None).unwrap();
+            validate(&job, &legacy).unwrap();
+        }
+        let mut job = author_job();
+        let mut context = complete_delivery();
+        context.as_object_mut().unwrap().remove("presentation");
+        job["payload"]["packet"]["contextDelivery"] = context;
+        let compact = prepare_with_version(&job, &scope("author"), None, COMPACT_VERSION).unwrap();
+        assert!(compact.model_payload["packet"]["contextDelivery"]["pages"].is_array());
+        assert!(compact.model_payload["packet"]["contextDelivery"]["sourceParts"].is_array());
+        validate(&job, &compact).unwrap();
+    }
+
+    #[test]
+    fn compact_version_accepts_native_retained_duplicate_locations_without_rewriting_them() {
+        let mut job = author_job();
+        let mut context = complete_delivery();
+        let coverage = json!({"kind":"COVERAGE","reference":"d192","recordDigest":digest('a'),"record":{"coverage":"PARTIAL","boundaries":["UNKNOWN_RUNTIME"]}});
+        let pages = context["pages"].as_array_mut().unwrap();
+        pages[0]["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(coverage.clone());
+        pages.push(json!({"receiptDigest":digest('b'),"items":[coverage]}));
+        context["presentation"] = super::super::job_context::present(
+            context["pages"].as_array().unwrap(),
+            context["sourceParts"].as_array().unwrap(),
+        );
+        assert_ne!(context["pages"], context["presentation"]["pages"]);
+        assert_eq!(
+            context["sourceParts"],
+            context["presentation"]["sourceParts"]
+        );
+        let retained_at = context["presentation"]["pages"][1]["displayProjection"]["omittedDuplicates"][0]["retainedAt"].clone();
+        assert_eq!(
+            retained_at,
+            json!({"pageIndex":0,"itemIndex":1,"sourceItemIndex":1})
+        );
+        job["payload"]["packet"]["contextDelivery"] = context.clone();
+        let compact = prepare_with_version(&job, &scope("author"), None, COMPACT_VERSION).unwrap();
+        let mut expected = context.clone();
+        delivery(&mut expected, &mut compact.map.clone()).unwrap();
+        expected.as_object_mut().unwrap().remove("pages");
+        expected.as_object_mut().unwrap().remove("sourceParts");
+        assert_eq!(compact.model_payload["packet"]["contextDelivery"], expected);
+        assert_eq!(
+            compact.model_payload["packet"]["contextDelivery"]["presentation"]["pages"][1]["displayProjection"]
+                ["omittedDuplicates"][0]["retainedAt"],
+            retained_at
+        );
+        validate(&job, &compact).unwrap();
+        // A forged duplicate pointer is rejected even though the retained
+        // source text and sourceParts remain otherwise unchanged.
+        job["payload"]["packet"]["contextDelivery"]["presentation"]["pages"][1]["displayProjection"]
+            ["omittedDuplicates"][0]["retainedAt"]["itemIndex"] = json!(0);
+        assert!(prepare_with_version(&job, &scope("author"), None, COMPACT_VERSION).is_err());
+    }
+
+    #[test]
+    fn representation_versions_cannot_share_maps_or_result_aliases() {
+        let job = author_job();
+        let scoped = scope("author");
+        let legacy = prepare(&job, &scoped, None).unwrap();
+        let compact = prepare_with_version(&job, &scoped, None, COMPACT_VERSION).unwrap();
+        assert_ne!(legacy.map.scope_tag, compact.map.scope_tag);
+        assert!(prepare_with_version(&job, &scoped, Some(&legacy.map), COMPACT_VERSION).is_err());
+        assert!(prepare_with_version(&job, &scoped, Some(&compact.map), VERSION).is_err());
+        for (wire, prepared) in [(&legacy, &compact), (&compact, &legacy)] {
+            assert!(decode_result(&json!({"action":"answer","answer":{"packetDigest":wire.model_payload["packet"]["packetDigest"]}}), prepared).is_err());
+        }
+        let mut mismatched = compact.clone();
+        mismatched.version = VERSION.into();
+        assert!(validate(&job, &mismatched).is_err());
+        assert!(decode_result(&json!({"action":"expand","selections":[]}), &mismatched).is_err());
+        assert!(supported_version(VERSION));
+        assert!(supported_version(COMPACT_VERSION));
+        assert!(!supported_version("codeclew-model-ids/2.0"));
+        assert!(prepare_with_version(&job, &scoped, None, "codeclew-model-ids/2.0").is_err());
+        let mut expanded = job.clone();
+        expanded["payload"]["packet"]["contextDelivery"] = complete_delivery();
+        let next =
+            prepare_with_version(&expanded, &scoped, Some(&compact.map), COMPACT_VERSION).unwrap();
+        assert_eq!(
+            &next.map.entries[..compact.map.entries.len()],
+            compact.map.entries.as_slice()
+        );
     }
 }

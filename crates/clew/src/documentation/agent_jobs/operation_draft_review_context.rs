@@ -1621,8 +1621,14 @@ mod tests {
 r = JSON.parse(STDIN.read)
 p = r.fetch("payload")
 mode = ARGV.fetch(0)
+review_context = p.fetch("reviewContext")
+review_pages = if defined?(FIXTURE_VERSION) && FIXTURE_VERSION == "codeclew-model-ids/1.1"
+  review_context.fetch("presentation").fetch("pages")
+else
+  review_context.fetch("pages")
+end
 exit 7 if mode == "uncertain"
-exit 7 if mode == "uncertain-after-expand" && !p.fetch("reviewContext").fetch("pages").empty?
+exit 7 if mode == "uncertain-after-expand" && !review_pages.empty?
 refs = (0...19).map { |i| "expanded-ref-%02d" % i }
 action = if mode == "empty"
   {"action" => "expand", "selections" => []}
@@ -1632,9 +1638,9 @@ elsif mode == "foreign"
   {"action" => "expand", "selections" => [{"references" => ["FOREIGN"]}]}
 elsif mode == "untracked"
   {"action" => "expand", "selections" => [{"references" => refs, "untrackedReads" => true}]}
-elsif mode == "feedback" && p.fetch("reviewContext").fetch("pages").empty? && p.fetch("lookupFeedback").empty?
+elsif mode == "feedback" && review_pages.empty? && p.fetch("lookupFeedback").empty?
   {"action" => "expand", "selections" => [{"symbols" => ["missing-review-only-symbol"]}]}
-elsif p.fetch("reviewContext").fetch("pages").empty?
+elsif review_pages.empty?
   if mode == "feedback"
     abort "missing bounded lookup feedback" unless p.fetch("lookupFeedback").first.fetch("status") == "NOT_FOUND"
   end

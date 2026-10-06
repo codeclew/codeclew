@@ -79,7 +79,7 @@ const SERIALIZER: &str = r#"
 require "digest"
 require "socket"
 carrier = JSON.parse(STDIN.read)
-abort "carrier version" unless carrier.fetch("schema") == "codeclew-model-ids/1.0"
+abort "carrier version" unless ["codeclew-model-ids/1.0", "codeclew-model-ids/1.1"].include?(FIXTURE_VERSION) && carrier.fetch("schema") == FIXTURE_VERSION
 canonical_job = carrier.fetch("canonicalJob")
 def sorted(v)
   case v
@@ -97,6 +97,7 @@ canonical_packet = canonical_job.fetch("payload").fetch("packet")
 unsigned_packet = canonical_packet.reject { |k,_| k == "packetDigest" }
 abort "packet content binding differs" unless content_digest(unsigned_packet) == canonical_packet.fetch("packetDigest")
 prepared = carrier.fetch("preparedModel")
+abort "prepared version" unless prepared.fetch("version") == FIXTURE_VERSION && prepared.fetch("map").fetch("version") == FIXTURE_VERSION
 abort "canonical carrier binding" unless prepared.fetch("canonicalJobDigest") == content_digest(canonical_job)
 model_payload = prepared.fetch("modelPayload")
 output_schema = prepared.fetch("outputSchema")
@@ -135,6 +136,16 @@ end
 "#;
 
 fn opt_in(path: &Path, role: &str, counter: &DispatchCounter, mode: &str) -> Value {
+    opt_in_with_version(path, role, counter, mode, model_ids::VERSION)
+}
+
+fn opt_in_with_version(
+    path: &Path,
+    role: &str,
+    counter: &DispatchCounter,
+    mode: &str,
+    version: &str,
+) -> Value {
     let mut config: Value = store::read(path, store::MAX_RECORD).unwrap();
     let original = config[role]["command"][4].as_str().unwrap();
     let model = original
@@ -143,10 +154,10 @@ fn opt_in(path: &Path, role: &str, counter: &DispatchCounter, mode: &str) -> Val
         .replace("puts JSON.generate(", "puts alias_fixture_reply(");
     assert!(!model.contains("JSON.parse(STDIN.read)"));
     config[role]["command"][4] = json!(format!(
-        "FIXTURE_PORT = {}\nFIXTURE_MODE = {:?}\n{}\n{}",
-        counter.port, mode, SERIALIZER, model
+        "FIXTURE_PORT = {}\nFIXTURE_MODE = {:?}\nFIXTURE_VERSION = {:?}\n{}\n{}",
+        counter.port, mode, version, SERIALIZER, model
     ));
-    config[role]["modelRepresentation"] = json!(model_ids::VERSION);
+    config[role]["modelRepresentation"] = json!(version);
     config[role]["network"] = json!(true);
     if role == "reviewer" {
         // This synthetic grouped delivery contains a large source fragment and
@@ -181,12 +192,26 @@ fn prepared(repo: &Repository, attempt: &Value) -> (Value, model_ids::Prepared) 
     (canonical, prepared)
 }
 
-// Everything outside the explicit identity allowlist stays byte-for-byte as a
-// JSON value, including arbitrary source strings containing digest-like text.
+fn checked_native_presentation(delivery: &Value) -> Value {
+    let presentation = super::job_context::present(
+        delivery["pages"].as_array().unwrap(),
+        delivery["sourceParts"].as_array().unwrap(),
+    );
+    assert_eq!(presentation, delivery["presentation"]);
+    presentation
+}
+
+// Protected source and query leaves stay exact in raw arrays or in the checked
+// native presentation when compact delivery omits duplicate raw siblings.
 fn protected(original: &Value, projected: &Value) {
     match original {
         Value::Object(object) => {
             for (key, value) in object {
+                if matches!(key.as_str(), "pages" | "sourceParts") && projected.get(key).is_none() {
+                    let presentation = checked_native_presentation(original);
+                    protected(&presentation[key], &projected["presentation"][key]);
+                    continue;
+                }
                 if matches!(
                     key.as_str(),
                     "text"
@@ -217,11 +242,82 @@ fn protected(original: &Value, projected: &Value) {
     }
 }
 
+// Test-only inverse over exact alias leaves permits whole-delivery equality:
+// offsets, source receipts, evidence labels and continuation cursors are checked
+// alongside the separate protected-text assertions. This never rewrites stores.
+fn canonical_alias_leaves(value: &Value, map: &model_ids::AliasMap) -> Value {
+    match value {
+        Value::String(text) => map
+            .entries
+            .iter()
+            .find(|entry| entry.alias == *text)
+            .map_or_else(|| value.clone(), |entry| json!(entry.canonical)),
+        Value::Array(values) => json!(
+            values
+                .iter()
+                .map(|value| canonical_alias_leaves(value, map))
+                .collect::<Vec<_>>()
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), canonical_alias_leaves(value, map)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn assert_model_delivery(job: &Value, prepared: &model_ids::Prepared) {
+    for (canonical, model) in [
+        (
+            &job["payload"]["packet"]["contextDelivery"],
+            &prepared.model_payload["packet"]["contextDelivery"],
+        ),
+        (
+            &job["payload"]["reviewContext"],
+            &prepared.model_payload["reviewContext"],
+        ),
+    ] {
+        if !canonical.is_object() {
+            continue;
+        }
+        let mut expected = canonical.clone();
+        if prepared.version == model_ids::COMPACT_VERSION {
+            checked_native_presentation(canonical);
+            for key in ["pages", "sourceParts"] {
+                assert!(model.get(key).is_none(), "compact raw {key} must be absent");
+                expected.as_object_mut().unwrap().remove(key);
+            }
+        } else {
+            assert!(model["pages"].is_array() && model["sourceParts"].is_array());
+        }
+        assert_eq!(canonical_alias_leaves(model, &prepared.map), expected);
+    }
+    // The compact scope excludes the archived author contract.
+    if job["payload"]["savedAuthorContract"]["packet"]["contextDelivery"].is_object() {
+        assert!(
+            prepared.model_payload["savedAuthorContract"]["packet"]["contextDelivery"]["pages"]
+                .is_array()
+        );
+        assert!(prepared.model_payload["savedAuthorContract"]["packet"]["contextDelivery"]["sourceParts"].is_array());
+    }
+}
+
 #[test]
 fn model_ids_host_grouped_expansion_and_independent_review_save_canonical_results() {
+    grouped_expansion_and_review(model_ids::VERSION);
+}
+
+#[test]
+fn model_ids_compact_host_grouped_expansion_and_independent_review_save_canonical_results() {
+    grouped_expansion_and_review(model_ids::COMPACT_VERSION);
+}
+
+fn grouped_expansion_and_review(version: &str) {
     let (_temp, repo, work, author_path, _) = agent_jobs::model_ids_grouped_author_fixture_setup();
     let counter = DispatchCounter::new();
-    opt_in(&author_path, "author", &counter, "valid");
+    opt_in_with_version(&author_path, "author", &counter, "valid", version);
     let authored =
         agent_jobs::run_operation_draft(&repo, &work.id, Some(&author_path), false, None, None)
             .unwrap();
@@ -231,6 +327,10 @@ fn model_ids_host_grouped_expansion_and_independent_review_save_canonical_result
     assert_eq!(counter.count(), 2);
     let (first_job, first) = prepared(&repo, &attempts[0]);
     let (second_job, second) = prepared(&repo, &attempts[1]);
+    assert_eq!(first.version, version);
+    assert_eq!(second.version, version);
+    assert_model_delivery(&first_job, &first);
+    assert_model_delivery(&second_job, &second);
     assert!(second.map.entries.len() > first.map.entries.len());
     assert_eq!(
         &second.map.entries[..first.map.entries.len()],
@@ -270,7 +370,7 @@ fn model_ids_host_grouped_expansion_and_independent_review_save_canonical_result
 
     let reviewer_path = author_path.with_file_name("model-id-review.json");
     agent_jobs::write_model_ids_grouped_review_fixture_config(&reviewer_path, &author_path);
-    opt_in(&reviewer_path, "reviewer", &counter, "valid");
+    opt_in_with_version(&reviewer_path, "reviewer", &counter, "valid", version);
     let reviewed = agent_jobs::review_operation_draft(
         &repo,
         &work.id,
@@ -285,6 +385,10 @@ fn model_ids_host_grouped_expansion_and_independent_review_save_canonical_result
     assert_eq!(counter.count(), 4);
     let (review_initial_job, initial_review) = prepared(&repo, &review_attempts[0]);
     let (review_final_job, final_review) = prepared(&repo, &review_attempts[1]);
+    assert_eq!(initial_review.version, version);
+    assert_eq!(final_review.version, version);
+    assert_model_delivery(&review_initial_job, &initial_review);
+    assert_model_delivery(&review_final_job, &final_review);
     assert!(
         review_initial_job["payload"]["reviewContext"]["pages"]
             .as_array()
@@ -335,14 +439,102 @@ fn model_ids_host_grouped_expansion_and_independent_review_save_canonical_result
     let final_review_invocation = review_attempts[1]["invocation"].as_str().unwrap();
     let review_saved = read(&repo, "job-results", final_review_invocation);
     assert_eq!(review_saved["result"]["review"], approved.review);
+    let resumed = agent_jobs::review_operation_draft(
+        &repo,
+        &work.id,
+        authored["run"].as_str().unwrap(),
+        &reviewer_path,
+        None,
+    )
+    .unwrap();
+    assert_eq!(resumed["run"], reviewed["run"]);
+    assert_eq!(resumed["status"], "DRAFT_REVIEW_APPROVED");
+    assert_eq!(counter.count(), 4);
+    // Current gated chains establish recovery compatibility; they are not
+    // historical e729cd2 goldens. Exercise the production retained-record checks.
+    for attempt in attempts.iter().chain(review_attempts.iter()) {
+        let invocation = attempt["invocation"].as_str().unwrap();
+        let validated =
+            agent_jobs::validate_frozen_model_records_for_test(&repo, invocation).unwrap();
+        assert_eq!(validated["version"], version);
+        assert_eq!(
+            validated["resultDigest"],
+            read(&repo, "job-results", invocation)["resultDigest"]
+        );
+    }
+
+    // Optional local qualification artifacts preserve these actual dispatched
+    // grouped calls; ordinary tests keep their existing temporary-only output.
+    if let Some(directory) = std::env::var_os("CODECLEW_TEST_MODEL_INPUT_ARTIFACTS") {
+        let directory = std::path::PathBuf::from(directory);
+        fs::create_dir_all(&directory).unwrap();
+        for (name, job, prepared, attempt) in [
+            ("author-initial", &first_job, &first, &attempts[0]),
+            ("author-expanded", &second_job, &second, &attempts[1]),
+            (
+                "reviewer-initial",
+                &review_initial_job,
+                &initial_review,
+                &review_attempts[0],
+            ),
+            (
+                "reviewer-expanded",
+                &review_final_job,
+                &final_review,
+                &review_attempts[1],
+            ),
+        ] {
+            let input = model_ids::forward_model_input(job, prepared, |canonical_job| {
+                let mut packet = canonical_job["payload"]["packet"].clone();
+                let expected = packet
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("packetDigest")
+                    .unwrap();
+                assert_eq!(expected, crate::canonical::hash(&packet).unwrap());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(input.payload, prepared.model_payload);
+            assert_eq!(input.output_schema, prepared.output_schema);
+            let artifact = json!({
+                "carrier": {"schema": version, "canonicalJob": job, "preparedModel": prepared},
+                "modelInput": {"payload": input.payload, "outputSchema": input.output_schema},
+                "dispatchObserved": true,
+                "protectedFieldsExact": true,
+                "canonicalSavedResultsValidated": true,
+                "canonicalInputRecord": read(&repo, "job-inputs", attempt["invocation"].as_str().unwrap()),
+                "modelInputRecord": read(&repo, "job-model-inputs", attempt["invocation"].as_str().unwrap()),
+                "rawResultRecord": read(&repo, "job-model-wire-results", attempt["invocation"].as_str().unwrap()),
+                "canonicalResultRecord": read(&repo, "job-results", attempt["invocation"].as_str().unwrap()),
+                "roleMapHead": store::read::<Value>(&repo.path(&format!(".codeclew/model-id-maps/{}/{}/head.json", prepared.scope.run, prepared.scope.role)).unwrap(), store::MAX_RECORD).unwrap()
+            });
+            let name = if version == model_ids::COMPACT_VERSION {
+                format!("compact-{name}")
+            } else {
+                name.to_owned()
+            };
+            fs::write(
+                directory.join(format!("{name}.json")),
+                serde_json::to_vec(&artifact).unwrap(),
+            )
+            .unwrap();
+        }
+    }
 }
 
 #[test]
 fn model_ids_host_invalid_delivered_alias_is_retained_and_resume_does_not_dispatch() {
+    for version in [model_ids::VERSION, model_ids::COMPACT_VERSION] {
+        invalid_delivered_alias(version);
+    }
+}
+
+fn invalid_delivered_alias(version: &str) {
     for mode in ["unknown", "wrong-scope"] {
         let (_temp, repo, work, path, _) = agent_jobs::model_ids_grouped_author_fixture_setup();
         let counter = DispatchCounter::new();
-        let config = opt_in(&path, "author", &counter, mode);
+        let config = opt_in_with_version(&path, "author", &counter, mode, version);
         let outcome =
             agent_jobs::run_operation_draft(&repo, &work.id, Some(&path), false, None, None);
         assert!(
@@ -397,9 +589,15 @@ fn model_ids_host_invalid_delivered_alias_is_retained_and_resume_does_not_dispat
 
 #[test]
 fn model_ids_host_recovers_prepared_head_and_raw_result_crash_windows() {
+    for version in [model_ids::VERSION, model_ids::COMPACT_VERSION] {
+        recover_prepared_head_and_raw_result(version);
+    }
+}
+
+fn recover_prepared_head_and_raw_result(version: &str) {
     let (_temp, repo, work, path, _) = agent_jobs::model_ids_grouped_author_fixture_setup();
     let counter = DispatchCounter::new();
-    opt_in(&path, "author", &counter, "valid");
+    opt_in_with_version(&path, "author", &counter, "valid", version);
     agent_jobs::interrupt_model_head_publication_once_for_test();
     let interrupted =
         agent_jobs::run_operation_draft(&repo, &work.id, Some(&path), false, None, None)

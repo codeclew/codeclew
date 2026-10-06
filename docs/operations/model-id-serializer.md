@@ -2,7 +2,9 @@
 
 An operation author using `codeclew-operation-draft-authoring/1.6`, or its
 independent reviewer, can opt into `"modelRepresentation":
-"codeclew-model-ids/1.0"` in its role configuration. Omit this option for an
+"codeclew-model-ids/1.1"` in its role configuration. This compact source candidate
+targets v0.13.16; installed v0.13.15 has neither model-ID mode. Version 1.0
+remains supported with its original frozen representation. Omit this option for an
 existing driver that expects the canonical job on stdin. The mode participates
 in the admitted configuration identity.
 
@@ -11,7 +13,7 @@ before dispatch. An opted-in driver receives this versioned carrier:
 
 ```json
 {
-  "schema": "codeclew-model-ids/1.0",
+  "schema": "codeclew-model-ids/1.1",
   "canonicalJob": { "...": "unchanged canonical job" },
   "preparedModel": { "...": "frozen payload, schema, scope, map and bindings" }
 }
@@ -29,6 +31,23 @@ The host map, canonical job, carrier and scope metadata are driver metadata;
 they must not be added to the model prompt or strict output schema. Keep the
 prepared instruction and strict schema. Never recalculate a canonical packet
 digest from aliased content.
+
+Version 1.1 keeps complete evidence in each native delivery's `presentation`.
+Before alias projection, the host checks that presentation against the existing
+native builder using all canonical pages and source parts. It then excludes only
+the duplicate raw `pages` and `sourceParts` siblings in `packet.contextDelivery`
+and `reviewContext` from model input. Read the presentation's complete pages,
+source parts and retained-reference links. Receipts, citations, delivery bindings
+and canonical raw arrays remain retained. A missing presentation keeps raw data;
+a mismatched or incomplete presentation fails instead of losing evidence.
+
+Version 1.0 retains its original complete raw-plus-presentation model payload,
+map identity and carrier bytes. Frozen records validate and recover by their
+saved version; changing a role's selected mode cannot migrate an existing run.
+For pure preparation, `prepare` retains version 1.0 behavior; use
+`prepare_with_version` with the explicit selected version for version 1.1.
+`forward_model_input` validates the saved version. No default silently rewrites
+old carriers.
 
 Input admission checks the complete serialized carrier, including the canonical
 job, prepared payload and schema, and host-only map, plus configured input
