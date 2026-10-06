@@ -215,7 +215,7 @@ document alone is not completion.
 | Content-keyed syntax reuse | Pending | Proceed after a bounded baseline; compiler reuse conditional. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
 | Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
-| Incremental releases | Pending | Next version follows the current release registry. |
+| Incremental releases | 0.13.15 qualification in progress | Full local CI passed on `b3eb735`, including RELEASE-mode usability smoke; no functional fixes. Hosted CI for the exact release commit, all platform assets and official installed verification remain publication gates. |
 | Documentation and cleanup | Pending | Final inventory and published removal diff required. |
 
 ### First scoped-read candidate (2026-10-06)
@@ -269,3 +269,20 @@ promising follow-up rather than rejecting them on byte savings or old-driver
 refusal. The latter only rejects changing the canonical packet before validation.
 No alias behavior is included in `30c837d` or installed `0.13.14`. No paid model
 calls, repeated scoped-read measurements or full CI ran for this assessment.
+
+### Release qualification and housekeeping (2026-10-06)
+
+The next unused version is `0.13.15`. Full `scripts/ci-verify.sh` passed on
+`b3eb735`, including the actual C# fixture, required Java/Kotlin checks and
+RELEASE-mode usability smoke. No functional correction was needed. The final
+metadata-only adjustment links the site installer to the latest published
+release, avoiding advertising an unpublished version during platform builds.
+Hosted CI still qualifies the exact tagged commit before publication; assets
+and official installed retained-context verification are pending.
+
+During this gate, eight obsolete pre-run clew library/metadata/test/CLI outputs
+were removed, reclaiming about 1.39 GiB while preserving the active target and
+current outputs. The research chat separately verified and removed an ignored,
+inactive `0.13.1` checkout's debug output, reclaiming 27,800,948,736 bytes
+(about 25.9 GiB). Current CI, source, private CAS, evidence and installed releases
+were preserved. This is build housekeeping, not the final tracked-content cleanup.
