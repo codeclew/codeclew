@@ -41,6 +41,48 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
             .and_then(|o| o.normalized["scope"].as_str())
             .unwrap_or("unavailable scope");
         let context = format!("{} · {scope}", page.selection.service);
+        if page.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+            let mut search_text = vec![
+                page.selection.service.clone(),
+                scope.into(),
+                page.endpoint.symbol.clone(),
+                page.worker.symbol.clone(),
+            ];
+            if let Some(wiring) = &page.wiring {
+                search_text.push(wiring.symbol.clone());
+            }
+            rows.insert(
+                format!("declarations:{}", page.id),
+                Row {
+                    id: format!("declarations-{}", page.id),
+                    title: page.title.clone(),
+                    display_title: None,
+                    kind: "Selected declarations".into(),
+                    href: format!("{}-overview.html", page.id),
+                    context: context.clone(),
+                    summary: "Retained compiler-bound declarations and source; behavior and relationships are not inferred.".into(),
+                    search_text: search_text.clone(),
+                    related_links: vec![],
+                },
+            );
+            if let Some(question) = &page.selection.question {
+                rows.insert(
+                    format!("question:{}", page.id),
+                    Row {
+                        id: format!("question-{}", page.id),
+                        title: question.clone(),
+                        display_title: None,
+                        kind: "Selected question".into(),
+                        href: format!("{}-diagnostic.html", page.id),
+                        context,
+                        summary: "Question text supplied with the selected declarations; no source-condition analysis was projected.".into(),
+                        search_text,
+                        related_links: vec![],
+                    },
+                );
+            }
+            continue;
+        }
         rows.insert(
             format!("process:{}", page.id),
             Row {
@@ -147,7 +189,7 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
     Ok(rows)
 }
 
-pub(super) fn enhancement(rows: &[Row]) -> Result<String, ClewError> {
+pub(super) fn enhancement(rows: &[Row], has_declaration_only: bool) -> Result<String, ClewError> {
     let payload = serde_json::to_string(rows)
         .map_err(crate::documentation::io_error)?
         .replace('<', "\\u003c");
@@ -159,8 +201,23 @@ pub(super) fn enhancement(rows: &[Row]) -> Result<String, ClewError> {
         .into_iter()
         .map(|kind| format!("<option>{}</option>", escape(kind)))
         .collect::<String>();
+    let (heading, summary, search_label, noscript) = if has_declaration_only {
+        (
+            "Find selected declarations and processes",
+            "This snapshot and bundle only. Declaration-only pages retain source but do not project behavior or relationships. Reverse links identify documentation context, not runtime impact.",
+            "Search exact symbol, declaration, process or question",
+            "Search requires JavaScript. Use the selected declaration and process links below.",
+        )
+    } else {
+        (
+            "Find selected processes and examined source",
+            "This snapshot and bundle only. Diagnostic questions are supplied text, not approved answers. Reverse links identify examined documentation context, not runtime impact.",
+            "Search exact symbol, process or question",
+            "Search requires JavaScript. Use the process list and shared source links below.",
+        )
+    };
     Ok(format!(
-        r#"<!-- native-catalog-start --><section aria-labelledby="catalog-title"><h2 id="catalog-title">Find selected processes and examined source</h2><p>This snapshot and bundle only. Diagnostic questions are supplied text, not approved answers. Reverse links identify examined documentation context, not runtime impact.</p><div id="catalog-controls" class="catalog-controls" hidden><label>Search exact symbol, process or question <input id="catalog-query" type="search" aria-label="Find native documentation metadata" /></label><label>Result type <select id="catalog-kind" aria-label="Native result type"><option value="">All types</option>{options}</select></label></div><p id="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results"></ul><div id="catalog-pager" class="catalog-pager" hidden><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Search requires JavaScript. Use the process list and shared source links below.</p></noscript><script id="catalog-data" type="application/json">{payload}</script></section><!-- native-catalog-end -->"#
+        r#"<!-- native-catalog-start --><section aria-labelledby="catalog-title"><h2 id="catalog-title">{heading}</h2><p>{summary}</p><div id="catalog-controls" class="catalog-controls" hidden><label>{search_label} <input id="catalog-query" type="search" aria-label="Find native documentation metadata" /></label><label>Result type <select id="catalog-kind" aria-label="Native result type"><option value="">All types</option>{options}</select></label></div><p id="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results"></ul><div id="catalog-pager" class="catalog-pager" hidden><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>{noscript}</p></noscript><script id="catalog-data" type="application/json">{payload}</script></section><!-- native-catalog-end -->"#
     ))
 }
 
@@ -185,6 +242,7 @@ mod tests {
         PageContent {
             id: id.into(),
             title: id.into(),
+            projection_kind: None,
             selection: Selection {
                 id: id.into(),
                 service: "service".into(),
@@ -283,7 +341,7 @@ mod tests {
                 .insert(observation.id.clone(), observation);
         }
         assert_eq!(rows(&p).unwrap(), catalogue);
-        let html = enhancement(&catalogue).unwrap();
+        let html = enhancement(&catalogue, false).unwrap();
         assert!(!html.contains("<script>{x}"));
         assert!(html.contains("\\u003cscript>"));
         assert!(html.contains("not approved answers") && html.contains("<noscript>"));
@@ -365,5 +423,36 @@ mod tests {
                 .iter()
                 .any(|row| row.kind == "Endpoint" && row.title == selected.endpoint.symbol)
         );
+    }
+
+    #[test]
+    fn declaration_only_catalogue_uses_neutral_declaration_and_question_labels() {
+        let mut selected = page("declarations", ":/main");
+        selected.projection_kind = Some(ProjectionKind::DeclarationOnly);
+        selected.title = "Selected functions: render".into();
+        selected.selection.question = Some("What source is retained?".into());
+        let projection = BundleProjection {
+            schema: DECLARATION_SCHEMA.into(),
+            input_digest: "input".into(),
+            context_digest: "context".into(),
+            selection_digest: "selection".into(),
+            pages: vec![selected],
+            source_call_graph: None,
+        };
+        let rows = rows(&projection).unwrap();
+        assert!(rows.iter().any(|row| row.kind == "Selected declarations"));
+        assert!(rows.iter().any(|row| row.kind == "Selected question"));
+        assert!(
+            rows.iter()
+                .all(|row| !matches!(row.kind.as_str(), "Process" | "Endpoint"))
+        );
+        assert!(
+            rows.iter()
+                .all(|row| !row.summary.contains("source condition"))
+        );
+        let html = enhancement(&rows, true).unwrap();
+        assert!(html.contains("Find selected declarations and processes"));
+        assert!(html.contains("do not project behavior or relationships"));
+        assert!(!html.contains("Endpoint"));
     }
 }

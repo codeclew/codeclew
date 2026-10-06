@@ -146,11 +146,15 @@ fn callable_label(symbol: &str) -> String {
         .replace('#', ".")
 }
 fn process_label(p: &PageContent) -> String {
-    format!(
-        "{} → {}",
-        callable_label(&p.endpoint.symbol),
-        callable_label(&p.worker.symbol)
-    )
+    if p.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+        p.title.clone()
+    } else {
+        format!(
+            "{} → {}",
+            callable_label(&p.endpoint.symbol),
+            callable_label(&p.worker.symbol)
+        )
+    }
 }
 fn citation_group(p: &PageContent, ids: &[String], ext: &str) -> String {
     if ids.is_empty() {
@@ -283,6 +287,170 @@ const VIEWS: &[(&str, &str)] = &[
     ("fields-state", "Fields and state"),
     ("diagnostic", "Diagnostic matrix"),
 ];
+const DECLARATION_VIEWS: &[(&str, &str)] = &[
+    ("overview", "Selected declarations"),
+    ("endpoint", "First selected declaration"),
+    ("worker", "Second selected declaration"),
+    ("fields-state", "Declaration sources"),
+    ("diagnostic", "Question and limits"),
+];
+
+fn views_for(p: &PageContent) -> &'static [(&'static str, &'static str)] {
+    if p.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+        DECLARATION_VIEWS
+    } else {
+        VIEWS
+    }
+}
+
+fn selected_declaration(c: &CallableProjection, label: &str, ext: &str) -> String {
+    let mut out = format!("<section><h2>{}</h2>\n", escape(label));
+    out += &paragraph(&format!(
+        "Declaration: {}. Symbol: {}. Authority: {}.",
+        c.declaration_id, c.symbol, c.authority
+    ));
+    if let Some(id) = &c.citation_id {
+        out += &format!("<p>Retained source: {}</p>\n", cite(id, ext));
+    }
+    if !c.gaps.is_empty() {
+        out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext));
+    }
+    out += "</section>\n";
+    out
+}
+
+fn declaration_only_page(
+    p: &PageContent,
+    view: &str,
+    title: &str,
+    snapshot: &str,
+    ext: &str,
+) -> String {
+    let same_declaration = p.endpoint.declaration_id == p.worker.declaration_id;
+    let mut out = format!(
+        "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
+        escape(&p.title),
+        escape(title),
+        link(&format!("index.{ext}"), "All selected declarations")
+    );
+    for (slug, label) in DECLARATION_VIEWS {
+        out += &format!(" · {}", link(&format!("{}-{slug}.{ext}", p.id), label));
+    }
+    out += &format!(
+        " · {}</nav>\n",
+        link(&format!("sources.{ext}"), "Source appendix")
+    );
+    match view {
+        "overview" => {
+            if let Some(question) = &p.selection.question {
+                out += &paragraph(&format!("Question: {question}"));
+            }
+            out += &paragraph(
+                "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations.",
+            );
+            if same_declaration {
+                out += &selected_declaration(&p.endpoint, "Selected declaration", ext);
+            } else {
+                out += &selected_declaration(&p.endpoint, "First selected declaration", ext);
+                out += &selected_declaration(&p.worker, "Second selected declaration", ext);
+            }
+            if let Some(wiring) = &p.wiring {
+                out += &selected_declaration(wiring, "Additional selected declaration", ext);
+            }
+            out += &paragraph(&p.handoff.limitation);
+        }
+        "endpoint" => {
+            out += &selected_declaration(
+                &p.endpoint,
+                if same_declaration {
+                    "Selected declaration"
+                } else {
+                    "First selected declaration"
+                },
+                ext,
+            );
+        }
+        "worker" => {
+            out += &selected_declaration(
+                &p.worker,
+                if same_declaration {
+                    "Selected declaration"
+                } else {
+                    "Second selected declaration"
+                },
+                ext,
+            );
+        }
+        "fields-state" => {
+            out += &paragraph(
+                "Field and data-state analysis is unavailable for declaration-only pages.",
+            );
+            out += &selected_declaration(&p.endpoint, "First retained declaration", ext);
+            if !same_declaration {
+                out += &selected_declaration(&p.worker, "Second retained declaration", ext);
+            }
+            if let Some(wiring) = &p.wiring {
+                out += &selected_declaration(wiring, "Additional retained declaration", ext);
+            }
+        }
+        "diagnostic" => {
+            if let Some(question) = &p.selection.question {
+                out += &paragraph(&format!("Question: {question}"));
+            }
+            out += &paragraph(
+                "Source-condition analysis is unavailable for declaration-only pages. The selected declarations do not establish behavior or a relationship between them.",
+            );
+        }
+        _ => unreachable!(),
+    }
+    if !p.human_instructions.is_empty() {
+        if view == "overview" {
+            out += &operational_instructions(&p.human_instructions);
+        } else {
+            out += &format!(
+                "<p>{}</p>\n",
+                link(
+                    &format!("{}-overview.{ext}#operational-instructions", p.id),
+                    "Operational instructions and captured note identities"
+                )
+            );
+        }
+    }
+    if !p.authored_paragraphs.is_empty() {
+        if view == "overview" {
+            out += &authored_paragraphs(&p.authored_paragraphs, ext);
+        } else {
+            out += &format!(
+                "<p>{}</p>\n",
+                link(
+                    &format!("{}-overview.{ext}#authored-paragraphs", p.id),
+                    "Maintained user documentation and original source context"
+                )
+            );
+        }
+    }
+    out += &format!(
+        "<details><summary>Sources and version</summary>{}</details>\n",
+        paragraph(&format!(
+            "Service: {}. Revision: {}. Snapshot: {}. Service digest: {}. First selected symbol: {}. Second selected symbol: {}.",
+            p.selection.service,
+            p.service_revision,
+            snapshot,
+            p.service_digest,
+            p.endpoint.symbol,
+            p.worker.symbol
+        ))
+    );
+    out += &format!(
+        "<details><summary>Retained limitations</summary><ul>{}</ul></details><p>{}</p></main>\n",
+        gaps(&p.limitations, ext),
+        link(
+            "projection.json",
+            "Complete typed projection and retained evidence"
+        )
+    );
+    out
+}
 fn authored_source_anchor(paragraph: &AuthoredParagraph, id: &str) -> String {
     // Presentation anchors name the existing frozen tuple, not a new SOURCE ID.
     anchor(
@@ -560,13 +728,16 @@ fn page(
     ext: &str,
     graph: Option<&SourceCallGraph>,
 ) -> String {
+    if p.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+        return declaration_only_page(p, view, title, snapshot, ext);
+    }
     let mut out = format!(
         "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
         escape(&process_label(p)),
         escape(title),
         link(&format!("index.{ext}"), "All processes")
     );
-    for (slug, label) in VIEWS {
+    for (slug, label) in views_for(p) {
         out += &format!(" · {}", link(&format!("{}-{slug}.{ext}", p.id), label));
     }
     out += &format!(
@@ -884,12 +1055,61 @@ fn html(title: &str, body: &str) -> String {
     )
 }
 const CSS: &str = "html{color:#172d49;background:#f7f4ec;font:16px/1.6 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:32px 24px;overflow-wrap:anywhere}a{color:#245d97}nav{margin:20px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0f2;padding:12px}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}table:focus-visible{outline:2px solid #245d97;outline-offset:3px}caption{text-align:left;font-weight:600}th,td{min-width:160px;padding:8px;border:1px solid #c7d0da;text-align:left;vertical-align:top}th:nth-child(3),td:nth-child(3){min-width:180px}th:nth-child(4),td:nth-child(4){min-width:220px}section,details{border-top:1px solid #c7d0da;padding:12px 0}h1{line-height:1.2}[hidden]{display:none!important}.catalog-controls{display:flex;flex-wrap:wrap;gap:12px}.catalog-controls label{display:flex;flex-direction:column;max-width:100%}.catalog-controls input,.catalog-controls select{font:inherit;box-sizing:border-box;max-width:100%}#catalog-results{padding-left:24px}.catalog-meta,.catalog-detail{display:block}#catalog-results .catalog-identity{border:0;padding:4px 0;font-size:13px}#catalog-results .catalog-identity summary{cursor:pointer;width:fit-content}#catalog-results .catalog-identity small{display:block}#catalog-results .catalog-identity code{overflow-wrap:anywhere}.catalog-pager{display:flex;gap:12px}.catalog-pager button{font:inherit}a:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid #245d97;outline-offset:3px}@media(max-width:600px){main{padding:20px 16px}h1{font-size:28px}}\n";
+
+fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewError> {
+    match projection.schema.as_str() {
+        SCHEMA => {
+            if projection
+                .pages
+                .iter()
+                .any(|page| page.projection_kind.is_some())
+            {
+                return Err(invalid(
+                    "legacy native page projection schema cannot contain projectionKind",
+                ));
+            }
+        }
+        DECLARATION_SCHEMA => {
+            if projection
+                .pages
+                .iter()
+                .any(|page| page.projection_kind.is_none())
+            {
+                return Err(invalid(
+                    "declaration-capable native page projection requires projectionKind on every page",
+                ));
+            }
+            if !projection
+                .pages
+                .iter()
+                .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly))
+            {
+                return Err(invalid(
+                    "declaration-capable native page projection requires a declaration-only page",
+                ));
+            }
+        }
+        _ => return Err(invalid("unsupported native page projection schema")),
+    }
+    for page in &projection.pages {
+        if page.projection_kind == Some(ProjectionKind::DeclarationOnly)
+            && (page.selection.expand_source_calls || page.selection.expand_data_state)
+        {
+            return Err(invalid(
+                "declaration-only pages cannot request source-call or data-state expansion",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn write(
     output: &Path,
     snapshot: &str,
     p: &BundleProjection,
 ) -> Result<Value, ClewError> {
     // Portable preflight before constructing or creating any output files.
+    validate_projection_kind(p)?;
     let mut names = BTreeSet::new();
     for page in &p.pages {
         if !store::valid_id(&page.id) || !names.insert(page.id.to_ascii_lowercase()) {
@@ -899,13 +1119,17 @@ pub(super) fn write(
         }
     }
     let catalogue = catalogue::rows(p)?;
+    let has_declaration_only = p
+        .pages
+        .iter()
+        .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
     let mut files = BTreeMap::new();
     let mut page_rows = Vec::new();
     for ext in ["html", "mdx"] {
         let mut bodies = BTreeMap::new();
         let mut index = "<main><h1>Native source documentation</h1>".to_string();
         if ext == "html" {
-            index += &catalogue::enhancement(&catalogue)?;
+            index += &catalogue::enhancement(&catalogue, has_declaration_only)?;
         }
         index += "<ul id=\"catalog-processes\">\n";
         for page_content in &p.pages {
@@ -919,7 +1143,7 @@ pub(super) fn write(
                     &process_label(page_content)
                 )
             );
-            for (slug, title) in VIEWS {
+            for (slug, title) in views_for(page_content) {
                 bodies.insert(
                     format!("{}-{slug}", page_content.id),
                     (
@@ -1174,6 +1398,7 @@ mod tests {
         let make = |id: &str| PageContent {
             id: id.into(),
             title: id.into(),
+            projection_kind: None,
             selection: Selection {
                 id: id.into(),
                 service: "service".into(),

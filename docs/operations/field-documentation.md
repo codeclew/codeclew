@@ -459,6 +459,58 @@ benefit. The [accepted measurement and exclusions](../plans/question-results-and
 describe the selected corpus and five pairs. This behavior is included in
 v0.13.17.
 
+## Native pages from retained declarations (source candidate)
+
+The source candidate shares declaration selection, retained sources, citations,
+page assembly, catalogue and HTML/MDX publication across Java and Kotlin.
+Language adapters admit and project the evidence they support. This Kotlin
+native-page support is not included in the v0.13.17 installed release.
+
+Select exact declaration observation IDs from `docs context` for a saved Check.
+For a Kotlin function, the current selection format uses the same ID for both
+required slots; these slot names do not establish endpoint or worker roles:
+
+```json
+[
+  {
+    "id": "selected-function",
+    "service": "orders",
+    "endpointDeclaration": "RETURNED_FUNCTION_DECLARATION_ID",
+    "workerDeclaration": "RETURNED_FUNCTION_DECLARATION_ID",
+    "question": "Which source declaration is retained for this function?"
+  }
+]
+```
+
+Save this as `/work/page-selection.json`, replace the service and declaration
+IDs, and render against the saved snapshot:
+
+```sh
+./clew docs pages render --root /work/architecture --snapshot SOURCE_CHECK \
+  --input /work/page-selection.json --output /work/native-pages
+```
+
+Rendering uses retained evidence and does not capture again or invoke a model.
+Kotlin pages require compiler-bound `FUNCTION` declarations with matching
+identity, scope, provenance and retained source. Constructors, properties and
+syntax-only Kotlin declarations are not admitted by this adapter. The pages
+show declarations, citations, the question and explicit limitations. Distinct
+selected declarations, including optional wiring, do not imply a relationship.
+Absent source occurrence bounds remain absent; retained line spans are not
+promoted to exact function-body ranges.
+
+A bundle containing a declaration-only page uses derived projection schema
+`codeclew-native-page-projection/1.1`, with explicit `projectionKind` on every
+page. `DECLARATION_ONLY` does not mean that calls or state changes are absent.
+`SOURCE_BEHAVIOR` denotes the existing Java source projection, with its own
+authority and gaps. Pure Java bundles retain schema `/1.0` and omit the field.
+Capture and Check contracts are unchanged.
+
+Kotlin call-graph, CFG and data-state projection remain unsupported here.
+`expandSourceCalls` and `expandDataState` are rejected for declaration-only
+selections before output is created. An independent Java selection in the same
+bundle can still use the existing Java expansion features.
+
 ## Kotlin compiler capture
 
 For native Kotlin compiler capture, select `kotlin-jvm-gradle-analysis` and the

@@ -81,6 +81,77 @@ fn add_declaration(
     symbol
 }
 
+fn add_kotlin_declaration(e: &mut ServiceEvidence, id: &str, kind: &str, text: &str) -> String {
+    let callable_id = format!("example/Sample.{id}");
+    let symbol = format!("callable:{callable_id}#jvm:(Ljava/lang/String;)Ljava/lang/String;");
+    let normalized = json!({
+        "schema":"declaration-descriptor/0.1",
+        "resolution":"PROVEN",
+        "provider":"K2_FIR",
+        "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+        "compilerAuthority":"fir-facts-extractor/0.6",
+        "declarationKind":kind,
+        "compilerCallableId":callable_id,
+        "jvmDescriptor":"(Ljava/lang/String;)Ljava/lang/String;",
+        "symbolIdentity":symbol,
+        "ownerIdentity":"class:example/Sample",
+        "module":":",
+        "sourceSet":"main",
+        "scope":":/main"
+    });
+    let mut retained = source(e, &format!("kotlin-{id}"), text);
+    retained.file = "src/main/kotlin/example/Sample.kt".into();
+    retained.start_line = 23;
+    retained.end_line = retained.start_line + text.lines().count() as u64 - 1;
+    retained.url = Some(format!(
+        "https://example.invalid/sample/blob/{}/{}#L23",
+        e.revision, retained.file
+    ));
+    let observation = Observation {
+        id: id.into(),
+        kind: "SYMBOL".into(),
+        service: e.service.clone(),
+        symbol: symbol.clone(),
+        digest: digest(&normalized).unwrap(),
+        normalized,
+        source_ids: vec![retained.id.clone()],
+    };
+    e.sources.insert(retained.id.clone(), retained);
+    e.observations.insert(id.into(), observation);
+    symbol
+}
+
+fn kotlin_check(e: ServiceEvidence) -> Check {
+    check::assemble(
+        "input-digest".into(),
+        BTreeMap::from([(e.service.clone(), e)]),
+        BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap()
+}
+
+fn refresh_observation_digest(e: &mut ServiceEvidence, id: &str) {
+    let observation = e.observations.get_mut(id).unwrap();
+    observation.digest = digest(&observation.normalized).unwrap();
+}
+
+fn kotlin_selection(endpoint: &str, worker: &str) -> Selection {
+    Selection {
+        id: "kotlin-page".into(),
+        service: "sample".into(),
+        endpoint_declaration: endpoint.into(),
+        worker_declaration: worker.into(),
+        wiring_declaration: None,
+        question: None,
+        note_ids: vec![],
+        authored_paragraphs: vec![],
+        expand_source_calls: false,
+        expand_data_state: false,
+    }
+}
+
 /// Fixture compiler relations bind exact occurrences independently of the
 /// projector. No answer labels, operation annotations, or Profile DSL exist.
 fn bind_call(
@@ -400,6 +471,13 @@ fn java_projection_bytes_and_published_files_match_the_preboundary_baseline() {
         "!task.eligible()",
         false,
     );
+    let legacy = project(&checked, std::slice::from_ref(&selection)).unwrap();
+    assert_eq!(legacy.schema, SCHEMA);
+    assert!(
+        serde_json::to_value(&legacy).unwrap()["pages"][0]
+            .get("projectionKind")
+            .is_none()
+    );
     actual.push(java_projection_facts(
         "guarded-shared-queue",
         &checked,
@@ -428,6 +506,508 @@ fn java_projection_bytes_and_published_files_match_the_preboundary_baseline() {
     ));
 
     assert_eq!(JAVA_PROJECTION_BASELINE, actual.join("\n"));
+}
+
+#[test]
+fn kotlin_function_projection_uses_compiler_bound_source_and_explicit_gaps() {
+    let mut evidence = evidence();
+    let retained = r#"fun render(value: String) = "Hello, ${value}, $value `literal`""#;
+    let symbol = add_kotlin_declaration(&mut evidence, "render", "FUNCTION", retained);
+    let checked = kotlin_check(evidence);
+    let projection = project(&checked, &[kotlin_selection("render", "render")]).unwrap();
+    assert_eq!(projection.schema, DECLARATION_SCHEMA);
+    let page = &projection.pages[0];
+    assert_eq!(page.projection_kind, Some(ProjectionKind::DeclarationOnly));
+    for callable in [&page.endpoint, &page.worker] {
+        assert_eq!(callable.authority, "COMPILER_DECLARATION");
+        assert_eq!(callable.symbol, symbol);
+        assert!(callable.steps.is_empty());
+        assert!(callable.state.is_empty());
+        assert!(callable.citation_id.is_some());
+        for code in [
+            "KOTLIN_BEHAVIOR_PROJECTION_UNAVAILABLE",
+            "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE",
+            "KOTLIN_DATA_STATE_UNAVAILABLE",
+        ] {
+            assert!(callable.gaps.iter().any(|gap| gap.code == code), "{code}");
+        }
+    }
+    let citation = page.citations[page.endpoint.citation_id.as_ref().unwrap()].clone();
+    let source = &page.sources[&citation.source_id];
+    assert_eq!(source.text, retained);
+    assert_eq!(citation.file, "src/main/kotlin/example/Sample.kt");
+    assert_eq!(citation.start_line, 23);
+    assert_eq!(citation.end_line, 23);
+    assert_eq!(citation.start_byte, 0);
+    assert_eq!(citation.end_byte, retained.len());
+    assert_eq!(
+        citation.text_digest,
+        crate::canonical::hash_bytes(retained.as_bytes())
+    );
+    assert_eq!(page.handoff.status, "DECLARATION_ONLY");
+    assert_eq!(
+        page.handoff.gaps[0].code,
+        "DECLARATION_ONLY_NO_RELATIONSHIP"
+    );
+    assert_eq!(page.title, format!("Selected functions: {symbol}"));
+}
+
+#[test]
+fn source_behavior_java_empty_body_differs_from_declaration_only_kotlin() {
+    let mut java = evidence();
+    add_declaration(
+        &mut java,
+        "java-empty",
+        "Example",
+        "empty",
+        "METHOD",
+        "void empty() {}",
+    );
+    let checked = kotlin_check(java);
+    let selection = kotlin_selection("java-empty", "java-empty");
+    let java_projection = project(&checked, &[selection]).unwrap();
+    assert_eq!(java_projection.schema, SCHEMA);
+    assert_eq!(java_projection.pages[0].projection_kind, None);
+    assert!(java_projection.pages[0].endpoint.steps.is_empty());
+    assert!(java_projection.pages[0].endpoint.state.is_empty());
+
+    let mut kotlin = evidence();
+    add_kotlin_declaration(&mut kotlin, "kotlin-empty", "FUNCTION", "fun empty() {}");
+    let checked = kotlin_check(kotlin);
+    let selection = kotlin_selection("kotlin-empty", "kotlin-empty");
+    let kotlin_projection = project(&checked, &[selection]).unwrap();
+    assert_eq!(kotlin_projection.schema, DECLARATION_SCHEMA);
+    assert_eq!(
+        kotlin_projection.pages[0].projection_kind,
+        Some(ProjectionKind::DeclarationOnly)
+    );
+    assert!(kotlin_projection.pages[0].endpoint.steps.is_empty());
+    assert!(kotlin_projection.pages[0].endpoint.state.is_empty());
+}
+
+#[test]
+fn declaration_schema_round_trips_and_missing_or_unknown_page_kind_fails_preflight() {
+    let mut evidence = evidence();
+    add_kotlin_declaration(&mut evidence, "render", "FUNCTION", "fun render() = 1");
+    let checked = kotlin_check(evidence);
+    let projection = project(&checked, &[kotlin_selection("render", "render")]).unwrap();
+    let encoded = serde_json::to_value(&projection).unwrap();
+    let decoded: BundleProjection = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(decoded, projection);
+    assert_eq!(encoded["pages"][0]["projectionKind"], "DECLARATION_ONLY");
+
+    let temp = tempfile::tempdir().unwrap();
+    let missing_output = temp.path().join("missing-kind");
+    let mut missing_kind = encoded.clone();
+    missing_kind["pages"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("projectionKind");
+    let missing_kind: BundleProjection = serde_json::from_value(missing_kind).unwrap();
+    assert!(super::super::publish::write(&missing_output, "snapshot", &missing_kind).is_err());
+    assert!(!missing_output.exists());
+
+    let unknown_output = temp.path().join("unknown-kind");
+    let mut unknown_kind = encoded;
+    unknown_kind["pages"][0]["projectionKind"] = json!("UNKNOWN");
+    assert!(serde_json::from_value::<BundleProjection>(unknown_kind).is_err());
+    assert!(!unknown_output.exists());
+}
+
+#[test]
+fn kotlin_without_source_occurrence_keeps_a_retained_text_line_span() {
+    let mut evidence = evidence();
+    let text = "fun render() = 1";
+    add_kotlin_declaration(&mut evidence, "render", "FUNCTION", text);
+    evidence
+        .sources
+        .get_mut("kotlin-render")
+        .unwrap()
+        .occurrence = None;
+    let checked = kotlin_check(evidence);
+    let projection = project(&checked, &[kotlin_selection("render", "render")]).unwrap();
+    let page = &projection.pages[0];
+    let citation = &page.citations[page.endpoint.citation_id.as_ref().unwrap()];
+    let retained = &page.sources[&citation.source_id];
+    assert!(retained.occurrence.is_none());
+    assert_eq!(citation.start_line, retained.start_line);
+    assert_eq!(citation.end_line, retained.end_line);
+    assert_eq!(citation.start_byte, 0);
+    assert_eq!(citation.end_byte, text.len());
+}
+
+#[test]
+fn kotlin_function_admission_rejects_authority_identity_scope_and_source_mismatches() {
+    let build = || {
+        let mut evidence = evidence();
+        add_kotlin_declaration(
+            &mut evidence,
+            "render",
+            "FUNCTION",
+            "fun render() = \"ready\"",
+        );
+        evidence
+    };
+    let reject = |mutate: fn(&mut ServiceEvidence), message: &str| {
+        let mut evidence = build();
+        mutate(&mut evidence);
+        let checked = kotlin_check(evidence);
+        let error = project(&checked, &[kotlin_selection("render", "render")]).unwrap_err();
+        assert!(error.message.contains(message), "{}", error.message);
+    };
+    reject(
+        |evidence| {
+            evidence.observations.get_mut("render").unwrap().normalized["provider"] =
+                json!("SYNTAX")
+        },
+        "lacks exact compiler authority",
+    );
+    reject(
+        |evidence| evidence.observations.get_mut("render").unwrap().service = "other".into(),
+        "service or observation identity",
+    );
+    reject(
+        |evidence| evidence.observations.get_mut("render").unwrap().id = "other".into(),
+        "observation ID does not match",
+    );
+    reject(
+        |evidence| {
+            evidence
+                .observations
+                .get_mut("render")
+                .unwrap()
+                .symbol
+                .push_str("-other")
+        },
+        "symbol identity does not match",
+    );
+    reject(
+        |evidence| {
+            evidence.observations.get_mut("render").unwrap().normalized["scope"] = json!(":/test")
+        },
+        "scope does not match",
+    );
+    reject(
+        |evidence| evidence.observations.get_mut("render").unwrap().digest = "wrong".into(),
+        "normalized evidence digest is inconsistent",
+    );
+    reject(
+        |evidence| evidence.sources.get_mut("kotlin-render").unwrap().end_line += 1,
+        "valid retained compiler-bound source span",
+    );
+    reject(
+        |evidence| {
+            evidence
+                .sources
+                .get_mut("kotlin-render")
+                .unwrap()
+                .text_digest = "wrong".into()
+        },
+        "valid retained compiler-bound source span",
+    );
+    reject(
+        |evidence| {
+            evidence
+                .observations
+                .get_mut("render")
+                .unwrap()
+                .source_ids
+                .clear()
+        },
+        "valid retained compiler-bound source span",
+    );
+    reject(
+        |evidence| {
+            evidence
+                .observations
+                .get_mut("render")
+                .unwrap()
+                .source_ids
+                .push("kotlin-render".into())
+        },
+        "valid retained compiler-bound source span",
+    );
+}
+
+#[test]
+fn kotlin_symbol_identity_validates_jvm_signature_and_optional_descriptor() {
+    let mut missing = evidence();
+    add_kotlin_declaration(&mut missing, "render", "FUNCTION", "fun render() = 1");
+    missing
+        .observations
+        .get_mut("render")
+        .unwrap()
+        .normalized
+        .as_object_mut()
+        .unwrap()
+        .remove("jvmDescriptor");
+    refresh_observation_digest(&mut missing, "render");
+    assert!(
+        project(
+            &kotlin_check(missing),
+            &[kotlin_selection("render", "render")]
+        )
+        .is_ok()
+    );
+
+    let invalid_descriptor = |descriptor: serde_json::Value, expected: &str| {
+        let mut evidence = evidence();
+        add_kotlin_declaration(&mut evidence, "render", "FUNCTION", "fun render() = 1");
+        evidence.observations.get_mut("render").unwrap().normalized["jvmDescriptor"] = descriptor;
+        refresh_observation_digest(&mut evidence, "render");
+        let error = project(
+            &kotlin_check(evidence),
+            &[kotlin_selection("render", "render")],
+        )
+        .unwrap_err();
+        assert!(error.message.contains(expected), "{}", error.message);
+    };
+    invalid_descriptor(json!(42), "JVM descriptor is not a string");
+    invalid_descriptor(json!("()V"), "disagrees with the compiler symbol identity");
+
+    let mut malformed = evidence();
+    add_kotlin_declaration(&mut malformed, "render", "FUNCTION", "fun render() = 1");
+    let observation = malformed.observations.get_mut("render").unwrap();
+    observation.symbol = "callable:example/Sample.render#jvm:not-a-jvm-signature".into();
+    observation.normalized["symbolIdentity"] = json!(observation.symbol);
+    observation
+        .normalized
+        .as_object_mut()
+        .unwrap()
+        .remove("jvmDescriptor");
+    observation.digest = digest(&observation.normalized).unwrap();
+    let error = project(
+        &kotlin_check(malformed),
+        &[kotlin_selection("render", "render")],
+    )
+    .unwrap_err();
+    assert!(error.message.contains("full symbol identity is invalid"));
+}
+
+#[test]
+fn kotlin_function_admission_rejects_ambiguous_and_unsupported_descriptors() {
+    let mut ambiguous = evidence();
+    add_kotlin_declaration(&mut ambiguous, "render", "FUNCTION", "fun render() = 1");
+    let mut duplicate = ambiguous.observations["render"].clone();
+    duplicate.id = "duplicate-render".into();
+    ambiguous
+        .observations
+        .insert(duplicate.id.clone(), duplicate);
+    let checked = kotlin_check(ambiguous);
+    let error = project(&checked, &[kotlin_selection("render", "render")]).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("ambiguous within its compilation scope")
+    );
+
+    for kind in ["CONSTRUCTOR", "PROPERTY", "MUTABLE_PROPERTY", "CLASS"] {
+        let mut unsupported = evidence();
+        add_kotlin_declaration(&mut unsupported, "unsupported", kind, "declaration");
+        let checked = kotlin_check(unsupported);
+        let error =
+            project(&checked, &[kotlin_selection("unsupported", "unsupported")]).unwrap_err();
+        assert!(
+            error.message.contains("FUNCTION declarations only"),
+            "{kind}: {}",
+            error.message
+        );
+    }
+
+    let mut syntax = evidence();
+    let normalized = json!({"syntaxKind":"function_declaration", "symbolIdentity":"example.Sample.render", "scope":":/main"});
+    syntax.observations.insert(
+        "syntax-only".into(),
+        Observation {
+            id: "syntax-only".into(),
+            kind: "SYMBOL".into(),
+            service: syntax.service.clone(),
+            symbol: "example.Sample.render".into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        },
+    );
+    let checked = kotlin_check(syntax);
+    let error = project(&checked, &[kotlin_selection("syntax-only", "syntax-only")]).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("syntax-only declarations are unsupported")
+    );
+}
+
+#[test]
+fn kotlin_graph_expansion_flags_are_rejected_during_projection() {
+    let mut evidence = evidence();
+    add_kotlin_declaration(&mut evidence, "render", "FUNCTION", "fun render() = 1");
+    let checked = kotlin_check(evidence);
+    for (source_calls, data_state, expected) in [
+        (
+            true,
+            false,
+            "expandSourceCalls is unavailable for declaration-only",
+        ),
+        (
+            false,
+            true,
+            "expandDataState is unavailable for declaration-only",
+        ),
+    ] {
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = source_calls;
+        selection.expand_data_state = data_state;
+        let error = project(&checked, &[selection]).unwrap_err();
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+}
+
+#[test]
+fn kotlin_source_escapes_to_paired_mdx_and_html_with_citation_links() {
+    let mut evidence = evidence();
+    let retained = r#"fun render(value: String) = "Hello, ${value}, $value `literal`""#;
+    add_kotlin_declaration(&mut evidence, "render", "FUNCTION", retained);
+    add_kotlin_declaration(
+        &mut evidence,
+        "additional",
+        "FUNCTION",
+        "fun additional() = 2",
+    );
+    let checked = kotlin_check(evidence);
+    let mut selection = kotlin_selection("render", "render");
+    selection.wiring_declaration = Some("additional".into());
+    selection.question = Some("What source is retained?".into());
+    let projection = project(&checked, &[selection]).unwrap();
+    assert_eq!(
+        projection.pages[0].projection_kind,
+        Some(ProjectionKind::DeclarationOnly)
+    );
+    assert_eq!(
+        projection.pages[0].selection.question.as_deref(),
+        Some("What source is retained?")
+    );
+    assert_eq!(
+        projection.pages[0].wiring.as_ref().unwrap().symbol,
+        "callable:example/Sample.additional#jvm:(Ljava/lang/String;)Ljava/lang/String;"
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("pages");
+    super::super::publish::write(&output, "snapshot-kotlin", &projection).unwrap();
+
+    let mdx = std::fs::read_to_string(output.join("kotlin-page-overview.mdx")).unwrap();
+    let html = std::fs::read_to_string(output.join("kotlin-page-overview.html")).unwrap();
+    let sources = std::fs::read_to_string(output.join("sources.mdx")).unwrap();
+    let fields_state =
+        std::fs::read_to_string(output.join("kotlin-page-fields-state.mdx")).unwrap();
+    let diagnostic = std::fs::read_to_string(output.join("kotlin-page-diagnostic.mdx")).unwrap();
+    assert!(mdx.contains("Selected functions:"));
+    assert!(mdx.contains("Additional selected declaration"));
+    assert!(mdx.contains("callable:example/Sample.additional"));
+    assert!(mdx.contains("Selected declarations are retained without inferring behavior or a relationship between them."));
+    assert!(mdx.contains("sources.mdx#ref-"));
+    assert!(mdx.contains("KOTLIN&#95;BEHAVIOR&#95;PROJECTION&#95;UNAVAILABLE"));
+    assert!(sources.contains("$&#123;value&#125;"));
+    assert!(sources.contains("&#96;literal&#96;"));
+    assert!(!sources.contains("${value}") && !sources.contains("`literal`"));
+    assert!(fields_state.contains("KOTLIN&#95;DATA&#95;STATE&#95;UNAVAILABLE"));
+    assert!(!fields_state.contains("<table "));
+    assert!(diagnostic.contains("Source-condition analysis is unavailable"));
+    assert!(diagnostic.contains("Question: What source is retained?"));
+    assert!(!diagnostic.contains("Rows concern direct calls"));
+    let body = html
+        .split_once("<body>\n")
+        .unwrap()
+        .1
+        .strip_suffix("</body></html>\n")
+        .unwrap();
+    assert_eq!(mdx, body.replace(".html", ".mdx"));
+}
+
+#[test]
+fn mixed_java_and_kotlin_selection_never_runs_the_java_handoff_proof() {
+    let mut evidence = evidence();
+    add_declaration(
+        &mut evidence,
+        "java-endpoint",
+        "Example",
+        "run",
+        "METHOD",
+        "void run() {}",
+    );
+    add_kotlin_declaration(
+        &mut evidence,
+        "kotlin-worker",
+        "FUNCTION",
+        "fun render() = 1",
+    );
+    let checked = kotlin_check(evidence);
+    let projected = project(
+        &checked,
+        &[kotlin_selection("java-endpoint", "kotlin-worker")],
+    )
+    .unwrap();
+    assert_eq!(projected.schema, DECLARATION_SCHEMA);
+    let page = &projected.pages[0];
+    assert_eq!(page.projection_kind, Some(ProjectionKind::DeclarationOnly));
+    assert_eq!(page.handoff.status, "DECLARATION_ONLY");
+    assert!(
+        !page
+            .handoff
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "SOURCE_DECLARED_SHARED_QUEUE")
+    );
+    assert_eq!(page.endpoint.authority, "COMPILER_DECLARATION");
+    assert_eq!(page.worker.authority, "COMPILER_DECLARATION");
+}
+
+#[test]
+fn separate_java_graph_page_does_not_expand_a_kotlin_declaration_page() {
+    let mut evidence = evidence();
+    add_declaration(
+        &mut evidence,
+        "java-endpoint",
+        "Example",
+        "accept",
+        "METHOD",
+        "void accept() {}",
+    );
+    add_declaration(
+        &mut evidence,
+        "java-worker",
+        "Example",
+        "tick",
+        "METHOD",
+        "void tick() {}",
+    );
+    add_kotlin_declaration(&mut evidence, "kotlin-entry", "FUNCTION", "fun entry() = 1");
+    let checked = kotlin_check(evidence);
+
+    let mut java = kotlin_selection("java-endpoint", "java-worker");
+    java.id = "java-page".into();
+    java.expand_source_calls = true;
+    let mut kotlin = kotlin_selection("kotlin-entry", "kotlin-entry");
+    kotlin.id = "kotlin-page".into();
+    let projection = project(&checked, &[java, kotlin]).unwrap();
+    assert_eq!(projection.schema, DECLARATION_SCHEMA);
+    assert_eq!(
+        projection.pages[0].projection_kind,
+        Some(ProjectionKind::SourceBehavior)
+    );
+    assert_eq!(
+        projection.pages[1].projection_kind,
+        Some(ProjectionKind::DeclarationOnly)
+    );
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    assert!(
+        graph
+            .nodes
+            .values()
+            .all(|node| !node.callable.symbol.contains("kotlin-entry"))
+    );
+    assert!(projection.pages[0].examined_sources.is_some());
+    assert!(projection.pages[1].examined_sources.is_none());
+    assert!(projection.pages[1].data_state.is_none());
 }
 
 #[test]

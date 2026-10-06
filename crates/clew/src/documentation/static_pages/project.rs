@@ -1,4 +1,4 @@
-//! Deterministic projection of selected Java source, not an operation answer.
+//! Deterministic projection of selected source declarations, not an operation answer.
 use super::{
     model::*,
     source::{self, Context, all_steps, gap, java_handoff},
@@ -32,34 +32,81 @@ pub(super) fn project_unresolved(
     let mut ids = BTreeSet::new();
     let mut pages = Vec::new();
     for selection in selections {
-        if selection.expand_data_state && !selection.expand_source_calls {
-            return Err(invalid("expandDataState requires expandSourceCalls"));
-        }
         if selection.id.is_empty() || !ids.insert(&selection.id) {
             return Err(invalid(
                 "native page selection IDs must be nonempty and unique",
             ));
         }
         let human_instructions = human_instructions(note_inputs, selection)?;
-        let evidence = checked
-            .services
-            .get(&selection.service)
+        let kotlin_service = checked
+            .source_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.inputs.services.get(&selection.service))
+            .is_some_and(|service| service.language == "kotlin");
+        let selected_evidence = checked.services.get(&selection.service);
+        let selected_kotlin = [
+            Some(selection.endpoint_declaration.as_str()),
+            Some(selection.worker_declaration.as_str()),
+            selection.wiring_declaration.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|id| {
+            selected_evidence
+                .and_then(|evidence| evidence.observations.get(id))
+                .is_some_and(source::is_kotlin_candidate)
+        });
+        if selection.expand_data_state
+            && !selection.expand_source_calls
+            && !kotlin_service
+            && !selected_kotlin
+        {
+            return Err(invalid("expandDataState requires expandSourceCalls"));
+        }
+        let evidence = selected_evidence
             .ok_or_else(|| invalid("native page selected service is not retained in Check"))?;
         let mut ctx = Context::new(evidence);
-        let endpoint = source::project_java(&mut ctx, &selection.endpoint_declaration)?;
-        let worker = source::project_java(&mut ctx, &selection.worker_declaration)?;
+        let endpoint =
+            source::project_callable(&mut ctx, &selection.endpoint_declaration, kotlin_service)?;
+        let worker =
+            source::project_callable(&mut ctx, &selection.worker_declaration, kotlin_service)?;
         let wiring = selection
             .wiring_declaration
             .as_ref()
-            .map(|id| source::project_java(&mut ctx, id))
+            .map(|id| source::project_callable(&mut ctx, id, kotlin_service))
             .transpose()?;
-        let handoff = java_handoff(
-            &mut ctx,
-            &endpoint.projection,
-            &worker.projection,
-            wiring.as_ref().map(|w| &w.projection),
-        );
-        let diagnostics = diagnostics(&worker.projection);
+        let declaration_only = [Some(&endpoint), Some(&worker), wiring.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|callable| callable.kind == ProjectionKind::DeclarationOnly);
+        if declaration_only && selection.expand_source_calls {
+            return Err(invalid(
+                "expandSourceCalls is unavailable for declaration-only pages",
+            ));
+        }
+        if declaration_only && selection.expand_data_state {
+            return Err(invalid(
+                "expandDataState is unavailable for declaration-only pages",
+            ));
+        }
+        if selection.expand_data_state && !selection.expand_source_calls {
+            return Err(invalid("expandDataState requires expandSourceCalls"));
+        }
+        let handoff = if declaration_only {
+            declaration_only_handoff()
+        } else {
+            java_handoff(
+                &mut ctx,
+                &endpoint.projection,
+                &worker.projection,
+                wiring.as_ref().map(|w| &w.projection),
+            )
+        };
+        let diagnostics = if declaration_only {
+            vec![]
+        } else {
+            diagnostics(&worker.projection)
+        };
         let mut limitations = vec![gap(
             "RUNTIME_NOT_OBSERVED",
             "Source declarations do not establish deployed activation, delivery, external success, or durable completion.",
@@ -68,12 +115,36 @@ pub(super) fn project_unresolved(
         for boundary in &evidence.boundaries {
             limitations.push(gap("RETAINED_SERVICE_BOUNDARY", boundary, None));
         }
-        pages.push(PageContent {
-            id: selection.id.clone(),
-            title: format!(
+        if declaration_only {
+            limitations.push(gap(
+                "DECLARATION_ONLY_NO_RELATIONSHIP",
+                "Selected declarations are retained without inferring behavior or a relationship between them.",
+                None,
+            ));
+        }
+        let title = if declaration_only
+            && endpoint.projection.declaration_id == worker.projection.declaration_id
+        {
+            format!("Selected functions: {}", endpoint.projection.symbol)
+        } else if declaration_only {
+            format!(
+                "Selected functions: {} · {}",
+                endpoint.projection.symbol, worker.projection.symbol
+            )
+        } else {
+            format!(
                 "{} → {}",
                 endpoint.projection.symbol, worker.projection.symbol
-            ),
+            )
+        };
+        pages.push(PageContent {
+            id: selection.id.clone(),
+            title,
+            projection_kind: Some(if declaration_only {
+                ProjectionKind::DeclarationOnly
+            } else {
+                ProjectionKind::SourceBehavior
+            }),
             selection: selection.clone(),
             service_revision: evidence.revision.clone(),
             service_digest: evidence.service_digest.clone(),
@@ -92,8 +163,26 @@ pub(super) fn project_unresolved(
             data_state: None,
         });
     }
+    let has_declaration_only = pages
+        .iter()
+        .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
+    if has_declaration_only {
+        for page in &mut pages {
+            page.projection_kind
+                .get_or_insert(ProjectionKind::SourceBehavior);
+        }
+    } else {
+        for page in &mut pages {
+            page.projection_kind = None;
+        }
+    }
     let mut projection = BundleProjection {
-        schema: SCHEMA.into(),
+        schema: if has_declaration_only {
+            DECLARATION_SCHEMA
+        } else {
+            SCHEMA
+        }
+        .into(),
         input_digest: checked.input_digest.clone(),
         context_digest: checked.context_digest.clone(),
         selection_digest: digest(&selections)?,
@@ -103,6 +192,22 @@ pub(super) fn project_unresolved(
     super::linked::attach(checked, &mut projection)?;
     super::data_state::attach(checked, &mut projection)?;
     Ok(projection)
+}
+
+fn declaration_only_handoff() -> HandoffProjection {
+    HandoffProjection {
+        status: "DECLARATION_ONLY".into(),
+        queue_allocation: None,
+        endpoint_field: None,
+        worker_field: None,
+        citation_ids: vec![],
+        gaps: vec![gap(
+            "DECLARATION_ONLY_NO_RELATIONSHIP",
+            "Selected declarations do not establish a call, wiring, or runtime relationship.",
+            None,
+        )],
+        limitation: "Declaration-only pages retain compiler declarations without proving source behavior, shared-object wiring, activation, delivery, or completion.".into(),
+    }
 }
 
 fn note_target(inputs: &RepositoryInputs, target: &str, service: &str) -> (bool, bool) {

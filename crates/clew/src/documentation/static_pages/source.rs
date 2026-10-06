@@ -6,6 +6,7 @@ use crate::error::ClewError;
 use std::collections::BTreeMap;
 
 pub(super) mod java;
+pub(super) mod kotlin;
 pub(super) use java::{Parsed, all_steps, compiler, handoff as java_handoff};
 
 pub(super) fn gap(code: &str, detail: impl Into<String>, citation_id: Option<String>) -> Gap {
@@ -27,6 +28,7 @@ pub(super) struct CallableKey {
 pub(super) struct ProjectedCallable {
     pub key: CallableKey,
     pub projection: CallableProjection,
+    pub kind: super::model::ProjectionKind,
 }
 
 pub(super) struct Context<'a> {
@@ -133,5 +135,40 @@ pub(super) fn project_java(
             .to_owned(),
         symbol: projection.symbol.clone(),
     };
-    Ok(ProjectedCallable { key, projection })
+    Ok(ProjectedCallable {
+        key,
+        projection,
+        kind: super::model::ProjectionKind::SourceBehavior,
+    })
+}
+
+pub(super) fn project_callable(
+    context: &mut Context<'_>,
+    declaration: &str,
+    kotlin_service: bool,
+) -> Result<ProjectedCallable, ClewError> {
+    let observation = context
+        .evidence
+        .observations
+        .get(declaration)
+        .ok_or_else(|| {
+            invalid(format!(
+                "selected callable declaration {declaration} is missing"
+            ))
+        })?;
+    // Valid Java compiler facts stay on the existing source-behavior adapter,
+    // even when the selected service also contains Kotlin declarations.
+    if java::compiler(observation) {
+        return project_java(context, declaration);
+    }
+    if kotlin_service || kotlin::candidate(observation) {
+        return kotlin::project(context, declaration);
+    }
+    // Admission errors from the selected adapter are terminal: never reinterpret
+    // a failed Kotlin declaration as Java based on syntax or source text.
+    project_java(context, declaration)
+}
+
+pub(super) fn is_kotlin_candidate(observation: &crate::documentation::model::Observation) -> bool {
+    kotlin::candidate(observation)
 }

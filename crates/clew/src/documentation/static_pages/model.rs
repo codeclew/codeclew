@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = "codeclew-native-page-projection/1.0";
+pub const DECLARATION_SCHEMA: &str = "codeclew-native-page-projection/1.1";
+
+/// Describes the scope of the selected page projection, not runtime certainty.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProjectionKind {
+    DeclarationOnly,
+    SourceBehavior,
+}
 
 /// Inputs select retained declarations. They never supply conclusions or labels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +85,8 @@ pub struct BundleProjection {
 pub struct PageContent {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_kind: Option<ProjectionKind>,
     pub selection: Selection,
     pub service_revision: String,
     pub service_digest: String,
