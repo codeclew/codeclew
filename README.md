@@ -33,6 +33,10 @@ compatible drivers. See the [v0.13.17 release notes](docs/releases/v0.13.17.md).
 
 ### Included in v0.13.17
 
+Kotlin/Gradle metadata capture now works with configuration cache enabled.
+Known build failure categories keep safe, specific recovery guidance.
+
+
 `docs work find-answer` searches historical approved method answers by the exact
 normalized request and subject, then checks applicability against an explicitly
 saved Check. Multiple eligible approvals require explicit selection. Historical

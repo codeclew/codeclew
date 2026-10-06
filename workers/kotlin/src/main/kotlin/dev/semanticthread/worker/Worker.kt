@@ -1433,6 +1433,7 @@ internal fun gradleModelCommand(
         )
     }
     if (!reuseDaemon) add("--no-daemon")
+    add("--no-configuration-cache")
     add("--quiet")
     addAll(listOf("-I", initScript.toString()))
     add("-Dsemantic.thread.compileTask=$compileTask")

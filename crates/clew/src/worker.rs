@@ -2274,7 +2274,8 @@ impl WorkerClient {
                     .collect();
                 let code = parse_worker_code(&error.code);
                 let failure = ClewError {
-                    message: safe_worker_error_message(&code).into(),
+                    message: safe_worker_error_message_for_worker_error(&code, &error.message)
+                        .into(),
                     code,
                     transaction_id: None,
                     snapshot_id: self.snapshot.as_ref().map(snapshot_label),
@@ -4132,6 +4133,47 @@ fn safe_worker_error_message(code: &ErrorCode) -> &'static str {
     }
 }
 
+fn safe_worker_error_message_for_worker_error(
+    code: &ErrorCode,
+    worker_message: &str,
+) -> &'static str {
+    if code != &ErrorCode::UnsupportedProjectConfiguration {
+        return safe_worker_error_message(code);
+    }
+
+    let Some((category, _)) = worker_message.split_once(':') else {
+        return safe_worker_error_message(code);
+    };
+
+    match category {
+        "BUILD_REPOSITORY_AUTHENTICATION" => {
+            "BUILD_REPOSITORY_AUTHENTICATION: check the configured repository credentials and access, then retry the failed Codeclew command"
+        }
+        "BUILD_REPOSITORY_TLS" => {
+            "BUILD_REPOSITORY_TLS: check the repository TLS and trust-store configuration, then retry the failed Codeclew command"
+        }
+        "BUILD_DEPENDENCY_RESOLUTION" => {
+            "BUILD_DEPENDENCY_RESOLUTION: check repository availability and declared dependencies, then retry the failed Codeclew command"
+        }
+        "BUILD_JDK_CONFIGURATION" => {
+            "BUILD_JDK_CONFIGURATION: check the selected JDK and project toolchain, then retry the failed Codeclew command"
+        }
+        "BUILD_COMPILATION_NOT_FOUND" => {
+            "BUILD_COMPILATION_NOT_FOUND: check that the project exposes the requested Kotlin compilation, then retry the failed Codeclew command"
+        }
+        "BUILD_MODEL_EXTRACTION_FAILED" => {
+            "BUILD_MODEL_EXTRACTION_FAILED: check the project build configuration and retry the failed Codeclew command"
+        }
+        "BUILD_LAUNCHER_START_FAILED" => {
+            "BUILD_LAUNCHER_START_FAILED: check the project build wrapper and local Java runtime, then retry the failed Codeclew command"
+        }
+        "BUILD_MODEL_MARKER_MISSING" => {
+            "BUILD_MODEL_MARKER_MISSING: verify the selected compilation, rerun clew doctor, and report this category if the native build works"
+        }
+        _ => safe_worker_error_message(code),
+    }
+}
+
 pub fn workspace_root() -> PathBuf {
     #[cfg(not(test))]
     {
@@ -5329,6 +5371,95 @@ mod tests {
         assert!(!message.contains('/'));
         assert!(!message.contains("HOME"));
         assert!(message.contains("explicit compilation"));
+    }
+
+    #[test]
+    fn unsupported_project_configuration_uses_only_allowlisted_build_category() {
+        let cases = [
+            (
+                "BUILD_REPOSITORY_AUTHENTICATION",
+                "BUILD_REPOSITORY_AUTHENTICATION: check the configured repository credentials and access, then retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_REPOSITORY_TLS",
+                "BUILD_REPOSITORY_TLS: check the repository TLS and trust-store configuration, then retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_DEPENDENCY_RESOLUTION",
+                "BUILD_DEPENDENCY_RESOLUTION: check repository availability and declared dependencies, then retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_JDK_CONFIGURATION",
+                "BUILD_JDK_CONFIGURATION: check the selected JDK and project toolchain, then retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_COMPILATION_NOT_FOUND",
+                "BUILD_COMPILATION_NOT_FOUND: check that the project exposes the requested Kotlin compilation, then retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_MODEL_EXTRACTION_FAILED",
+                "BUILD_MODEL_EXTRACTION_FAILED: check the project build configuration and retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_LAUNCHER_START_FAILED",
+                "BUILD_LAUNCHER_START_FAILED: check the project build wrapper and local Java runtime, then retry the failed Codeclew command",
+            ),
+            (
+                "BUILD_MODEL_MARKER_MISSING",
+                "BUILD_MODEL_MARKER_MISSING: verify the selected compilation, rerun clew doctor, and report this category if the native build works",
+            ),
+        ];
+        let private_suffix = "https://private.example/repository?token=secret /private/fixture-project/build.gradle.kts\n\u{1b}[31mred\u{1b}[0m";
+
+        for (category, expected) in cases {
+            let worker_message = format!("{category}:{private_suffix}");
+            let actual = safe_worker_error_message_for_worker_error(
+                &ErrorCode::UnsupportedProjectConfiguration,
+                &worker_message,
+            );
+            assert_eq!(actual, expected);
+            assert!(!actual.contains("private.example"));
+            assert!(!actual.contains("token=secret"));
+            assert!(!actual.contains("/private/fixture-project"));
+            assert!(!actual.contains('\n'));
+            assert!(!actual.contains('\u{1b}'));
+        }
+    }
+
+    #[test]
+    fn unsupported_project_configuration_rejects_malformed_or_unknown_categories() {
+        let generic = safe_worker_error_message(&ErrorCode::UnsupportedProjectConfiguration);
+        for worker_message in [
+            "",
+            "BUILD_REPOSITORY_AUTHENTICATION",
+            "BUILD_UNKNOWN:private details",
+            " BUILD_REPOSITORY_AUTHENTICATION:private details",
+            "build_repository_authentication:private details",
+            "xBUILD_REPOSITORY_AUTHENTICATION:private details",
+            "BUILD_REPOSITORY_AUTHENTICATION_EXTRA:private details",
+            ":BUILD_REPOSITORY_AUTHENTICATION:private details",
+        ] {
+            assert_eq!(
+                safe_worker_error_message_for_worker_error(
+                    &ErrorCode::UnsupportedProjectConfiguration,
+                    worker_message,
+                ),
+                generic,
+                "worker message should fall back to generic guidance: {worker_message:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_project_configuration_category_does_not_override_another_worker_error_code() {
+        let code = ErrorCode::UnsupportedCompilerPluginAbi;
+        assert_eq!(
+            safe_worker_error_message_for_worker_error(
+                &code,
+                "BUILD_REPOSITORY_AUTHENTICATION:private details",
+            ),
+            safe_worker_error_message(&code),
+        );
     }
 
     #[test]

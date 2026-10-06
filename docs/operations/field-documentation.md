@@ -459,7 +459,18 @@ benefit. The [accepted measurement and exclusions](../plans/question-results-and
 describe the selected corpus and five pairs. This behavior is included in
 v0.13.17.
 
+## Kotlin compiler capture
+
+For native Kotlin compiler capture, select `kotlin-jvm-gradle-analysis` and the
+project's exact compilation scope. In v0.13.17, model requests disable
+configuration-cache reuse for their injected metadata task. Keep your project
+setting unchanged. If a compiler check remains unresolved, follow its returned
+build category and `nextAction`: known repository-access, TLS, dependency,
+JDK/toolchain, compilation, model and launcher failures retain safe
+category-specific guidance.
+
 ## Explicit compiler enrichment afterward
+
 
 Keep the same service ID, `profile: "source-syntax"`, source roots/dialect and fixed commit. Add this object to the complete service JSON, then update through `service show` / `service add` with its current input digest:
 

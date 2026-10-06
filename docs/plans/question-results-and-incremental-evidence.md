@@ -700,3 +700,35 @@ gates and platform release qualification are required before publication.
 Official installed lookup, current syntax receipts and independent 1.1 role
 smokes then verify the published package. These local deterministic role
 fixtures make no paid provider calls or review-quality claim.
+
+
+### Kotlin model configuration cache and safe failure guidance (2026-10-06)
+
+Before tagging 0.13.17, a bounded paired synthetic Gradle reproduction established
+that native `help` succeeds with configuration cache enabled, the injected model
+task fails under cache restrictions, and the same model request succeeds with
+`--no-configuration-cache`. The production model command now supplies that flag
+without changing the caller's project properties or ordinary build preference.
+The native project-dependency extraction regression uses configuration cache
+enabled and the production command builder; it verifies metadata extraction
+without claiming a target compilation. The command-plan test and shared worker
+compilation for Kotlin 2.1/2.3 passed.
+
+The Rust host also retains eight existing `BUILD_*` categories through a fixed
+static guidance allowlist for `UNSUPPORTED_PROJECT_CONFIGURATION`. Unknown or
+malformed prefixes and other error codes keep their generic guidance. Three
+focused tests cover all eight categories, private-shaped suffixes, malformed
+inputs and wrong error codes; formatting passed. Raw worker text is never
+forwarded as guidance. These bounded changes were independently reviewed and
+accepted before integration. They do not establish the cause or resolution of
+a separate reported project/version combination or universal composite-build
+support.
+
+The earlier 0.13.17 candidate `dd28cf7d288d15c7703dfd4847d28b193ae0d643`
+retains its own hosted CI binding and must not qualify this new production
+delta. The final exact release head requires fresh hosted Linux/macOS gates,
+platform qualification and official installed checks. A fourth installed
+regression will capture a small Kotlin compiler project with configuration
+cache enabled and verify ordinary HTML rendering from the saved Check. Native
+linked MDX/HTML projection remains Java-only; this regression must not claim
+Kotlin native MDX support.

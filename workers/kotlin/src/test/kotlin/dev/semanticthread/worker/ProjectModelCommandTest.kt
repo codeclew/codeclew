@@ -159,6 +159,7 @@ class ProjectModelCommandTest {
                 ":semanticThreadModel",
             )
             assertEquals(1, command.count { it == "--no-daemon" })
+            assertEquals(1, command.count { it == "--no-configuration-cache" })
             val warmCommand = gradleModelCommand(
                 wrapper,
                 repo,
@@ -237,6 +238,7 @@ class ProjectModelCommandTest {
                 """plugins { kotlin("jvm") version "2.4.10" apply false }
                 |""".trimMargin(),
             )
+            root.resolve("gradle.properties").writeText("org.gradle.configuration-cache=true\n")
             val lib = root.resolve("lib")
             val app = root.resolve("app")
             lib.createDirectories()
@@ -265,16 +267,20 @@ class ProjectModelCommandTest {
             val initScript = repository.resolve(
                 "workers/kotlin/src/main/resources/semantic-thread-model.init.gradle",
             )
-            val process = ProcessBuilder(
-                repository.resolve("gradlew").toString(),
-                "-p", root.toString(),
-                "--offline",
-                "--no-daemon",
-                "--quiet",
-                "-I", initScript.toString(),
-                "-Dsemantic.thread.compileTask=compileKotlin",
+            val command = gradleModelCommand(
+                repository.resolve("gradlew"),
+                root,
+                root.resolve(".gradle-user-home"),
+                root.resolve(".gradle-project-cache"),
+                initScript,
+                "compileKotlin",
                 ":app:semanticThreadModel",
-            ).directory(root.toFile()).redirectErrorStream(true).start()
+            ).toMutableList()
+            command.add(command.lastIndex, "--offline")
+            val process = ProcessBuilder(command)
+                .directory(root.toFile())
+                .redirectErrorStream(true)
+                .start()
             val outputFuture = CompletableFuture.supplyAsync {
                 process.inputStream.bufferedReader().use { it.readText() }
             }
