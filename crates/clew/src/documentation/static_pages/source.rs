@@ -5,6 +5,7 @@ use crate::documentation::model::{Observation, ServiceEvidence, Source};
 use crate::error::ClewError;
 use std::collections::BTreeMap;
 
+pub(super) mod control_flow;
 pub(super) mod java;
 pub(super) mod kotlin;
 pub(super) use java::{Parsed, all_steps, compiler, handoff as java_handoff};

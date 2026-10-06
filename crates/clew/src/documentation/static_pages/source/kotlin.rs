@@ -148,17 +148,18 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
     // remains a line-span citation and is never promoted to an exact body span.
     let citation_id = context.citation(&source, 0, source.text.len());
     context.retain(&observation);
-    let projection = CallableProjection {
+    let mut projection = CallableProjection {
         declaration_id: observation.id.clone(),
         symbol: observation.symbol.clone(),
         authority: "COMPILER_DECLARATION".into(),
         citation_id: Some(citation_id.clone()),
+        control_flow: None,
         steps: vec![],
         state: vec![],
         gaps: vec![
             gap(
                 "KOTLIN_BEHAVIOR_PROJECTION_UNAVAILABLE",
-                "This page retains the compiler-bound Kotlin source span; Kotlin statement and control-flow behavior are not projected.",
+                "Kotlin statement-level behavior is unavailable; any admitted compiler control-flow panel is shown separately.",
                 Some(citation_id.clone()),
             ),
             gap(
@@ -173,6 +174,12 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
             ),
         ],
     };
+    super::control_flow::attach(context, &observation, scope, &mut projection)?;
+    let kind = if projection.control_flow.is_some() {
+        ProjectionKind::CompilerControlFlow
+    } else {
+        ProjectionKind::DeclarationOnly
+    };
     Ok(ProjectedCallable {
         key: CallableKey {
             service: context.evidence.service.clone(),
@@ -180,6 +187,6 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
             symbol: observation.symbol,
         },
         projection,
-        kind: ProjectionKind::DeclarationOnly,
+        kind,
     })
 }

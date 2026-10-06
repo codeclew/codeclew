@@ -79,20 +79,25 @@ pub(super) fn project_unresolved(
             .into_iter()
             .flatten()
             .any(|callable| callable.kind == ProjectionKind::DeclarationOnly);
-        if declaration_only && selection.expand_source_calls {
+        let compiler_control_flow = [Some(&endpoint), Some(&worker), wiring.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|callable| callable.kind == ProjectionKind::CompilerControlFlow);
+        let declaration_view = declaration_only || compiler_control_flow;
+        if declaration_view && selection.expand_source_calls {
             return Err(invalid(
-                "expandSourceCalls is unavailable for declaration-only pages",
+                "expandSourceCalls is unavailable for declaration-only and compiler-control-flow pages",
             ));
         }
-        if declaration_only && selection.expand_data_state {
+        if declaration_view && selection.expand_data_state {
             return Err(invalid(
-                "expandDataState is unavailable for declaration-only pages",
+                "expandDataState is unavailable for declaration-only and compiler-control-flow pages",
             ));
         }
         if selection.expand_data_state && !selection.expand_source_calls {
             return Err(invalid("expandDataState requires expandSourceCalls"));
         }
-        let handoff = if declaration_only {
+        let handoff = if declaration_view {
             declaration_only_handoff()
         } else {
             java_handoff(
@@ -102,7 +107,7 @@ pub(super) fn project_unresolved(
                 wiring.as_ref().map(|w| &w.projection),
             )
         };
-        let diagnostics = if declaration_only {
+        let diagnostics = if declaration_view {
             vec![]
         } else {
             diagnostics(&worker.projection)
@@ -115,18 +120,18 @@ pub(super) fn project_unresolved(
         for boundary in &evidence.boundaries {
             limitations.push(gap("RETAINED_SERVICE_BOUNDARY", boundary, None));
         }
-        if declaration_only {
+        if declaration_view {
             limitations.push(gap(
                 "DECLARATION_ONLY_NO_RELATIONSHIP",
                 "Selected declarations are retained without inferring behavior or a relationship between them.",
                 None,
             ));
         }
-        let title = if declaration_only
+        let title = if declaration_view
             && endpoint.projection.declaration_id == worker.projection.declaration_id
         {
             format!("Selected functions: {}", endpoint.projection.symbol)
-        } else if declaration_only {
+        } else if declaration_view {
             format!(
                 "Selected functions: {} · {}",
                 endpoint.projection.symbol, worker.projection.symbol
@@ -140,7 +145,9 @@ pub(super) fn project_unresolved(
         pages.push(PageContent {
             id: selection.id.clone(),
             title,
-            projection_kind: Some(if declaration_only {
+            projection_kind: Some(if compiler_control_flow {
+                ProjectionKind::CompilerControlFlow
+            } else if declaration_only {
                 ProjectionKind::DeclarationOnly
             } else {
                 ProjectionKind::SourceBehavior
@@ -163,9 +170,13 @@ pub(super) fn project_unresolved(
             data_state: None,
         });
     }
-    let has_declaration_only = pages
+    let has_declaration_only = pages.iter().any(|page| {
+        page.projection_kind
+            .is_some_and(ProjectionKind::is_declaration_view)
+    });
+    let has_compiler_control_flow = pages
         .iter()
-        .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
+        .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow));
     if has_declaration_only {
         for page in &mut pages {
             page.projection_kind
@@ -177,7 +188,9 @@ pub(super) fn project_unresolved(
         }
     }
     let mut projection = BundleProjection {
-        schema: if has_declaration_only {
+        schema: if has_compiler_control_flow {
+            CONTROL_FLOW_SCHEMA
+        } else if has_declaration_only {
             DECLARATION_SCHEMA
         } else {
             SCHEMA

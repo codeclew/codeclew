@@ -146,7 +146,9 @@ fn callable_label(symbol: &str) -> String {
         .replace('#', ".")
 }
 fn process_label(p: &PageContent) -> String {
-    if p.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+    if p.projection_kind
+        .is_some_and(ProjectionKind::is_declaration_view)
+    {
         p.title.clone()
     } else {
         format!(
@@ -296,14 +298,83 @@ const DECLARATION_VIEWS: &[(&str, &str)] = &[
 ];
 
 fn views_for(p: &PageContent) -> &'static [(&'static str, &'static str)] {
-    if p.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+    if p.projection_kind
+        .is_some_and(ProjectionKind::is_declaration_view)
+    {
         DECLARATION_VIEWS
     } else {
         VIEWS
     }
 }
 
-fn selected_declaration(c: &CallableProjection, label: &str, ext: &str) -> String {
+fn control_flow_panel(c: &CallableProjection, ext: &str, full: bool) -> String {
+    let Some(graph) = &c.control_flow else {
+        return String::new();
+    };
+    let mut out = format!(
+        "<section><h3>Compiler-provided local control flow</h3>\n{}",
+        paragraph(&format!(
+            "Provider: {}. Nodes: {}. Edges: {}. Node IDs are identifiers, not execution order. Edge kinds and labels are retained compiler metadata; labels are not interpreted as conditions or branch truth.",
+            graph.provider,
+            graph.nodes.len(),
+            graph.edges.len()
+        ))
+    );
+    out += &format!(
+        "<details><summary>Compiler graph bindings</summary>{}</details>\n",
+        paragraph(&format!(
+            "Graph ID: {}. Graph observation: {}. Graph evidence binding: {}. Descriptor evidence binding: {}. Compiler graph name: {}.",
+            graph.graph_id,
+            graph.graph_observation_id,
+            graph.graph_evidence_binding,
+            graph.descriptor_evidence_binding,
+            graph.compiler_graph_name
+        ))
+    );
+    if full {
+        out += "<table><caption>Retained compiler control-flow nodes and outgoing edges</caption><thead><tr><th scope=\"col\">Node ID</th><th scope=\"col\">Role</th><th scope=\"col\">Source</th><th scope=\"col\">Outgoing target, kind and label</th></tr></thead><tbody>\n";
+        for node in &graph.nodes {
+            let source = node
+                .citation_id
+                .as_deref()
+                .map(|id| cite(id, ext))
+                .unwrap_or_else(|| "No source range retained for this node.".into());
+            let outgoing = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.source_node_id == node.node_id)
+                .map(|edge| {
+                    format!(
+                        "<li>Target node ID {} · kind {} · label {}</li>\n",
+                        edge.target_node_id,
+                        control_flow_edge_label(edge.kind),
+                        edge.label
+                            .as_deref()
+                            .map(escape)
+                            .unwrap_or_else(|| "(none)".into())
+                    )
+                })
+                .collect::<String>();
+            out += &format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td><ul>{}</ul></td></tr>\n",
+                node.node_id,
+                control_flow_role_label(node.role),
+                source,
+                outgoing
+            );
+        }
+        out += "</tbody></table>\n";
+    }
+    out += "</section>\n";
+    out
+}
+
+fn selected_declaration(
+    c: &CallableProjection,
+    label: &str,
+    ext: &str,
+    full_control_flow: bool,
+) -> String {
     let mut out = format!("<section><h2>{}</h2>\n", escape(label));
     out += &paragraph(&format!(
         "Declaration: {}. Symbol: {}. Authority: {}.",
@@ -312,11 +383,47 @@ fn selected_declaration(c: &CallableProjection, label: &str, ext: &str) -> Strin
     if let Some(id) = &c.citation_id {
         out += &format!("<p>Retained source: {}</p>\n", cite(id, ext));
     }
+    out += &control_flow_panel(c, ext, full_control_flow);
     if !c.gaps.is_empty() {
         out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext));
     }
     out += "</section>\n";
     out
+}
+
+fn control_flow_role_label(role: crate::thread_flow_cfg::LocalCfgNodeRole) -> &'static str {
+    use crate::thread_flow_cfg::LocalCfgNodeRole::*;
+    match role {
+        Entry => "ENTRY",
+        Exit => "EXIT",
+        Operation => "OPERATION",
+        Decision => "DECISION",
+        Merge => "MERGE",
+        Return => "RETURN",
+        Throw => "THROW",
+        Catch => "CATCH",
+        Finally => "FINALLY",
+        LoopCondition => "LOOP_CONDITION",
+        LoopExit => "LOOP_EXIT",
+        Dead => "DEAD",
+    }
+}
+
+fn control_flow_edge_label(kind: crate::thread_flow_cfg::LocalCfgEdgeKind) -> &'static str {
+    use crate::thread_flow_cfg::LocalCfgEdgeKind::*;
+    match kind {
+        Next => "NEXT",
+        True => "TRUE",
+        False => "FALSE",
+        WhenCase => "WHEN_CASE",
+        Exception => "EXCEPTION",
+        Return => "RETURN",
+        LoopBack => "LOOP_BACK",
+        Break => "BREAK",
+        Continue => "CONTINUE",
+        Finally => "FINALLY",
+        Dead => "DEAD",
+    }
 }
 
 fn declaration_only_page(
@@ -327,6 +434,7 @@ fn declaration_only_page(
     ext: &str,
 ) -> String {
     let same_declaration = p.endpoint.declaration_id == p.worker.declaration_id;
+    let has_control_flow = p.projection_kind == Some(ProjectionKind::CompilerControlFlow);
     let mut out = format!(
         "<main><h1>{}: {}</h1>\n<nav aria-label=\"Documentation pages\">{}",
         escape(&p.title),
@@ -345,17 +453,19 @@ fn declaration_only_page(
             if let Some(question) = &p.selection.question {
                 out += &paragraph(&format!("Question: {question}"));
             }
-            out += &paragraph(
-                "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations.",
-            );
-            if same_declaration {
-                out += &selected_declaration(&p.endpoint, "Selected declaration", ext);
+            out += &paragraph(if has_control_flow {
+                "This page retains selected compiler declarations and function-local compiler control-flow graphs. The graphs do not establish relationships between declarations, execution order, branch truth or deployed runtime behavior."
             } else {
-                out += &selected_declaration(&p.endpoint, "First selected declaration", ext);
-                out += &selected_declaration(&p.worker, "Second selected declaration", ext);
+                "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations."
+            });
+            if same_declaration {
+                out += &selected_declaration(&p.endpoint, "Selected declaration", ext, false);
+            } else {
+                out += &selected_declaration(&p.endpoint, "First selected declaration", ext, false);
+                out += &selected_declaration(&p.worker, "Second selected declaration", ext, false);
             }
             if let Some(wiring) = &p.wiring {
-                out += &selected_declaration(wiring, "Additional selected declaration", ext);
+                out += &selected_declaration(wiring, "Additional selected declaration", ext, false);
             }
             out += &paragraph(&p.handoff.limitation);
         }
@@ -368,6 +478,7 @@ fn declaration_only_page(
                     "First selected declaration"
                 },
                 ext,
+                true,
             );
         }
         "worker" => {
@@ -379,18 +490,19 @@ fn declaration_only_page(
                     "Second selected declaration"
                 },
                 ext,
+                true,
             );
         }
         "fields-state" => {
             out += &paragraph(
                 "Field and data-state analysis is unavailable for declaration-only pages.",
             );
-            out += &selected_declaration(&p.endpoint, "First retained declaration", ext);
+            out += &selected_declaration(&p.endpoint, "First retained declaration", ext, false);
             if !same_declaration {
-                out += &selected_declaration(&p.worker, "Second retained declaration", ext);
+                out += &selected_declaration(&p.worker, "Second retained declaration", ext, false);
             }
             if let Some(wiring) = &p.wiring {
-                out += &selected_declaration(wiring, "Additional retained declaration", ext);
+                out += &selected_declaration(wiring, "Additional retained declaration", ext, true);
             }
         }
         "diagnostic" => {
@@ -728,7 +840,9 @@ fn page(
     ext: &str,
     graph: Option<&SourceCallGraph>,
 ) -> String {
-    if p.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+    if p.projection_kind
+        .is_some_and(ProjectionKind::is_declaration_view)
+    {
         return declaration_only_page(p, view, title, snapshot, ext);
     }
     let mut out = format!(
@@ -917,16 +1031,22 @@ fn page(
     out
 }
 fn appendix(p: &BundleProjection, ext: &str) -> String {
-    let has_declaration_only = p
+    let has_declaration_only = p.pages.iter().any(|page| {
+        page.projection_kind
+            .is_some_and(ProjectionKind::is_declaration_view)
+    });
+    let all_declaration_only = p.pages.iter().all(|page| {
+        page.projection_kind
+            .is_some_and(ProjectionKind::is_declaration_view)
+    });
+    let has_compiler_control_flow = p
         .pages
         .iter()
-        .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
-    let all_declaration_only = p
-        .pages
-        .iter()
-        .all(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
+        .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow));
     let index_label = if !has_declaration_only {
         "All processes"
+    } else if all_declaration_only && has_compiler_control_flow {
+        "All selected declarations and compiler control flow"
     } else if all_declaration_only {
         "All selected declarations"
     } else {
@@ -1072,6 +1192,12 @@ fn html(title: &str, body: &str) -> String {
 const CSS: &str = "html{color:#172d49;background:#f7f4ec;font:16px/1.6 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:32px 24px;overflow-wrap:anywhere}a{color:#245d97}nav{margin:20px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0f2;padding:12px}table{border-collapse:collapse;width:100%;display:block;overflow-x:auto}table:focus-visible{outline:2px solid #245d97;outline-offset:3px}caption{text-align:left;font-weight:600}th,td{min-width:160px;padding:8px;border:1px solid #c7d0da;text-align:left;vertical-align:top}th:nth-child(3),td:nth-child(3){min-width:180px}th:nth-child(4),td:nth-child(4){min-width:220px}section,details{border-top:1px solid #c7d0da;padding:12px 0}h1{line-height:1.2}[hidden]{display:none!important}.catalog-controls{display:flex;flex-wrap:wrap;gap:12px}.catalog-controls label{display:flex;flex-direction:column;max-width:100%}.catalog-controls input,.catalog-controls select{font:inherit;box-sizing:border-box;max-width:100%}#catalog-results{padding-left:24px}.catalog-meta,.catalog-detail{display:block}#catalog-results .catalog-identity{border:0;padding:4px 0;font-size:13px}#catalog-results .catalog-identity summary{cursor:pointer;width:fit-content}#catalog-results .catalog-identity small{display:block}#catalog-results .catalog-identity code{overflow-wrap:anywhere}.catalog-pager{display:flex;gap:12px}.catalog-pager button{font:inherit}a:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid #245d97;outline-offset:3px}@media(max-width:600px){main{padding:20px 16px}h1{font-size:28px}}\n";
 
 fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewError> {
+    let graph_counts = projection
+        .pages
+        .iter()
+        .map(super::source::control_flow::validate_page)
+        .collect::<Result<Vec<_>, _>>()?;
+    let graph_count = graph_counts.iter().sum::<usize>();
     match projection.schema.as_str() {
         SCHEMA => {
             if projection
@@ -1081,6 +1207,11 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
             {
                 return Err(invalid(
                     "legacy native page projection schema cannot contain projectionKind",
+                ));
+            }
+            if graph_count != 0 {
+                return Err(invalid(
+                    "legacy native page projection schema cannot contain compiler control-flow panels",
                 ));
             }
         }
@@ -1103,15 +1234,54 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
                     "declaration-capable native page projection requires a declaration-only page",
                 ));
             }
+            if graph_count != 0
+                || projection
+                    .pages
+                    .iter()
+                    .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow))
+            {
+                return Err(invalid(
+                    "declaration projection schema cannot contain compiler control-flow panels",
+                ));
+            }
+        }
+        CONTROL_FLOW_SCHEMA => {
+            if projection
+                .pages
+                .iter()
+                .any(|page| page.projection_kind.is_none())
+            {
+                return Err(invalid(
+                    "compiler control-flow schema requires projectionKind on every page",
+                ));
+            }
+            if graph_count == 0
+                || !projection
+                    .pages
+                    .iter()
+                    .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow))
+            {
+                return Err(invalid(
+                    "compiler control-flow schema requires at least one graph-bearing page",
+                ));
+            }
         }
         _ => return Err(invalid("unsupported native page projection schema")),
     }
-    for page in &projection.pages {
-        if page.projection_kind == Some(ProjectionKind::DeclarationOnly)
+    for (page, page_graph_count) in projection.pages.iter().zip(graph_counts) {
+        let declares_graph = page.projection_kind == Some(ProjectionKind::CompilerControlFlow);
+        if declares_graph != (page_graph_count != 0) {
+            return Err(invalid(
+                "page control-flow kind differs from its retained graph payloads",
+            ));
+        }
+        if page
+            .projection_kind
+            .is_some_and(ProjectionKind::forbids_expansion)
             && (page.selection.expand_source_calls || page.selection.expand_data_state)
         {
             return Err(invalid(
-                "declaration-only pages cannot request source-call or data-state expansion",
+                "declaration and compiler control-flow pages cannot request source-call or data-state expansion",
             ));
         }
     }
@@ -1134,17 +1304,25 @@ pub(super) fn write(
         }
     }
     let catalogue = catalogue::rows(p)?;
-    let has_declaration_only = p
+    let has_declaration_only = p.pages.iter().any(|page| {
+        page.projection_kind
+            .is_some_and(ProjectionKind::is_declaration_view)
+    });
+    let has_compiler_control_flow = p
         .pages
         .iter()
-        .any(|page| page.projection_kind == Some(ProjectionKind::DeclarationOnly));
+        .any(|page| page.projection_kind == Some(ProjectionKind::CompilerControlFlow));
     let mut files = BTreeMap::new();
     let mut page_rows = Vec::new();
     for ext in ["html", "mdx"] {
         let mut bodies = BTreeMap::new();
         let mut index = "<main><h1>Native source documentation</h1>".to_string();
         if ext == "html" {
-            index += &catalogue::enhancement(&catalogue, has_declaration_only)?;
+            index += &catalogue::enhancement(
+                &catalogue,
+                has_declaration_only,
+                has_compiler_control_flow,
+            )?;
         }
         index += "<ul id=\"catalog-processes\">\n";
         for page_content in &p.pages {
@@ -1406,6 +1584,7 @@ mod tests {
             symbol: "Example.run".into(),
             authority: "SOURCE".into(),
             citation_id: None,
+            control_flow: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],

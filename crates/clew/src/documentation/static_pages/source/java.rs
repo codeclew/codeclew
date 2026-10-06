@@ -611,6 +611,7 @@ impl Context<'_> {
             }
             .into(),
             citation_id: None,
+            control_flow: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],

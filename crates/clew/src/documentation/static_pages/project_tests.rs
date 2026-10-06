@@ -121,6 +121,182 @@ fn add_kotlin_declaration(e: &mut ServiceEvidence, id: &str, kind: &str, text: &
     symbol
 }
 
+fn add_local_cfg(
+    evidence: &mut ServiceEvidence,
+    declaration_id: &str,
+    graph_name: &str,
+    node_roles: &[crate::thread_flow_cfg::LocalCfgNodeRole],
+    source_ranges: &[Option<(usize, usize)>],
+    edges: Vec<crate::thread_flow_cfg::LocalCfgEdge>,
+) -> String {
+    use crate::documentation::local_cfg::{
+        LOCAL_CFG_EVIDENCE_SCHEMA, LocalCfgEvidence, LocalCfgNodeCitation, LocalCfgSourceSite,
+    };
+    use crate::thread_flow_cfg::{
+        LOCAL_CFG_SCHEMA, LocalCfgNode, LocalCfgPayload, LocalCfgSourceRange,
+    };
+
+    let declaration = &evidence.observations[declaration_id];
+    let owner = declaration.symbol.clone();
+    let owner_source = evidence.sources[&declaration.source_ids[0]].clone();
+    assert_eq!(node_roles.len(), source_ranges.len());
+    let mut graph = LocalCfgPayload {
+        schema: LOCAL_CFG_SCHEMA.into(),
+        graph_id: String::new(),
+        owner_symbol_identity: owner.clone(),
+        file: owner_source.file.clone(),
+        compiler_graph_name: graph_name.into(),
+        provider: "K2_FIR_CFG".into(),
+        source_provenance: "COMPILER_UTF16_RANGE_TO_UTF8_BYTES".into(),
+        nodes: node_roles
+            .iter()
+            .zip(source_ranges)
+            .enumerate()
+            .map(|(node_id, (role, range))| LocalCfgNode {
+                node_id: node_id as u64,
+                role: *role,
+                source: range.map(|(start, end)| LocalCfgSourceRange {
+                    start: start as u64,
+                    end: end as u64,
+                }),
+            })
+            .collect(),
+        edges,
+    };
+    graph.graph_id = crate::canonical::hash(&graph).unwrap();
+
+    let graph_binding = format!("sha256:{}", "b".repeat(64));
+    let descriptor_binding = format!("sha256:{}", "c".repeat(64));
+    let source_id = format!("cfg-source-{declaration_id}");
+    let text = owner_source.text.clone();
+    let text_digest = crate::canonical::hash_bytes(text.as_bytes());
+    let start_line = owner_source.start_line;
+    let end_line = start_line + text.lines().count() as u64 - 1;
+    evidence.sources.insert(
+        source_id.clone(),
+        Source {
+            id: source_id.clone(),
+            service: evidence.service.clone(),
+            revision: evidence.revision.clone(),
+            file: graph.file.clone(),
+            start_line,
+            end_line,
+            text: text.clone(),
+            text_digest: text_digest.clone(),
+            evidence_digest: graph_binding.clone(),
+            authority: owner_source.authority.clone(),
+            occurrence: None,
+            url: owner_source.url.clone(),
+        },
+    );
+    let node_citations = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let range = node.source.as_ref()?;
+            let start = range.start as usize;
+            let end = range.end as usize;
+            Some(LocalCfgNodeCitation {
+                node_id: node.node_id,
+                byte_start: range.start,
+                byte_end: range.end,
+                text_digest: crate::canonical::hash_bytes(text.get(start..end).unwrap().as_bytes()),
+            })
+        })
+        .collect();
+    let scope = declaration.normalized["scope"].as_str().unwrap().to_owned();
+    let normalized = LocalCfgEvidence {
+        schema: LOCAL_CFG_EVIDENCE_SCHEMA.into(),
+        scope,
+        owner_symbol_identity: owner.clone(),
+        file: graph.file.clone(),
+        graph,
+        graph_evidence_binding: graph_binding.clone(),
+        descriptor_evidence_binding: descriptor_binding,
+        node_citations,
+        source_site: LocalCfgSourceSite {
+            source_id: source_id.clone(),
+            source_digest: text_digest.clone(),
+            source_evidence_digest: graph_binding,
+            source_status: "SOURCE_RETAINED".into(),
+            authority: evidence.sources[&source_id].authority.clone(),
+            file: evidence.sources[&source_id].file.clone(),
+            start_line,
+            end_line,
+            owner_byte_start: 0,
+            owner_byte_end: text.len() as u64,
+            source_content_digest: text_digest.clone(),
+            full_compilation_source_digest: text_digest,
+            span_digest: crate::canonical::hash_bytes(text.as_bytes()),
+        },
+    };
+    normalized
+        .validate_source(
+            &evidence.sources[&source_id],
+            &evidence.service,
+            &evidence.revision,
+        )
+        .unwrap();
+    let normalized = serde_json::to_value(normalized).unwrap();
+    let id = format!("cfg-{declaration_id}");
+    evidence.observations.insert(
+        id.clone(),
+        Observation {
+            id: id.clone(),
+            kind: "LOCAL_CFG".into(),
+            service: evidence.service.clone(),
+            symbol: owner,
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![source_id],
+        },
+    );
+    id
+}
+
+fn add_local_cfg_boundary(
+    evidence: &mut ServiceEvidence,
+    owner: Option<&str>,
+    file: Option<&str>,
+    scope: &str,
+    code: &str,
+) -> String {
+    use crate::documentation::local_cfg::{
+        LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA, LocalCfgBoundaryEvidence,
+    };
+
+    let binding = format!("sha256:{}", "d".repeat(64));
+    let boundary = LocalCfgBoundaryEvidence {
+        schema: LOCAL_CFG_BOUNDARY_EVIDENCE_SCHEMA.into(),
+        kind: "LOCAL_CFG_BOUNDARY".into(),
+        scope: scope.into(),
+        owner_symbol_identity: owner.map(str::to_owned),
+        file: file.map(str::to_owned),
+        compiler_graph_name: Some("unavailable".into()),
+        code: code.into(),
+        provider: "CODECLEW_LOCAL_CFG_NORMALIZER".into(),
+        evidence_binding: binding.clone(),
+        descriptor_evidence_binding: Some(format!("sha256:{}", "e".repeat(64))),
+        raw_row_hash: None,
+    };
+    boundary.validate(&binding).unwrap();
+    let normalized = serde_json::to_value(boundary).unwrap();
+    let id = format!("cfg-boundary-{code}");
+    evidence.observations.insert(
+        id.clone(),
+        Observation {
+            id: id.clone(),
+            kind: "LOCAL_CFG_BOUNDARY".into(),
+            service: evidence.service.clone(),
+            symbol: owner.unwrap_or_default().into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        },
+    );
+    id
+}
+
 fn kotlin_check(e: ServiceEvidence) -> Check {
     check::assemble(
         "input-digest".into(),
@@ -130,6 +306,47 @@ fn kotlin_check(e: ServiceEvidence) -> Check {
         &BTreeMap::new(),
     )
     .unwrap()
+}
+
+fn kotlin_control_flow_check() -> (Check, String, String, String) {
+    use crate::thread_flow_cfg::{LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNodeRole};
+
+    let mut evidence = evidence();
+    let retained =
+        "fun calculate(value: String): String {\r\n  // π\r\n  return value.trim()\r\n}".to_owned();
+    let symbol = add_kotlin_declaration(&mut evidence, "calculate", "FUNCTION", &retained);
+    let comment_start = retained.find("// π").unwrap();
+    let return_start = retained.find("return value.trim()").unwrap();
+    let cfg_id = add_local_cfg(
+        &mut evidence,
+        "calculate",
+        "graph <{π}>",
+        &[
+            LocalCfgNodeRole::Entry,
+            LocalCfgNodeRole::Operation,
+            LocalCfgNodeRole::Return,
+        ],
+        &[
+            None,
+            Some((comment_start, comment_start + "// π".len())),
+            Some((return_start, return_start + "return value.trim()".len())),
+        ],
+        vec![
+            LocalCfgEdge {
+                source_node_id: 0,
+                target_node_id: 1,
+                kind: LocalCfgEdgeKind::Next,
+                label: Some("<entry>{π}".into()),
+            },
+            LocalCfgEdge {
+                source_node_id: 1,
+                target_node_id: 2,
+                kind: LocalCfgEdgeKind::Return,
+                label: Some("CompilerReturn".into()),
+            },
+        ],
+    );
+    (kotlin_check(evidence), symbol, cfg_id, retained)
 }
 
 fn refresh_observation_digest(e: &mut ServiceEvidence, id: &str) {
@@ -550,6 +767,249 @@ fn kotlin_function_projection_uses_compiler_bound_source_and_explicit_gaps() {
         "DECLARATION_ONLY_NO_RELATIONSHIP"
     );
     assert_eq!(page.title, format!("Selected functions: {symbol}"));
+}
+
+#[test]
+fn kotlin_compiler_control_flow_binds_exact_graph_and_renders_cited_nodes() {
+    let (checked, symbol, cfg_id, retained) = kotlin_control_flow_check();
+    let comment_start = retained.find("// π").unwrap();
+    let projection = project(&checked, &[kotlin_selection("calculate", "calculate")]).unwrap();
+
+    assert_eq!(projection.schema, CONTROL_FLOW_SCHEMA);
+    let page = &projection.pages[0];
+    assert_eq!(page.title, format!("Selected functions: {symbol}"));
+    assert_eq!(
+        page.projection_kind,
+        Some(ProjectionKind::CompilerControlFlow)
+    );
+    let panel = page.endpoint.control_flow.as_ref().unwrap();
+    assert_eq!(panel.owner_key.service, "sample");
+    assert_eq!(panel.owner_key.scope, ":/main");
+    assert_eq!(panel.owner_key.symbol, symbol);
+    assert_eq!(panel.graph_observation_id, cfg_id);
+    assert_eq!(panel.nodes.len(), 3);
+    assert_eq!(panel.edges.len(), 2);
+    assert_eq!(panel.nodes[0].node_id, 0);
+    assert_eq!(panel.nodes[0].citation_id, None);
+    let comment_citation = &page.citations[panel.nodes[1].citation_id.as_ref().unwrap()];
+    assert_eq!(comment_citation.start_byte, comment_start);
+    assert_eq!(
+        &page.sources[&comment_citation.source_id].text
+            [comment_citation.start_byte..comment_citation.end_byte],
+        "// π"
+    );
+    let return_citation = &page.citations[panel.nodes[2].citation_id.as_ref().unwrap()];
+    assert_eq!(
+        &page.sources[&return_citation.source_id].text
+            [return_citation.start_byte..return_citation.end_byte],
+        "return value.trim()"
+    );
+    assert!(page.observations.contains_key(&cfg_id));
+
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let catalogue: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("catalogue.json")).unwrap())
+            .unwrap();
+    let declaration_row = catalogue["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "declarations-kotlin-page")
+        .unwrap();
+    assert_eq!(declaration_row["title"].as_str(), Some(page.title.as_str()));
+    assert_eq!(
+        declaration_row["kind"].as_str(),
+        Some("Selected declarations")
+    );
+    let overview = std::fs::read_to_string(temp.path().join("kotlin-page-overview.html")).unwrap();
+    assert!(overview.contains("Nodes: 3. Edges: 2."));
+    assert!(!overview.contains("Retained compiler control-flow nodes and outgoing edges"));
+    let endpoint = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.html")).unwrap();
+    assert!(endpoint.contains("Retained compiler control-flow nodes and outgoing edges"));
+    assert!(endpoint.contains("Node IDs are identifiers, not execution order."));
+    assert!(endpoint.contains("labels are retained compiler metadata"));
+    assert!(endpoint.contains("&lt;entry&gt;&#123;π&#125;"));
+    let mdx = std::fs::read_to_string(temp.path().join("kotlin-page-endpoint.mdx")).unwrap();
+    assert!(mdx.contains("&lt;entry&gt;&#123;π&#125;"));
+    assert!(!mdx.contains("<entry>{π}"));
+}
+
+#[test]
+fn local_cfg_boundaries_veto_only_matching_owner_scope_and_file() {
+    let run = |owner: Option<&str>, file: Option<&str>, code: &str| {
+        let (mut checked, _, _, _) = kotlin_control_flow_check();
+        let boundary_id = add_local_cfg_boundary(
+            checked.services.get_mut("sample").unwrap(),
+            owner,
+            file,
+            ":/main",
+            code,
+        );
+        let projection = project(&checked, &[kotlin_selection("calculate", "calculate")]).unwrap();
+        (projection, boundary_id)
+    };
+
+    for (owner, file, code) in [
+        (None, None, "SCOPE_UNKNOWN"),
+        (
+            None,
+            Some("src/main/kotlin/example/Sample.kt"),
+            "FILE_UNKNOWN",
+        ),
+        (
+            Some("callable:example/Sample.calculate#jvm:(Ljava/lang/String;)Ljava/lang/String;"),
+            None,
+            "OWNER_UNKNOWN",
+        ),
+    ] {
+        let (projection, boundary_id) = run(owner, file, code);
+        let page = &projection.pages[0];
+        assert_eq!(projection.schema, DECLARATION_SCHEMA);
+        assert_eq!(page.projection_kind, Some(ProjectionKind::DeclarationOnly));
+        assert!(page.endpoint.control_flow.is_none());
+        assert!(page.observations.contains_key(&boundary_id));
+        assert!(page.endpoint.gaps.iter().any(|gap| {
+            gap.code == "KOTLIN_CONTROL_FLOW_UNAVAILABLE" && gap.detail.contains(code)
+        }));
+    }
+
+    let (unrelated_file, _) = run(
+        None,
+        Some("src/main/kotlin/other/Other.kt"),
+        "OTHER_FILE_UNKNOWN",
+    );
+    assert_eq!(unrelated_file.schema, CONTROL_FLOW_SCHEMA);
+    assert!(unrelated_file.pages[0].endpoint.control_flow.is_some());
+}
+
+#[test]
+fn kotlin_control_flow_preflight_rejects_binding_and_schema_mismatch_before_output() {
+    let (checked, _, _, _) = kotlin_control_flow_check();
+    let build = || project(&checked, &[kotlin_selection("calculate", "calculate")]).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+
+    let mut wrong_scope = build();
+    wrong_scope.pages[0]
+        .endpoint
+        .control_flow
+        .as_mut()
+        .unwrap()
+        .owner_key
+        .scope
+        .push_str("/wrong");
+    let wrong_scope_output = temp.path().join("wrong-scope");
+    assert!(super::super::publish::write(&wrong_scope_output, "snapshot", &wrong_scope).is_err());
+    assert!(!wrong_scope_output.exists());
+
+    let mut wrong_citation = build();
+    let citation_id = wrong_citation.pages[0]
+        .endpoint
+        .control_flow
+        .as_ref()
+        .unwrap()
+        .nodes[1]
+        .citation_id
+        .clone()
+        .unwrap();
+    wrong_citation.pages[0]
+        .citations
+        .get_mut(&citation_id)
+        .unwrap()
+        .start_byte += 1;
+    let wrong_citation_output = temp.path().join("wrong-citation");
+    assert!(
+        super::super::publish::write(&wrong_citation_output, "snapshot", &wrong_citation).is_err()
+    );
+    assert!(!wrong_citation_output.exists());
+
+    let mut wrong_schema = build();
+    wrong_schema.schema = DECLARATION_SCHEMA.into();
+    let wrong_schema_output = temp.path().join("wrong-schema");
+    assert!(super::super::publish::write(&wrong_schema_output, "snapshot", &wrong_schema).is_err());
+    assert!(!wrong_schema_output.exists());
+}
+
+#[test]
+fn kotlin_additional_only_control_flow_uses_declaration_sources_view() {
+    use crate::thread_flow_cfg::{LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNodeRole};
+
+    let mut evidence = evidence();
+    add_kotlin_declaration(&mut evidence, "render", "FUNCTION", "fun render() = 1");
+    let additional = "fun additional() = 2";
+    add_kotlin_declaration(&mut evidence, "additional", "FUNCTION", additional);
+    add_local_cfg(
+        &mut evidence,
+        "additional",
+        "additional-graph",
+        &[
+            LocalCfgNodeRole::Entry,
+            LocalCfgNodeRole::LoopCondition,
+            LocalCfgNodeRole::Return,
+        ],
+        &[None, Some((0, additional.len())), None],
+        vec![
+            LocalCfgEdge {
+                source_node_id: 0,
+                target_node_id: 1,
+                kind: LocalCfgEdgeKind::Next,
+                label: None,
+            },
+            LocalCfgEdge {
+                source_node_id: 1,
+                target_node_id: 0,
+                kind: LocalCfgEdgeKind::LoopBack,
+                label: Some("loop <back>".into()),
+            },
+            LocalCfgEdge {
+                source_node_id: 1,
+                target_node_id: 2,
+                kind: LocalCfgEdgeKind::False,
+                label: None,
+            },
+        ],
+    );
+    let checked = kotlin_check(evidence);
+    let mut selection = kotlin_selection("render", "render");
+    selection.wiring_declaration = Some("additional".into());
+    let mut expanded = selection.clone();
+    expanded.expand_source_calls = true;
+    assert!(
+        project(&checked, &[expanded])
+            .unwrap_err()
+            .message
+            .contains("expandSourceCalls is unavailable for declaration-only")
+    );
+    let mut expanded_state = selection.clone();
+    expanded_state.expand_data_state = true;
+    assert!(
+        project(&checked, &[expanded_state])
+            .unwrap_err()
+            .message
+            .contains("expandDataState is unavailable for declaration-only")
+    );
+    let projection = project(&checked, &[selection]).unwrap();
+
+    assert_eq!(projection.schema, CONTROL_FLOW_SCHEMA);
+    let page = &projection.pages[0];
+    assert_eq!(
+        page.projection_kind,
+        Some(ProjectionKind::CompilerControlFlow)
+    );
+    assert!(page.endpoint.control_flow.is_none());
+    assert!(page.worker.control_flow.is_none());
+    assert!(page.wiring.as_ref().unwrap().control_flow.is_some());
+
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    let fields = std::fs::read_to_string(temp.path().join("kotlin-page-fields-state.mdx")).unwrap();
+    assert!(fields.contains("Additional retained declaration"));
+    assert!(fields.contains("Compiler-provided local control flow"));
+    assert!(fields.contains("Retained compiler control-flow nodes and outgoing edges"));
+    assert!(fields.contains("LOOP_CONDITION"));
+    assert!(fields.contains("LOOP_BACK"));
+    assert!(fields.contains("loop &lt;back&gt;"));
+    assert!(fields.contains("Node ID 1") || fields.contains("<td>1</td>"));
 }
 
 #[test]

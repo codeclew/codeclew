@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = "codeclew-native-page-projection/1.0";
 pub const DECLARATION_SCHEMA: &str = "codeclew-native-page-projection/1.1";
+pub const CONTROL_FLOW_SCHEMA: &str = "codeclew-native-page-projection/1.2";
 
 /// Describes the scope of the selected page projection, not runtime certainty.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -12,6 +13,50 @@ pub const DECLARATION_SCHEMA: &str = "codeclew-native-page-projection/1.1";
 pub enum ProjectionKind {
     DeclarationOnly,
     SourceBehavior,
+    CompilerControlFlow,
+}
+
+impl ProjectionKind {
+    pub(crate) const fn is_declaration_view(self) -> bool {
+        matches!(self, Self::DeclarationOnly | Self::CompilerControlFlow)
+    }
+
+    pub(crate) const fn forbids_expansion(self) -> bool {
+        matches!(self, Self::DeclarationOnly | Self::CompilerControlFlow)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompilerControlFlowOwnerKey {
+    pub service: String,
+    pub scope: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompilerControlFlowNode {
+    pub node_id: u64,
+    pub role: crate::thread_flow_cfg::LocalCfgNodeRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::thread_flow_cfg::LocalCfgSourceRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompilerControlFlowProjection {
+    pub owner_key: CompilerControlFlowOwnerKey,
+    pub graph_observation_id: String,
+    pub graph_id: String,
+    pub graph_evidence_binding: String,
+    pub descriptor_evidence_binding: String,
+    pub provider: String,
+    pub compiler_graph_name: String,
+    pub nodes: Vec<CompilerControlFlowNode>,
+    pub edges: Vec<crate::thread_flow_cfg::LocalCfgEdge>,
 }
 
 /// Inputs select retained declarations. They never supply conclusions or labels.
@@ -258,6 +303,8 @@ pub struct CallableProjection {
     pub symbol: String,
     pub authority: String,
     pub citation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_flow: Option<CompilerControlFlowProjection>,
     pub steps: Vec<Statement>,
     pub state: Vec<StateRow>,
     pub gaps: Vec<Gap>,

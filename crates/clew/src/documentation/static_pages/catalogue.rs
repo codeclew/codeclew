@@ -41,7 +41,10 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
             .and_then(|o| o.normalized["scope"].as_str())
             .unwrap_or("unavailable scope");
         let context = format!("{} · {scope}", page.selection.service);
-        if page.projection_kind == Some(ProjectionKind::DeclarationOnly) {
+        if page
+            .projection_kind
+            .is_some_and(ProjectionKind::is_declaration_view)
+        {
             let mut search_text = vec![
                 page.selection.service.clone(),
                 scope.into(),
@@ -60,7 +63,11 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                     kind: "Selected declarations".into(),
                     href: format!("{}-overview.html", page.id),
                     context: context.clone(),
-                    summary: "Retained compiler-bound declarations and source; behavior and relationships are not inferred.".into(),
+                    summary: if page.projection_kind == Some(ProjectionKind::CompilerControlFlow) {
+                        "Retained compiler-bound declarations and function-local control-flow graphs; inter-function relationships, execution order and runtime behavior are not inferred.".into()
+                    } else {
+                        "Retained compiler-bound declarations and source; behavior and relationships are not inferred.".into()
+                    },
                     search_text: search_text.clone(),
                     related_links: vec![],
                 },
@@ -189,7 +196,11 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
     Ok(rows)
 }
 
-pub(super) fn enhancement(rows: &[Row], has_declaration_only: bool) -> Result<String, ClewError> {
+pub(super) fn enhancement(
+    rows: &[Row],
+    has_declaration_only: bool,
+    has_compiler_control_flow: bool,
+) -> Result<String, ClewError> {
     let payload = serde_json::to_string(rows)
         .map_err(crate::documentation::io_error)?
         .replace('<', "\\u003c");
@@ -201,7 +212,14 @@ pub(super) fn enhancement(rows: &[Row], has_declaration_only: bool) -> Result<St
         .into_iter()
         .map(|kind| format!("<option>{}</option>", escape(kind)))
         .collect::<String>();
-    let (heading, summary, search_label, noscript) = if has_declaration_only {
+    let (heading, summary, search_label, noscript) = if has_compiler_control_flow {
+        (
+            "Find selected declarations and compiler control-flow panels",
+            "This snapshot and bundle only. Compiler node IDs are identifiers, not execution order. Graph labels are retained compiler metadata; relationships between selected functions and runtime execution are not inferred.",
+            "Search exact symbol, declaration, compiler graph or question",
+            "Search requires JavaScript. Use the selected declaration and compiler control-flow links below.",
+        )
+    } else if has_declaration_only {
         (
             "Find selected declarations and processes",
             "This snapshot and bundle only. Declaration-only pages retain source but do not project behavior or relationships. Reverse links identify documentation context, not runtime impact.",
@@ -234,6 +252,7 @@ mod tests {
             symbol: "method:class:Same#submit()V".into(),
             authority: "SYNTHETIC_TEST".into(),
             citation_id: None,
+            control_flow: None,
             steps: vec![],
             state: vec![],
             gaps: vec![],
@@ -341,7 +360,7 @@ mod tests {
                 .insert(observation.id.clone(), observation);
         }
         assert_eq!(rows(&p).unwrap(), catalogue);
-        let html = enhancement(&catalogue, false).unwrap();
+        let html = enhancement(&catalogue, false, false).unwrap();
         assert!(!html.contains("<script>{x}"));
         assert!(html.contains("\\u003cscript>"));
         assert!(html.contains("not approved answers") && html.contains("<noscript>"));
@@ -450,7 +469,7 @@ mod tests {
             rows.iter()
                 .all(|row| !row.summary.contains("source condition"))
         );
-        let html = enhancement(&rows, true).unwrap();
+        let html = enhancement(&rows, true, false).unwrap();
         assert!(html.contains("Find selected declarations and processes"));
         assert!(html.contains("do not project behavior or relationships"));
         assert!(!html.contains("Endpoint"));

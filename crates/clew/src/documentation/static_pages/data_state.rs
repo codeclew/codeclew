@@ -1154,6 +1154,7 @@ mod tests {
                 symbol: "method:Fixture#prepare()".into(),
                 authority: "COMPILER_EXACT".into(),
                 citation_id: None,
+                control_flow: None,
                 steps: vec![],
                 state: vec![],
                 gaps: vec![],

@@ -499,15 +499,23 @@ selected declarations, including optional wiring, do not imply a relationship.
 Absent source occurrence bounds remain absent; retained line spans are not
 promoted to exact function-body ranges.
 
-A bundle containing a declaration-only page uses derived projection schema
+A bundle containing a declaration-only page and no compiler control-flow panel
+uses derived projection schema
 `codeclew-native-page-projection/1.1`, with explicit `projectionKind` on every
 page. `DECLARATION_ONLY` does not mean that calls or state changes are absent.
+When an exact retained `LOCAL_CFG` is available, its function also receives a
+compiler control-flow panel: node IDs and roles, explicit outgoing edges and
+source citations where the compiler supplied valid ranges. Such pages use
+`COMPILER_CONTROL_FLOW` and bundle schema `/1.2`; each selected function keeps
+its own graph. A node without a source range has no source citation. Table row
+order is not execution order, and compiler labels are not inferred predicates.
 `SOURCE_BEHAVIOR` denotes the existing Java source projection, with its own
 authority and gaps. Pure Java bundles retain schema `/1.0` and omit the field.
 Capture and Check contracts are unchanged.
 
-Kotlin call-graph, CFG and data-state projection remain unsupported here.
-`expandSourceCalls` and `expandDataState` are rejected for declaration-only
+Kotlin call-graph expansion, structured activity diagrams, handoffs and
+data-state projection remain unsupported here. `expandSourceCalls` and
+`expandDataState` are rejected for declaration-only and compiler control-flow
 selections before output is created. An independent Java selection in the same
 bundle can still use the existing Java expansion features.
 
@@ -542,8 +550,9 @@ Owned `CALL_RELATION` records include the exact target, compilation scope and
 retained call-site text with byte coordinates and source/evidence digests.
 Partial or ambiguous evidence is not promoted to an exact call. Selecting the
 caller does not recursively select the callee or establish its body, runtime
-dispatch, execution order or CFG. Native pages remain declaration-only for
-Kotlin; their graph and data-state expansion flags remain unavailable.
+dispatch, execution order or CFG. Kotlin native pages can separately display
+an admitted local compiler graph; call and data-state expansion remain
+unavailable.
 Previously captured Checks are immutable and do not gain discarded relation
 records when the CLI is updated; acquiring those records requires a new Check.
 
@@ -553,8 +562,9 @@ explicit control edges and compiler path labels, with source spans converted
 from UTF-16 offsets to UTF-8 byte ranges inside the owning function. Data-only
 edges do not become control edges. Unsupported kinds, inconsistent ownership
 or invalid ranges produce a boundary instead of an inferred graph. Constructor
-capture can still report `NO_SOURCE_FUNCTION`. This retained compiler capability
-does not enable Kotlin CFG projection in native documentation pages.
+capture can still report `NO_SOURCE_FUNCTION`. A native-page control-flow panel
+additionally requires the matching graph, declaration and exact retained source
+bindings in the selected Check.
 
 New Checks also retain supported `LOCAL_CFG` evidence for the exact function.
 Use `docs context --symbol` to select its graph and available source bindings.
