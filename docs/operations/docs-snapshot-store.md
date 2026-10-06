@@ -464,10 +464,11 @@ They write `NON_CACHEABLE` with a reason. Pure
 syntax retains its cache path; explicit historical snapshot reads remain
 available independently of current provider admission.
 
-### Exact per-file syntax reuse (source candidate)
+<a id="exact-per-file-syntax-reuse-source-candidate"></a>
 
-The accepted development candidate `1db703a` adds a second reuse boundary inside
-syntax capture. Successful extraction is keyed by service, relative path, exact
+### Exact per-file syntax reuse
+
+Version 0.13.16 includes a second reuse boundary inside syntax capture. Successful extraction is keyed by service, relative path, exact
 file bytes, language/dialect and the complete bundled producer, including its
 parser inputs and pinned Rust toolchain. Equal content at a different path or in
 another service does not reuse that result. Whole-capture admission also binds
@@ -486,8 +487,8 @@ The [bounded capture-cost measurement](field-documentation.md#incremental-captur
 found 21.863% incremental native capture/Check savings on one worker corpus after
 cache seeding, with complete evidence/Check equality and retained partial
 coverage. Startup, changed-file parsing and IO still cost time. It is not a
-general CLI, compiler or documentation-task speedup. The candidate targets
-v0.13.16 pending its release gate; it is absent from released v0.13.15.
+general CLI, compiler or documentation-task speedup. Exact per-file syntax reuse
+is included in v0.13.16.
 
 ## Initial model-request preflight
 
@@ -1184,15 +1185,16 @@ Saved answer/packet/review/provenance files and historical publications stay fro
 A different question or scope requires new Work and cannot inherit this saved
 approval. The comparison creates no new cache, review or publication baseline.
 
-## Find an approved answer by exact request (source candidate)
+<a id="find-an-approved-answer-by-exact-request-source-candidate"></a>
+
+## Find an approved answer by exact request
 
 ```sh
-./clew docs work find-answer --root DOCS --subject service:ID \
+clew docs work find-answer --root DOCS --subject service:ID \
   --input question.json --snapshot SAVED_CHECK
 ```
 
-Accepted source candidate `c15fecd` targets v0.13.16 pending its release gate and
-is absent from released v0.13.15. It searches immutable
+Exact approved-answer discovery is included in v0.13.16. It searches immutable
 Work manifests and every historical approved run, without needing saved Work or
 review IDs. Matching uses the complete normalized request: question, audience,
 language, root declaration, profile, authoring contract, context bounds and
@@ -1242,7 +1244,7 @@ To choose among eligible approvals, copy one candidate's complete `selection`
 object into a JSON file and rerun:
 
 ```sh
-./clew docs work find-answer --root DOCS --subject service:ID \
+clew docs work find-answer --root DOCS --subject service:ID \
   --input question.json --snapshot SAVED_CHECK --select answer-selection.json
 ```
 
@@ -1265,11 +1267,13 @@ acquired evidence and use the existing [publication baseline and admission](#rev
 when a catalogue update is intended. Generic service narratives continue through
 their Work/proposal path.
 
-### Compatible model ID representation (source candidate)
+<a id="compatible-model-id-representation-source-candidate"></a>
 
-Accepted candidate `e729cd2` introduced the frozen
+### Compatible model ID representation
+
+Version 0.13.16 includes the frozen
 `modelRepresentation: "codeclew-model-ids/1.0"` option for native 1.6 method
-authoring and independent review. The subsequent compact candidate recommends
+authoring and independent review, and recommends compact
 `modelRepresentation: "codeclew-model-ids/1.1"` for compatible new drivers;
 existing 1.0 representations remain supported unchanged. The
 [serializer contract and public Rust example](model-id-serializer.md)
@@ -1305,5 +1309,4 @@ The earlier [two-retained-first-call measurement](../product/validation/model-id
 remains a separate 1.0 result: 4.9184% fewer combined reference tokens against
 canonical input. Complete carrier bytes, including canonical input and host-only
 map, still participate in conservative admission and reservation for both modes.
-The candidates target v0.13.16; the release gate remains pending and released
-v0.13.15 contains neither mode.
+Both modes are included in v0.13.16. Historical v0.13.15 contains neither mode.

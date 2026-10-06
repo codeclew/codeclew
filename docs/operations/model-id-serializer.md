@@ -2,8 +2,8 @@
 
 An operation author using `codeclew-operation-draft-authoring/1.6`, or its
 independent reviewer, can opt into `"modelRepresentation":
-"codeclew-model-ids/1.1"` in its role configuration. This compact source candidate
-targets v0.13.16; installed v0.13.15 has neither model-ID mode. Version 1.0
+"codeclew-model-ids/1.1"` in its role configuration. This compact representation
+is included in v0.13.16. Version 1.0
 remains supported with its original frozen representation. Omit this option for an
 existing driver that expects the canonical job on stdin. The mode participates
 in the admitted configuration identity.

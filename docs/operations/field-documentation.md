@@ -15,10 +15,8 @@ source-question packet lets your current agent answer with file/line references;
 it is separate from a saved operation answer with an independent meaning review.
 
 Exact approved-answer discovery, syntax-file reuse and model ID representation
-are accepted source candidates targeted for v0.13.16, whose release gate is still
-pending. They are absent from released v0.13.15. Use `./clew` from the accepted
-checkout for these candidate commands. Other commands below also work through
-the installed launcher within its released contract.
+are included in v0.13.16. Use installed `clew` for the method workflow below;
+use `./clew` when developing this checkout.
 
 For a saved Java method answer, select an exact callable declaration from a
 native captured Check admitted for `process-graph-v1`. If compiler evidence is
@@ -44,11 +42,11 @@ Replace the declaration placeholder with its exact retained observation ID; omit
 `entrypoint`. Prepare, author and independently review the method:
 
 ```sh
-./clew docs work prepare --root /work/architecture --subject service:orders \
+clew docs work prepare --root /work/architecture --subject service:orders \
   --input /work/method-question.json --snapshot SOURCE_CHECK
-./clew docs work run --root /work/architecture --work RETURNED_WORK \
+clew docs work run --root /work/architecture --work RETURNED_WORK \
   --config /operator/method-author.json --draft
-./clew docs work review-draft --root /work/architecture --work RETURNED_WORK \
+clew docs work review-draft --root /work/architecture --work RETURNED_WORK \
   --source-run RETURNED_AUTHOR_RUN --config /operator/method-reviewer.json
 ```
 
@@ -68,7 +66,7 @@ when a new captured comparison is needed. Then use the original request file
 and exact subject without remembering Work or review IDs:
 
 ```sh
-./clew docs work find-answer --root /work/architecture --subject service:orders \
+clew docs work find-answer --root /work/architecture --subject service:orders \
   --input /work/method-question.json --snapshot COMPARED_CHECK
 ```
 
@@ -104,14 +102,14 @@ Neither finding an answer nor checking applicability updates `docs/index.html`.
 
 For compatible new drivers, use `modelRepresentation:
 "codeclew-model-ids/1.1"`; see the [public serializer example and contract](model-id-serializer.md).
-This compact candidate verifies the complete native presentation against the
+This compact representation verifies the complete native presentation against the
 canonical pages/source parts, then omits only duplicate raw delivery arrays from
 the model form. The model reads the preserved presentation, including retained
 reference links; receipts, citations and canonical archives remain intact. A
 missing presentation retains raw arrays, while a mismatched presentation fails.
 Version 1.0 remains supported unchanged; changing the selected mode cannot
 migrate an existing run. Both versions preserve canonical answers and independent
-reviewer scope, and both are absent from installed v0.13.15.
+reviewer scope, and both are included in v0.13.16.
 
 In a generated grouped-read fixture, paired supported 1.0/1.1 model forms for the
 same canonical jobs and scopes measured **163,106 to 104,051 combined prompt plus
@@ -431,9 +429,11 @@ Configuration, driver, evidence, read-ledger or publication mismatches return an
 
 When another projection is needed, run `docs recompose` from the original source-capture snapshot after publication, then render its newly returned snapshot. Both operations use saved evidence without capture. Keep the frozen publication ID/path. Pin the source parent with `clew docs snapshot pin --root /work/architecture --name orders-source-first --snapshot SOURCE_SNAPSHOT` before changing service configuration.
 
-## Incremental capture cost (source candidate)
+<a id="incremental-capture-cost-source-candidate"></a>
 
-The accepted `1db703a` candidate reuses successful syntax extraction for the same
+## Incremental capture cost
+
+Version 0.13.16 reuses successful syntax extraction for the same
 service and relative file path when exact source bytes, language/dialect and the
 complete bundled producer match. It reconstructs Source receipts for the current
 revision, snapshot, blob, ranges and URL. Scope acquisition, file inventory,
@@ -456,8 +456,8 @@ initialization. The measured forced-full incremental capture took about 1.1
 seconds; these are different operations, not a paired cold-start comparison.
 Account for startup and new/changed files before expecting a warm incremental
 benefit. The [accepted measurement and exclusions](../plans/question-results-and-incremental-evidence.md#measured-syntax-file-reuse-candidate-2026-10-06)
-describe the selected corpus and five pairs. The v0.13.16 integrated release gate
-is pending; this behavior is absent from released v0.13.15.
+describe the selected corpus and five pairs. This behavior is included in
+v0.13.16.
 
 ## Explicit compiler enrichment afterward
 
@@ -478,8 +478,8 @@ Keep the same service ID, `profile: "source-syntax"`, source roots/dialect and f
 Use the actual qualified profile and compilation selector; writable/AP projects require their own explicit supported profile/admission. Configure the provider only through `modules.semantic`. Then run `clew docs check --root /work/architecture --service orders`. This is synchronous and may run Maven/compiler work for that provider's selected compilation and its build dependencies. It retains compatible saved sibling services; it does not guarantee no reactor work. Ordinary `context`, Work and `render` consume saved evidence; avoid `--refresh` and unscoped `docs check` when no acquisition is intended.
 
 This is a new capture, not an in-place enrichment of the old snapshot. Released
-v0.13.15 reparses source when semantic execution is enabled. The accepted syntax
-candidate can reuse exact per-file syntax extraction while acquiring the
+v0.13.15 reparses source when semantic execution is enabled. Version 0.13.16
+can reuse exact per-file syntax extraction while acquiring the
 compiler provider separately; composite semantic captures remain non-cacheable.
 Enrichment attaches only unique equal-revision/name/file/line `SEMANTIC_SYMBOL`
 observations. Source identities remain source-based, and lexical FLOW targets are

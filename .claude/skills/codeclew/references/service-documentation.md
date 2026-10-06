@@ -498,9 +498,9 @@ proof. Human input is retained verbatim with its separate authority.
 
 ## Find an approved answer before preparing new Work
 
-This is a source candidate for upcoming 0.13.16. Installed 0.13.15 does not
-include `docs work find-answer`; check the selected launcher's version and help
-before using it. Select an existing saved Check explicitly and supply the exact
+Codeclew 0.13.16 includes `docs work find-answer`. Use the installed `clew`
+launcher and check its version and help; older releases need an update before
+using this command. Select an existing saved Check explicitly and supply the exact
 subject and original Work request. Normalization applies the Work defaults; it
 does not search for similar questions or choose an answer by recency.
 
@@ -609,8 +609,9 @@ The older defaults and saved results retain their existing policies.
 
 ### Opt into typed model IDs with a compatible driver
 
-This source candidate is intended for upcoming 0.13.16 and is absent from
-installed 0.13.15. For native authoring 1.6 and its independent reviewer, set
+Codeclew 0.13.16 includes both model-ID modes. Use the installed `clew`
+launcher; older releases need an update before selecting a mode. For native
+authoring 1.6 and its independent reviewer, set
 `"modelRepresentation": "codeclew-model-ids/1.1"` on the selected `author` or
 `reviewer` role only when its driver implements that carrier contract. Omit the
 field for an existing driver; its canonical stdin format and configuration
@@ -620,11 +621,10 @@ and configuration identity.
 The host retains the unchanged canonical job and exact versioned carrier before
 dispatch. The carrier contains `schema`, `canonicalJob` and `preparedModel`;
 `schema` matches the selected and retained representation version.
-the prepared form includes the model payload, output schema, scoped map and
+The prepared form includes the model payload, output schema, scoped map and
 digest bindings. Validate the canonical job and packet first, then use the
 [public Rust API and serializer contract](https://github.com/codeclew/codeclew/blob/main/docs/operations/model-id-serializer.md)
 and [executable serializer example](https://github.com/codeclew/codeclew/blob/main/crates/clew/examples/model_ids_serializer.rs).
-These source links describe the candidate once published.
 `clew::documentation::model_ids::forward_model_input` invokes the canonical
 validation callback before checking the frozen prepared projection. Forward only
 its returned `payload` and `output_schema` to the model. Keep the canonical job,

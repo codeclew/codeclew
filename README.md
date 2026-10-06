@@ -21,27 +21,17 @@ checkout for source development; direct capsule binaries are unsupported.
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
-## Current release: v0.13.15
+<a id="current-release-v01315"></a>
 
-Retained `docs context --dependency` reads the selected evidence closure before
-materializing unrelated observation payloads. The response explicitly identifies
-selected validation and preserves source, citations, boundaries and cursor scope.
-Other selectors and source objects keep their existing full reads.
-Service documentation retains the neutral **SERVICE** label and separate source,
-review and runtime status. See the [v0.13.15 release notes](docs/releases/v0.13.15.md).
+## Current release: v0.13.16
 
-C# reading and analysis through Roslyn remains included, with the read-only
-profile and .NET 10+ host SDK requirement introduced in 0.13.11.
-The [public task guides](https://codeclew.github.io/codeclew/) include pinned,
-executed 0.13.11 examples and their explicit evidence limits.
+Version 0.13.16 includes exact approved-answer discovery, exact per-file syntax
+reuse and an opt-in model serializer with compact evidence presentation for
+compatible drivers. See the [v0.13.16 release notes](docs/releases/v0.13.16.md).
 
-### Accepted source candidates for v0.13.16
+<a id="accepted-source-candidates-for-v01316"></a>
 
-The upcoming v0.13.16 release gate is pending. Released v0.13.15 does not include
-the accepted exact-answer reuse (`c15fecd`), syntax-file reuse (`1db703a`) or
-model ID representation (`e729cd2`) candidates or the subsequent compact 1.1
-candidate. Use `./clew` from the development checkout to exercise them; these results do not change the installed
-release contract.
+### Included in v0.13.16
 
 `docs work find-answer` searches historical approved method answers by the exact
 normalized request and subject, then checks applicability against an explicitly
@@ -70,6 +60,20 @@ See the [bounded compact measurement](docs/plans/question-results-and-incrementa
 The earlier 4.9184% result remains the separate 1.0 measurement of two retained
 first calls against canonical input. Maps and canonical jobs stay outside model
 input in both versions.
+
+### Included from v0.13.15
+
+Retained `docs context --dependency` reads the selected evidence closure before
+materializing unrelated observation payloads. The response explicitly identifies
+selected validation and preserves source, citations, boundaries and cursor scope.
+Other selectors and source objects keep their existing full reads.
+Service documentation retains the neutral **SERVICE** label and separate source,
+review and runtime status. See the [v0.13.15 release notes](docs/releases/v0.13.15.md).
+
+C# reading and analysis through Roslyn remains included, with the read-only
+profile and .NET 10+ host SDK requirement introduced in 0.13.11.
+The [public task guides](https://codeclew.github.io/codeclew/) include pinned,
+executed 0.13.11 examples and their explicit evidence limits.
 
 ### Included from v0.13.11
 
@@ -127,7 +131,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.15 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.16 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -156,7 +160,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.15 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.16 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
