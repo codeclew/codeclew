@@ -412,13 +412,12 @@ fn normalize(
                         == Some("codeclew-java-compiler-fact/1.0")
                 {
                     for key in ["variableSite", "callSite", "declarationSite"] {
-                        if let Some(site) = object.get_mut(key).and_then(Value::as_object_mut) {
-                            if site.contains_key("sourceDigest")
-                                && site.contains_key("evidenceDigest")
-                            {
-                                site.remove("revision");
-                                site.remove("evidenceDigest");
-                            }
+                        if let Some(site) = object.get_mut(key).and_then(Value::as_object_mut)
+                            && site.contains_key("sourceDigest")
+                            && site.contains_key("evidenceDigest")
+                        {
+                            site.remove("revision");
+                            site.remove("evidenceDigest");
                         }
                     }
                 }
@@ -479,14 +478,13 @@ fn normalize(
                 *text = spans.get(text).cloned().ok_or_else(|| {
                     invalid("ANSWER_REUSE_PROJECTION_INVALID: unknown source span")
                 })?;
-            } else if field == "reference"
+            } else if (field == "reference"
                 || field.ends_with("Reference")
                 || field.ends_with("References")
-                || matches!(field, "evidence" | "citationId" | "fieldDeclarations")
+                || matches!(field, "evidence" | "citationId" | "fieldDeclarations"))
+                && let Some(stable) = references.get(text)
             {
-                if let Some(stable) = references.get(text) {
-                    *text = stable.clone();
-                }
+                *text = stable.clone();
             }
         }
         _ => {}

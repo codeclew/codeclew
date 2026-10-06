@@ -1166,6 +1166,11 @@ pub(super) fn write_reusable_review_fixture_config(path: &Path, author: &Path, m
 }
 
 #[cfg(test)]
+pub(super) fn model_ids_grouped_review_config(path: &Path, author: &Path) -> Value {
+    context_mode::model_ids_grouped_review_config(path, author)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -3330,9 +3335,4 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0", "invo
         assert_eq!(html.matches("class=\"reader-nav\"").count(), 1);
         assert!(html.matches("class=\"snapshot-history\"").count() <= 1);
     }
-}
-
-#[cfg(test)]
-pub(super) fn model_ids_grouped_review_config(path: &Path, author: &Path) -> Value {
-    context_mode::model_ids_grouped_review_config(path, author)
 }

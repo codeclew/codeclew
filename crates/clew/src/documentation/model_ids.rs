@@ -216,10 +216,10 @@ fn field(
     domain: Domain,
     map: &mut AliasMap,
 ) -> Result<(), ClewError> {
-    if let Some(value) = object.get_mut(key) {
-        if let Some(text) = value.as_str() {
-            *value = json!(map.project(domain, text)?);
-        }
+    if let Some(value) = object.get_mut(key)
+        && let Some(text) = value.as_str()
+    {
+        *value = json!(map.project(domain, text)?);
     }
     Ok(())
 }
@@ -296,10 +296,10 @@ fn page(page: &mut Value, map: &mut AliasMap) -> Result<(), ClewError> {
     if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
         for item in items {
             field(item, "recordDigest", Domain::Digest, map)?;
-            if item["kind"] == "SOURCE" {
-                if let Some(record) = item.get_mut("record") {
-                    source(record, map)?;
-                }
+            if item["kind"] == "SOURCE"
+                && let Some(record) = item.get_mut("record")
+            {
+                source(record, map)?;
             }
         }
     }

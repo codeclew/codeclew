@@ -54,8 +54,8 @@ pub(super) fn find(
                     "answer discovery exceeds 128 historical approvals; use a narrower documentation root",
                 ));
             }
-            let approved = operation_draft_review::load_approved_answer(repo, &saved, &review_run)?;
-            let chain = match agent_jobs::validate_reusable_chain(repo, &saved, &review_run) {
+            let approved = operation_draft_review::load_approved_answer(repo, &saved, review_run)?;
+            let chain = match agent_jobs::validate_reusable_chain(repo, &saved, review_run) {
                 Ok(()) => json!({"status":"SUPPORTED"}),
                 Err(error) if error.message.starts_with("ANSWER_REUSE_UNSUPPORTED:") => {
                     json!({"status":"UNSUPPORTED","reason":error.message})

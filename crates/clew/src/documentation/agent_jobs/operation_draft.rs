@@ -1796,6 +1796,17 @@ fn run_summary(report: &RunReport) -> Value {
 }
 
 #[cfg(test)]
+pub(super) fn model_ids_grouped_fixture_setup() -> (
+    tempfile::TempDir,
+    Repository,
+    super::super::work::Work,
+    std::path::PathBuf,
+    Value,
+) {
+    context_mode::model_ids_grouped_fixture_setup()
+}
+
+#[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::documentation::agent_jobs::Amount;
@@ -4289,15 +4300,4 @@ puts JSON.generate({"schema" => "codeclew-documentation-agent-result/1.0",
                 .exists()
         );
     }
-}
-
-#[cfg(test)]
-pub(super) fn model_ids_grouped_fixture_setup() -> (
-    tempfile::TempDir,
-    Repository,
-    super::super::work::Work,
-    std::path::PathBuf,
-    Value,
-) {
-    context_mode::model_ids_grouped_fixture_setup()
 }
