@@ -211,7 +211,7 @@ document alone is not completion.
 | Slice | Status | Result / next decision |
 | --- | --- | --- |
 | Baseline and first scoped read | Accepted implementation; release pending | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full CI and official installed verification remain release gates. |
-| Precise question-result reuse | Implementation candidate; independent acceptance pending | Exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
+| Precise question-result reuse | Implementation accepted; release pending | Accepted `c15fecd`: exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
 | Content-keyed syntax reuse | Pending | Proceed after a bounded baseline; compiler reuse conditional. |
 | Role evidence representation | Pending | Inspect an actual expansion prompt before claiming token savings. |
 | Short opaque model IDs | Implementation deferred; promising measured opportunity | Two retained role prompts plus strict schemas show a 10.26% combined reduction in reference `o200k_base` text tokens for a prospective representation. This is not target-model usage or a qualified codec. Host-prepared projection can preserve canonical driver validation without a duplex protocol, but durable representation identity, expansion stability, typed decoding and supported driver forwarding need a separate implementation slice. See the [bounded assessment](../product/validation/model-id-alias-feasibility.md). |
@@ -325,5 +325,9 @@ not a general latency, billing or pricing comparison. No paid pilot was rerun.
 
 Zero writes describes durable Work/job/review/publication/source mutations;
 existing CAS/locking infrastructure may perform operational filesystem IO.
-Independent acceptance and the next release remain pending. This candidate is
-not included in the frozen 0.13.15 tag, and no new full CI gate was run for it.
+The research chat independently accepted `c15fecd937c6795d378a18fe97aefd50e193aeec`
+in this scope after reviewing the final corrections, test log and retained
+exercise. The next release and agreed integrated final gate remain pending.
+This implementation is not included in the frozen 0.13.15 tag, and no new full CI
+gate was run for it. Next, measure the actual syntax path before deciding whether
+per-file extraction reuse merits implementation; short model IDs stay queued.
