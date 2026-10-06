@@ -5,6 +5,7 @@ mod linked;
 pub mod model;
 mod project;
 mod publish;
+mod source;
 
 use super::{
     check::Check,
@@ -33,7 +34,7 @@ pub(super) fn source_data_graph(
         .observations
         .get(declaration)
         .ok_or_else(|| invalid("source-data root declaration is unavailable"))?;
-    if !project::compiler(d)
+    if !source::compiler(d)
         || d.normalized["resolution"] != "COMPILER_EXACT"
         || !matches!(
             d.normalized["declarationKind"].as_str(),

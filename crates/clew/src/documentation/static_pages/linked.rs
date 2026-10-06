@@ -2,7 +2,7 @@
 //! No edge establishes receiver identity, worker invocation or runtime impact.
 use super::{
     model::*,
-    project::{Context, compiler},
+    source::{self, CallableKey, Context, compiler},
 };
 use crate::{
     documentation::{check::Check, digest, model::ServiceEvidence},
@@ -26,40 +26,35 @@ fn frontier(code: &str, detail: &str, citation: &str) -> Gap {
     }
 }
 
-fn key(service: &str, scope: &str, symbol: &str) -> Result<String, ClewError> {
+fn key(identity: &CallableKey) -> Result<String, ClewError> {
     Ok(format!(
         "callable-{}",
-        &digest(&(service, scope, symbol))?[7..]
+        &digest(&(
+            identity.service.as_str(),
+            identity.scope.as_str(),
+            identity.symbol.as_str()
+        ))?[7..]
     ))
 }
 
 fn node(evidence: &ServiceEvidence, declaration: &str) -> Result<SourceCallNode, ClewError> {
-    let mut ctx = Context {
-        evidence,
-        citations: BTreeMap::new(),
-        observations: BTreeMap::new(),
-        sources: BTreeMap::new(),
-    };
-    let callable = ctx.callable(declaration)?;
-    let scope = evidence.observations[declaration].normalized["scope"]
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
-    let id = key(&evidence.service, &scope, &callable.symbol)?;
+    let mut ctx = Context::new(evidence);
+    let callable = source::project_java(&mut ctx, declaration)?;
+    let id = key(&callable.key)?;
     let mut calls = Vec::new();
     edges(
-        &callable.steps,
+        &callable.projection.steps,
         "body",
-        &callable.symbol,
-        &scope,
+        &callable.key.symbol,
+        &callable.key.scope,
         &ctx.observations,
         &mut calls,
     );
     Ok(SourceCallNode {
         id,
-        service: evidence.service.clone(),
-        scope,
-        callable,
+        service: callable.key.service,
+        scope: callable.key.scope,
+        callable: callable.projection,
         calls,
         citations: ctx.citations,
         observations: ctx.observations,
@@ -123,11 +118,11 @@ fn edges(
 
 fn root_key(evidence: &ServiceEvidence, declaration: &str) -> Result<String, ClewError> {
     let o = &evidence.observations[declaration];
-    key(
-        &evidence.service,
-        o.normalized["scope"].as_str().unwrap_or(""),
-        &o.symbol,
-    )
+    key(&CallableKey {
+        service: evidence.service.clone(),
+        scope: o.normalized["scope"].as_str().unwrap_or("").to_owned(),
+        symbol: o.symbol.clone(),
+    })
 }
 
 /// Constructor bodies cited by the selected handoff were already examined by

@@ -1,6 +1,6 @@
 //! Opt-in source syntax transformations joined to compiler variable occurrences.
 //! No value evaluation, receiver alias analysis, runtime completion or new traversal.
-use super::{model::*, project::Parsed};
+use super::{model::*, source::Parsed};
 use crate::{
     canonical::hash_bytes,
     documentation::{
@@ -1403,6 +1403,20 @@ mod tests {
                 &serde_json::from_value::<crate::documentation::work::Request>(explicit).unwrap()
             )
             .unwrap()
+        );
+    }
+
+    #[test]
+    fn source_data_context_matches_the_preboundary_canonical_baseline() {
+        use crate::documentation::source_data_context as bridge;
+        let work = bridge_work(
+            "String prepare(Task task) { String chosen = task; if (chosen == null) { chosen = \"anonymous\"; } String transformed = chosen.trim(); return \"prefix:\" + transformed; }",
+        );
+        let projection = bridge::build(&work).unwrap().unwrap();
+        let encoded = crate::documentation::bytes(&projection.context).unwrap();
+        assert_eq!(
+            crate::canonical::hash_bytes(&encoded),
+            "sha256:b710fa2c26f6329e5ecd6070c6884174cd60bb0534ba3ef54484e0c613e39fb8"
         );
     }
     #[test]

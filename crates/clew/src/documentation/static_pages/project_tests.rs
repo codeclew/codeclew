@@ -1,6 +1,12 @@
 use super::*;
-use crate::documentation::{check, model::SourceOccurrence};
+use crate::documentation::{
+    check,
+    model::{Observation, ServiceEvidence, Source, SourceOccurrence},
+};
 use serde_json::json;
+use std::collections::BTreeMap;
+
+const JAVA_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
 
 fn evidence() -> ServiceEvidence {
     ServiceEvidence {
@@ -262,6 +268,166 @@ fn scenario(
 
 fn page(c: &Check, s: Selection) -> PageContent {
     project(c, &[s]).unwrap().pages.remove(0)
+}
+
+// Frozen before extraction from the Java-only static-pages projector.
+const JAVA_PROJECTION_BASELINE: &str = r###"BASELINE_PROJECTION guarded-shared-queue sha256:881de0eca3fdb90299703b83589216d5a6b5c1bb0fb7028e7d40c1574b1d65bd
+BASELINE_FILE guarded-shared-queue catalogue.json sha256:ce5385a366833bec74661a9e2055e55642af97b05f5d85444817e80181e82181
+BASELINE_FILE guarded-shared-queue index.html sha256:539eacd7f83d38cff51178b78c65744cc40bf7ff0dd95fbb68afa34384ec61eb
+BASELINE_FILE guarded-shared-queue index.mdx sha256:f374dc09b421ff040bc03626491aeb28382bb778523885ad1033dbf9ae9e8f7e
+BASELINE_FILE guarded-shared-queue journey-diagnostic.html sha256:cf4fb297be8619ac6d2fa6d9d86b3945710350aa5123e9f2aef6554a4f7f2d09
+BASELINE_FILE guarded-shared-queue journey-diagnostic.mdx sha256:22807392821f77807cb981716f4bfc7a08ed5c71b44c790401235245f3d9440c
+BASELINE_FILE guarded-shared-queue journey-endpoint.html sha256:65cb61fa44ee11727ff67f033f54568f2c7a38e2d933f19b43f38bd94950f26c
+BASELINE_FILE guarded-shared-queue journey-endpoint.mdx sha256:9063cd4d7073aaa4d421987d2cae030073e10fa17438c1a55accd1d6615ed524
+BASELINE_FILE guarded-shared-queue journey-fields-state.html sha256:934c63298e6652729cf2a6eb0e7811c42053d34fc98776031e1af244d6fa07fe
+BASELINE_FILE guarded-shared-queue journey-fields-state.mdx sha256:0868fc56a83cff245378ced9fceb1077125ca4d1feeef6614e0cb6e73348ff29
+BASELINE_FILE guarded-shared-queue journey-overview.html sha256:e893e5c9456477f44d854dab583654290bb7498ea225e46ac84e3be83f0ed52f
+BASELINE_FILE guarded-shared-queue journey-overview.mdx sha256:7b89ef4ecb3297e3f2da1a62498d99cff5c105c02b636b7e27f70a3c70e9d1b2
+BASELINE_FILE guarded-shared-queue journey-worker.html sha256:db3a5d992b030a91d598be97592a310629afaa25cdb620f478348fbd8caf87c0
+BASELINE_FILE guarded-shared-queue journey-worker.mdx sha256:796d391728f09094397eea054947cc0f9e42b8f983f475548b2af453a31a3600
+BASELINE_FILE guarded-shared-queue manifest.json sha256:36b0c321d8726d1eb0ed926212856ad6438ad9f599e8ca135d5b6777d881a296
+BASELINE_FILE guarded-shared-queue native-reader.js sha256:ce9995c761f68342e490f9d6c96d481c6a93c8c706f3bd336513fedda3108425
+BASELINE_FILE guarded-shared-queue projection.json sha256:0a24e4f57e9a78a5121bab821430375dd642cea238227395fae7b365b767f1f6
+BASELINE_FILE guarded-shared-queue sources.html sha256:764fca35142d69c01514bb7fa2e6f2b86f15b8bb77d9db55601ac49bbc66a997
+BASELINE_FILE guarded-shared-queue sources.mdx sha256:3d4babfbaffe7ac6eca0f0f33fd09d8d14c060e5fdf1f726311be7345a44c2e7
+BASELINE_FILE guarded-shared-queue style.css sha256:30f2a7247d667d5fc0ae6992a7aff6761faeef34b00a391252bb295c15ee4109
+BASELINE_PROJECTION linked-shared-child-cycle sha256:2bfca86d6856ac6cf6325ca06021819c6bacb290a57c27f118e190a25c5f77de
+BASELINE_FILE linked-shared-child-cycle catalogue.json sha256:af2c9b4dee5e02e84cfe3e3aae524c17d324c0737afca453c6a5f865960d303a
+BASELINE_FILE linked-shared-child-cycle child-diagnostic.html sha256:241f5b5c7ed0ff25a6173d7ce4a49a2766912b61b0cbdf654d968bc918a41e2e
+BASELINE_FILE linked-shared-child-cycle child-diagnostic.mdx sha256:1d0e4972c0cf8599cfd8ac06df431c2af17e1cd256da49e13b64d7db0044674f
+BASELINE_FILE linked-shared-child-cycle child-endpoint.html sha256:a5f2281ac09e254f10d406c67b2dc6d523beebe3b160b2b7a03d4cd1c4c1aa35
+BASELINE_FILE linked-shared-child-cycle child-endpoint.mdx sha256:100f3f077b9099c10b7748c2439bbc10885f88426d2d3dc2c416af18bf6cefd8
+BASELINE_FILE linked-shared-child-cycle child-fields-state.html sha256:9dbdfa6395b996864ea0240ee8cea5d91173906edc8e995ada823443ce68d28d
+BASELINE_FILE linked-shared-child-cycle child-fields-state.mdx sha256:38556a14f53e726c28184077aa2c8d71b163c8484b53f6db852103a8a3e3c7e2
+BASELINE_FILE linked-shared-child-cycle child-overview.html sha256:49a8a2e4e17a3ebecd41937436337b4d177295ea58007e89a462eff3c44f628e
+BASELINE_FILE linked-shared-child-cycle child-overview.mdx sha256:f00f79c7fa996811aed26393a30489e8092eeaa3cb73cdf45a87b4cc4779c553
+BASELINE_FILE linked-shared-child-cycle child-worker.html sha256:6ff1b5ffbe2d112a7a2a10dc9cfd7bd922dd33044218b86d103b3e2f48e4f16b
+BASELINE_FILE linked-shared-child-cycle child-worker.mdx sha256:5549885caabd13367452f5dda175db1dbe44db11bcb9d77c24b6e2e18fdc0f0a
+BASELINE_FILE linked-shared-child-cycle cycle-diagnostic.html sha256:90a3d2ced80b9c152da04601da443f6608a29c171a3b1b22b939a331e0d8283f
+BASELINE_FILE linked-shared-child-cycle cycle-diagnostic.mdx sha256:2f239cf20ea9f6d454aba13087d70d87d2db8c638fd46accd1c631dec0fd0f0a
+BASELINE_FILE linked-shared-child-cycle cycle-endpoint.html sha256:ba05316c95040a776f1f548f70f379bdea3f7db6d00bae0099608d5c9a03212a
+BASELINE_FILE linked-shared-child-cycle cycle-endpoint.mdx sha256:5c256946195279d4342569a970bf9f4df22ed3c3461653eac369aa5411873ad9
+BASELINE_FILE linked-shared-child-cycle cycle-fields-state.html sha256:74c9b7c67f7ec36355d422d1486e6bb23630a90294b17ea04f9a8266ef6a837e
+BASELINE_FILE linked-shared-child-cycle cycle-fields-state.mdx sha256:76b75b876ded11edb6ce750d75c49869a2baa59cc6d41ba4a608821eb95f3b6b
+BASELINE_FILE linked-shared-child-cycle cycle-overview.html sha256:4e4aa74c9ffb331ec7e10628044f2fe591d09b2474e7210c6d17a8a52a15c28e
+BASELINE_FILE linked-shared-child-cycle cycle-overview.mdx sha256:329428e123e6985ea3f868b0064a02174113a704aca2da4f50f80df8a7f14c2f
+BASELINE_FILE linked-shared-child-cycle cycle-worker.html sha256:2fdafccfcc1811d2428ce94639eca73416365fddc738d50b209bbcd64825d534
+BASELINE_FILE linked-shared-child-cycle cycle-worker.mdx sha256:bf5a7436ab20fff2b4a8ad34f964c21ab338f74ff708bc2994e01db9c3def7ce
+BASELINE_FILE linked-shared-child-cycle index.html sha256:d0da473e8ebea7131646f18ec64a5ee3b3dd4283c9e5f3f2fa012b7627575a5c
+BASELINE_FILE linked-shared-child-cycle index.mdx sha256:533375ae2f024c2dac08c75a59dda03ad8628ba82b876bed6d19ee93973634d2
+BASELINE_FILE linked-shared-child-cycle manifest.json sha256:45c7a69ca6ec7d602aa384827876b532d099361338ef2ee9020db28fc42d5ed4
+BASELINE_FILE linked-shared-child-cycle native-reader.js sha256:ce9995c761f68342e490f9d6c96d481c6a93c8c706f3bd336513fedda3108425
+BASELINE_FILE linked-shared-child-cycle parent-a-diagnostic.html sha256:27054d11b2dcf36d9e4046c0f07f80fb3fb4d9a9de540e47a88175ab9961b6a0
+BASELINE_FILE linked-shared-child-cycle parent-a-diagnostic.mdx sha256:384430b68fd2215210678c9ae30af847f32cd435726d5d17fea287d7203ab06b
+BASELINE_FILE linked-shared-child-cycle parent-a-endpoint.html sha256:c919a6f1cfbe1669fe2fa48f3c3868f04b26e8d3edeb38fa52910385091eb4dd
+BASELINE_FILE linked-shared-child-cycle parent-a-endpoint.mdx sha256:ce69da906bc9c8ea755bc175770e7a454d77cf301f735ec97f1db29360a5ccf9
+BASELINE_FILE linked-shared-child-cycle parent-a-fields-state.html sha256:dbb1d55df450bb3dfdeab5c97fa50b4f0b3bf5ad7c3eb9086bb58718a055681e
+BASELINE_FILE linked-shared-child-cycle parent-a-fields-state.mdx sha256:dc6197db24a8df796cf95e560111cdf5b896f56047980db3fbede1a6e2093ead
+BASELINE_FILE linked-shared-child-cycle parent-a-overview.html sha256:b60ddf8070d549546ccd809cd018433cf43536f331a2bc36a6ec1046fafdbf51
+BASELINE_FILE linked-shared-child-cycle parent-a-overview.mdx sha256:16cc4998161ab92118058b08a0545df433611741bb3193f895f115288ce8a2c3
+BASELINE_FILE linked-shared-child-cycle parent-a-worker.html sha256:6b6195bbe3a7a911c9ce980ce2176c19adfe0056fb383427a7097f60db4dce38
+BASELINE_FILE linked-shared-child-cycle parent-a-worker.mdx sha256:9240938b39d7dc1c508e751aa29efc46b780c3d47f03b8d95d96f50dd90e2ed0
+BASELINE_FILE linked-shared-child-cycle parent-b-diagnostic.html sha256:e88112a02edd49655cffdf01938571e73feebf3d6a989f7a1db8c5b5e2e96173
+BASELINE_FILE linked-shared-child-cycle parent-b-diagnostic.mdx sha256:7ceeb01b690e32cd129024421300a482d0a8a961872e3d16f1d07f83cf50f30b
+BASELINE_FILE linked-shared-child-cycle parent-b-endpoint.html sha256:e65fc0fa8b41a1e1b907946bfedf3ff0aedcd34d05b2e31b027e58d1c9bf9225
+BASELINE_FILE linked-shared-child-cycle parent-b-endpoint.mdx sha256:cd87a7f0154286e0dd729a75f03fc3a9e2cf9155c7177e7eda792846426b40bf
+BASELINE_FILE linked-shared-child-cycle parent-b-fields-state.html sha256:5e46355f0e33ac3c3ac24401035255d785f6917aea6abb71aeee942c30d6c74b
+BASELINE_FILE linked-shared-child-cycle parent-b-fields-state.mdx sha256:1e0a4c37a99f5cb8085e4e5a20a145a7313caaa58bd83357fd73d0780736e8a3
+BASELINE_FILE linked-shared-child-cycle parent-b-overview.html sha256:f91813b370b3a100ead84b0f9191bcaf259e09adc82dc99125082d9c36862e5a
+BASELINE_FILE linked-shared-child-cycle parent-b-overview.mdx sha256:3c52bbfbf039690bbf1c3d5397ce00ff1a973b57647c9684da11fd1f88a66ed2
+BASELINE_FILE linked-shared-child-cycle parent-b-worker.html sha256:a5d8fd0764ed1bcb1f9483be7fd755e6985408cbe0375e7e2a88bb02a2c6235e
+BASELINE_FILE linked-shared-child-cycle parent-b-worker.mdx sha256:c03819d986b79f0d32746bfffcf79093019ee4a489518c3fecfb35c302807c6c
+BASELINE_FILE linked-shared-child-cycle projection.json sha256:282c6fbcf5c6faf722e094987589513c7f8a3535151af0250685e1555e40f416
+BASELINE_FILE linked-shared-child-cycle source-calls.html sha256:23bf6cf1381895bf7807c8a04d04ed9be92ce82f8aa1c99028db0a925bfd4567
+BASELINE_FILE linked-shared-child-cycle source-calls.mdx sha256:394623da9ce4c1bf20be46cc62a63bd450aff7344a11fbb3175b86ea5ed50ebd
+BASELINE_FILE linked-shared-child-cycle sources.html sha256:cae07648cb2191431a565848edb63d24ade01f60956012f48bd24382bcc4d6c4
+BASELINE_FILE linked-shared-child-cycle sources.mdx sha256:81fdb292f2043c1a331d85d14ed2d37a4c90b45cecc40dae2e45dff3a118f9d9
+BASELINE_FILE linked-shared-child-cycle style.css sha256:30f2a7247d667d5fc0ae6992a7aff6761faeef34b00a391252bb295c15ee4109
+BASELINE_PROJECTION unicode-unavailable-dependency sha256:bd96d75aa54eae141c90b8aab7ece14b9ae84ce70f2819872bc5ff1d3979406b
+BASELINE_FILE unicode-unavailable-dependency catalogue.json sha256:a9ca4ac71b54f797069f38857ca354216f22d2d95279c3ba3ae2349eb60fd06a
+BASELINE_FILE unicode-unavailable-dependency index.html sha256:e8f4a04d54a15ea15dd89d2e55e65f94e1078f2d5a1c158d377cec23623f5168
+BASELINE_FILE unicode-unavailable-dependency index.mdx sha256:dc5d5a85a62d501c1bbc793e48dfb9bea6b6c505c9247a6fd275a9e023662143
+BASELINE_FILE unicode-unavailable-dependency journey-diagnostic.html sha256:45b77d464d1b34e94a1630160948db6e6fb7df24cadddf62a29421cf337c78e3
+BASELINE_FILE unicode-unavailable-dependency journey-diagnostic.mdx sha256:66d25591a2b933cfd7fe6d8b639dbc21562eaa8dcd53d1c53a2c4218389bc785
+BASELINE_FILE unicode-unavailable-dependency journey-endpoint.html sha256:65cb61fa44ee11727ff67f033f54568f2c7a38e2d933f19b43f38bd94950f26c
+BASELINE_FILE unicode-unavailable-dependency journey-endpoint.mdx sha256:9063cd4d7073aaa4d421987d2cae030073e10fa17438c1a55accd1d6615ed524
+BASELINE_FILE unicode-unavailable-dependency journey-fields-state.html sha256:51716a8532149fd86a7deaf6381aa9c5d26c6cdf449aa060b9fbbe43954b19d0
+BASELINE_FILE unicode-unavailable-dependency journey-fields-state.mdx sha256:49739f4ab5dedf581b3de460879836a8a06c971fa276e8b7fb7510773b9a1caa
+BASELINE_FILE unicode-unavailable-dependency journey-overview.html sha256:55f00cd6f33304cdbe3af027be05d9134ef33a5d00ffa8f17763cf40e2f16e4a
+BASELINE_FILE unicode-unavailable-dependency journey-overview.mdx sha256:a967c21aab1a513d1114552d3218841abde4bec84708449135c58adf257b3d64
+BASELINE_FILE unicode-unavailable-dependency journey-worker.html sha256:85344b00af809a57657266b4e4ad9d1a6e9118179383611dd32582d3bafda4d9
+BASELINE_FILE unicode-unavailable-dependency journey-worker.mdx sha256:4d7ce63ae654ce34428c93bedfb87e8384aecddb55e3ddaebe97eb1388b4543d
+BASELINE_FILE unicode-unavailable-dependency manifest.json sha256:24d7c9667a4c285aee42187b847300daedbdba96e057c5cba8300357e8ebc057
+BASELINE_FILE unicode-unavailable-dependency native-reader.js sha256:ce9995c761f68342e490f9d6c96d481c6a93c8c706f3bd336513fedda3108425
+BASELINE_FILE unicode-unavailable-dependency projection.json sha256:76793d09f18e16ca3c0dc70bf2d438e5d10478cae5396dbf8edc920840a15e65
+BASELINE_FILE unicode-unavailable-dependency sources.html sha256:3e70f6ed9a643f134e57e5eb4ecc86e8cf13782edc65b3bfa115c783bfe4ce88
+BASELINE_FILE unicode-unavailable-dependency sources.mdx sha256:b80644a4dfa51318f27ea358954f79875b93ead2a64c3dd790eabbbdfb2ba81f
+BASELINE_FILE unicode-unavailable-dependency style.css sha256:30f2a7247d667d5fc0ae6992a7aff6761faeef34b00a391252bb295c15ee4109"###;
+
+fn java_projection_facts(case: &str, checked: &Check, selections: &[Selection]) -> String {
+    let projection = project(checked, selections).unwrap();
+    let encoded = crate::documentation::bytes(&projection).unwrap();
+    let mut facts = vec![format!(
+        "BASELINE_PROJECTION {case} {}",
+        crate::canonical::hash_bytes(&encoded)
+    )];
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "source-boundary-baseline-v1", &projection)
+        .unwrap();
+    let mut files = BTreeMap::new();
+    for entry in std::fs::read_dir(output.path()).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().into_string().unwrap();
+        let bytes = std::fs::read(entry.path()).unwrap();
+        files.insert(name, crate::canonical::hash_bytes(&bytes));
+    }
+    facts.extend(
+        files
+            .into_iter()
+            .map(|(name, digest)| format!("BASELINE_FILE {case} {name} {digest}")),
+    );
+    facts.join("\n")
+}
+
+#[test]
+fn java_projection_bytes_and_published_files_match_the_preboundary_baseline() {
+    let mut actual = Vec::new();
+    let (checked, selection) = scenario(
+        "Ingress",
+        "Consumer",
+        "pending",
+        "task.sku.trim()",
+        "!task.eligible()",
+        false,
+    );
+    actual.push(java_projection_facts(
+        "guarded-shared-queue",
+        &checked,
+        &[selection],
+    ));
+
+    let (checked, selections) = linked_fixture("task.priority < 1", "chosen.trim()", "child");
+    actual.push(java_projection_facts(
+        "linked-shared-child-cycle",
+        &checked,
+        &selections,
+    ));
+
+    let (checked, selection) = scenario(
+        "Ingress",
+        "Consumer",
+        "pending",
+        "\"café☕\"",
+        "!task.eligible()",
+        false,
+    );
+    actual.push(java_projection_facts(
+        "unicode-unavailable-dependency",
+        &checked,
+        &[selection],
+    ));
+
+    assert_eq!(JAVA_PROJECTION_BASELINE, actual.join("\n"));
 }
 
 #[test]
