@@ -63,7 +63,6 @@ fn opaque(syntax: String, reason: &str) -> DataValue {
 struct Flow<'a> {
     input: &'a Input<'a>,
     node: &'a SourceCallNode,
-    declarations: &'a BTreeMap<String, Observation>,
     source_id: &'a str,
     exhausted: bool,
     construction_bytes: usize,
@@ -157,39 +156,27 @@ impl Flow<'_> {
     fn storage(&mut self, n: Node<'_>) -> Option<DataStorage> {
         let o = self.fact(n)?;
         let identity = o.identity.clone();
-        let kind = o.kind.label().to_owned();
-        let receiver = if kind == "FIELD" {
-            let declaration_id = o.declaration_id.clone();
-            let declaration = declaration_id
-                .as_ref()
-                .and_then(|id| self.declarations.get(id))
-                .filter(|d| {
-                    d.kind == "SYMBOL"
-                        && d.service == self.node.service
-                        && d.normalized["scope"] == self.node.scope
-                        && d.normalized["declarationKind"] == "FIELD"
-                        && d.symbol == identity
-                        && d.normalized["symbolIdentity"] == identity
-                });
-            let available = declaration.is_some();
-            let static_field = declaration.is_some_and(|d| {
-                d.normalized["modifiers"]
-                    .as_array()
-                    .is_some_and(|m| m.iter().any(|v| v == "STATIC"))
-            });
-            if let Some(d) = declaration
-                && !self.result.field_declarations.contains(&d.id)
-            {
-                self.result.field_declarations.push(d.id.clone());
+        let variable_kind = o.kind;
+        let kind = variable_kind.label().to_owned();
+        let member = o.member.clone();
+        let receiver = if matches!(variable_kind, VariableKind::Field | VariableKind::Property) {
+            if let Some(member) = &member {
+                let declarations = if variable_kind == VariableKind::Property {
+                    &mut self.result.property_declarations
+                } else {
+                    &mut self.result.field_declarations
+                };
+                if !declarations.contains(&member.declaration_id) {
+                    declarations.push(member.declaration_id.clone());
+                }
+            } else {
+                self.frontier("FIELD_DECLARATION_UNAVAILABLE", "An external variable declaration is unavailable; its storage cannot be unified.");
             }
-            if !available {
-                self.frontier("FIELD_DECLARATION_UNAVAILABLE","An external variable declaration is unavailable; its storage cannot be unified.");
-            }
-            Some(if !available {
+            Some(if member.is_none() {
                 "UNRESOLVED_DECLARATION".into()
-            } else if static_field {
+            } else if member.is_some_and(|m| m.static_member) {
                 "STATIC".into()
-            } else if n.kind() == Kind::Field {
+            } else if matches!(n.kind(), Kind::Field | Kind::Member) {
                 n.child(Role::Receiver)
                     .map(|r| self.receiver(r))
                     .unwrap_or_else(|| "UNRESOLVED".into())
@@ -207,7 +194,7 @@ impl Flow<'_> {
     }
     fn simple_target(n: Node<'_>) -> bool {
         n.kind() == Kind::Variable
-            || (n.kind() == Kind::Field
+            || (matches!(n.kind(), Kind::Field | Kind::Member)
                 && n.child(Role::Receiver)
                     .is_some_and(|r| matches!(r.kind(), Kind::Variable | Kind::This | Kind::Super)))
     }
@@ -216,7 +203,8 @@ impl Flow<'_> {
         self.frontier(code, detail);
     }
     fn writable(storage: &DataStorage) -> bool {
-        storage.kind != "FIELD" || matches!(storage.receiver.as_deref(), Some("THIS" | "STATIC"))
+        !matches!(storage.kind.as_str(), "FIELD" | "PROPERTY")
+            || matches!(storage.receiver.as_deref(), Some("THIS" | "STATIC"))
     }
     fn read(&mut self, n: Node<'_>, path: &Path) -> DataValue {
         if let Some(storage) = self.storage(n) {
@@ -254,7 +242,7 @@ impl Flow<'_> {
             return opaque(String::new(), "DATA_STATE_BUDGET");
         }
         match n.kind() {
-            Kind::Variable | Kind::Field => {
+            Kind::Variable | Kind::Field | Kind::Member => {
                 if !Self::simple_target(n) {
                     self.stop_effects(path,"OPAQUE_RECEIVER_EFFECTS","Unsupported field receiver evaluation may have effects; this and following transformations are withheld.");
                     return opaque(n.text(), "RECEIVER_EFFECTS_WITHHELD");
@@ -381,7 +369,7 @@ impl Flow<'_> {
                 let fields: Vec<_> = path
                     .env
                     .keys()
-                    .filter(|s| s.kind == "FIELD")
+                    .filter(|s| matches!(s.kind.as_str(), "FIELD" | "PROPERTY"))
                     .cloned()
                     .collect();
                 for storage in fields {
@@ -629,6 +617,7 @@ fn project_with_bindings(
         definitions: vec![],
         calls: vec![],
         field_declarations: vec![],
+        property_declarations: vec![],
         gaps: vec![],
     };
     let input = match input::prepare(e, node)? {
@@ -656,7 +645,7 @@ fn project_with_bindings(
 }
 
 fn transfer(
-    e: &ServiceEvidence,
+    _e: &ServiceEvidence,
     node: &SourceCallNode,
     input: &Input<'_>,
     mut result: NodeDataState,
@@ -672,7 +661,6 @@ fn transfer(
     let mut flow = Flow {
         input,
         node,
-        declarations: &e.observations,
         source_id: &source.id,
         exhausted: false,
         construction_bytes: 0,
@@ -707,9 +695,12 @@ fn transfer(
         // keeps the old value as an alternative when only one branch writes.
         for n in active_nodes(body)
             .into_iter()
-            .filter(|n| matches!(n.kind(), Kind::Variable | Kind::Field))
+            .filter(|n| matches!(n.kind(), Kind::Variable | Kind::Field | Kind::Member))
         {
-            if !flow.fact(n).is_some_and(|o| o.kind == VariableKind::Field) {
+            if !flow
+                .fact(n)
+                .is_some_and(|o| matches!(o.kind, VariableKind::Field | VariableKind::Property))
+            {
                 continue;
             }
             let Some(storage) = flow.storage(n).filter(Flow::writable) else {
@@ -749,6 +740,8 @@ fn transfer(
     }
     flow.result.field_declarations.sort();
     flow.result.field_declarations.dedup();
+    flow.result.property_declarations.sort();
+    flow.result.property_declarations.dedup();
     Ok((flow.result, formals))
 }
 #[cfg(test)]
@@ -759,6 +752,7 @@ fn semantic_digest(state: &NodeDataState) -> Result<String, ClewError> {
     let mut semantic = state.clone();
     semantic.data_state_digest.clear();
     semantic.field_declarations.clear();
+    semantic.property_declarations.clear();
     for d in &mut semantic.definitions {
         d.citation_id = None;
     }
@@ -850,6 +844,7 @@ pub(super) fn attach_graph(
     let mut fact_bytes = 0;
     let mut fact_count = 0;
     let mut retained_sources = BTreeSet::new();
+    let mut retained_properties = BTreeSet::new();
     for id in selected {
         let node = &graph.nodes[id];
         let e = &checked.services[&node.service];
@@ -861,7 +856,8 @@ pub(super) fn attach_graph(
                 .map_err(|_| invalid("data input encoding failed"))?
                 .len();
             fact_count += input["nodes"].as_array().map_or(0, Vec::len)
-                + input["variables"].as_array().map_or(0, Vec::len);
+                + input["variables"].as_array().map_or(0, Vec::len)
+                + input["members"].as_array().map_or(0, Vec::len);
             if fact_count > MAX_ROWS || fact_bytes > MAX_BYTES {
                 return Err(invalid(
                     "expandDataState exceeds cumulative retained-fact budget; narrow the selection",
@@ -910,6 +906,34 @@ pub(super) fn attach_graph(
         }
         let node = graph.nodes.get_mut(id).unwrap();
         let e = &checked.services[&node.service];
+        for id in &state.property_declarations {
+            let property = e
+                .observations
+                .get(id)
+                .ok_or_else(|| invalid("examined property declaration is unavailable"))?;
+            if retained_properties.insert((e.service.clone(), id.clone())) {
+                fact_count += 1;
+                fact_bytes += serde_json::to_vec(property)
+                    .map_err(|_| invalid("property evidence encoding failed"))?
+                    .len();
+            }
+            for source_id in &property.source_ids {
+                if retained_sources.insert(source_id.clone()) {
+                    fact_bytes += e.sources.get(source_id).map_or(0, |s| s.text.len());
+                }
+            }
+            if fact_count > MAX_ROWS || fact_bytes > MAX_BYTES {
+                return Err(invalid(
+                    "expandDataState exceeds cumulative retained-fact budget; narrow the selection",
+                ));
+            }
+            node.observations.insert(id.clone(), property.clone());
+            for source_id in &property.source_ids {
+                if let Some(source) = e.sources.get(source_id) {
+                    node.sources.insert(source_id.clone(), source.clone());
+                }
+            }
+        }
         for o in e.observations.values().filter(|o| {
             matches!(o.kind.as_str(), "VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
                 && o.normalized["callableObservationId"] == node.callable.declaration_id
@@ -957,12 +981,22 @@ pub(super) fn attach_graph(
                 }
             }
             state.data_state_digest = semantic_digest(state)?;
-            for field in &state.field_declarations {
-                graph
-                    .reverse_field_references
-                    .entry(field.clone())
-                    .or_default()
-                    .push(node.id.clone());
+            for (declarations, references) in [
+                (
+                    &state.field_declarations,
+                    &mut graph.reverse_field_references,
+                ),
+                (
+                    &state.property_declarations,
+                    &mut graph.reverse_property_references,
+                ),
+            ] {
+                for declaration in declarations {
+                    references
+                        .entry(declaration.clone())
+                        .or_default()
+                        .push(node.id.clone());
+                }
             }
         }
     }
@@ -1330,6 +1364,7 @@ mod tests {
                 definitions: vec![],
                 calls: vec![],
                 field_declarations: vec![],
+                property_declarations: vec![],
                 gaps: vec![],
             },
         )
@@ -1350,7 +1385,7 @@ mod tests {
                     identity: identity.into(),
                     kind: VariableKind::Parameter,
                     declaration: true,
-                    declaration_id: None,
+                    member: None,
                     formal_slot: Some(slot),
                 },
             );
@@ -1466,7 +1501,7 @@ mod tests {
                     identity: format!("compiler-symbol-{i}"),
                     kind: VariableKind::Parameter,
                     declaration: true,
-                    declaration_id: None,
+                    member: None,
                     formal_slot: Some(0),
                 },
             );

@@ -465,6 +465,7 @@ fn normalize(
                     | "sourceReferences"
                     | "dependencyReferences"
                     | "fieldDeclarations"
+                    | "propertyDeclarations"
                     | "contextReferences"
             ) {
                 items.sort_by_key(Value::to_string);
@@ -481,7 +482,10 @@ fn normalize(
             } else if (field == "reference"
                 || field.ends_with("Reference")
                 || field.ends_with("References")
-                || matches!(field, "evidence" | "citationId" | "fieldDeclarations"))
+                || matches!(
+                    field,
+                    "evidence" | "citationId" | "fieldDeclarations" | "propertyDeclarations"
+                ))
                 && let Some(stable) = references.get(text)
             {
                 *text = stable.clone();

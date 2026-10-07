@@ -2509,7 +2509,7 @@ internal class Worker(
         val documentationCalls = analysis.facts.filter { it["recordType"].safeString() == "DOCUMENTATION_CALL" }
             .groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
         val documentationData = analysis.facts.filter { it["recordType"].safeString() in setOf(
-            "DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY",
+            "DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_OPERATION",
         ) }.groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
         val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path, bytes); val pkg = kt.packageFqName.asString()
@@ -2522,6 +2522,7 @@ internal class Worker(
                 documentationDescriptors[relative].orEmpty(),
                 documentationCalls[relative].orEmpty(),
                 documentationData[relative].orEmpty(),
+                documentationDescriptors.values.flatten(),
             )
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }

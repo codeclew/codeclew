@@ -284,6 +284,7 @@ pub(super) fn build_roots(
         process_links: vec![],
         reverse_examined_processes: BTreeMap::new(),
         reverse_field_references: BTreeMap::new(),
+        reverse_property_references: BTreeMap::new(),
     };
     for (service, declaration) in roots {
         let evidence = checked.services.get(service).ok_or_else(|| {

@@ -3384,6 +3384,178 @@ fn kotlin_common_data_input_rejects_broken_original_pins_identity_closure_and_tr
     }
 }
 
+fn kotlin_property_contract_fixture() -> ServiceEvidence {
+    let mut e = kotlin_data_contract_fixture();
+    let text = "fun render(): String { return title }";
+    let owner = e.observations.get_mut("render").unwrap();
+    owner.symbol = "callable:example/Sample.render#jvm:()Ljava/lang/String;".into();
+    owner.normalized["symbolIdentity"] = json!(owner.symbol);
+    owner.normalized["jvmDescriptor"] = json!("()Ljava/lang/String;");
+    owner.normalized["parameterTypes"] = json!([]);
+    let source = e.sources.get_mut(&owner.source_ids[0]).unwrap();
+    source.text = text.into();
+    source.text_digest = crate::canonical::hash_bytes(text.as_bytes());
+    source.occurrence.as_mut().unwrap().end_byte = text.len();
+    source.occurrence.as_mut().unwrap().blob = source.text_digest.clone();
+    let start = 37;
+    let variable_start = start + text.find("title").unwrap();
+    let return_start = start + text.find("return").unwrap();
+    let proof = json!({"schema":"kotlin-documentation-property-storage/1.0","authority":"K2_DEFAULT_BACKING_PROPERTY",
+        "qualified":true,"defaultGetter":true,"defaultSetter":true,"hasBackingField":true,"delegated":false,
+        "extension":false,"contextParameters":0,"modality":"FINAL","isOverride":false,"lateinit":false});
+    let property_identity = "property:example/title";
+    let mut property_source = source.clone();
+    property_source.id = "property-source".into();
+    property_source.file = "src/main/kotlin/example/State.kt".into();
+    property_source.text = "var title: String = \"hello\"".into();
+    property_source.text_digest = crate::canonical::hash_bytes(property_source.text.as_bytes());
+    property_source.occurrence.as_mut().unwrap().end_byte = property_source.text.len();
+    property_source.occurrence.as_mut().unwrap().blob = property_source.text_digest.clone();
+    let property_start = 111;
+    let property_end = property_start + property_source.text.len();
+    owner.normalized["outlineOwnerSource"]["byteEnd"] = json!(start + text.len());
+    owner.normalized["outlineOwnerSource"]["sourceDigest"] = json!(source.text_digest);
+    let node = |kind: &str, start: usize, end: usize, children: Vec<usize>| {
+        json!({"kind":kind,"byteStart":start,
+        "byteEnd":end,"children":children,"roles":{},"actuals":[],"defaultArguments":[]})
+    };
+    owner.normalized["documentation"]["dataInput"] = json!({"schema":"codeclew-kotlin-documentation-data/1.0",
+        "authority":"KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES","coordinateDomain":"ORIGINAL_UTF8_BYTES",
+        "ownerSymbolIdentity":owner.symbol,"ownerByteStart":start,"ownerByteEnd":start+text.len(),"file":source.file,
+        "compilationScope":":/main","fullCompilationSourceDigest":"sha256:synthetic-original-file","body":2,
+        "variables":[],"boundaries":[],"nodes":[node("VARIABLE",variable_start,variable_start+5,vec![]),
+            node("RETURN",return_start,variable_start+5,vec![0]),node("BLOCK",start+text.find('{').unwrap(),start+text.len(),vec![1])],
+        "members":[{"schema":"kotlin-documentation-member/1.0","ownerSymbolIdentity":owner.symbol,
+            "propertyIdentity":property_identity,"accessMode":"READ","variableType":"kotlin/String",
+            "byteStart":variable_start,"byteEnd":variable_start+5,"propertyByteStart":property_start,
+            "propertyByteEnd":property_end,"propertyFile":property_source.file,"compilationScope":":/main","storageProof":proof}]});
+    owner.digest = digest(&owner.normalized).unwrap();
+    let normalized = json!({"schema":"declaration-descriptor/0.1","provider":"K2_FIR","resolution":"PROVEN",
+        "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES","compilerAuthority":"fir-facts-extractor/0.6",
+        "symbolIdentity":property_identity,"scope":":/main","declarationKind":"MUTABLE_PROPERTY",
+        "ownerIdentity":"package:example","declaredType":"kotlin/String","documentationStorage":proof,
+        "outlineOwnerSource":{"sourceId":property_source.id,"sourceStatus":"SOURCE_RETAINED","file":property_source.file,
+            "sourceDigest":property_source.text_digest,"evidenceDigest":property_source.evidence_digest,
+            "byteStart":property_start,"byteEnd":property_end,"fullCompilationSourceDigest":"sha256:synthetic-property-file"}});
+    e.observations.insert(
+        "title-property".into(),
+        Observation {
+            id: "title-property".into(),
+            kind: "SYMBOL".into(),
+            service: e.service.clone(),
+            symbol: property_identity.into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![property_source.id.clone()],
+        },
+    );
+    e.sources
+        .insert(property_source.id.clone(), property_source);
+    e
+}
+
+#[test]
+fn kotlin_property_storage_keeps_distinct_kind_cross_file_sources_and_reverse_references() {
+    let checked = kotlin_check(kotlin_property_contract_fixture());
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let projection = project(&checked, &[selection]).unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let node = graph.nodes.values().next().unwrap();
+    let state = node.data_state.as_ref().unwrap();
+    assert!(state.field_declarations.is_empty());
+    assert_eq!(state.property_declarations, vec!["title-property"]);
+    assert!(node.sources.contains_key("property-source"));
+    assert!(node.observations.contains_key("title-property"));
+    assert_eq!(
+        graph.reverse_property_references["title-property"],
+        vec![node.id.clone()]
+    );
+    assert!(
+        state
+            .definitions
+            .iter()
+            .all(|d| d.storage.as_ref().is_none_or(|s| s.kind == "PROPERTY"))
+    );
+    assert_eq!(state.definitions.len(), 2);
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "cross-file-properties", &projection).unwrap();
+    let html = std::fs::read_to_string(output.path().join("source-calls.html")).unwrap();
+    assert!(html.contains("Examined property declaration references"));
+    assert!(
+        std::fs::read_to_string(output.path().join("sources.html"))
+            .unwrap()
+            .contains("State.kt")
+    );
+}
+
+#[test]
+fn kotlin_property_input_refuses_custom_virtual_delegated_or_unbound_declaration_proofs() {
+    for case in [
+        "getter",
+        "virtual",
+        "delegate",
+        "target_range",
+        "file",
+        "access_type",
+        "scope",
+    ] {
+        let mut e = kotlin_property_contract_fixture();
+        let owner = e.observations.get_mut("render").unwrap();
+        let member = &mut owner.normalized["documentation"]["dataInput"]["members"][0];
+        match case {
+            "getter" => member["storageProof"]["defaultGetter"] = json!(false),
+            "virtual" => member["storageProof"]["modality"] = json!("OPEN"),
+            "delegate" => member["storageProof"]["delegated"] = json!(true),
+            "target_range" => member["propertyByteEnd"] = json!(112),
+            "file" => member["propertyFile"] = json!("Other.kt"),
+            "access_type" => member["variableType"] = json!("kotlin/Int"),
+            "scope" => member["compilationScope"] = json!(":other/main"),
+            _ => unreachable!(),
+        }
+        owner.digest = digest(&owner.normalized).unwrap();
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = true;
+        selection.expand_data_state = true;
+        let error = project(&kotlin_check(e), &[selection])
+            .unwrap_err()
+            .to_string();
+        let expected = match case {
+            "getter" | "virtual" | "delegate" | "scope" => {
+                "Kotlin property access lacks an ordinary backing-storage proof"
+            }
+            _ => "Kotlin property access and retained original storage declaration disagree",
+        };
+        assert!(error.contains(expected), "{case}: {error}");
+    }
+}
+
+#[test]
+fn kotlin_property_retained_source_counts_towards_cumulative_data_budget() {
+    let mut e = kotlin_property_contract_fixture();
+    let source = e.sources.get_mut("property-source").unwrap();
+    source.text.push_str(&" ".repeat(1024 * 1024));
+    source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+    source.occurrence.as_mut().unwrap().end_byte = source.text.len();
+    source.occurrence.as_mut().unwrap().blob = source.text_digest.clone();
+    let end = 111 + source.text.len();
+    let property = e.observations.get_mut("title-property").unwrap();
+    property.normalized["outlineOwnerSource"]["byteEnd"] = json!(end);
+    property.normalized["outlineOwnerSource"]["sourceDigest"] = json!(source.text_digest);
+    property.digest = digest(&property.normalized).unwrap();
+    let owner = e.observations.get_mut("render").unwrap();
+    owner.normalized["documentation"]["dataInput"]["members"][0]["propertyByteEnd"] = json!(end);
+    owner.digest = digest(&owner.normalized).unwrap();
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let error = project(&kotlin_check(e), &[selection])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cumulative retained-fact budget"), "{error}");
+}
+
 #[test]
 fn kotlin_source_escapes_to_paired_mdx_and_html_with_citation_links() {
     let mut evidence = evidence();

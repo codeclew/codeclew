@@ -2,6 +2,7 @@
 //! Parsing, compiler identity selection and argument binding happened during
 //! capture; this consumer neither reparses source nor invents Java call rows.
 use super::*;
+use crate::semantic_validation::KotlinPropertyStorageProof as StorageProof;
 use crate::{
     canonical::hash_bytes,
     documentation::static_pages::model::SourceCallNode,
@@ -25,6 +26,8 @@ struct Envelope {
     body: usize,
     nodes: Vec<RawNode>,
     variables: Vec<RawVariable>,
+    #[serde(default)]
+    members: Vec<RawMember>,
     boundaries: Vec<String>,
 }
 #[derive(Deserialize)]
@@ -66,11 +69,35 @@ struct RawVariable {
     declaration_byte_end: usize,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawMember {
+    schema: String,
+    owner_symbol_identity: String,
+    property_identity: String,
+    access_mode: String,
+    variable_type: String,
+    byte_start: usize,
+    byte_end: usize,
+    property_byte_start: usize,
+    property_byte_end: usize,
+    property_file: String,
+    compilation_scope: String,
+    storage_proof: StorageProof,
+}
+
 pub(in super::super) fn prepare<'a>(
     evidence: &'a ServiceEvidence,
     node: &SourceCallNode,
 ) -> Result<Prepared<'a>, ClewError> {
     let owner = &evidence.observations[&node.callable.declaration_id];
+    if owner.normalized["receiverType"].is_object()
+        || owner.normalized["contextParameters"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty())
+    {
+        return Ok(Prepared::VariablesUnavailable);
+    }
     let Some(raw) = owner.normalized["documentation"].get("dataInput") else {
         return Ok(Prepared::VariablesUnavailable);
     };
@@ -117,7 +144,7 @@ pub(in super::super) fn prepare<'a>(
         || owner.normalized["analysis"]["analyzerCompilerVersion"] != "2.4.10"
         || envelope.nodes.is_empty()
         || envelope.nodes.len() > super::super::MAX_ROWS
-        || envelope.variables.len() > super::super::MAX_ROWS
+        || envelope.variables.len() + envelope.members.len() > super::super::MAX_ROWS
         || envelope.body >= envelope.nodes.len()
         || envelope.boundaries.len() > 32
         || envelope.boundaries.iter().any(|code| {
@@ -156,12 +183,7 @@ pub(in super::super) fn prepare<'a>(
         let range = local(raw.byte_start, raw.byte_end)?;
         if matches!(
             raw.kind,
-            Kind::Field
-                | Kind::This
-                | Kind::Super
-                | Kind::Construct
-                | Kind::Throw
-                | Kind::NestedBody
+            Kind::Field | Kind::Super | Kind::Construct | Kind::Throw | Kind::NestedBody
         ) {
             return Err(invalid(
                 "Kotlin data syntax promotes an unsupported operation",
@@ -323,7 +345,7 @@ pub(in super::super) fn prepare<'a>(
                     identity: variable.variable_identity.clone(),
                     kind,
                     declaration,
-                    declaration_id: None,
+                    member: None,
                     formal_slot: variable.parameter_index,
                 },
             )
@@ -350,6 +372,97 @@ pub(in super::super) fn prepare<'a>(
         {
             return Err(invalid(
                 "Kotlin data variable access disagrees with its compiler declaration",
+            ));
+        }
+    }
+    for member in &envelope.members {
+        let range = local(member.byte_start, member.byte_end)?;
+        if member.schema != "kotlin-documentation-member/1.0"
+            || member.owner_symbol_identity != owner.symbol
+            || member.compilation_scope != node.scope
+            || !matches!(member.access_mode.as_str(), "READ" | "WRITE")
+            || member.variable_type.is_empty()
+            || member.variable_type.len() > 4096
+            || !member.storage_proof.admitted()
+        {
+            return Err(invalid(
+                "Kotlin property access lacks an ordinary backing-storage proof",
+            ));
+        }
+        let properties: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|property| {
+                property.kind == "SYMBOL"
+                    && property.service == evidence.service
+                    && property.symbol == member.property_identity
+                    && property.normalized["symbolIdentity"] == member.property_identity
+                    && property.normalized["scope"] == node.scope
+                    && property.normalized["schema"] == "declaration-descriptor/0.1"
+                    && property.normalized["provider"] == "K2_FIR"
+                    && property.normalized["resolution"] == "PROVEN"
+                    && property.normalized["sourceProvenance"]
+                        == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+                    && property.normalized["compilerAuthority"] == "fir-facts-extractor/0.6"
+                    && matches!(
+                        property.normalized["declarationKind"].as_str(),
+                        Some("PROPERTY" | "MUTABLE_PROPERTY")
+                    )
+            })
+            .collect();
+        let [property] = properties.as_slice() else {
+            return Err(invalid(
+                "Kotlin property compiler declaration is missing or ambiguous",
+            ));
+        };
+        let proof: StorageProof =
+            serde_json::from_value(property.normalized["documentationStorage"].clone())
+                .map_err(|_| invalid("Kotlin property descriptor storage proof is missing"))?;
+        let site = &property.normalized["outlineOwnerSource"];
+        let source = site["sourceId"]
+            .as_str()
+            .and_then(|id| evidence.sources.get(id))
+            .ok_or_else(|| invalid("Kotlin property original declaration source is missing"))?;
+        if proof != member.storage_proof
+            || property.digest != digest(&property.normalized)?
+            || site["sourceStatus"] != "SOURCE_RETAINED"
+            || site["file"] != member.property_file
+            || source.file != member.property_file
+            || source.service != evidence.service
+            || source.revision != evidence.revision
+            || property.source_ids != [source.id.clone()]
+            || site["sourceDigest"] != source.text_digest
+            || site["evidenceDigest"] != source.evidence_digest
+            || source.text_digest != hash_bytes(source.text.as_bytes())
+            || site["byteStart"].as_u64() != Some(member.property_byte_start as u64)
+            || site["byteEnd"].as_u64() != Some(member.property_byte_end as u64)
+            || member
+                .property_byte_end
+                .checked_sub(member.property_byte_start)
+                != Some(source.text.len())
+            || property.normalized["declaredType"] != member.variable_type
+            || (member.access_mode == "WRITE"
+                && property.normalized["declarationKind"] != "MUTABLE_PROPERTY")
+        {
+            return Err(invalid(
+                "Kotlin property access and retained original storage declaration disagree",
+            ));
+        }
+        let binding = Variable {
+            identity: member.property_identity.clone(),
+            kind: VariableKind::Property,
+            declaration: false,
+            formal_slot: None,
+            member: Some(MemberStorage {
+                declaration_id: property.id.clone(),
+                static_member: property.normalized["ownerIdentity"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("package:")),
+            }),
+        };
+        if input.variables.insert(range, binding).is_some() {
+            return Err(invalid(
+                "Kotlin property occurrence collides with another storage binding",
             ));
         }
     }

@@ -16,6 +16,7 @@ internal class KotlinDocumentationSource(
     descriptors: List<JsonObject>,
     relations: List<JsonObject>,
     private val dataFacts: List<JsonObject> = emptyList(),
+    private val storageDescriptors: List<JsonObject> = descriptors,
 ) {
     private val dataCalls = relations
     private val sourceDigest = "sha256:" + MessageDigest.getInstance("SHA-256")
@@ -51,7 +52,7 @@ internal class KotlinDocumentationSource(
             (it["start"]!!.jsonPrimitive.int >= range.first) && (it["end"]!!.jsonPrimitive.int <= range.last + 1)
         }).read(function, descriptor)
         val data = KotlinDocumentationData(file, originalSource, compilationScope, descriptor,
-            coordinates, compilerCoordinates, dataFacts, dataCalls).read(function)
+            coordinates, compilerCoordinates, dataFacts, dataCalls, storageDescriptors).read(function)
         val documented = if (data == null) flow else JsonObject(flow + mapOf("dataInput" to data))
         return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to documented))
     }

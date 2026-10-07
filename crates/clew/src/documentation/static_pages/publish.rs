@@ -1210,12 +1210,24 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
         }
         out += "</ul></section>\n";
     }
-    if !graph.reverse_field_references.is_empty() {
-        out += "<h2>Examined field declaration references</h2>";
+    for (heading, references) in [
+        (
+            "Examined field declaration references",
+            &graph.reverse_field_references,
+        ),
+        (
+            "Examined property declaration references",
+            &graph.reverse_property_references,
+        ),
+    ] {
+        if references.is_empty() {
+            continue;
+        }
+        out += &format!("<h2>{heading}</h2>");
         out += &paragraph(
             "These are references in examined source bodies, not runtime instance identities or an impact inventory.",
         );
-        for (field, nodes) in &graph.reverse_field_references {
+        for (field, nodes) in references {
             out += &format!(
                 "<p>{}: {}</p>",
                 escape(field),

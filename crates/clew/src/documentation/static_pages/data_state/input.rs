@@ -26,6 +26,7 @@ pub(super) use java::site_range as java_site_range;
 pub(super) enum Kind {
     Variable,
     Field,
+    Member,
     This,
     Super,
     Literal,
@@ -65,6 +66,7 @@ pub(super) enum VariableKind {
     Parameter,
     Local,
     Field,
+    Property,
 }
 impl VariableKind {
     pub(super) fn label(self) -> &'static str {
@@ -72,6 +74,7 @@ impl VariableKind {
             Self::Parameter => "PARAMETER",
             Self::Local => "LOCAL_VARIABLE",
             Self::Field => "FIELD",
+            Self::Property => "PROPERTY",
         }
     }
 }
@@ -80,8 +83,16 @@ pub(super) struct Variable {
     pub identity: String,
     pub kind: VariableKind,
     pub declaration: bool,
-    pub declaration_id: Option<String>,
+    pub member: Option<MemberStorage>,
     pub formal_slot: Option<usize>,
+}
+
+/// Storage qualification is producer-owned; the shared engine never decodes
+/// a Java field declaration or a Kotlin accessor to establish it.
+#[derive(Clone)]
+pub(super) struct MemberStorage {
+    pub declaration_id: String,
+    pub static_member: bool,
 }
 
 /// Actuals remain in source evaluation order. A missing formal slot withholds

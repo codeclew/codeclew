@@ -11,6 +11,39 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct KotlinPropertyStorageProof {
+    schema: String,
+    authority: String,
+    qualified: bool,
+    default_getter: bool,
+    default_setter: bool,
+    has_backing_field: bool,
+    delegated: bool,
+    extension: bool,
+    context_parameters: usize,
+    modality: String,
+    is_override: bool,
+    lateinit: bool,
+}
+impl KotlinPropertyStorageProof {
+    pub(crate) fn admitted(&self) -> bool {
+        self.schema == "kotlin-documentation-property-storage/1.0"
+            && self.authority == "K2_DEFAULT_BACKING_PROPERTY"
+            && self.qualified
+            && self.default_getter
+            && self.default_setter
+            && self.has_backing_field
+            && !self.delegated
+            && !self.extension
+            && self.context_parameters == 0
+            && self.modality == "FINAL"
+            && !self.is_override
+            && !self.lateinit
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeclarationRelationSnapshot {
@@ -526,7 +559,12 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
         "PROPERTY" | "MUTABLE_PROPERTY" => {
             allowed.push("compilerCallableId");
             if !partial {
-                allowed.extend(["isOverride", "declaredType", "declaredNullable"]);
+                allowed.extend([
+                    "isOverride",
+                    "declaredType",
+                    "declaredNullable",
+                    "documentationStorage",
+                ]);
             }
         }
         "CLASS" => allowed.extend(["compilerClassId", "spring", "jvmAnnotations"]),
@@ -662,6 +700,26 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
                 return Err(payload_invalid(
                     "property compiler identity is inconsistent",
                 ));
+            }
+            if let Some(storage) = value.get("documentationStorage") {
+                let proof: KotlinPropertyStorageProof = serde_json::from_value(storage.clone())
+                    .map_err(|_| {
+                        payload_invalid("property documentation storage proof shape is invalid")
+                    })?;
+                if proof.schema != "kotlin-documentation-property-storage/1.0"
+                    || proof.authority != "K2_DEFAULT_BACKING_PROPERTY"
+                    || !matches!(
+                        proof.modality.as_str(),
+                        "" | "FINAL" | "OPEN" | "ABSTRACT" | "SEALED"
+                    )
+                    || value["modality"] != proof.modality
+                    || value["isOverride"] != proof.is_override
+                    || (proof.qualified && !proof.admitted())
+                {
+                    return Err(payload_invalid(
+                        "property documentation storage proof authority is inconsistent",
+                    ));
+                }
             }
         }
         "CLASS" => {
@@ -2644,6 +2702,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "isOverride",
                 "declaredType",
                 "declaredNullable",
+                "documentationStorage",
             ]),
             "CLASS" => allowed.extend(["compilerClassId", "spring", "jvmAnnotations"]),
             _ => return Err(invalid("unknown declaration descriptor kind")),
@@ -3558,6 +3617,71 @@ mod tests {
             "compilerAuthority":"fir-facts-extractor/0.6",
             "resolution":"PROVEN","provider":"K2_FIR"
         })
+    }
+
+    #[test]
+    fn property_documentation_storage_transport_is_optional_closed_and_authoritative() {
+        let mut property = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        let object = property.as_object_mut().unwrap();
+        for field in ["returnType", "returnNullable", "parameterTypes"] {
+            object.remove(field);
+        }
+        property["declarationKind"] = json!("MUTABLE_PROPERTY");
+        property["symbolIdentity"] = json!("property:p/Derived.title");
+        property["compilerCallableId"] = json!("p/Derived.title");
+        property["isOverride"] = json!(false);
+        property["declaredType"] = json!("kotlin/String");
+        property["declaredNullable"] = json!(false);
+        let verify_snapshot = |row: &Value| {
+            let mut facts = verified_facts();
+            facts["declarationDescriptors"]["descriptors"] = json!([row]);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            validate_declaration_descriptor_snapshot(&facts).map(|_| ())
+        };
+        validate_declaration_descriptor_fact(&property).unwrap();
+        verify_snapshot(&property).unwrap();
+        property["documentationStorage"] = json!({
+            "schema":"kotlin-documentation-property-storage/1.0",
+            "authority":"K2_DEFAULT_BACKING_PROPERTY","qualified":true,
+            "defaultGetter":true,"defaultSetter":true,"hasBackingField":true,
+            "delegated":false,"extension":false,"contextParameters":0,
+            "modality":"FINAL","isOverride":false,"lateinit":false
+        });
+        validate_declaration_descriptor_fact(&property).unwrap();
+        verify_snapshot(&property).unwrap();
+        let mut opaque = property.clone();
+        opaque["documentationStorage"]["qualified"] = json!(false);
+        opaque["documentationStorage"]["defaultGetter"] = json!(false);
+        validate_declaration_descriptor_fact(&opaque).unwrap();
+        verify_snapshot(&opaque).unwrap();
+        for (key, value) in [
+            ("schema", json!("future-schema")),
+            ("authority", json!("PSI_GUESS")),
+            ("qualified", json!("yes")),
+            ("defaultGetter", json!(false)),
+            ("delegated", json!(true)),
+            ("contextParameters", json!(-1)),
+            ("modality", json!("OPEN")),
+            ("unknownProof", json!(true)),
+        ] {
+            let mut invalid = property.clone();
+            invalid["documentationStorage"][key] = value;
+            assert!(
+                validate_declaration_descriptor_fact(&invalid).is_err(),
+                "{key}"
+            );
+            // Snapshot admission independently routes through the same
+            // granular validator via validate_kotlin_semantic_payload.
+            assert!(verify_snapshot(&invalid).is_err(), "snapshot {key}");
+        }
+        let mut function = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        function["documentationStorage"] = property["documentationStorage"].clone();
+        assert!(validate_declaration_descriptor_fact(&function).is_err());
+        assert!(verify_snapshot(&function).is_err());
     }
 
     #[test]

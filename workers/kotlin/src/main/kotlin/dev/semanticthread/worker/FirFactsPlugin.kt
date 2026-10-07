@@ -11,6 +11,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.boolean
 import org.jetbrains.kotlin.KtRealSourceElementKind
 import org.jetbrains.kotlin.compiler.plugin.AbstractCliOption
 import org.jetbrains.kotlin.compiler.plugin.CliOption
@@ -45,6 +47,10 @@ import org.jetbrains.kotlin.fir.expressions.FirNamedArgumentExpression
 import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.FirSafeCallExpression
+import org.jetbrains.kotlin.fir.expressions.FirEqualityOperatorCall
+import org.jetbrains.kotlin.fir.expressions.FirThisReceiverExpression
+import org.jetbrains.kotlin.fir.declarations.impl.FirDefaultPropertyGetter
+import org.jetbrains.kotlin.fir.declarations.impl.FirDefaultPropertySetter
 import org.jetbrains.kotlin.fir.expressions.FirStatement
 import org.jetbrains.kotlin.fir.expressions.FirTryExpression
 import org.jetbrains.kotlin.fir.expressions.FirVariableAssignment
@@ -174,6 +180,7 @@ private class FirDocumentationVariablesChecker24(
         ) return
         val identity = "callable:$ownerId#jvm:$descriptor"
         val file = context.containingFilePath ?: return
+        if (owner.receiverParameter != null || owner.contextParameters.isNotEmpty()) return
         appendFact(output, buildJsonObject {
             put("recordType", "DOCUMENTATION_VARIABLE_RECEIPT")
             put("schema", "kotlin-documentation-variable-receipt/1.0")
@@ -233,6 +240,31 @@ private class FirDocumentationVariablesChecker24(
                 put("resolution", "COMPILER_EXACT")
                 put("authority", "K2_RESOLVED_VARIABLE_SYMBOL")
             }
+        }
+        fun member(symbol: org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>?, access: FirQualifiedAccessExpression?, mode: String): Boolean {
+            val source = access?.source
+            val property = (symbol as? FirPropertySymbol)?.fir ?: return false
+            if (documentationPropertyStorage24(property)["qualified"]?.jsonPrimitive?.boolean != true
+                || source == null || source.kind !== KtRealSourceElementKind
+                || source.startOffset < ownerSource.startOffset || source.endOffset > ownerSource.endOffset
+                || source.startOffset >= source.endOffset) return false
+            if (property.symbol.callableId?.classId != null && access.explicitReceiver == null) {
+                val dispatch = access.dispatchReceiver as? FirThisReceiverExpression ?: return false
+                val ownClass = context.containingElements.filterIsInstance<FirRegularClass>().lastOrNull()
+                if (dispatch.calleeReference.boundSymbol !== ownClass?.symbol) return false
+            }
+            if (rows.size >= 4096) { exhausted = true; boundary("DOCUMENTATION_VARIABLE_BUDGET", source); return false }
+            rows += buildJsonObject {
+                put("recordType", "DOCUMENTATION_MEMBER")
+                put("schema", "kotlin-documentation-member/1.0")
+                put("file", file); put("ownerSymbolIdentity", identity)
+                put("ownerStart", ownerSource.startOffset); put("ownerEnd", ownerSource.endOffset)
+                put("start", source.startOffset); put("end", source.endOffset)
+                put("propertyIdentity", "property:${property.symbol.callableId}")
+                put("accessMode", mode); put("variableType", (property.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString().orEmpty())
+                put("authority", "K2_RESOLVED_PROPERTY_SYMBOL"); put("resolution", "COMPILER_EXACT")
+            }
+            return true
         }
         fun bind(variable: org.jetbrains.kotlin.fir.declarations.FirVariable, slot: Int?) {
             val source = variable.source ?: return
@@ -300,8 +332,8 @@ private class FirDocumentationVariablesChecker24(
                     val left = element.lValue as? FirQualifiedAccessExpression
                     val symbol = (left?.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
                     val binding = symbol?.let(bindings::get)
-                    if (binding == null) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", left?.source)
-                    else row(binding, left.source, "VARIABLE_ACCESS", "WRITE")
+                    if (binding != null) row(binding, left.source, "VARIABLE_ACCESS", "WRITE")
+                    else if (!member(symbol, left, "WRITE")) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", left?.source)
                     // A local write target is not a read. Its receiver is only
                     // traversed for unbound property accesses; no field fact is emitted.
                     if (binding == null) left?.acceptChildren(visitor)
@@ -311,7 +343,23 @@ private class FirDocumentationVariablesChecker24(
                     val symbol = (element.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
                     val binding = symbol?.let(bindings::get)
                     if (binding != null) row(binding, element.source, "VARIABLE_ACCESS", "READ")
-                    else if (symbol is FirPropertySymbol) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", element.source)
+                    else if (symbol is FirPropertySymbol && !member(symbol, element, "READ")) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", element.source)
+                    element.acceptChildren(visitor)
+                }
+                element is FirEqualityOperatorCall -> {
+                    val source = element.source
+                    val arguments = element.argumentList.arguments
+                    if (source != null && source.kind === KtRealSourceElementKind && arguments.size == 2
+                        && arguments.all { it.resolvedType.classId?.asString() == "kotlin/Int" && !it.resolvedType.isMarkedNullable }) {
+                        if (rows.size >= 4096) { exhausted = true; boundary("DOCUMENTATION_VARIABLE_BUDGET", source) }
+                        else rows += buildJsonObject {
+                            put("recordType", "DOCUMENTATION_OPERATION"); put("schema", "kotlin-documentation-operation/1.0")
+                            put("file", file); put("ownerSymbolIdentity", identity)
+                            put("ownerStart", ownerSource.startOffset); put("ownerEnd", ownerSource.endOffset)
+                            put("start", source.startOffset); put("end", source.endOffset)
+                            put("proof", "NON_NULL_INT_EQUALITY"); put("authority", "K2_RESOLVED_OPERAND_TYPES")
+                        }
+                    }
                     element.acceptChildren(visitor)
                 }
                 else -> element.acceptChildren(visitor)
@@ -662,6 +710,29 @@ private class FirFactsFunctionDescriptorChecker(
     }
 }
 
+/** Qualified storage access; custom/virtual/delegated accessors stay opaque. */
+private fun documentationPropertyStorage24(property: FirProperty): JsonObject {
+    val status = runCatching { property.symbol.resolvedStatus }.getOrNull()
+    val getter = property.getter is FirDefaultPropertyGetter
+    val setter = !property.isVar || property.setter is FirDefaultPropertySetter
+    val backing = property.backingField != null
+    val ordinary = property.origin.fromSource && !property.origin.generated && !property.isLocal
+        && property.source != null && property.symbol.callableId?.isLocal == false
+        && property.delegate == null && property.receiverParameter == null && property.contextParameters.isEmpty()
+        && status?.modality?.name == "FINAL" && !status.isOverride && !status.isLateInit
+        && getter && setter && backing
+    return buildJsonObject {
+        put("schema", "kotlin-documentation-property-storage/1.0")
+        put("authority", "K2_DEFAULT_BACKING_PROPERTY")
+        put("qualified", ordinary)
+        put("defaultGetter", getter); put("defaultSetter", setter); put("hasBackingField", backing)
+        put("delegated", property.delegate != null); put("extension", property.receiverParameter != null)
+        put("contextParameters", property.contextParameters.size)
+        put("modality", status?.modality?.name.orEmpty())
+        put("isOverride", status?.isOverride ?: true); put("lateinit", status?.isLateInit ?: true)
+    }
+}
+
 private class FirFactsPropertyDescriptorChecker(
     private val output: String,
 ) : FirDeclarationChecker<FirProperty>(MppCheckerKind.Common) {
@@ -719,6 +790,7 @@ private class FirFactsPropertyDescriptorChecker(
         record["isOverride"] = JsonPrimitive(status.isOverride)
         record["declaredType"] = JsonPrimitive(declaredType.toString())
         record["declaredNullable"] = JsonPrimitive(declaredType.isMarkedNullable)
+        record["documentationStorage"] = documentationPropertyStorage24(declaration)
         record["typeParameters"] = kotlinx.serialization.json.JsonArray(typeParameters)
         appendFact(output, kotlinx.serialization.json.JsonObject(record))
     }
@@ -855,15 +927,16 @@ private data class ResolvedArgumentMapping24(
 private fun resolvedArgumentMapping24(
     callable: FirCallableSymbol<*>,
     arguments: FirResolvedArgumentList?,
+    documentationOnly: Boolean = false,
 ): ResolvedArgumentMapping24 {
     val function = callable.fir as? FirFunction
         ?: return ResolvedArgumentMapping24(null, "ARGUMENT_OWNER_NOT_FUNCTION")
     val callableId = callable.callableId
         ?: return ResolvedArgumentMapping24(null, "NO_COMPILER_CALLABLE_ID")
-    if (!function.origin.fromSource || function.origin.generated || callableId.isLocal) {
+    if (callableId.isLocal || (!documentationOnly && (!function.origin.fromSource || function.origin.generated))) {
         return ResolvedArgumentMapping24(null, "EXTERNAL_OR_LOCAL_ARGUMENT_TARGET")
     }
-    if (function.receiverParameter != null) {
+    if (function.receiverParameter != null && !(documentationOnly && !function.origin.fromSource)) {
         return ResolvedArgumentMapping24(null, "EXTENSION_ARGUMENT_MAPPING_UNSUPPORTED")
     }
     if (function.contextParameters.isNotEmpty()) {
@@ -1489,6 +1562,7 @@ private class FirFactsExpressionChecker(
                         put("end", source.endOffset)
                         put("owner", owner)
                         put("kind", relationKind)
+                        put("dataResultType", value.resolvedType.toString())
                         if (descriptor != null && compilerId != null && !compilerId.isLocal) {
                             val prefix = if (relationKind == "CONSTRUCTS") "constructor:" else "callable:"
                             put("target", "$prefix$compilerId#jvm:$descriptor")
@@ -1496,7 +1570,7 @@ private class FirFactsExpressionChecker(
                         } else {
                             put("resolution", "UNKNOWN")
                         }
-                        val mapping = resolvedArgumentMapping24(callable, arguments)
+                        val mapping = resolvedArgumentMapping24(callable, arguments, documentationOnly = true)
                         if (mapping.unknownCode == null) {
                             put("dataArgumentToParameter", JsonArray(mapping.rows.orEmpty()))
                             put("dataOmittedDefaultParameterIndices", JsonArray(mapping.omittedDefaultParameterIndices.orEmpty().map(::JsonPrimitive)))

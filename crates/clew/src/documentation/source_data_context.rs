@@ -134,9 +134,13 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
             .ok_or_else(|| invalid("sourceDataContext has no data projection"))?;
         let mut observations = node.observations.clone();
         let mut retained_sources = node.sources.clone();
-        for id in &state.field_declarations {
+        for id in state
+            .field_declarations
+            .iter()
+            .chain(&state.property_declarations)
+        {
             let observation = work.checked.dependencies.get(id).ok_or_else(|| {
-                invalid("sourceDataContext examined field declaration is unavailable")
+                invalid("sourceDataContext examined member declaration is unavailable")
             })?;
             observations.insert(id.clone(), observation.clone());
             for source_id in &observation.source_ids {
@@ -146,7 +150,7 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
                     .get(&observation.service)
                     .and_then(|s| s.sources.get(source_id))
                     .ok_or_else(|| {
-                        invalid("sourceDataContext examined field source is unavailable")
+                        invalid("sourceDataContext examined member source is unavailable")
                     })?;
                 if counted_sources.insert(source_id.clone()) {
                     retained_bytes = retained_bytes.saturating_add(source.text.len());
@@ -272,6 +276,23 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
                 .map(|id| reference(work, "DEPENDENCY", id))
                 .collect::<Result<Vec<_>, _>>()?
         );
+        if !node
+            .data_state
+            .as_ref()
+            .unwrap()
+            .property_declarations
+            .is_empty()
+        {
+            state["propertyDeclarations"] = json!(
+                node.data_state
+                    .as_ref()
+                    .unwrap()
+                    .property_declarations
+                    .iter()
+                    .map(|id| reference(work, "DEPENDENCY", id))
+                    .collect::<Result<Vec<_>, _>>()?
+            );
+        }
         let call_sites: Vec<_> = node
             .calls
             .iter()

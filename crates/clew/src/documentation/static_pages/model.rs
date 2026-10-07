@@ -280,6 +280,8 @@ pub struct SourceCallGraph {
     pub reverse_examined_processes: BTreeMap<String, Vec<ExaminedProcessReason>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reverse_field_references: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reverse_property_references: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -645,6 +647,8 @@ pub struct NodeDataState {
     pub definitions: Vec<DataDefinition>,
     pub calls: Vec<DataCall>,
     pub field_declarations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub property_declarations: Vec<String>,
     pub gaps: Vec<Gap>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

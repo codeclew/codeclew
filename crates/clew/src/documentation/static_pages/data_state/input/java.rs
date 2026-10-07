@@ -118,7 +118,11 @@ fn syntax(
     Ok(index)
 }
 
-fn variable(observation: &Observation) -> Option<Variable> {
+fn variable(
+    observation: &Observation,
+    evidence: &ServiceEvidence,
+    node: &SourceCallNode,
+) -> Option<Variable> {
     let normalized = &observation.normalized;
     let identity = normalized["variableIdentity"].as_str()?.to_owned();
     if identity.is_empty() {
@@ -142,13 +146,29 @@ fn variable(observation: &Observation) -> Option<Variable> {
                 .ok()
         })
         .flatten();
+    let member = normalized["declarationObservationId"]
+        .as_str()
+        .and_then(|id| evidence.observations.get(id))
+        .filter(|d| {
+            kind == VariableKind::Field
+                && d.kind == "SYMBOL"
+                && d.service == node.service
+                && d.normalized["scope"] == node.scope
+                && d.normalized["declarationKind"] == "FIELD"
+                && d.symbol == identity
+                && d.normalized["symbolIdentity"] == identity
+        })
+        .map(|d| MemberStorage {
+            declaration_id: d.id.clone(),
+            static_member: d.normalized["modifiers"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|v| v == "STATIC")),
+        });
     Some(Variable {
         identity,
         kind,
         declaration: observation.kind == "VARIABLE_DECLARATION",
-        declaration_id: normalized["declarationObservationId"]
-            .as_str()
-            .map(str::to_owned),
+        member,
         formal_slot,
     })
 }
@@ -230,7 +250,7 @@ pub(in super::super) fn prepare<'a>(
         }
         match (
             site_range(observation, evidence, source),
-            variable(observation),
+            variable(observation, evidence, node),
         ) {
             (Some(range), Some(variable)) => {
                 if input.variables.insert(range, variable).is_some() {

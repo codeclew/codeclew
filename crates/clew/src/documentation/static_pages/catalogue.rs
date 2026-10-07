@@ -428,6 +428,7 @@ mod tests {
                 process_links: vec![],
                 reverse_examined_processes: BTreeMap::new(),
                 reverse_field_references: BTreeMap::new(),
+                reverse_property_references: BTreeMap::new(),
             }),
         };
         let catalogue = rows(&p).unwrap();

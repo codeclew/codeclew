@@ -20,10 +20,11 @@ class KotlinDocumentationVariablesTest {
     private fun compile(source: String): List<JsonObject> = compileAll(source).filter {
         it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_DATA_BOUNDARY")
     }
-    private fun compileAll(source: String): List<JsonObject> {
+    private fun compileAll(source: String): List<JsonObject> = compileSources(mapOf("Variables.kt" to source))
+    private fun compileSources(sources: Map<String, String>): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-documentation-variables").toRealPath()
         try {
-            val input = Files.writeString(root.resolve("Variables.kt"), source)
+            val inputs = sources.map { (name, text) -> Files.writeString(root.resolve(name), text).toString() }
             val facts = root.resolve("facts.jsonl")
             val plugin = Path.of(FirFactsCompilerPluginRegistrar::class.java.protectionDomain.codeSource.location.toURI())
             val output = ByteArrayOutputStream()
@@ -31,7 +32,7 @@ class KotlinDocumentationVariablesTest {
                 synchronized(K2JVMCompiler::class.java) {
                     K2JVMCompiler().exec(stream, "-no-stdlib", "-no-reflect", "-jvm-target", "21",
                         "-classpath", System.getProperty("java.class.path"), "-d", root.resolve("classes").toString(),
-                        "-Xplugin=$plugin", "-P", "plugin:semantic-thread-facts:output=$facts", input.toString())
+                        "-Xplugin=$plugin", "-P", "plugin:semantic-thread-facts:output=$facts", *inputs.toTypedArray())
                 }
             }
             assertEquals(0, status.code, output.toString())
@@ -41,21 +42,24 @@ class KotlinDocumentationVariablesTest {
         }
     }
 
-    private fun extractData(source: String): Map<String, JsonObject> {
-        val rows = compileAll(source)
-        val coordinates = assertNotNull(CompilerUtf16ToUtf8ByteMap.fromCompilerInput(source))
+    private fun extractData(source: String): Map<String, JsonObject> = extractDataSources(mapOf("Variables.kt" to source), "Variables.kt")
+    private fun extractDataSources(sources: Map<String, String>, selectedFile: String): Map<String, JsonObject> {
+        val source = sources[selectedFile]!!
+        val rows = compileSources(sources)
         val descriptors = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" }.map { row ->
+            val name = Path.of(row["file"]!!.jsonPrimitive.content).fileName.toString()
+            val coordinates = assertNotNull(CompilerUtf16ToUtf8ByteMap.fromCompilerInput(sources[name]!!))
             val range = assertNotNull(coordinates.range(row["start"]!!.jsonPrimitive.int, row["end"]!!.jsonPrimitive.int))
-            JsonObject(row + mapOf("start" to JsonPrimitive(range.first), "end" to JsonPrimitive(range.last + 1)))
+            JsonObject(row + mapOf("start" to JsonPrimitive(range.first), "end" to JsonPrimitive(range.last + 1), "file" to JsonPrimitive("src/$name")))
         }
         val disposable = Disposer.newDisposable("kotlin-documentation-data-test")
         try {
             val environment = KotlinCoreEnvironment.createForProduction(disposable, CompilerConfiguration(), EnvironmentConfigFiles.JVM_CONFIG_FILES)
-            val file = KtPsiFactory(environment.project, markGenerated = false).createFile("Variables.kt", source)
-            val documentation = KotlinDocumentationSource("src/Variables.kt", file, source, ":/main", descriptors,
-                rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" },
-                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY") })
-            return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).associate { function ->
+            val file = KtPsiFactory(environment.project, markGenerated = false).createFile(selectedFile, source)
+            val documentation = KotlinDocumentationSource("src/$selectedFile", file, source, ":/main", descriptors.filter { it["file"]!!.jsonPrimitive.content == "src/$selectedFile" },
+                rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile },
+                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_OPERATION") && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile }, descriptors)
+            return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).filter { it.bodyExpression != null && it.receiverTypeReference == null }.associate { function ->
                 val enriched = documentation.enrich(function, buildJsonObject { put("name", function.name) })
                 function.name!! to assertNotNull(enriched["documentation"]?.jsonObject?.get("dataInput"), enriched.toString()).jsonObject
             }
@@ -125,10 +129,10 @@ class KotlinDocumentationVariablesTest {
     fun normalizedInputDoesNotTreatCustomOperatorsPropertiesOrExternalCallsAsPureTransfers() {
         val source = """
             package docs
-            class Box(val value: String) { operator fun plus(other: Box): Box = this }
+            class Box(private val input: String) { val value: String get() = input; operator fun plus(other: Box): Box = this }
             fun operator(value: Box): String { val result = value + value; return "later" }
             fun property(value: Box): String { val result = value.value; return "later" }
-            fun external(value: String): String { val result = value.trim(); return "later" }
+            fun external(value: String): String { val result = value.trim { it == ' ' }; return "later" }
             fun trigger(): Boolean = true
             val enabled: Boolean get() = trigger()
             operator fun Boolean?.not(): Boolean = trigger()
@@ -150,6 +154,69 @@ class KotlinDocumentationVariablesTest {
             assertEquals(1, matched.size, "$name must retain its exact unsupported expression")
             assertEquals("UNSUPPORTED", matched.single()["kind"]!!.jsonPrimitive.content)
         }
+    }
+
+    @Test
+    fun memberExtensionAndLabelledThisNeverCollapseDistinctReceiverStorage() {
+        val labelledThis = "this@" + "Box"
+        val source = """
+            package docs
+            class Box(var value: String) {
+                fun Box.copyValue(): String { value = "extension"; $labelledThis.value = "dispatch"; return value }
+                fun labelled(): String = $labelledThis.value
+            }
+        """.trimIndent()
+        val facts = compileAll(source)
+        assertTrue(facts.none { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_VARIABLE_RECEIPT"
+            && ".copyValue#jvm:" in it["ownerSymbolIdentity"]!!.jsonPrimitive.content })
+        val labelled = extractData(source)["labelled"]!!
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        val receiver = labelled["nodes"]!!.jsonArray.map { it.jsonObject }.single {
+            bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() == "this@Box"
+        }
+        assertEquals("UNSUPPORTED", receiver["kind"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun ordinaryPropertyIdentitiesCloseAcrossFilesWithoutPromotingCustomOrVirtualAccessors() {
+        val data = extractDataSources(mapOf(
+            "Task.kt" to "package docs\nclass Task(val name: String, val eligible: Boolean)",
+            "Config.kt" to "package docs\nclass Config(val prefix: String)\nclass Custom(private val input: String) { val value: String get() = input }\nopen class Virtual { open val value: String = \"initial\" }",
+            "Pipeline.kt" to ("\uFEFF" + "package docs\r\nfun ordinary(task: Task, config: Config): String { val chosen = task.name; return config.prefix + chosen }\r\nfun custom(other: Custom): String = other.value\r\nfun virtual(other: Virtual): String = other.value\r\n")
+        ), "Pipeline.kt")
+        val members = data["ordinary"]!!["members"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(setOf("property:docs/Task.name", "property:docs/Config.prefix"), members.map { it["propertyIdentity"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(setOf("src/Task.kt", "src/Config.kt"), members.map { it["propertyFile"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(2, data["ordinary"]!!["nodes"]!!.jsonArray.count { it.jsonObject["kind"]!!.jsonPrimitive.content == "MEMBER" })
+        for (name in listOf("custom", "virtual")) {
+            assertTrue(data[name]!!["members"]!!.jsonArray.isEmpty(), name)
+            val body = data[name]!!["nodes"]!!.jsonArray.map { it.jsonObject }.filter { it["kind"]!!.jsonPrimitive.content != "RETURN" }
+            assertEquals(1, body.size); assertEquals("UNSUPPORTED", body.single()["kind"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun primaryPipelineRetainsOrdinaryStorageNormalExternalResultsAndCompilerIntEquality() {
+        val fixture = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
+            .map { it.resolve("fixtures/documentation-common-pipeline/kotlin/src/main/kotlin/paired/Pipeline.kt") }
+            .first { Files.isRegularFile(it) }
+        val data = extractData(Files.readString(fixture))
+        val helper = data["chooseName"]!!
+        assertTrue(helper["members"]!!.jsonArray.isNotEmpty(), helper.toString())
+        val run = data["runOnce"]!!
+        val members = run["members"]!!.jsonArray.map { it.jsonObject }
+        assertTrue(setOf("property:paired/ProcessingLoop.pending", "property:paired/ProcessingLoop.config",
+            "property:paired/Config.enabled", "property:paired/Config.prefix", "property:paired/Task.eligible",
+            "property:paired/ProcessingLoop.gateway", "property:paired/ProcessingLoop.lastState").all { id -> members.any { it["propertyIdentity"]!!.jsonPrimitive.content == id } }, members.toString())
+        assertEquals(2, members.count { it["accessMode"]!!.jsonPrimitive.content == "WRITE" })
+        val nodes = run["nodes"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(4, nodes.count { it["kind"]!!.jsonPrimitive.content == "CALL" }, run.toString())
+        assertEquals(2, nodes.count { it["kind"]!!.jsonPrimitive.content == "ASSIGNMENT" })
+        assertTrue(nodes.any { it["kind"]!!.jsonPrimitive.content == "BINARY" }, nodes.toString())
+        val bytes = Files.readString(fixture).toByteArray(Charsets.UTF_8)
+        assertTrue(nodes.filter { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }.all {
+            bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() in setOf("=", "==", "!=", "+", "!")
+        }, nodes.toString())
     }
 
     @Test
