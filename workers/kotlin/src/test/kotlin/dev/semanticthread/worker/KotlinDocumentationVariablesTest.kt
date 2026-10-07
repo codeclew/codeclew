@@ -157,6 +157,44 @@ class KotlinDocumentationVariablesTest {
     }
 
     @Test
+    fun primaryConstructorStorageBindsResolvedParameterObjectsToOrdinaryProperties() {
+        val source = """
+            package docs
+            class Queue
+            class Endpoint(private val submitted: Queue)
+            class Worker(private val pending: Queue, val other: String) { var lastState = "idle" }
+            class PairQueues(q: Queue) { val submitted = q; val pending = q }
+            class Custom(private val input: Queue) { val pending: Queue get() = input }
+            class Changed(var pending: Queue) { init { pending = Queue() } }
+            class SideEffects(var pending: Queue) { val changed = run { pending = Queue(); "changed" } }
+        """.trimIndent()
+        val facts = compileAll(source)
+        val constructors = facts.filter { it["declarationKind"]?.jsonPrimitive?.content == "CONSTRUCTOR" }
+        for ((name, properties) in listOf("Endpoint" to listOf("submitted"), "Worker" to listOf("pending", "other"))) {
+            val constructor = constructors.single { it["ownerIdentity"]?.jsonPrimitive?.content == "class:docs/$name" }
+            val proof = assertNotNull(constructor["documentationConstructorStorage"]?.jsonObject, name)
+            assertEquals("K2_PRIMARY_PARAMETER_PROPERTY_INITIALIZER", proof["authority"]!!.jsonPrimitive.content)
+            assertEquals(constructor["symbolIdentity"], proof["constructorIdentity"])
+            val bindings = proof["bindings"]!!.jsonArray.map { it.jsonObject }
+            assertEquals(properties.indices.toList(), bindings.map { it["parameterIndex"]!!.jsonPrimitive.int })
+            assertEquals(properties.map { "property:docs/$name.$it" }, bindings.map { it["propertyIdentity"]!!.jsonPrimitive.content })
+            assertEquals(properties.indices.map { constructor["symbolIdentity"]!!.jsonPrimitive.content + "/parameter/$it" }, bindings.map { it["parameterIdentity"]!!.jsonPrimitive.content })
+        }
+        val custom = constructors.single { it["ownerIdentity"]?.jsonPrimitive?.content == "class:docs/Custom" }
+        assertEquals(listOf("property:docs/Custom.input"), custom["documentationConstructorStorage"]!!.jsonObject["bindings"]!!.jsonArray.map {
+            it.jsonObject["propertyIdentity"]!!.jsonPrimitive.content
+        })
+        val pair = constructors.single { it["ownerIdentity"]?.jsonPrimitive?.content == "class:docs/PairQueues" }
+        val sharedBindings = pair["documentationConstructorStorage"]!!.jsonObject["bindings"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf(0, 0), sharedBindings.map { it["parameterIndex"]!!.jsonPrimitive.int })
+        assertEquals(listOf("property:docs/PairQueues.submitted", "property:docs/PairQueues.pending"), sharedBindings.map { it["propertyIdentity"]!!.jsonPrimitive.content })
+        assertEquals(1, sharedBindings.map { it["parameterIdentity"] }.toSet().size)
+        for (name in listOf("Changed", "SideEffects")) {
+            assertTrue(constructors.single { it["ownerIdentity"]?.jsonPrimitive?.content == "class:docs/$name" }["documentationConstructorStorage"] == null, name)
+        }
+    }
+
+    @Test
     fun memberExtensionAndLabelledThisNeverCollapseDistinctReceiverStorage() {
         val labelledThis = "this@" + "Box"
         val source = """
@@ -201,6 +239,12 @@ class KotlinDocumentationVariablesTest {
             .map { it.resolve("fixtures/documentation-common-pipeline/kotlin/src/main/kotlin/paired/Pipeline.kt") }
             .first { Files.isRegularFile(it) }
         val data = extractData(Files.readString(fixture))
+        val assembly = data["assemble"]!!["nodes"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(3, assembly.count { it["kind"]!!.jsonPrimitive.content == "CONSTRUCT" }, assembly.toString())
+        assertTrue(assembly.none { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }, assembly.toString())
+        val allocation = assembly.single { it["kind"]!!.jsonPrimitive.content == "CONSTRUCT" && it["actuals"]!!.jsonArray.isEmpty() }
+        assertEquals("constructor:java/util/concurrent/LinkedBlockingQueue.LinkedBlockingQueue#jvm:()V", allocation["targetIdentity"]!!.jsonPrimitive.content)
+        assertEquals(1, data["submit"]!!["nodes"]!!.jsonArray.count { it.jsonObject["kind"]!!.jsonPrimitive.content == "CONSTRUCT" })
         val helper = data["chooseName"]!!
         assertTrue(helper["members"]!!.jsonArray.isNotEmpty(), helper.toString())
         val run = data["runOnce"]!!
@@ -217,6 +261,31 @@ class KotlinDocumentationVariablesTest {
         assertTrue(nodes.filter { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }.all {
             bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() in setOf("=", "==", "!=", "+", "!")
         }, nodes.toString())
+    }
+
+    @Test
+    fun constructorActualsKeepSourceOrderAndResolvedFormalSlots() {
+        val source = """
+            package docs
+            class Queue
+            class Owner(val first: Queue, val second: Queue)
+            fun assemble() {
+                val one = Queue()
+                val two = Queue()
+                val owner = Owner(second = two, first = one)
+            }
+        """.trimIndent()
+        val data = extractData(source)["assemble"]!!
+        val nodes = data["nodes"]!!.jsonArray.map { it.jsonObject }
+        val constructors = nodes.filter { it["kind"]!!.jsonPrimitive.content == "CONSTRUCT" }
+        assertEquals(3, constructors.size, data.toString())
+        val owner = constructors.single { it["targetIdentity"]!!.jsonPrimitive.content.startsWith("constructor:docs/Owner.Owner#jvm:") }
+        assertEquals(listOf(1, 0), owner["actuals"]!!.jsonArray.map { it.jsonObject["formalSlot"]!!.jsonPrimitive.int })
+        assertEquals(listOf("two", "one"), owner["actuals"]!!.jsonArray.map {
+            val n = nodes[it.jsonObject["expression"]!!.jsonPrimitive.int]
+            source.toByteArray().copyOfRange(n["byteStart"]!!.jsonPrimitive.int, n["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+        })
+        assertTrue(constructors.all { it["defaultArguments"]!!.jsonArray.isEmpty() })
     }
 
     @Test

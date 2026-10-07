@@ -90,7 +90,29 @@ pub(in super::super) fn prepare<'a>(
     evidence: &'a ServiceEvidence,
     node: &SourceCallNode,
 ) -> Result<Prepared<'a>, ClewError> {
-    let owner = &evidence.observations[&node.callable.declaration_id];
+    let sites: Vec<_> = node
+        .calls
+        .iter()
+        .filter_map(|edge| {
+            edge.exact_call_site
+                .as_ref()
+                .map(|site| (site, edge.target_node.clone(), edge.status.clone()))
+        })
+        .collect();
+    prepare_sites(evidence, &node.callable.declaration_id, &node.scope, &sites)
+}
+
+pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
+    evidence: &'a ServiceEvidence,
+    declaration: &str,
+    scope: &str,
+    sites: &[(
+        &crate::documentation::static_pages::model::NeutralExactCallSite,
+        Option<String>,
+        String,
+    )],
+) -> Result<Prepared<'a>, ClewError> {
+    let owner = &evidence.observations[declaration];
     if owner.normalized["receiverType"].is_object()
         || owner.normalized["contextParameters"]
             .as_array()
@@ -131,7 +153,7 @@ pub(in super::super) fn prepare<'a>(
         || envelope.authority != "KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES"
         || envelope.coordinate_domain != "ORIGINAL_UTF8_BYTES"
         || envelope.owner_symbol_identity != owner.symbol
-        || envelope.compilation_scope != node.scope
+        || envelope.compilation_scope != scope
         || envelope.file != source.file
         || site["file"] != source.file
         || site["byteStart"].as_u64() != Some(envelope.owner_byte_start as u64)
@@ -183,7 +205,7 @@ pub(in super::super) fn prepare<'a>(
         let range = local(raw.byte_start, raw.byte_end)?;
         if matches!(
             raw.kind,
-            Kind::Field | Kind::Super | Kind::Construct | Kind::Throw | Kind::NestedBody
+            Kind::Field | Kind::Super | Kind::Throw | Kind::NestedBody
         ) {
             return Err(invalid(
                 "Kotlin data syntax promotes an unsupported operation",
@@ -218,19 +240,31 @@ pub(in super::super) fn prepare<'a>(
                 .count()
             || defaults.len() != raw.default_arguments.len()
             || !slots.is_disjoint(&defaults)
-            || (raw.kind != Kind::Call
+            || (!matches!(raw.kind, Kind::Call | Kind::Construct)
                 && (!raw.actuals.is_empty()
                     || !defaults.is_empty()
                     || raw.target_identity.is_some()))
         {
             return Err(invalid("Kotlin data call has contradictory formal slots"));
         }
-        if raw.kind == Kind::Call {
-            let candidates: Vec<_> = node
-                .calls
+        if matches!(raw.kind, Kind::Call | Kind::Construct) {
+            let prefix = if raw.kind == Kind::Construct {
+                "constructor:"
+            } else {
+                "callable:"
+            };
+            if raw.target_identity.as_deref().is_none_or(|target| {
+                !target.starts_with(prefix)
+                    || crate::semantic_validation::validate_kotlin_full_symbol_identity(target)
+                        .is_err()
+            }) {
+                return Err(invalid(
+                    "Kotlin invocation kind differs from its compiler target",
+                ));
+            }
+            let candidates: Vec<_> = sites
                 .iter()
-                .filter_map(|edge| edge.exact_call_site.as_ref().map(|site| (edge, site)))
-                .filter(|(_, site)| {
+                .filter(|(site, _, _)| {
                     site.compilation_byte_start == raw.byte_start as u64
                         && site.compilation_byte_end == raw.byte_end as u64
                         && site.file == source.file
@@ -240,11 +274,11 @@ pub(in super::super) fn prepare<'a>(
                         && source.text.get(range.0..range.1) == Some(site.expression.as_str())
                 })
                 .collect();
-            if let [(edge, site)] = candidates.as_slice() {
+            if let [(site, target_node, status)] = candidates.as_slice() {
                 let binding = BoundCall {
                     occurrence: format!("compiler-site/{}", site.relation_id),
-                    target_node: edge.target_node.clone(),
-                    status: edge.status.clone(),
+                    target_node: target_node.clone(),
+                    status: status.clone(),
                 };
                 if input.calls.insert(range, binding).is_some() {
                     return Err(invalid("Kotlin data call source occurrence is ambiguous"));
@@ -379,7 +413,7 @@ pub(in super::super) fn prepare<'a>(
         let range = local(member.byte_start, member.byte_end)?;
         if member.schema != "kotlin-documentation-member/1.0"
             || member.owner_symbol_identity != owner.symbol
-            || member.compilation_scope != node.scope
+            || member.compilation_scope != scope
             || !matches!(member.access_mode.as_str(), "READ" | "WRITE")
             || member.variable_type.is_empty()
             || member.variable_type.len() > 4096
@@ -397,7 +431,7 @@ pub(in super::super) fn prepare<'a>(
                     && property.service == evidence.service
                     && property.symbol == member.property_identity
                     && property.normalized["symbolIdentity"] == member.property_identity
-                    && property.normalized["scope"] == node.scope
+                    && property.normalized["scope"] == scope
                     && property.normalized["schema"] == "declaration-descriptor/0.1"
                     && property.normalized["provider"] == "K2_FIR"
                     && property.normalized["resolution"] == "PROVEN"

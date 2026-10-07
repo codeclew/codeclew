@@ -68,6 +68,7 @@ import org.jetbrains.kotlin.fir.scopes.unsubstitutedScope
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirConstructorSymbol
+import org.jetbrains.kotlin.fir.symbols.impl.FirValueParameterSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirPropertySymbol
 import org.jetbrains.kotlin.fir.types.FirResolvedTypeRef
@@ -370,6 +371,7 @@ private class FirDocumentationVariablesChecker24(
     }
 }
 
+@OptIn(org.jetbrains.kotlin.fir.declarations.DirectDeclarationsAccess::class)
 private class FirFactsConstructorDescriptorChecker(
     private val output: String,
 ) : FirDeclarationChecker<FirConstructor>(MppCheckerKind.Common) {
@@ -471,6 +473,36 @@ private class FirFactsConstructorDescriptorChecker(
             } },
         )
         record["typeParameters"] = JsonArray(emptyList())
+        val ownClass = context.containingElements.filterIsInstance<FirRegularClass>().lastOrNull()
+        fun directParameter(property: FirProperty): Int? {
+            val initializer = property.initializer as? FirQualifiedAccessExpression ?: return null
+            val parameter = (initializer.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol as? FirValueParameterSymbol
+                ?: return null
+            return declaration.valueParameters.indexOfFirst { it.symbol === parameter }.takeIf { it >= 0 }
+        }
+        if (declaration.isPrimary && ownClass?.symbol?.classId == ownerClassId
+            && ownClass.declarations.none { it is org.jetbrains.kotlin.fir.declarations.FirAnonymousInitializer }
+            && ownClass.declarations.filterIsInstance<FirProperty>().all {
+                it.delegate == null && (it.initializer == null
+                    || it.initializer is org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
+                    || directParameter(it) != null)
+            }) {
+            val bindings = ownClass.declarations.filterIsInstance<FirProperty>().mapNotNull { property ->
+                if (documentationPropertyStorage24(property)["qualified"]?.jsonPrimitive?.boolean != true) return@mapNotNull null
+                val slot = directParameter(property) ?: return@mapNotNull null
+                buildJsonObject {
+                    put("parameterIndex", slot)
+                    put("parameterIdentity", "$symbolIdentity/parameter/$slot")
+                    put("propertyIdentity", "property:${property.symbol.callableId}")
+                }
+            }
+            if (bindings.isNotEmpty()) record["documentationConstructorStorage"] = buildJsonObject {
+                put("schema", "kotlin-documentation-constructor-storage/1.0")
+                put("authority", "K2_PRIMARY_PARAMETER_PROPERTY_INITIALIZER")
+                put("constructorIdentity", symbolIdentity)
+                put("bindings", JsonArray(bindings))
+            }
+        }
         appendFact(output, JsonObject(record))
     }
 }

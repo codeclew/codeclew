@@ -335,7 +335,10 @@ fn augment_source_events(
         let SourceStatement::Invocation(call) = SourceStatement::decode(event) else {
             continue;
         };
-        if call.kind != crate::documentation::source_statement::InvocationKind::Call {
+        if call.kind != crate::documentation::source_statement::InvocationKind::Call
+            && !(call.kind == crate::documentation::source_statement::InvocationKind::Construct
+                && capabilities.producer == StructureProducer::KotlinPsi)
+        {
             continue;
         }
         let Some(target) = call.exact_target() else {
@@ -343,7 +346,13 @@ fn augment_source_events(
         };
         let target_valid = match capabilities.producer {
             StructureProducer::KotlinPsi => {
-                crate::semantic_validation::validate_kotlin_full_symbol_identity(target).is_ok()
+                target.starts_with(match call.kind {
+                    crate::documentation::source_statement::InvocationKind::Call => "callable:",
+                    crate::documentation::source_statement::InvocationKind::Construct => {
+                        "constructor:"
+                    }
+                }) && crate::semantic_validation::validate_kotlin_full_symbol_identity(target)
+                    .is_ok()
             }
             StructureProducer::Roslyn => target.starts_with("method:class:"),
             StructureProducer::TypeScript => {

@@ -7,7 +7,7 @@ mod kotlin;
 use crate::{documentation::model::Source, error::ClewError};
 use std::collections::BTreeMap;
 
-pub(super) fn prepare<'a>(
+pub(in crate::documentation::static_pages) fn prepare<'a>(
     evidence: &'a crate::documentation::model::ServiceEvidence,
     node: &super::super::model::SourceCallNode,
 ) -> Result<Prepared<'a>, ClewError> {
@@ -18,12 +18,30 @@ pub(super) fn prepare<'a>(
         java::prepare(evidence, node)
     }
 }
+pub(in crate::documentation::static_pages) fn prepare_handoff<'a>(
+    evidence: &'a crate::documentation::model::ServiceEvidence,
+    callable: &super::super::model::CallableProjection,
+) -> Result<Prepared<'a>, ClewError> {
+    let owner = &evidence.observations[&callable.declaration_id];
+    let scope = owner.normalized["scope"].as_str().unwrap_or_default();
+    let sites: Vec<_> = callable
+        .retained_call_sites
+        .as_ref()
+        .map(|r| {
+            r.sites
+                .iter()
+                .map(|site| (site, None, "ADMITTED_COMPILER_SITE".to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    kotlin::prepare_sites(evidence, &callable.declaration_id, scope, &sites)
+}
 #[cfg(test)]
 pub(super) use java::site_range as java_site_range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(super) enum Kind {
+pub(in crate::documentation::static_pages) enum Kind {
     Variable,
     Field,
     Member,
@@ -49,7 +67,7 @@ pub(super) enum Kind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(super) enum Role {
+pub(in crate::documentation::static_pages) enum Role {
     Receiver,
     Operand,
     Operator,
@@ -62,14 +80,14 @@ pub(super) enum Role {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum VariableKind {
+pub(in crate::documentation::static_pages) enum VariableKind {
     Parameter,
     Local,
     Field,
     Property,
 }
 impl VariableKind {
-    pub(super) fn label(self) -> &'static str {
+    pub(in crate::documentation::static_pages) fn label(self) -> &'static str {
         match self {
             Self::Parameter => "PARAMETER",
             Self::Local => "LOCAL_VARIABLE",
@@ -79,7 +97,7 @@ impl VariableKind {
     }
 }
 
-pub(super) struct Variable {
+pub(in crate::documentation::static_pages) struct Variable {
     pub identity: String,
     pub kind: VariableKind,
     pub declaration: bool,
@@ -90,14 +108,14 @@ pub(super) struct Variable {
 /// Storage qualification is producer-owned; the shared engine never decodes
 /// a Java field declaration or a Kotlin accessor to establish it.
 #[derive(Clone)]
-pub(super) struct MemberStorage {
+pub(in crate::documentation::static_pages) struct MemberStorage {
     pub declaration_id: String,
     pub static_member: bool,
 }
 
 /// Actuals remain in source evaluation order. A missing formal slot withholds
 /// binding; producers must never recover one by matching the argument's name.
-pub(super) struct Actual {
+pub(in crate::documentation::static_pages) struct Actual {
     pub expression: usize,
     pub formal_slot: Option<usize>,
 }
@@ -105,13 +123,13 @@ pub(super) struct Actual {
 /// The producer has admitted one exact source call occurrence. This does not
 /// assert runtime dispatch, normal completion or receiver identity.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct BoundCall {
+pub(in crate::documentation::static_pages) struct BoundCall {
     pub occurrence: String,
     pub target_node: Option<String>,
     pub status: String,
 }
 
-pub(super) struct SyntaxNode {
+pub(in crate::documentation::static_pages) struct SyntaxNode {
     pub kind: Kind,
     pub range: (usize, usize),
     pub children: Vec<usize>,
@@ -122,7 +140,7 @@ pub(super) struct SyntaxNode {
     pub default_arguments: Vec<usize>,
 }
 
-pub(super) struct Input<'a> {
+pub(in crate::documentation::static_pages) struct Input<'a> {
     pub source: &'a Source,
     pub nodes: Vec<SyntaxNode>,
     pub body: Option<usize>,
@@ -131,7 +149,7 @@ pub(super) struct Input<'a> {
     pub missing_sites: bool,
 }
 
-pub(super) enum Prepared<'a> {
+pub(in crate::documentation::static_pages) enum Prepared<'a> {
     Body(Input<'a>),
     Unavailable,
     Partial,
@@ -139,15 +157,17 @@ pub(super) enum Prepared<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Node<'a> {
+pub(in crate::documentation::static_pages) struct Node<'a> {
     input: &'a Input<'a>,
     index: usize,
 }
 impl<'a> Input<'a> {
-    pub(super) fn node(&'a self, index: usize) -> Node<'a> {
+    pub(in crate::documentation::static_pages) fn node(&'a self, index: usize) -> Node<'a> {
         Node { input: self, index }
     }
-    pub(super) fn formals(&self) -> Result<BTreeMap<usize, String>, ClewError> {
+    pub(in crate::documentation::static_pages) fn formals(
+        &self,
+    ) -> Result<BTreeMap<usize, String>, ClewError> {
         let mut formals = BTreeMap::new();
         for variable in self.variables.values().filter(|v| {
             v.declaration && v.kind == VariableKind::Parameter && v.formal_slot.is_some()
@@ -163,33 +183,33 @@ impl<'a> Input<'a> {
     }
 }
 impl<'a> Node<'a> {
-    pub(super) fn kind(self) -> Kind {
+    pub(in crate::documentation::static_pages) fn kind(self) -> Kind {
         self.input.nodes[self.index].kind
     }
-    pub(super) fn range(self) -> (usize, usize) {
+    pub(in crate::documentation::static_pages) fn range(self) -> (usize, usize) {
         self.input.nodes[self.index].range
     }
-    pub(super) fn text(self) -> String {
+    pub(in crate::documentation::static_pages) fn text(self) -> String {
         let (start, end) = self.range();
         self.input.source.text[start..end].to_owned()
     }
-    pub(super) fn child(self, role: Role) -> Option<Self> {
+    pub(in crate::documentation::static_pages) fn child(self, role: Role) -> Option<Self> {
         self.input.nodes[self.index]
             .roles
             .get(&role)
             .map(|&index| self.input.node(index))
     }
-    pub(super) fn children(self) -> Vec<Self> {
+    pub(in crate::documentation::static_pages) fn children(self) -> Vec<Self> {
         self.input.nodes[self.index]
             .children
             .iter()
             .map(|&index| self.input.node(index))
             .collect()
     }
-    pub(super) fn default_arguments(self) -> &'a [usize] {
+    pub(in crate::documentation::static_pages) fn default_arguments(self) -> &'a [usize] {
         &self.input.nodes[self.index].default_arguments
     }
-    pub(super) fn actuals(self) -> Vec<(Self, Option<usize>)> {
+    pub(in crate::documentation::static_pages) fn actuals(self) -> Vec<(Self, Option<usize>)> {
         self.input.nodes[self.index]
             .actuals
             .iter()

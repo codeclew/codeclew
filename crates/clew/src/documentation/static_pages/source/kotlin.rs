@@ -48,6 +48,9 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
         ));
     }
     if normalized["declarationKind"] != "FUNCTION" {
+        if super::compiler::kotlin_constructor_admitted(&observation) {
+            return project_constructor(context, observation);
+        }
         return Err(invalid(
             "Kotlin native pages currently support compiler FUNCTION declarations only",
         ));
@@ -192,5 +195,65 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
         },
         projection,
         kind,
+    })
+}
+
+fn project_constructor(
+    context: &mut Context<'_>,
+    observation: Observation,
+) -> Result<ProjectedCallable, ClewError> {
+    let n = &observation.normalized;
+    let scope = n["scope"]
+        .as_str()
+        .filter(|scope| !scope.is_empty())
+        .ok_or_else(|| invalid("Kotlin constructor scope is unavailable"))?
+        .to_owned();
+    if scope
+        != format!(
+            "{}/{}",
+            n["module"].as_str().unwrap_or_default(),
+            n["sourceSet"].as_str().unwrap_or_default()
+        )
+        || context
+            .evidence
+            .observations
+            .values()
+            .filter(|o| {
+                o.kind == "SYMBOL"
+                    && o.symbol == observation.symbol
+                    && o.normalized["scope"] == scope
+            })
+            .count()
+            != 1
+    {
+        return Err(invalid("Kotlin constructor scope or identity is ambiguous"));
+    }
+    let source = super::kotlin_handoff::retained_storage_source(context, &observation)
+        .map_err(|_| invalid("Kotlin constructor exact original source pins disagree"))?;
+    context.retain(&observation);
+    let citation = context.citation(&source, 0, source.text.len());
+    Ok(ProjectedCallable {
+        key: CallableKey {
+            service: context.evidence.service.clone(),
+            scope,
+            symbol: observation.symbol.clone(),
+        },
+        projection: CallableProjection {
+            declaration_id: observation.id,
+            symbol: observation.symbol,
+            authority: "COMPILER_DECLARATION".into(),
+            citation_id: Some(citation.clone()),
+            control_flow: None,
+            source_outline: None,
+            retained_call_sites: None,
+            steps: vec![],
+            state: vec![],
+            gaps: vec![gap(
+                "CONSTRUCTOR_STORAGE_ONLY",
+                "Compiler primary parameter-to-property storage is retained; constructor execution is not expanded.",
+                Some(citation),
+            )],
+        },
+        kind: ProjectionKind::DeclarationOnly,
     })
 }

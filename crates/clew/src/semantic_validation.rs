@@ -44,6 +44,64 @@ impl KotlinPropertyStorageProof {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct KotlinConstructorStorageProof {
+    schema: String,
+    authority: String,
+    constructor_identity: String,
+    pub(crate) bindings: Vec<KotlinConstructorStorageBinding>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct KotlinConstructorStorageBinding {
+    pub(crate) parameter_index: usize,
+    parameter_identity: String,
+    pub(crate) property_identity: String,
+}
+pub(crate) fn validate_constructor_storage_proof(value: &Value) -> Result<(), ClewError> {
+    let Some(raw) = value.get("documentationConstructorStorage") else {
+        return Ok(());
+    };
+    let proof: KotlinConstructorStorageProof = serde_json::from_value(raw.clone())
+        .map_err(|_| payload_invalid("constructor storage proof shape is invalid"))?;
+    let parameters = value["parameterTypes"]
+        .as_array()
+        .ok_or_else(|| payload_invalid("constructor storage proof lacks formal descriptors"))?;
+    let owner = payload_string(value, "compilerClassId")?;
+    let mut properties = BTreeSet::new();
+    if proof.schema != "kotlin-documentation-constructor-storage/1.0"
+        || proof.authority != "K2_PRIMARY_PARAMETER_PROPERTY_INITIALIZER"
+        || value["isPrimary"] != true
+        || value["symbolIdentity"] != proof.constructor_identity
+        || proof.bindings.is_empty()
+        || proof.bindings.len() > 4096
+    {
+        return Err(payload_invalid(
+            "constructor storage proof authority is inconsistent",
+        ));
+    }
+    for binding in &proof.bindings {
+        if binding.parameter_index >= parameters.len()
+            || binding.parameter_identity
+                != format!(
+                    "{}/parameter/{}",
+                    proof.constructor_identity, binding.parameter_index
+                )
+            || !binding
+                .property_identity
+                .starts_with(&format!("property:{owner}."))
+            || !properties.insert(&binding.property_identity)
+            || validate_kotlin_full_symbol_identity(&binding.property_identity).is_err()
+        {
+            return Err(payload_invalid(
+                "constructor storage binding has an invalid formal or property identity",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeclarationRelationSnapshot {
@@ -553,7 +611,11 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
         "CONSTRUCTOR" => {
             allowed.extend(["compilerCallableId", "compilerClassId", "jvmDescriptor"]);
             if !partial {
-                allowed.extend(["isPrimary", "parameterTypes"]);
+                allowed.extend([
+                    "isPrimary",
+                    "parameterTypes",
+                    "documentationConstructorStorage",
+                ]);
             }
         }
         "PROPERTY" | "MUTABLE_PROPERTY" => {
@@ -692,6 +754,7 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
                     "constructor compiler/JVM identity is inconsistent",
                 ));
             }
+            validate_constructor_storage_proof(value)?;
         }
         "PROPERTY" | "MUTABLE_PROPERTY" => {
             let callable = payload_string(value, "compilerCallableId")?;
@@ -2696,6 +2759,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "isPrimary",
                 "jvmDescriptor",
                 "parameterTypes",
+                "documentationConstructorStorage",
             ]),
             "PROPERTY" | "MUTABLE_PROPERTY" => allowed.extend([
                 "compilerCallableId",
@@ -3617,6 +3681,81 @@ mod tests {
             "compilerAuthority":"fir-facts-extractor/0.6",
             "resolution":"PROVEN","provider":"K2_FIR"
         })
+    }
+
+    #[test]
+    fn constructor_storage_transport_keeps_primary_parameter_property_closure() {
+        let mut constructor = constructor_fact();
+        let verify_snapshot = |row: &Value| {
+            let mut facts = verified_facts();
+            facts["declarationDescriptors"]["descriptors"] = json!([row]);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            validate_declaration_descriptor_snapshot(&facts).map(|_| ())
+        };
+        validate_declaration_descriptor_fact(&constructor).unwrap();
+        verify_snapshot(&constructor).unwrap();
+        constructor["documentationConstructorStorage"] = json!({
+            "schema":"kotlin-documentation-constructor-storage/1.0",
+            "authority":"K2_PRIMARY_PARAMETER_PROPERTY_INITIALIZER",
+            "constructorIdentity":constructor["symbolIdentity"],
+            "bindings":[{"parameterIndex":0,
+                "parameterIdentity":format!("{}/parameter/0",constructor["symbolIdentity"].as_str().unwrap()),
+                "propertyIdentity":"property:p/Box.input"}]
+        });
+        validate_declaration_descriptor_fact(&constructor).unwrap();
+        verify_snapshot(&constructor).unwrap();
+        let mut shared_parameter = constructor.clone();
+        let mut binding =
+            shared_parameter["documentationConstructorStorage"]["bindings"][0].clone();
+        binding["propertyIdentity"] = json!("property:p/Box.other");
+        shared_parameter["documentationConstructorStorage"]["bindings"]
+            .as_array_mut()
+            .unwrap()
+            .push(binding);
+        validate_declaration_descriptor_fact(&shared_parameter).unwrap();
+        verify_snapshot(&shared_parameter).unwrap();
+        for case in [
+            "authority",
+            "owner",
+            "slot",
+            "parameter",
+            "property",
+            "duplicate",
+            "unknown",
+            "secondary",
+        ] {
+            let mut invalid = constructor.clone();
+            let proof = &mut invalid["documentationConstructorStorage"];
+            match case {
+                "authority" => proof["authority"] = json!("PSI_NAMES"),
+                "owner" => {
+                    proof["constructorIdentity"] = json!("constructor:p/Other.<init>#jvm:()V")
+                }
+                "slot" => proof["bindings"][0]["parameterIndex"] = json!(2),
+                "parameter" => {
+                    proof["bindings"][0]["parameterIdentity"] = json!("other/parameter/0")
+                }
+                "property" => {
+                    proof["bindings"][0]["propertyIdentity"] = json!("property:p/Other.input")
+                }
+                "duplicate" => {
+                    let duplicate = proof["bindings"][0].clone();
+                    proof["bindings"].as_array_mut().unwrap().push(duplicate);
+                }
+                "unknown" => proof["untrustedExtension"] = json!(true),
+                "secondary" => invalid["isPrimary"] = json!(false),
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_declaration_descriptor_fact(&invalid).is_err(),
+                "{case}"
+            );
+            assert!(verify_snapshot(&invalid).is_err(), "snapshot {case}");
+        }
     }
 
     #[test]

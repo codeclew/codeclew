@@ -235,7 +235,11 @@ internal class KotlinDocumentationData(
         val rows = callRecords[range(site)].orEmpty().distinct()
         val selected = rows.singleOrNull { it["resolution"]?.jsonPrimitive?.content == "COMPILER_EXACT" }
             ?: return add("UNSUPPORTED", site)
-        if (selected["kind"]?.jsonPrimitive?.content != "CALLS") return add("UNSUPPORTED", site)
+        val kind = when (selected["kind"]?.jsonPrimitive?.content) {
+            "CALLS" -> "CALL"
+            "CONSTRUCTS" -> "CONSTRUCT"
+            else -> return add("UNSUPPORTED", site)
+        }
         if (selected.containsKey("dataArgumentBoundary") || selected["dataArgumentToParameter"] !is JsonArray || selected["dataOmittedDefaultParameterIndices"] !is JsonArray) {
             return add("UNSUPPORTED", site)
         }
@@ -251,7 +255,7 @@ internal class KotlinDocumentationData(
                 binding?.get("parameterIndex")?.let { put("formalSlot", it) }
             }
         }
-        return add("CALL", site, roles.values.toList() + actuals.map { it["expression"]!!.jsonPrimitive.int }, roles,
+        return add(kind, site, roles.values.toList() + actuals.map { it["expression"]!!.jsonPrimitive.int }, roles,
             actuals, selected["dataOmittedDefaultParameterIndices"]?.jsonArray.orEmpty(), selected["target"]?.jsonPrimitive?.content)
     }
 }

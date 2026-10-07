@@ -95,7 +95,16 @@ pub(super) fn project_unresolved(
         if selection.expand_data_state && !selection.expand_source_calls {
             return Err(invalid("expandDataState requires expandSourceCalls"));
         }
-        let handoff = if declaration_view {
+        let kotlin_wiring = wiring.is_some()
+            && [Some(&endpoint), Some(&worker), wiring.as_ref()]
+                .into_iter()
+                .flatten()
+                .all(|c| {
+                    let o = &evidence.observations[&c.projection.declaration_id];
+                    source::compiler::kotlin_admitted(o)
+                        && o.normalized["documentation"]["dataInput"].is_object()
+                });
+        let handoff = if declaration_view && !kotlin_wiring {
             declaration_only_handoff()
         } else {
             java_handoff(
@@ -118,7 +127,7 @@ pub(super) fn project_unresolved(
         for boundary in &evidence.boundaries {
             limitations.push(gap("RETAINED_SERVICE_BOUNDARY", boundary, None));
         }
-        if declaration_view {
+        if declaration_view && !kotlin_wiring {
             limitations.push(gap(
                 "DECLARATION_ONLY_NO_RELATIONSHIP",
                 "Selected declarations are retained without inferring behavior or a relationship between them.",

@@ -215,7 +215,7 @@ fn selected_roots(page: &PageContent, evidence: &ServiceEvidence) -> Vec<(String
         .filter_map(|o| o.normalized["ownerIdentity"].as_str())
         .collect();
     for observation in page.observations.values().filter(|o| {
-        compiler(o)
+        (compiler(o) || source::compiler::kotlin_constructor_admitted(o))
             && o.normalized["declarationKind"] == "CONSTRUCTOR"
             && o.normalized["scope"] == wiring.normalized["scope"]
             && o.normalized["ownerIdentity"]
@@ -226,7 +226,8 @@ fn selected_roots(page: &PageContent, evidence: &ServiceEvidence) -> Vec<(String
                 .observations
                 .values()
                 .filter(|candidate| {
-                    compiler(candidate)
+                    (compiler(candidate)
+                        || source::compiler::kotlin_constructor_admitted(candidate))
                         && candidate.normalized["declarationKind"] == "CONSTRUCTOR"
                         && candidate.symbol == o.symbol
                         && candidate.normalized["ownerIdentity"] == o.normalized["ownerIdentity"]

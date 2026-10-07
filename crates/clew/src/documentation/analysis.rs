@@ -2140,7 +2140,8 @@ pub(crate) fn project_scoped(
             || fact["schema"] == "codeclew-rust-syntax-fact/1.2"
             || (fact["schema"] == "declaration-descriptor/0.1"
                 && (fact["documentation"]["dataInput"].is_object()
-                    || fact["documentationStorage"]["qualified"] == true));
+                    || fact["documentationStorage"]["qualified"] == true
+                    || fact["documentationConstructorStorage"].is_object()));
         let mut outline_owner_source = None;
         if exact_outline_owner {
             let exact_owner = json!({"file":fact["file"],

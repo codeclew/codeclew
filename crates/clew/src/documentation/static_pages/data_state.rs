@@ -1,6 +1,6 @@
 //! Opt-in source syntax transformations joined to compiler variable occurrences.
 //! No value evaluation, receiver alias analysis, runtime completion or new traversal.
-mod input;
+pub(super) mod input;
 use super::model::*;
 use crate::{
     canonical::hash_bytes,

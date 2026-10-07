@@ -6,7 +6,6 @@ use crate::documentation::{
     model::{Observation, Source},
 };
 use crate::error::ClewError;
-use std::collections::BTreeMap;
 use tree_sitter::{Node, Parser};
 
 const JAVA_SCHEMA: &str = "codeclew-java-compiler-fact/1.0";
@@ -125,43 +124,13 @@ impl Parsed {
 }
 
 impl Context<'_> {
-    fn handoff(
+    pub(super) fn java_handoff_input(
         &mut self,
         endpoint: &CallableProjection,
         worker: &CallableProjection,
-        wiring: Option<&CallableProjection>,
-    ) -> HandoffProjection {
-        let mut result = HandoffProjection { status: "LOCAL_GAP".into(), queue_allocation: None, endpoint_field: None, worker_field: None, citation_ids: vec![], gaps: vec![], limitation: "Source-declared shared object wiring does not prove enqueue success, scheduling, deployed activation, delivery, or completion.".into() };
-        let proof = self.handoff_proof(endpoint, worker, wiring);
-        match proof {
-            Ok((allocation, endpoint_field, worker_field, citations)) => {
-                result.status = "SOURCE_DECLARED_SHARED_QUEUE".into();
-                result.queue_allocation = Some(allocation);
-                result.endpoint_field = Some(endpoint_field);
-                result.worker_field = Some(worker_field);
-                result.citation_ids = citations;
-            }
-            Err(reason) => result.gaps.push(reason),
-        }
-        result
-    }
-
-    fn handoff_proof(
-        &mut self,
-        endpoint: &CallableProjection,
-        worker: &CallableProjection,
-        wiring: Option<&CallableProjection>,
-    ) -> Result<(String, String, String, Vec<String>), Gap> {
-        let wiring = wiring.ok_or_else(|| gap("WIRING_NOT_SELECTED", "No explicit callable wiring declaration was selected; equal queue names and types do not establish object identity.", None))?;
-        for callable in [endpoint, worker, wiring] {
-            if callable.authority != "COMPILER_DECLARATION" {
-                return Err(gap(
-                    "WIRING_COMPILER_UNAVAILABLE",
-                    "All three selected callable declarations require applicable compiler evidence.",
-                    callable.citation_id.clone(),
-                ));
-            }
-        }
+        wiring: &CallableProjection,
+    ) -> Result<super::handoff::Input, Gap> {
+        use super::handoff::{Binding, Input, LocalChange, LocalValue, Row};
         let wire_rows = all_steps(&wiring.steps);
         if wire_rows.iter().any(|s| {
             !s.reachable
@@ -224,19 +193,10 @@ impl Context<'_> {
             .get(&wiring.declaration_id)
             .unwrap()
             .clone();
-        if e.normalized["scope"] != w.normalized["scope"]
-            || e.normalized["scope"] != wiring_obs.normalized["scope"]
-        {
-            return Err(gap(
-                "WIRING_SCOPE_MISMATCH",
-                "Selected endpoint, worker and wiring belong to different compiler scopes.",
-                wiring.citation_id.clone(),
-            ));
-        }
-        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
-        let mut allocation_citations = BTreeMap::new();
-        let mut bindings: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+        let local_identity = |name: &str| format!("source-local:{}:{name}", wiring.declaration_id);
+        let mut rows = Vec::new();
         for row in wire_rows {
+            let mut next = Row::default();
             for call in &row.calls {
                 if call.phase != "CREATION" || call.authority != "COMPILER_EXACT_CALL_RELATION" {
                     continue;
@@ -276,21 +236,13 @@ impl Context<'_> {
                                 Some(call.citation_id.clone()),
                             )
                         })?;
-                        if let Some(allocation) = aliases.get(argument.trim()) {
-                            bindings.entry(owner.into()).or_default().push((
-                                allocation.clone(),
-                                call.citation_id.clone(),
-                                proof_citation,
-                            ));
-                        } else {
-                            return Err(gap(
-                                "QUEUE_ARGUMENT_ALIAS_UNPROVEN",
-                                format!(
-                                    "Constructor queue argument {argument} is not a bound local allocation or alias."
-                                ),
-                                Some(call.citation_id.clone()),
-                            ));
-                        }
+                        next.bindings.push(Binding {
+                            owner: owner.into(),
+                            argument: local_identity(argument.trim()),
+                            argument_syntax: argument.clone(),
+                            citation: call.citation_id.clone(),
+                            storage_citation: proof_citation,
+                        });
                     }
                 }
             }
@@ -317,48 +269,31 @@ impl Context<'_> {
                             .any(|name| t.contains(&format!("java.util.concurrent.{name}#")))
                         })
                 });
-                if let Some(call) = allocation {
-                    let id = format!("{}:{}", wiring.declaration_id, call.citation_id);
-                    aliases.insert(local.name.clone(), id.clone());
-                    allocation_citations.insert(id, call.citation_id.clone());
-                } else if let Some(bound) = aliases.get(local.expression.trim()).cloned() {
-                    aliases.insert(local.name.clone(), bound);
+                let value = if let Some(call) = allocation {
+                    LocalValue::Allocation {
+                        id: format!("{}:{}", wiring.declaration_id, call.citation_id),
+                        citation: call.citation_id.clone(),
+                    }
+                } else if identifier(local.expression.trim()) {
+                    LocalValue::Reference(local_identity(local.expression.trim()))
                 } else {
-                    aliases.remove(&local.name);
-                }
+                    LocalValue::Unknown
+                };
+                next.locals.push(LocalChange {
+                    identity: local_identity(&local.name),
+                    value,
+                });
             }
+            rows.push(next);
         }
-        let selected = |owner: &str| -> Option<(String, String, String)> {
-            match bindings.get(owner)?.as_slice() {
-                [binding] => Some(binding.clone()),
-                _ => None,
-            }
-        };
-        let eb = selected(e.normalized["ownerIdentity"].as_str().unwrap_or(""));
-        let wb = selected(w.normalized["ownerIdentity"].as_str().unwrap_or(""));
-        match (eb, wb) {
-            (Some(eb), Some(wb)) if eb.0 == wb.0 => {
-                let mut citations = vec![
-                    submission.citation_id,
-                    consumption.citation_id,
-                    eb.1,
-                    eb.2,
-                    wb.1,
-                    wb.2,
-                ];
-                if let Some(citation) = allocation_citations.get(&eb.0) {
-                    citations.push(citation.clone());
-                }
-                citations.sort();
-                citations.dedup();
-                Ok((eb.0, endpoint_field, worker_field, citations))
-            }
-            _ => Err(gap(
-                "SHARED_QUEUE_OBJECT_UNPROVEN",
-                "Selected constructions do not bind exactly one endpoint and worker to the same local queue allocation.",
-                wiring.citation_id.clone(),
-            )),
-        }
+        Ok(Input {
+            endpoint_owner: e.normalized["ownerIdentity"].as_str().unwrap_or("").into(),
+            worker_owner: w.normalized["ownerIdentity"].as_str().unwrap_or("").into(),
+            endpoint_storage: endpoint_field,
+            worker_storage: worker_field,
+            operation_citations: vec![submission.citation_id, consumption.citation_id],
+            rows,
+        })
     }
 
     fn receiver_field(
@@ -1255,5 +1190,5 @@ pub(in crate::documentation::static_pages) fn handoff(
     worker: &CallableProjection,
     wiring: Option<&CallableProjection>,
 ) -> HandoffProjection {
-    context.handoff(endpoint, worker, wiring)
+    super::handoff::project(context, endpoint, worker, wiring)
 }

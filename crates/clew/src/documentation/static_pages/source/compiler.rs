@@ -30,7 +30,7 @@ pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> 
             StructureProducer::Roslyn,
             CallNavigation::RetainedCompilerSites,
         )
-    } else if kotlin_admitted(owner) {
+    } else if kotlin_admitted(owner) || kotlin_constructor_admitted(owner) {
         (
             StructureProducer::KotlinPsi,
             CallNavigation::RetainedCompilerSites,
@@ -196,6 +196,29 @@ pub(in crate::documentation::static_pages) fn kotlin_admitted(owner: &Observatio
         && n["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
         && n["compilerAuthority"] == "fir-facts-extractor/0.6"
         && n["symbolIdentity"] == owner.symbol
+        && crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol).is_ok()
+}
+
+pub(in crate::documentation::static_pages) fn kotlin_constructor_admitted(
+    owner: &Observation,
+) -> bool {
+    let n = &owner.normalized;
+    owner.kind == "SYMBOL"
+        && n["schema"] == "declaration-descriptor/0.1"
+        && n["declarationKind"] == "CONSTRUCTOR"
+        && n["resolution"] == "PROVEN"
+        && n["provider"] == "K2_FIR"
+        && n["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+        && n["compilerAuthority"] == "fir-facts-extractor/0.6"
+        && n["symbolIdentity"] == owner.symbol
+        && n["documentationConstructorStorage"].is_object()
+        && n["compilerCallableId"]
+            .as_str()
+            .zip(n["jvmDescriptor"].as_str())
+            .is_some_and(|(id, descriptor)| {
+                owner.symbol == format!("constructor:{id}#jvm:{descriptor}")
+            })
+        && crate::semantic_validation::validate_constructor_storage_proof(n).is_ok()
         && crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol).is_ok()
 }
 
