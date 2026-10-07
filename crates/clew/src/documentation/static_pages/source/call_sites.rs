@@ -271,7 +271,7 @@ fn relation_site(
             && target_identity.starts_with("method:class:")
             && normalized["targetCsharpIdentity"]
                 .as_str()
-                .is_some_and(|id| id.starts_with("M:"))
+                .is_some_and(|id| id.starts_with("csharp:M:"))
     } else {
         kotlin_relation_valid(normalized, owner, target_identity)
     };

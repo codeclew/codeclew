@@ -5167,7 +5167,7 @@ fn csharp_common_check() -> Check {
         declaration.as_object_mut().unwrap().extend(json!({"schema":crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA,
             "kind":"DECLARATION","declarationKind":"METHOD","resolution":"COMPILER_EXACT",
             "symbolIdentity":identity,"ownerIdentity":owner,"name":name,"jvmDescriptor":descriptor,
-            "csharpIdentity":format!("M:DocumentationProbe.{}.{}(System.String)", if name=="Format" {"IFormatter"} else {"ProbeController"}, name),
+            "csharpIdentity":format!("csharp:M:DocumentationProbe.{}.{}(System.String)", if name=="Format" {"IFormatter"} else {"ProbeController"}, name),
             "scope":{"compilation":scope}}).as_object().unwrap().clone());
         let body = &text[start..end];
         let mut events = Vec::new();
@@ -5189,9 +5189,9 @@ fn csharp_common_check() -> Check {
                 relation["sourceIdentity"] = json!(identity);
                 relation["targetIdentity"] = json!(target);
                 relation["targetCsharpIdentity"] = json!(if name == "Forward" {
-                    "M:DocumentationProbe.IFormatter.Format(System.String)"
+                    "csharp:M:DocumentationProbe.IFormatter.Format(System.String)"
                 } else {
-                    "M:DocumentationProbe.ProbeController.Prepare(System.String)"
+                    "csharp:M:DocumentationProbe.ProbeController.Prepare(System.String)"
                 });
                 relation["scope"] = json!({"compilation":scope});
                 facts.push((relation.clone(), digest(&relation).unwrap()));
@@ -5237,7 +5237,7 @@ fn csharp_common_check() -> Check {
         if name != "Format" {
             declaration["documentation"] = json!({"schema":"codeclew-csharp-documentation-flow/1.0",
                 "authority":"ROSLYN_SOURCE_STRUCTURE","events":events,
-                "boundaries":if name=="Unsupported" {vec!["TRY_UNSUPPORTED","LAMBDA_UNSUPPORTED","SHORT_CIRCUIT_UNSUPPORTED","NULL_CONDITIONAL_UNSUPPORTED"]} else {vec![]}});
+                "boundaries":if name=="Unsupported" {vec!["EXCEPTION_FLOW_REQUIRES_SOURCE_REVIEW","LAMBDA_EXECUTION_NOT_EXPANDED","SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW","NULL_CONDITIONAL_FLOW_REQUIRES_SOURCE_REVIEW"]} else {vec![]}});
         }
         facts.push((declaration.clone(), digest(&declaration).unwrap()));
     }
@@ -5341,7 +5341,11 @@ fn csharp_interface_and_unsupported_controls_remain_explicit_frontiers() {
         .unwrap();
     assert!(outline.tree.is_none());
     assert_eq!(outline.gaps[0].code, "SOURCE_OUTLINE_CONTROL_BOUNDARY");
-    assert!(outline.gaps[0].detail.contains("LAMBDA_UNSUPPORTED"));
+    assert!(
+        outline.gaps[0]
+            .detail
+            .contains("LAMBDA_EXECUTION_NOT_EXPANDED")
+    );
 }
 
 #[test]

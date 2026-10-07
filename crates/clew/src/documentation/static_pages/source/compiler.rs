@@ -22,7 +22,7 @@ pub(super) fn csharp_admitted(owner: &Observation) -> bool {
         && n["scope"].as_str().is_some_and(|s| !s.is_empty())
         && n["csharpIdentity"]
             .as_str()
-            .is_some_and(|s| s.starts_with("M:"))
+            .is_some_and(|s| s.starts_with("csharp:M:"))
         && n["name"]
             .as_str()
             .zip(n["jvmDescriptor"].as_str())
@@ -34,7 +34,9 @@ pub(super) fn csharp_admitted(owner: &Observation) -> bool {
                                 owner.symbol
                                     == format!(
                                         "method:{class}#{name}{descriptor}@{}",
-                                        &crate::canonical::hash_bytes(id.as_bytes())[7..19]
+                                        &crate::canonical::hash_bytes(
+                                            id.strip_prefix("csharp:").unwrap_or(id).as_bytes()
+                                        )[7..19]
                                     )
                             }))
                 })
@@ -155,4 +157,46 @@ pub(super) fn project_csharp(
         projection,
         kind: ProjectionKind::DeclarationOnly,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn roslyn_identity_prefix_and_collision_digest_match_the_worker_contract() {
+        // A ref parameter can collide with a value parameter after portable
+        // descriptor erasure. The worker salts the identity with the raw CLR ID.
+        let raw = "M:Probe.Choose(System.Int32@)";
+        let clr = format!("csharp:{raw}");
+        let base = "method:class:Probe#Choose(I)I";
+        let symbol = format!(
+            "{base}@{}",
+            &crate::canonical::hash_bytes(raw.as_bytes())[7..19]
+        );
+        let normalized = json!({"schema":crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA,
+            "kind":"DECLARATION","declarationKind":"METHOD","resolution":"COMPILER_EXACT",
+            "symbolIdentity":symbol,"ownerIdentity":"class:Probe","name":"Choose",
+            "jvmDescriptor":"(I)I","csharpIdentity":clr,"scope":"probe"});
+        let mut owner = Observation {
+            id: "choose".into(),
+            kind: "SYMBOL".into(),
+            service: "probe".into(),
+            symbol,
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        };
+        assert!(csharp_admitted(&owner));
+        owner.normalized["csharpIdentity"] = json!(raw);
+        assert!(!csharp_admitted(&owner));
+        owner.normalized["csharpIdentity"] = json!(clr);
+        owner.symbol = format!(
+            "{base}@{}",
+            &crate::canonical::hash_bytes(clr.as_bytes())[7..19]
+        );
+        owner.normalized["symbolIdentity"] = json!(owner.symbol);
+        assert!(!csharp_admitted(&owner));
+    }
 }
