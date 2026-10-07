@@ -40,6 +40,7 @@ impl DispatchCounter {
             while !stopped.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                             .unwrap();
@@ -73,6 +74,22 @@ impl Drop for DispatchCounter {
         self.stop.store(true, Ordering::SeqCst);
         self.worker.take().unwrap().join().unwrap();
     }
+}
+
+#[test]
+fn dispatch_counter_waits_for_the_acknowledged_byte_before_counting() {
+    let counter = DispatchCounter::new();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", counter.port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(counter.count(), 0);
+    stream.write_all(b"D").unwrap();
+    let mut acknowledgment = [0];
+    stream.read_exact(&mut acknowledgment).unwrap();
+    assert_eq!(acknowledgment, [b'A']);
+    assert_eq!(counter.count(), 1);
 }
 
 const SERIALIZER: &str = r#"
