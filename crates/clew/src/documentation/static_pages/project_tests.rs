@@ -5316,6 +5316,148 @@ fn csharp_common_source_outline_and_exact_calls_expand_one_direct_helper() {
 }
 
 #[test]
+fn common_source_invocations_bind_exact_spans_without_mutation_authority() {
+    let mut checked = csharp_common_check();
+    let selection = csharp_selection(&checked, "Render");
+    let evidence = checked.services.get_mut("sample").unwrap();
+    let owner = evidence.observations[&selection.endpoint_declaration]
+        .symbol
+        .clone();
+    let relation = evidence
+        .observations
+        .iter()
+        .find(|(_, row)| row.kind == "CALL_RELATION" && row.symbol == owner)
+        .unwrap()
+        .0
+        .clone();
+    evidence.observations.remove(&relation);
+    let projection = project(&checked, &[selection]).unwrap();
+    assert_eq!(projection.schema, SOURCE_INVOCATION_SCHEMA);
+    let page = &projection.pages[0];
+    let sites = &page.endpoint.retained_call_sites.as_ref().unwrap().sites;
+    assert_eq!(sites.len(), 2);
+    assert_ne!(sites[0].citation_id, sites[1].citation_id);
+    assert_eq!(
+        sites
+            .iter()
+            .filter(|site| page.observations[&site.relation_id].kind == "FLOW")
+            .count(),
+        1
+    );
+    assert!(sites.iter().all(|site| site.argument_bindings.is_none()));
+    assert!(page.endpoint.steps.is_empty() && page.endpoint.state.is_empty());
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    assert_eq!(graph.schema, "codeclew-native-source-calls/1.2");
+    let root = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == page.endpoint.declaration_id)
+        .unwrap();
+    assert_eq!(root.calls.len(), 2);
+    assert_eq!(root.calls[0].target_node, root.calls[1].target_node);
+    assert!(root.calls.iter().all(|edge| edge.call.is_none()
+        && edge.conditions.is_none()
+        && edge.reachable.is_none()
+        && edge.receiver_lineage == "UNRESOLVED"
+        && edge.runtime_dispatch == "UNRESOLVED"));
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "snapshot", &projection).unwrap();
+    let html = std::fs::read_to_string(output.path().join("csharp-render-endpoint.html")).unwrap();
+    assert!(html.contains("Compiler source event"));
+    let mut old_schema = projection.clone();
+    old_schema.schema = DECLARATION_SCHEMA.into();
+    assert!(
+        super::super::publish::write(&output.path().join("old-schema"), "snapshot", &old_schema)
+            .is_err()
+    );
+    let mut forged = projection;
+    let site = &mut forged.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_mut()
+        .unwrap()
+        .sites[0];
+    site.compilation_byte_start += 1;
+    assert!(
+        super::super::publish::write(&output.path().join("forged"), "snapshot", &forged).is_err()
+    );
+}
+
+#[test]
+fn source_invocation_target_conflicts_never_repair_compiler_relations() {
+    let mut checked = csharp_common_check();
+    let selection = csharp_selection(&checked, "Render");
+    let evidence = checked.services.get_mut("sample").unwrap();
+    let owner_symbol = evidence.observations[&selection.endpoint_declaration]
+        .symbol
+        .clone();
+    let flow = evidence
+        .observations
+        .values_mut()
+        .find(|row| {
+            row.kind == "FLOW" && row.symbol == owner_symbol && row.normalized["kind"] == "CALL"
+        })
+        .unwrap();
+    let ordinal = flow.normalized["ordinal"].as_u64().unwrap() as usize;
+    let target = json!("method:class:Other#Prepare()V");
+    flow.normalized["target"] = target.clone();
+    flow.digest = digest(&flow.normalized).unwrap();
+    let owner = evidence
+        .observations
+        .get_mut(&selection.endpoint_declaration)
+        .unwrap();
+    owner.normalized["documentation"]["events"][ordinal]["target"] = target;
+    owner.digest = digest(&owner.normalized).unwrap();
+    let projection = project(&checked, &[selection]).unwrap();
+    let sites = projection.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_ref()
+        .unwrap();
+    assert!(sites.sites.is_empty());
+    assert!(
+        sites
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "SOURCE_INVOCATION_TARGET_CONFLICT")
+    );
+}
+
+#[test]
+fn source_invocations_require_the_complete_owner_event_envelope() {
+    let mut checked = csharp_common_check();
+    let selection = csharp_selection(&checked, "Render");
+    let evidence = checked.services.get_mut("sample").unwrap();
+    let owner = evidence.observations[&selection.endpoint_declaration]
+        .symbol
+        .clone();
+    let relation = evidence
+        .observations
+        .iter()
+        .find(|(_, row)| row.kind == "CALL_RELATION" && row.symbol == owner)
+        .unwrap()
+        .0
+        .clone();
+    evidence.observations.remove(&relation);
+    let local = evidence
+        .observations
+        .values_mut()
+        .find(|row| row.kind == "FLOW" && row.symbol == owner && row.normalized["kind"] == "LOCAL")
+        .unwrap();
+    local.normalized["unexpected"] = json!("not in the compiler event list");
+    local.digest = digest(&local.normalized).unwrap();
+    let projection = project(&checked, &[selection]).unwrap();
+    let page = &projection.pages[0];
+    let sites = &page.endpoint.retained_call_sites.as_ref().unwrap().sites;
+    assert_eq!(sites.len(), 1);
+    assert!(
+        sites
+            .iter()
+            .all(|site| page.observations[&site.relation_id].kind == "CALL_RELATION")
+    );
+}
+
+#[test]
 fn csharp_interface_and_unsupported_controls_remain_explicit_frontiers() {
     let checked = csharp_common_check();
     let projection = project(

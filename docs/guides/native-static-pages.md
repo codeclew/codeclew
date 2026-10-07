@@ -381,6 +381,17 @@ exercise task polling, source guards, a name helper, transformation, an opaque
 gateway interface and state assignments in Java and Kotlin. Queue wiring and
 Kotlin data/state transfer still require separately qualified evidence.
 
+The shared reader can also retain CALL sites from admitted compiler-target
+source events when the complete ordered event set and exact source-span contract
+bind the owner, scope, ordinal and original bytes. This supports an implicit
+Kotlin member helper without widening mutation relations. Existing exact call
+relations take precedence at the same occurrence; conflicting targets prevent
+navigation. These source-event sites supply no receiver identity or argument
+mappings. Missing external declarations remain explicit navigation frontiers.
+Bundles using this evidence have native projection schema 1.3 and source-call
+graph schema 1.2. Saved Checks need no recapture to use their retained evidence;
+previously published bundles remain immutable.
+
 A malformed optional span yields an event-local
 `KOTLIN_SOURCE_OUTLINE_EXACT_SPAN_REJECTED` gap and withholds exact expression
 text. The event remains present. Existing control/lambda boundaries still veto

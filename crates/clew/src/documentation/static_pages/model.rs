@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub const SCHEMA: &str = "codeclew-native-page-projection/1.0";
 pub const DECLARATION_SCHEMA: &str = "codeclew-native-page-projection/1.1";
 pub const CONTROL_FLOW_SCHEMA: &str = "codeclew-native-page-projection/1.2";
+pub const SOURCE_INVOCATION_SCHEMA: &str = "codeclew-native-page-projection/1.3";
 
 /// Describes the scope of the selected page projection, not runtime certainty.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,7 +135,8 @@ pub struct NeutralCallArgumentBinding {
     pub citation_id: String,
 }
 
-/// One captured compiler call relation and its exact retained source span.
+/// One captured compiler call relation or compiler-linked FLOW invocation and
+/// its exact retained source span. `relation_id` identifies that observation.
 /// Byte offsets address the full compilation source recorded by the call-site
 /// envelope; `expression` and its citation are relative to the retained Source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

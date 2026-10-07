@@ -13,6 +13,25 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const GRAPH_SCHEMA_JAVA: &str = "codeclew-native-source-calls/1.0";
 const GRAPH_SCHEMA_KOTLIN: &str = "codeclew-native-source-calls/1.1";
+const GRAPH_SCHEMA_SOURCE_INVOCATIONS: &str = "codeclew-native-source-calls/1.2";
+
+fn graph_schema(graph: &SourceCallGraph) -> &'static str {
+    if graph
+        .nodes
+        .values()
+        .any(|node| source::call_sites::uses_source_events(&node.callable, &node.observations))
+    {
+        GRAPH_SCHEMA_SOURCE_INVOCATIONS
+    } else if graph
+        .nodes
+        .values()
+        .any(|node| node.node_projection_kind.is_some())
+    {
+        GRAPH_SCHEMA_KOTLIN
+    } else {
+        GRAPH_SCHEMA_JAVA
+    }
+}
 const EXAMINED_SCHEMA: &str = "codeclew-native-examined-source/1.0";
 const AUTHORITY: &str = "EXAMINED_DOCUMENTATION_CONTEXT_NOT_RUNTIME_IMPACT";
 const MAX_DEPTH: usize = 2;
@@ -437,13 +456,7 @@ pub(super) fn build_roots(
         }
         graph.nodes.insert(id, current);
     }
-    if graph
-        .nodes
-        .values()
-        .any(|node| node.node_projection_kind.is_some())
-    {
-        graph.schema = GRAPH_SCHEMA_KOTLIN.into();
-    }
+    graph.schema = graph_schema(&graph).into();
     // Back edges remain explicit. Cached records are never recursively copied.
     let mut active = BTreeSet::new();
     let mut complete = BTreeSet::new();
@@ -823,13 +836,7 @@ pub(super) fn validate_graph(
             "source-call graph authority or fixed expansion limits are inconsistent",
         ));
     }
-    let has_kotlin = graph
-        .nodes
-        .values()
-        .any(|node| node.node_projection_kind.is_some());
-    if (has_kotlin && graph.schema != GRAPH_SCHEMA_KOTLIN)
-        || (!has_kotlin && graph.schema != GRAPH_SCHEMA_JAVA)
-    {
+    if graph.schema != graph_schema(graph) {
         return Err(crate::documentation::invalid(
             "source-call graph schema does not match its retained node shapes",
         ));

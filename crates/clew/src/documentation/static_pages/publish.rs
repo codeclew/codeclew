@@ -431,11 +431,25 @@ fn retained_call_sites_panel(
     let Some(retained) = &c.retained_call_sites else {
         return String::new();
     };
+    let source_event = |id: &str| {
+        c.source_outline.as_ref().is_some_and(|outline| {
+            outline
+                .events
+                .iter()
+                .any(|event| event.observation_id == id)
+        })
+    };
+    let has_source_events = retained
+        .sites
+        .iter()
+        .any(|site| source_event(&site.relation_id));
     let mut out = format!(
         "<section><h3>Retained exact call sites</h3>\n{}",
-        paragraph(
+        paragraph(if has_source_events {
+            "These sites come from retained compiler call relations or compiler-target source events with exact captured spans. Source-event sites do not supply receiver identity or argument mappings. No site establishes runtime execution, invocation count, ordering, or reachability."
+        } else {
             "These are retained compiler call relations with their captured source snippets. They do not establish runtime execution, invocation count, ordering, or reachability."
-        )
+        })
     );
     if retained.sites.is_empty() {
         out += &format!("<ul>{}</ul>\n", gaps(&retained.gaps, ext));
@@ -451,13 +465,18 @@ fn retained_call_sites_panel(
         out += "<ol aria-label=\"Retained exact call sites\">\n";
         for site in &retained.sites {
             out += &format!(
-                "<li><p>Target identity: {}. Source: {}:{}-{}. Captured source span bytes [{}, {}). Relation: {}. {}",
+                "<li><p>Target identity: {}. Source: {}:{}-{}. Captured source span bytes [{}, {}). {}: {}. {}",
                 escape(&site.target_identity),
                 escape(&site.file),
                 site.start_line,
                 site.end_line,
                 site.compilation_byte_start,
                 site.compilation_byte_end,
+                if source_event(&site.relation_id) {
+                    "Compiler source event"
+                } else {
+                    "Relation"
+                },
                 escape(&site.relation_id),
                 cite(&site.citation_id, ext)
             );
@@ -1517,6 +1536,13 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
         .map(super::source::control_flow::validate_page)
         .collect::<Result<Vec<_>, _>>()?;
     let graph_count = graph_counts.iter().sum::<usize>();
+    if super::project::uses_source_invocations(projection)
+        != (projection.schema == SOURCE_INVOCATION_SCHEMA)
+    {
+        return Err(invalid(
+            "Compiler source-invocation evidence requires its native projection schema",
+        ));
+    }
     match projection.schema.as_str() {
         SCHEMA => {
             if projection
@@ -1582,6 +1608,17 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
             {
                 return Err(invalid(
                     "compiler control-flow schema requires at least one graph-bearing page",
+                ));
+            }
+        }
+        SOURCE_INVOCATION_SCHEMA => {
+            if projection
+                .pages
+                .iter()
+                .any(|page| page.projection_kind.is_none())
+            {
+                return Err(invalid(
+                    "Source-invocation schema requires projectionKind on every page",
                 ));
             }
         }

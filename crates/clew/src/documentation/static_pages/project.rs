@@ -193,7 +193,28 @@ pub(super) fn project_unresolved(
     };
     super::linked::attach(checked, &mut projection)?;
     super::data_state::attach(checked, &mut projection)?;
+    if uses_source_invocations(&projection) {
+        projection.schema = SOURCE_INVOCATION_SCHEMA.into();
+    }
     Ok(projection)
+}
+
+pub(super) fn uses_source_invocations(projection: &BundleProjection) -> bool {
+    projection.pages.iter().any(|page| {
+        [
+            Some(&page.endpoint),
+            Some(&page.worker),
+            page.wiring.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|callable| source::call_sites::uses_source_events(callable, &page.observations))
+    }) || projection.source_call_graph.as_ref().is_some_and(|graph| {
+        graph
+            .nodes
+            .values()
+            .any(|node| source::call_sites::uses_source_events(&node.callable, &node.observations))
+    })
 }
 
 fn declaration_only_handoff() -> HandoffProjection {

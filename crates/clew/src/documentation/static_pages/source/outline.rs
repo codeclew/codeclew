@@ -391,11 +391,11 @@ fn source_lines(source: &Source, start: u64, end: u64) -> Option<String> {
     Some(lines.get(first..=last)?.join("\n"))
 }
 
-fn documented_payload(event: &Value) -> Value {
+pub(super) fn documented_payload(event: &Value) -> Value {
     strip_capture_coordinates(event)
 }
 
-fn event_payload(normalized: &Value) -> Value {
+pub(super) fn event_payload(normalized: &Value) -> Value {
     let mut payload = normalized.clone();
     if let Some(object) = payload.as_object_mut() {
         object.remove("ordinal");

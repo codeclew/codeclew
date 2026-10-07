@@ -74,6 +74,18 @@ pub(super) fn attach(
         &context.evidence.sources,
         callable.citation_id.clone(),
     )?;
+    let projection = augment_source_events(
+        projection,
+        owner,
+        owner_source,
+        &context.evidence.observations,
+        &context.evidence.sources,
+    )?;
+    for site in &projection.sites {
+        if let Some(observation) = context.evidence.observations.get(&site.relation_id) {
+            context.retain(observation);
+        }
+    }
     if projection.gaps.is_empty() {
         for site in &projection.sites {
             let source = context
@@ -245,6 +257,168 @@ fn captured_occurrence_key(relation: &Observation) -> Option<(String, String, u6
         site["byteStart"].as_u64()?,
         site["byteEnd"].as_u64()?,
     ))
+}
+
+/// The compiler-linked structure envelope retains selected targets separately
+/// from mutation relations. Admit that evidence without granting receiver,
+/// argument mapping, branch truth or data-flow authority. Older events without
+/// the exact shared source-span contract never enter this navigation path.
+fn augment_source_events(
+    mut retained: RetainedCallSites,
+    owner: &Observation,
+    owner_source: Option<&Source>,
+    observations: &BTreeMap<String, Observation>,
+    sources: &BTreeMap<String, Source>,
+) -> Result<RetainedCallSites, ClewError> {
+    use crate::documentation::source_statement::{SourceStatement, StructureProducer};
+    let Some(capabilities) = super::compiler::capabilities(owner) else {
+        return Ok(retained);
+    };
+    if capabilities.source_structure.is_none()
+        || (!retained.gaps.is_empty()
+            && !retained
+                .gaps
+                .iter()
+                .all(|gap| gap.code.ends_with("RETAINED_CALL_SITES_NOT_PROVEN")))
+    {
+        return Ok(retained);
+    }
+    let Some(owner_source) = owner_source else {
+        return Ok(retained);
+    };
+    let scope = retained.owner_key.scope.as_str();
+    let Some(events) = owner.normalized["documentation"]["events"].as_array() else {
+        return Ok(retained);
+    };
+    let flows: Vec<_> = observations
+        .iter()
+        .filter(|(_, flow)| {
+            flow.kind == "FLOW"
+                && flow.service == owner.service
+                && flow.symbol == owner.symbol
+                && flow.normalized["scope"] == scope
+        })
+        .collect();
+    if flows.len() != events.len() {
+        return Ok(retained);
+    }
+    let mut ordered = BTreeMap::new();
+    for (map_key, flow) in flows {
+        let Some(ordinal) = flow.normalized["ordinal"].as_u64() else {
+            return Ok(retained);
+        };
+        if ordered.insert(ordinal, (map_key, flow)).is_some() {
+            return Ok(retained);
+        }
+    }
+    for (index, event) in events.iter().enumerate() {
+        let Some((map_key, flow)) = ordered.get(&(index as u64)) else {
+            return Ok(retained);
+        };
+        if flow.id != **map_key
+            || flow.digest != digest(&flow.normalized)?
+            || super::outline::event_payload(&flow.normalized)
+                != super::outline::documented_payload(event)
+        {
+            return Ok(retained);
+        }
+    }
+    for (index, event) in events.iter().enumerate() {
+        let SourceStatement::Invocation(call) = SourceStatement::decode(event) else {
+            continue;
+        };
+        if call.kind != crate::documentation::source_statement::InvocationKind::Call {
+            continue;
+        }
+        let Some(target) = call.exact_target() else {
+            continue;
+        };
+        let target_valid = match capabilities.producer {
+            StructureProducer::KotlinPsi => {
+                crate::semantic_validation::validate_kotlin_full_symbol_identity(target).is_ok()
+            }
+            StructureProducer::Roslyn => target.starts_with("method:class:"),
+            StructureProducer::Javac => false, // Java retains its qualified behavioral relation consumer.
+        };
+        if !target_valid {
+            continue;
+        }
+        let (_, flow) = ordered[&(index as u64)];
+        let Some((source, exact)) = crate::documentation::source_span::retained_event_source(
+            owner,
+            scope,
+            index as u64,
+            event,
+            flow,
+            owner_source,
+            sources,
+        ) else {
+            continue;
+        };
+        let same = retained.sites.iter().find(|site| {
+            site.file == source.file
+                && site.full_compilation_source_digest == exact.full_compilation_source_digest
+                && site.compilation_byte_start == exact.compilation_byte_start as u64
+                && site.compilation_byte_end == exact.compilation_byte_end as u64
+        });
+        if let Some(same) = same {
+            if same.target_identity != target {
+                retained.sites.clear();
+                retained.gaps = vec![gap(
+                    "SOURCE_INVOCATION_TARGET_CONFLICT",
+                    "Retained compiler records disagree on the selected target at one exact source occurrence.",
+                    None,
+                )];
+                return Ok(retained);
+            }
+            continue;
+        }
+        retained.sites.push(NeutralExactCallSite {
+            relation_id: flow.id.clone(),
+            normalized_digest: flow.digest.clone(),
+            target_identity: target.into(),
+            source_id: source.id.clone(),
+            file: source.file.clone(),
+            start_line: source.start_line,
+            end_line: source.end_line,
+            compilation_byte_start: exact.compilation_byte_start as u64,
+            compilation_byte_end: exact.compilation_byte_end as u64,
+            source_digest: source.text_digest.clone(),
+            evidence_binding: source.evidence_digest.clone(),
+            full_compilation_source_digest: exact.full_compilation_source_digest,
+            expression: exact.expression,
+            citation_id: citation_id(source, 0, source.text.len()),
+            argument_bindings: None,
+        });
+    }
+    if !retained.sites.is_empty() {
+        retained.gaps.clear();
+    }
+    retained.sites.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then_with(|| left.start_line.cmp(&right.start_line))
+            .then_with(|| {
+                left.compilation_byte_start
+                    .cmp(&right.compilation_byte_start)
+            })
+            .then_with(|| left.compilation_byte_end.cmp(&right.compilation_byte_end))
+            .then_with(|| left.relation_id.cmp(&right.relation_id))
+    });
+    Ok(retained)
+}
+
+pub(in crate::documentation::static_pages) fn uses_source_events(
+    callable: &CallableProjection,
+    observations: &BTreeMap<String, Observation>,
+) -> bool {
+    callable.retained_call_sites.as_ref().is_some_and(|sites| {
+        sites.sites.iter().any(|site| {
+            observations
+                .get(&site.relation_id)
+                .is_some_and(|observation| observation.kind == "FLOW")
+        })
+    })
 }
 
 // Keep independent owner, source and provenance pins explicit at this validation boundary.
@@ -796,6 +970,7 @@ pub(in crate::documentation::static_pages) fn validate_node(
         sources,
         callable.citation_id.clone(),
     )?;
+    let expected = augment_source_events(expected, owner, owner_source, observations, sources)?;
     if retained != &expected {
         return Err(invalid(
             "retained Kotlin call-site payload differs from its copied compiler evidence",
