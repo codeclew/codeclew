@@ -83,7 +83,14 @@ class SpringCompilerPluginCompatibilityTest {
             assertEquals(0, status.code, output.toString())
             val rows = Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
             val endpoint = rows.single { it["compilerCallableId"]?.jsonPrimitive?.content == "pluginfixture/Api.orders" }
-            assertEquals("HTTP_ENDPOINT", endpoint["spring"]!!.jsonObject["entries"]!!.jsonArray.single().jsonObject["kind"]!!.jsonPrimitive.content)
+            val annotations = assertNotNull(endpoint["jvmAnnotations"])
+            val interpreter = ProcessBuilder(requireNotNull(System.getProperty("codeclew.test.springInterpreter"))).start()
+            interpreter.outputStream.bufferedWriter().use { it.write(JsonArray(listOf(annotations)).toString()) }
+            val interpreted = interpreter.inputStream.bufferedReader().readText()
+            val errors = interpreter.errorStream.bufferedReader().readText()
+            assertEquals(0, interpreter.waitFor(), errors)
+            val spring = Json.parseToJsonElement(interpreted).jsonArray.single().jsonObject
+            assertEquals("HTTP_ENDPOINT", spring["entries"]!!.jsonArray.single().jsonObject["kind"]!!.jsonPrimitive.content)
             assertTrue(rows.any { it["compilerClassId"]?.jsonPrimitive?.content == "pluginfixture/Order" })
             URLClassLoader(arrayOf(outputDirectory.toUri().toURL()), javaClass.classLoader).use { loader ->
                 val api = loader.loadClass("pluginfixture.Api")

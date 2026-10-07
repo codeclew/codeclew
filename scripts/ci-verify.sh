@@ -91,7 +91,7 @@ cargo test --locked -p clew --test documentation_visuals --test documentation_la
 cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
 cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1
-./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest \
+./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.SpringCompilerPluginCompatibilityTest \
   :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest \
   :workers:kotlin23:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest
 cargo test --locked -p clew --lib documentation::check::tests::two_java_services_resolve_and_compose_declared_http_with_branches -- --exact --ignored --test-threads=1
