@@ -1658,10 +1658,9 @@ mod tests {
             .into_iter()
             .map(|fact| {
                 let lease = cas.read(&fact.payload, 64 * 1024 * 1024).unwrap();
-                (
-                    serde_json::from_slice(lease.bytes()).unwrap(),
-                    fact.payload.digest,
-                )
+                let mut value: Value = serde_json::from_slice(lease.bytes()).unwrap();
+                value["scope"] = json!({"compilation":":/main"});
+                (value, fact.payload.digest)
             })
             .collect();
         let service: Service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0", "id":"warehouse", "title":"Warehouse import", "repositoryId":"warehouse", "repository":"https://example.invalid/warehouse",

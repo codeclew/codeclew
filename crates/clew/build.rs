@@ -68,7 +68,7 @@ fn generate_worker_input_manifests() {
         ));
         for root in &roots {
             generated.push_str(&format!("\"{root}\","));
-            println!("cargo:rerun-if-changed={}", repo.join(root).display());
+            println!("cargo:rerun-if-changed=../../{root}");
         }
         generated.push_str("];\n");
         generated.push_str(&format!(
@@ -76,7 +76,7 @@ fn generate_worker_input_manifests() {
         ));
         for file in &files {
             generated.push_str(&format!("\"{file}\","));
-            println!("cargo:rerun-if-changed={}", repo.join(file).display());
+            println!("cargo:rerun-if-changed=../../{file}");
         }
         generated.push_str("];\n");
         generated.push_str(&format!(
@@ -88,10 +88,7 @@ fn generate_worker_input_manifests() {
         generated.push_str("];\n");
         let (output_digest, output_entries) =
             validate_output_manifest(&repo, output_manifest, variant, install_task);
-        println!(
-            "cargo:rerun-if-changed={}",
-            repo.join(output_manifest).display()
-        );
+        println!("cargo:rerun-if-changed=../../{output_manifest}");
         generated.push_str(&format!(
             "pub(crate) const PINNED_{name}_OUTPUT_DIGEST: &str = \"{output_digest}\";\n"
         ));
