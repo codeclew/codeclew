@@ -979,7 +979,7 @@ pub(super) fn validate_graph(
             && (graph_sites.len() != expected_sites.len()
                 || expected_sites
                     .iter()
-                    .any(|site| !graph_sites.iter().any(|candidate| *candidate == site)))
+                    .any(|site| !graph_sites.contains(&site)))
         {
             return Err(crate::documentation::invalid(
                 "Kotlin graph exact-site edges differ from the admitted owner call-site projection",

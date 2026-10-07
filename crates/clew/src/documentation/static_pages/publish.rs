@@ -369,6 +369,14 @@ fn control_flow_panel(c: &CallableProjection, ext: &str, full: bool) -> String {
     out
 }
 
+/// Common inert rendering for exact source coordinates admitted by any adapter.
+fn exact_source_span_item(exact: &crate::documentation::source_span::ExactSourceSpan) -> String {
+    format!(
+        "<li>Retained source: <code>{}</code></li>\n",
+        escape(&exact.expression)
+    )
+}
+
 fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
     let Some(outline) = &c.source_outline else {
         return String::new();
@@ -395,6 +403,12 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
                 event.end_line,
                 cite(&event.citation_id, ext)
             );
+            if let Some(exact) = &event.exact_source {
+                out += &exact_source_span_item(exact);
+            }
+            if !event.gaps.is_empty() {
+                out += &format!("<li><ul>{}</ul></li>\n", gaps(&event.gaps, ext));
+            }
         }
         out += "</ul>\n";
     }

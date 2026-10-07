@@ -134,6 +134,8 @@ fn owner_source<'a>(evidence: &'a ServiceEvidence, owner: &Observation) -> Optio
     }
 }
 
+// Keep independent owner, source and provenance pins explicit at this validation boundary.
+#[allow(clippy::too_many_arguments)]
 fn derive_projection(
     service: &str,
     revision: &str,
@@ -178,10 +180,10 @@ fn derive_projection(
     }
     let mut occurrences = BTreeSet::new();
     for (_, relation) in relations {
-        if let Some(key) = captured_occurrence_key(relation) {
-            if !occurrences.insert(key) {
-                return Ok(unavailable(UnavailableReason::Conflict));
-            }
+        if let Some(key) = captured_occurrence_key(relation)
+            && !occurrences.insert(key)
+        {
+            return Ok(unavailable(UnavailableReason::Conflict));
         }
     }
     let mut sites = Vec::with_capacity(relations.len());
@@ -239,6 +241,8 @@ fn captured_occurrence_key(relation: &Observation) -> Option<(String, String, u6
     ))
 }
 
+// Keep independent owner, source and provenance pins explicit at this validation boundary.
+#[allow(clippy::too_many_arguments)]
 fn relation_site(
     service: &str,
     revision: &str,

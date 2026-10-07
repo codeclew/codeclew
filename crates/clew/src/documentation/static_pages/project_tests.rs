@@ -4952,3 +4952,172 @@ fn cited_constructor_source_does_not_admit_another_scope_or_owner() {
             .all(|n| { !n.callable.declaration_id.starts_with("other-") })
     );
 }
+
+fn exact_outline_check() -> Check {
+    let mut evidence = kotlin_answer_next_outline_evidence();
+    evidence
+        .observations
+        .retain(|_, row| row.kind != "LOCAL_CFG");
+    let retained = "fun next(api: Api): String {\r\n  // π🙂\r\n  val first = api.pick(\"α🙂\"); val second = api.pick(\"α🙂\")\r\n  return first\r\n}";
+    let prefix = "\r\n".repeat(22);
+    let full = format!("{prefix}{retained}\r\n");
+    let owner_start = prefix.len();
+    let owner_end = owner_start + retained.len();
+    let full_digest = crate::canonical::hash_bytes(full.as_bytes());
+    let owner = evidence.observations["answer-next"].clone();
+    let owner_id = owner.source_ids[0].clone();
+    let owner_source = evidence.sources.get_mut(&owner_id).unwrap();
+    owner_source.text = retained.into();
+    owner_source.text_digest = crate::canonical::hash_bytes(retained.as_bytes());
+    owner_source.end_line = owner_source.start_line + 4;
+    let owner_site = json!({"file":owner_source.file,"byteStart":owner_start,"byteEnd":owner_end,
+        "sourceStatus":"SOURCE_RETAINED","sourceId":owner_id,"sourceDigest":owner_source.text_digest,
+        "evidenceDigest":owner_source.evidence_digest,"fullCompilationSourceDigest":full_digest});
+    let call = "api.pick(\"α🙂\")";
+    let first = retained.find(call).unwrap();
+    let second = retained[first + call.len()..].find(call).unwrap() + first + call.len();
+    let local_first = retained.find("val first").unwrap();
+    let local_second = retained.find("val second").unwrap();
+    let returned = retained.find("return first").unwrap();
+    let specs = [
+        ("CALL", first, first + call.len()),
+        ("LOCAL", local_first, first + call.len()),
+        ("CALL", second, second + call.len()),
+        ("LOCAL", local_second, second + call.len()),
+        ("RETURN", returned, returned + "return first".len()),
+    ];
+    let events = specs.iter().enumerate().map(|(ordinal,(kind,start,end))| {
+        let mut event = json!({"kind":kind,"sourceSpan":{
+            "schema":"codeclew-documentation-source-span/1.0","coordinateDomain":"ORIGINAL_UTF8_BYTES",
+            "ownerSymbolIdentity":owner.symbol,"compilationScope":":/main","file":owner_site["file"],
+            "ordinal":ordinal,"ownerByteStart":owner_start,"ownerByteEnd":owner_end,
+            "byteStart":owner_start+start,"byteEnd":owner_start+end,"fullCompilationSourceDigest":full_digest
+        }});
+        if *kind == "CALL" {
+            event["target"] = json!("callable:parity/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;");
+            event["resolution"] = json!("COMPILER_EXACT");
+        }
+        event
+    }).collect();
+    let flow_ids = set_kotlin_outline_events(&mut evidence, "answer-next", events);
+    evidence
+        .observations
+        .get_mut("answer-next")
+        .unwrap()
+        .normalized["outlineOwnerSource"] = owner_site.clone();
+    refresh_observation_digest(&mut evidence, "answer-next");
+    let owner_source = evidence.sources[&owner_id].clone();
+    for (id, (_, start, end)) in flow_ids.iter().zip(specs) {
+        let source_id = evidence.observations[id].source_ids[0].clone();
+        let source = evidence.sources.get_mut(&source_id).unwrap();
+        source.text = retained[start..end].into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        source.start_line = owner_source.start_line
+            + retained[..start].bytes().filter(|b| *b == b'\n').count() as u64;
+        source.end_line = source.start_line;
+        let site = json!({"file":source.file,"startLine":source.start_line,"endLine":source.end_line,
+            "byteStart":owner_start+start,"byteEnd":owner_start+end,"sourceStatus":"SOURCE_RETAINED",
+            "sourceId":source_id,"sourceDigest":source.text_digest,"evidenceDigest":source.evidence_digest,
+            "fullCompilationSourceDigest":full_digest});
+        evidence.observations.get_mut(id).unwrap().normalized["outlineSite"] = site;
+        refresh_observation_digest(&mut evidence, id);
+    }
+    kotlin_check(evidence)
+}
+
+#[test]
+fn kotlin_outline_exact_spans_preserve_same_line_occurrences_local_and_return_text() {
+    let checked = exact_outline_check();
+    let projection = project(&checked, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+    let page = &projection.pages[0];
+    let outline = page.endpoint.source_outline.as_ref().unwrap();
+    let expressions = outline
+        .events
+        .iter()
+        .map(|event| {
+            assert!(event.gaps.is_empty());
+            let exact = event.exact_source.as_ref().unwrap();
+            let cite = &page.citations[&event.citation_id];
+            let source = &page.sources[&cite.source_id];
+            assert_eq!(source.text, exact.expression);
+            assert_eq!(
+                cite.text_digest,
+                crate::canonical::hash_bytes(exact.expression.as_bytes())
+            );
+            exact.expression.as_str()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expressions,
+        vec![
+            "api.pick(\"α🙂\")",
+            "val first = api.pick(\"α🙂\")",
+            "api.pick(\"α🙂\")",
+            "val second = api.pick(\"α🙂\")",
+            "return first"
+        ]
+    );
+    assert_ne!(outline.events[0].citation_id, outline.events[2].citation_id);
+    assert_ne!(outline.events[1].citation_id, outline.events[3].citation_id);
+    let tree = outline.tree.as_ref().unwrap();
+    assert!(tree.contains("LOCAL PSI source: val second"));
+    assert!(tree.contains("return PSI source: return first"));
+    let temp = tempfile::tempdir().unwrap();
+    super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    for ext in ["html", "mdx"] {
+        let body = std::fs::read_to_string(temp.path().join(format!("kotlin-page-endpoint.{ext}")))
+            .unwrap();
+        assert!(body.contains("Retained source: <code>return first</code>"));
+    }
+}
+
+#[test]
+fn kotlin_outline_invalid_optional_spans_are_local_gaps_without_losing_events() {
+    let checked = exact_outline_check();
+    let cases = [
+        ("ownerSymbolIdentity", json!("callable:wrong/owner#jvm:()V")),
+        ("compilationScope", json!(":other/main")),
+        ("ordinal", json!(99)),
+        (
+            "fullCompilationSourceDigest",
+            json!(format!("sha256:{}", "a".repeat(64))),
+        ),
+        ("byteStart", json!(0)),
+        ("byteEnd", json!(usize::MAX)),
+        (
+            "byteStart",
+            json!(
+                44 + "fun next(api: Api): String {\r\n  // π🙂\r\n  val first = api.pick(\"".len()
+                    + 1
+            ),
+        ),
+    ];
+    for (key, value) in cases {
+        let mut changed = checked.clone();
+        let e = changed.services.get_mut("sample").unwrap();
+        e.observations.get_mut("answer-next").unwrap().normalized["documentation"]["events"][0]["sourceSpan"]
+            [key] = value.clone();
+        e.observations
+            .get_mut("flow-answer-next-return")
+            .unwrap()
+            .normalized["sourceSpan"][key] = value;
+        refresh_observation_digest(e, "answer-next");
+        refresh_observation_digest(e, "flow-answer-next-return");
+        let projection =
+            project(&changed, &[kotlin_selection("answer-next", "answer-next")]).unwrap();
+        let outline = projection.pages[0]
+            .endpoint
+            .source_outline
+            .as_ref()
+            .unwrap();
+        assert_eq!(outline.events.len(), 5, "{key}");
+        assert!(outline.events[0].exact_source.is_none(), "{key}");
+        assert_eq!(
+            outline.events[0].gaps[0].code, "KOTLIN_SOURCE_OUTLINE_EXACT_SPAN_REJECTED",
+            "{key}"
+        );
+        assert!(outline.events[1].exact_source.is_some(), "{key}");
+        let temp = tempfile::tempdir().unwrap();
+        super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
+    }
+}

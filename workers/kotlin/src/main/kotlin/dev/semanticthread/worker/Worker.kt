@@ -2510,6 +2510,7 @@ internal class Worker(
                 relative,
                 kt,
                 bytes.toString(Charsets.UTF_8),
+                "$module/$sourceSet",
                 documentationDescriptors[relative].orEmpty(),
                 documentationCalls[relative].orEmpty(),
             )

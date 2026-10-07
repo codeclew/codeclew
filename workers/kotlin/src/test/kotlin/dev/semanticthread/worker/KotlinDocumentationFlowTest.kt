@@ -155,6 +155,46 @@ class KotlinDocumentationFlowTest {
         assertTrue(flow["boundaries"]!!.jsonArray.map { it.jsonPrimitive.content }.contains("EXCEPTION_TYPES_AND_DISPATCH_NOT_ESTABLISHED"))
     }
 
+    @Test
+    fun outlineEventsKeepExactOriginalCrlfUnicodeSpansAndOwnerOrdinals() {
+        val source = """
+            package docs
+            // π🙂 before all declarations
+            class Api { fun pick(value: String): String = value }
+            fun caller(api: Api): String {
+                val first = api.pick("α🙂"); val second = api.pick("α🙂")
+                return first
+            }
+        """.trimIndent().replace("\n", "\r\n") + "\r\n"
+        val rows = extract(source)
+        val caller = rows.single { it["name"]!!.jsonPrimitive.content == "caller" }
+        val events = caller["documentation"]!!.jsonObject["events"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("CALL", "LOCAL", "CALL", "LOCAL", "RETURN"), events.map { it["kind"]!!.jsonPrimitive.content })
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        val texts = events.mapIndexed { ordinal, event ->
+            val span = event["sourceSpan"]!!.jsonObject
+            assertEquals("codeclew-documentation-source-span/1.0", span["schema"]!!.jsonPrimitive.content)
+            assertEquals("ORIGINAL_UTF8_BYTES", span["coordinateDomain"]!!.jsonPrimitive.content)
+            assertEquals(caller["documentationSymbol"], span["ownerSymbolIdentity"])
+            assertEquals(":/main", span["compilationScope"]!!.jsonPrimitive.content)
+            assertEquals("src/Importer.kt", span["file"]!!.jsonPrimitive.content)
+            assertEquals(ordinal, span["ordinal"]!!.jsonPrimitive.int)
+            val start = span["byteStart"]!!.jsonPrimitive.int
+            val end = span["byteEnd"]!!.jsonPrimitive.int
+            assertTrue(start >= span["ownerByteStart"]!!.jsonPrimitive.int)
+            assertTrue(end <= span["ownerByteEnd"]!!.jsonPrimitive.int)
+            assertEquals("sha256:" + java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }, span["fullCompilationSourceDigest"]!!.jsonPrimitive.content)
+            bytes.copyOfRange(start, end).decodeToString()
+        }
+        assertEquals(listOf("api.pick(\"α🙂\")", "val first = api.pick(\"α🙂\")", "api.pick(\"α🙂\")", "val second = api.pick(\"α🙂\")", "return first"), texts)
+        assertNotEquals(events[0]["sourceSpan"]!!.jsonObject["byteStart"], events[2]["sourceSpan"]!!.jsonObject["byteStart"])
+        val callee = rows.single { it["name"]!!.jsonPrimitive.content == "pick" }
+        val returned = callee["documentation"]!!.jsonObject["events"]!!.jsonArray.single().jsonObject
+        val span = returned["sourceSpan"]!!.jsonObject
+        assertEquals(callee["documentationSymbol"], span["ownerSymbolIdentity"])
+        assertEquals("value", bytes.copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString())
+    }
+
     private fun extract(source: String): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-docs-facts").toRealPath()
         val disposable = Disposer.newDisposable("kotlin-docs-test")
@@ -181,7 +221,7 @@ class KotlinDocumentationFlowTest {
             }.distinct()
             val environment = KotlinCoreEnvironment.createForProduction(disposable, CompilerConfiguration(), EnvironmentConfigFiles.JVM_CONFIG_FILES)
             val file = KtPsiFactory(environment.project, markGenerated = false).createFile("Importer.kt", source)
-            val documentation = KotlinDocumentationSource("src/Importer.kt", file, source,
+            val documentation = KotlinDocumentationSource("src/Importer.kt", file, source, ":/main",
                 rows.filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" },
                 rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" })
             return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).map { declaration ->

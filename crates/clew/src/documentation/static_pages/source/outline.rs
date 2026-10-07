@@ -135,31 +135,55 @@ pub(super) fn attach(
             ));
             return Ok(());
         };
-        let source = match flow.source_ids.as_slice() {
-            [source_id] => context
-                .evidence
-                .sources
-                .get(source_id)
-                .filter(|source| {
-                    source.id == *source_id
-                        && source.file == owner_source.file
-                        && valid_source(context.evidence, source, Some(&owner_source))
-                        && source_lines(&owner_source, source.start_line, source.end_line)
-                            .is_some_and(|text| text == source.text)
-                })
-                .cloned(),
-            _ => None,
+        let (source, exact_source, event_gaps) = if documented.get("sourceSpan").is_some() {
+            if let Some((source, exact)) = crate::documentation::source_span::retained_event_source(
+                owner,
+                scope,
+                ordinal,
+                documented,
+                flow,
+                &owner_source,
+                &context.evidence.sources,
+            ) {
+                (source.clone(), Some(exact), Vec::new())
+            } else {
+                (
+                    owner_source.clone(),
+                    None,
+                    vec![gap(
+                        "KOTLIN_SOURCE_OUTLINE_EXACT_SPAN_REJECTED",
+                        "The optional PSI source span failed its exact owner, scope, ordinal, digest or UTF-8 bounds; the event remains retained without exact expression text.",
+                        callable.citation_id.clone(),
+                    )],
+                )
+            }
+        } else {
+            let source = match flow.source_ids.as_slice() {
+                [source_id] => context
+                    .evidence
+                    .sources
+                    .get(source_id)
+                    .filter(|source| {
+                        source.id == *source_id
+                            && source.file == owner_source.file
+                            && valid_source(context.evidence, source, Some(&owner_source))
+                            && source_lines(&owner_source, source.start_line, source.end_line)
+                                .is_some_and(|text| text == source.text)
+                    })
+                    .cloned(),
+                _ => None,
+            };
+            let Some(source) = source else {
+                callable.source_outline = Some(unavailable_outline(
+                    owner_key,
+                    callable.citation_id.clone(),
+                    "KOTLIN_SOURCE_OUTLINE_EVENT_SOURCE_MISMATCH",
+                    "A FLOW event source does not match the declaration file, evidence binding, or exact retained line text.",
+                ));
+                return Ok(());
+            };
+            (source, None, Vec::new())
         };
-        let Some(source) = source else {
-            callable.source_outline = Some(unavailable_outline(
-                owner_key,
-                callable.citation_id.clone(),
-                "KOTLIN_SOURCE_OUTLINE_EVENT_SOURCE_MISMATCH",
-                "A FLOW event source does not match the declaration file, evidence binding, or exact retained line text.",
-            ));
-            return Ok(());
-        };
-
         let citation_id = context.citation(&source, 0, source.text.len());
         outline_events.push(SourceOutlineEvent {
             observation_id: flow.id.clone(),
@@ -170,6 +194,8 @@ pub(super) fn attach(
             end_line: source.end_line,
             event: documented_payload(documented),
             citation_id,
+            exact_source,
+            gaps: event_gaps,
         });
     }
 
@@ -304,6 +330,7 @@ fn event_payload(normalized: &Value) -> Value {
     if let Some(object) = payload.as_object_mut() {
         object.remove("ordinal");
         object.remove("scope");
+        object.remove("outlineSite");
     }
     payload
 }
@@ -324,7 +351,16 @@ fn strip_capture_coordinates(value: &Value) -> Value {
             object
                 .iter()
                 .filter(|(key, _)| !COORDINATES.contains(&key.as_str()))
-                .map(|(key, value)| (key.clone(), strip_capture_coordinates(value)))
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        if key == "sourceSpan" {
+                            value.clone()
+                        } else {
+                            strip_capture_coordinates(value)
+                        },
+                    )
+                })
                 .collect(),
         ),
         Value::Array(values) => {
@@ -407,7 +443,14 @@ fn derive_tree(
                         )),
                     );
                 }
-                let label = format!("{} target metadata: {target}", event.kind);
+                let label = if let Some(exact) = &event.exact_source {
+                    format!(
+                        "{} PSI source: {} · target metadata: {target}",
+                        event.kind, exact.expression
+                    )
+                } else {
+                    format!("{} target metadata: {target}", event.kind)
+                };
                 steps.push(crate::documentation::process_flow::ProjectionStep::Action {
                     diagram: label.clone(),
                     tree: label,
@@ -415,15 +458,32 @@ fn derive_tree(
                 });
             }
             "RETURN" => steps.push(
-                crate::documentation::process_flow::ProjectionStep::MethodReturn(String::new()),
+                crate::documentation::process_flow::ProjectionStep::MethodReturn(
+                    event
+                        .exact_source
+                        .as_ref()
+                        .map(|exact| format!("PSI source: {}", exact.expression))
+                        .unwrap_or_default(),
+                ),
             ),
             "END" => steps.push(crate::documentation::process_flow::ProjectionStep::End),
-            "LOCAL" | "STATEMENT" => steps.push(
-                crate::documentation::process_flow::ProjectionStep::Gap(format!(
-                    "KOTLIN_SOURCE_OUTLINE_{}_EXPRESSION_STRUCTURE_NOT_ESTABLISHED",
-                    event.kind
-                )),
-            ),
+            "LOCAL" | "STATEMENT" => {
+                if let Some(exact) = &event.exact_source {
+                    let label = format!("{} PSI source: {}", event.kind, exact.expression);
+                    steps.push(crate::documentation::process_flow::ProjectionStep::Action {
+                        diagram: label.clone(),
+                        tree: label,
+                        category: None,
+                    });
+                } else {
+                    steps.push(crate::documentation::process_flow::ProjectionStep::Gap(
+                        format!(
+                            "KOTLIN_SOURCE_OUTLINE_{}_EXPRESSION_STRUCTURE_NOT_ESTABLISHED",
+                            event.kind,
+                        ),
+                    ));
+                }
+            }
             kind => {
                 let code = match kind {
                     "BOUNDARY" => "KOTLIN_SOURCE_OUTLINE_CONTROL_BOUNDARY",
@@ -631,23 +691,68 @@ pub(in crate::documentation::static_pages) fn validate_source_outline(
                 "Kotlin source-outline event differs from its retained FLOW binding",
             ));
         }
-        let source = match flow.source_ids.as_slice() {
-            [id] => sources.get(id).filter(|source| source.id == *id),
-            _ => None,
+        let source = if documented.get("sourceSpan").is_some() {
+            let exact = crate::documentation::source_span::retained_event_source(
+                owner,
+                &outline.owner_key.scope,
+                ordinal,
+                documented,
+                flow,
+                owner_source,
+                sources,
+            );
+            match exact {
+                Some((source, expected))
+                    if outline_event.exact_source.as_ref() == Some(&expected)
+                        && outline_event.gaps.is_empty() =>
+                {
+                    source
+                }
+                None if outline_event.exact_source.is_none()
+                    && outline_event.gaps
+                        == vec![gap(
+                            "KOTLIN_SOURCE_OUTLINE_EXACT_SPAN_REJECTED",
+                            "The optional PSI source span failed its exact owner, scope, ordinal, digest or UTF-8 bounds; the event remains retained without exact expression text.",
+                            callable.citation_id.clone(),
+                        )] =>
+                {
+                    owner_source
+                }
+                _ => {
+                    return Err(invalid(
+                        "Kotlin outline exact expression or local gap differs from retained evidence",
+                    ));
+                }
+            }
+        } else {
+            if outline_event.exact_source.is_some() || !outline_event.gaps.is_empty() {
+                return Err(invalid(
+                    "Legacy Kotlin outline event cannot invent exact source coordinates",
+                ));
+            }
+            match flow.source_ids.as_slice() {
+                [id] => sources.get(id).filter(|source| source.id == *id),
+                _ => None,
+            }
+            .filter(|source| {
+                valid_source_binding(source, Some(owner_source))
+                    && source_lines(owner_source, source.start_line, source.end_line)
+                        .is_some_and(|text| text == source.text)
+            })
+            .ok_or_else(|| {
+                invalid("Kotlin source-outline event Source is not bound to retained lines")
+            })?
+        };
+        if source.file != outline_event.file
+            || source.start_line != outline_event.start_line
+            || source.end_line != outline_event.end_line
+            || source.service != service
+            || source.revision != revision
+        {
+            return Err(invalid(
+                "Kotlin source-outline event location differs from its retained Source",
+            ));
         }
-        .filter(|source| {
-            source.file == outline_event.file
-                && source.start_line == outline_event.start_line
-                && source.end_line == outline_event.end_line
-                && source.service == service
-                && source.revision == revision
-                && valid_source_binding(source, Some(owner_source))
-                && source_lines(owner_source, source.start_line, source.end_line)
-                    .is_some_and(|text| text == source.text)
-        })
-        .ok_or_else(|| {
-            invalid("Kotlin source-outline event Source is not bound to retained lines")
-        })?;
         validate_citation(
             outline_event,
             source,
@@ -770,6 +875,8 @@ fn validate_citation(
     Ok(())
 }
 
+// Keep independent owner, source and provenance pins explicit at this validation boundary.
+#[allow(clippy::too_many_arguments)]
 fn complete_event_bindings(
     service: &str,
     revision: &str,
@@ -812,6 +919,9 @@ fn complete_event_bindings(
             || event_payload(&flow.normalized) != documented_payload(documented)
         {
             return false;
+        }
+        if documented.get("sourceSpan").is_some() {
+            continue; // Exact source admission is event-local, not an event-presence claim.
         }
         let source = match flow.source_ids.as_slice() {
             [id] => sources.get(id).filter(|source| source.id == *id),

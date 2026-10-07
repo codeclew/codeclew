@@ -79,6 +79,10 @@ pub struct SourceOutlineEvent {
     /// The documented PSI event with capture coordinates removed.
     pub event: serde_json::Value,
     pub citation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_source: Option<super::super::source_span::ExactSourceSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -41,6 +41,8 @@ struct ProjectedLocalCfg {
     descriptor_evidence_binding: String,
 }
 
+// Keep independent owner, source and provenance pins explicit at this validation boundary.
+#[allow(clippy::too_many_arguments)]
 fn local_cfg_boundary(
     scope: String,
     owner: Option<String>,

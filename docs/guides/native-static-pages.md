@@ -357,3 +357,25 @@ from the same immutable projection without another store or capture. Scope is th
 one selected native bundle. Existing selection/body/source budgets are unchanged.
 This result does not qualify a 200-service/2,000-process catalogue or aggregate
 historical publications; those scale and discovery tasks remain separate.
+
+## Exact retained source for outline events
+
+The source-development implementation after 0.13.17 supports the optional
+`codeclew-documentation-source-span/1.0` event contract. The shared core validates
+original UTF-8 byte ranges against the captured owner, compilation scope, file,
+event ordinal and full compilation-source digest. Kotlin PSI is its first
+producer; this coordinate contract does not establish execution order, variable
+values, aliases or runtime dispatch.
+
+New captures preserve exact LOCAL, CALL and RETURN text in the ordinary shared
+source appendix and citations. Repeated calls on the same Unicode/CRLF line have
+different retained sources and citations. Expression-body returns cite the body
+expression; explicit returns cite the retained return statement. Expanded callee
+bodies use the same path as selected roots. HTML and inert MDX use one renderer.
+
+A malformed optional span yields an event-local
+`KOTLIN_SOURCE_OUTLINE_EXACT_SPAN_REJECTED` gap and withholds exact expression
+text. The event remains present. Existing control/lambda boundaries still veto
+an unsupported structural tree. Older Checks without this payload retain their
+line citations and output bytes; missing exact coordinates never prove a missing
+operation. Rendering uses only the selected saved Check and retained sources.

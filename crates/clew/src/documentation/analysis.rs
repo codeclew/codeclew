@@ -726,7 +726,8 @@ fn add_source(
     Ok(Some(id))
 }
 
-fn add_kotlin_call_site_source(
+/// Retain exact original-byte source for calls, declarations or documentation events.
+fn add_exact_byte_source(
     evidence: &mut ServiceEvidence,
     service: &Service,
     sources: &CompilationSource,
@@ -1147,7 +1148,16 @@ fn strip_coordinates(value: &Value) -> Value {
                             | "file"
                     )
                 })
-                .map(|(k, v)| (k.clone(), strip_coordinates(v)))
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        if k == "sourceSpan" {
+                            v.clone()
+                        } else {
+                            strip_coordinates(v)
+                        },
+                    )
+                })
                 .collect(),
         ),
         Value::Array(a) => Value::Array(a.iter().map(strip_coordinates).collect()),
@@ -1828,7 +1838,7 @@ pub(crate) fn project_scoped(
             crate::semantic_validation::validate_kotlin_full_symbol_identity(&target_identity)?;
             let scope = resolve_scope_key(&fact["scope"], known)?;
             let identity = scoped_identity(&scope, &format!("kotlin-call-site:{}", digest(fact)?));
-            let Some((source_id, call_site)) = add_kotlin_call_site_source(
+            let Some((source_id, call_site)) = add_exact_byte_source(
                 &mut evidence,
                 service,
                 sources,
@@ -1985,7 +1995,32 @@ pub(crate) fn project_scoped(
             binding,
             &scoped,
         )?;
+        let mut source = source;
+        let has_outline_spans = fact["documentation"]["events"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event.get("sourceSpan").is_some()));
+        let mut outline_owner_source = None;
+        if has_outline_spans {
+            let exact_owner = json!({"file":fact["file"],
+                    "byteStart":fact.get("start").or_else(|| fact.get("byteStart")),
+                    "byteEnd":fact.get("end").or_else(|| fact.get("byteEnd"))});
+            if let Some((id, site)) = add_exact_byte_source(
+                &mut evidence,
+                service,
+                sources,
+                &scope,
+                &exact_owner,
+                binding,
+                &scoped,
+            )? {
+                source = Some(id);
+                outline_owner_source = Some(site);
+            }
+        }
         let mut normalized = strip_coordinates(fact);
+        if let Some(site) = &outline_owner_source {
+            normalized["outlineOwnerSource"] = site.clone();
+        }
         if let Some(s) = source.as_ref().and_then(|id| evidence.sources.get(id)) {
             normalized["sourceTokens"] = json!(java_tokens(&s.text));
         }
@@ -1996,6 +2031,21 @@ pub(crate) fn project_scoped(
         let mut content = normalized.clone();
         if let Value::Object(map) = &mut content {
             map.remove("scope");
+        }
+        // Optional source coordinates bind provenance, not declaration meaning.
+        // Keep their exact normalized digests, but exclude them from the existing
+        // cross-scope content comparison so identical declarations stay identical.
+        if has_outline_spans {
+            if let Some(object) = content.as_object_mut() {
+                object.remove("outlineOwnerSource");
+            }
+            if let Some(events) = content["documentation"]["events"].as_array_mut() {
+                for event in events {
+                    if let Some(object) = event.as_object_mut() {
+                        object.remove("sourceSpan");
+                    }
+                }
+            }
         }
         let content_digest = digest(&content)?;
         if !scope.is_empty() {
@@ -2032,7 +2082,7 @@ pub(crate) fn project_scoped(
             for (index, event) in events.iter().enumerate() {
                 let identity = scoped_identity(&scope, &format!("{symbol}/event/{index}"));
                 let event_id = dependency_id(&service.id, "flow", &identity)?;
-                let event_source = add_source(
+                let mut event_source = add_source(
                     &mut evidence,
                     service,
                     sources,
@@ -2041,7 +2091,41 @@ pub(crate) fn project_scoped(
                     binding,
                     &identity,
                 )?;
+                let mut outline_site = None;
+                if let Some(span) = event.get("sourceSpan") {
+                    let valid = super::source_span::validate_capture_span(
+                        span,
+                        symbol,
+                        &scope,
+                        index as u64,
+                        fact,
+                        sources
+                            .blob(&scope, fact["file"].as_str().unwrap_or_default())
+                            .map(|blob| (blob.text.as_ref(), blob.content_digest.as_str())),
+                    );
+                    if valid {
+                        let exact = json!({"file":span["file"],"byteStart":span["byteStart"],"byteEnd":span["byteEnd"]});
+                        if let Some((id, site)) = add_exact_byte_source(
+                            &mut evidence,
+                            service,
+                            sources,
+                            &scope,
+                            &exact,
+                            binding,
+                            &identity,
+                        )? {
+                            event_source = Some(id);
+                            outline_site = Some(site);
+                        }
+                    }
+                    if outline_site.is_none() {
+                        outline_site = Some(json!({"sourceStatus":"SOURCE_REJECTED"}));
+                    }
+                }
                 let mut normalized = strip_coordinates(event);
+                if let Some(site) = outline_site {
+                    normalized["outlineSite"] = site;
+                }
                 normalized["ordinal"] = json!(index);
                 if !scope.is_empty() {
                     normalized["scope"] = json!(scope);
@@ -4267,6 +4351,54 @@ class UseTask {
                 .iter()
                 .any(|b| b.starts_with("SCOPE_AMBIGUOUS")),
             "identical payloads across scopes are not ambiguous: {:?}",
+            evidence.boundaries
+        );
+    }
+
+    #[test]
+    fn optional_exact_source_provenance_does_not_invent_cross_scope_ambiguity() {
+        let service = projection_service();
+        let file = "src/main/java/example/Shared.java";
+        let text = "package example;\r\npublic class Shared {}\r\n";
+        let start = text.find("public").unwrap();
+        let end = text.find('}').unwrap() + 1;
+        let table = BTreeMap::from([(file.into(), text.into())]);
+        let sources = compile_sources(
+            vec![(":a/main", table.clone(), true), (":b/main", table, true)],
+            BTreeMap::new(),
+        );
+        let facts = [":a/main",":b/main"].into_iter().map(|scope| {
+            let mut fact = declaration_fact(&json!({"compilation":scope}),"example.Shared",file,2);
+            fact.0["start"]=json!(start); fact.0["end"]=json!(end);
+            fact.0["documentation"]=json!({"events":[{"kind":"STATEMENT","file":file,"startLine":2,"endLine":2,
+                "sourceSpan":{"schema":"codeclew-documentation-source-span/1.0","coordinateDomain":"ORIGINAL_UTF8_BYTES",
+                "ownerSymbolIdentity":"example.Shared","compilationScope":scope,"file":file,"ordinal":0,
+                "ownerByteStart":start,"ownerByteEnd":end,"byteStart":start,"byteEnd":end,
+                "fullCompilationSourceDigest":canonical::hash_bytes(text.as_bytes())}}],"boundaries":[]});
+            fact
+        }).collect();
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main", ":b/main"]);
+        assert_eq!(
+            evidence
+                .observations
+                .values()
+                .filter(|o| o.kind == "FLOW")
+                .count(),
+            2
+        );
+        assert!(
+            evidence
+                .observations
+                .values()
+                .filter(|o| o.kind == "FLOW")
+                .all(|o| o.normalized["outlineSite"]["sourceStatus"] == "SOURCE_RETAINED")
+        );
+        assert!(
+            !evidence
+                .boundaries
+                .iter()
+                .any(|b| b.starts_with("SCOPE_AMBIGUOUS")),
+            "{:?}",
             evidence.boundaries
         );
     }

@@ -57,6 +57,7 @@ pub mod sections;
 pub mod snapshot_pins;
 mod source_data_context;
 mod source_inputs;
+mod source_span;
 pub mod source_steps;
 pub(crate) mod sqlite_objects;
 pub mod static_pages;

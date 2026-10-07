@@ -4,15 +4,19 @@ import kotlinx.serialization.json.*
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.*
+import java.security.MessageDigest
 
 /** Syntax structure is attached only to a matching retained compiler descriptor. */
 internal class KotlinDocumentationSource(
     private val file: String,
     private val source: KtFile,
-    originalSource: String,
+    private val originalSource: String,
+    private val compilationScope: String,
     descriptors: List<JsonObject>,
     relations: List<JsonObject>,
 ) {
+    private val sourceDigest = "sha256:" + MessageDigest.getInstance("SHA-256")
+        .digest(originalSource.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, source.text)
     private val compilerCoordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(originalSource)
     private val declarations = descriptors.groupBy { it["start"]?.jsonPrimitive?.intOrNull to it["end"]?.jsonPrimitive?.intOrNull }
@@ -31,7 +35,7 @@ internal class KotlinDocumentationSource(
             it["declarationKind"]?.jsonPrimitive?.content == "FUNCTION"
         } ?: return row
         val identity = descriptor["symbolIdentity"]?.jsonPrimitive?.content ?: return row
-        val flow = KotlinDocumentationFlow(file, source, coordinates, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
+        val flow = KotlinDocumentationFlow(file, source, sourceDigest, compilationScope, descriptor, coordinates, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
             (it["start"]!!.jsonPrimitive.int >= range.first) && (it["end"]!!.jsonPrimitive.int <= range.last + 1)
         }).read(declaration, descriptor)
         return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to flow))
@@ -42,6 +46,9 @@ internal class KotlinDocumentationSource(
 private class KotlinDocumentationFlow(
     private val file: String,
     private val source: KtFile,
+    private val sourceDigest: String,
+    private val compilationScope: String,
+    private val descriptor: JsonObject,
     private val coordinates: CompilerUtf16ToUtf8ByteMap,
     relations: List<JsonObject>,
 ) : KtTreeVisitorVoid() {
@@ -96,6 +103,22 @@ private class KotlinDocumentationFlow(
             put("file", file)
             put("startLine", line(element.textRange.startOffset))
             put("endLine", line((element.textRange.endOffset - 1).coerceAtLeast(element.textRange.startOffset)))
+            val range = coordinates.range(element.textRange.startOffset, element.textRange.endOffset)
+            if (range != null && !range.isEmpty()) {
+                put("sourceSpan", buildJsonObject {
+                    put("schema", "codeclew-documentation-source-span/1.0")
+                    put("coordinateDomain", "ORIGINAL_UTF8_BYTES")
+                    put("ownerSymbolIdentity", descriptor["symbolIdentity"]!!)
+                    put("compilationScope", compilationScope)
+                    put("file", file)
+                    put("ordinal", events.size)
+                    put("ownerByteStart", descriptor["start"]!!)
+                    put("ownerByteEnd", descriptor["end"]!!)
+                    put("byteStart", range.first)
+                    put("byteEnd", range.last + 1)
+                    put("fullCompilationSourceDigest", sourceDigest)
+                })
+            }
             attributes.forEach { (key, value) -> put(key, value) }
         }
     }
