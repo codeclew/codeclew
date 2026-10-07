@@ -290,6 +290,10 @@ fn extract_gradle(
                     .ok_or_else(|| unsupported("Java repository path is not UTF-8"))?,
                 "--no-daemon",
                 "--quiet",
+                // The injected metadata task reads Project at execution time.
+                // Keep the project's normal cache setting, but do not attempt
+                // to cache this one operational model request.
+                "--no-configuration-cache",
                 "-I",
                 script
                     .path()
@@ -2064,6 +2068,41 @@ mod tests {
             let encoded = serde_json::to_string(&model.authority).unwrap();
             assert!(!encoded.contains(workspace.to_str().unwrap()));
         }
+    }
+
+    #[test]
+    #[ignore = "qualification launches native Gradle with configuration cache enabled"]
+    fn java_configuration_cache_project_extracts_its_native_model() {
+        let workspace = crate::worker::workspace_root();
+        let fixture = workspace.join("fixtures/documentation-common-pipeline/java");
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        for name in [
+            "build.gradle.kts",
+            "settings.gradle.kts",
+            "gradle.properties",
+            "src/main/java/paired/Pipeline.java",
+        ] {
+            let target = root.join(name);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(fixture.join(name), target).unwrap();
+        }
+        for name in [
+            "gradlew",
+            "gradle/wrapper/gradle-wrapper.jar",
+            "gradle/wrapper/gradle-wrapper.properties",
+        ] {
+            let target = root.join(name);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(workspace.join(name), target).unwrap();
+        }
+        let settings = fs::read(root.join("gradle.properties")).unwrap();
+        let model = extract_java_model(root, ":/main").unwrap();
+        assert_eq!(model.authority.release, 21);
+        assert_eq!(model.authority.source_files.len(), 1);
+        assert!(model.authority.compiler_version.starts_with("javac 21"));
+        assert_eq!(fs::read(root.join("gradle.properties")).unwrap(), settings);
+        verify_model(&model.authority).unwrap();
     }
 
     #[test]
