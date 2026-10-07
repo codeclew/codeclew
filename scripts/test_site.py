@@ -94,8 +94,7 @@ def archived_root_context(case, root, path):
     case.assertEqual(manifest.get('schema'), 'codeclew-documentation-publication/1.0')
     case.assertEqual(manifest.get('id'), bundle, f'{path}: publication identity mismatch')
     case.assertIn(bindings.get('schema'), ('codeclew-documentation-bindings/1.4',
-                                         'codeclew-documentation-bindings/1.5',
-                                         'codeclew-documentation-bindings/1.6'))
+                                         'codeclew-documentation-bindings/1.5'))
     files = manifest.get('files', {})
     case.assertEqual(files.get('bindings.json'), digest(bindings_bytes),
                      f'{path}: bindings digest mismatch')
@@ -295,7 +294,7 @@ class GeneratedDocumentationTests(unittest.TestCase):
                 archive = frozen / 'root-overview.html'
                 archive.write_text(markup)
                 (root / 'index.html').write_bytes(archive.read_bytes())
-                bindings = {'schema': f'codeclew-documentation-bindings/1.{4 + number}',
+                bindings = {'schema': f'codeclew-documentation-bindings/1.{4 + number % 2}',
                             'outputHashes': {'root-overview.html': digest(archive.read_bytes())}}
                 binding_path = frozen / 'bindings.json'
                 binding_path.write_text(json.dumps(bindings))
@@ -304,7 +303,7 @@ class GeneratedDocumentationTests(unittest.TestCase):
                                       'bindings.json': digest(binding_path.read_bytes())}}
                 (frozen / 'publication.json').write_text(json.dumps(manifest))
             self.assertEqual(roots, generated_documentation_roots(site))
-            # Both archived roots resolve Home/History from their own deployed
+            # Each archived root resolves Home/History from its own deployed
             # root, and service citations can reach retained source outside docs.
             assert_generated_documentation_roots(unittest.TestCase(), site)
             current = roots[1]
