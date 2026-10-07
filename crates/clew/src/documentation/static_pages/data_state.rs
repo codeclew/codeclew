@@ -1,17 +1,18 @@
 //! Opt-in source syntax transformations joined to compiler variable occurrences.
 //! No value evaluation, receiver alias analysis, runtime completion or new traversal.
-use super::{model::*, source::Parsed};
+mod input;
+use super::model::*;
 use crate::{
     canonical::hash_bytes,
     documentation::{
         check::Check,
         digest, invalid,
-        model::{Observation, ServiceEvidence, Source},
+        model::{Observation, ServiceEvidence},
     },
     error::ClewError,
 };
+use input::{Input, Kind, Node, Prepared, Role, Variable, VariableKind};
 use std::collections::{BTreeMap, BTreeSet};
-use tree_sitter::Node;
 const SCHEMA: &str = "codeclew-source-data-state/1.0";
 const AUTHORITY: &str = "SOURCE_SYNTAX_WITH_COMPILER_VARIABLE_IDENTITY";
 const MAX_BYTES: usize = 1024 * 1024; // Existing source expansion ceiling, not an additional traversal allowance.
@@ -24,22 +25,15 @@ struct Path {
     completed: Vec<DataCompletion>,
     terminated: bool,
 }
-fn children(n: Node<'_>) -> Vec<Node<'_>> {
-    let mut c = n.walk();
-    n.named_children(&mut c).collect()
-}
 fn active_nodes(root: Node<'_>) -> Vec<Node<'_>> {
     let mut pending = vec![root];
     let mut result = vec![];
     while let Some(n) = pending.pop() {
-        if matches!(
-            n.kind(),
-            "lambda_expression" | "class_body" | "class_declaration"
-        ) {
+        if n.kind() == Kind::NestedBody {
             continue;
         }
         result.push(n);
-        pending.extend(children(n).into_iter().rev());
+        pending.extend(n.children().into_iter().rev());
     }
     result
 }
@@ -57,95 +51,9 @@ fn opaque(syntax: String, reason: &str) -> DataValue {
     }
 }
 
-/// Coordinate conversion uses retained exact bytes, including CRLF and UTF-8.
-fn position(text: &str, offset: usize, first: u64) -> Option<(u64, usize)> {
-    if !text.is_char_boundary(offset) {
-        return None;
-    }
-    let bytes = text.as_bytes();
-    let mut at = 0;
-    let mut line = first;
-    let mut start = 0;
-    while at < offset {
-        if bytes[at] == b'\r' {
-            if bytes.get(at + 1) == Some(&b'\n') {
-                at += 1;
-            }
-            line += 1;
-            start = at + 1;
-        } else if bytes[at] == b'\n' {
-            line += 1;
-            start = at + 1;
-        }
-        at += 1;
-    }
-    Some((line, offset.checked_sub(start)?))
-}
-fn offset(text: &str, line: u64, column: usize, first: u64) -> Option<usize> {
-    let row = usize::try_from(line.checked_sub(first)?).ok()?;
-    let start = if row == 0 {
-        0
-    } else {
-        text.match_indices('\n').nth(row - 1)?.0 + 1
-    };
-    let end = text[start..]
-        .find('\n')
-        .map(|n| start + n)
-        .unwrap_or(text.len());
-    let at = start.checked_add(column)?;
-    (at <= end && text.is_char_boundary(at)).then_some(at)
-}
-/// No substring search: exact global line/column to local callable range.
-fn site_range(o: &Observation, e: &ServiceEvidence, body: &Source) -> Option<(usize, usize)> {
-    if digest(&o.normalized).ok().as_deref() != Some(o.digest.as_str()) {
-        return None;
-    }
-    if o.normalized["schema"] != "codeclew-java-compiler-fact/1.0"
-        || o.normalized["resolution"] != "COMPILER_EXACT"
-    {
-        return None;
-    }
-    let site = &o.normalized["variableSite"];
-    let source = e.sources.get(site["sourceId"].as_str()?)?;
-    let origin = usize::try_from(site["sourceByteStart"].as_u64()?).ok()?;
-    let limit = usize::try_from(site["sourceByteEnd"].as_u64()?).ok()?;
-    let start = usize::try_from(site["byteStart"].as_u64()?)
-        .ok()?
-        .checked_sub(origin)?;
-    let end = usize::try_from(site["byteEnd"].as_u64()?)
-        .ok()?
-        .checked_sub(origin)?;
-    if limit.checked_sub(origin) != Some(source.text.len())
-        || source.file != body.file
-        || source.service != body.service
-        || source.revision != body.revision
-        || o.source_ids != [source.id.clone()]
-        || site["service"] != e.service
-        || site["revision"] != e.revision
-        || site["file"] != source.file
-        || site["sourceDigest"] != source.text_digest
-        || site["evidenceDigest"] != source.evidence_digest
-        || source.text_digest != hash_bytes(source.text.as_bytes())
-        || site["sourceStatus"] != "SOURCE_RETAINED"
-    {
-        return None;
-    }
-    let exact = source.text.get(start..end)?;
-    if start >= end || site["spanDigest"] != hash_bytes(exact.as_bytes()) {
-        return None;
-    }
-    let (sl, sc) = position(&source.text, start, source.start_line)?;
-    let (el, ec) = position(&source.text, end, source.start_line)?;
-    let bs = offset(&body.text, sl, sc, body.start_line)?;
-    let be = offset(&body.text, el, ec, body.start_line)?;
-    // Callable snippets normalize CRLF. Only exact normalized full spans join.
-    let normalized = exact.replace("\r\n", "\n").replace('\r', "\n");
-    (body.text.get(bs..be)? == normalized).then_some((bs, be))
-}
 struct Flow<'a> {
-    parsed: &'a Parsed,
+    input: &'a Input<'a>,
     node: &'a SourceCallNode,
-    facts: BTreeMap<(usize, usize), &'a Observation>,
     declarations: &'a BTreeMap<String, Observation>,
     source_id: &'a str,
     exhausted: bool,
@@ -225,31 +133,24 @@ impl Flow<'_> {
             self.result.gaps.push(gap(code, detail));
         }
     }
-    fn fact(&self, n: Node<'_>) -> Option<&Observation> {
-        self.facts.get(&self.parsed.range(n)).copied()
+    fn fact(&self, n: Node<'_>) -> Option<&Variable> {
+        self.input.variables.get(&n.range())
     }
     fn receiver(&self, n: Node<'_>) -> String {
-        if n.kind() == "this" || self.parsed.text(n) == "this" {
+        if n.kind() == Kind::This {
             return "THIS".into();
         }
         if let Some(o) = self.fact(n) {
-            return format!(
-                "INPUT:{}",
-                o.normalized["variableIdentity"]
-                    .as_str()
-                    .unwrap_or("unavailable")
-            );
+            return format!("INPUT:{}", o.identity);
         }
-        format!("UNRESOLVED:{}", self.parsed.text(n))
+        format!("UNRESOLVED:{}", n.text())
     }
     fn storage(&mut self, n: Node<'_>) -> Option<DataStorage> {
         let o = self.fact(n)?;
-        let identity = o.normalized["variableIdentity"].as_str()?.to_owned();
-        let kind = o.normalized["variableKind"].as_str()?.to_owned();
+        let identity = o.identity.clone();
+        let kind = o.kind.label().to_owned();
         let receiver = if kind == "FIELD" {
-            let declaration_id = o.normalized["declarationObservationId"]
-                .as_str()
-                .map(str::to_owned);
+            let declaration_id = o.declaration_id.clone();
             let declaration = declaration_id
                 .as_ref()
                 .and_then(|id| self.declarations.get(id))
@@ -279,8 +180,8 @@ impl Flow<'_> {
                 "UNRESOLVED_DECLARATION".into()
             } else if static_field {
                 "STATIC".into()
-            } else if n.kind() == "field_access" {
-                n.child_by_field_name("object")
+            } else if n.kind() == Kind::Field {
+                n.child(Role::Receiver)
                     .map(|r| self.receiver(r))
                     .unwrap_or_else(|| "UNRESOLVED".into())
             } else {
@@ -296,10 +197,10 @@ impl Flow<'_> {
         })
     }
     fn simple_target(n: Node<'_>) -> bool {
-        n.kind() == "identifier"
-            || (n.kind() == "field_access"
-                && n.child_by_field_name("object")
-                    .is_some_and(|r| matches!(r.kind(), "identifier" | "this" | "super")))
+        n.kind() == Kind::Variable
+            || (n.kind() == Kind::Field
+                && n.child(Role::Receiver)
+                    .is_some_and(|r| matches!(r.kind(), Kind::Variable | Kind::This | Kind::Super)))
     }
     fn stop_effects(&mut self, path: &mut Path, code: &str, detail: &str) {
         path.terminated = true;
@@ -332,60 +233,52 @@ impl Flow<'_> {
             }
         } else {
             self.frontier("DATA_SITE_UNAVAILABLE","A variable expression has no unique exact compiler occurrence join; no spelling fallback was used.");
-            opaque(self.parsed.text(n), "EXACT_VARIABLE_SITE_UNAVAILABLE")
+            opaque(n.text(), "EXACT_VARIABLE_SITE_UNAVAILABLE")
         }
     }
     fn expression(&mut self, n: Node<'_>, path: &mut Path) -> DataValue {
         if path.terminated {
             return opaque(String::new(), "TRANSFER_ALREADY_WITHHELD");
         }
-        if !self.reserve(self.parsed.range(n).1 - self.parsed.range(n).0) {
+        if !self.reserve(n.range().1 - n.range().0) {
             path.terminated = true;
             return opaque(String::new(), "DATA_STATE_BUDGET");
         }
         match n.kind() {
-            "identifier" | "field_access" => {
+            Kind::Variable | Kind::Field => {
                 if !Self::simple_target(n) {
                     self.stop_effects(path,"OPAQUE_RECEIVER_EFFECTS","Unsupported field receiver evaluation may have effects; this and following transformations are withheld.");
-                    return opaque(self.parsed.text(n), "RECEIVER_EFFECTS_WITHHELD");
+                    return opaque(n.text(), "RECEIVER_EFFECTS_WITHHELD");
                 }
                 self.read(n, path)
             }
-            "string_literal"
-            | "character_literal"
-            | "decimal_integer_literal"
-            | "hex_integer_literal"
-            | "decimal_floating_point_literal"
-            | "true"
-            | "false"
-            | "null_literal" => DataValue::Literal {
-                text: self.parsed.text(n),
-            },
-            "parenthesized_expression" => children(n)
+            Kind::Literal => DataValue::Literal { text: n.text() },
+            Kind::Parenthesized => n
+                .children()
                 .first()
                 .map(|c| self.expression(*c, path))
-                .unwrap_or_else(|| opaque(self.parsed.text(n), "EMPTY_EXPRESSION")),
-            "unary_expression" => {
-                if let Some(operand) = n.child_by_field_name("operand") {
+                .unwrap_or_else(|| opaque(n.text(), "EMPTY_EXPRESSION")),
+            Kind::Unary => {
+                if let Some(operand) = n.child(Role::Operand) {
                     let value = self.expression(operand, path);
                     if path.terminated {
                         return opaque(String::new(), "CHILD_EFFECTS_WITHHELD");
                     }
                     DataValue::Unary {
                         operator: n
-                            .child_by_field_name("operator")
-                            .map(|o| self.parsed.text(o))
+                            .child(Role::Operator)
+                            .map(|o| o.text())
                             .unwrap_or_default(),
                         operand: Box::new(value),
                     }
                 } else {
-                    opaque(self.parsed.text(n), "UNARY_SHAPE")
+                    opaque(n.text(), "UNARY_SHAPE")
                 }
             }
-            "binary_expression" => {
+            Kind::Binary => {
                 let op = n
-                    .child_by_field_name("operator")
-                    .map(|n| self.parsed.text(n))
+                    .child(Role::Operator)
+                    .map(|n| n.text())
                     .unwrap_or_default();
                 if matches!(op.as_str(), "&&" | "||") {
                     path.terminated = true;
@@ -393,12 +286,9 @@ impl Flow<'_> {
                         "OPAQUE_SHORT_CIRCUIT",
                         "Short-circuit value/control effects are not transferred.",
                     );
-                    return opaque(self.parsed.text(n), "SHORT_CIRCUIT");
+                    return opaque(n.text(), "SHORT_CIRCUIT");
                 }
-                match (
-                    n.child_by_field_name("left"),
-                    n.child_by_field_name("right"),
-                ) {
+                match (n.child(Role::Left), n.child(Role::Right)) {
                     (Some(l), Some(r)) => {
                         let left = self.expression(l, path);
                         if path.terminated {
@@ -414,47 +304,42 @@ impl Flow<'_> {
                             right: Box::new(right),
                         }
                     }
-                    _ => opaque(self.parsed.text(n), "BINARY_SHAPE"),
+                    _ => opaque(n.text(), "BINARY_SHAPE"),
                 }
             }
-            "method_invocation" | "object_creation_expression" => {
-                let range = self.parsed.range(n);
-                let edge = self.node.calls.iter().find(|e| {
-                    e.call.as_ref().is_some_and(|call| {
-                        self.node.citations.get(&call.citation_id).is_some_and(|c| {
-                            c.source_id == self.source_id && (c.start_byte, c.end_byte) == range
-                        })
-                    })
-                });
-                let Some(edge) = edge else {
+            Kind::Call | Kind::Construct => {
+                let range = n.range();
+                let Some(binding) = self.input.calls.get(&range) else {
                     self.frontier("CALL_OCCURRENCE_UNAVAILABLE","No unique retained call occurrence is available; result and effects remain opaque.");
                     path.terminated = true;
-                    return opaque(self.parsed.text(n), "CALL_OCCURRENCE_UNAVAILABLE");
+                    return opaque(n.text(), "CALL_OCCURRENCE_UNAVAILABLE");
                 };
-                let occurrence = edge
-                    .occurrence_path
-                    .as_ref()
-                    .expect("Java data-state edges have occurrence paths")
-                    .clone();
-                let target = edge.target_node.clone();
-                let status = edge.status.clone();
+                let occurrence = binding.occurrence.clone();
+                let target = binding.target_node.clone();
+                let status = binding.status.clone();
                 let receiver = n
-                    .child_by_field_name("object")
+                    .child(Role::Receiver)
                     .map(|r| Box::new(self.expression(r, path)));
                 if path.terminated {
                     return opaque(String::new(), "RECEIVER_EFFECTS_WITHHELD");
                 }
                 let mut arguments = Vec::new();
-                for argument in n
-                    .child_by_field_name("arguments")
-                    .map(children)
-                    .unwrap_or_default()
-                {
+                let mut actual_bindings = Vec::new();
+                for (argument, formal_slot) in n.actuals() {
                     let value = self.expression(argument, path);
                     if path.terminated {
                         return opaque(String::new(), "ARGUMENT_EFFECTS_WITHHELD");
                     }
+                    if formal_slot.is_none() {
+                        self.stop_effects(path, "CALL_ARGUMENT_BINDING_UNAVAILABLE", "An argument has no exact formal slot; this and following transformations are withheld.");
+                        return opaque(n.text(), "CALL_ARGUMENT_BINDING_UNAVAILABLE");
+                    }
+                    actual_bindings.push((formal_slot, value.clone()));
                     arguments.push(value);
+                }
+                if !n.default_arguments().is_empty() {
+                    self.stop_effects(path, "OMITTED_DEFAULT_EFFECTS_OPAQUE", "Omitted defaults are evaluated after supplied arguments; their unavailable initializer effects and following transformations are withheld.");
+                    return opaque(n.text(), "OMITTED_DEFAULT_EFFECTS_OPAQUE");
                 }
                 if !self.reserve(serde_json::to_vec(&arguments).unwrap().len()) {
                     path.terminated = true;
@@ -465,14 +350,14 @@ impl Flow<'_> {
                     conditions: path.guards.clone(),
                     occurrence: occurrence.clone(),
                     target_node: target.clone(),
-                    arguments: arguments
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                        .map(|(slot, value)| DataArgument {
-                            slot,
-                            value,
-                            formal_identity: None,
+                    arguments: actual_bindings
+                        .into_iter()
+                        .filter_map(|(formal_slot, value)| {
+                            formal_slot.map(|slot| DataArgument {
+                                slot,
+                                value,
+                                formal_identity: None,
+                            })
                         })
                         .collect(),
                     return_definitions: vec![],
@@ -483,7 +368,7 @@ impl Flow<'_> {
                     conditions: path.guards.clone(),
                 });
                 // Any call can change fields through receivers, aliases or callbacks.
-                // Locals/formals keep their Java bindings; no receiver solver is implied.
+                // Locals/formals keep their compiler bindings; no receiver solver is implied.
                 let fields: Vec<_> = path
                     .env
                     .keys()
@@ -519,7 +404,7 @@ impl Flow<'_> {
             _ => {
                 self.frontier("OPAQUE_EXPRESSION","Unsupported expressions retain literal syntax; their transformations/effects are not evaluated.");
                 path.terminated = true;
-                opaque(self.parsed.text(n), "UNSUPPORTED_EXPRESSION")
+                opaque(n.text(), "UNSUPPORTED_EXPRESSION")
             }
         }
     }
@@ -545,7 +430,7 @@ impl Flow<'_> {
                 self.frontier("RECEIVER_STORAGE_OPAQUE","Writes through non-this receivers do not establish source-local instance storage or aliases.");
             }
         }
-        let range = self.parsed.range(n);
+        let range = n.range();
         let citation_id = self
             .node
             .citations
@@ -576,9 +461,9 @@ impl Flow<'_> {
             return vec![path];
         }
         match n.kind() {
-            "block" => {
+            Kind::Block => {
                 let mut paths = vec![path];
-                for (i, c) in children(n).into_iter().enumerate() {
+                for (i, c) in n.children().into_iter().enumerate() {
                     if paths.len() > MAX_ROWS {
                         self.exhausted = true;
                         return vec![];
@@ -596,11 +481,11 @@ impl Flow<'_> {
                 }
                 paths
             }
-            "if_statement" => {
-                let Some(condition) = n.child_by_field_name("condition") else {
+            Kind::If => {
+                let Some(condition) = n.child(Role::Condition) else {
                     return vec![path];
                 };
-                let expression = self.parsed.text(condition); // Guard is source syntax, not evaluated.
+                let expression = condition.text(); // Guard is source syntax, not evaluated.
                 let _ = self.expression(condition, &mut path);
                 if path.terminated {
                     return vec![path];
@@ -616,20 +501,21 @@ impl Flow<'_> {
                     holds: false,
                 });
                 let mut rows = n
-                    .child_by_field_name("consequence")
+                    .child(Role::Then)
                     .map(|c| self.statement(c, &format!("{id}/true"), yes.clone()))
                     .unwrap_or_else(|| vec![yes]);
                 rows.extend(
-                    n.child_by_field_name("alternative")
+                    n.child(Role::Else)
                         .map(|c| self.statement(c, &format!("{id}/false"), no.clone()))
                         .unwrap_or_else(|| vec![no]),
                 );
                 vec![self.join(id, rows)]
             }
-            "local_variable_declaration" => {
-                let vars = children(n)
+            Kind::Local => {
+                let vars = n
+                    .children()
                     .into_iter()
-                    .filter(|c| c.kind() == "variable_declarator")
+                    .filter(|c| c.kind() == Kind::Declarator)
                     .collect::<Vec<_>>();
                 if vars.len() != 1 {
                     self.frontier(
@@ -642,9 +528,9 @@ impl Flow<'_> {
                 let storage = self.storage(n).or_else(|| self.storage(vars[0]));
                 if let Some(s) = storage {
                     let value = vars[0]
-                        .child_by_field_name("value")
+                        .child(Role::Initializer)
                         .map(|v| self.expression(v, &mut path))
-                        .unwrap_or_else(|| opaque(self.parsed.text(n), "UNINITIALIZED"));
+                        .unwrap_or_else(|| opaque(n.text(), "UNINITIALIZED"));
                     self.define(id.into(), Some(s), value, &mut path, n);
                 } else {
                     self.frontier(
@@ -655,13 +541,12 @@ impl Flow<'_> {
                 }
                 vec![path]
             }
-            "expression_statement" => {
-                if let Some(expr) = children(n).first().copied() {
-                    if expr.kind() == "assignment_expression" {
-                        if let (Some(left), Some(right)) = (
-                            expr.child_by_field_name("left"),
-                            expr.child_by_field_name("right"),
-                        ) {
+            Kind::Expression => {
+                if let Some(expr) = n.children().first().copied() {
+                    if expr.kind() == Kind::Assignment {
+                        if let (Some(left), Some(right)) =
+                            (expr.child(Role::Left), expr.child(Role::Right))
+                        {
                             if !Self::simple_target(left) {
                                 self.stop_effects(&mut path,"OPAQUE_ASSIGNMENT_TARGET_EFFECTS","Unsupported assignment receiver or array-index evaluation may have effects; this and following transformations are withheld.");
                                 return vec![path];
@@ -674,8 +559,8 @@ impl Flow<'_> {
                             let prior = self.read(left, &path);
                             let right = self.expression(right, &mut path);
                             let op = expr
-                                .child_by_field_name("operator")
-                                .map(|n| self.parsed.text(n))
+                                .child(Role::Operator)
+                                .map(|n| n.text())
                                 .unwrap_or_else(|| "=".into());
                             let value = if op == "=" {
                                 right
@@ -701,15 +586,16 @@ impl Flow<'_> {
                 }
                 vec![path]
             }
-            "return_statement" | "throw_statement" => {
-                let value = children(n)
+            Kind::Return | Kind::Throw => {
+                let value = n
+                    .children()
                     .first()
                     .map(|v| self.expression(*v, &mut path))
                     .unwrap_or_else(|| opaque(String::new(), "VOID_RETURN"));
                 if path.terminated {
                     return vec![path];
                 }
-                if n.kind() == "return_statement" {
+                if n.kind() == Kind::Return {
                     self.define(format!("{id}/return"), None, value, &mut path, n);
                 }
                 path.terminated = true;
@@ -723,17 +609,10 @@ impl Flow<'_> {
         }
     }
 }
-fn project(e: &ServiceEvidence, node: &SourceCallNode) -> Result<NodeDataState, ClewError> {
-    let declaration = &e.observations[&node.callable.declaration_id];
-    let source = declaration
-        .source_ids
-        .iter()
-        .filter_map(|id| e.sources.get(id))
-        .find(|s| {
-            Parsed::new(&s.text)
-                .and_then(|p| p.callable(declaration).map(|_| ()))
-                .is_some()
-        });
+fn project_with_bindings(
+    e: &ServiceEvidence,
+    node: &SourceCallNode,
+) -> Result<(NodeDataState, BTreeMap<usize, String>), ClewError> {
     let mut result = NodeDataState {
         schema: SCHEMA.into(),
         authority: AUTHORITY.into(),
@@ -743,59 +622,43 @@ fn project(e: &ServiceEvidence, node: &SourceCallNode) -> Result<NodeDataState, 
         field_declarations: vec![],
         gaps: vec![],
     };
-    let Some(source) = source else {
-        result.gaps.push(gap(
-            "DATA_BODY_UNAVAILABLE",
-            "The retained callable body cannot be parsed.",
-        ));
-        return Ok(result);
-    };
-    let parsed = Parsed::new(&source.text)
-        .ok_or_else(|| invalid("data-state callable parser unavailable"))?;
-    let callable = parsed
-        .callable(declaration)
-        .ok_or_else(|| invalid("data-state callable is ambiguous"))?;
-    if callable.has_error() {
-        result.gaps.push(gap(
-            "DATA_BODY_PARTIAL",
-            "The retained callable has syntax errors; no data transformation is promoted.",
-        ));
-        return Ok(result);
-    }
-    let mut facts = BTreeMap::new();
-    let mut bytes = 0;
-    let mut missing = false;
-    for o in e.observations.values().filter(|o| {
-        matches!(o.kind.as_str(), "VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
-            && o.normalized["callableObservationId"] == node.callable.declaration_id
-            && o.normalized["scope"] == node.scope
-    }) {
-        bytes += serde_json::to_vec(o)
-            .map_err(|_| invalid("data-state fact encoding failed"))?
-            .len();
-        if bytes > MAX_BYTES || facts.len() >= MAX_ROWS {
-            return Err(invalid(
-                "expandDataState exceeds bounded fact budget; narrow the selection",
+    let input = match input::prepare(e, node)? {
+        Prepared::Body(input) => input,
+        Prepared::Unavailable => {
+            result.gaps.push(gap(
+                "DATA_BODY_UNAVAILABLE",
+                "The retained callable body cannot be parsed.",
             ));
+            return Ok((result, BTreeMap::new()));
         }
-        if let Some(range) = site_range(o, e, source) {
-            if facts.insert(range, o).is_some() {
-                return Err(invalid("data-state variable site is ambiguous"));
-            }
-        } else {
-            missing = true;
+        Prepared::Partial => {
+            result.gaps.push(gap(
+                "DATA_BODY_PARTIAL",
+                "The retained callable has syntax errors; no data transformation is promoted.",
+            ));
+            return Ok((result, BTreeMap::new()));
         }
-    }
-    if missing {
+    };
+    transfer(e, node, &input, result)
+}
+
+fn transfer(
+    e: &ServiceEvidence,
+    node: &SourceCallNode,
+    input: &Input<'_>,
+    mut result: NodeDataState,
+) -> Result<(NodeDataState, BTreeMap<usize, String>), ClewError> {
+    if input.missing_sites {
         result.gaps.push(gap(
             "DATA_SITE_UNAVAILABLE",
             "Old or inconsistent variable sites cannot supply exact column identities.",
         ));
     }
+    let formals = input.formals()?;
+    let source = input.source;
     let mut flow = Flow {
-        parsed: &parsed,
+        input,
         node,
-        facts,
         declarations: &e.observations,
         source_id: &source.id,
         exhausted: false,
@@ -805,15 +668,13 @@ fn project(e: &ServiceEvidence, node: &SourceCallNode) -> Result<NodeDataState, 
     let mut path = Path::default();
     // Formal definitions are immutable per cached callable, never caller-specific.
     for o in flow
-        .facts
+        .input
+        .variables
         .values()
-        .filter(|o| o.kind == "VARIABLE_DECLARATION" && o.normalized["variableKind"] == "PARAMETER")
+        .filter(|o| o.declaration && o.kind == VariableKind::Parameter)
     {
         let storage = DataStorage {
-            identity: o.normalized["variableIdentity"]
-                .as_str()
-                .unwrap_or("")
-                .into(),
+            identity: o.identity.clone(),
             kind: "PARAMETER".into(),
             receiver: None,
         };
@@ -828,17 +689,14 @@ fn project(e: &ServiceEvidence, node: &SourceCallNode) -> Result<NodeDataState, 
             citation_id: None,
         });
     }
-    if let Some(body) = callable.child_by_field_name("body") {
+    if let Some(body) = input.body.map(|index| input.node(index)) {
         // Source-local fields start with an explicit opaque incoming value. This
         // keeps the old value as an alternative when only one branch writes.
         for n in active_nodes(body)
             .into_iter()
-            .filter(|n| matches!(n.kind(), "identifier" | "field_access"))
+            .filter(|n| matches!(n.kind(), Kind::Variable | Kind::Field))
         {
-            if !flow
-                .fact(n)
-                .is_some_and(|o| o.normalized["variableKind"] == "FIELD")
-            {
+            if !flow.fact(n).is_some_and(|o| o.kind == VariableKind::Field) {
                 continue;
             }
             let Some(storage) = flow.storage(n).filter(Flow::writable) else {
@@ -878,7 +736,11 @@ fn project(e: &ServiceEvidence, node: &SourceCallNode) -> Result<NodeDataState, 
     }
     flow.result.field_declarations.sort();
     flow.result.field_declarations.dedup();
-    Ok(flow.result)
+    Ok((flow.result, formals))
+}
+#[cfg(test)]
+fn project(e: &ServiceEvidence, node: &SourceCallNode) -> Result<NodeDataState, ClewError> {
+    project_with_bindings(e, node).map(|(state, _)| state)
 }
 fn semantic_digest(state: &NodeDataState) -> Result<String, ClewError> {
     let mut semantic = state.clone();
@@ -973,12 +835,16 @@ pub(super) fn attach_graph(
             }
         }
     }
+    let mut formals = BTreeMap::new();
     for id in selected {
         let node = graph
             .nodes
             .get(id)
             .ok_or_else(|| invalid("examined data-state node is unavailable"))?;
-        let state = project(&checked.services[&node.service], node)?;
+        let (state, bindings) = project_with_bindings(&checked.services[&node.service], node)?;
+        for (slot, identity) in bindings {
+            formals.insert((id.clone(), slot), identity);
+        }
         rows += state.definitions.len() + state.calls.len();
         bytes += serde_json::to_vec(&state)
             .map_err(|_| invalid("data-state encoding failed"))?
@@ -1021,26 +887,6 @@ pub(super) fn attach_graph(
             })
         })
         .collect();
-    let formals: BTreeMap<_, _> = graph
-        .nodes
-        .iter()
-        .flat_map(|(id, n)| {
-            n.data_state.iter().flat_map(move |s| {
-                s.definitions.iter().filter_map(move |d| {
-                    let DataValue::Input { storage } = &d.value else {
-                        return None;
-                    };
-                    let slot = storage
-                        .identity
-                        .rsplit_once("/slot/")?
-                        .1
-                        .parse::<usize>()
-                        .ok()?;
-                    Some(((id.clone(), slot), storage.identity.clone()))
-                })
-            })
-        })
-        .collect();
     for node in graph.nodes.values_mut() {
         if let Some(state) = &mut node.data_state {
             for call in &mut state.calls {
@@ -1067,6 +913,15 @@ pub(super) fn attach_graph(
 
 #[cfg(test)]
 mod tests {
+    use super::super::source::Parsed;
+    use super::input::java_site_range as site_range;
+    use crate::documentation::model::Source;
+    use tree_sitter::Node;
+    fn children(n: Node<'_>) -> Vec<Node<'_>> {
+        let mut cursor = n.walk();
+        n.named_children(&mut cursor).collect()
+    }
+
     use super::*;
     use serde_json::json;
     fn source(text: &str) -> Source {
@@ -1339,6 +1194,261 @@ mod tests {
             },
         );
         work
+    }
+
+    // Synthetic producer-normalized input, deliberately not a Java grammar.
+    // This verifies the common engine's contract, not Kotlin compiler admission.
+    fn reordered_call_input(source: &Source) -> Input<'_> {
+        use input::{Actual, BoundCall, SyntaxNode};
+        let left = source.text.find("left()").unwrap();
+        let right = source.text.find("right()").unwrap();
+        let call = source.text.find("pick(").unwrap();
+        let call_end = source.text.rfind(')').unwrap() + 1;
+        let ranges = [(left, left + 6), (right, right + 7), (call, call_end)];
+        let mut nodes: Vec<_> = ranges
+            .iter()
+            .map(|&range| SyntaxNode {
+                kind: Kind::Call,
+                range,
+                children: vec![],
+                roles: BTreeMap::new(),
+                actuals: vec![],
+                default_arguments: vec![],
+            })
+            .collect();
+        nodes[2].children = vec![0, 1];
+        nodes[2].actuals = vec![
+            Actual {
+                expression: 0,
+                formal_slot: Some(1),
+            },
+            Actual {
+                expression: 1,
+                formal_slot: Some(0),
+            },
+        ];
+        nodes.push(SyntaxNode {
+            kind: Kind::Return,
+            range: (0, source.text.len()),
+            children: vec![2],
+            roles: BTreeMap::new(),
+            actuals: vec![],
+            default_arguments: vec![],
+        });
+        let calls = ranges
+            .iter()
+            .enumerate()
+            .map(|(i, &range)| {
+                (
+                    range,
+                    BoundCall {
+                        occurrence: format!("producer-call-{i}"),
+                        target_node: None,
+                        status: "BODY_UNAVAILABLE".into(),
+                    },
+                )
+            })
+            .collect();
+        Input {
+            source,
+            nodes,
+            body: Some(3),
+            variables: BTreeMap::new(),
+            calls,
+            missing_sites: false,
+        }
+    }
+
+    fn common_transfer(input: &Input<'_>) -> (NodeDataState, BTreeMap<usize, String>) {
+        let evidence = evidence(&input.source.text);
+        transfer(
+            &evidence,
+            &node(),
+            input,
+            NodeDataState {
+                schema: SCHEMA.into(),
+                authority: AUTHORITY.into(),
+                data_state_digest: String::new(),
+                definitions: vec![],
+                calls: vec![],
+                field_declarations: vec![],
+                gaps: vec![],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn common_input_keeps_actual_evaluation_order_separate_from_formal_slots() {
+        let source = source("return pick(second = left(), first = right());");
+        let mut input = reordered_call_input(&source);
+        for (slot, identity) in [
+            (0, "compiler-local-symbol@101"),
+            (1, "compiler-local-symbol@202"),
+        ] {
+            input.variables.insert(
+                (slot, slot + 1),
+                Variable {
+                    identity: identity.into(),
+                    kind: VariableKind::Parameter,
+                    declaration: true,
+                    declaration_id: None,
+                    formal_slot: Some(slot),
+                },
+            );
+        }
+        let (state, formals) = common_transfer(&input);
+        assert_eq!(
+            formals,
+            BTreeMap::from([
+                (0, "compiler-local-symbol@101".into()),
+                (1, "compiler-local-symbol@202".into()),
+            ])
+        );
+        assert_eq!(
+            state
+                .calls
+                .iter()
+                .map(|c| c.occurrence.as_str())
+                .collect::<Vec<_>>(),
+            ["producer-call-0", "producer-call-1", "producer-call-2"]
+        );
+        assert!(state.calls[0].normal_completion_of.is_empty());
+        assert_eq!(
+            state.calls[1].normal_completion_of[0].occurrence,
+            "producer-call-0"
+        );
+        let outer = &state.calls[2];
+        assert_eq!(
+            outer.arguments.iter().map(|a| a.slot).collect::<Vec<_>>(),
+            [1, 0]
+        );
+        assert_eq!(
+            outer
+                .normal_completion_of
+                .iter()
+                .map(|c| c.occurrence.as_str())
+                .collect::<Vec<_>>(),
+            ["producer-call-0", "producer-call-1"]
+        );
+        for (actual, occurrence) in outer
+            .arguments
+            .iter()
+            .zip(["producer-call-0", "producer-call-1"])
+        {
+            assert!(
+                matches!(&actual.value, DataValue::CallResult { occurrence: got, .. } if got == occurrence)
+            );
+        }
+        assert_eq!(
+            state
+                .definitions
+                .iter()
+                .filter(|d| d.storage.is_none())
+                .count(),
+            1
+        );
+        // Formal identities are immutable inputs, not overwritten by actuals.
+        assert!(
+            state.definitions[..2]
+                .iter()
+                .all(|d| matches!(d.value, DataValue::Input { .. }))
+        );
+    }
+
+    #[test]
+    fn common_input_withholds_missing_argument_binding_and_default_effects() {
+        let source = source("return pick(second = left(), first = right());");
+        let mut input = reordered_call_input(&source);
+        input.nodes[2].actuals[0].formal_slot = None;
+        let (missing, _) = common_transfer(&input);
+        assert_eq!(
+            missing.calls.len(),
+            1,
+            "only earlier supplied argument evaluation is retained"
+        );
+        assert!(
+            missing.definitions.is_empty(),
+            "enclosing return is withheld"
+        );
+        assert!(
+            missing
+                .gaps
+                .iter()
+                .any(|g| g.code == "CALL_ARGUMENT_BINDING_UNAVAILABLE")
+        );
+        input.nodes[2].actuals[0].formal_slot = Some(1);
+        input.nodes[2].default_arguments = vec![2];
+        let (default, _) = common_transfer(&input);
+        assert_eq!(
+            default.calls.len(),
+            2,
+            "supplied actuals precede omitted defaults"
+        );
+        assert!(
+            default.definitions.is_empty(),
+            "default completion is not silently assumed"
+        );
+        assert!(
+            default
+                .gaps
+                .iter()
+                .any(|g| g.code == "OMITTED_DEFAULT_EFFECTS_OPAQUE")
+        );
+    }
+
+    #[test]
+    fn common_input_refuses_ambiguous_formals_and_unbound_call_occurrence() {
+        let source = source("return pick(second = left(), first = right());");
+        let mut input = reordered_call_input(&source);
+        for i in 0..2 {
+            input.variables.insert(
+                (i, i + 1),
+                Variable {
+                    identity: format!("compiler-symbol-{i}"),
+                    kind: VariableKind::Parameter,
+                    declaration: true,
+                    declaration_id: None,
+                    formal_slot: Some(0),
+                },
+            );
+        }
+        assert!(
+            input
+                .formals()
+                .unwrap_err()
+                .to_string()
+                .contains("formal slot is ambiguous")
+        );
+        input.variables.clear();
+        input.calls.clear();
+        let (state, _) = common_transfer(&input);
+        assert!(state.calls.is_empty());
+        assert!(state.definitions.is_empty());
+        assert!(
+            state
+                .gaps
+                .iter()
+                .any(|g| g.code == "CALL_OCCURRENCE_UNAVAILABLE")
+        );
+    }
+
+    #[test]
+    fn java_adapter_withholds_a_call_without_its_occurrence_identity() {
+        let text = "String prepare() { return f(); }";
+        let evidence = evidence(text);
+        let parsed = Parsed::new(text).unwrap();
+        let mut node = call_node(&evidence, &parsed);
+        node.calls[0].occurrence_path = None;
+        let state = project(&evidence, &node).unwrap();
+        assert!(state.calls.is_empty());
+        assert!(state.definitions.is_empty());
+        assert!(
+            state
+                .gaps
+                .iter()
+                .any(|g| g.code == "CALL_OCCURRENCE_UNAVAILABLE")
+        );
     }
     #[test]
     fn source_data_packet_bridge_binds_guarded_ir_exact_sources_and_default_identity() {
