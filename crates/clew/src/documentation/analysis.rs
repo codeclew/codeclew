@@ -1,4 +1,4 @@
-//! Current JVM evidence uses the normal admitted session and immutable generation.
+//! Retained producer evidence uses admitted sessions and immutable generations.
 use super::{
     bytes, digest, invalid, io_error,
     local_cfg::{
@@ -248,6 +248,7 @@ fn capture_local_with_diagnostics(
         "kotlin" => SessionLanguage::Kotlin,
         "csharp" => SessionLanguage::CSharp,
         "typescript" => SessionLanguage::TypeScript,
+        "rust" => SessionLanguage::Rust,
         _ => SessionLanguage::Java,
     };
     let readiness = super::progress::run("SOURCE_ADMISSION", || {
@@ -389,6 +390,7 @@ fn capture_session(
                 "kotlin" => "analysis:kotlin-semantic-facts",
                 "csharp" => super::csharp::CSHARP_FACTS_DOMAIN,
                 "typescript" => crate::typescript_adapter_v2::TYPESCRIPT_COMPILER_FACTS_CAPABILITY,
+                "rust" => crate::rust_adapter_v2::RUST_SYNTAX_FACTS_CAPABILITY,
                 _ => "analysis:java-compiler-facts",
             };
             if fact.domain_uri.as_str() != domain {
@@ -418,6 +420,7 @@ fn capture_session(
         "typescript" => {
             project_typescript_declarations(&mut facts);
         }
+        "rust" => project_rust_declarations(&mut facts),
         _ => {}
     }
     let wanted: BTreeSet<_> = facts
@@ -507,6 +510,22 @@ pub(in crate::documentation) fn project_typescript_declarations(facts: &mut [(Va
             && fact["declarationIdentity"].is_string()
         {
             fact["symbolIdentity"] = fact["declarationIdentity"].clone();
+        }
+    }
+}
+
+pub(in crate::documentation) fn project_rust_declarations(facts: &mut [(Value, String)]) {
+    for (fact, _) in facts {
+        if fact["schema"] != "codeclew-rust-syntax-fact/1.2" {
+            continue;
+        }
+        if fact["kind"] == "declaration" {
+            fact["sourceFactKind"] = json!("declaration");
+            fact["kind"] = json!("DECLARATION");
+            fact["start"] = fact["rangeStart"].clone();
+            fact["end"] = fact["rangeEnd"].clone();
+        } else if fact["kind"] == "analysis-boundary" {
+            fact["kind"] = json!("BOUNDARY");
         }
     }
 }
@@ -1620,9 +1639,34 @@ pub(crate) fn project_scoped(
     let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut roslyn_coordinates = BTreeMap::new();
     for (raw_fact, binding) in &facts {
+        if raw_fact["schema"] == "codeclew-rust-syntax-fact/1.2"
+            && raw_fact["signature"].is_string()
+        {
+            let scope = resolve_scope_key(&raw_fact["scope"], known)?;
+            let blob = sources
+                .blob(&scope, raw_fact["file"].as_str().unwrap_or_default())
+                .ok_or_else(|| invalid("Rust signature original source is unavailable"))?;
+            let start = raw_fact["signatureStart"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok());
+            let end = raw_fact["signatureEnd"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok());
+            if start
+                .zip(end)
+                .and_then(|(start, end)| blob.text.get(start..end))
+                != raw_fact["signature"].as_str()
+            {
+                return Err(invalid(
+                    "Rust signature differs from its exact original source range",
+                ));
+            }
+        }
         let mut bound_fact;
-        let fact = if raw_fact["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
-            && raw_fact["documentation"].is_object()
+        let fact = if matches!(
+            raw_fact["schema"].as_str(),
+            Some("codeclew-typescript-compiler-fact/1.1" | "codeclew-rust-syntax-fact/1.2")
+        ) && raw_fact["documentation"].is_object()
         {
             let scope = resolve_scope_key(&raw_fact["scope"], known)?;
             bound_fact = raw_fact.clone();
@@ -2092,8 +2136,10 @@ pub(crate) fn project_scoped(
         let has_outline_spans = fact["documentation"]["events"]
             .as_array()
             .is_some_and(|events| events.iter().any(|event| event.get("sourceSpan").is_some()));
+        let exact_outline_owner =
+            has_outline_spans || fact["schema"] == "codeclew-rust-syntax-fact/1.2";
         let mut outline_owner_source = None;
-        if has_outline_spans {
+        if exact_outline_owner {
             let exact_owner = json!({"file":fact["file"],
                     "byteStart":fact.get("byteStart").or_else(|| fact.get("start")),
                     "byteEnd":fact.get("byteEnd").or_else(|| fact.get("end"))});
@@ -2128,7 +2174,7 @@ pub(crate) fn project_scoped(
         // Optional source coordinates bind provenance, not declaration meaning.
         // Keep their exact normalized digests, but exclude them from the existing
         // cross-scope content comparison so identical declarations stay identical.
-        if has_outline_spans {
+        if exact_outline_owner {
             if let Some(object) = content.as_object_mut() {
                 object.remove("outlineOwnerSource");
             }
@@ -2381,16 +2427,22 @@ fn bind_original_byte_documentation(
     full_digest: &str,
 ) -> Result<(), ClewError> {
     use super::source_span::{EventSourceSpan, SPAN_SCHEMA};
-    if fact["schema"] != crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+    let producer_valid = (fact["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+        && fact["resolution"] == "COMPILER_RESOLVED"
+        && fact["documentation"]["schema"] == "codeclew-typescript-documentation-flow/1.0"
+        && fact["documentation"]["authority"] == "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE")
+        || (fact["schema"] == "codeclew-rust-syntax-fact/1.2"
+            && fact["sourceFactKind"] == "declaration"
+            && fact["resolution"] == "SYNTAX_EXACT"
+            && fact["documentation"]["schema"] == "codeclew-rust-documentation-flow/1.0"
+            && fact["documentation"]["authority"] == "RUST_SYN_SOURCE_STRUCTURE");
+    if !producer_valid
         || fact["kind"] != "DECLARATION"
-        || fact["resolution"] != "COMPILER_RESOLVED"
-        || fact["documentation"]["schema"] != "codeclew-typescript-documentation-flow/1.0"
-        || fact["documentation"]["authority"] != "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE"
         || fact["documentation"]["boundaries"].as_array().is_none()
         || crate::canonical::hash_bytes(text.as_bytes()) != full_digest
     {
         return Err(invalid(
-            "TypeScript documentation lacks original-byte producer authority",
+            "Documentation lacks admitted original-byte producer authority",
         ));
     }
     let start = fact["start"]

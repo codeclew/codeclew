@@ -570,6 +570,7 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
         ),
         "csharp" => s.profile == "csharp-dotnet-msbuild-read-only",
         "typescript" => s.profile == "typescript-5-project-read-only",
+        "rust" => s.profile == "rust-syntax",
         "kotlin" => matches!(
             s.profile.as_str(),
             "kotlin-jvm-maven-analysis"
@@ -606,7 +607,7 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
         if !supported {
             return Err(ClewError::new(
                 ErrorCode::UnsupportedLanguage,
-                "durable documentation requires an admitted Java/Kotlin JVM, C# .NET SDK or TypeScript project analysis profile",
+                "durable documentation requires an admitted Java/Kotlin JVM, C# .NET SDK, TypeScript project or Rust syntax analysis profile",
             ));
         }
         // Explicit compilation selection: duplicates and empty selectors are

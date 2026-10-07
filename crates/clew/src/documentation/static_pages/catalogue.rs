@@ -65,6 +65,8 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                     context: context.clone(),
                     summary: if page.projection_kind == Some(ProjectionKind::CompilerControlFlow) {
                         "Retained compiler-bound declarations and function-local control-flow graphs; inter-function relationships, execution order and runtime behavior are not inferred.".into()
+                    } else if page.endpoint.authority == "SYNTAX_DECLARATION" || page.worker.authority == "SYNTAX_DECLARATION" {
+                        "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.".into()
                     } else {
                         "Retained compiler-bound declarations and source; behavior and relationships are not inferred.".into()
                     },

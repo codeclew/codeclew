@@ -349,6 +349,7 @@ fn augment_source_events(
             StructureProducer::TypeScript => {
                 target.starts_with("ts:") || target.starts_with("ts-external:")
             }
+            StructureProducer::RustSyntax => false,
             StructureProducer::Javac => false, // Java retains its qualified behavioral relation consumer.
         };
         if !target_valid {

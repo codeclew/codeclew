@@ -21,8 +21,7 @@ pub const RUST_INDEX_SCHEMA: &str = "codeclew-rust-syntax-index/1.2";
 const FACT_SCHEMA: &str = "codeclew-rust-syntax-fact/1.2";
 const RECEIPT_SCHEMA: &str = "codeclew-rust-syntax-completeness/1.0";
 const ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-rust-syntax-adapter/1.2";
-const PARSER_AUTHORITY: &str =
-    "syn-2.0.119/full+visit+proc-macro2-1.0.107/span-locations+direct-call-paths-v1+match-cases-v1";
+const PARSER_AUTHORITY: &str = "syn-2.0.119/full+visit+proc-macro2-1.0.107/span-locations+direct-call-paths-v1+match-cases-v1+original-bom-v1+documentation-structure-v1";
 const MAX_SOURCE_FILES: usize = 512;
 const MAX_SOURCE_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOTAL_SOURCE_BYTES: usize = 32 * 1024 * 1024;
@@ -862,6 +861,7 @@ fn visit_items(
                 &value.sig.ident,
                 value,
                 &value.attrs,
+                &value.sig,
                 Some(&value.block),
                 context,
             )?,
@@ -880,6 +880,7 @@ fn visit_items(
                             &method.sig.ident,
                             method,
                             &method.attrs,
+                            &method.sig,
                             method.default.as_ref(),
                             context,
                         )?;
@@ -904,6 +905,7 @@ fn visit_items(
                             &method.sig.ident,
                             method,
                             &method.attrs,
+                            &method.sig,
                             Some(&method.block),
                             context,
                         )?;
@@ -938,7 +940,7 @@ fn add_declaration(
     attrs: &[syn::Attribute],
     context: &mut SyntaxContext<'_>,
 ) -> Result<(), ClewError> {
-    add_declaration_inner(kind, ident, spanned, attrs, None, context)
+    add_declaration_inner(kind, ident, spanned, attrs, None, None, context)
 }
 
 fn add_callable_declaration(
@@ -946,18 +948,29 @@ fn add_callable_declaration(
     ident: &syn::Ident,
     spanned: &impl Spanned,
     attrs: &[syn::Attribute],
+    signature: &syn::Signature,
     body: Option<&syn::Block>,
     context: &mut SyntaxContext<'_>,
 ) -> Result<(), ClewError> {
-    add_declaration_inner(kind, ident, spanned, attrs, Some(body), context)
+    add_declaration_inner(
+        kind,
+        ident,
+        spanned,
+        attrs,
+        Some(body),
+        Some(signature),
+        context,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_declaration_inner(
     kind: &str,
     ident: &syn::Ident,
     spanned: &impl Spanned,
     attrs: &[syn::Attribute],
     callable_body: Option<Option<&syn::Block>>,
+    signature: Option<&syn::Signature>,
     context: &mut SyntaxContext<'_>,
 ) -> Result<(), ClewError> {
     note_attributes(attrs, context, ident.to_string().as_str());
@@ -987,6 +1000,27 @@ fn add_declaration_inner(
         "cfgStatus":if has_any_attribute(attrs, &["cfg", "cfg_attr"]) { "UNKNOWN" } else { "UNCONDITIONAL" },
         "resolution":"SYNTAX_EXACT",
     });
+    // Types and modules have useful exact declaration text even without a
+    // function body. This is syntax display, never a resolved type claim.
+    if signature.is_none() && end - start <= 4096 {
+        descriptor["signature"] = json!(&context.source[start..end]);
+        descriptor["signatureStart"] = json!(start);
+        descriptor["signatureEnd"] = json!(end);
+    }
+    if let Some(signature) = signature {
+        let signature_start = offset(context.source, context.line_index, signature.span().start())?;
+        let signature_end = offset(context.source, context.line_index, signature.span().end())?;
+        let signature = &context.source[signature_start..signature_end];
+        if signature.len() <= 4096 {
+            descriptor["signature"] = json!(signature);
+            descriptor["signatureStart"] = json!(signature_start);
+            descriptor["signatureEnd"] = json!(signature_end);
+        }
+        descriptor["parserAuthority"] = json!(PARSER_AUTHORITY);
+    }
+    if let Some(body) = callable_body {
+        descriptor["documentation"] = documentation_flow(body, context)?;
+    }
     if let Some((references, truncated)) = direct_references {
         let object = descriptor
             .as_object_mut()
@@ -1009,6 +1043,205 @@ fn add_declaration_inner(
     }
     context.descriptors.insert(identity.clone(), descriptor);
     Ok(())
+}
+
+/// Bounded, non-causal source structure. Calls remain syntax text; this
+/// producer has no resolved target, receiver, data-value or runtime authority.
+fn documentation_flow(
+    body: Option<&syn::Block>,
+    context: &SyntaxContext<'_>,
+) -> Result<Value, ClewError> {
+    let mut flow = DocumentationFlow {
+        source: context.source,
+        path: context.path,
+        line_index: context.line_index,
+        events: Vec::new(),
+        boundaries: BTreeSet::new(),
+        bytes: 0,
+    };
+    if let Some(body) = body {
+        flow.block(body, 0, true)?;
+    } else {
+        flow.boundaries
+            .insert("RUST_DECLARATION_BODY_UNAVAILABLE".into());
+    }
+    Ok(json!({"schema":"codeclew-rust-documentation-flow/1.0",
+        "authority":"RUST_SYN_SOURCE_STRUCTURE","events":flow.events,"boundaries":flow.boundaries}))
+}
+
+struct DocumentationFlow<'a> {
+    source: &'a str,
+    path: &'a str,
+    line_index: &'a SourceLineIndex,
+    events: Vec<Value>,
+    boundaries: BTreeSet<String>,
+    bytes: usize,
+}
+
+impl DocumentationFlow<'_> {
+    fn emit(
+        &mut self,
+        kind: &str,
+        value: &impl Spanned,
+        condition: Option<&syn::Expr>,
+    ) -> Result<(), ClewError> {
+        let span = value.span();
+        let start = offset(self.source, self.line_index, span.start())?;
+        let end = offset(self.source, self.line_index, span.end())?;
+        let mut event = json!({"kind":kind,"file":self.path,"start":start,"end":end,
+            "startLine":span.start().line,"endLine":span.end().line,"resolution":"SYNTAX_EXACT"});
+        if let Some(condition) = condition {
+            let start = offset(self.source, self.line_index, condition.span().start())?;
+            let end = offset(self.source, self.line_index, condition.span().end())?;
+            event["condition"] = json!(&self.source[start..end]);
+        }
+        let size = canonical::bytes(&event).map_err(internal)?.len();
+        if self.events.len() >= 64 || self.bytes.saturating_add(size) > 8192 {
+            self.boundaries
+                .insert("RUST_DOCUMENTATION_STRUCTURE_LIMIT".into());
+        } else {
+            self.bytes += size;
+            self.events.push(event);
+        }
+        Ok(())
+    }
+
+    fn expression(&mut self, value: &syn::Expr) {
+        struct Boundaries<'a> {
+            out: &'a mut BTreeSet<String>,
+            depth: usize,
+        }
+        impl<'ast> syn::visit::Visit<'ast> for Boundaries<'_> {
+            fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+                if self.depth >= MAX_NESTING {
+                    self.out.insert("RUST_DOCUMENTATION_NESTING_LIMIT".into());
+                    return;
+                }
+                let boundary = match expr {
+                    syn::Expr::If(_) | syn::Expr::Match(_) | syn::Expr::Block(_) => {
+                        Some("RUST_NESTED_EXPRESSION_CONTROL_OPAQUE")
+                    }
+                    syn::Expr::While(_) | syn::Expr::ForLoop(_) | syn::Expr::Loop(_) => {
+                        Some("RUST_LOOP_CONTROL_OPAQUE")
+                    }
+                    syn::Expr::Closure(_)
+                    | syn::Expr::Async(_)
+                    | syn::Expr::Await(_)
+                    | syn::Expr::Yield(_) => Some("RUST_NESTED_CALLABLE_OR_SUSPENSION_OPAQUE"),
+                    syn::Expr::Try(_)
+                    | syn::Expr::TryBlock(_)
+                    | syn::Expr::Break(_)
+                    | syn::Expr::Continue(_) => Some("RUST_NONLOCAL_CONTROL_OPAQUE"),
+                    syn::Expr::Macro(_) => Some("RUST_MACRO_EXPRESSION_NOT_EXPANDED"),
+                    syn::Expr::Binary(binary)
+                        if matches!(binary.op, syn::BinOp::And(_) | syn::BinOp::Or(_)) =>
+                    {
+                        Some("RUST_SHORT_CIRCUIT_CONTROL_OPAQUE")
+                    }
+                    _ => None,
+                };
+                if let Some(boundary) = boundary {
+                    self.out.insert(boundary.into());
+                    return;
+                }
+                self.depth += 1;
+                syn::visit::visit_expr(self, expr);
+                self.depth -= 1;
+            }
+        }
+        syn::visit::Visit::visit_expr(
+            &mut Boundaries {
+                out: &mut self.boundaries,
+                depth: 0,
+            },
+            value,
+        );
+    }
+
+    fn block(
+        &mut self,
+        block: &syn::Block,
+        depth: usize,
+        function_tail: bool,
+    ) -> Result<(), ClewError> {
+        if depth >= MAX_NESTING {
+            self.boundaries
+                .insert("RUST_DOCUMENTATION_NESTING_LIMIT".into());
+            return Ok(());
+        }
+        for (index, statement) in block.stmts.iter().enumerate() {
+            let tail = function_tail && index + 1 == block.stmts.len();
+            match statement {
+                syn::Stmt::Local(local) => {
+                    if !local.attrs.is_empty() {
+                        self.boundaries
+                            .insert("RUST_STATEMENT_ATTRIBUTE_OPAQUE".into());
+                    }
+                    if let Some(init) = &local.init {
+                        self.expression(&init.expr);
+                        if init.diverge.is_some() {
+                            self.boundaries
+                                .insert("RUST_LET_ELSE_CONTROL_OPAQUE".into());
+                        }
+                    }
+                    self.emit("LOCAL", local, None)?;
+                }
+                syn::Stmt::Expr(syn::Expr::If(branch), semi) => {
+                    self.branch(branch, depth + 1, tail && semi.is_none())?
+                }
+                syn::Stmt::Expr(syn::Expr::Block(nested), semi) if nested.label.is_none() => {
+                    self.block(&nested.block, depth + 1, tail && semi.is_none())?
+                }
+                syn::Stmt::Expr(expr, semi) => {
+                    self.expression(expr);
+                    let tail = tail && semi.is_none();
+                    let kind = if matches!(expr, syn::Expr::Return(_)) || tail {
+                        "RETURN"
+                    } else {
+                        "STATEMENT"
+                    };
+                    self.emit(kind, expr, None)?;
+                }
+                _ => {
+                    self.boundaries.insert("RUST_STATEMENT_FORM_OPAQUE".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn branch(
+        &mut self,
+        branch: &syn::ExprIf,
+        depth: usize,
+        function_tail: bool,
+    ) -> Result<(), ClewError> {
+        if depth >= MAX_NESTING {
+            self.boundaries
+                .insert("RUST_DOCUMENTATION_NESTING_LIMIT".into());
+            return Ok(());
+        }
+        if !branch.attrs.is_empty() {
+            self.boundaries
+                .insert("RUST_STATEMENT_ATTRIBUTE_OPAQUE".into());
+        }
+        self.expression(&branch.cond);
+        self.emit("IF", &branch.cond, Some(&branch.cond))?;
+        self.block(&branch.then_branch, depth + 1, function_tail)?;
+        if let Some((_, other)) = &branch.else_branch {
+            self.emit("ELSE", other, None)?;
+            match other.as_ref() {
+                syn::Expr::If(nested) => self.branch(nested, depth + 1, function_tail)?,
+                syn::Expr::Block(nested) if nested.label.is_none() => {
+                    self.block(&nested.block, depth + 1, function_tail)?
+                }
+                _ => {
+                    self.boundaries.insert("RUST_ELSE_CONTROL_OPAQUE".into());
+                }
+            }
+        }
+        self.emit("END", branch, None)
+    }
 }
 
 fn collect_match_arm_cases(
@@ -1482,7 +1715,9 @@ struct SourceLineIndex {
 }
 
 fn source_line_index(source: &str) -> SourceLineIndex {
-    let byte_starts = std::iter::once(0)
+    // syn removes an initial BOM before parsing. First-line columns are relative
+    // to the remaining text; later line starts still use the original bytes.
+    let byte_starts = std::iter::once(usize::from(source.starts_with('\u{feff}')) * 3)
         .chain(
             source
                 .bytes()
@@ -1664,6 +1899,62 @@ mod tests {
 
     fn digest(character: char) -> String {
         format!("sha256:{}", character.to_string().repeat(64))
+    }
+
+    #[test]
+    fn documentation_original_bom_spans_and_function_tail_context_are_exact() {
+        let source = "\u{feff}pub fn f(flag: bool) -> i32 { if flag { helper() }; { helper() }; 9 }\r\npub fn tail(flag: bool) -> &'static str { if flag { \"π🙂\" } else { \"plain\" } }\r\nfn helper() {}\r\n";
+        let owned = OwnedGitSyntaxAuthority::new(source);
+        let descriptors = owned.index["declarationDescriptors"]["descriptors"]
+            .as_array()
+            .unwrap();
+        let f = descriptors.iter().find(|row| row["name"] == "f").unwrap();
+        let start = f["rangeStart"].as_u64().unwrap() as usize;
+        let end = f["rangeEnd"].as_u64().unwrap() as usize;
+        assert_eq!(start, 3);
+        assert_eq!(
+            &source[start..end],
+            "pub fn f(flag: bool) -> i32 { if flag { helper() }; { helper() }; 9 }"
+        );
+        let events = f["documentation"]["events"].as_array().unwrap();
+        let expression = |event: &Value| {
+            source
+                .get(
+                    event["start"].as_u64().unwrap() as usize
+                        ..event["end"].as_u64().unwrap() as usize,
+                )
+                .unwrap()
+        };
+        let returns: Vec<_> = events
+            .iter()
+            .filter(|row| row["kind"] == "RETURN")
+            .map(expression)
+            .collect();
+        assert_eq!(returns, vec!["9"]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|row| row["kind"] == "STATEMENT" && expression(row) == "helper()")
+                .count(),
+            2
+        );
+        let tail = descriptors
+            .iter()
+            .find(|row| row["name"] == "tail")
+            .unwrap();
+        let returns: Vec<_> = tail["documentation"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "RETURN")
+            .map(expression)
+            .collect();
+        assert_eq!(returns, vec!["\"π🙂\"", "\"plain\""]);
+        assert!(
+            events
+                .iter()
+                .all(|row| row["resolution"] == "SYNTAX_EXACT" && row.get("target").is_none())
+        );
     }
 
     #[derive(Default)]

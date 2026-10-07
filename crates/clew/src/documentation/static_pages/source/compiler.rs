@@ -10,6 +10,7 @@ use crate::error::ClewError;
 pub(super) enum CallNavigation {
     JavaBehavioral,
     RetainedCompilerSites,
+    UnresolvedSyntax,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +40,11 @@ pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> 
             StructureProducer::TypeScript,
             CallNavigation::RetainedCompilerSites,
         )
+    } else if rust_admitted(owner) {
+        (
+            StructureProducer::RustSyntax,
+            CallNavigation::UnresolvedSyntax,
+        )
     } else {
         return None;
     };
@@ -49,6 +55,35 @@ pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> 
         source_structure,
         call_navigation,
     })
+}
+
+pub(super) fn rust_admitted(owner: &Observation) -> bool {
+    let n = &owner.normalized;
+    owner.kind == "SYMBOL"
+        && n["schema"] == "codeclew-rust-syntax-fact/1.2"
+        && n["kind"] == "DECLARATION"
+        && n["sourceFactKind"] == "declaration"
+        && n["resolution"] == "SYNTAX_EXACT"
+        && n["symbolIdentity"] == owner.symbol
+        && owner.symbol.starts_with("rust-syntax:")
+        && n["scope"]
+            .as_str()
+            .is_some_and(|scope| scope.starts_with("cargo:"))
+        && matches!(
+            n["declarationKind"].as_str(),
+            Some(
+                "function"
+                    | "impl-method"
+                    | "trait-method"
+                    | "struct"
+                    | "enum"
+                    | "trait"
+                    | "type-alias"
+                    | "module"
+                    | "const"
+                    | "static"
+            )
+        )
 }
 
 pub(super) fn typescript_admitted(owner: &Observation) -> bool {
@@ -67,15 +102,44 @@ pub(super) fn typescript_admitted(owner: &Observation) -> bool {
 }
 
 /// Retained input/return display only; a signature does not bind argument values.
-pub(in crate::documentation::static_pages) fn declared_signature(
-    owner: &Observation,
-) -> Option<&str> {
-    if !typescript_admitted(owner) {
+pub(in crate::documentation::static_pages) fn declared_signature<'a>(
+    owner: &'a Observation,
+    sources: &std::collections::BTreeMap<String, crate::documentation::model::Source>,
+) -> Option<&'a str> {
+    if !(typescript_admitted(owner) || rust_admitted(owner)) {
         return None;
     }
-    owner.normalized["signature"]
+    let signature = owner.normalized["signature"]
         .as_str()
-        .filter(|text| !text.is_empty() && text.len() <= 4096)
+        .filter(|text| !text.is_empty() && text.len() <= 4096)?;
+    if rust_admitted(owner) {
+        let site = &owner.normalized["outlineOwnerSource"];
+        let source = sources.get(site["sourceId"].as_str()?)?;
+        let owner_start = usize::try_from(site["byteStart"].as_u64()?).ok()?;
+        let owner_end = usize::try_from(site["byteEnd"].as_u64()?).ok()?;
+        if site["sourceStatus"] != "SOURCE_RETAINED"
+            || site["sourceId"] != source.id
+            || owner.source_ids.as_slice() != [source.id.clone()]
+            || source.service != owner.service
+            || site["file"] != source.file
+            || site["sourceDigest"] != source.text_digest
+            || site["evidenceDigest"] != source.evidence_digest
+            || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
+            || owner_end.checked_sub(owner_start) != Some(source.text.len())
+        {
+            return None;
+        }
+        let start = usize::try_from(owner.normalized["signatureStart"].as_u64()?)
+            .ok()?
+            .checked_sub(owner_start)?;
+        let end = usize::try_from(owner.normalized["signatureEnd"].as_u64()?)
+            .ok()?
+            .checked_sub(owner_start)?;
+        if source.text.get(start..end) != Some(signature) {
+            return None;
+        }
+    }
+    Some(signature)
 }
 
 pub(super) fn csharp_candidate(owner: &Observation) -> bool {
@@ -152,13 +216,13 @@ pub(super) fn project_declaration(
         .get(id)
         .ok_or_else(|| invalid("compiler declaration is missing"))?
         .clone();
-    if !(csharp_admitted(&owner) || typescript_admitted(&owner))
+    if !(csharp_admitted(&owner) || typescript_admitted(&owner) || rust_admitted(&owner))
         || owner.id != id
         || owner.service != context.evidence.service
         || owner.digest != digest(&owner.normalized)?
     {
         return Err(invalid(
-            "Selected declaration lacks admitted retained compiler authority",
+            "Selected declaration lacks admitted retained producer authority",
         ));
     }
     let scope = owner.normalized["scope"].as_str().unwrap();
@@ -199,7 +263,12 @@ pub(super) fn project_declaration(
     let mut projection = CallableProjection {
         declaration_id: owner.id.clone(),
         symbol: owner.symbol.clone(),
-        authority: "COMPILER_DECLARATION".into(),
+        authority: if rust_admitted(&owner) {
+            "SYNTAX_DECLARATION"
+        } else {
+            "COMPILER_DECLARATION"
+        }
+        .into(),
         citation_id: Some(citation.clone()),
         control_flow: None,
         source_outline: None,
@@ -209,7 +278,11 @@ pub(super) fn project_declaration(
         gaps: vec![
             gap(
                 "SOURCE_BEHAVIOR_PROJECTION_UNAVAILABLE",
-                "Retained source structure and compiler call targets do not establish statement effects or runtime behavior.",
+                if rust_admitted(&owner) {
+                    "Retained syntax does not establish compiler resolution, statement effects or runtime behavior."
+                } else {
+                    "Retained source structure and compiler call targets do not establish statement effects or runtime behavior."
+                },
                 Some(citation.clone()),
             ),
             gap(
@@ -225,7 +298,9 @@ pub(super) fn project_declaration(
         ],
     };
     super::outline::attach(context, &owner, scope, &mut projection)?;
-    super::call_sites::attach(context, &owner, scope, &mut projection)?;
+    if !rust_admitted(&owner) {
+        super::call_sites::attach(context, &owner, scope, &mut projection)?;
+    }
     Ok(ProjectedCallable {
         key: CallableKey {
             service: owner.service,
@@ -260,6 +335,7 @@ mod tests {
         let kotlin = "callable:example/Pipeline.run#jvm:()V";
         let csharp = "method:class:Example.Pipeline#Run()V";
         let typescript = "ts:src/probe.ts#function:run@0-32";
+        let rust = "rust-syntax:src/lib.rs#function:run@0-32";
         let producers = [
             owner(
                 java,
@@ -287,12 +363,18 @@ mod tests {
                 "kind":"DECLARATION","declarationKind":"FUNCTION","resolution":"COMPILER_RESOLVED",
                 "symbolIdentity":typescript,"declarationIdentity":typescript,"scope":"tsconfig:tsconfig.json"}),
             ),
+            owner(
+                rust,
+                json!({"schema":"codeclew-rust-syntax-fact/1.2", "kind":"DECLARATION", "sourceFactKind":"declaration",
+                "declarationKind":"function", "resolution":"SYNTAX_EXACT", "symbolIdentity":rust, "scope":"cargo:Cargo.toml#probe#lib#probe"}),
+            ),
         ];
         let docs = [
             json!({"schema":"codeclew-java-documentation-flow/1.0","authority":"JAVAC_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
             json!({"schema":"codeclew-kotlin-documentation-flow/1.0","authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS","events":[],"boundaries":[]}),
             json!({"schema":"codeclew-csharp-documentation-flow/1.0","authority":"ROSLYN_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
             json!({"schema":"codeclew-typescript-documentation-flow/1.0","authority":"TYPESCRIPT_COMPILER_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
+            json!({"schema":"codeclew-rust-documentation-flow/1.0","authority":"RUST_SYN_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
         ];
         for (index, mut owner) in producers.into_iter().enumerate() {
             for (body_index, body) in docs.iter().enumerate() {
@@ -303,8 +385,15 @@ mod tests {
                     c.call_navigation == CallNavigation::JavaBehavioral,
                     index == 0
                 );
-                assert_eq!(admitted(&owner), index != 0);
-                assert_eq!(body_envelope(&owner), index != 0 && index == body_index);
+                assert_eq!(admitted(&owner), (1..4).contains(&index));
+                assert_eq!(
+                    body_envelope(&owner),
+                    (1..4).contains(&index) && index == body_index
+                );
+                assert_eq!(
+                    c.call_navigation == CallNavigation::UnresolvedSyntax,
+                    index == 4
+                );
             }
             // A malformed source body must not erase independently admitted
             // compiler-call navigation; a forged declaration grants neither.

@@ -11,6 +11,7 @@ pub(crate) enum StructureProducer {
     KotlinPsi,
     Roslyn,
     TypeScript,
+    RustSyntax,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +49,9 @@ impl StructureContract {
                 Some("codeclew-typescript-documentation-flow/1.0"),
                 Some("TYPESCRIPT_COMPILER_SOURCE_STRUCTURE"),
             ) => StructureProducer::TypeScript,
+            (Some("codeclew-rust-documentation-flow/1.0"), Some("RUST_SYN_SOURCE_STRUCTURE")) => {
+                StructureProducer::RustSyntax
+            }
             _ => return None,
         };
         Some(Self { producer })
@@ -190,6 +194,11 @@ mod tests {
                 "codeclew-typescript-documentation-flow/1.0",
                 "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE",
                 StructureProducer::TypeScript,
+            ),
+            (
+                "codeclew-rust-documentation-flow/1.0",
+                "RUST_SYN_SOURCE_STRUCTURE",
+                StructureProducer::RustSyntax,
             ),
         ];
         for (schema, authority, producer) in producers {

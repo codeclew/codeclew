@@ -116,13 +116,40 @@ pub(super) fn project_unresolved(
                 None,
             ));
         }
+        let non_callable = [
+            &selection.endpoint_declaration,
+            &selection.worker_declaration,
+        ]
+        .into_iter()
+        .any(|id| {
+            evidence
+                .observations
+                .get(id)
+                .and_then(|row| row.normalized["declarationKind"].as_str())
+                .is_some_and(|kind| {
+                    !matches!(
+                        kind,
+                        "FUNCTION"
+                            | "METHOD"
+                            | "CONSTRUCTOR"
+                            | "function"
+                            | "impl-method"
+                            | "trait-method"
+                    )
+                })
+        });
+        let declaration_label = if non_callable {
+            "Selected declarations"
+        } else {
+            "Selected functions"
+        };
         let title = if declaration_view
             && endpoint.projection.declaration_id == worker.projection.declaration_id
         {
-            format!("Selected functions: {}", endpoint.projection.symbol)
+            format!("{declaration_label}: {}", endpoint.projection.symbol)
         } else if declaration_view {
             format!(
-                "Selected functions: {} · {}",
+                "{declaration_label}: {} · {}",
                 endpoint.projection.symbol, worker.projection.symbol
             )
         } else {

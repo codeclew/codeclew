@@ -5730,3 +5730,163 @@ fn native_typescript_common_reader_binds_original_bytes_and_qualified_helper() {
     );
     assert!(html.contains("&lt;script&gt;") && !html.contains("<script>"));
 }
+
+fn rust_common_check() -> Check {
+    let text = include_str!("../../../../../fixtures/rust-documentation-common-core/src/lib.rs");
+    let temporary = tempfile::tempdir().unwrap();
+    let repo = temporary.path().join("source");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), text).unwrap();
+    for args in [vec!["init", "-q"], vec!["add", "."]] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let state = crate::state::StateAuthority::open(temporary.path().join("state")).unwrap();
+    let store = crate::cas::CasStore::open(&state).unwrap();
+    let (snapshot, _) = crate::repository_snapshot::capture(&repo, &store).unwrap();
+    let scope = "cargo:Cargo.toml#documentation_probe#lib#documentation_probe";
+    let authority = crate::rust_adapter_v2::RustSyntaxAuthority {
+        compilation_id: scope,
+        model_digest: &format!("sha256:{}", "a".repeat(64)),
+        package: "documentation_probe",
+        target_kind: "lib",
+        target_name: "documentation_probe",
+        source_path: "src/lib.rs",
+        cargo_version: "qualified-syntax-test",
+        rustc_version: "qualified-syntax-test",
+    };
+    let index = crate::rust_adapter_v2::build_syntax_index(&store, &snapshot, &authority).unwrap();
+    let mut facts: Vec<_> = index["declarationDescriptors"]["descriptors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|descriptor| {
+            let mut raw = descriptor.clone();
+            raw["schema"] = json!("codeclew-rust-syntax-fact/1.2");
+            raw["kind"] = json!("declaration");
+            let binding = crate::cas::CasObject::for_bytes(
+                "codeclew-rust-syntax-fact/1.2",
+                &crate::canonical::bytes(&raw).unwrap(),
+            )
+            .unwrap()
+            .digest;
+            raw["scope"] = json!({"compilation":scope});
+            (raw, binding)
+        })
+        .collect();
+    crate::documentation::analysis::project_rust_declarations(&mut facts);
+    let service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0",
+        "id":"sample","title":"Rust syntax","repositoryId":"probe","repository":"https://example.invalid/probe",
+        "language":"rust","profile":"rust-syntax","compilations":[scope],"targetRef":"main"})).unwrap();
+    crate::documentation::store::validate_service(&service).unwrap();
+    let evidence = crate::documentation::analysis::project(
+        &service,
+        &"a".repeat(40),
+        &digest(&service).unwrap(),
+        "STATIC",
+        "PARTIAL",
+        facts,
+        &BTreeMap::from([("src/lib.rs".into(), text.into())]),
+        false,
+    )
+    .unwrap();
+    kotlin_check(evidence)
+}
+
+#[test]
+fn native_rust_common_reader_preserves_syntax_authority_and_useful_declarations() {
+    let checked = rust_common_check();
+    let selection = |name: &str| {
+        let owner = checked.services["sample"]
+            .observations
+            .values()
+            .find(|row| row.kind == "SYMBOL" && row.normalized["name"] == name)
+            .unwrap();
+        assert!(!super::super::source::has_exact_call_capability(owner));
+        Selection {
+            id: format!("rust-{name}"),
+            expand_source_calls: false,
+            ..kotlin_selection(&owner.id, &owner.id)
+        }
+    };
+    let selections = [
+        selection("render"),
+        selection("Request"),
+        selection("limits"),
+        selection("opaque"),
+    ];
+    let projection = project(&checked, &selections).unwrap();
+    assert!(projection.source_call_graph.is_none());
+    let page = &projection.pages[0];
+    let callable = &page.endpoint;
+    assert_eq!(callable.authority, "SYNTAX_DECLARATION");
+    assert!(
+        callable.steps.is_empty()
+            && callable.state.is_empty()
+            && callable.retained_call_sites.is_none()
+    );
+    let outline = callable.source_outline.as_ref().unwrap();
+    assert_eq!(outline.authority, "RUST_SYN_SOURCE_STRUCTURE");
+    assert!(
+        outline
+            .tree
+            .as_ref()
+            .unwrap()
+            .contains("input.name.is_empty()")
+            && outline.tree.as_ref().unwrap().contains("choose_name")
+    );
+    assert!(outline.gaps.is_empty());
+    let original =
+        include_str!("../../../../../fixtures/rust-documentation-common-core/src/lib.rs");
+    for event in &outline.events {
+        let span = event.exact_source.as_ref().unwrap();
+        assert_eq!(
+            &original[span.compilation_byte_start..span.compilation_byte_end],
+            span.expression
+        );
+        assert_eq!(
+            span.full_compilation_source_digest,
+            crate::canonical::hash_bytes(original.as_bytes())
+        );
+        assert!(event.event.get("target").is_none());
+    }
+    assert!(
+        projection.pages[3]
+            .endpoint
+            .source_outline
+            .as_ref()
+            .unwrap()
+            .tree
+            .is_none()
+    );
+    assert!(
+        !projection.pages[3]
+            .endpoint
+            .source_outline
+            .as_ref()
+            .unwrap()
+            .gaps
+            .is_empty()
+    );
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "snapshot", &projection).unwrap();
+    let html = std::fs::read_to_string(output.path().join("rust-render-endpoint.html")).unwrap();
+    assert!(
+        html.contains("Cited Rust source outline")
+            && html.contains("fn render(input: &amp;Request) -&gt; String")
+    );
+    assert!(html.contains("&lt;script&gt;") && !html.contains("<script>"));
+    let types = std::fs::read_to_string(output.path().join("rust-Request-endpoint.html")).unwrap();
+    assert!(types.contains("Retained declaration source") && types.contains("pub struct Request"));
+    let catalogue = std::fs::read_to_string(output.path().join("catalogue.json")).unwrap();
+    assert!(!catalogue.contains("compiler-bound"));
+    let mut expansion = selections[0].clone();
+    expansion.expand_source_calls = true;
+    assert!(project(&checked, &[expansion]).is_err());
+}

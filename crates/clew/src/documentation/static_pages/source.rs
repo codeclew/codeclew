@@ -178,6 +178,9 @@ pub(super) fn project_callable(
     {
         return compiler::project_declaration(context, declaration);
     }
+    if observation.normalized["schema"] == "codeclew-rust-syntax-fact/1.2" {
+        return compiler::project_declaration(context, declaration);
+    }
     let java_syntax = observation.normalized["schema"] == "syntax-only"
         || (observation.normalized["authority"] == "SYNTAX"
             && matches!(

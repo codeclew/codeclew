@@ -16,6 +16,7 @@ pub(super) struct OutlineProducer {
     authority: &'static str,
     kotlin: bool,
     producer_label: &'static str,
+    call_navigation: super::compiler::CallNavigation,
 }
 
 pub(super) fn producer(owner: &Observation) -> Option<OutlineProducer> {
@@ -28,18 +29,27 @@ pub(super) fn producer(owner: &Observation) -> Option<OutlineProducer> {
             authority: "KOTLIN_PSI_WITH_K2_CALL_TARGETS",
             kotlin: true,
             producer_label: "Kotlin",
+            call_navigation: super::compiler::CallNavigation::RetainedCompilerSites,
         }),
         StructureProducer::Roslyn if super::compiler::csharp_admitted(owner) => {
             Some(OutlineProducer {
                 authority: "ROSLYN_SOURCE_STRUCTURE",
                 kotlin: false,
                 producer_label: "Roslyn",
+                call_navigation: super::compiler::CallNavigation::RetainedCompilerSites,
             })
         }
         StructureProducer::TypeScript => Some(OutlineProducer {
             authority: "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE",
             kotlin: false,
             producer_label: "TypeScript compiler",
+            call_navigation: super::compiler::CallNavigation::RetainedCompilerSites,
+        }),
+        StructureProducer::RustSyntax => Some(OutlineProducer {
+            authority: "RUST_SYN_SOURCE_STRUCTURE",
+            kotlin: false,
+            producer_label: "Rust syntax",
+            call_navigation: super::compiler::CallNavigation::UnresolvedSyntax,
         }),
         _ => None,
     }
@@ -514,6 +524,16 @@ fn derive_tree(
                 steps.push(crate::documentation::process_flow::ProjectionStep::Else);
             }
             SourceStatement::Invocation(call) => {
+                if contract.call_navigation == super::compiler::CallNavigation::UnresolvedSyntax {
+                    return (
+                        None,
+                        Some(issue(
+                            "SOURCE_OUTLINE_CALL_AUTHORITY_UNAVAILABLE",
+                            "Retained syntax cannot establish an exact compiler call target."
+                                .into(),
+                        )),
+                    );
+                }
                 let Some(target) = call.target else {
                     return (
                         None,
@@ -653,7 +673,6 @@ pub(in crate::documentation::static_pages) fn validate_source_outline(
         || owner.symbol != callable.symbol
         || owner.digest != digest(&owner.normalized)?
         || producer(owner).is_none()
-        || !super::compiler::admitted(owner)
         || owner.normalized["scope"] != outline.owner_key.scope
     {
         return Err(invalid(

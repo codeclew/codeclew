@@ -896,3 +896,29 @@ recapture or model calls. The public synthetic
 [TypeScript common-core probe](../../fixtures/typescript-documentation-common-core/README.md)
 contains ordinary helper navigation and explicit negative examples. It does
 not qualify every TypeScript project or framework.
+
+### Rust retained syntax pages
+
+Rust documentation capture accepts `rust-syntax` with an exact
+`cargo:<manifest>#<package>#<target-kind>#<target-name>` selector. It retains the
+selected Cargo target's parsed declarations with `SYNTAX_EXACT` authority.
+Function signatures, type/module declaration text and bounded source outlines
+use the same declaration reader, original-byte citations and HTML/MDX renderer.
+BOM, CRLF and Unicode are included in source binding. Signatures displayed as
+source text must match their exact retained original range.
+
+`SYNTAX_DECLARATION` is distinct from a compiler declaration. Calls remain
+unresolved source expressions; a name matching another declaration does not
+establish a selected callee. `expandSourceCalls` and `expandDataState` are not
+admitted for this producer. Ordinary `if`/`else`, local declarations, explicit
+returns and actual function-tail values can form a cited source tree. Discarded
+nested-block values are statements, not returns from the function. Question-mark
+control, loops, macros, closures, suspension, nested control expressions and
+unsupported forms retain explicit boundaries instead of a partial tree.
+
+Use the common catalogue to navigate separately retained function, type and
+module selections. The public synthetic
+[Rust common-core probe](../../fixtures/rust-documentation-common-core/README.md)
+starts with a BOM and same-line public function and includes useful declarations
+plus control-boundary examples. These syntax facts do not establish compiler
+resolution, activation, runtime values, receiver aliases or storage identity.

@@ -385,6 +385,7 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
     let label = match outline.authority.as_str() {
         "KOTLIN_PSI_WITH_K2_CALL_TARGETS" => "Kotlin",
         "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE" => "TypeScript",
+        "RUST_SYN_SOURCE_STRUCTURE" => "Rust",
         _ => "C#",
     };
     let event_label = if kotlin { "PSI" } else { "Source" };
@@ -392,6 +393,8 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
         "This tree preserves retained Kotlin PSI structure and exact K2 call-target metadata. It is not an execution trace: PSI conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
     } else if outline.authority == "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE" {
         "This tree preserves retained TypeScript compiler source structure and admitted selected-declaration targets. Source conditions do not establish predicate truth; event ordinals do not represent runtime invocation counts, and receiver dispatch remains unresolved."
+    } else if outline.authority == "RUST_SYN_SOURCE_STRUCTURE" {
+        "This tree preserves exact retained Rust syntax. Calls remain unresolved source text; parsing does not establish compiler type resolution, predicate truth, receiver identity, reachability or state effects."
     } else {
         "This tree preserves retained Roslyn source structure and exact compiler call-target metadata. It is not an execution trace: source conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
     };
@@ -581,6 +584,7 @@ fn argument_bindings_panel(site: &NeutralExactCallSite, ext: &str) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn selected_declaration(
     c: &CallableProjection,
     label: &str,
@@ -589,6 +593,7 @@ fn selected_declaration(
     service: &str,
     graph: Option<&SourceCallGraph>,
     observations: &BTreeMap<String, crate::documentation::model::Observation>,
+    sources: &BTreeMap<String, crate::documentation::model::Source>,
 ) -> String {
     let mut out = format!("<section><h2>{}</h2>\n", escape(label));
     out += &paragraph(&format!(
@@ -600,12 +605,20 @@ fn selected_declaration(
     }
     if let Some(signature) = observations
         .get(&c.declaration_id)
-        .and_then(super::source::compiler::declared_signature)
+        .and_then(|owner| super::source::compiler::declared_signature(owner, sources))
     {
-        out += &format!(
-            "<p>Retained input and return signature:</p><pre>{}</pre>\n",
-            escape(signature)
-        );
+        let function = observations.get(&c.declaration_id).is_some_and(|owner| {
+            matches!(
+                owner.normalized["declarationKind"].as_str(),
+                Some("FUNCTION" | "METHOD" | "function" | "impl-method" | "trait-method")
+            )
+        });
+        let label = if function {
+            "Retained input and return signature"
+        } else {
+            "Retained declaration source"
+        };
+        out += &format!("<p>{label}:</p><pre>{}</pre>\n", escape(signature));
     }
     out += &control_flow_panel(c, ext, full_control_flow);
     out += &source_outline_panel(c, ext);
@@ -683,6 +696,10 @@ fn declaration_only_page(
             }
             out += &paragraph(if has_control_flow {
                 "This page retains selected compiler declarations and function-local compiler control-flow graphs. The graphs do not establish relationships between declarations, execution order, branch truth or deployed runtime behavior."
+            } else if p.endpoint.authority == "SYNTAX_DECLARATION"
+                || p.worker.authority == "SYNTAX_DECLARATION"
+            {
+                "This page retains selected syntax declarations, source signatures and cited source structure. Parsing does not establish compiler resolution, runtime behavior or relationships between declarations."
             } else {
                 "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations."
             });
@@ -695,6 +712,7 @@ fn declaration_only_page(
                     &p.selection.service,
                     graph,
                     &p.observations,
+                    &p.sources,
                 );
             } else {
                 out += &selected_declaration(
@@ -705,6 +723,7 @@ fn declaration_only_page(
                     &p.selection.service,
                     graph,
                     &p.observations,
+                    &p.sources,
                 );
                 out += &selected_declaration(
                     &p.worker,
@@ -714,6 +733,7 @@ fn declaration_only_page(
                     &p.selection.service,
                     graph,
                     &p.observations,
+                    &p.sources,
                 );
             }
             if let Some(wiring) = &p.wiring {
@@ -725,6 +745,7 @@ fn declaration_only_page(
                     &p.selection.service,
                     graph,
                     &p.observations,
+                    &p.sources,
                 );
             }
             out += &paragraph(&p.handoff.limitation);
@@ -742,6 +763,7 @@ fn declaration_only_page(
                 &p.selection.service,
                 graph,
                 &p.observations,
+                &p.sources,
             );
         }
         "worker" => {
@@ -757,6 +779,7 @@ fn declaration_only_page(
                 &p.selection.service,
                 graph,
                 &p.observations,
+                &p.sources,
             );
         }
         "fields-state" => {
@@ -771,6 +794,7 @@ fn declaration_only_page(
                 &p.selection.service,
                 graph,
                 &p.observations,
+                &p.sources,
             );
             if !same_declaration {
                 out += &selected_declaration(
@@ -781,6 +805,7 @@ fn declaration_only_page(
                     &p.selection.service,
                     graph,
                     &p.observations,
+                    &p.sources,
                 );
             }
             if let Some(wiring) = &p.wiring {
@@ -792,6 +817,7 @@ fn declaration_only_page(
                     &p.selection.service,
                     graph,
                     &p.observations,
+                    &p.sources,
                 );
             }
         }
@@ -1070,6 +1096,7 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                 &node.service,
                 Some(graph),
                 &node.observations,
+                &node.sources,
             );
         } else {
             out += &callable(&node.callable, ext);
