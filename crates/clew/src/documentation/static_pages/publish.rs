@@ -382,10 +382,16 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
         return String::new();
     };
     let kotlin = outline.authority == "KOTLIN_PSI_WITH_K2_CALL_TARGETS";
-    let label = if kotlin { "Kotlin" } else { "C#" };
+    let label = match outline.authority.as_str() {
+        "KOTLIN_PSI_WITH_K2_CALL_TARGETS" => "Kotlin",
+        "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE" => "TypeScript",
+        _ => "C#",
+    };
     let event_label = if kotlin { "PSI" } else { "Source" };
     let explanation = if kotlin {
         "This tree preserves retained Kotlin PSI structure and exact K2 call-target metadata. It is not an execution trace: PSI conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
+    } else if outline.authority == "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE" {
+        "This tree preserves retained TypeScript compiler source structure and admitted selected-declaration targets. Source conditions do not establish predicate truth; event ordinals do not represent runtime invocation counts, and receiver dispatch remains unresolved."
     } else {
         "This tree preserves retained Roslyn source structure and exact compiler call-target metadata. It is not an execution trace: source conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
     };
@@ -582,6 +588,7 @@ fn selected_declaration(
     full_control_flow: bool,
     service: &str,
     graph: Option<&SourceCallGraph>,
+    observations: &BTreeMap<String, crate::documentation::model::Observation>,
 ) -> String {
     let mut out = format!("<section><h2>{}</h2>\n", escape(label));
     out += &paragraph(&format!(
@@ -590,6 +597,15 @@ fn selected_declaration(
     ));
     if let Some(id) = &c.citation_id {
         out += &format!("<p>Retained source: {}</p>\n", cite(id, ext));
+    }
+    if let Some(signature) = observations
+        .get(&c.declaration_id)
+        .and_then(super::source::compiler::declared_signature)
+    {
+        out += &format!(
+            "<p>Retained input and return signature:</p><pre>{}</pre>\n",
+            escape(signature)
+        );
     }
     out += &control_flow_panel(c, ext, full_control_flow);
     out += &source_outline_panel(c, ext);
@@ -678,6 +694,7 @@ fn declaration_only_page(
                     false,
                     &p.selection.service,
                     graph,
+                    &p.observations,
                 );
             } else {
                 out += &selected_declaration(
@@ -687,6 +704,7 @@ fn declaration_only_page(
                     false,
                     &p.selection.service,
                     graph,
+                    &p.observations,
                 );
                 out += &selected_declaration(
                     &p.worker,
@@ -695,6 +713,7 @@ fn declaration_only_page(
                     false,
                     &p.selection.service,
                     graph,
+                    &p.observations,
                 );
             }
             if let Some(wiring) = &p.wiring {
@@ -705,6 +724,7 @@ fn declaration_only_page(
                     false,
                     &p.selection.service,
                     graph,
+                    &p.observations,
                 );
             }
             out += &paragraph(&p.handoff.limitation);
@@ -721,6 +741,7 @@ fn declaration_only_page(
                 true,
                 &p.selection.service,
                 graph,
+                &p.observations,
             );
         }
         "worker" => {
@@ -735,6 +756,7 @@ fn declaration_only_page(
                 true,
                 &p.selection.service,
                 graph,
+                &p.observations,
             );
         }
         "fields-state" => {
@@ -748,6 +770,7 @@ fn declaration_only_page(
                 false,
                 &p.selection.service,
                 graph,
+                &p.observations,
             );
             if !same_declaration {
                 out += &selected_declaration(
@@ -757,6 +780,7 @@ fn declaration_only_page(
                     false,
                     &p.selection.service,
                     graph,
+                    &p.observations,
                 );
             }
             if let Some(wiring) = &p.wiring {
@@ -767,6 +791,7 @@ fn declaration_only_page(
                     true,
                     &p.selection.service,
                     graph,
+                    &p.observations,
                 );
             }
         }
@@ -1025,6 +1050,14 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                 owner.normalized["schema"] == crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA
             }) {
             "C#"
+        } else if node
+            .observations
+            .get(&node.callable.declaration_id)
+            .is_some_and(|owner| {
+                owner.normalized["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+            })
+        {
+            "TypeScript"
         } else {
             "Kotlin"
         };
@@ -1036,6 +1069,7 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                 true,
                 &node.service,
                 Some(graph),
+                &node.observations,
             );
         } else {
             out += &callable(&node.callable, ext);

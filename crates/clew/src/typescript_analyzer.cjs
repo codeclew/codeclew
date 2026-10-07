@@ -103,7 +103,11 @@ function byteMap(source) {
   if (byteMaps.has(source.fileName)) return byteMaps.get(source.fileName)
   const text = source.text
   const offsets = new Uint32Array(text.length + 1)
-  let bytes = 0
+  // TypeScript's file reader removes a UTF-8 BOM. All retained positions refer
+  // to the original snapshot bytes, including that prefix.
+  const original = fs.readFileSync(source.fileName)
+  let bytes = original.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))
+    && !text.startsWith('\uFEFF') ? 3 : 0
   let index = 0
   while (index < text.length) {
     offsets[index] = bytes
@@ -246,6 +250,72 @@ function addRelation(kind, node, sourceIdentityValue, targetSymbol) {
   })
 }
 
+// This producer retains syntax, never predicate truth or execution order.
+// Unsupported control forms veto the tree instead of appearing as sequential
+// statements. Nested callable bodies belong to their own declarations.
+function documentationFlow(owner) {
+  if (languageProfile !== 'typescript' || !owner.body || !ts.isBlock(owner.body)) return undefined
+  const events = []
+  const boundaries = new Set()
+  const file = repositoryRelative(owner.getSourceFile().fileName)
+  function emit(kind, node, extra = {}) {
+    if (events.length >= 4096) { boundaries.add('TYPESCRIPT_DOCUMENTATION_EVENT_LIMIT'); return }
+    events.push({ kind, file, ...range(node), ...extra })
+  }
+  function calls(node) {
+    if (ts.isFunctionLike(node) || ts.isClassLike(node)) {
+      boundaries.add('TYPESCRIPT_NESTED_CALLABLE_OPAQUE'); return
+    }
+    if (ts.isConditionalExpression(node) || ts.isAwaitExpression(node)
+        || ts.isYieldExpression(node) || ts.isNewExpression(node)
+        || (ts.isBinaryExpression(node) && [ts.SyntaxKind.AmpersandAmpersandToken,
+          ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(node.operatorToken.kind))) {
+      boundaries.add('TYPESCRIPT_EXPRESSION_CONTROL_OPAQUE'); return
+    }
+    if (ts.isCallExpression(node)) {
+      const signature = checker.getResolvedSignature(node)
+      const targetSymbol = checker.getSymbolAtLocation(node.expression)
+        || (signature && signature.declaration && signature.declaration.name
+          ? checker.getSymbolAtLocation(signature.declaration.name) : undefined)
+      const target = signature && identityForSymbol(targetSymbol)
+      const selectedSymbol = signature && signature.declaration && signature.declaration.name
+        ? checker.getSymbolAtLocation(signature.declaration.name) : undefined
+      const callableType = checker.getTypeAtLocation(node.expression)
+      // Existing relation facts identify a symbol. Only a selected signature
+      // declaration identical to that symbol's retained declaration grants
+      // body navigation. Overload selections remain an explicit frontier.
+      if (!target || !signature.declaration
+          || target !== identityForDeclaration(signature.declaration)
+          || (selectedSymbol && selectedSymbol.declarations && selectedSymbol.declarations.length !== 1)
+          || (callableType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+          || node.questionDotToken || node.expression.questionDotToken) {
+        boundaries.add('TYPESCRIPT_CALL_TARGET_OPAQUE')
+      } else {
+        emit('CALL', node, { target, resolution: 'COMPILER_EXACT' })
+      }
+    }
+    ts.forEachChild(node, calls)
+  }
+  function statement(node) {
+    if (ts.isBlock(node)) { node.statements.forEach(statement); return }
+    if (ts.isIfStatement(node)) {
+      calls(node.expression)
+      emit('IF', node.expression, { condition: node.expression.getText() })
+      statement(node.thenStatement)
+      if (node.elseStatement) { emit('ELSE', node.elseStatement); statement(node.elseStatement) }
+      emit('END', node); return
+    }
+    if (ts.isVariableStatement(node)) { calls(node); emit('LOCAL', node); return }
+    if (ts.isReturnStatement(node)) { if (node.expression) calls(node.expression); emit('RETURN', node); return }
+    if (ts.isExpressionStatement(node)) { calls(node.expression); emit('STATEMENT', node); return }
+    if (ts.isEmptyStatement(node)) return
+    boundaries.add(`TYPESCRIPT_STATEMENT_OPAQUE_${ts.SyntaxKind[node.kind]}`)
+  }
+  statement(owner.body)
+  return { schema: 'codeclew-typescript-documentation-flow/1.0',
+    authority: 'TYPESCRIPT_COMPILER_SOURCE_STRUCTURE', events, boundaries: [...boundaries].sort() }
+}
+
 function visit(node, currentIdentity) {
   const kind = declarationKind(node)
   let identity = currentIdentity
@@ -265,6 +335,7 @@ function visit(node, currentIdentity) {
         declarationKind: kind,
         name: declarationName(node),
         symbolIdentity: identity,
+        declarationIdentity: identityForDeclaration(node),
         ownerIdentity: ownerIdentity(node),
         exported: isExported(node),
         typeText: authorityMode === 'JAVASCRIPT_SYNTAX_CONDITIONAL'
@@ -273,6 +344,7 @@ function visit(node, currentIdentity) {
         signature: authorityMode === 'JAVASCRIPT_SYNTAX_CONDITIONAL'
           ? undefined
           : signature ? normalizeText(checker.signatureToString(signature, node, ts.TypeFormatFlags.NoTruncation)) : undefined,
+        documentation: documentationFlow(node),
         file,
         start: offsets.start,
         end: offsets.end,

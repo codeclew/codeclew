@@ -5535,3 +5535,198 @@ fn csharp_rejected_child_source_stays_local_and_preflight_rejects_changed_source
     assert!(super::super::publish::write(&output, "snapshot", &projection).is_err());
     assert!(!output.exists());
 }
+
+#[test]
+fn foreign_symbol_relations_cannot_disappear_from_exact_compiler_validation() {
+    let mut checked = csharp_common_check();
+    let selection = csharp_selection(&checked, "Render");
+    let evidence = checked.services.get_mut("sample").unwrap();
+    let symbol = evidence.observations[&selection.endpoint_declaration]
+        .symbol
+        .clone();
+    let relation = evidence
+        .observations
+        .values_mut()
+        .find(|row| row.kind == "CALL_RELATION" && row.symbol == symbol)
+        .unwrap();
+    relation.normalized["schema"] = json!(crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA);
+    relation.digest = digest(&relation.normalized).unwrap();
+    let projection = project(&checked, &[selection]).unwrap();
+    let retained = projection.pages[0]
+        .endpoint
+        .retained_call_sites
+        .as_ref()
+        .unwrap();
+    assert!(retained.sites.is_empty());
+    assert!(
+        retained
+            .gaps
+            .iter()
+            .any(|gap| gap.code == "RETAINED_CALL_SITES_REJECTED")
+    );
+}
+
+#[test]
+#[ignore = "requires npm ci in fixtures/typescript-documentation-common-core"]
+fn native_typescript_common_reader_binds_original_bytes_and_qualified_helper() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/typescript-documentation-common-core")
+        .canonicalize()
+        .unwrap();
+    let scope = "tsconfig:tsconfig.json";
+    let operational =
+        crate::typescript_project_model::extract_typescript_model(&root, scope).unwrap();
+    assert_eq!(operational.authority.compiler_version, "5.9.3");
+    let text = std::fs::read_to_string(root.join("Probe.ts")).unwrap();
+    assert!(text.starts_with('\u{feff}') && text.contains("\r\n") && text.contains("π🙂"));
+    let mut facts: Vec<_> = operational
+        .facts
+        .iter()
+        .map(|fact| {
+            let raw = serde_json::to_value(fact).unwrap();
+            let binding = crate::cas::CasObject::for_bytes(
+                crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA,
+                &crate::canonical::bytes(&raw).unwrap(),
+            )
+            .unwrap()
+            .digest;
+            let mut scoped = raw;
+            scoped["scope"] = json!({"compilation":scope});
+            (scoped, binding)
+        })
+        .collect();
+    assert!(
+        facts
+            .iter()
+            .any(|(fact, _)| fact["kind"] == "RELATION" && fact["relationKind"] == "CALLS")
+    );
+    for (fact, _) in &facts {
+        if fact["kind"] != "DECLARATION" {
+            continue;
+        }
+        let start = fact["start"].as_u64().unwrap() as usize;
+        let end = fact["end"].as_u64().unwrap() as usize;
+        let slice = text.get(start..end).unwrap();
+        assert!(!slice.is_empty());
+        assert_eq!(
+            fact["startLine"].as_u64().unwrap(),
+            1 + text[..start].bytes().filter(|byte| *byte == b'\n').count() as u64
+        );
+        if fact["name"] == "render" {
+            assert!(slice.starts_with("export function render(") && slice.ends_with('}'));
+        }
+        if fact["name"] == "chooseName" {
+            assert!(slice.starts_with("function chooseName(") && slice.ends_with('}'));
+        }
+    }
+    crate::documentation::analysis::project_typescript_declarations(&mut facts);
+    let service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0",
+        "id":"sample","title":"TypeScript structure","repositoryId":"probe","repository":"https://example.invalid/probe",
+        "language":"typescript","profile":"typescript-5-project-read-only","compilations":[scope],"targetRef":"main"})).unwrap();
+    crate::documentation::store::validate_service(&service).unwrap();
+    let evidence = crate::documentation::analysis::project(
+        &service,
+        &"a".repeat(40),
+        &digest(&service).unwrap(),
+        "STATIC",
+        "PARTIAL",
+        facts,
+        &BTreeMap::from([("Probe.ts".into(), text.clone())]),
+        false,
+    )
+    .unwrap();
+    let checked = kotlin_check(evidence);
+    let selection = |name: &str| {
+        let owner = checked.services["sample"]
+            .observations
+            .values()
+            .find(|row| row.kind == "SYMBOL" && row.normalized["name"] == name)
+            .unwrap();
+        Selection {
+            id: format!("typescript-{name}"),
+            expand_source_calls: true,
+            ..kotlin_selection(&owner.id, &owner.id)
+        }
+    };
+    let selections = [
+        selection("render"),
+        selection("opaque"),
+        selection("ambiguous"),
+        selection("loop"),
+    ];
+    let projection = project(&checked, &selections).unwrap();
+    let root_page = &projection.pages[0];
+    let outline = root_page.endpoint.source_outline.as_ref().unwrap();
+    assert_eq!(outline.authority, "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE");
+    assert!(outline.tree.as_ref().unwrap().contains("chooseName") && outline.gaps.is_empty());
+    for event in &outline.events {
+        let span = event.exact_source.as_ref().unwrap();
+        assert_eq!(
+            &text[span.compilation_byte_start..span.compilation_byte_end],
+            span.expression
+        );
+        assert_eq!(
+            span.full_compilation_source_digest,
+            crate::canonical::hash_bytes(text.as_bytes())
+        );
+    }
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let root_node = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == root_page.endpoint.declaration_id)
+        .unwrap();
+    assert_eq!(root_node.calls.len(), 2);
+    let helper_edge = root_node
+        .calls
+        .iter()
+        .find(|edge| edge.status == "RETAINED_DECLARED_BODY")
+        .unwrap();
+    let helper = &graph.nodes[helper_edge.target_node.as_ref().unwrap()];
+    assert!(
+        helper.callable.symbol.contains("chooseName")
+            && helper
+                .callable
+                .source_outline
+                .as_ref()
+                .unwrap()
+                .tree
+                .is_some()
+    );
+    assert!(
+        root_node
+            .calls
+            .iter()
+            .all(|edge| edge.runtime_dispatch == "UNRESOLVED")
+    );
+    assert!(
+        root_node
+            .calls
+            .iter()
+            .any(|edge| !edge.frontiers.is_empty())
+    );
+    for page in &projection.pages[1..] {
+        let outline = page.endpoint.source_outline.as_ref().unwrap();
+        assert!(outline.tree.is_none() && !outline.gaps.is_empty());
+        assert!(
+            page.endpoint
+                .retained_call_sites
+                .as_ref()
+                .unwrap()
+                .sites
+                .is_empty()
+        );
+        assert!(page.endpoint.steps.is_empty() && page.endpoint.state.is_empty());
+    }
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "snapshot", &projection).unwrap();
+    let html =
+        std::fs::read_to_string(output.path().join("typescript-render-endpoint.html")).unwrap();
+    assert!(html.contains("Cited TypeScript source outline"));
+    assert!(
+        html.contains("Retained input and return signature")
+            && html.contains("input: Request")
+            && html.contains("): string")
+    );
+    assert!(html.contains("&lt;script&gt;") && !html.contains("<script>"));
+}

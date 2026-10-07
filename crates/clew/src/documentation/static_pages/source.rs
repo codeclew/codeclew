@@ -170,7 +170,13 @@ pub(super) fn project_callable(
         return kotlin::project(context, declaration);
     }
     if compiler::csharp_candidate(observation) {
-        return compiler::project_csharp(context, declaration);
+        return compiler::project_declaration(context, declaration);
+    }
+    if observation.normalized["schema"]
+        .as_str()
+        .is_some_and(|schema| schema.starts_with("codeclew-typescript-compiler-fact/"))
+    {
+        return compiler::project_declaration(context, declaration);
     }
     let java_syntax = observation.normalized["schema"] == "syntax-only"
         || (observation.normalized["authority"] == "SYNTAX"

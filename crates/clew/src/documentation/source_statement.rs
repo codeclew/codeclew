@@ -10,6 +10,7 @@ pub(crate) enum StructureProducer {
     Javac,
     KotlinPsi,
     Roslyn,
+    TypeScript,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,10 @@ impl StructureContract {
             (Some("codeclew-csharp-documentation-flow/1.0"), Some("ROSLYN_SOURCE_STRUCTURE")) => {
                 StructureProducer::Roslyn
             }
+            (
+                Some("codeclew-typescript-documentation-flow/1.0"),
+                Some("TYPESCRIPT_COMPILER_SOURCE_STRUCTURE"),
+            ) => StructureProducer::TypeScript,
             _ => return None,
         };
         Some(Self { producer })
@@ -180,6 +185,11 @@ mod tests {
                 "codeclew-csharp-documentation-flow/1.0",
                 "ROSLYN_SOURCE_STRUCTURE",
                 StructureProducer::Roslyn,
+            ),
+            (
+                "codeclew-typescript-documentation-flow/1.0",
+                "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE",
+                StructureProducer::TypeScript,
             ),
         ];
         for (schema, authority, producer) in producers {

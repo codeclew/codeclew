@@ -34,6 +34,11 @@ pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> 
             StructureProducer::KotlinPsi,
             CallNavigation::RetainedCompilerSites,
         )
+    } else if typescript_admitted(owner) {
+        (
+            StructureProducer::TypeScript,
+            CallNavigation::RetainedCompilerSites,
+        )
     } else {
         return None;
     };
@@ -44,6 +49,33 @@ pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> 
         source_structure,
         call_navigation,
     })
+}
+
+pub(super) fn typescript_admitted(owner: &Observation) -> bool {
+    let n = &owner.normalized;
+    owner.kind == "SYMBOL"
+        && n["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+        && n["kind"] == "DECLARATION"
+        && matches!(n["declarationKind"].as_str(), Some("FUNCTION" | "METHOD"))
+        && n["resolution"] == "COMPILER_RESOLVED"
+        && n["symbolIdentity"] == owner.symbol
+        && n["declarationIdentity"] == owner.symbol
+        && owner.symbol.starts_with("ts:")
+        && n["scope"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("tsconfig:"))
+}
+
+/// Retained input/return display only; a signature does not bind argument values.
+pub(in crate::documentation::static_pages) fn declared_signature(
+    owner: &Observation,
+) -> Option<&str> {
+    if !typescript_admitted(owner) {
+        return None;
+    }
+    owner.normalized["signature"]
+        .as_str()
+        .filter(|text| !text.is_empty() && text.len() <= 4096)
 }
 
 pub(super) fn csharp_candidate(owner: &Observation) -> bool {
@@ -110,7 +142,7 @@ pub(in crate::documentation::static_pages) fn body_envelope(owner: &Observation)
     })
 }
 
-pub(super) fn project_csharp(
+pub(super) fn project_declaration(
     context: &mut Context<'_>,
     id: &str,
 ) -> Result<ProjectedCallable, ClewError> {
@@ -120,13 +152,13 @@ pub(super) fn project_csharp(
         .get(id)
         .ok_or_else(|| invalid("compiler declaration is missing"))?
         .clone();
-    if !csharp_admitted(&owner)
+    if !(csharp_admitted(&owner) || typescript_admitted(&owner))
         || owner.id != id
         || owner.service != context.evidence.service
         || owner.digest != digest(&owner.normalized)?
     {
         return Err(invalid(
-            "Roslyn METHOD declaration lacks exact retained compiler authority",
+            "Selected declaration lacks admitted retained compiler authority",
         ));
     }
     let scope = owner.normalized["scope"].as_str().unwrap();
@@ -143,7 +175,7 @@ pub(super) fn project_csharp(
         != 1
     {
         return Err(invalid(
-            "Roslyn METHOD identity is ambiguous within its compilation scope",
+            "Compiler declaration identity is ambiguous within its compilation scope",
         ));
     }
     let source = match owner.source_ids.as_slice() {
@@ -160,7 +192,7 @@ pub(super) fn project_csharp(
         _ => None,
     }
     .ok_or_else(|| {
-        invalid("Roslyn METHOD requires one valid retained compiler-bound source span")
+        invalid("Compiler declaration requires one valid retained compiler-bound source span")
     })?;
     let citation = context.citation(&source, 0, source.text.len());
     context.retain(&owner);
@@ -227,6 +259,7 @@ mod tests {
         let java = "method:class:example.Pipeline#run()V";
         let kotlin = "callable:example/Pipeline.run#jvm:()V";
         let csharp = "method:class:Example.Pipeline#Run()V";
+        let typescript = "ts:src/probe.ts#function:run@0-32";
         let producers = [
             owner(
                 java,
@@ -248,11 +281,18 @@ mod tests {
                 "scope":"main","resolution":"COMPILER_EXACT","csharpIdentity":"csharp:M:Example.Pipeline.Run",
                 "name":"Run","jvmDescriptor":"()V","ownerIdentity":"class:Example.Pipeline"}),
             ),
+            owner(
+                typescript,
+                json!({"schema":crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA,
+                "kind":"DECLARATION","declarationKind":"FUNCTION","resolution":"COMPILER_RESOLVED",
+                "symbolIdentity":typescript,"declarationIdentity":typescript,"scope":"tsconfig:tsconfig.json"}),
+            ),
         ];
         let docs = [
             json!({"schema":"codeclew-java-documentation-flow/1.0","authority":"JAVAC_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
             json!({"schema":"codeclew-kotlin-documentation-flow/1.0","authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS","events":[],"boundaries":[]}),
             json!({"schema":"codeclew-csharp-documentation-flow/1.0","authority":"ROSLYN_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
+            json!({"schema":"codeclew-typescript-documentation-flow/1.0","authority":"TYPESCRIPT_COMPILER_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
         ];
         for (index, mut owner) in producers.into_iter().enumerate() {
             for (body_index, body) in docs.iter().enumerate() {

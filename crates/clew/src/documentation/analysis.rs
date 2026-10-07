@@ -247,6 +247,7 @@ fn capture_local_with_diagnostics(
     let language = match service.language.as_str() {
         "kotlin" => SessionLanguage::Kotlin,
         "csharp" => SessionLanguage::CSharp,
+        "typescript" => SessionLanguage::TypeScript,
         _ => SessionLanguage::Java,
     };
     let readiness = super::progress::run("SOURCE_ADMISSION", || {
@@ -387,6 +388,7 @@ fn capture_session(
             let domain = match service.language.as_str() {
                 "kotlin" => "analysis:kotlin-semantic-facts",
                 "csharp" => super::csharp::CSHARP_FACTS_DOMAIN,
+                "typescript" => crate::typescript_adapter_v2::TYPESCRIPT_COMPILER_FACTS_CAPABILITY,
                 _ => "analysis:java-compiler-facts",
             };
             if fact.domain_uri.as_str() != domain {
@@ -413,6 +415,9 @@ fn capture_session(
     match service.language.as_str() {
         "kotlin" => facts = super::kotlin::project_facts(facts)?,
         "csharp" => facts = super::csharp::project_facts(facts)?,
+        "typescript" => {
+            project_typescript_declarations(&mut facts);
+        }
         _ => {}
     }
     let wanted: BTreeSet<_> = facts
@@ -491,6 +496,19 @@ fn capture_session(
         &sources,
         &known,
     )
+}
+
+pub(in crate::documentation) fn project_typescript_declarations(facts: &mut [(Value, String)]) {
+    for (fact, _) in facts {
+        // Keep symbol-level relations intact. Only compiler-owned declaration
+        // spans supply distinct documentation bodies, including overloads.
+        if fact["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+            && fact["kind"] == "DECLARATION"
+            && fact["declarationIdentity"].is_string()
+        {
+            fact["symbolIdentity"] = fact["declarationIdentity"].clone();
+        }
+    }
 }
 
 pub fn source_id(service: &str, identity: &str) -> Result<String, ClewError> {
@@ -1603,7 +1621,22 @@ pub(crate) fn project_scoped(
     let mut roslyn_coordinates = BTreeMap::new();
     for (raw_fact, binding) in &facts {
         let mut bound_fact;
-        let fact = if raw_fact["schema"] == super::csharp::CSHARP_FACT_SCHEMA
+        let fact = if raw_fact["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+            && raw_fact["documentation"].is_object()
+        {
+            let scope = resolve_scope_key(&raw_fact["scope"], known)?;
+            bound_fact = raw_fact.clone();
+            if let Some(blob) = sources.blob(&scope, raw_fact["file"].as_str().unwrap_or_default())
+            {
+                bind_original_byte_documentation(
+                    &mut bound_fact,
+                    &scope,
+                    &blob.text,
+                    &blob.content_digest,
+                )?;
+            }
+            &bound_fact
+        } else if raw_fact["schema"] == super::csharp::CSHARP_FACT_SCHEMA
             && raw_fact["documentation"].is_object()
         {
             let scope = resolve_scope_key(&raw_fact["scope"], known)?;
@@ -2337,6 +2370,91 @@ pub(crate) fn project_scoped(
     super::contracts::enrich(&mut evidence)?;
     verify_evidence(&evidence)?;
     Ok(evidence)
+}
+
+/// Bind a producer's already-original-byte events. This never converts UTF-16,
+/// parses source, resolves a target, or repairs an invalid producer anchor.
+fn bind_original_byte_documentation(
+    fact: &mut Value,
+    scope: &str,
+    text: &str,
+    full_digest: &str,
+) -> Result<(), ClewError> {
+    use super::source_span::{EventSourceSpan, SPAN_SCHEMA};
+    if fact["schema"] != crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA
+        || fact["kind"] != "DECLARATION"
+        || fact["resolution"] != "COMPILER_RESOLVED"
+        || fact["documentation"]["schema"] != "codeclew-typescript-documentation-flow/1.0"
+        || fact["documentation"]["authority"] != "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE"
+        || fact["documentation"]["boundaries"].as_array().is_none()
+        || crate::canonical::hash_bytes(text.as_bytes()) != full_digest
+    {
+        return Err(invalid(
+            "TypeScript documentation lacks original-byte producer authority",
+        ));
+    }
+    let start = fact["start"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| invalid("documentation owner byte start is missing"))?;
+    let end = fact["end"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| invalid("documentation owner byte end is missing"))?;
+    if start >= end || text.get(start..end).is_none() {
+        return Err(invalid(
+            "documentation owner range does not bind original UTF-8",
+        ));
+    }
+    let symbol = fact["symbolIdentity"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| invalid("documentation owner identity is missing"))?
+        .to_owned();
+    let file = fact["file"]
+        .as_str()
+        .ok_or_else(|| invalid("documentation owner file is missing"))?
+        .to_owned();
+    for (ordinal, event) in fact["documentation"]["events"]
+        .as_array_mut()
+        .ok_or_else(|| invalid("documentation events are missing"))?
+        .iter_mut()
+        .enumerate()
+    {
+        let byte_start = event["start"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| invalid("documentation event start is missing"))?;
+        let byte_end = event["end"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| invalid("documentation event end is missing"))?;
+        if byte_start < start
+            || byte_start >= byte_end
+            || byte_end > end
+            || event["file"] != file
+            || text.get(byte_start..byte_end).is_none()
+        {
+            return Err(invalid(
+                "documentation event does not bind its original-byte owner",
+            ));
+        }
+        event["sourceSpan"] = serde_json::to_value(EventSourceSpan {
+            schema: SPAN_SCHEMA.into(),
+            coordinate_domain: "ORIGINAL_UTF8_BYTES".into(),
+            owner_symbol_identity: symbol.clone(),
+            compilation_scope: scope.into(),
+            file: file.clone(),
+            ordinal: ordinal as u64,
+            owner_byte_start: start,
+            owner_byte_end: end,
+            byte_start,
+            byte_end,
+            full_compilation_source_digest: full_digest.into(),
+        })
+        .map_err(|_| invalid("documentation source span cannot be retained"))?;
+    }
+    Ok(())
 }
 
 /// Validate present column bounds without trusting normalized JSON. Old variable

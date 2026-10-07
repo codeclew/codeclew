@@ -15,6 +15,7 @@ use serde_json::Value;
 pub(super) struct OutlineProducer {
     authority: &'static str,
     kotlin: bool,
+    producer_label: &'static str,
 }
 
 pub(super) fn producer(owner: &Observation) -> Option<OutlineProducer> {
@@ -26,13 +27,20 @@ pub(super) fn producer(owner: &Observation) -> Option<OutlineProducer> {
         StructureProducer::KotlinPsi => Some(OutlineProducer {
             authority: "KOTLIN_PSI_WITH_K2_CALL_TARGETS",
             kotlin: true,
+            producer_label: "Kotlin",
         }),
         StructureProducer::Roslyn if super::compiler::csharp_admitted(owner) => {
             Some(OutlineProducer {
                 authority: "ROSLYN_SOURCE_STRUCTURE",
                 kotlin: false,
+                producer_label: "Roslyn",
             })
         }
+        StructureProducer::TypeScript => Some(OutlineProducer {
+            authority: "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE",
+            kotlin: false,
+            producer_label: "TypeScript compiler",
+        }),
         _ => None,
     }
 }
@@ -51,10 +59,10 @@ impl OutlineProducer {
             detail
         } else {
             detail
-                .replace("Kotlin PSI", "Roslyn source")
-                .replace("Kotlin", "Roslyn")
+                .replace("Kotlin PSI", &format!("{} source", self.producer_label))
+                .replace("Kotlin", self.producer_label)
                 .replace("PSI", "source")
-                .replace("K2", "Roslyn")
+                .replace("K2", self.producer_label)
         }
     }
     fn source_label(self) -> &'static str {

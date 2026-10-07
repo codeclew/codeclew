@@ -59,7 +59,7 @@ pub(super) fn attach(
         scope: scope.to_owned(),
         symbol: owner.symbol.clone(),
     };
-    let candidates = candidate_relations(&context.evidence.observations, &owner.symbol, scope);
+    let candidates = candidate_relations(&context.evidence.observations, owner, scope);
     for (_, relation) in &candidates {
         context.retain(relation);
     }
@@ -121,16 +121,20 @@ pub(super) fn attach(
 
 fn candidate_relations<'a>(
     observations: &'a BTreeMap<String, Observation>,
-    owner_symbol: &str,
+    owner: &Observation,
     scope: &str,
 ) -> Vec<(&'a str, &'a Observation)> {
     observations
         .iter()
         .filter(|(_, relation)| {
             relation.kind == "CALL_RELATION"
+                // TypeScript's legacy relations identify symbols, not selected
+                // overload bodies. Its admitted navigation uses source events.
+                && !(super::compiler::typescript_admitted(owner)
+                    && relation.normalized["schema"] == crate::typescript_adapter_v2::TYPESCRIPT_FACT_SCHEMA)
                 && relation.normalized["relationKind"] == "CALLS"
-                && (relation.symbol == owner_symbol
-                    || relation.normalized["sourceIdentity"].as_str() == Some(owner_symbol))
+                && (relation.symbol == owner.symbol
+                    || relation.normalized["sourceIdentity"].as_str() == Some(owner.symbol.as_str()))
                 && relation.normalized["scope"]
                     .as_str()
                     .is_none_or(|relation_scope| relation_scope == scope)
@@ -162,13 +166,17 @@ fn derive_projection(
         owner_key: owner_key.clone(),
         sites: Vec::new(),
         gaps: vec![gap(
-            &if super::compiler::csharp_admitted(owner) {
+            &if super::compiler::csharp_admitted(owner)
+                || super::compiler::typescript_admitted(owner)
+            {
                 reason.code().replace("KOTLIN_", "")
             } else {
                 reason.code().into()
             },
             if super::compiler::csharp_admitted(owner) {
                 reason.detail().replace("Kotlin", "Roslyn")
+            } else if super::compiler::typescript_admitted(owner) {
+                reason.detail().replace("Kotlin", "TypeScript compiler")
             } else {
                 reason.detail().into()
             },
@@ -338,6 +346,9 @@ fn augment_source_events(
                 crate::semantic_validation::validate_kotlin_full_symbol_identity(target).is_ok()
             }
             StructureProducer::Roslyn => target.starts_with("method:class:"),
+            StructureProducer::TypeScript => {
+                target.starts_with("ts:") || target.starts_with("ts-external:")
+            }
             StructureProducer::Javac => false, // Java retains its qualified behavioral relation consumer.
         };
         if !target_valid {
@@ -959,7 +970,7 @@ pub(in crate::documentation::static_pages) fn validate_node(
         [id] => sources.get(id).filter(|source| source.id == *id),
         _ => None,
     };
-    let candidates = candidate_relations(observations, &callable.symbol, scope);
+    let candidates = candidate_relations(observations, owner, scope);
     let expected = derive_projection(
         service,
         revision,

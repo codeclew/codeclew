@@ -869,3 +869,30 @@ and links to an available original version. `translationGaps` is separate from
 analysis gaps; it does not trigger capture. Reusing the same source snapshot for
 a translated author Work requires no reindexing. Review the translation normally;
 `--unassessed` still means the explanation has not passed meaning review.
+
+### TypeScript retained function pages
+
+TypeScript documentation capture accepts `typescript-5-project-read-only` with
+an exact `tsconfig:<path>` selector and the project's installed TypeScript 5
+compiler. Restore the project's dependencies before capture. Select a retained
+`FUNCTION` or `METHOD` observation in the same native page-selection contract
+used above. The common declaration reader displays the retained compiler
+input/return signature, cited guards, locals, returns and supported source
+statements. These are source facts, not evaluated predicates or state effects.
+
+The producer retains a distinct declaration identity for each original source
+span. Its existing symbol-level CALLS relations remain available as evidence;
+they do not identify a selected overload body. Exact documentation navigation
+requires a resolved signature selecting the same single compiler declaration.
+Overloads, any/unknown callables and optional calls remain explicit boundaries.
+Interfaces and external declarations do not establish runtime receiver dispatch.
+Unsupported loops, exception/control expressions and nested callable bodies
+prevent a complete source tree; retained source and event citations remain
+available. No Java behavior, argument-value or data-state authority is granted.
+
+Positions refer to original UTF-8 bytes, including BOM, CRLF and Unicode. The
+same saved Check can render the common HTML/MDX reader without the live checkout,
+recapture or model calls. The public synthetic
+[TypeScript common-core probe](../../fixtures/typescript-documentation-common-core/README.md)
+contains ordinary helper navigation and explicit negative examples. It does
+not qualify every TypeScript project or framework.

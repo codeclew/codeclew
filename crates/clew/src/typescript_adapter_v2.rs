@@ -10,7 +10,7 @@ use crate::typescript_project_model::{
     TypeScriptOperationalModel, TypeScriptProjectModel, analyzer_digest, verify_model,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 use std::sync::Mutex;
@@ -60,11 +60,15 @@ pub enum TypeScriptCompilerFact {
         declaration_kind: String,
         name: String,
         symbol_identity: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        declaration_identity: Option<String>,
         owner_identity: String,
         exported: bool,
         type_text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        documentation: Option<Value>,
         file: String,
         start: u64,
         end: u64,
@@ -516,10 +520,12 @@ mod tests {
             declaration_kind: "FUNCTION".into(),
             name: "usePersistentState".into(),
             symbol_identity: "ts:src/hooks.ts#function:usePersistentState@0-10".into(),
+            declaration_identity: None,
             owner_identity: "module:src/hooks.ts".into(),
             exported: true,
             type_text: "() => void".into(),
             signature: Some("(): void".into()),
+            documentation: None,
             file: "src/hooks.ts".into(),
             start: 0,
             end: 10,
@@ -555,10 +561,12 @@ mod tests {
             declaration_kind: "FUNCTION".into(),
             name: "target".into(),
             symbol_identity: "ts:src/main.ts#function:target@0-10".into(),
+            declaration_identity: None,
             owner_identity: "module:src/main.ts".into(),
             exported: false,
             type_text: "() => void".into(),
             signature: Some("(): void".into()),
+            documentation: None,
             file: "src/main.ts".into(),
             start,
             end,
