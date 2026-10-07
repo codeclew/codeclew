@@ -391,7 +391,7 @@ internal class CompilerUtf16ToUtf8ByteMap private constructor(
     }
 }
 
-private fun compilerLineNormalizedText(source: String): String {
+internal fun compilerLineNormalizedText(source: String): String {
     if ('\r' !in source) return source
     val normalized = StringBuilder(source.length)
     var index = 0

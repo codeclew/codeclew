@@ -1188,7 +1188,7 @@ fn strip_coordinates(value: &Value) -> Value {
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        if k == "sourceSpan" {
+                        if k == "sourceSpan" || k == "dataInput" {
                             v.clone()
                         } else {
                             strip_coordinates(v)
@@ -2179,6 +2179,9 @@ pub(crate) fn project_scoped(
         if exact_outline_owner {
             if let Some(object) = content.as_object_mut() {
                 object.remove("outlineOwnerSource");
+            }
+            if let Some(documentation) = content["documentation"].as_object_mut() {
+                documentation.remove("dataInput");
             }
             if let Some(events) = content["documentation"]["events"].as_array_mut() {
                 for event in events {
@@ -4583,6 +4586,64 @@ class UseTask {
                 .iter()
                 .any(|b| b.starts_with("SCOPE_AMBIGUOUS")),
             "identical payloads across scopes are not ambiguous: {:?}",
+            evidence.boundaries
+        );
+    }
+
+    #[test]
+    fn kotlin_data_input_original_source_provenance_survives_normalization_across_scopes() {
+        let service = projection_service();
+        let file = "src/main/kotlin/example/Shared.kt";
+        let text = "\u{feff}// π🙂\r\nfun shared(input: String): String = input\r\n";
+        let start = text.find("fun shared").unwrap();
+        let end = text.rfind("input").unwrap() + "input".len();
+        let table = BTreeMap::from([(file.into(), text.into())]);
+        let sources = compile_sources(
+            vec![(":a/main", table.clone(), true), (":b/main", table, true)],
+            BTreeMap::new(),
+        );
+        let mut expected = BTreeMap::new();
+        let facts=[":a/main",":b/main"].into_iter().map(|scope| {
+            let mut fact=declaration_fact(&json!({"compilation":scope}),"example.shared",file,2);
+            fact.0["schema"]=json!("declaration-descriptor/0.1");
+            fact.0["start"]=json!(start);fact.0["end"]=json!(end);
+            let input=json!({"schema":"codeclew-kotlin-documentation-data/1.0",
+                "authority":"KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES","coordinateDomain":"ORIGINAL_UTF8_BYTES",
+                "ownerSymbolIdentity":"example.shared","compilationScope":scope,"file":file,
+                "ownerByteStart":start,"ownerByteEnd":end,"fullCompilationSourceDigest":canonical::hash_bytes(text.as_bytes()),
+                "nodes":[{"kind":"VARIABLE","byteStart":end-5,"byteEnd":end}],
+                "variables":[{"kind":"VARIABLE_ACCESS","byteStart":end-5,"byteEnd":end,
+                    "declarationByteStart":start+11,"declarationByteEnd":start+24}]});
+            fact.0["documentation"]["dataInput"]=input.clone();
+            expected.insert(scope.to_string(),input);
+            fact
+        }).collect();
+        let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main", ":b/main"]);
+        let observations: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "SYMBOL")
+            .collect();
+        assert_eq!(observations.len(), 2);
+        for owner in observations {
+            let scope = owner.normalized["scope"].as_str().unwrap();
+            assert_eq!(
+                owner.normalized["documentation"]["dataInput"],
+                expected[scope]
+            );
+            let site = &owner.normalized["outlineOwnerSource"];
+            assert_eq!(site["byteStart"], start);
+            assert_eq!(site["byteEnd"], end);
+            let source = &evidence.sources[site["sourceId"].as_str().unwrap()];
+            assert_eq!(source.text.as_bytes(), &text.as_bytes()[start..end]);
+            assert_eq!(owner.digest, digest(&owner.normalized).unwrap());
+        }
+        assert!(
+            !evidence
+                .boundaries
+                .iter()
+                .any(|b| b.starts_with("SCOPE_AMBIGUOUS")),
+            "{:?}",
             evidence.boundaries
         );
     }

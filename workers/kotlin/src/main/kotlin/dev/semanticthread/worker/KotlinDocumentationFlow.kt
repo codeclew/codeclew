@@ -2,6 +2,7 @@ package dev.semanticthread.worker
 
 import kotlinx.serialization.json.*
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.*
 import java.security.MessageDigest
@@ -19,7 +20,15 @@ internal class KotlinDocumentationSource(
     private val dataCalls = relations
     private val sourceDigest = "sha256:" + MessageDigest.getInstance("SHA-256")
         .digest(originalSource.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-    private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, source.text)
+    // Kotlin PSI expects LF line separators. Use a documentation-only view;
+    // original parser/edit offsets and retained source bytes keep their domain.
+    private val documentationSource = if ('\r' in source.text) {
+        KtPsiFactory(source.project, markGenerated = false).createFile(source.name, compilerLineNormalizedText(originalSource))
+    } else source
+    private val inputCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, source.text)
+    private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, documentationSource.text)
+    private val functions = PsiTreeUtil.collectElementsOfType(documentationSource, KtNamedFunction::class.java)
+        .groupBy { function -> psiCoordinates?.range(function.textRange.startOffset, function.textRange.endOffset)?.let { it.first to it.last + 1 } }
     private val compilerCoordinates = CompilerUtf16ToUtf8ByteMap.fromCompilerInput(originalSource)
     private val declarations = descriptors.groupBy { it["start"]?.jsonPrimitive?.intOrNull to it["end"]?.jsonPrimitive?.intOrNull }
     private val calls = relations.mapNotNull { row ->
@@ -32,16 +41,17 @@ internal class KotlinDocumentationSource(
     fun enrich(declaration: KtNamedDeclaration, row: JsonObject): JsonObject {
         if (declaration !is KtNamedFunction || declaration.bodyExpression == null) return row
         val coordinates = psiCoordinates ?: return row
-        val range = coordinates.range(declaration.textRange.startOffset, declaration.textRange.endOffset) ?: return row
+        val range = inputCoordinates?.range(declaration.textRange.startOffset, declaration.textRange.endOffset) ?: return row
+        val function = functions[range.first to range.last + 1]?.singleOrNull() ?: return row
         val descriptor = declarations[range.first to range.last + 1]?.singleOrNull {
             it["declarationKind"]?.jsonPrimitive?.content == "FUNCTION"
         } ?: return row
         val identity = descriptor["symbolIdentity"]?.jsonPrimitive?.content ?: return row
-        val flow = KotlinDocumentationFlow(file, source, sourceDigest, compilationScope, descriptor, coordinates, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
+        val flow = KotlinDocumentationFlow(file, documentationSource, sourceDigest, compilationScope, descriptor, coordinates, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
             (it["start"]!!.jsonPrimitive.int >= range.first) && (it["end"]!!.jsonPrimitive.int <= range.last + 1)
-        }).read(declaration, descriptor)
+        }).read(function, descriptor)
         val data = KotlinDocumentationData(file, originalSource, compilationScope, descriptor,
-            coordinates, compilerCoordinates, dataFacts, dataCalls).read(declaration)
+            coordinates, compilerCoordinates, dataFacts, dataCalls).read(function)
         val documented = if (data == null) flow else JsonObject(flow + mapOf("dataInput" to data))
         return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to documented))
     }

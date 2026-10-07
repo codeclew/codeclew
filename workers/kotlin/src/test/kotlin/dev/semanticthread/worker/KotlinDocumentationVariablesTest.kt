@@ -70,7 +70,8 @@ class KotlinDocumentationVariablesTest {
             fun helper(input: String): String { val chosen = input; return chosen }
             fun format(input: String, flag: Boolean): String {
                 var chosen = input
-                if (flag) { chosen = "π🙂" } else { chosen = input }
+                if (flag) { chosen = "π🙂" }
+                else { chosen = input }
                 val transformed = helper(chosen)
                 return transformed
             }
@@ -102,6 +103,13 @@ class KotlinDocumentationVariablesTest {
         }
         val formatKinds = data["format"]!!["nodes"]!!.jsonArray.map { it.jsonObject["kind"]!!.jsonPrimitive.content }
         assertTrue(setOf("LOCAL", "IF", "ASSIGNMENT", "CALL", "RETURN").all(formatKinds::contains), formatKinds.toString())
+        val branch = data["format"]!!["nodes"]!!.jsonArray.map { it.jsonObject }.single { it["kind"]!!.jsonPrimitive.content == "IF" }
+        assertTrue(branch["roles"]!!.jsonObject.keys.containsAll(setOf("CONDITION", "THEN", "ELSE")), branch.toString())
+        assertEquals(2, formatKinds.count { it == "ASSIGNMENT" })
+        for (token in data["format"]!!["nodes"]!!.jsonArray.map { it.jsonObject }.filter { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }) {
+            assertEquals("=", bytes.copyOfRange(token["byteStart"]!!.jsonPrimitive.int, token["byteEnd"]!!.jsonPrimitive.int).decodeToString(),
+                "only assignment operator leaves are opaque; both branches must normalize")
+        }
         val named = data["named"]!!["nodes"]!!.jsonArray.map { it.jsonObject }.single { it["kind"]!!.jsonPrimitive.content == "CALL" }
         assertEquals(listOf(1, 0), named["actuals"]!!.jsonArray.map { it.jsonObject["formalSlot"]!!.jsonPrimitive.int })
         val namedArguments = named["actuals"]!!.jsonArray.map { it.jsonObject["expression"]!!.jsonPrimitive.int }
