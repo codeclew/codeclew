@@ -9,6 +9,7 @@
 //! - `ELSE`, `RETURN`, `THROW`, `STATEMENT`, `LOCAL`, `BOUNDARY`: no text
 //! - `END`: closes the nearest open `IF` or `LOOP`
 
+use super::source_statement::{SourceStatement, StructureContract, StructureProducer};
 use serde_json::Value;
 
 /// Shorten a `method:class:<Owner>#<name>(...)<desc>` symbol to `Owner#name`.
@@ -102,6 +103,12 @@ impl Projection {
 
 fn qualified_documentation_authority(documentation: &Value) -> bool {
     documentation["authority"] == "JAVAC_SOURCE_STRUCTURE"
+        // Older saved Java envelopes did not carry a schema. Preserve their
+        // qualified consumer, but never accept a foreign/unknown schema merely
+        // because it copies the Java authority string.
+        && (documentation.get("schema").is_none()
+            || StructureContract::identify(documentation)
+                .is_some_and(|contract| contract.producer == StructureProducer::Javac))
 }
 
 fn control_critical_boundary(code: &str) -> bool {
@@ -207,10 +214,11 @@ pub(crate) fn project_flow(events: &Value, documentation: &Value, symbol: &str) 
     let mut meaningful = false;
     let mut invalid = None;
     for row in rows {
-        let kind = row["kind"].as_str().unwrap_or("");
-        match kind {
-            "IF" => {
-                let condition = row["condition"].as_str().unwrap_or("");
+        let statement = SourceStatement::decode(row);
+        let kind = statement.label();
+        match statement {
+            SourceStatement::If { condition, .. } => {
+                let condition = condition.unwrap_or("");
                 if condition.trim().is_empty() {
                     invalid = Some("IF_CONDITION_MISSING".to_string());
                     break;
@@ -220,15 +228,15 @@ pub(crate) fn project_flow(events: &Value, documentation: &Value, symbol: &str) 
                     .steps
                     .push(ProjectionStep::If(condition.to_string()));
             }
-            "ELSE" => {
-                if !row["condition"].as_str().unwrap_or("").trim().is_empty() {
+            SourceStatement::Else { condition, .. } => {
+                if !condition.unwrap_or("").trim().is_empty() {
                     invalid = Some("FLOW_ELSE_CONDITION_UNSUPPORTED".to_string());
                     break;
                 }
                 projection.steps.push(ProjectionStep::Else);
             }
-            "ELSEIF" => {
-                let condition = row["condition"].as_str().unwrap_or("");
+            SourceStatement::ElseIf(condition) => {
+                let condition = condition.unwrap_or("");
                 if condition.trim().is_empty() {
                     invalid = Some("ELSEIF_CONDITION_MISSING".to_string());
                     break;
@@ -239,19 +247,17 @@ pub(crate) fn project_flow(events: &Value, documentation: &Value, symbol: &str) 
                     .push(ProjectionStep::If(condition.to_string()));
                 meaningful = true;
             }
-            "END" => projection.steps.push(ProjectionStep::End),
-            "CALL" | "CONSTRUCT" => {
-                let target = row["target"].as_str().unwrap_or("");
-                if target.is_empty() || row["targetStatus"] == "UNRESOLVED" {
+            SourceStatement::End => projection.steps.push(ProjectionStep::End),
+            SourceStatement::Invocation(call) => {
+                let target = call.target.unwrap_or("");
+                if target.is_empty() || call.unresolved {
                     invalid = Some("FLOW_CALL_TARGET_UNRESOLVED".to_string());
                     break;
                 }
                 // HTTP annotations mark an attempted client call even when
                 // the receiver is a framework type. Keep that exact CALL
                 // visible; boundary metadata is evidence, not delivery proof.
-                let has_http_metadata =
-                    row["http"].as_object().is_some_and(|http| !http.is_empty());
-                if has_http_metadata || !is_framework_symbol(target) {
+                if call.has_http_metadata || !is_framework_symbol(target) {
                     let label = method_label(target);
                     let category = step_kind(kind, target);
                     projection.steps.push(ProjectionStep::Action {
@@ -262,14 +268,14 @@ pub(crate) fn project_flow(events: &Value, documentation: &Value, symbol: &str) 
                 }
                 meaningful = true;
             }
-            "RETURN" => {
+            SourceStatement::Return => {
                 projection
                     .steps
                     .push(ProjectionStep::MethodReturn(String::new()));
                 meaningful = true;
             }
-            "BOUNDARY" => {
-                let code = row["code"].as_str().unwrap_or_else(|| {
+            SourceStatement::Boundary(code) => {
+                let code = code.unwrap_or_else(|| {
                     projection
                         .evidence_gaps
                         .first()
@@ -282,23 +288,25 @@ pub(crate) fn project_flow(events: &Value, documentation: &Value, symbol: &str) 
                 }
                 projection.steps.push(ProjectionStep::Gap(code.to_string()));
             }
-            "STATEMENT" | "LOCAL" => projection
+            SourceStatement::Expression | SourceStatement::Local => projection
                 .steps
                 .push(ProjectionStep::Gap(format!("FLOW_{kind}_TEXT_UNAVAILABLE"))),
-            "LOOP" => {
+            SourceStatement::Unsupported("LOOP") => {
                 invalid = Some("FLOW_LOOP_UNSUPPORTED_IN_M1".to_string());
                 break;
             }
-            "THROW" | "TRY" | "CATCH" | "FINALLY" | "SWITCH" | "BREAK" | "CONTINUE"
-            | "DEFERRED" => {
+            SourceStatement::Unsupported(
+                "THROW" | "TRY" | "CATCH" | "FINALLY" | "SWITCH" | "BREAK" | "CONTINUE"
+                | "DEFERRED",
+            ) => {
                 invalid = Some(format!("FLOW_{kind}_CONTROL_UNSUPPORTED"));
                 break;
             }
-            "" => {
+            SourceStatement::Missing => {
                 invalid = Some("FLOW_EVENT_KIND_MISSING".to_string());
                 break;
             }
-            unknown => {
+            SourceStatement::Unsupported(unknown) => {
                 invalid = Some(format!("FLOW_EVENT_UNSUPPORTED:{unknown}"));
                 break;
             }
@@ -920,6 +928,31 @@ mod tests {
             "boundaries":boundaries
         });
         super::validate_projection(super::project_flow(&events, &documentation, symbol))
+    }
+
+    #[test]
+    fn foreign_source_schema_cannot_borrow_java_flow_authority() {
+        let events = json!([{"kind":"IF","condition":"value != null"},
+            {"kind":"CALL","target":"method:class:svc.Helper#run()V","resolution":"COMPILER_EXACT"},
+            {"kind":"END"},{"kind":"RETURN"}]);
+        for schema in [
+            "codeclew-csharp-documentation-flow/1.0",
+            "codeclew-kotlin-documentation-flow/1.0",
+            "future/1.0",
+        ] {
+            let documentation = json!({"schema":schema,"authority":"JAVAC_SOURCE_STRUCTURE",
+                "events":events,"boundaries":[]});
+            let checked =
+                super::validate_projection(super::project_flow(&events, &documentation, "entry"));
+            assert!(!checked.source_eligible());
+            assert_eq!(checked.projection.steps, vec![super::ProjectionStep::Gap("FLOW_AUTHORITY_NOT_QUALIFIED; EVIDENCE_BOUNDARIES:FLOW_AUTHORITY_NOT_QUALIFIED".into())]);
+        }
+        let java = json!({"schema":"codeclew-java-documentation-flow/1.0",
+            "authority":"JAVAC_SOURCE_STRUCTURE","events":events,"boundaries":[]});
+        assert!(
+            super::validate_projection(super::project_flow(&events, &java, "entry"))
+                .source_eligible()
+        );
     }
 
     fn gap_only(rendered: &super::RenderedProjection, code: &str) {

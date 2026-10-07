@@ -4,12 +4,12 @@ use super::super::model::{
 };
 use super::{Context, gap};
 use crate::documentation::model::{Observation, ServiceEvidence, Source};
+use crate::documentation::source_statement::{
+    SourceStatement, StructureContract, StructureProducer,
+};
 use crate::documentation::{digest, invalid};
 use crate::error::ClewError;
 use serde_json::Value;
-
-const DOCUMENTATION_SCHEMA: &str = "codeclew-kotlin-documentation-flow/1.0";
-const OUTLINE_AUTHORITY: &str = "KOTLIN_PSI_WITH_K2_CALL_TARGETS";
 
 #[derive(Clone, Copy)]
 pub(super) struct OutlineProducer {
@@ -18,15 +18,16 @@ pub(super) struct OutlineProducer {
 }
 
 pub(super) fn producer(owner: &Observation) -> Option<OutlineProducer> {
-    let doc = &owner.normalized["documentation"];
-    match (doc["schema"].as_str(), doc["authority"].as_str()) {
-        (Some(DOCUMENTATION_SCHEMA), Some(OUTLINE_AUTHORITY)) => Some(OutlineProducer {
-            authority: OUTLINE_AUTHORITY,
+    let contract = StructureContract::identify(&owner.normalized["documentation"])?;
+    if super::compiler::capabilities(owner)?.producer != contract.producer {
+        return None;
+    }
+    match contract.producer {
+        StructureProducer::KotlinPsi => Some(OutlineProducer {
+            authority: "KOTLIN_PSI_WITH_K2_CALL_TARGETS",
             kotlin: true,
         }),
-        (Some("codeclew-csharp-documentation-flow/1.0"), Some("ROSLYN_SOURCE_STRUCTURE"))
-            if super::compiler::csharp_admitted(owner) =>
-        {
+        StructureProducer::Roslyn if super::compiler::csharp_admitted(owner) => {
             Some(OutlineProducer {
                 authority: "ROSLYN_SOURCE_STRUCTURE",
                 kotlin: false,
@@ -70,7 +71,7 @@ fn outline_gap(
     gap(&contract.code(code), contract.detail(detail), citation)
 }
 
-/// Attach an outline only to an already-admitted Kotlin declaration. Failed
+/// Attach an outline only to an already-admitted compiler declaration. Failed
 /// outline admission is represented as one cited unavailable marker; it never
 /// promotes the declaration into the causal source-behavior projection.
 pub(super) fn attach(
@@ -457,10 +458,13 @@ fn derive_tree(
             detail: contract.detail(detail),
             event_index: Some(index),
         };
-        match event.kind.as_str() {
-            "IF" => {
-                let Some(condition) = event.event["condition"].as_str().filter(|s| !s.is_empty())
-                else {
+        let statement = SourceStatement::decode(&event.event);
+        match statement {
+            SourceStatement::If {
+                condition,
+                subject_present,
+            } => {
+                let Some(condition) = condition.filter(|s| !s.is_empty()) else {
                     return (
                         None,
                         Some(issue(
@@ -469,7 +473,7 @@ fn derive_tree(
                         )),
                     );
                 };
-                if event.event.get("subject").is_some() {
+                if subject_present {
                     return (
                         None,
                         Some(issue(
@@ -485,8 +489,12 @@ fn derive_tree(
                     ),
                 ));
             }
-            "ELSE" => {
-                if event.event.get("condition").is_some() || event.event.get("subject").is_some() {
+            SourceStatement::Else {
+                condition_present,
+                subject_present,
+                ..
+            } => {
+                if condition_present || subject_present {
                     return (
                         None,
                         Some(issue(
@@ -497,8 +505,8 @@ fn derive_tree(
                 }
                 steps.push(crate::documentation::process_flow::ProjectionStep::Else);
             }
-            "CALL" | "CONSTRUCT" => {
-                let Some(target) = event.event["target"].as_str().filter(|s| !s.is_empty()) else {
+            SourceStatement::Invocation(call) => {
+                let Some(target) = call.target else {
                     return (
                         None,
                         Some(issue(
@@ -507,7 +515,7 @@ fn derive_tree(
                         )),
                     );
                 };
-                if event.event["resolution"] != "COMPILER_EXACT" {
+                if call.exact_target().is_none() {
                     return (
                         None,
                         Some(issue(
@@ -532,7 +540,7 @@ fn derive_tree(
                     category: None,
                 });
             }
-            "RETURN" => steps.push(
+            SourceStatement::Return => steps.push(
                 crate::documentation::process_flow::ProjectionStep::MethodReturn(
                     event
                         .exact_source
@@ -541,8 +549,10 @@ fn derive_tree(
                         .unwrap_or_default(),
                 ),
             ),
-            "END" => steps.push(crate::documentation::process_flow::ProjectionStep::End),
-            "LOCAL" | "STATEMENT" => {
+            SourceStatement::End => {
+                steps.push(crate::documentation::process_flow::ProjectionStep::End)
+            }
+            SourceStatement::Local | SourceStatement::Expression => {
                 if let Some(exact) = &event.exact_source {
                     let label = format!(
                         "{} {}: {}",
@@ -564,7 +574,8 @@ fn derive_tree(
                     ));
                 }
             }
-            kind => {
+            unsupported => {
+                let kind = unsupported.label();
                 let code = match kind {
                     "BOUNDARY" => "KOTLIN_SOURCE_OUTLINE_CONTROL_BOUNDARY",
                     "LOOP" | "TRY" | "CATCH" | "FINALLY" | "DEFERRED" | "THROW" | "BREAK"

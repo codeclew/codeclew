@@ -2,8 +2,49 @@
 //! Portable signature grammar does not transfer Java compiler authority.
 use super::super::model::{CallableProjection, ProjectionKind};
 use super::{CallableKey, Context, ProjectedCallable, gap};
+use crate::documentation::source_statement::{StructureContract, StructureProducer};
 use crate::documentation::{digest, invalid, model::Observation};
 use crate::error::ClewError;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CallNavigation {
+    JavaBehavioral,
+    RetainedCompilerSites,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CallableCapabilities {
+    pub(super) producer: StructureProducer,
+    pub(super) source_structure: Option<StructureContract>,
+    pub(super) call_navigation: CallNavigation,
+}
+
+/// Declaration authority and body structure are admitted independently.
+/// Structure never grants Java's behavior/data consumers to other producers.
+pub(super) fn capabilities(owner: &Observation) -> Option<CallableCapabilities> {
+    let (producer, call_navigation) = if super::java::compiler(owner) {
+        (StructureProducer::Javac, CallNavigation::JavaBehavioral)
+    } else if csharp_admitted(owner) {
+        (
+            StructureProducer::Roslyn,
+            CallNavigation::RetainedCompilerSites,
+        )
+    } else if kotlin_admitted(owner) {
+        (
+            StructureProducer::KotlinPsi,
+            CallNavigation::RetainedCompilerSites,
+        )
+    } else {
+        return None;
+    };
+    let source_structure = StructureContract::admit(&owner.normalized["documentation"])
+        .filter(|contract| contract.producer == producer);
+    Some(CallableCapabilities {
+        producer,
+        source_structure,
+        call_navigation,
+    })
+}
 
 pub(super) fn csharp_candidate(owner: &Observation) -> bool {
     owner.normalized["schema"]
@@ -44,24 +85,29 @@ pub(super) fn csharp_admitted(owner: &Observation) -> bool {
 }
 
 pub(in crate::documentation::static_pages) fn admitted(owner: &Observation) -> bool {
+    capabilities(owner).is_some_and(|capabilities| {
+        capabilities.call_navigation == CallNavigation::RetainedCompilerSites
+    })
+}
+
+fn kotlin_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
-    csharp_admitted(owner)
-        || (owner.kind == "SYMBOL"
-            && n["schema"] == "declaration-descriptor/0.1"
-            && n["declarationKind"] == "FUNCTION"
-            && n["resolution"] == "PROVEN"
-            && n["provider"] == "K2_FIR"
-            && n["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
-            && n["compilerAuthority"] == "fir-facts-extractor/0.6"
-            && n["symbolIdentity"] == owner.symbol
-            && crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol)
-                .is_ok())
+    owner.kind == "SYMBOL"
+        && n["schema"] == "declaration-descriptor/0.1"
+        && n["declarationKind"] == "FUNCTION"
+        && n["resolution"] == "PROVEN"
+        && n["provider"] == "K2_FIR"
+        && n["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+        && n["compilerAuthority"] == "fir-facts-extractor/0.6"
+        && n["symbolIdentity"] == owner.symbol
+        && crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol).is_ok()
 }
 
 pub(in crate::documentation::static_pages) fn body_envelope(owner: &Observation) -> bool {
-    super::outline::producer(owner).is_some()
-        && owner.normalized["documentation"]["events"].is_array()
-        && owner.normalized["documentation"]["boundaries"].is_array()
+    capabilities(owner).is_some_and(|capabilities| {
+        capabilities.call_navigation == CallNavigation::RetainedCompilerSites
+            && capabilities.source_structure.is_some()
+    })
 }
 
 pub(super) fn project_csharp(
@@ -163,6 +209,71 @@ pub(super) fn project_csharp(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn owner(symbol: &str, normalized: serde_json::Value) -> Observation {
+        Observation {
+            id: "owner".into(),
+            kind: "SYMBOL".into(),
+            service: "sample".into(),
+            symbol: symbol.into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn common_capabilities_do_not_transfer_behavior_or_foreign_structure() {
+        let java = "method:class:example.Pipeline#run()V";
+        let kotlin = "callable:example/Pipeline.run#jvm:()V";
+        let csharp = "method:class:Example.Pipeline#Run()V";
+        let producers = [
+            owner(
+                java,
+                json!({"schema":"codeclew-java-compiler-fact/1.0",
+                "declarationKind":"METHOD","symbolIdentity":java,"scope":"main"}),
+            ),
+            owner(
+                kotlin,
+                json!({"schema":"declaration-descriptor/0.1",
+                "declarationKind":"FUNCTION","symbolIdentity":kotlin,"scope":"main",
+                "provider":"K2_FIR","resolution":"PROVEN",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+                "compilerAuthority":"fir-facts-extractor/0.6"}),
+            ),
+            owner(
+                csharp,
+                json!({"schema":crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA,
+                "kind":"DECLARATION","declarationKind":"METHOD","symbolIdentity":csharp,
+                "scope":"main","resolution":"COMPILER_EXACT","csharpIdentity":"csharp:M:Example.Pipeline.Run",
+                "name":"Run","jvmDescriptor":"()V","ownerIdentity":"class:Example.Pipeline"}),
+            ),
+        ];
+        let docs = [
+            json!({"schema":"codeclew-java-documentation-flow/1.0","authority":"JAVAC_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
+            json!({"schema":"codeclew-kotlin-documentation-flow/1.0","authority":"KOTLIN_PSI_WITH_K2_CALL_TARGETS","events":[],"boundaries":[]}),
+            json!({"schema":"codeclew-csharp-documentation-flow/1.0","authority":"ROSLYN_SOURCE_STRUCTURE","events":[],"boundaries":[]}),
+        ];
+        for (index, mut owner) in producers.into_iter().enumerate() {
+            for (body_index, body) in docs.iter().enumerate() {
+                owner.normalized["documentation"] = body.clone();
+                let c = capabilities(&owner).unwrap();
+                assert_eq!(c.source_structure.is_some(), index == body_index);
+                assert_eq!(
+                    c.call_navigation == CallNavigation::JavaBehavioral,
+                    index == 0
+                );
+                assert_eq!(admitted(&owner), index != 0);
+                assert_eq!(body_envelope(&owner), index != 0 && index == body_index);
+            }
+            // A malformed source body must not erase independently admitted
+            // compiler-call navigation; a forged declaration grants neither.
+            owner.normalized["documentation"]["events"] = json!("not an array");
+            assert!(capabilities(&owner).unwrap().source_structure.is_none());
+            owner.normalized["symbolIdentity"] = json!("forged");
+            assert!(capabilities(&owner).is_none());
+        }
+    }
 
     #[test]
     fn roslyn_identity_prefix_and_collision_digest_match_the_worker_contract() {

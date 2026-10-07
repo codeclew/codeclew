@@ -161,7 +161,9 @@ pub(super) fn project_callable(
         })?;
     // Valid Java compiler facts stay on the existing source-behavior adapter,
     // even when the selected service also contains Kotlin declarations.
-    if java::compiler(observation) {
+    if compiler::capabilities(observation).is_some_and(|capabilities| {
+        capabilities.call_navigation == compiler::CallNavigation::JavaBehavioral
+    }) {
         return project_java(context, declaration);
     }
     if kotlin::candidate(observation) {
@@ -194,5 +196,7 @@ pub(super) fn project_callable(
 }
 
 pub(super) fn has_exact_call_capability(owner: &Observation) -> bool {
-    kotlin::candidate(owner) || compiler::csharp_candidate(owner)
+    compiler::capabilities(owner).is_some_and(|capabilities| {
+        capabilities.call_navigation == compiler::CallNavigation::RetainedCompilerSites
+    })
 }
