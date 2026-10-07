@@ -13,7 +13,8 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 SITE = Path(__file__).resolve().parents[1] / 'site'
-GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs')
+GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs',
+                        'examples/clew-starter/docs')
 ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html'}
 TASKS = {'./nav-query.html', './documentation.html', './working-tree.html'}
 
@@ -93,7 +94,8 @@ def archived_root_context(case, root, path):
     case.assertEqual(manifest.get('schema'), 'codeclew-documentation-publication/1.0')
     case.assertEqual(manifest.get('id'), bundle, f'{path}: publication identity mismatch')
     case.assertIn(bindings.get('schema'), ('codeclew-documentation-bindings/1.4',
-                                         'codeclew-documentation-bindings/1.5'))
+                                         'codeclew-documentation-bindings/1.5',
+                                         'codeclew-documentation-bindings/1.6'))
     files = manifest.get('files', {})
     case.assertEqual(files.get('bindings.json'), digest(bindings_bytes),
                      f'{path}: bindings digest mismatch')

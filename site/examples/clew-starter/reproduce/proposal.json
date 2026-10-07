@@ -1,0 +1,190 @@
+{
+  "schema": "codeclew-documentation-proposal/1.0",
+  "operations": [
+    {
+      "entrypoint": "section1",
+      "title": "Prepare a source-linked task with first-document.py",
+      "summary": {
+        "text": "first-document.py prepares an authoring task for a first overview or a question about saved source. It accepts an initialized documentation root, service and audience, plus a Clew launcher (default: clew). Capture needs a local Git checkout, repository URL, Python/Java/Kotlin language, declared dialect and repeatable committed source roots; read needs an exact saved snapshot and question.\n\nThe source describes capture resolving committed HEAD, comparing the service registration before adding a missing service, then invoking bind and check and requiring a returned snapshot. Read uses the supplied snapshot. Both prepare overview Work, record paginated context and a SOURCE inventory, select source spans while preserving separate authority groups, and read complete retained parts. The CLI wrapper expects JSON and accepted exit codes.\n\nA fresh authoring/first-document-* directory receives context, inventory, source-part JSON, a Work request, packet.md, an intentionally incomplete proposal.json, result.json and CLI progress; capture also writes service.json and check.json. The successful path ends at READY_FOR_AUTHOR with NOT_PUBLISHED. Read the packet and complete parts, then replace the proposal title, summary and empty evidence with source-supported content. The starter prints a later submit command.\n\nThis overview is grounded in retained Python syntax/declarations and lexical order. Import declarations are present, but imported implementations, resolved call targets, runtime dispatch and Clew CLI implementation semantics are not established; the declared dialect is not compiler-validated.",
+        "evidence": [
+          "s1",
+          "s133",
+          "s71",
+          "s201",
+          "s230",
+          "s166",
+          "s33",
+          "s31",
+          "s206",
+          "s32",
+          "s116",
+          "s121",
+          "s90"
+        ]
+      },
+      "steps": [],
+      "visuals": [
+        {
+          "id": "starter-preparation",
+          "kind": "execution-flow",
+          "title": "From capture or saved snapshot to an authoring packet",
+          "purpose": {
+            "text": "Show where the two input modes merge and where preparation hands off to the author.",
+            "evidence": [
+              "s1",
+              "s133"
+            ]
+          },
+          "scope": {
+            "text": "Successful preparation described by the retained Python function bodies; commands are invocation syntax, not CLI implementation evidence.",
+            "evidence": [
+              "s1",
+              "s71",
+              "s133",
+              "s230"
+            ]
+          },
+          "limitations": [
+            "Shows only successful preparation; missing inputs, registration conflicts, incomplete reads and command failures stop the source-described path.",
+            "Edges summarize source-level branches and lexical order, not compiler-resolved calls or observed runtime execution.",
+            "Import declarations are retained; their implementations and runtime dispatch are unresolved in this package.",
+            "The dialect is declared rather than compiler-validated; source scope is conservative.",
+            "Clew command implementations and external effects are outside the retained source. Preparation writes NOT_PUBLISHED and prints a later submit command; it performs no proposal submission or publication in the retained prepare body."
+          ],
+          "nodes": [
+            {
+              "id": "inputs",
+              "meaning": {
+                "text": "Inputs and initialized root",
+                "evidence": [
+                  "s133",
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "capture",
+              "meaning": {
+                "text": "Capture committed HEAD",
+                "evidence": [
+                  "s1",
+                  "s71"
+                ]
+              }
+            },
+            {
+              "id": "read",
+              "meaning": {
+                "text": "Read saved snapshot",
+                "evidence": [
+                  "s133",
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "retained",
+              "meaning": {
+                "text": "Record context and complete source parts",
+                "evidence": [
+                  "s1",
+                  "s201",
+                  "s230"
+                ]
+              }
+            },
+            {
+              "id": "packet",
+              "meaning": {
+                "text": "Write packet and incomplete proposal",
+                "evidence": [
+                  "s1",
+                  "s166"
+                ]
+              }
+            },
+            {
+              "id": "ready",
+              "meaning": {
+                "text": "READY_FOR_AUTHOR; next: author proposal",
+                "evidence": [
+                  "s1"
+                ]
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "choose-capture",
+              "from": "inputs",
+              "to": "capture",
+              "meaning": {
+                "text": "capture mode",
+                "evidence": [
+                  "s133",
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "choose-read",
+              "from": "inputs",
+              "to": "read",
+              "meaning": {
+                "text": "read mode",
+                "evidence": [
+                  "s133",
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "captured-snapshot",
+              "from": "capture",
+              "to": "retained",
+              "meaning": {
+                "text": "Returned snapshot required",
+                "evidence": [
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "supplied-snapshot",
+              "from": "read",
+              "to": "retained",
+              "meaning": {
+                "text": "Use supplied snapshot",
+                "evidence": [
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "assemble",
+              "from": "retained",
+              "to": "packet",
+              "meaning": {
+                "text": "Attach recorded context and parts",
+                "evidence": [
+                  "s1"
+                ]
+              }
+            },
+            {
+              "id": "handoff",
+              "from": "packet",
+              "to": "ready",
+              "meaning": {
+                "text": "Write result; print later submit command",
+                "evidence": [
+                  "s1"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

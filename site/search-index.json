@@ -84,6 +84,18 @@
     "group": "Tasks"
   },
   {
+    "title": "See clew document its own starter",
+    "url": "./documentation.html#clew-starter",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
+    "title": "Export linked pages from a saved Check",
+    "url": "./documentation.html#retained-source-pages",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
     "title": "Select one small committed source scope",
     "url": "./documentation.html#source-snapshot",
     "description": "Create a first document",
