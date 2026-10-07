@@ -195,6 +195,40 @@ class KotlinDocumentationFlowTest {
         assertEquals("value", bytes.copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString())
     }
 
+    @Test
+    fun assignmentsKeepTheirSourceSpansAndCallsWithoutInventingStateFacts() {
+        val source = """
+            package docs
+            // π🙂 before the assignment spans
+            fun update(flag: Boolean): Int {
+                var value = 0
+                if (flag) { value = compute() } else { value += 2 }
+                if (value == 7) return value
+                return value
+            }
+            fun compute(): Int = 7
+        """.trimIndent().replace("\n", "\r\n") + "\r\n"
+        val row = extract(source).single { it["name"]!!.jsonPrimitive.content == "update" }
+        val flow = row["documentation"]!!.jsonObject
+        assertTrue(flow["boundaries"]!!.jsonArray.isEmpty(), flow.toString())
+        val events = flow["events"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("LOCAL", "IF", "CALL", "STATEMENT", "ELSE", "STATEMENT", "END", "IF", "RETURN", "END", "RETURN"),
+            events.map { it["kind"]!!.jsonPrimitive.content })
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        val assignments = events.filter { it["kind"]!!.jsonPrimitive.content == "STATEMENT" }
+        assertEquals(listOf("value = compute()", "value += 2"), assignments.map { event ->
+            val span = event["sourceSpan"]!!.jsonObject
+            assertEquals(row["documentationSymbol"], span["ownerSymbolIdentity"])
+            assertEquals(events.indexOf(event), span["ordinal"]!!.jsonPrimitive.int)
+            assertFalse(event.containsKey("state"))
+            assertFalse(event.containsKey("reachable"))
+            bytes.copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+        })
+        val call = events.single { it["kind"]!!.jsonPrimitive.content == "CALL" }
+        assertEquals("callable:docs/compute#jvm:()I", call["target"]!!.jsonPrimitive.content)
+        assertEquals("COMPILER_EXACT", call["resolution"]!!.jsonPrimitive.content)
+    }
+
     private fun extract(source: String): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-docs-facts").toRealPath()
         val disposable = Disposer.newDisposable("kotlin-docs-test")

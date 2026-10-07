@@ -205,7 +205,12 @@ private class KotlinDocumentationFlow(
             event("IF", expression, mapOf("condition" to JsonPrimitive(condition)))
             scan(expression.right)
             event("END", expression)
-        } else super.visitBinaryExpression(expression)
+        } else {
+            super.visitBinaryExpression(expression)
+            // Retain the assignment's source occurrence, without deriving
+            // storage identity, value flow or an effect from PSI syntax.
+            if (KtTokens.ALL_ASSIGNMENTS.contains(expression.operationToken)) event("STATEMENT", expression)
+        }
     }
 
     override fun visitSafeQualifiedExpression(expression: KtSafeQualifiedExpression) {

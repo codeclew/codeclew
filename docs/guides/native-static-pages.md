@@ -367,11 +367,19 @@ event ordinal and full compilation-source digest. Kotlin PSI is its first
 producer; this coordinate contract does not establish execution order, variable
 values, aliases or runtime dispatch.
 
-New captures preserve exact LOCAL, CALL and RETURN text in the ordinary shared
+New captures preserve exact LOCAL, STATEMENT, CALL and RETURN text in the ordinary shared
 source appendix and citations. Repeated calls on the same Unicode/CRLF line have
 different retained sources and citations. Expression-body returns cite the body
 expression; explicit returns cite the retained return statement. Expanded callee
 bodies use the same path as selected roots. HTML and inert MDX use one renderer.
+
+Kotlin captures also retain ordinary and compound assignments as cited STATEMENT
+events, including calls inside the assignment. These are source occurrences;
+they do not establish storage identity, value transfer or a state effect. The
+public [paired Pipeline fixtures](../../fixtures/documentation-common-pipeline/README.md)
+exercise task polling, source guards, a name helper, transformation, an opaque
+gateway interface and state assignments in Java and Kotlin. Queue wiring and
+Kotlin data/state transfer still require separately qualified evidence.
 
 A malformed optional span yields an event-local
 `KOTLIN_SOURCE_OUTLINE_EXACT_SPAN_REJECTED` gap and withholds exact expression
