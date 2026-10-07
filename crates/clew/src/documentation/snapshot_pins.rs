@@ -296,7 +296,7 @@ fn pin_result(
         .map(|(id, evidence)| {
             (
                 id.clone(),
-                json!({"revision": evidence.revision, "coverage": evidence.coverage}),
+                json!({"revision": evidence.revision, "coverage": evidence.coverage, "entrypoints": evidence.entrypoints.len()}),
             )
         })
         .collect();
@@ -305,6 +305,9 @@ fn pin_result(
         "status": status,
         "name": name,
         "snapshot": snapshot,
+        "manifestBytes": snapshot.rsplit_once('/').and_then(|(_, size)| size.parse::<u64>().ok()),
+        "checkStatus": if checked.unresolved.is_empty() { "CHECKED" } else { "UNRESOLVED" },
+        "unresolved": checked.unresolved.iter().map(|(id, record)| (id, super::check::unresolved_summary(record))).collect::<BTreeMap<_, _>>(),
         "namedRoot": {"name": name, "snapshot": snapshot, "root": repo.root},
         "readability": "READABLE_NOW_CURRENT_READER",
         "readerContract": READER_CONTRACT,

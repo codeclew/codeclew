@@ -251,6 +251,18 @@ pub(crate) fn safe_summary(value: &Value) -> Option<Value> {
     }))
 }
 
+/// Revalidate the source-free projection already persisted in a saved Check.
+pub(crate) fn saved_summary(value: &Value) -> Option<Value> {
+    if !value["schema"].is_null() {
+        return safe_summary(value);
+    }
+    safe_summary(&json!({
+        "schema":SCHEMA, "stage":value["stage"], "status":value["status"],
+        "process":{"exitCode":value["exitCode"], "signal":value["signal"]},
+        "stdout":value["stdout"], "stderr":value["stderr"]
+    }))
+}
+
 fn stream_metadata(tail: &Tail) -> Value {
     json!({
         "observedBytes": tail.observed,
@@ -319,6 +331,13 @@ mod tests {
         );
         let diagnostic = from_evidence(&error.evidence).unwrap();
         let safe = safe_summary(&diagnostic).unwrap();
+        assert_eq!(saved_summary(&safe), Some(safe.clone()));
+        let mut extra_private = safe.clone();
+        extra_private["privateArtifact"] = json!("PRIVATE_DIAGNOSTIC_MARKER");
+        assert_eq!(saved_summary(&extra_private), Some(safe.clone()));
+        let mut forged = safe.clone();
+        forged["stdout"]["retainedBytes"] = json!(TAIL_LIMIT + 1);
+        assert!(saved_summary(&forged).is_none());
         assert_eq!(safe["status"], "CAPTURED_PRIVATE");
         assert!(!safe.to_string().contains("private"));
         assert!(!error.to_string().contains("stdout-private"));

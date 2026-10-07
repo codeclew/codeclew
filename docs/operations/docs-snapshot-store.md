@@ -59,7 +59,15 @@ historical capture inputs. The documentation repository must still be openable.
 `pin` and `show` validate the current typed Check reader data, including each
 original composition parent. Missing or corrupt required objects fail explicitly;
 an unsuccessful verification leaves an existing marker in place. The report says
-`READABLE_NOW_CURRENT_READER` and source freshness `UNVERIFIED`. It does not
+`READABLE_NOW_CURRENT_READER` and source freshness `UNVERIFIED`. The separate
+`checkStatus` reports `CHECKED` or `UNRESOLVED`; a readable snapshot can contain
+failed source acquisition. `unresolved` preserves the recorded reason and next
+action, while `services[ID].entrypoints` counts captured entrypoints. The
+`manifestBytes` field and the snapshot handle's `/size` suffix count serialized
+manifest bytes, not entrypoints. Selecting a service whose capture failed reports
+that snapshot's recorded cause; a service omitted from capture is identified as
+`SERVICE_NOT_SELECTED`. Repair the cause and explicitly run
+`docs check --service ID`, or select a known snapshot containing the service. This does not
 revalidate current source code, certify compiler-input reuse, or imply a complete
 service analysis where the retained snapshot records gaps. `show` returns the
 exact `snapshot` handle for supported consumer commands. Those consumers retain

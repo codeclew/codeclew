@@ -3,7 +3,7 @@
 #[path = "support/documentation.rs"]
 mod support;
 use clew::documentation::{cache, check::Check, store::Repository};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 use support::Fixture;
 
@@ -62,6 +62,16 @@ fn pins_share_objects_and_survive_latest_and_declaration_changes_without_source(
         checked.input_digest
     );
     let shown = f.ok(&["docs", "snapshot", "show", "--name", "release"]);
+    assert_eq!(shown["checkStatus"], "CHECKED");
+    assert_eq!(shown["unresolved"], json!({}));
+    assert_eq!(
+        shown["services"]["orders"]["entrypoints"],
+        checked.services["orders"].entrypoints.len()
+    );
+    assert_eq!(
+        shown["manifestBytes"],
+        handle.rsplit_once('/').unwrap().1.parse::<u64>().unwrap()
+    );
     assert!(shown.to_string().contains(&handle));
     assert!(shown.to_string().contains("UNVERIFIED"));
     let listed = f.ok(&["docs", "snapshot", "list"]);
@@ -78,6 +88,65 @@ fn pins_share_objects_and_survive_latest_and_declaration_changes_without_source(
         fs::read(f.docs.join(".codeclew/cache/latest-check.json")).unwrap(),
         b"not a snapshot"
     );
+}
+
+#[test]
+fn readable_failed_snapshot_reports_recorded_capture_status_through_cli() {
+    use std::collections::BTreeMap;
+    let f = Fixture::new();
+    f.service("orders");
+    let repo = Repository::open(&f.docs).unwrap();
+    let mut checked = clew::documentation::check::assemble(
+        repo.input_digest().unwrap(),
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "orders".into(),
+            json!({
+                "status":"UNRESOLVED", "reason":"WORKER_CRASHED",
+                "nextAction":"Repair the source binding and explicitly check orders.",
+                "evidencePackage":{"privateArtifact":"PRIVATE_DIAGNOSTIC_MARKER"}
+            }),
+        )]),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    checked.source_inputs = Some(clew::documentation::check::SourceInputs {
+        schema: clew::documentation::check::SOURCE_INPUTS_SCHEMA.into(),
+        input_digest: checked.input_digest.clone(),
+        inputs: repo.inputs().unwrap(),
+        selected_services: ["orders".into()].into_iter().collect(),
+        retained_services: Default::default(),
+    });
+    let handle = checked.save_snapshot(&repo).unwrap();
+    let pinned = pin(&f, "capture-failed", &handle);
+    let shown = f.ok(&["docs", "snapshot", "show", "--name", "capture-failed"]);
+    for result in [pinned, shown] {
+        assert_eq!(result["readability"], "READABLE_NOW_CURRENT_READER");
+        assert_eq!(result["checkStatus"], "UNRESOLVED");
+        assert_eq!(result["unresolved"]["orders"]["reason"], "WORKER_CRASHED");
+        assert_eq!(
+            result["manifestBytes"],
+            handle.rsplit_once('/').unwrap().1.parse::<u64>().unwrap()
+        );
+        assert_eq!(result["services"], json!({}));
+        assert!(!result.to_string().contains("PRIVATE_DIAGNOSTIC_MARKER"));
+    }
+    let (code, failure) = f.run(&[
+        "docs",
+        "context",
+        "--service",
+        "orders",
+        "--snapshot",
+        &handle,
+    ]);
+    assert_ne!(code, 0);
+    assert_eq!(failure["error"]["code"], "INVALID_INPUT");
+    assert_eq!(failure["error"]["snapshotId"], handle);
+    assert!(failure.to_string().contains("WORKER_CRASHED"));
+    assert!(failure.to_string().contains("Repair the source binding"));
+    assert!(failure.to_string().contains(&handle));
+    assert!(!failure.to_string().contains("PRIVATE_DIAGNOSTIC_MARKER"));
 }
 
 #[test]

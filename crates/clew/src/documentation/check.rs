@@ -1035,10 +1035,46 @@ impl Check {
         if selected.iter().any(|id| !services.contains_key(id)) {
             return Err(invalid("selected documentation service does not exist"));
         }
-        if selected.iter().any(|id| !checked.services.contains_key(id)) {
-            return Err(invalid(
-                "selected service is missing from retained evidence; select a saved snapshot containing it or explicitly run docs check --service ID",
+        if let Some(service) = selected
+            .iter()
+            .find(|id| !checked.services.contains_key(*id))
+        {
+            let snapshot = match &original_handle {
+                Some(handle) => handle.clone(),
+                None => {
+                    let raw = normalized_bytes
+                        .as_deref()
+                        .ok_or_else(|| invalid("saved check manifest is missing"))?;
+                    format!("{}/{}", super::cache::content_digest(raw), raw.len())
+                }
+            };
+            let recorded = checked.unresolved.get(service).map(unresolved_summary);
+            let message = match recorded.as_ref() {
+                Some(failure) if failure["reason"] == "SERVICE_NOT_SELECTED" => format!(
+                    "service {service} was not selected for capture in snapshot {snapshot}; explicitly run docs check --service {service} or select a snapshot containing it"
+                ),
+                Some(failure) => format!(
+                    "service {service} has no retained evidence because snapshot {snapshot} recorded a capture failure ({}): {}; resolve the recorded cause and explicitly run docs check --service {service}",
+                    failure["reason"].as_str().unwrap_or("UNRESOLVED"),
+                    failure["nextAction"]
+                        .as_str()
+                        .unwrap_or("inspect the selected docs check unresolved record")
+                ),
+                None => format!(
+                    "service {service} is missing from retained evidence in snapshot {snapshot}; select a saved snapshot containing it or explicitly run docs check --service {service}"
+                ),
+            };
+            let mut error = invalid(message)
+                .with_snapshot(&snapshot)
+                .with_relevant(service);
+            error.evidence.push(format!(
+                "documentation-retained-service-failure:{}",
+                json!({
+                    "schema":"codeclew-documentation-retained-service-failure/1.0",
+                    "service":service,"snapshot":snapshot,"recordedFailure":recorded
+                })
             ));
+            return Err(error);
         }
         if let Some(handle) = original_handle {
             return Ok((checked, handle));
@@ -1297,12 +1333,240 @@ impl Check {
     }
 }
 
+/// Public diagnostic fields only; private worker artifacts and full evidence
+/// packages remain in the stored Check and are not copied into reader errors.
+pub(super) fn unresolved_summary(record: &Value) -> Value {
+    let mut summary = serde_json::Map::new();
+    for key in ["status", "reason", "nextAction", "targetRevision"] {
+        if let Some(value) = record.get(key).and_then(Value::as_str) {
+            summary.insert(key.into(), json!(value));
+        }
+    }
+    if let Some(value) = record
+        .get("workerFailure")
+        .and_then(crate::worker_diagnostics::safe_summary)
+    {
+        summary.insert("workerFailure".into(), value);
+    }
+    if let Some(value) = record
+        .get("mavenFailure")
+        .and_then(crate::maven_diagnostics::saved_summary)
+    {
+        summary.insert("mavenFailure".into(), value);
+    }
+    Value::Object(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    fn add_kotlin_service(repo: &Repository, id: &str) -> Service {
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":id, "title":id,
+            "repositoryId":id, "repository":format!("https://example.invalid/{id}"),
+            "language":"kotlin", "profile":"kotlin-jvm-gradle-analysis",
+            "compilations":[":/main"], "targetRef":"main"
+        }))
+        .unwrap();
+        repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        service
+    }
+
+    // Synthetic compiler graph: this tests projection/retention, not worker acquisition.
+    fn kotlin_scheduled_evidence(service: &Service) -> ServiceEvidence {
+        let symbol = "callable:example/Worker.tick#jvm:()V";
+        let file = "src/main/kotlin/example/Worker.kt";
+        let text = "package example\nimport org.springframework.scheduling.annotation.Scheduled\nclass Worker { @Scheduled(fixedDelay = 100) fun tick() {} }\n";
+        let annotation = "org.springframework.scheduling.annotation.Scheduled";
+        let fact = json!({
+            "kind":"DECLARATION", "symbolIdentity":symbol, "ownerIdentity":"class:example/Worker",
+            "name":"tick", "declarationKind":"METHOD", "file":file,
+            "startLine":3, "endLine":3, "resolution":"RESOLVED",
+            "documentation":{"events":[]}, "scope":{"compilation":":/main"},
+            "jvmAnnotations":{
+                "schema":"jvm-annotation-facts/1.0", "authority":"K2_RESOLVED_ANNOTATIONS",
+                "declaration":symbol,
+                "definitions":{(annotation):{"origin":{"kind":"BINARY","identity":annotation},
+                    "annotations":[],"members":{"fixedDelay":{"annotations":[],"returnType":"long"}}}},
+                "types":[], "callables":[{"method":{"identity":symbol,"annotations":[{
+                    "typeName":annotation,"arguments":{"fixedDelay":{"kind":"CONSTANT","value":100}},
+                    "origin":{"kind":"SOURCE","identity":file}}],"overrides":[]},
+                    "classes":[],"abstractMethod":false,"inherited":false,"implementationSource":true}],
+                "boundaries":[], "coverage":{"status":"COMPLETE","scope":"REACHABLE_ANNOTATIONS_AND_HIERARCHY"}
+            }
+        });
+        super::super::analysis::project(
+            service,
+            &"a".repeat(40),
+            &digest(service).unwrap(),
+            "DEVELOPMENT",
+            "COMPLETE",
+            vec![(fact, "binding-digest".into())],
+            &BTreeMap::from([(file.into(), text.into())]),
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn retained_failed_capture_preserves_recorded_reason_snapshot_and_healthy_sibling() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Recorded capture failure").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        for id in ["failed", "healthy", "unselected"] {
+            add_kotlin_service(&repo, id);
+        }
+        let checked = capture_selected_with(&repo,
+            &BTreeSet::from(["failed".into(), "healthy".into()]), repo.inputs().unwrap(),
+            |service, _, _| {
+                if service.id == "failed" {
+                    let mut error = ClewError::new(crate::error::ErrorCode::WorkerCrashed,
+                        "sentinel acquisition failure; repair the fixture binding");
+                    error.evidence.push("documentation-evidence-report:{\"privateArtifact\":\"PRIVATE_DIAGNOSTIC_MARKER\"}".into());
+                    Err(error)
+                } else { Ok(kotlin_scheduled_evidence(service)) }
+            }).unwrap();
+        let handle = checked.save_snapshot(&repo).unwrap();
+        let latest = fs::read(repo.path(".codeclew/cache/latest-check.json").unwrap()).unwrap();
+        assert_eq!(checked.unresolved["failed"]["reason"], "WORKER_CRASHED");
+        for selector in [Some(handle.as_str()), None] {
+            let error =
+                Check::retained(&repo, selector, &BTreeSet::from(["failed".into()])).unwrap_err();
+            assert_eq!(error.code, crate::error::ErrorCode::InvalidInput);
+            assert_eq!(error.snapshot_id.as_deref(), Some(handle.as_str()));
+            assert!(!error.retryable); // Re-reading the immutable failure cannot repair capture.
+            assert!(error.message.contains("WORKER_CRASHED"));
+            assert!(error.message.contains("sentinel acquisition failure"));
+            let report: Value = serde_json::from_str(
+                error.evidence[0]
+                    .strip_prefix("documentation-retained-service-failure:")
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(report["service"], "failed");
+            assert_eq!(report["snapshot"], handle);
+            assert_eq!(report["recordedFailure"]["reason"], "WORKER_CRASHED");
+            assert!(!report.to_string().contains("PRIVATE_DIAGNOSTIC_MARKER"));
+        }
+        assert!(Check::retained(&repo, Some(&handle), &BTreeSet::from(["healthy".into()])).is_ok());
+        let error = Check::retained(&repo, Some(&handle), &BTreeSet::from(["unselected".into()]))
+            .unwrap_err();
+        assert!(error.message.contains("was not selected for capture"));
+        assert!(!error.message.contains("capture failure"));
+        let missing =
+            Check::retained(&repo, Some(&handle), &BTreeSet::from(["unknown".into()])).unwrap_err();
+        assert!(missing.message.contains("service does not exist"));
+        assert!(missing.evidence.is_empty());
+        assert_eq!(
+            fs::read(repo.path(".codeclew/cache/latest-check.json").unwrap()).unwrap(),
+            latest
+        );
+        let pinned = super::super::snapshot_pins::run(super::super::snapshot_pins::Command::Pin {
+            root: temporary.path().into(),
+            name: "failed-check".into(),
+            snapshot: handle.clone(),
+        })
+        .unwrap();
+        let shown = super::super::snapshot_pins::run(super::super::snapshot_pins::Command::Show {
+            root: temporary.path().into(),
+            name: "failed-check".into(),
+        })
+        .unwrap();
+        for result in [pinned, shown] {
+            assert_eq!(result["checkStatus"], "UNRESOLVED");
+            assert_eq!(result["manifestBytes"], latest.len());
+            assert_eq!(result["services"]["healthy"]["entrypoints"], 1);
+            assert_eq!(result["unresolved"]["failed"]["reason"], "WORKER_CRASHED");
+            assert_eq!(result["readability"], "READABLE_NOW_CURRENT_READER");
+            assert!(!result.to_string().contains("PRIVATE_DIAGNOSTIC_MARKER"));
+        }
+        let mut generic = assemble(
+            repo.input_digest().unwrap(),
+            checked.services.clone(),
+            BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        generic.source_inputs = checked.source_inputs.clone();
+        let generic_handle = generic.save_snapshot(&repo).unwrap();
+        let missing = Check::retained(
+            &repo,
+            Some(&generic_handle),
+            &BTreeSet::from(["failed".into()]),
+        )
+        .unwrap_err();
+        assert!(missing.message.contains("missing from retained evidence"));
+        assert!(!missing.message.contains("capture failure"));
+        let manifest = repo.path("codeclew-docs.yaml").unwrap();
+        let mut declarations: Value =
+            serde_yaml_ng::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        declarations["title"] = json!("Changed inputs");
+        fs::write(manifest, serde_yaml_ng::to_string(&declarations).unwrap()).unwrap();
+        let changed_repo = Repository::open(temporary.path()).unwrap();
+        let stale = Check::retained(
+            &changed_repo,
+            Some(&handle),
+            &BTreeSet::from(["failed".into()]),
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, crate::error::ErrorCode::StaleRequiresReslice);
+        assert!(stale.evidence.is_empty());
+    }
+
+    #[test]
+    fn compiler_annotations_without_syntax_annotation_observations_save_and_retain() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Compiler annotations").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        add_kotlin_service(&repo, "healthy");
+        let checked = capture_selected_with(
+            &repo,
+            &BTreeSet::new(),
+            repo.inputs().unwrap(),
+            |service, _, _| Ok(kotlin_scheduled_evidence(service)),
+        )
+        .unwrap();
+        assert!(checked.unresolved.is_empty());
+        let service = &checked.services["healthy"];
+        assert_eq!(service.entrypoints.len(), 1);
+        assert_eq!(service.entrypoints[0].kind, "SCHEDULED_JOB");
+        assert!(
+            service
+                .observations
+                .values()
+                .all(|o| o.kind != "SOURCE_ANNOTATIONS")
+        );
+        for kind in ["CONTRACT_SCOPE", "ENTITY_SCOPE"] {
+            assert!(checked.dependencies.values().any(|o| o.kind == kind));
+        }
+        let handle = checked.save_snapshot(&repo).unwrap();
+        assert!(Check::retained(&repo, Some(&handle), &BTreeSet::from(["healthy".into()])).is_ok());
+        let mut previous = super::super::render::make_bindings(&checked, BTreeMap::new()).unwrap();
+        previous.fragments.insert(
+            "former-syntax".into(),
+            super::super::bindings::FragmentBinding {
+                influence_scope: None,
+                subject: "service:healthy".into(),
+                content_digest: "old".into(),
+                content: Value::Null,
+                dependencies: BTreeMap::from([(
+                    "healthy:source_annotations:former".into(),
+                    "former-digest".into(),
+                )]),
+                dependencies_from_evidence: false,
+                sources: BTreeMap::new(),
+                evidence: None,
+            },
+        );
+        let freshness = super::super::bindings::freshness(Some(&previous), &checked);
+        assert_eq!(freshness["status"], "PARTIALLY_STALE");
+    }
 
     #[test]
     fn scenario_with_many_declared_services_is_not_rejected_before_traversal() {
