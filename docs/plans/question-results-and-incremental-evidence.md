@@ -1,6 +1,6 @@
 # Question results and incremental evidence
 
-Status: authorized on 2026-10-06; execution started.
+Status: selected increments delivered and officially installed in 0.13.17 on 2026-10-06. Separate Kotlin/Java documentation parity remains a follow-up.
 Baseline: release `v0.13.14`, main `496284241625ee86fa61d8d5422739601ac92d28`.
 
 ## Outcome and ownership
@@ -211,12 +211,12 @@ document alone is not completion.
 | Slice | Status | Result / next decision |
 | --- | --- | --- |
 | Baseline and first scoped read | Accepted and shipped in 0.13.15 | Independent acceptance covers `30c837d`: public retained `docs context --dependency` preserves the exact 75-item method result on the same saved snapshot; per-page object fetches 1,996 to 105 and fetched bytes 5,142,771 to 2,648,886. Source objects still read in full; selected validation is explicit. Full local and exact-release hosted CI passed; official installed verification preserves all 75 items and both pages. |
-| Precise question-result reuse | Implementation accepted; release pending | Accepted `c15fecd`: exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
-| Content-keyed syntax reuse | Implementation accepted; release pending | Independently accepted `1db703a`: same-service/path exact-byte extraction reuse with complete producer admission and current source receipts. Two-revision full evidence/Check equality and 21.863% measured incremental native benefit; 16 final syntax tests including nine cache regressions passed. Compiler reuse is outside this slice. |
-| Role evidence representation | Compact native 1.1 independently accepted; release pending | Checked native presentation replaces only duplicate raw model-facing pages/source parts. Actual grouped author/reviewer delivery, canonical approval, both-version recovery and frozen 1.0 compatibility passed. The complete four-call generated Java fixture decreases paired prompt/schema reference counts 163,106 to 104,051 (36.2065%); expanded calls decrease 38.8299%. Initial author without duplication grows by 18 reference tokens. Initial semantic selection remains deferred. |
-| Short opaque model IDs | Implementation independently accepted; release pending | Accepted `e729cd2`: explicit host-prepared native author/reviewer carrier, stable typed expansion maps, durable raw JSON/failure recovery and supported public serializer. Actual first-call prompts plus strict schemas decrease reference `o200k_base` text counts by 4.9184% including protocol. The earlier 10.26% remains a historical prospective upper bound, not delivered benefit. See the [assessment and actual measurement](../product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06). |
-| Incremental releases | 0.13.15 published and installed; 0.13.16 aborted; 0.13.17 final gates pending | The 0.13.15 local/hosted gates, 14 published assets and official installed retained-context equivalence remain recorded below. Integrated 0.13.16 local CI passed on `e2542efd33f193eb9e7f6e126b3f31f535fd66ce` in 4,173.985 seconds, including real C# qualification and a RELEASE usability smoke. The 0.13.16 tag remains immutable without assets after Linux test-helper lint failures. Version 0.13.17 carries the narrow fix; exact release-revision hosted gates, publication and official installed verification follow. |
-| Documentation and cleanup | Cleanup accepted and published; final product documentation prepared for release | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links. README, practical workflow, snapshot-store reference, mirrored portable guide and public task page describe the accepted candidates without changing historical example qualification. Current guides and installation pins target 0.13.17; historical source and renderer receipts retain their original versions. |
+| Precise question-result reuse | Accepted and shipped in 0.13.17 | Accepted `c15fecd`: exact request discovery, complete retained-history checks and native method preparation replay; separate from release 0.13.15. |
+| Content-keyed syntax reuse | Accepted and shipped in 0.13.17 | Independently accepted `1db703a`: same-service/path exact-byte extraction reuse with complete producer admission and current source receipts. Two-revision full evidence/Check equality and 21.863% measured incremental native benefit; 16 final syntax tests including nine cache regressions passed. Compiler reuse is outside this slice. |
+| Role evidence representation | Compact native 1.1 accepted and shipped in 0.13.17 | Checked native presentation replaces only duplicate raw model-facing pages/source parts. Actual grouped author/reviewer delivery, canonical approval, both-version recovery and frozen 1.0 compatibility passed. The complete four-call generated Java fixture decreases paired prompt/schema reference counts 163,106 to 104,051 (36.2065%); expanded calls decrease 38.8299%. Initial author without duplication grows by 18 reference tokens. Initial semantic selection remains deferred. |
+| Short opaque model IDs | Accepted and shipped in 0.13.17 | Accepted `e729cd2`: explicit host-prepared native author/reviewer carrier, stable typed expansion maps, durable raw JSON/failure recovery and supported public serializer. Actual first-call prompts plus strict schemas decrease reference `o200k_base` text counts by 4.9184% including protocol. The earlier 10.26% remains a historical prospective upper bound, not delivered benefit. See the [assessment and actual measurement](../product/validation/model-id-alias-feasibility.md#supported-native-candidate-2026-10-06). |
+| Incremental releases | 0.13.15 and 0.13.17 published and officially installed; 0.13.16 aborted | The 0.13.15 local/hosted gates, 14 published assets and official installed retained-context equivalence remain recorded below. Integrated 0.13.16 local CI passed on `e2542efd33f193eb9e7f6e126b3f31f535fd66ce` in 4,173.985 seconds, including real C# qualification and a RELEASE usability smoke. The 0.13.16 tag remains immutable without assets after Linux test-helper lint failures. Version 0.13.17 includes the narrow test-build fix and Kotlin capture correction; exact-head CI, all platform builds, 14 assets, actual 0.13.15 upgrade and four installed checks passed as recorded below. |
+| Documentation and cleanup | Accepted cleanup and current product documentation published | Cleanup `f570dba` (integrated as `f622083`) removes three generated historical reports and pins public methodology links. README, practical workflow, snapshot-store reference, mirrored portable guide and public task page describe the accepted candidates without changing historical example qualification. Current guides and installation pins target 0.13.17; historical source and renderer receipts retain their original versions. |
 
 ### First scoped-read candidate (2026-10-06)
 
@@ -732,3 +732,90 @@ regression will capture a small Kotlin compiler project with configuration
 cache enabled and verify ordinary HTML rendering from the saved Check. Native
 linked MDX/HTML projection remains Java-only; this regression must not claim
 Kotlin native MDX support.
+
+
+### Published 0.13.17 and installed verification (2026-10-06)
+
+The final immutable `v0.13.17` tag binds commit
+`649b1a964372d5e184c525dc6eca06125b7dbe14`, tree
+`8921344bfc520b363210940eb36702c2e356684a`. Exact-head
+[Linux and macOS CI](https://github.com/codeclew/codeclew/actions/runs/37459583315)
+passed. The [release workflow](https://github.com/codeclew/codeclew/actions/runs/37468411289)
+passed its conditional mutation qualification, all three architecture builds
+and publication. Each architecture qualified the real C# Roslyn worker with
+SDK 10. The [published release](https://github.com/codeclew/codeclew/releases/tag/v0.13.17)
+contains all 14 expected assets: six platform/profile archives, their checksums,
+and the installer with its checksum. The aborted 0.13.16 tag remains unchanged
+without release assets.
+
+The final packaging correction refreshes only the trusted Kotlin 2.1, 2.3 and
+2.4 distribution manifests through the supported generator and verifies all
+three. Their worker JAR hashes/sizes and tree hashes change; dependency entries,
+modes, schema and build tasks remain unchanged. The earlier `37d1145` Linux
+attempt failed because embedded expected distribution outputs were stale; its
+RELEASE prime separately reported the Kotlin 2.3 manifest mismatch. The corrected
+clean head primes successfully and passes the 6/6 local RELEASE mutation pilot.
+The earlier `dd28cf7` and `37d1145` attempts keep their own results; neither the
+original `e2542ef` local qualification nor a superseded candidate qualifies the
+final production delta. Fresh exact-head hosted CI above does.
+
+The original official installed 0.13.15 launcher executed `clew upgrade` against
+the official latest-release feed, without release-version/API/base or local-asset
+overrides. It downloaded and verified the macOS arm64 core archive, activated
+`clew 0.13.17` in RELEASE mode and returned the exact tagged revision and tree in
+its release manifest. The published installer asset was also checksum-verified;
+this upgrade executed the installer bundled with 0.13.15, rather than replacing
+that path with a direct reinstall. Other architectures are covered by hosted
+build/qualification results, not independent local installations.
+
+Four installed checks passed:
+
+- Exact approved-answer lookup found the original saved approval. Answer,
+  review, provenance, packet and audit match its prior export, and all 351
+  pre-existing documentation-root files remain unchanged. There were zero
+  captures, model invocations and durable result writes.
+- A two-file Python syntax fixture captured two revisions with one changed guard.
+  Persistent syntax manifests increase from two to three; original manifest
+  bytes remain unchanged, current source records carry the second revision and
+  changed guard, and the first snapshot's context remains unchanged. This is
+  correctness and manifest persistence, not parse-hit instrumentation or a new
+  performance measurement.
+- Local deterministic author and independent reviewer drivers used mode 1.1
+  against the retained method Check. Both canonical results match their fixtures,
+  role scopes and frozen input/result digests agree, terminal resume preserves
+  exact records and all 351 pre-existing files remain unchanged. There were no
+  paid/provider calls, recapture, expansion or publication. This fixture has no
+  duplicate delivery to remove; expanded compaction remains the accepted source
+  evidence above. It does not independently exercise the public Rust serializer
+  API or establish model quality or billing.
+- A synthetic Kotlin 2.4.10 / Gradle 9.6.1 project with JDK toolchain 21 and
+  `org.gradle.configuration-cache=true` produced a CHECKED compiler snapshot,
+  coverage PARTIAL and CAPTURED_SOURCE authority, with no unresolved services.
+  Retained compiler metadata and method source were checked. Ordinary HTML
+  rendering from that saved Check is PARTIAL with five explicit gaps and runtime
+  UNKNOWN; capture manifests and tracked project files remain unchanged. The
+  actual Check, current catalog, bound source and documentation root are retained
+  privately for the next slice without recapture. Native Kotlin MDX is outside
+  this release's supported projection scope. This does not qualify a separately
+  reported project/version combination or reviewed narrative quality.
+
+The initial syntax fixture lacked its declared Git origin, and the initial
+Kotlin fixture used singular `compilation` instead of the closed service schema's
+`compilations` list. Both failed before capture and were corrected in fixture
+setup. A subsequent syntax assertion assumed default service context contained
+SOURCE items; exact returned source-ID drills completed the check using the same
+two saved snapshots, without repeating acquisition. Original failure logs are
+retained privately; these setup/query corrections required no product change.
+
+[Pages deployment](https://github.com/codeclew/codeclew/actions/runs/37463011498)
+passed on the final release source. Public HTTPS landing-page, task-guide and
+search-index bytes match that source exactly. Historical 0.13.11 source-authoring
+and separate 0.13.14 renderer receipts retain their original bindings; current
+product guidance does not relabel them as new authoring evidence. The accepted
+three-file tracked-artifact cleanup remains closed.
+
+The selected accepted increments are delivered. Compiler extraction reuse,
+initial semantic selection and broader role-policy unification remain deferred
+under their earlier evidence/benefit conditions. Kotlin/Java documentation parity
+and native Kotlin MDX belong to the separately prioritized next slice; they did
+not block or enter the corrective 0.13.17 release.
