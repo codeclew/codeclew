@@ -464,13 +464,15 @@ benefit. The [accepted measurement and exclusions](../plans/question-results-and
 describe the selected corpus and five pairs. This behavior is included in
 v0.13.17.
 
-## Native pages from retained declarations (source candidate)
+<a id="native-pages-from-retained-declarations-source-candidate"></a>
 
-The source candidate shares declaration selection, retained sources, citations,
+## Native pages from retained declarations
+
+Version 0.13.18 shares declaration selection, retained sources, citations,
 page assembly, catalogue and HTML/MDX publication across Java, Kotlin, C#,
 TypeScript and Rust. See the [shared capabilities and limits](../guides/native-retained-source.md).
 Language adapters admit and project the evidence they support. This Kotlin
-native-page support is not included in the v0.13.17 installed release.
+native-page support is included in v0.13.18; older Checks remain immutable.
 
 Select exact declaration observation IDs from `docs context` for a saved Check.
 For a Kotlin function, the current selection format uses the same ID for both
@@ -607,7 +609,7 @@ build category and `nextAction`: known repository-access, TLS, dependency,
 JDK/toolchain, compilation, model and launcher failures retain safe
 category-specific guidance.
 
-The source candidate also retains compiler-exact Kotlin `CALLS` in a captured
+Version 0.13.18 also retains compiler-exact Kotlin `CALLS` in a captured
 Check. Select a function by its returned full compiler identity:
 
 ```sh
@@ -626,7 +628,7 @@ compiler variable and source bindings; it does not infer runtime values.
 Previously captured Checks are immutable and do not gain discarded relation
 records when the CLI is updated; acquiring those records requires a new Check.
 
-The source candidate also seals supported raw FIR control-flow graphs directly
+Version 0.13.18 also seals supported raw FIR control-flow graphs directly
 into retained `local-cfg/0.1` facts. These graphs preserve compiler node IDs,
 explicit control edges and compiler path labels, with source spans converted
 from UTF-16 offsets to UTF-8 byte ranges inside the owning function. Data-only

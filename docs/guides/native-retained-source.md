@@ -1,7 +1,7 @@
 # Native documentation from retained source
 
-Draft for the next release. The shared source reader, Kotlin data-state and
-constructor wiring additions described here are not included in v0.13.17.
+The shared source reader, Kotlin data-state and constructor wiring described
+here are included in v0.13.18. They were not included in v0.13.17.
 
 Capture an explicit service scope once, then select exact declaration IDs from
 `clew docs context` using the returned Check. `clew docs pages render` produces
@@ -92,6 +92,28 @@ invalid input.
 
 The original Java/Kotlin Pipeline examples are public synthetic fixtures. Their
 paired source, byte/citation checks and offline HTML/MDX qualification establish
-bounded generator behavior, not coverage of a production service. The installed
-Kotlin version matrix must be recorded separately before claiming its release
+bounded generator behavior, not coverage of a production service.
+
+A local installed core built from the release-candidate sources passed the
+following matrix on macOS Apple Silicon, with only the 2.4.10 analyzer packaged:
+
+| Project compiler | Native Maven build | Saved Check and offline pages | Analyzer |
+| --- | --- | --- | --- |
+| 1.9.25 | Passed | Passed, explicit language/API upgrade boundaries | 2.4.10 |
+| 2.1.21 | Passed | Passed | 2.4.10 |
+| 2.3.0 | Passed | Passed | 2.4.10 |
+| 2.4.10 | Passed | Passed | 2.4.10 |
+
+Each version retained the original Pipeline sources, 32 worker definitions,
+four worker calls, seven backing properties and two constructor dependencies
+for the source-declared shared queue. Offline rendering verified 730 internal
+links, nine exact call-site byte spans and 144 citation byte spans per version,
+with no model calls. Capture coverage remains `PARTIAL`; successful documentation
+does not remove the retained unsupported-source boundaries.
+
+The unsupported 2.99.0 compiler declaration returned `UNRESOLVED`, with no
+successful service evidence and an explicit missing qualified-engine diagnostic.
+No native compilation was attempted for that unsupported version. The matrix
+establishes this bounded installed-core behavior, not native compiler semantic
+equivalence, arbitrary-project compatibility or Intel/Linux documentation
 qualification.

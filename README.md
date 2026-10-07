@@ -23,15 +23,25 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.17
+## Current release: v0.13.18
 
-Version 0.13.17 includes exact approved-answer discovery, exact per-file syntax
-reuse and an opt-in model serializer with compact evidence presentation for
-compatible drivers. See the [v0.13.17 release notes](docs/releases/v0.13.17.md).
+Version 0.13.18 renders linked offline HTML and MDX from selected retained Java,
+Kotlin, C#, TypeScript and Rust declarations. New Kotlin compiler evidence can
+explain guarded data transformations and source-declared shared queue wiring
+through the common Java/Kotlin transfer engine. Endpoint exclusion and
+reinclusion preserve saved analysis and retained explanations. See the
+[v0.13.18 release notes](docs/releases/v0.13.18.md) and
+[native retained-source guide](docs/guides/native-retained-source.md).
+
+A single installed core passed a bounded public Pipeline fixture on native
+Kotlin 1.9.25, 2.1.21, 2.3.0 and 2.4.10 projects. Project compiler settings and
+analyzer identity remain separate; partial coverage and the explicit Kotlin 1.9
+analysis upgrade boundary stay visible. This does not establish native compiler
+semantic equivalence or broader mutation support.
 
 <a id="accepted-source-candidates-for-v01316"></a>
 
-### Included in v0.13.17
+### Included from v0.13.17
 
 Kotlin/Gradle metadata capture now works with configuration cache enabled.
 Known build failure categories keep safe, specific recovery guidance.
@@ -135,7 +145,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.17 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.18 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -164,7 +174,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.17 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.18 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
