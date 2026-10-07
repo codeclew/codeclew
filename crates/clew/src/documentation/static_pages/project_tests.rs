@@ -6242,3 +6242,241 @@ fn native_rust_common_reader_preserves_syntax_authority_and_useful_declarations(
     expansion.expand_source_calls = true;
     assert!(project(&checked, &[expansion]).is_err());
 }
+
+fn retained_kotlin_wiring_fixture() -> (ServiceEvidence, Selection) {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/documentation-common-pipeline/kotlin/retained-wiring-evidence.json"
+    )))
+    .unwrap();
+    (
+        serde_json::from_value(fixture["evidence"].clone()).unwrap(),
+        serde_json::from_value(fixture["selection"].clone()).unwrap(),
+    )
+}
+
+#[test]
+fn retained_kotlin_pipeline_combines_shared_wiring_constructor_dependencies_and_data_state() {
+    let (evidence, mut selection) = retained_kotlin_wiring_fixture();
+    selection.expand_data_state = true;
+    let projection = project(&kotlin_check(evidence), &[selection]).unwrap();
+    let page = &projection.pages[0];
+    assert_eq!(page.handoff.status, "SOURCE_DECLARED_SHARED_QUEUE");
+    assert_eq!(
+        page.handoff.endpoint_field.as_deref(),
+        Some("property:paired/DispatchEndpoint.submitted")
+    );
+    assert_eq!(
+        page.handoff.worker_field.as_deref(),
+        Some("property:paired/ProcessingLoop.pending")
+    );
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let constructors: Vec<_> = page
+        .examined_sources
+        .as_ref()
+        .unwrap()
+        .memberships
+        .iter()
+        .filter(|m| m.reason == "SELECTED_HANDOFF_CONSTRUCTOR")
+        .collect();
+    assert_eq!(constructors.len(), 2);
+    for member in constructors {
+        let node = &graph.nodes[&member.node];
+        assert!(node.data_state.is_none());
+        assert!(
+            !page
+                .data_state
+                .as_ref()
+                .unwrap()
+                .nodes
+                .contains(&member.node)
+        );
+        assert!(
+            graph.reverse_examined_processes[&member.node]
+                .iter()
+                .any(|r| r.process_id == page.id && r.reasons.contains(member))
+        );
+    }
+    let worker = graph
+        .nodes
+        .values()
+        .find(|n| n.callable.declaration_id == page.worker.declaration_id)
+        .unwrap();
+    assert_eq!(worker.data_state.as_ref().unwrap().definitions.len(), 32);
+    assert_eq!(worker.data_state.as_ref().unwrap().calls.len(), 4);
+    assert!(
+        graph
+            .nodes
+            .values()
+            .flat_map(|n| &n.calls)
+            .all(|e| e.call.is_none())
+    );
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "kotlin-wiring", &projection).unwrap();
+    let html =
+        std::fs::read_to_string(output.path().join(format!("{}-overview.html", page.id))).unwrap();
+    assert!(html.contains("Source-declared shared queue"));
+    assert!(html.contains("property:paired/DispatchEndpoint.submitted"));
+    assert!(!html.contains(
+        "It does not project source behavior or infer relationships between declarations."
+    ));
+}
+
+#[test]
+fn retained_kotlin_constructor_and_wiring_boundaries_withhold_shared_object_proof() {
+    for case in [
+        "missing-proof",
+        "foreign-property",
+        "invalid-slot",
+        "custom-getter",
+        "source-pins",
+        "conditional-wiring",
+        "unsupported-wiring",
+        "foreign-receiver",
+    ] {
+        let (mut evidence, selection) = retained_kotlin_wiring_fixture();
+        let constructor_id = evidence
+            .observations
+            .values()
+            .find(|o| {
+                o.normalized["declarationKind"] == "CONSTRUCTOR"
+                    && o.normalized["ownerIdentity"] == "class:paired/ProcessingLoop"
+            })
+            .unwrap()
+            .id
+            .clone();
+        match case {
+            "missing-proof" => {
+                evidence
+                    .observations
+                    .get_mut(&constructor_id)
+                    .unwrap()
+                    .normalized
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("documentationConstructorStorage");
+            }
+            "foreign-property" => {
+                evidence
+                    .observations
+                    .get_mut(&constructor_id)
+                    .unwrap()
+                    .normalized["documentationConstructorStorage"]["bindings"][0]["propertyIdentity"] =
+                    json!("property:paired/Other.pending");
+            }
+            "invalid-slot" => {
+                evidence
+                    .observations
+                    .get_mut(&constructor_id)
+                    .unwrap()
+                    .normalized["documentationConstructorStorage"]["bindings"][0]["parameterIndex"] =
+                    json!(30);
+            }
+            "custom-getter" | "foreign-receiver" => {
+                let property = evidence
+                    .observations
+                    .values_mut()
+                    .find(|o| o.symbol == "property:paired/ProcessingLoop.pending")
+                    .unwrap();
+                if case == "custom-getter" {
+                    property.normalized["documentationStorage"]["defaultGetter"] = json!(false);
+                } else {
+                    property.normalized["ownerIdentity"] = json!("class:paired/Other");
+                }
+                property.digest = digest(&property.normalized).unwrap();
+            }
+            "source-pins" => {
+                evidence
+                    .observations
+                    .get_mut(&constructor_id)
+                    .unwrap()
+                    .normalized["outlineOwnerSource"]["byteEnd"] = json!(1);
+            }
+            "conditional-wiring" | "unsupported-wiring" => {
+                let wiring = evidence
+                    .observations
+                    .get_mut(selection.wiring_declaration.as_ref().unwrap())
+                    .unwrap();
+                let input = &mut wiring.normalized["documentation"]["dataInput"];
+                if case == "conditional-wiring" {
+                    let body = input["body"].as_u64().unwrap() as usize;
+                    input["nodes"][body]["kind"] = json!("IF");
+                } else {
+                    let construct = input["nodes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|n| n["kind"] == "CONSTRUCT")
+                        .unwrap();
+                    construct["kind"] = json!("UNSUPPORTED");
+                    construct["actuals"] = json!([]);
+                    construct["defaultArguments"] = json!([]);
+                    construct["targetIdentity"] = serde_json::Value::Null;
+                }
+                wiring.digest = digest(&wiring.normalized).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let constructor = evidence.observations.get_mut(&constructor_id).unwrap();
+        constructor.digest = digest(&constructor.normalized).unwrap();
+        let projection = project(&kotlin_check(evidence), &[selection]).unwrap();
+        assert_eq!(projection.pages[0].handoff.status, "LOCAL_GAP", "{case}");
+        assert!(
+            projection.pages[0].handoff.queue_allocation.is_none(),
+            "{case}"
+        );
+        assert!(!projection.pages[0].handoff.gaps.is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn kotlin_constructor_storage_proof_changes_examined_version_with_identical_source_and_status() {
+    let (mut evidence, selection) = retained_kotlin_wiring_fixture();
+    let baseline = project(
+        &kotlin_check(evidence.clone()),
+        std::slice::from_ref(&selection),
+    )
+    .unwrap();
+    let constructor = evidence
+        .observations
+        .values_mut()
+        .find(|o| {
+            o.normalized["declarationKind"] == "CONSTRUCTOR"
+                && o.normalized["ownerIdentity"] == "class:paired/ProcessingLoop"
+        })
+        .unwrap();
+    let source_ids = constructor.source_ids.clone();
+    // The selected pending binding remains valid. A changed, weaker retained
+    // constructor storage proof must still invalidate its examined version.
+    constructor.normalized["documentationConstructorStorage"]["bindings"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|b| b["propertyIdentity"] != "property:paired/ProcessingLoop.config");
+    crate::semantic_validation::validate_constructor_storage_proof(&constructor.normalized)
+        .unwrap();
+    constructor.digest = digest(&constructor.normalized).unwrap();
+    let changed = project(&kotlin_check(evidence), &[selection]).unwrap();
+    assert_eq!(
+        baseline.pages[0].handoff.status,
+        "SOURCE_DECLARED_SHARED_QUEUE"
+    );
+    assert_eq!(baseline.pages[0].handoff, changed.pages[0].handoff);
+    assert_ne!(
+        baseline.pages[0]
+            .examined_sources
+            .as_ref()
+            .unwrap()
+            .examined_source_digest,
+        changed.pages[0]
+            .examined_sources
+            .as_ref()
+            .unwrap()
+            .examined_source_digest
+    );
+    for source in source_ids {
+        assert_eq!(
+            baseline.pages[0].sources[&source],
+            changed.pages[0].sources[&source]
+        );
+    }
+}

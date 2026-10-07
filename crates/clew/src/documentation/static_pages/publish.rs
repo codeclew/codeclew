@@ -700,6 +700,8 @@ fn declaration_only_page(
                 || p.worker.authority == "SYNTAX_DECLARATION"
             {
                 "This page retains selected syntax declarations, source signatures and cited source structure. Parsing does not establish compiler resolution, runtime behavior or relationships between declarations."
+            } else if p.handoff.status == "SOURCE_DECLARED_SHARED_QUEUE" {
+                "This page retains selected compiler declarations, source structure and source-declared shared queue wiring. Runtime behavior remains unobserved."
             } else {
                 "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations."
             });
@@ -747,6 +749,24 @@ fn declaration_only_page(
                     &p.observations,
                     &p.sources,
                 );
+            }
+            if p.handoff.status == "SOURCE_DECLARED_SHARED_QUEUE" {
+                out += "<h2>Source-declared shared queue</h2>\n";
+                out += &paragraph(&format!(
+                    "Source binds {} and {} to the same queue allocation.",
+                    p.handoff
+                        .endpoint_field
+                        .as_deref()
+                        .unwrap_or("endpoint property"),
+                    p.handoff
+                        .worker_field
+                        .as_deref()
+                        .unwrap_or("worker property")
+                ));
+                out += &citation_group(p, &p.handoff.citation_ids, ext);
+            } else if p.handoff.status == "LOCAL_GAP" {
+                out += "<h2>Shared queue wiring unresolved</h2>\n";
+                out += &format!("<ul>{}</ul>\n", gaps(&p.handoff.gaps, ext));
             }
             out += &paragraph(&p.handoff.limitation);
         }

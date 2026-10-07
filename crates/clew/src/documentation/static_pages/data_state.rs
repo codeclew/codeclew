@@ -796,6 +796,13 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
             .examined_sources
             .iter()
             .flat_map(|e| e.memberships.iter().map(|m| m.node.clone()))
+            .filter(|id| {
+                let node = &graph.nodes[id];
+                !node
+                    .observations
+                    .get(&node.callable.declaration_id)
+                    .is_some_and(super::source::compiler::kotlin_constructor_admitted)
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -891,6 +898,15 @@ pub(super) fn attach_graph(
             .nodes
             .get(id)
             .ok_or_else(|| invalid("examined data-state node is unavailable"))?;
+        if node
+            .observations
+            .get(&node.callable.declaration_id)
+            .is_some_and(super::source::compiler::kotlin_constructor_admitted)
+        {
+            // This root retains a compiler storage proof, not a constructor
+            // body. Never send it through the Java source/data adapter.
+            continue;
+        }
         let (state, bindings) = project_with_bindings(&checked.services[&node.service], node)?;
         for (slot, identity) in bindings {
             formals.insert((id.clone(), slot), identity);

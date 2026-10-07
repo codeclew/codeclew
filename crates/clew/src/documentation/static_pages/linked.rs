@@ -787,7 +787,7 @@ pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
                 )
             })
             .collect::<Vec<_>>();
-        digest(&(
+        let fingerprint = digest(&(
             EXAMINED_SCHEMA,
             &node.service,
             &node.scope,
@@ -803,7 +803,16 @@ pub(super) fn node_digest(node: &SourceCallNode) -> Result<String, ClewError> {
             &node.callable.source_outline,
             &node.callable.control_flow,
             kotlin_sites,
-        ))
+        ))?;
+        if source::compiler::kotlin_constructor_admitted(own) {
+            digest(&(
+                EXAMINED_SCHEMA,
+                fingerprint,
+                &own.normalized["documentationConstructorStorage"],
+            ))
+        } else {
+            Ok(fingerprint)
+        }
     } else {
         // Keep the frozen Java digest input byte-for-byte unchanged.
         digest(&(
