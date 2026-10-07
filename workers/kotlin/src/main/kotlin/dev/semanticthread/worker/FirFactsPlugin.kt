@@ -139,7 +139,7 @@ private class FirFactsCheckersExtension(
                 }
             })
         override val functionCheckers: Set<FirDeclarationChecker<FirFunction>> =
-            setOf(FirFactsCfgChecker(output))
+            setOf(FirFactsCfgChecker(output), FirDocumentationVariablesChecker24(output))
         override val simpleFunctionCheckers = setOf(
             FirFactsOverrideChecker(output),
             FirFactsFunctionDescriptorChecker(output),
@@ -150,6 +150,162 @@ private class FirFactsCheckersExtension(
         )
         override val regularClassCheckers = setOf(FirFactsClassDescriptorChecker(output))
         override val constructorCheckers = setOf(FirFactsConstructorDescriptorChecker(output))
+    }
+}
+
+/**
+ * Exact source occurrences of parameters and local storage, resolved by FIR
+ * symbol identity. This is not dataflow, value evaluation or receiver analysis.
+ * Raw coordinates remain compiler UTF-16 offsets until the host binds them to
+ * retained original bytes. Local names and callableId are never storage keys.
+ */
+private class FirDocumentationVariablesChecker24(
+    private val output: String,
+) : FirDeclarationChecker<FirFunction>(MppCheckerKind.Common) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(declaration: FirFunction) {
+        val owner = declaration as? FirNamedFunction ?: return
+        val ownerId = owner.symbol.callableId ?: return
+        val ownerSource = owner.source ?: return
+        val descriptor = compilerJvmMethodDescriptor(owner) ?: return
+        if (ownerId.isLocal || !owner.origin.fromSource || owner.origin.generated
+            || ownerSource.kind !== KtRealSourceElementKind
+            || owner.hasAnnotationSafe(JvmStandardClassIds.Annotations.JvmName, context.session)
+        ) return
+        val identity = "callable:$ownerId#jvm:$descriptor"
+        val file = context.containingFilePath ?: return
+        val bindings = java.util.IdentityHashMap<org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>, JsonObject>()
+        val rows = mutableListOf<JsonObject>()
+        val boundaries = mutableMapOf<String, JsonObject>()
+        var exhausted = false
+
+        fun boundary(code: String, source: org.jetbrains.kotlin.KtSourceElement?) {
+            if (boundaries.size >= 32 || code in boundaries) return
+            boundaries[code] = buildJsonObject {
+                put("recordType", "DOCUMENTATION_DATA_BOUNDARY")
+                put("schema", "kotlin-documentation-variable-boundary/1.0")
+                put("file", file)
+                put("ownerSymbolIdentity", identity)
+                put("ownerStart", ownerSource.startOffset)
+                put("ownerEnd", ownerSource.endOffset)
+                source?.let { put("start", it.startOffset); put("end", it.endOffset) }
+                put("coordinateDomain", "COMPILER_UTF16_OFFSETS")
+                put("code", code)
+                put("resolution", "UNKNOWN")
+            }
+        }
+        fun row(binding: JsonObject, source: org.jetbrains.kotlin.KtSourceElement?, kind: String, mode: String?) {
+            if (rows.size >= 4096) {
+                exhausted = true
+                boundary("DOCUMENTATION_VARIABLE_BUDGET", ownerSource)
+                return
+            }
+            if (source == null || source.kind !== KtRealSourceElementKind
+                || source.startOffset < ownerSource.startOffset || source.endOffset > ownerSource.endOffset
+                || source.startOffset >= source.endOffset
+            ) {
+                boundary("DOCUMENTATION_VARIABLE_SOURCE_UNAVAILABLE", source)
+                return
+            }
+            rows += buildJsonObject {
+                binding.entries.forEach { (key, value) -> put(key, value) }
+                put("recordType", "DOCUMENTATION_VARIABLE")
+                put("schema", "kotlin-documentation-variable/1.0")
+                put("file", file)
+                put("ownerSymbolIdentity", identity)
+                put("ownerStart", ownerSource.startOffset)
+                put("ownerEnd", ownerSource.endOffset)
+                put("start", source.startOffset)
+                put("end", source.endOffset)
+                put("coordinateDomain", "COMPILER_UTF16_OFFSETS")
+                put("kind", kind)
+                mode?.let { put("accessMode", it) }
+                put("resolution", "COMPILER_EXACT")
+                put("authority", "K2_RESOLVED_VARIABLE_SYMBOL")
+            }
+        }
+        fun bind(variable: org.jetbrains.kotlin.fir.declarations.FirVariable, slot: Int?) {
+            val source = variable.source ?: return
+            if (!variable.origin.fromSource || variable.origin.generated
+                || source.kind !== KtRealSourceElementKind
+            ) return
+            val local = variable as? FirProperty
+            if (local != null && (!local.isLocal || local.delegate != null)) {
+                boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", source)
+                return
+            }
+            if (bindings.size >= 4096) {
+                exhausted = true
+                boundary("DOCUMENTATION_VARIABLE_BUDGET", source)
+                return
+            }
+            val binding = buildJsonObject {
+                put("variableIdentity", if (slot != null) "$identity/parameter/$slot"
+                    else "$identity/local-source/${source.startOffset}:${source.endOffset}")
+                put("variableKind", if (slot != null) "PARAMETER" else "LOCAL_VARIABLE")
+                put("declarationStart", source.startOffset)
+                put("declarationEnd", source.endOffset)
+                put("name", variable.name.asString())
+                slot?.let {
+                    put("parameterIndex", it)
+                    put("hasDefault", owner.valueParameters[it].defaultValue != null)
+                }
+            }
+            bindings[variable.symbol] = binding
+            row(binding, source, "VARIABLE_DECLARATION", null)
+        }
+        owner.valueParameters.forEachIndexed { slot, parameter -> bind(parameter, slot) }
+        // First collect declarations; references then join by the exact compiler
+        // symbol object, including shadowed names in separate lexical scopes.
+        fun walk(action: (org.jetbrains.kotlin.fir.FirElement, FirVisitorVoid) -> Unit) {
+            var depth = 0
+            owner.body?.accept(object : FirVisitorVoid() {
+                override fun visitElement(element: org.jetbrains.kotlin.fir.FirElement) {
+                    if (exhausted) return
+                    if (element is FirFunction || element is FirRegularClass) {
+                        boundary("DOCUMENTATION_NESTED_BODY_DEFERRED", element.source)
+                        return
+                    }
+                    if (depth >= 128) {
+                        exhausted = true
+                        boundary("DOCUMENTATION_VARIABLE_BUDGET", element.source)
+                        return
+                    }
+                    depth++
+                    action(element, this)
+                    depth--
+                }
+            })
+        }
+        walk { element, visitor ->
+            if (element is FirProperty) bind(element, null)
+            element.acceptChildren(visitor)
+        }
+        walk { element, visitor ->
+            when {
+                element is FirVariableAssignment -> {
+                    val left = element.lValue as? FirQualifiedAccessExpression
+                    val symbol = (left?.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
+                    val binding = symbol?.let(bindings::get)
+                    if (binding == null) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", left?.source)
+                    else row(binding, left.source, "VARIABLE_ACCESS", "WRITE")
+                    // A local write target is not a read. Its receiver is only
+                    // traversed for unbound property accesses; no field fact is emitted.
+                    if (binding == null) left?.acceptChildren(visitor)
+                    element.rValue.accept(visitor)
+                }
+                element is FirQualifiedAccessExpression && element !is FirFunctionCall -> {
+                    val symbol = (element.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
+                    val binding = symbol?.let(bindings::get)
+                    if (binding != null) row(binding, element.source, "VARIABLE_ACCESS", "READ")
+                    else if (symbol is FirPropertySymbol) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", element.source)
+                    element.acceptChildren(visitor)
+                }
+                else -> element.acceptChildren(visitor)
+            }
+        }
+        rows.distinct().forEach { appendFact(output, it) }
+        boundaries.values.forEach { appendFact(output, it) }
     }
 }
 

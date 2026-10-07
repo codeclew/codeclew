@@ -319,30 +319,35 @@ internal class CompilerUtf16ToUtf8ByteMap private constructor(
     internal companion object {
         fun from(source: String): CompilerUtf16ToUtf8ByteMap? = build(source, normalizeLineSeparators = false)
 
-        /** Maps compiler offsets (after line-separator normalization) to original-source bytes. */
+        /** Compiler input removes the initial BOM and normalizes line separators. */
         fun fromCompilerInput(source: String): CompilerUtf16ToUtf8ByteMap? =
-            build(source, normalizeLineSeparators = true)
+            build(source, normalizeLineSeparators = true, removeInitialBom = true)
 
         /** Selects the coordinate domain actually used by a PSI text view of original source. */
         fun forSourceText(
             originalSource: String,
             sourceText: String,
-        ): CompilerUtf16ToUtf8ByteMap? = when (sourceText) {
-            originalSource -> from(originalSource)
-            compilerLineNormalizedText(originalSource) -> fromCompilerInput(originalSource)
+        ): CompilerUtf16ToUtf8ByteMap? = when {
+            sourceText == originalSource -> from(originalSource)
+            sourceText == compilerLineNormalizedText(originalSource) ->
+                build(originalSource, normalizeLineSeparators = true)
+            sourceText == compilerLineNormalizedText(originalSource).removePrefix("\uFEFF") ->
+                fromCompilerInput(originalSource)
             else -> null
         }
 
         private fun build(
             source: String,
             normalizeLineSeparators: Boolean,
+            removeInitialBom: Boolean = false,
         ): CompilerUtf16ToUtf8ByteMap? {
             if (source.length == Int.MAX_VALUE) return null
             val byteOffsets = IntArray(source.length + 1) { -1 }
             var utf16Offset = 0
-            var sourceOffset = 0
-            var byteOffset = 0
-            byteOffsets[0] = 0
+            val bomRemoved = removeInitialBom && source.startsWith('\uFEFF')
+            var sourceOffset = if (bomRemoved) 1 else 0
+            var byteOffset = if (bomRemoved) 3 else 0
+            byteOffsets[0] = byteOffset
             while (sourceOffset < source.length) {
                 val current = source[sourceOffset]
                 if (normalizeLineSeparators && current == '\r') {

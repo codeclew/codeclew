@@ -229,6 +229,50 @@ class KotlinDocumentationFlowTest {
         assertEquals("COMPILER_EXACT", call["resolution"]!!.jsonPrimitive.content)
     }
 
+    @Test
+    fun compilerBomRemovalKeepsDistinctOriginalAndNormalizedPsiCoordinateDomains() {
+        val original = "\uFEFF" + """
+            package docs
+            // π🙂 before exact spans
+            fun echo(input: String): String = input
+            fun caller(input: String): String = echo(input)
+        """.trimIndent().replace("\n", "\r\n") + "\r\n"
+        val normalized = original.replace("\r\n", "\n")
+        val compiler = normalized.removePrefix("\uFEFF")
+        val views = listOf(
+            original to assertNotNull(CompilerUtf16ToUtf8ByteMap.forSourceText(original, original)),
+            normalized to assertNotNull(CompilerUtf16ToUtf8ByteMap.forSourceText(original, normalized)),
+            compiler to assertNotNull(CompilerUtf16ToUtf8ByteMap.forSourceText(original, compiler)),
+        )
+        val bytes = original.toByteArray(Charsets.UTF_8)
+        for ((view, coordinates) in views) {
+            val start = view.lastIndexOf("echo(input)")
+            val span = assertNotNull(coordinates.range(start, start + "echo(input)".length))
+            assertEquals("echo(input)", bytes.copyOfRange(span.first, span.last + 1).decodeToString())
+        }
+        assertEquals(0, views[0].second.offset(0))
+        assertEquals(0, views[1].second.offset(0))
+        assertEquals(3, views[2].second.offset(0))
+        assertEquals(3, assertNotNull(CompilerUtf16ToUtf8ByteMap.fromCompilerInput(original)).offset(0))
+        assertNull(CompilerUtf16ToUtf8ByteMap.forSourceText(original, "unrelated view"))
+        val rows = extract(original)
+        assertEquals(setOf("echo", "caller"), rows.map { it["name"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(2, rows.size)
+        for (row in rows) {
+            val events = row["documentation"]!!.jsonObject["events"]!!.jsonArray.map { it.jsonObject }
+            assertTrue(events.isNotEmpty(), row.toString())
+            for (event in events) {
+                val span = event["sourceSpan"]!!.jsonObject
+                val text = bytes.copyOfRange(span["byteStart"]!!.jsonPrimitive.int, span["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+                assertTrue(text in setOf("input", "echo(input)"), text)
+            }
+            if (row["name"]!!.jsonPrimitive.content == "caller") {
+                assertEquals("callable:docs/echo#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+                    events.single { it["kind"]!!.jsonPrimitive.content == "CALL" }["target"]!!.jsonPrimitive.content)
+            }
+        }
+    }
+
     private fun extract(source: String): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-docs-facts").toRealPath()
         val disposable = Disposer.newDisposable("kotlin-docs-test")
