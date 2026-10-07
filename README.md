@@ -14,7 +14,7 @@ checkout for source development; direct capsule binaries are unsupported.
 | Install Codeclew and connect an agent | [Install](#install-on-macos-linux-or-windows-through-wsl2) and [install the agent skill](#install-the-agent-skill) |
 | Navigate code and check repository support | [Practical code navigation](#practical-code-navigation) and [operational admission](#operational-admission) |
 | Create or refresh service documentation | [Durable service documentation](#durable-service-documentation) and the [service workflow](skills/codeclew/references/service-documentation.md) |
-| Export linked pages from selected Java source | [Native source pages](docs/guides/native-static-pages.md) |
+| Export linked pages from selected retained source | [Native source pages](docs/guides/native-static-pages.md) |
 | Ask and review a question about retained Java source | [Draft review and explicit publication](docs/operations/docs-snapshot-store.md#review-a-saved-operation-draft) and [compare a saved answer with a new Check](docs/operations/docs-snapshot-store.md#compare-a-saved-answer-with-an-explicit-captured-check) |
 | Find a previously approved method answer after a source update | [Capture, question, review and exact reuse](docs/operations/field-documentation.md#capture-question-review-and-exact-reuse) and [discovery limits](docs/operations/docs-snapshot-store.md#find-an-approved-answer-by-exact-request-source-candidate) |
 | Try the internal Java process draft | [historical v0.13.1 example and limits](#historical-v0131-example-and-limits), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |

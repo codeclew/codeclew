@@ -467,7 +467,8 @@ v0.13.17.
 ## Native pages from retained declarations (source candidate)
 
 The source candidate shares declaration selection, retained sources, citations,
-page assembly, catalogue and HTML/MDX publication across Java and Kotlin.
+page assembly, catalogue and HTML/MDX publication across Java, Kotlin, C#,
+TypeScript and Rust. See the [shared capabilities and limits](../guides/native-retained-source.md).
 Language adapters admit and project the evidence they support. This Kotlin
 native-page support is not included in the v0.13.17 installed release.
 
@@ -497,8 +498,10 @@ IDs, and render against the saved snapshot:
 
 Rendering uses retained evidence and does not capture again or invoke a model.
 Kotlin pages require compiler-bound `FUNCTION` declarations with matching
-identity, scope, provenance and retained source. Constructors, properties and
-syntax-only Kotlin declarations are not admitted by this adapter. The pages
+identity, scope, provenance and retained source. Constructors and properties are not selected as function pages. Supported
+constructor storage proofs and ordinary backing-property declarations can still
+be retained as dependencies of Kotlin data-state and shared queue wiring.
+Syntax-only Kotlin declarations are not admitted by this adapter. The pages
 show declarations, citations, the question and explicit limitations. Distinct
 selected declarations, including optional wiring, do not imply a relationship.
 Absent source occurrence bounds remain absent; retained line spans are not
@@ -575,11 +578,15 @@ statement paths, conditions and structural reachability. Navigation does not
 establish runtime dispatch, invocation order or a process relationship between
 selected functions.
 
-Kotlin structured activity diagrams, handoffs and data-state projection remain
-unsupported here. `expandDataState` is rejected for Kotlin selections before
-output is created, including when `expandSourceCalls` is enabled. An independent
-Java selection in the same bundle can still use the existing Java expansion
-features.
+Kotlin structured activity diagrams remain unavailable. New compiler evidence
+from the 2.4.10 analyzer can supply bounded data-state and source-declared shared
+queue wiring. Select `expandSourceCalls: true` together with `expandDataState: true`
+to inspect parameter/local definitions, ordinary backing properties, conditional
+writes and actual/formal/return mappings in the retained source-call context.
+An exact `wiringDeclaration` additionally selects the composition for queue proof.
+Missing typed evidence is reported explicitly; old Checks remain unchanged.
+Read the [shared transfer and wiring boundaries](../guides/native-retained-source.md).
+C#, TypeScript and Rust pages do not admit this data-state expansion.
 
 For Docusaurus, the qualified recipe uses version 3.10.2, `baseUrl: "/"`,
 `trailingSlash: false` and the docs plugin at `routeBasePath: "/"`. Keep each
@@ -614,7 +621,8 @@ Partial or ambiguous evidence is not promoted to an exact call. Selecting the
 caller does not recursively select the callee or establish its body, runtime
 dispatch, execution order or CFG. Kotlin native pages can separately display
 an admitted local compiler graph and explicitly expand retained exact call
-targets. Data-state expansion remains unavailable.
+targets. Explicit data-state expansion additionally requires supported retained
+compiler variable and source bindings; it does not infer runtime values.
 Previously captured Checks are immutable and do not gain discarded relation
 records when the CLI is updated; acquiring those records requires a new Check.
 

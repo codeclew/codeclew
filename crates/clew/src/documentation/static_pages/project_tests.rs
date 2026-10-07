@@ -6320,6 +6320,54 @@ fn retained_kotlin_pipeline_combines_shared_wiring_constructor_dependencies_and_
     assert!(!html.contains(
         "It does not project source behavior or infer relationships between declarations."
     ));
+    for view in ["fields-state", "diagnostic"] {
+        for ext in ["html", "mdx"] {
+            let text =
+                std::fs::read_to_string(output.path().join(format!("{}-{view}.{ext}", page.id)))
+                    .unwrap();
+            assert!(text.contains("Retained source data transformations are available"));
+            assert!(!text.contains("analysis is unavailable for declaration-only pages"));
+            assert!(text.contains(&format!(
+                "source-calls.{ext}#ref-{}-data",
+                crate::canonical::hash_bytes(worker.id.as_bytes()).trim_start_matches("sha256:")
+            )));
+            for constructor in page
+                .examined_sources
+                .as_ref()
+                .unwrap()
+                .memberships
+                .iter()
+                .filter(|m| m.reason == "SELECTED_HANDOFF_CONSTRUCTOR")
+            {
+                let href = format!(
+                    "source-calls.{ext}#ref-{}-data",
+                    crate::canonical::hash_bytes(constructor.node.as_bytes())
+                        .trim_start_matches("sha256:")
+                );
+                assert!(!text.contains(&href));
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_kotlin_without_data_expansion_keeps_unavailable_guidance() {
+    let (evidence, mut selection) = retained_kotlin_wiring_fixture();
+    selection.expand_data_state = false;
+    let projection = project(&kotlin_check(evidence), &[selection]).unwrap();
+    assert!(projection.pages[0].data_state.is_none());
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "kotlin-no-data", &projection).unwrap();
+    for view in ["fields-state", "diagnostic"] {
+        let text = std::fs::read_to_string(
+            output
+                .path()
+                .join(format!("{}-{view}.html", projection.pages[0].id)),
+        )
+        .unwrap();
+        assert!(text.contains("analysis is unavailable for declaration-only pages"));
+        assert!(!text.contains("Source data transformations:"));
+    }
 }
 
 #[test]

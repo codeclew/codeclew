@@ -665,6 +665,44 @@ fn control_flow_edge_label(kind: crate::thread_flow_cfg::LocalCfgEdgeKind) -> &'
     }
 }
 
+fn retained_data_context_links(
+    p: &PageContent,
+    graph: Option<&SourceCallGraph>,
+    ext: &str,
+) -> String {
+    let (Some(state), Some(graph)) = (&p.data_state, graph) else {
+        return String::new();
+    };
+    if !p.selection.expand_data_state {
+        return String::new();
+    }
+    let mut links = String::new();
+    for id in &state.nodes {
+        let Some(node) = graph.nodes.get(id).filter(|node| node.data_state.is_some()) else {
+            continue;
+        };
+        links += &format!(
+            "<li>{}</li>\n",
+            link(
+                &format!("source-calls.{ext}#{}-data", anchor(id)),
+                &format!(
+                    "Source data transformations: {}",
+                    callable_label(&node.callable.symbol)
+                )
+            )
+        );
+    }
+    if links.is_empty() {
+        return links;
+    }
+    format!(
+        "{}<ul>{links}</ul>\n",
+        paragraph(
+            "Retained source data transformations are available in the expanded source-call context. Definitions, guards and call prerequisites describe source syntax; runtime values and completion remain unproven."
+        )
+    )
+}
+
 fn declaration_only_page(
     p: &PageContent,
     view: &str,
@@ -674,6 +712,7 @@ fn declaration_only_page(
     graph: Option<&SourceCallGraph>,
 ) -> String {
     let graph = p.selection.expand_source_calls.then_some(graph).flatten();
+    let data_context_links = retained_data_context_links(p, graph, ext);
     let same_declaration = p.endpoint.declaration_id == p.worker.declaration_id;
     let has_control_flow = p.projection_kind == Some(ProjectionKind::CompilerControlFlow);
     let mut out = format!(
@@ -803,9 +842,13 @@ fn declaration_only_page(
             );
         }
         "fields-state" => {
-            out += &paragraph(
-                "Field and data-state analysis is unavailable for declaration-only pages.",
-            );
+            if data_context_links.is_empty() {
+                out += &paragraph(
+                    "Field and data-state analysis is unavailable for declaration-only pages.",
+                );
+            } else {
+                out += &data_context_links;
+            }
             out += &selected_declaration(
                 &p.endpoint,
                 "First retained declaration",
@@ -845,9 +888,13 @@ fn declaration_only_page(
             if let Some(question) = &p.selection.question {
                 out += &paragraph(&format!("Question: {question}"));
             }
-            out += &paragraph(
-                "Source-condition analysis is unavailable for declaration-only pages. The selected declarations do not establish behavior or a relationship between them.",
-            );
+            if data_context_links.is_empty() {
+                out += &paragraph(
+                    "Source-condition analysis is unavailable for declaration-only pages. The selected declarations do not establish behavior or a relationship between them.",
+                );
+            } else {
+                out += &data_context_links;
+            }
         }
         _ => unreachable!(),
     }

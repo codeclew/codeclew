@@ -590,7 +590,10 @@ The complete preparation, author-only configuration and recovery recipe is in
 
 Internal callable Work may opt into `"sourceDataContext": true` in the same
 `process-graph-v1` preparation request. `rootDeclaration` selects an exact retained
-Java compiler callable. Run `docs work packet --root ROOT --work WORK_ID` to inspect
+Java or Kotlin compiler callable with admitted typed data input. Kotlin needs
+retained variable/source evidence supplied by the 2.4.10 analyzer; older Checks
+do not gain it automatically. C#, TypeScript and Rust do not admit this opt-in.
+Run `docs work packet --root ROOT --work WORK_ID` to inspect
 the resulting `sourceDataContext` and genuine Work citation labels before authoring.
 The graph uses only the immutable Work snapshot; it never captures or reads current
 source. Omitted and false retain the ordinary Work and packet representation.

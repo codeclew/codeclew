@@ -5,6 +5,11 @@ exact retained declaration IDs. It produces linked offline HTML and inert MDX 3
 from one typed source projection. It runs no analyzer, recapture or latest-pointer
 fallback. Ordinary source development uses `./clew`; examples below use installed `clew`.
 
+Java, Kotlin, C#, TypeScript and Rust share the reader, retained sources and
+HTML/MDX publication. Their compiler and syntax capabilities remain distinct;
+see [native retained-source capabilities](native-retained-source.md). The Java
+recipe below remains an initial compiler-backed example.
+
 ## First native HTML from saved Java evidence
 
 Register and bind the Java service, then capture its compiler evidence. For a
@@ -110,7 +115,9 @@ refused. HTML requires no JavaScript or network dependency. MDX contains escaped
 text and native inert JSX, with no imports or executable expressions. Relative
 links use the corresponding output format.
 
-`projection.json` uses `codeclew-native-page-projection/1.0`: input and context
+Pure Java `projection.json` uses `codeclew-native-page-projection/1.0`;
+declaration/CFG bundles use `/1.1` or `/1.2`, with explicit `projectionKind`.
+An explicit Java source-invocation selection can use `/1.3`. Input and context
 digests retain their original Check meaning, while `selectionDigest` hashes the
 exact ordered selector array. Pages preserve full selected source, observations,
 recursive statements, condition paths, calls, state rows, diagnostics, citation
@@ -148,7 +155,10 @@ digests and the generated file list.
 
 Shared queue identity requires an explicit local allocation, exact compiler call
 relations and constructor assignments to the selected fields. Equal variable
-names or types establish no handoff. Branches preserve exact expressions and
+names or types establish no handoff. Kotlin queue proof additionally requires
+retained compiler proof that a primary-constructor parameter initializes an
+ordinary backing property. Unsupported accessors, delegates and ambiguous
+construction remain gaps. Branches preserve exact expressions and
 false alternatives. Unsupported syntax and missing/ambiguous provenance remain
 local gaps. DEP-01 metadata identifies an external target and source availability;
 it establishes no implementation behavior. Offer success, scheduling, runtime
