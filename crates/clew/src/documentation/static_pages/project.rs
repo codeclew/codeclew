@@ -38,13 +38,8 @@ pub(super) fn project_unresolved(
             ));
         }
         let human_instructions = human_instructions(note_inputs, selection)?;
-        let kotlin_service = checked
-            .source_inputs
-            .as_ref()
-            .and_then(|inputs| inputs.inputs.services.get(&selection.service))
-            .is_some_and(|service| service.language == "kotlin");
         let selected_evidence = checked.services.get(&selection.service);
-        let selected_kotlin = [
+        let selected_exact_calls = [
             Some(selection.endpoint_declaration.as_str()),
             Some(selection.worker_declaration.as_str()),
             selection.wiring_declaration.as_deref(),
@@ -54,26 +49,20 @@ pub(super) fn project_unresolved(
         .any(|id| {
             selected_evidence
                 .and_then(|evidence| evidence.observations.get(id))
-                .is_some_and(source::is_kotlin_candidate)
+                .is_some_and(source::has_exact_call_capability)
         });
-        if selection.expand_data_state
-            && !selection.expand_source_calls
-            && !kotlin_service
-            && !selected_kotlin
-        {
+        if selection.expand_data_state && !selection.expand_source_calls && !selected_exact_calls {
             return Err(invalid("expandDataState requires expandSourceCalls"));
         }
         let evidence = selected_evidence
             .ok_or_else(|| invalid("native page selected service is not retained in Check"))?;
         let mut ctx = Context::new(evidence);
-        let endpoint =
-            source::project_callable(&mut ctx, &selection.endpoint_declaration, kotlin_service)?;
-        let worker =
-            source::project_callable(&mut ctx, &selection.worker_declaration, kotlin_service)?;
+        let endpoint = source::project_callable(&mut ctx, &selection.endpoint_declaration)?;
+        let worker = source::project_callable(&mut ctx, &selection.worker_declaration)?;
         let wiring = selection
             .wiring_declaration
             .as_ref()
-            .map(|id| source::project_callable(&mut ctx, id, kotlin_service))
+            .map(|id| source::project_callable(&mut ctx, id))
             .transpose()?;
         let declaration_only = [Some(&endpoint), Some(&worker), wiring.as_ref()]
             .into_iter()
@@ -84,9 +73,9 @@ pub(super) fn project_unresolved(
             .flatten()
             .any(|callable| callable.kind == ProjectionKind::CompilerControlFlow);
         let declaration_view = declaration_only || compiler_control_flow;
-        if declaration_view && selection.expand_source_calls && !selected_kotlin {
+        if declaration_view && selection.expand_source_calls && !selected_exact_calls {
             return Err(invalid(
-                "expandSourceCalls on declaration-only pages requires an admitted Kotlin function",
+                "expandSourceCalls on declaration-only pages requires an admitted compiler exact-call capability",
             ));
         }
         if declaration_view && selection.expand_data_state {

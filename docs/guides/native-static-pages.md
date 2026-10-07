@@ -379,3 +379,33 @@ text. The event remains present. Existing control/lambda boundaries still veto
 an unsupported structural tree. Older Checks without this payload retain their
 line citations and output bytes; missing exact coordinates never prove a missing
 operation. Rendering uses only the selected saved Check and retained sources.
+
+### C# retained source structure and direct helpers
+
+The source-development reader now admits exact Roslyn `METHOD` declarations
+with their original compiler identity and compilation scope. This is unreleased
+work after 0.13.17. The installed 0.13.17 C# analysis profile remains available;
+these native reader additions are not in that release.
+
+C# and Kotlin use the same retained source-outline, exact-call-site, bounded
+helper expansion, citation and HTML/MDX engines. C# authority remains
+`ROSLYN_SOURCE_STRUCTURE`; portable descriptor grammar does not establish Java
+compiler authority. Original UTF-8 spans are checked against Roslyn's decoded
+UTF-16 anchors, including BOM, CRLF and supplementary Unicode characters. A
+source-coordinate map is built once per immutable compilation file.
+
+The executable `fixtures/csharp-documentation-common-core` example contains an
+ASP.NET Core MVC action with two same-line calls to one direct source helper.
+Each call retains its own exact citation; the helper body is retained once in
+the bounded source-call graph. An interface call retains its compiler target
+without choosing an implementation. `TRY`, lambda, short-circuit and conditional
+access boundaries remain explicit and prevent a complete structural tree.
+Source structure does not establish predicate truth, runtime invocation order,
+receiver dispatch, data transformations or state effects.
+
+Select exact retained declaration observation IDs with `expandSourceCalls: true`
+and render from the immutable Check returned by `clew docs check`. HTML and inert
+MDX use that saved evidence without a checkout, recapture or model call. The
+analysis requires .NET SDK 10+ and restored project inputs; the analyzer does not
+restore them. Constructors and other unsupported native declaration kinds are
+rejected explicitly rather than parsed as Java.

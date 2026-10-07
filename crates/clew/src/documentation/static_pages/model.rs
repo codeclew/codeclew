@@ -293,7 +293,7 @@ pub struct SourceCallNode {
     pub sources: BTreeMap<String, Source>,
     /// Local examined text and call semantics; excludes global capture provenance.
     pub examined_source_digest: String,
-    /// Present only for compiler-admitted Kotlin declaration nodes in the graph.
+    /// Present only for compiler-admitted retained declaration nodes in the graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_projection_kind: Option<ProjectionKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -318,7 +318,7 @@ pub struct SourceCallEdge {
     pub conditions: Option<Vec<PathCondition>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reachable: Option<bool>,
-    /// Kotlin compiler-exact source site; its schema intentionally carries no
+    /// Compiler-exact source site; its schema intentionally carries no
     /// Java statement path, ordering, conditions or reachability facts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact_call_site: Option<NeutralExactCallSite>,

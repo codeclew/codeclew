@@ -381,11 +381,17 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
     let Some(outline) = &c.source_outline else {
         return String::new();
     };
+    let kotlin = outline.authority == "KOTLIN_PSI_WITH_K2_CALL_TARGETS";
+    let label = if kotlin { "Kotlin" } else { "C#" };
+    let event_label = if kotlin { "PSI" } else { "Source" };
+    let explanation = if kotlin {
+        "This tree preserves retained Kotlin PSI structure and exact K2 call-target metadata. It is not an execution trace: PSI conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
+    } else {
+        "This tree preserves retained Roslyn source structure and exact compiler call-target metadata. It is not an execution trace: source conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
+    };
     let mut out = format!(
-        "<section><h3>Cited Kotlin source outline</h3>\n{}",
-        paragraph(
-            "This tree preserves retained Kotlin PSI structure and exact K2 call-target metadata. It is not an execution trace: PSI conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
-        )
+        "<section><h3>Cited {label} source outline</h3>\n{}",
+        paragraph(explanation)
     );
     if let Some(tree) = &outline.tree {
         out += &format!("<pre>{}</pre>\n", escape(tree));
@@ -393,10 +399,10 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
         out += &format!("<ul>{}</ul>\n", gaps(&outline.gaps, ext));
     }
     if !outline.events.is_empty() {
-        out += "<ul aria-label=\"Retained PSI event citations\">\n";
+        out += &format!("<ul aria-label=\"Retained {event_label} event citations\">\n");
         for event in &outline.events {
             out += &format!(
-                "<li>PSI event ordinal {} · {} · {}-{}: {}</li>\n",
+                "<li>{event_label} event ordinal {} · {} · {}-{}: {}</li>\n",
                 event.ordinal,
                 escape(&event.kind),
                 event.start_line,
@@ -993,10 +999,20 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
             "Service: {}. Compiler scope: {}. Examined source digest: {}.",
             node.service, node.scope, node.examined_source_digest
         ));
+        let producer_label = if node
+            .observations
+            .get(&node.callable.declaration_id)
+            .is_some_and(|owner| {
+                owner.normalized["schema"] == crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA
+            }) {
+            "C#"
+        } else {
+            "Kotlin"
+        };
         if node.node_projection_kind.is_some() {
             out += &selected_declaration(
                 &node.callable,
-                "Retained Kotlin declaration",
+                &format!("Retained {producer_label} declaration"),
                 ext,
                 true,
                 &node.service,
@@ -1053,7 +1069,7 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                 ));
             } else if let Some(site) = &edge.exact_call_site {
                 out += &format!(
-                    "<details><summary>Exact Kotlin source site {}</summary><pre>{}</pre>",
+                    "<details><summary>Exact {producer_label} source site {}</summary><pre>{}</pre>",
                     escape(&site.relation_id),
                     escape(&site.expression)
                 );
@@ -1611,7 +1627,7 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
             });
             if !has_selected_kotlin_node {
                 return Err(invalid(
-                    "declaration page source-call expansion requires an admitted Kotlin graph root",
+                    "declaration page source-call expansion requires an admitted compiler exact-call graph root",
                 ));
             }
         }

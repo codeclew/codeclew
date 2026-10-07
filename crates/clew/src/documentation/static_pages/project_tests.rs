@@ -1243,7 +1243,7 @@ fn kotlin_answer_next_outline_is_cited_noncausal_and_keeps_cfg_independent() {
 #[test]
 fn kotlin_retained_call_sites_keep_exact_same_line_byte_occurrences() {
     let mut evidence = kotlin_retained_call_sites_evidence();
-    let relation_ids = vec!["call-relation-0".to_owned(), "call-relation-1".to_owned()];
+    let relation_ids = ["call-relation-0".to_owned(), "call-relation-1".to_owned()];
     let owner = evidence.observations.get_mut("answer-next").unwrap();
     owner
         .normalized
@@ -5120,4 +5120,272 @@ fn kotlin_outline_invalid_optional_spans_are_local_gaps_without_losing_events() 
         let temp = tempfile::tempdir().unwrap();
         super::super::publish::write(temp.path(), "snapshot", &projection).unwrap();
     }
+}
+
+/// Compiler-shaped test facts exercise the common capture contract. The separate
+/// real Roslyn qualification uses the same committed fixture without synthetic facts.
+fn csharp_common_check() -> Check {
+    let text =
+        include_str!("../../../../../fixtures/csharp-documentation-common-core/ProbeController.cs");
+    let file = "ProbeController.cs";
+    let scope = "csproj:Probe.csproj@net10.0";
+    let service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0",
+        "id":"sample","title":"Roslyn structure","repositoryId":"probe","repository":"https://example.invalid/probe",
+        "language":"csharp","profile":"csharp-dotnet-msbuild-read-only","compilations":[scope],"targetRef":"main"})).unwrap();
+    let descriptor = "(LSystem/String;)LSystem/String;";
+    let symbol =
+        |name: &str| format!("method:class:DocumentationProbe.ProbeController#{name}{descriptor}");
+    let interface_symbol = format!("method:class:DocumentationProbe.IFormatter#Format{descriptor}");
+    let anchors = |start: usize, end: usize| {
+        json!({"file":file,
+        "start":text[3..start].encode_utf16().count(),"end":text[3..end].encode_utf16().count(),
+        "byteStart":start,"byteEnd":end,
+        "startLine":1+text[..start].bytes().filter(|b| *b==b'\n').count(),
+        "endLine":1+text[..end-1].bytes().filter(|b| *b==b'\n').count()})
+    };
+    let mut facts = Vec::new();
+    for (name, marker, owner_end_marker) in [
+        ("Render", "public string Render", "\r\n    }"),
+        ("Prepare", "private static string Prepare", "\r\n    }"),
+        ("Forward", "public string Forward", ";"),
+        ("Unsupported", "public string Unsupported", "\r\n    }"),
+        ("Format", "string Format", ";"),
+    ] {
+        let start = text.find(marker).unwrap();
+        let end = start + text[start..].find(owner_end_marker).unwrap() + owner_end_marker.len();
+        let mut declaration = anchors(start, end);
+        let owner = if name == "Format" {
+            "class:DocumentationProbe.IFormatter"
+        } else {
+            "class:DocumentationProbe.ProbeController"
+        };
+        let identity = if name == "Format" {
+            interface_symbol.clone()
+        } else {
+            symbol(name)
+        };
+        declaration.as_object_mut().unwrap().extend(json!({"schema":crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA,
+            "kind":"DECLARATION","declarationKind":"METHOD","resolution":"COMPILER_EXACT",
+            "symbolIdentity":identity,"ownerIdentity":owner,"name":name,"jvmDescriptor":descriptor,
+            "csharpIdentity":format!("M:DocumentationProbe.{}.{}(System.String)", if name=="Format" {"IFormatter"} else {"ProbeController"}, name),
+            "scope":{"compilation":scope}}).as_object().unwrap().clone());
+        let body = &text[start..end];
+        let mut events = Vec::new();
+        let mut event = |kind: &str, expression: &str, after: usize, target: Option<String>| {
+            let local = body[after..].find(expression).unwrap() + after;
+            let mut value = anchors(start + local, start + local + expression.len());
+            value["kind"] = json!(kind);
+            if kind == "IF" {
+                value["condition"] = json!("value.Length == 0");
+            }
+            if let Some(target) = target.clone() {
+                value["target"] = json!(target);
+                value["resolution"] = json!("COMPILER_EXACT");
+                let mut relation = value.clone();
+                relation.as_object_mut().unwrap().remove("target");
+                relation["schema"] = json!(crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA);
+                relation["kind"] = json!("RELATION");
+                relation["relationKind"] = json!("CALLS");
+                relation["sourceIdentity"] = json!(identity);
+                relation["targetIdentity"] = json!(target);
+                relation["targetCsharpIdentity"] = json!(if name == "Forward" {
+                    "M:DocumentationProbe.IFormatter.Format(System.String)"
+                } else {
+                    "M:DocumentationProbe.ProbeController.Prepare(System.String)"
+                });
+                relation["scope"] = json!({"compilation":scope});
+                facts.push((relation.clone(), digest(&relation).unwrap()));
+            }
+            events.push(value);
+            local + expression.len()
+        };
+        match name {
+            "Render" => {
+                event(
+                    "LOCAL",
+                    "var marker = \"π🙂 <script>{probe()}.mdx/@EXT@\";",
+                    0,
+                    None,
+                );
+                event("IF", "if (value.Length == 0) return marker;", 0, None);
+                event("RETURN", "return marker;", 0, None);
+                event("END", "if (value.Length == 0) return marker;", 0, None);
+                let first = event("CALL", "Prepare(\"α🙂\")", 0, Some(symbol("Prepare")));
+                event("LOCAL", "var first = Prepare(\"α🙂\");", 0, None);
+                event("CALL", "Prepare(\"α🙂\")", first, Some(symbol("Prepare")));
+                event("LOCAL", "var second = Prepare(\"α🙂\");", 0, None);
+                event("RETURN", "return first;", 0, None);
+            }
+            "Prepare" => {
+                event("LOCAL", "var result = value;", 0, None);
+                event("RETURN", "return result;", 0, None);
+            }
+            "Forward" => {
+                event(
+                    "CALL",
+                    "formatter.Format(value)",
+                    0,
+                    Some(interface_symbol.clone()),
+                );
+                event("RETURN", "formatter.Format(value)", 0, None);
+            }
+            "Unsupported" => {
+                event("RETURN", "return \"error\";", 0, None);
+            }
+            _ => {}
+        }
+        if name != "Format" {
+            declaration["documentation"] = json!({"schema":"codeclew-csharp-documentation-flow/1.0",
+                "authority":"ROSLYN_SOURCE_STRUCTURE","events":events,
+                "boundaries":if name=="Unsupported" {vec!["TRY_UNSUPPORTED","LAMBDA_UNSUPPORTED","SHORT_CIRCUIT_UNSUPPORTED","NULL_CONDITIONAL_UNSUPPORTED"]} else {vec![]}});
+        }
+        facts.push((declaration.clone(), digest(&declaration).unwrap()));
+    }
+    let evidence = crate::documentation::analysis::project(
+        &service,
+        &"a".repeat(40),
+        &digest(&service).unwrap(),
+        "STATIC",
+        "SEMANTIC",
+        facts,
+        &BTreeMap::from([(file.into(), text.into())]),
+        false,
+    )
+    .unwrap();
+    kotlin_check(evidence)
+}
+
+fn csharp_selection(checked: &Check, name: &str) -> Selection {
+    let id = checked.services["sample"]
+        .observations
+        .values()
+        .find(|row| row.kind == "SYMBOL" && row.normalized["name"] == name)
+        .unwrap()
+        .id
+        .clone();
+    Selection {
+        id: format!("csharp-{}", name.to_lowercase()),
+        expand_source_calls: true,
+        ..kotlin_selection(&id, &id)
+    }
+}
+
+#[test]
+fn csharp_common_source_outline_and_exact_calls_expand_one_direct_helper() {
+    let checked = csharp_common_check();
+    let projection = project(&checked, &[csharp_selection(&checked, "Render")]).unwrap();
+    let page = &projection.pages[0];
+    let outline = page.endpoint.source_outline.as_ref().unwrap();
+    assert_eq!(outline.authority, "ROSLYN_SOURCE_STRUCTURE");
+    assert!(
+        outline
+            .tree
+            .as_ref()
+            .unwrap()
+            .contains("LOCAL Source: var marker")
+    );
+    assert!(!outline.tree.as_ref().unwrap().contains("PSI"));
+    assert!(
+        outline
+            .events
+            .iter()
+            .all(|event| event.exact_source.is_some() && event.gaps.is_empty())
+    );
+    let sites = &page.endpoint.retained_call_sites.as_ref().unwrap().sites;
+    assert_eq!(sites.len(), 2);
+    assert_eq!(sites[0].expression, "Prepare(\"α🙂\")");
+    assert_ne!(sites[0].citation_id, sites[1].citation_id);
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    assert_eq!(graph.nodes.len(), 2);
+    let root = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.declaration_id == page.endpoint.declaration_id)
+        .unwrap();
+    assert_eq!(root.calls.len(), 2);
+    assert_eq!(root.calls[0].target_node, root.calls[1].target_node);
+    assert!(root.calls.iter().all(
+        |edge| edge.status == "RETAINED_DECLARED_BODY" && edge.runtime_dispatch == "UNRESOLVED"
+    ));
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "snapshot", &projection).unwrap();
+    let html = std::fs::read_to_string(output.path().join("csharp-render-endpoint.html")).unwrap();
+    assert!(html.contains("Cited C# source outline"));
+    assert!(html.contains("&lt;script&gt;"));
+    assert!(!html.contains("<script>"));
+}
+
+#[test]
+fn csharp_interface_and_unsupported_controls_remain_explicit_frontiers() {
+    let checked = csharp_common_check();
+    let projection = project(
+        &checked,
+        &[
+            csharp_selection(&checked, "Forward"),
+            csharp_selection(&checked, "Unsupported"),
+        ],
+    )
+    .unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let forward = graph
+        .nodes
+        .values()
+        .find(|node| node.callable.symbol.contains("#Forward("))
+        .unwrap();
+    assert_eq!(forward.calls[0].status, "CALL_TARGET_BODY_NOT_CAPTURED");
+    assert!(forward.calls[0].target_node.is_none());
+    let outline = projection.pages[1]
+        .endpoint
+        .source_outline
+        .as_ref()
+        .unwrap();
+    assert!(outline.tree.is_none());
+    assert_eq!(outline.gaps[0].code, "SOURCE_OUTLINE_CONTROL_BOUNDARY");
+    assert!(outline.gaps[0].detail.contains("LAMBDA_UNSUPPORTED"));
+}
+
+#[test]
+fn csharp_rejected_child_source_stays_local_and_preflight_rejects_changed_source() {
+    let mut checked = csharp_common_check();
+    let selection = csharp_selection(&checked, "Render");
+    let evidence = checked.services.get_mut("sample").unwrap();
+    let helper = evidence
+        .observations
+        .values()
+        .find(|row| row.kind == "SYMBOL" && row.normalized["name"] == "Prepare")
+        .unwrap()
+        .id
+        .clone();
+    let source = evidence.observations[&helper].source_ids[0].clone();
+    evidence.sources.get_mut(&source).unwrap().text_digest = "invalid".into();
+    let projection = project(&checked, &[selection]).unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    assert_eq!(graph.nodes.len(), 1);
+    assert!(
+        graph
+            .nodes
+            .values()
+            .next()
+            .unwrap()
+            .calls
+            .iter()
+            .all(|edge| edge.status == "BODY_UNAVAILABLE")
+    );
+    let fresh = csharp_common_check();
+    let mut projection = project(&fresh, &[csharp_selection(&fresh, "Render")]).unwrap();
+    projection.pages[0]
+        .endpoint
+        .source_outline
+        .as_mut()
+        .unwrap()
+        .events[0]
+        .exact_source
+        .as_mut()
+        .unwrap()
+        .expression
+        .push_str("invented");
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("tampered");
+    assert!(super::super::publish::write(&output, "snapshot", &projection).is_err());
+    assert!(!output.exists());
 }

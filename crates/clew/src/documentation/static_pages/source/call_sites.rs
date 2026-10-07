@@ -9,7 +9,6 @@ use crate::documentation::{digest, invalid};
 use crate::error::ClewError;
 use std::collections::{BTreeMap, BTreeSet};
 
-const DECLARATION_SCHEMA: &str = "declaration-descriptor/0.1";
 const CALL_SCHEMA: &str = "codeclew-kotlin-documentation-call/1.0";
 const NO_CALL_SITES: &str = "KOTLIN_RETAINED_CALL_SITES_NOT_PROVEN";
 const REJECTED_CALL_SITES: &str = "KOTLIN_RETAINED_CALL_SITES_REJECTED";
@@ -117,6 +116,7 @@ fn candidate_relations<'a>(
         .iter()
         .filter(|(_, relation)| {
             relation.kind == "CALL_RELATION"
+                && relation.normalized["relationKind"] == "CALLS"
                 && (relation.symbol == owner_symbol
                     || relation.normalized["sourceIdentity"].as_str() == Some(owner_symbol))
                 && relation.normalized["scope"]
@@ -149,7 +149,19 @@ fn derive_projection(
     let unavailable = |reason: UnavailableReason| RetainedCallSites {
         owner_key: owner_key.clone(),
         sites: Vec::new(),
-        gaps: vec![gap(reason.code(), reason.detail(), owner_citation.clone())],
+        gaps: vec![gap(
+            &if super::compiler::csharp_admitted(owner) {
+                reason.code().replace("KOTLIN_", "")
+            } else {
+                reason.code().into()
+            },
+            if super::compiler::csharp_admitted(owner) {
+                reason.detail().replace("Kotlin", "Roslyn")
+            } else {
+                reason.detail().into()
+            },
+            owner_citation.clone(),
+        )],
     };
 
     if owner.id.is_empty()
@@ -157,14 +169,8 @@ fn derive_projection(
         || owner.service != service
         || owner.symbol != owner_key.symbol
         || owner.normalized["scope"].as_str() != Some(owner_key.scope.as_str())
-        || owner.normalized["schema"] != DECLARATION_SCHEMA
-        || owner.normalized["declarationKind"] != "FUNCTION"
-        || owner.normalized["resolution"] != "PROVEN"
-        || owner.normalized["provider"] != "K2_FIR"
-        || owner.normalized["sourceProvenance"] != "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
-        || owner.normalized["compilerAuthority"] != "fir-facts-extractor/0.6"
+        || !super::compiler::admitted(owner)
         || owner.digest != digest(&owner.normalized)?
-        || crate::semantic_validation::validate_kotlin_full_symbol_identity(&owner.symbol).is_err()
     {
         return Ok(unavailable(UnavailableReason::Rejected));
     }
@@ -254,21 +260,24 @@ fn relation_site(
     sources: &BTreeMap<String, Source>,
 ) -> Result<Option<(NeutralExactCallSite, Vec<super::super::model::Gap>)>, ClewError> {
     let normalized = &relation.normalized;
-    let Some(source_callable) = normalized["sourceCompilerCallableId"].as_str() else {
-        return Ok(None);
-    };
-    let Some(source_descriptor) = normalized["sourceJvmDescriptor"].as_str() else {
-        return Ok(None);
-    };
-    let Some(target_callable) = normalized["targetCompilerCallableId"].as_str() else {
-        return Ok(None);
-    };
-    let Some(target_descriptor) = normalized["targetJvmDescriptor"].as_str() else {
-        return Ok(None);
-    };
     let Some(target_identity) = normalized["targetIdentity"].as_str() else {
         return Ok(None);
     };
+    let csharp = super::compiler::csharp_admitted(owner);
+    let producer_valid = if csharp {
+        normalized["schema"] == crate::csharp_adapter_v2::CSHARP_FACT_SCHEMA
+            && normalized["resolution"] == "COMPILER_EXACT"
+            && normalized["sourceIdentity"] == owner.symbol
+            && target_identity.starts_with("method:class:")
+            && normalized["targetCsharpIdentity"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("M:"))
+    } else {
+        kotlin_relation_valid(normalized, owner, target_identity)
+    };
+    let target_descriptor = normalized["targetJvmDescriptor"]
+        .as_str()
+        .unwrap_or_default();
     let site = &normalized["callSite"];
     let Some(file) = site["file"].as_str() else {
         return Ok(None);
@@ -309,35 +318,15 @@ fn relation_site(
     else {
         return Ok(None);
     };
-    let source_identity = format!("callable:{source_callable}#jvm:{source_descriptor}");
-    let target_from_parts = format!("callable:{target_callable}#jvm:{target_descriptor}");
-    let owner_callable = owner.normalized["compilerCallableId"].as_str();
-    let owner_descriptor_mismatch = owner
-        .normalized
-        .get("jvmDescriptor")
-        .is_some_and(|descriptor| descriptor.as_str() != Some(source_descriptor));
     if relation.id.is_empty()
         || relation.id != map_key
         || relation.service != service
         || relation.symbol != owner_key.symbol
-        || normalized["schema"] != CALL_SCHEMA
+        || !producer_valid
         || normalized["kind"] != "RELATION"
         || normalized["relationKind"] != "CALLS"
-        || normalized["resolution"] != "COMPILER_EXACT"
-        || normalized["compilerResolution"] != "PROVEN"
-        || normalized["provider"] != "K2_FIR"
-        || normalized["compilerSchema"] != "declaration-relation/0.1"
-        || normalized["sourceProvenance"] != "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
         || normalized["sourceIdentity"].as_str() != Some(owner_key.symbol.as_str())
         || normalized["scope"].as_str() != Some(owner_key.scope.as_str())
-        || owner_callable != Some(source_callable)
-        || owner_descriptor_mismatch
-        || source_identity != owner_key.symbol
-        || target_from_parts != target_identity
-        || crate::semantic_validation::validate_kotlin_full_symbol_identity(&source_identity)
-            .is_err()
-        || crate::semantic_validation::validate_kotlin_full_symbol_identity(target_identity)
-            .is_err()
         || relation.digest != digest(&relation.normalized)?
         || site["sourceStatus"] != "SOURCE_RETAINED"
         || source_id != relation_source_id
@@ -364,6 +353,30 @@ fn relation_site(
         return Ok(None);
     }
 
+    if csharp {
+        let owner_site = &owner.normalized["outlineOwnerSource"];
+        let (Some(start), Some(end)) = (
+            owner_site["byteStart"].as_u64(),
+            owner_site["byteEnd"].as_u64(),
+        ) else {
+            return Ok(None);
+        };
+        if owner_site["sourceStatus"] != "SOURCE_RETAINED"
+            || owner_site["sourceId"] != owner_source.id
+            || owner_site["sourceDigest"] != owner_source.text_digest
+            || owner_site["evidenceDigest"] != owner_source.evidence_digest
+            || owner_site["fullCompilationSourceDigest"] != full_source_digest
+            || byte_start < start
+            || byte_end > end
+            || end.checked_sub(start) != Some(owner_source.text.len() as u64)
+            || owner_source
+                .text
+                .get((byte_start - start) as usize..(byte_end - start) as usize)
+                != Some(source.text.as_str())
+        {
+            return Ok(None);
+        }
+    }
     let citation_id = citation_id(source, 0, source.text.len());
     let mut neutral_site = NeutralExactCallSite {
         relation_id: relation.id.clone(),
@@ -391,6 +404,43 @@ fn relation_site(
     );
     neutral_site.argument_bindings = argument_bindings;
     Ok(Some((neutral_site, argument_gaps)))
+}
+
+fn kotlin_relation_valid(
+    normalized: &serde_json::Value,
+    owner: &Observation,
+    target: &str,
+) -> bool {
+    let (
+        Some(source_callable),
+        Some(source_descriptor),
+        Some(target_callable),
+        Some(target_descriptor),
+    ) = (
+        normalized["sourceCompilerCallableId"].as_str(),
+        normalized["sourceJvmDescriptor"].as_str(),
+        normalized["targetCompilerCallableId"].as_str(),
+        normalized["targetJvmDescriptor"].as_str(),
+    )
+    else {
+        return false;
+    };
+    let source = format!("callable:{source_callable}#jvm:{source_descriptor}");
+    normalized["schema"] == CALL_SCHEMA
+        && normalized["resolution"] == "COMPILER_EXACT"
+        && normalized["compilerResolution"] == "PROVEN"
+        && normalized["provider"] == "K2_FIR"
+        && normalized["compilerSchema"] == "declaration-relation/0.1"
+        && normalized["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+        && owner.normalized["compilerCallableId"] == source_callable
+        && owner
+            .normalized
+            .get("jvmDescriptor")
+            .is_none_or(|d| d == source_descriptor)
+        && source == owner.symbol
+        && format!("callable:{target_callable}#jvm:{target_descriptor}") == target
+        && crate::semantic_validation::validate_kotlin_full_symbol_identity(&source).is_ok()
+        && crate::semantic_validation::validate_kotlin_full_symbol_identity(target).is_ok()
 }
 
 fn project_argument_bindings(
@@ -718,11 +768,9 @@ pub(in crate::documentation::static_pages) fn validate_node(
     let owner = observations
         .get(&callable.declaration_id)
         .ok_or_else(|| invalid("retained Kotlin call-site owner is not retained"))?;
-    let is_kotlin_function = owner.normalized["schema"] == DECLARATION_SCHEMA
-        && owner.normalized["declarationKind"] == "FUNCTION";
-    if !is_kotlin_function {
+    if !super::compiler::admitted(owner) {
         return Err(invalid(
-            "retained Kotlin call sites are attached to a non-Kotlin function",
+            "retained exact call sites require an admitted compiler declaration",
         ));
     }
     let scope = owner.normalized["scope"]

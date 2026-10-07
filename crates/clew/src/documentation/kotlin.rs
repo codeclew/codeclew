@@ -1175,7 +1175,7 @@ mod tests {
                 .is_none()
         );
         assert!(context.iter().any(|item| {
-            item["kind"] == "SOURCE" && item["record"]["text"] == &source[owner_start..owner_end]
+            item["kind"] == "SOURCE" && item["record"]["text"] == source[owner_start..owner_end]
         }));
         let source_missing_check = check::Check {
             schema: "codeclew-documentation-check/1.0".into(),

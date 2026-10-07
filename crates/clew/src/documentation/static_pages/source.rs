@@ -6,6 +6,7 @@ use crate::error::ClewError;
 use std::collections::BTreeMap;
 
 pub(super) mod call_sites;
+pub(super) mod compiler;
 pub(super) mod control_flow;
 pub(super) mod java;
 pub(super) mod kotlin;
@@ -148,7 +149,6 @@ pub(super) fn project_java(
 pub(super) fn project_callable(
     context: &mut Context<'_>,
     declaration: &str,
-    kotlin_service: bool,
 ) -> Result<ProjectedCallable, ClewError> {
     let observation = context
         .evidence
@@ -164,14 +164,35 @@ pub(super) fn project_callable(
     if java::compiler(observation) {
         return project_java(context, declaration);
     }
-    if kotlin_service || kotlin::candidate(observation) {
+    if kotlin::candidate(observation) {
         return kotlin::project(context, declaration);
     }
-    // Admission errors from the selected adapter are terminal: never reinterpret
-    // a failed Kotlin declaration as Java based on syntax or source text.
-    project_java(context, declaration)
+    if compiler::csharp_candidate(observation) {
+        return compiler::project_csharp(context, declaration);
+    }
+    let java_syntax = observation.normalized["schema"] == "syntax-only"
+        || (observation.normalized["authority"] == "SYNTAX"
+            && matches!(
+                observation.normalized["syntaxKind"].as_str(),
+                Some("method_declaration" | "constructor_declaration" | "field_declaration")
+            ));
+    if java_syntax
+        && !observation.source_ids.is_empty()
+        && observation.source_ids.iter().all(|id| {
+            context
+                .evidence
+                .sources
+                .get(id)
+                .is_some_and(|source| source.file.ends_with(".java"))
+        })
+    {
+        return project_java(context, declaration);
+    }
+    Err(invalid(
+        "Selected declaration has no supported compiler projection; source language is never inferred as Java",
+    ))
 }
 
-pub(super) fn is_kotlin_candidate(observation: &crate::documentation::model::Observation) -> bool {
-    kotlin::candidate(observation)
+pub(super) fn has_exact_call_capability(owner: &Observation) -> bool {
+    kotlin::candidate(owner) || compiler::csharp_candidate(owner)
 }

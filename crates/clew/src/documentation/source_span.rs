@@ -41,11 +41,11 @@ pub fn validate_capture_span(
         && span.compilation_scope == scope
         && span.ordinal == ordinal
         && owner["file"] == span.file
-        && owner["start"]
+        && owner["byteStart"]
             .as_u64()
-            .or_else(|| owner["byteStart"].as_u64())
+            .or_else(|| owner["start"].as_u64())
             == Some(span.owner_byte_start as u64)
-        && owner["end"].as_u64().or_else(|| owner["byteEnd"].as_u64())
+        && owner["byteEnd"].as_u64().or_else(|| owner["end"].as_u64())
             == Some(span.owner_byte_end as u64)
         && span.owner_byte_start <= span.byte_start
         && span.byte_start < span.byte_end

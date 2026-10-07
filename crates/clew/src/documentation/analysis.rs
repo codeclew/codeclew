@@ -1600,7 +1600,32 @@ pub(crate) fn project_scoped(
     // incompatible candidates becomes an explicit SCOPE_AMBIGUOUS boundary
     // rather than last-write-wins overwriting a single candidate.
     let mut symbol_digests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (fact, binding) in &facts {
+    let mut roslyn_coordinates = BTreeMap::new();
+    for (raw_fact, binding) in &facts {
+        let mut bound_fact;
+        let fact = if raw_fact["schema"] == super::csharp::CSHARP_FACT_SCHEMA
+            && raw_fact["documentation"].is_object()
+        {
+            let scope = resolve_scope_key(&raw_fact["scope"], known)?;
+            bound_fact = raw_fact.clone();
+            if let Some(blob) = sources.blob(&scope, raw_fact["file"].as_str().unwrap_or_default())
+            {
+                super::csharp::bind_source_spans(
+                    &mut bound_fact,
+                    &scope,
+                    roslyn_coordinates
+                        .entry((
+                            scope.clone(),
+                            raw_fact["file"].as_str().unwrap_or_default().to_owned(),
+                        ))
+                        .or_insert_with(|| super::csharp::SourceCoordinates::new(&blob.text)),
+                    &blob.content_digest,
+                )?;
+            }
+            &bound_fact
+        } else {
+            raw_fact
+        };
         if fact["schema"] == "codeclew-kotlin-documentation-local-cfg-boundary/1.0" {
             let mut boundary: LocalCfgBoundaryEvidence = serde_json::from_value(fact.clone())
                 .map_err(|_| invalid("Kotlin CFG boundary violates its typed contract"))?;
@@ -1909,7 +1934,7 @@ pub(crate) fn project_scoped(
             };
             let identity = scoped_identity(&scope, &format!("{relation_prefix}:{}", digest(fact)?));
             let id = dependency_id(&service.id, "call-relation", &identity)?;
-            let source = add_source(
+            let mut source = add_source(
                 &mut evidence,
                 service,
                 sources,
@@ -1918,6 +1943,37 @@ pub(crate) fn project_scoped(
                 binding,
                 &identity,
             )?;
+            let mut exact_site = None;
+            if fact["schema"] == super::csharp::CSHARP_FACT_SCHEMA
+                && fact["relationKind"] == "CALLS"
+            {
+                if let Some(blob) = sources.blob(&scope, fact["file"].as_str().unwrap_or_default())
+                {
+                    let coordinates = roslyn_coordinates
+                        .entry((
+                            scope.clone(),
+                            fact["file"].as_str().unwrap_or_default().to_owned(),
+                        ))
+                        .or_insert_with(|| super::csharp::SourceCoordinates::new(&blob.text));
+                    if !coordinates.valid_anchor(fact) {
+                        return Err(invalid(
+                            "Roslyn CALLS anchors do not bind original UTF-8 source",
+                        ));
+                    }
+                }
+                if let Some((id, site)) = add_exact_byte_source(
+                    &mut evidence,
+                    service,
+                    sources,
+                    &scope,
+                    fact,
+                    binding,
+                    &identity,
+                )? {
+                    source = Some(id);
+                    exact_site = Some(site);
+                }
+            }
             let mut normalized = strip_coordinates(fact);
             normalized["scope"] = json!(scope);
             let mut call_site = json!({
@@ -1928,6 +1984,10 @@ pub(crate) fn project_scoped(
                 "byteEnd":fact["byteEnd"],
                 "sourceStatus":"SOURCE_UNAVAILABLE"
             });
+            if let Some(site) = exact_site {
+                call_site = site;
+                normalized["evidenceBinding"] = json!(binding);
+            }
             if fact["sourceIdentity"].as_str().is_none_or(str::is_empty) {
                 call_site["ownerStatus"] = json!("SOURCE_OWNER_UNAVAILABLE");
                 let boundary = if is_type_use {
@@ -2002,8 +2062,8 @@ pub(crate) fn project_scoped(
         let mut outline_owner_source = None;
         if has_outline_spans {
             let exact_owner = json!({"file":fact["file"],
-                    "byteStart":fact.get("start").or_else(|| fact.get("byteStart")),
-                    "byteEnd":fact.get("end").or_else(|| fact.get("byteEnd"))});
+                    "byteStart":fact.get("byteStart").or_else(|| fact.get("start")),
+                    "byteEnd":fact.get("byteEnd").or_else(|| fact.get("end"))});
             if let Some((id, site)) = add_exact_byte_source(
                 &mut evidence,
                 service,

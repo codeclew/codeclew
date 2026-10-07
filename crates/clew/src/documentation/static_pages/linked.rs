@@ -40,9 +40,9 @@ fn key(identity: &CallableKey) -> Result<String, ClewError> {
 
 fn node(evidence: &ServiceEvidence, declaration: &str) -> Result<SourceCallNode, ClewError> {
     let mut ctx = Context::new(evidence);
-    let callable = source::project_callable(&mut ctx, declaration, false)?;
+    let callable = source::project_callable(&mut ctx, declaration)?;
     let id = key(&callable.key)?;
-    let kotlin = source::is_kotlin_candidate(&evidence.observations[declaration]);
+    let kotlin = source::has_exact_call_capability(&evidence.observations[declaration]);
     let mut calls = Vec::new();
     if kotlin {
         if let Some(retained) = &callable.projection.retained_call_sites {
@@ -476,14 +476,6 @@ pub(super) fn build_roots(
     Ok(graph)
 }
 
-fn kotlin_body_envelope(observation: &crate::documentation::model::Observation) -> bool {
-    let documentation = &observation.normalized["documentation"];
-    documentation["schema"] == "codeclew-kotlin-documentation-flow/1.0"
-        && documentation["authority"] == "KOTLIN_PSI_WITH_K2_CALL_TARGETS"
-        && documentation["events"].is_array()
-        && documentation["boundaries"].is_array()
-}
-
 pub(super) fn expand_kotlin_edge(
     evidence: &ServiceEvidence,
     edge: &mut SourceCallEdge,
@@ -496,19 +488,17 @@ pub(super) fn expand_kotlin_edge(
     let site = edge
         .exact_call_site
         .as_ref()
-        .ok_or_else(|| crate::documentation::invalid("Kotlin exact call site disappeared"))?;
+        .ok_or_else(|| crate::documentation::invalid("Compiler exact call site disappeared"))?;
     let citation = site.citation_id.as_str();
     let target = site.target_identity.as_str();
     let candidates: Vec<_> = evidence
         .observations
         .values()
         .filter(|observation| {
-            source::is_kotlin_candidate(observation)
+            source::has_exact_call_capability(observation)
                 && observation.kind == "SYMBOL"
                 && observation.service == evidence.service
-                && observation.normalized["schema"] == "declaration-descriptor/0.1"
-                && observation.normalized["resolution"] == "PROVEN"
-                && observation.normalized["declarationKind"] == "FUNCTION"
+                && source::compiler::admitted(observation)
                 && observation.normalized["symbolIdentity"] == target
                 && observation.symbol == target
                 && observation.normalized["scope"] == edge.target_scope
@@ -524,19 +514,19 @@ pub(super) fn expand_kotlin_edge(
             let (code, detail) = if ambiguous || candidates.len() > 1 {
                 (
                     "CALL_TARGET_AMBIGUOUS",
-                    "The exact Kotlin target has no unique admitted function declaration in this compilation scope.",
+                    "The exact compiler target has no unique admitted function declaration in this compilation scope.",
                 )
             } else if evidence.observations.values().any(|observation| {
-                source::is_kotlin_candidate(observation) && observation.symbol == target
+                source::has_exact_call_capability(observation) && observation.symbol == target
             }) {
                 (
                     "CALL_TARGET_SCOPE_MISMATCH",
-                    "A Kotlin declaration in another compilation scope is not a substitute for the exact target.",
+                    "A compiler declaration in another compilation scope is not a substitute for the exact target.",
                 )
             } else {
                 (
                     "CALL_TARGET_BODY_NOT_CAPTURED",
-                    "The exact Kotlin target has no retained repository function declaration.",
+                    "The exact compiler target has no retained repository function declaration.",
                 )
             };
             edge.status = code.into();
@@ -545,11 +535,11 @@ pub(super) fn expand_kotlin_edge(
         }
     };
     edge.target_declaration = Some(declaration.id.clone());
-    if !kotlin_body_envelope(declaration) {
+    if !source::compiler::body_envelope(declaration) {
         edge.status = "CALL_TARGET_BODY_NOT_CAPTURED".into();
         edge.frontiers.push(frontier(
             "CALL_TARGET_BODY_NOT_CAPTURED",
-            "The exact Kotlin declaration has no intact admitted documentation-flow body envelope; its declaration identity is retained without examining a body.",
+            "The exact compiler declaration has no intact admitted documentation-flow body envelope; its declaration identity is retained without examining a body.",
             citation,
         ));
         return Ok(());
@@ -571,13 +561,15 @@ pub(super) fn expand_kotlin_edge(
             Ok(node) => node,
             Err(error)
                 if error.code == crate::error::ErrorCode::InvalidInput
-                    && (error.message.starts_with("Kotlin ")
+                    && (error.message.starts_with("Compiler ")
+                        || error.message.starts_with("Kotlin ")
+                        || error.message.starts_with("Roslyn ")
                         || error.message.starts_with("retained Kotlin ")) =>
             {
                 edge.status = "BODY_UNAVAILABLE".into();
                 edge.frontiers.push(frontier(
                     "CALL_TARGET_BODY_UNAVAILABLE",
-                    "The exact Kotlin declaration was identified, but its retained source evidence did not pass body admission.",
+                    "The exact compiler declaration was identified, but its retained source evidence did not pass body admission.",
                     citation,
                 ));
                 return Ok(());
@@ -858,8 +850,8 @@ pub(super) fn validate_graph(
     }
     for (id, node) in &graph.nodes {
         let owner = node.observations.get(&node.callable.declaration_id);
-        let kotlin =
-            node.node_projection_kind.is_some() || owner.is_some_and(source::is_kotlin_candidate);
+        let kotlin = node.node_projection_kind.is_some()
+            || owner.is_some_and(source::has_exact_call_capability);
         if !kotlin {
             for edge in &node.calls {
                 if edge.call.is_none()
@@ -877,7 +869,7 @@ pub(super) fn validate_graph(
             continue;
         }
         let owner = owner.ok_or_else(|| {
-            crate::documentation::invalid("Kotlin source-call node owner is not retained")
+            crate::documentation::invalid("Compiler source-call node owner is not retained")
         })?;
         let computed_id = key(&CallableKey {
             service: node.service.clone(),
@@ -892,7 +884,7 @@ pub(super) fn validate_graph(
             || owner.symbol != node.callable.symbol
             || owner.digest != digest(&owner.normalized)?
             || owner.normalized["scope"].as_str() != Some(node.scope.as_str())
-            || !source::is_kotlin_candidate(owner)
+            || !source::has_exact_call_capability(owner)
             || node.node_projection_kind.is_none_or(|kind| {
                 !matches!(
                     kind,
@@ -902,18 +894,20 @@ pub(super) fn validate_graph(
             })
         {
             return Err(crate::documentation::invalid(
-                "Kotlin source-call node key, projection kind or owner differs from its admitted declaration",
+                "Compiler source-call node key, projection kind or owner differs from its admitted declaration",
             ));
         }
         let revision = service_revisions
             .get(node.service.as_str())
             .copied()
             .ok_or_else(|| {
-                crate::documentation::invalid("Kotlin graph node has no selected service revision")
+                crate::documentation::invalid(
+                    "Compiler graph node has no selected service revision",
+                )
             })?;
         let [owner_source_id] = owner.source_ids.as_slice() else {
             return Err(crate::documentation::invalid(
-                "Kotlin graph owner source is ambiguous",
+                "Compiler graph owner source is ambiguous",
             ));
         };
         let owner_source = node
@@ -926,17 +920,17 @@ pub(super) fn validate_graph(
             })
             .ok_or_else(|| {
                 crate::documentation::invalid(
-                    "Kotlin graph owner source revision differs from its selected page",
+                    "Compiler graph owner source revision differs from its selected page",
                 )
             })?;
         let citation_id = node.callable.citation_id.as_deref().ok_or_else(|| {
-            crate::documentation::invalid("Kotlin graph owner citation is missing")
+            crate::documentation::invalid("Compiler graph owner citation is missing")
         })?;
         if node.citations.get(citation_id)
             != Some(&source::call_sites::expected_citation(owner_source))
         {
             return Err(crate::documentation::invalid(
-                "Kotlin graph owner citation differs from its exact retained source text",
+                "Compiler graph owner citation differs from its exact retained source text",
             ));
         }
         source::outline::validate_source_outline(
@@ -982,7 +976,7 @@ pub(super) fn validate_graph(
                     .any(|site| !graph_sites.contains(&site)))
         {
             return Err(crate::documentation::invalid(
-                "Kotlin graph exact-site edges differ from the admitted owner call-site projection",
+                "Compiler graph exact-site edges differ from the admitted owner call-site projection",
             ));
         }
         for edge in &node.calls {
@@ -1020,7 +1014,7 @@ pub(super) fn validate_graph(
                     if let Some(target_id) = &edge.target_node {
                         let Some(target) = graph.nodes.get(target_id) else {
                             return Err(crate::documentation::invalid(
-                                "Kotlin source-call edge target node is missing",
+                                "Compiler source-call edge target node is missing",
                             ));
                         };
                         if target.service != node.service
@@ -1032,10 +1026,10 @@ pub(super) fn validate_graph(
                             || target
                                 .observations
                                 .get(&target.callable.declaration_id)
-                                .is_none_or(|owner| !kotlin_body_envelope(owner))
+                                .is_none_or(|owner| !source::compiler::body_envelope(owner))
                         {
                             return Err(crate::documentation::invalid(
-                                "Kotlin source-call edge target differs from its exact compiler identity",
+                                "Compiler source-call edge target differs from its exact compiler identity",
                             ));
                         }
                     }
@@ -1060,7 +1054,7 @@ pub(super) fn validate_graph(
             .is_some_and(|node| node.node_projection_kind.is_some())
         {
             return Err(crate::documentation::invalid(
-                "Kotlin exact source-call sites cannot create selected-process links",
+                "Compiler exact source-call sites cannot create selected-process links",
             ));
         }
     }
@@ -1093,7 +1087,7 @@ fn validate_selected_kotlin_roots(
                     "expanded page selected declaration evidence is not retained",
                 )
             })?;
-            if !source::is_kotlin_candidate(owner) {
+            if !source::has_exact_call_capability(owner) {
                 continue;
             }
             let scope = owner.normalized["scope"].as_str().ok_or_else(|| {
@@ -1255,9 +1249,12 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
     graph.process_links.dedup();
     for n in graph.nodes.values_mut() {
         if n.node_projection_kind.is_some() {
-            n.callable
-                .gaps
-                .retain(|gap| gap.code != "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE");
+            n.callable.gaps.retain(|gap| {
+                !matches!(
+                    gap.code.as_str(),
+                    "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE" | "SOURCE_CALL_GRAPH_UNAVAILABLE"
+                )
+            });
         }
         n.examined_source_digest = node_digest(n)?;
         decorate(&mut n.callable.steps, "body", &n.calls);
@@ -1330,9 +1327,12 @@ pub(super) fn attach(checked: &Check, projection: &mut BundleProjection) -> Resu
                 .get(&id)
                 .is_some_and(|node| node.node_projection_kind.is_some())
             {
-                callable
-                    .gaps
-                    .retain(|gap| gap.code != "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE");
+                callable.gaps.retain(|gap| {
+                    !matches!(
+                        gap.code.as_str(),
+                        "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE" | "SOURCE_CALL_GRAPH_UNAVAILABLE"
+                    )
+                });
             }
             decorate(&mut callable.steps, "body", &graph.nodes[&id].calls);
         }

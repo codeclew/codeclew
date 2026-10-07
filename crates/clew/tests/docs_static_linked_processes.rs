@@ -422,7 +422,7 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     let gateway = child
         .calls
         .iter()
-        .find(|e| e.call.name == "deliver")
+        .find(|e| e.call.as_ref().is_some_and(|call| call.name == "deliver"))
         .unwrap();
     assert_eq!(gateway.status, "BODY_UNAVAILABLE");
     assert_eq!(gateway.runtime_dispatch, "UNRESOLVED");
@@ -430,6 +430,8 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     assert!(
         !gateway
             .conditions
+            .as_ref()
+            .expect("Java conditions remain retained")
             .iter()
             .any(|c| c.expression.contains("response"))
     );
@@ -437,7 +439,7 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         child
             .calls
             .iter()
-            .find(|e| e.call.name == "prepare")
+            .find(|e| e.call.as_ref().is_some_and(|call| call.name == "prepare"))
             .unwrap()
             .target_node
             .is_some()
@@ -448,7 +450,11 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     let prepare_id = child
         .calls
         .iter()
-        .find(|edge| edge.call.name == "prepare")
+        .find(|edge| {
+            edge.call
+                .as_ref()
+                .is_some_and(|call| call.name == "prepare")
+        })
         .unwrap()
         .target_node
         .as_ref()
@@ -523,12 +529,20 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
         let edge = graph.nodes[&relation.caller_node]
             .calls
             .iter()
-            .find(|e| e.occurrence_path == relation.occurrence_path)
+            .find(|e| e.occurrence_path.as_deref() == Some(relation.occurrence_path.as_str()))
             .unwrap();
-        assert_eq!(edge.call.arguments, ["task"]);
+        assert_eq!(
+            edge.call
+                .as_ref()
+                .expect("Java call remains retained")
+                .arguments,
+            ["task"]
+        );
         for expected in conditions {
             assert!(
                 edge.conditions
+                    .as_ref()
+                    .expect("Java conditions remain retained")
                     .iter()
                     .any(|c| c.expression.contains(expected) && !c.holds),
                 "{parent}: {:?}",
@@ -680,7 +694,7 @@ fn shared_child_expansion_local_review_mutations_and_offline_snapshot() {
     let deliver_data = child_data
         .calls
         .iter()
-        .find(|c| c.occurrence == gateway.occurrence_path)
+        .find(|c| Some(c.occurrence.as_str()) == gateway.occurrence_path.as_deref())
         .unwrap();
     assert!(deliver_data.target_node.is_none());
     assert!(child_data.definitions.iter().any(|d| {
