@@ -6480,3 +6480,126 @@ fn kotlin_constructor_storage_proof_changes_examined_version_with_identical_sour
         );
     }
 }
+
+#[test]
+fn kotlin_publication_selection_builds_effective_property_and_constructor_dependencies_and_restores_bytes()
+ {
+    use crate::documentation::endpoint_publication::{Policy, Selector};
+    let (evidence, mut main) = retained_kotlin_wiring_fixture();
+    main.expand_data_state = true;
+    let endpoint = &evidence.observations[&main.endpoint_declaration];
+    let policy = Policy {
+        exclusions: BTreeSet::from([Selector {
+            service: evidence.service.clone(),
+            scope: endpoint.normalized["scope"].as_str().unwrap().into(),
+            symbol: endpoint.symbol.clone(),
+        }]),
+        ..Policy::default()
+    };
+    let checked = kotlin_check(evidence);
+    let worker_context = Selection {
+        id: "kotlin-worker-context".into(),
+        endpoint_declaration: main.worker_declaration.clone(),
+        worker_declaration: main.worker_declaration.clone(),
+        wiring_declaration: None,
+        ..main.clone()
+    };
+    let selections = [main.clone(), worker_context];
+    let baseline = project(&checked, &selections).unwrap();
+    let excluded = project_with_policy(&checked, &selections, &policy).unwrap();
+    assert_eq!(
+        excluded
+            .pages
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        ["kotlin-worker-context"]
+    );
+    let graph = excluded.source_call_graph.as_ref().unwrap();
+    assert!(graph.nodes.values().all(
+        |n| n.observations[&n.callable.declaration_id].normalized["declarationKind"]
+            != "CONSTRUCTOR"
+    ));
+    assert!(
+        graph
+            .reverse_examined_processes
+            .values()
+            .flatten()
+            .all(|r| r.process_id != main.id)
+    );
+    assert!(!graph.reverse_property_references.is_empty());
+    assert!(
+        graph
+            .nodes
+            .values()
+            .flat_map(|n| n.observations.values())
+            .all(|o| !o.symbol.starts_with("property:paired/Body."))
+    );
+    let worker = graph
+        .nodes
+        .values()
+        .find(|n| n.callable.declaration_id == main.worker_declaration)
+        .unwrap();
+    assert_eq!(worker.data_state.as_ref().unwrap().definitions.len(), 32);
+    assert_eq!(worker.data_state.as_ref().unwrap().calls.len(), 4);
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "kotlin-effective", &excluded).unwrap();
+    assert!(
+        !output
+            .path()
+            .join(format!("{}-overview.html", main.id))
+            .exists()
+    );
+    let restored = project_with_policy(&checked, &selections, &Policy::default()).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&baseline).unwrap(),
+        serde_json::to_vec(&restored).unwrap()
+    );
+    let empty = project_with_policy(&checked, &[main], &policy).unwrap();
+    assert!(empty.pages.is_empty());
+    assert_eq!(empty.schema, SCHEMA);
+    let empty_output = tempfile::tempdir().unwrap();
+    super::super::publish::write(empty_output.path(), "kotlin-empty", &empty).unwrap();
+}
+
+#[test]
+fn excluding_kotlin_from_mixed_pages_restores_frozen_java_projection_shape() {
+    use crate::documentation::endpoint_publication::{Policy, Selector};
+    let (kotlin, mut k_selection) = retained_kotlin_wiring_fixture();
+    k_selection.expand_data_state = true;
+    let endpoint = &kotlin.observations[&k_selection.endpoint_declaration];
+    let policy = Policy {
+        exclusions: BTreeSet::from([Selector {
+            service: kotlin.service.clone(),
+            scope: endpoint.normalized["scope"].as_str().unwrap().into(),
+            symbol: endpoint.symbol.clone(),
+        }]),
+        ..Policy::default()
+    };
+    let (java_check, mut j_selection) = scenario(
+        "Ingress",
+        "Consumer",
+        "pending",
+        "task.sku",
+        "!task.eligible()",
+        false,
+    );
+    j_selection.expand_source_calls = true;
+    let java = project(&java_check, std::slice::from_ref(&j_selection)).unwrap();
+    let mut services = java_check.services.clone();
+    services.insert(kotlin.service.clone(), kotlin);
+    let combined = check::assemble(
+        "input-digest".into(),
+        services,
+        BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let excluded = project_with_policy(&combined, &[j_selection, k_selection], &policy).unwrap();
+    assert_eq!(excluded.schema, SCHEMA);
+    assert_eq!(excluded.pages, java.pages);
+    assert_eq!(excluded.source_call_graph, java.source_call_graph);
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "mixed-filtered", &excluded).unwrap();
+}

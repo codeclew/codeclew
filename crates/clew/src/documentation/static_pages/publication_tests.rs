@@ -284,11 +284,16 @@ fn unrelated_policy_keeps_valid_native_declaration_with_unresolved_publication_s
         .as_object_mut()
         .unwrap()
         .remove("scope");
+    // The shared reader now requires compiler scope for compiler authority.
+    // Keep this publication-policy case on genuine retained Java syntax.
+    observation.normalized["schema"] = json!("syntax-only");
+    observation.normalized["authority"] = json!("SYNTAX");
+    observation.normalized["syntaxKind"] = json!("method_declaration");
     observation.digest = crate::documentation::digest(&observation.normalized).unwrap();
     let mut selected = selection("syntax-page", "sample", "endpoint-a");
     selected.expand_source_calls = false;
     selected.expand_data_state = false;
-    assert!(project::project_unresolved(&checked, &[selected.clone()]).is_ok());
+    assert!(project::project_unresolved(&checked, std::slice::from_ref(&selected)).is_ok());
     assert!(
         endpoint_publication::selector_for_declaration(&checked.services["sample"], "endpoint-a",)
             .is_err()
@@ -296,6 +301,7 @@ fn unrelated_policy_keeps_valid_native_declaration_with_unresolved_publication_s
     let projection = project::project_with_policy(&checked, &[selected], &policy).unwrap();
     assert_eq!(projection.pages.len(), 1);
     assert_eq!(projection.pages[0].id, "syntax-page");
+    assert_eq!(projection.pages[0].endpoint.authority, "SYNTAX_SOURCE");
     assert_eq!(
         projection.endpoint_publication_policy_digest,
         Some(policy.digest().unwrap())

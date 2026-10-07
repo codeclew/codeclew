@@ -465,6 +465,8 @@ mod tests {
             input_digest: "input".into(),
             context_digest: "context".into(),
             selection_digest: "selection".into(),
+            endpoint_publication_policy_digest: None,
+            requested_selection_digest: None,
             pages: vec![selected],
             source_call_graph: None,
         };
