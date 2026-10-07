@@ -1696,9 +1696,24 @@ fn validate_projection_kind(projection: &BundleProjection) -> Result<(), ClewErr
             .projection_kind
             .is_some_and(ProjectionKind::forbids_expansion)
             && page.selection.expand_data_state
+            && !(page.selection.expand_source_calls
+                && page.data_state.as_ref().is_some_and(|state| {
+                    !state.nodes.is_empty()
+                        && projection.source_call_graph.as_ref().is_some_and(|graph| {
+                            state.nodes.iter().all(|id| {
+                                graph.nodes.get(id).is_some_and(|node| {
+                                    node.data_state.is_some()
+                                        && node
+                                            .observations
+                                            .get(&node.callable.declaration_id)
+                                            .is_some_and(super::data_state::supported_language)
+                                })
+                            })
+                        })
+                }))
         {
             return Err(invalid(
-                "declaration and compiler control-flow pages cannot request data-state expansion",
+                "declaration data-state expansion requires a retained source-call graph and admitted data payloads",
             ));
         }
         if page.selection.expand_source_calls

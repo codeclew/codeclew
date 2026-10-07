@@ -78,7 +78,16 @@ pub(super) fn project_unresolved(
                 "expandSourceCalls on declaration-only pages requires an admitted compiler exact-call capability",
             ));
         }
-        if declaration_view && selection.expand_data_state {
+        let selected_data_languages = [Some(&endpoint), Some(&worker), wiring.as_ref()]
+            .into_iter()
+            .flatten()
+            .all(|callable| {
+                evidence
+                    .observations
+                    .get(&callable.projection.declaration_id)
+                    .is_some_and(super::data_state::supported_language)
+            });
+        if declaration_view && selection.expand_data_state && !selected_data_languages {
             return Err(invalid(
                 "expandDataState is unavailable for declaration-only and compiler-control-flow pages",
             ));

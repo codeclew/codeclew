@@ -2858,11 +2858,24 @@ fn kotlin_additional_only_control_flow_uses_declaration_sources_view() {
     );
     let mut expanded_state = selection.clone();
     expanded_state.expand_data_state = true;
+    expanded_state.expand_source_calls = true;
+    let missing_data = project(&checked, &[expanded_state]).unwrap();
     assert!(
-        project(&checked, &[expanded_state])
-            .unwrap_err()
-            .message
-            .contains("expandDataState is unavailable for declaration-only")
+        missing_data
+            .source_call_graph
+            .as_ref()
+            .unwrap()
+            .nodes
+            .values()
+            .all(|node| {
+                let state = node.data_state.as_ref().unwrap();
+                state.definitions.is_empty()
+                    && state.calls.is_empty()
+                    && state
+                        .gaps
+                        .iter()
+                        .any(|gap| gap.code == "DATA_COMPILER_VARIABLES_UNAVAILABLE")
+            })
     );
     let projection = project(&checked, &[selection]).unwrap();
 
@@ -3174,7 +3187,7 @@ fn kotlin_function_admission_rejects_ambiguous_and_unsupported_descriptors() {
 }
 
 #[test]
-fn kotlin_graph_expansion_flags_are_rejected_during_projection() {
+fn kotlin_data_expansion_requires_navigation_and_reports_missing_compiler_input() {
     let mut evidence = evidence();
     add_kotlin_declaration(&mut evidence, "render", "FUNCTION", "fun render() = 1");
     let checked = kotlin_check(evidence);
@@ -3189,18 +3202,185 @@ fn kotlin_graph_expansion_flags_are_rejected_during_projection() {
             .iter()
             .any(|gap| gap.code == "KOTLIN_SOURCE_CALL_GRAPH_UNAVAILABLE")
     );
-    for source_calls in [false, true] {
-        let mut selection = kotlin_selection("render", "render");
-        selection.expand_source_calls = source_calls;
-        selection.expand_data_state = true;
-        let error = project(&checked, &[selection]).unwrap_err();
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_data_state = true;
+    let error = project(&checked, &[selection.clone()]).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("expandDataState requires expandSourceCalls")
+    );
+    selection.expand_source_calls = true;
+    let projection = project(&checked, &[selection]).unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    assert!(!graph.nodes.is_empty());
+    for node in graph.nodes.values() {
+        let state = node.data_state.as_ref().unwrap();
+        assert!(state.definitions.is_empty() && state.calls.is_empty());
         assert!(
-            error
-                .message
-                .contains("expandDataState is unavailable for declaration-only"),
-            "{}",
-            error.message
+            state
+                .gaps
+                .iter()
+                .any(|g| g.code == "DATA_COMPILER_VARIABLES_UNAVAILABLE")
         );
+    }
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "old-kotlin-check", &projection).unwrap();
+    let html = std::fs::read_to_string(output.path().join("source-calls.html")).unwrap();
+    assert!(html.contains("This Check does not retain an admitted Kotlin compiler variable input"));
+}
+
+// Synthetic closed-contract conformance fixture. Real K2 inputs are qualified
+// separately by worker tests and saved-Check native page rendering.
+fn kotlin_data_contract_fixture() -> ServiceEvidence {
+    let text = "fun render(input: String): String { val chosen = input; return chosen }";
+    let mut e = evidence();
+    let symbol = add_kotlin_declaration(&mut e, "render", "FUNCTION", text);
+    let source = e.sources.values().next().unwrap().clone();
+    let offset = 37;
+    let span = |needle: &str| {
+        let start = text.find(needle).unwrap();
+        (offset + start, offset + start + needle.len())
+    };
+    let node = |kind: &str, needle: &str, children: Vec<usize>, roles: serde_json::Value| {
+        let (start, end) = span(needle);
+        json!({"kind":kind,"byteStart":start,"byteEnd":end,"children":children,
+            "roles":roles,"actuals":[],"defaultArguments":[]})
+    };
+    let parameter = format!("{symbol}/parameter/0");
+    let local = format!("{symbol}/local-source/51:69");
+    let variable =
+        |identity: &str, kind: &str, needle: &str, target: &str, declaration: bool, mode: &str| {
+            let (start, end) = span(needle);
+            let (ds, de) = span(target);
+            let mut row = json!({"schema":"kotlin-documentation-variable/1.0",
+            "ownerSymbolIdentity":symbol,"variableIdentity":identity,"variableKind":kind,
+            "kind":if declaration {"VARIABLE_DECLARATION"} else {"VARIABLE_ACCESS"},
+            "name":if kind=="PARAMETER" {"input"} else {"chosen"},"variableType":"kotlin/String",
+            "resolution":"COMPILER_EXACT","authority":"K2_RESOLVED_VARIABLE_SYMBOL",
+            "byteStart":start,"byteEnd":end,"declarationByteStart":ds,"declarationByteEnd":de});
+            if kind == "PARAMETER" {
+                row["parameterIndex"] = json!(0);
+                row["hasDefault"] = json!(false);
+            }
+            if !declaration {
+                row["accessMode"] = json!(mode);
+            }
+            row
+        };
+    let mut input = node("VARIABLE", "input;", vec![], json!({}));
+    input["byteEnd"] = json!(input["byteEnd"].as_u64().unwrap() - 1);
+    let mut chosen = node("VARIABLE", "chosen }", vec![], json!({}));
+    chosen["byteEnd"] = json!(chosen["byteEnd"].as_u64().unwrap() - 2);
+    let mut access_input = variable(
+        &parameter,
+        "PARAMETER",
+        "input;",
+        "input: String",
+        false,
+        "READ",
+    );
+    access_input["byteEnd"] = input["byteEnd"].clone();
+    let mut access_chosen = variable(
+        &local,
+        "LOCAL_VARIABLE",
+        "chosen }",
+        "val chosen = input",
+        false,
+        "READ",
+    );
+    access_chosen["byteEnd"] = chosen["byteEnd"].clone();
+    let o = e.observations.get_mut("render").unwrap();
+    o.normalized["analysis"] = json!({"analyzerCompilerVersion":"2.4.10"});
+    o.normalized["parameterTypes"] = json!([{"index":0,"hasDefault":false}]);
+    o.normalized["outlineOwnerSource"] = json!({"sourceId":source.id,"sourceStatus":"SOURCE_RETAINED",
+        "sourceDigest":source.text_digest,"evidenceDigest":source.evidence_digest,"file":source.file,
+        "byteStart":offset,"byteEnd":offset+text.len(),"fullCompilationSourceDigest":"sha256:synthetic-original-file"});
+    o.normalized["documentation"] = json!({"dataInput":{
+        "schema":"codeclew-kotlin-documentation-data/1.0","authority":"KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES",
+        "coordinateDomain":"ORIGINAL_UTF8_BYTES","ownerSymbolIdentity":symbol,"ownerByteStart":offset,
+        "ownerByteEnd":offset+text.len(),"file":source.file,"compilationScope":":/main",
+        "fullCompilationSourceDigest":"sha256:synthetic-original-file","body":5,"boundaries":[],
+        "nodes":[input,node("DECLARATOR","val chosen = input",vec![0],json!({"INITIALIZER":0})),
+            node("LOCAL","val chosen = input",vec![1],json!({})),chosen,
+            node("RETURN","return chosen",vec![3],json!({})),
+            node("BLOCK","{ val chosen = input; return chosen }",vec![2,4],json!({}))],
+        "variables":[variable(&parameter,"PARAMETER","input: String","input: String",true,""),
+            variable(&local,"LOCAL_VARIABLE","val chosen = input","val chosen = input",true,""),
+            access_input,access_chosen]
+    }});
+    o.digest = digest(&o.normalized).unwrap();
+    e
+}
+
+#[test]
+fn kotlin_common_data_transfer_uses_compiler_storage_and_removes_blanket_unavailable_gap() {
+    let e = kotlin_data_contract_fixture();
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let projection = project(&kotlin_check(e), &[selection]).unwrap();
+    let graph = projection.source_call_graph.as_ref().unwrap();
+    let node = graph.nodes.values().next().unwrap();
+    let state = node.data_state.as_ref().unwrap();
+    assert_eq!(state.definitions.len(), 3);
+    assert_eq!(
+        state
+            .definitions
+            .iter()
+            .filter(|d| d.storage.is_none())
+            .count(),
+        1
+    );
+    assert!(state.gaps.is_empty(), "{:?}", state.gaps);
+    for gaps in [
+        &node.callable.gaps,
+        &projection.pages[0].endpoint.gaps,
+        &projection.pages[0].worker.gaps,
+    ] {
+        assert!(
+            gaps.iter()
+                .all(|g| g.code != "KOTLIN_DATA_STATE_UNAVAILABLE")
+        );
+    }
+    let output = tempfile::tempdir().unwrap();
+    super::super::publish::write(output.path(), "common-kotlin-data", &projection).unwrap();
+    let html = std::fs::read_to_string(output.path().join("source-calls.html")).unwrap();
+    assert!(html.contains("Source data transformations"));
+    assert!(!html.contains("Kotlin data-flow and state transformations are unavailable"));
+}
+
+#[test]
+fn kotlin_common_data_input_rejects_broken_original_pins_identity_closure_and_tree_contract() {
+    for case in [
+        "digest",
+        "owner",
+        "access_type",
+        "access_target",
+        "formal",
+        "cycle",
+        "budget",
+        "unknown",
+    ] {
+        let mut e = kotlin_data_contract_fixture();
+        let o = e.observations.get_mut("render").unwrap();
+        let input = &mut o.normalized["documentation"]["dataInput"];
+        match case {
+            "digest" => input["fullCompilationSourceDigest"] = json!("sha256:wrong"),
+            "owner" => input["ownerByteStart"] = json!(36),
+            "access_type" => input["variables"][2]["variableType"] = json!("kotlin/Boolean"),
+            "access_target" => input["variables"][3]["declarationByteStart"] = json!(38),
+            "formal" => input["variables"][0]["parameterIndex"] = json!(1),
+            "cycle" => input["nodes"][5]["children"] = json!([5]),
+            "budget" => input["boundaries"] = json!(["DOCUMENTATION_VARIABLE_BUDGET"]),
+            "unknown" => input["untrustedExtension"] = json!(true),
+            _ => unreachable!(),
+        }
+        o.digest = digest(&o.normalized).unwrap();
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = true;
+        selection.expand_data_state = true;
+        assert!(project(&kotlin_check(e), &[selection]).is_err(), "{case}");
     }
 }
 

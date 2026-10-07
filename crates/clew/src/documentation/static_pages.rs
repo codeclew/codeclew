@@ -34,15 +34,9 @@ pub(super) fn source_data_graph(
         .observations
         .get(declaration)
         .ok_or_else(|| invalid("source-data root declaration is unavailable"))?;
-    if !source::compiler(d)
-        || d.normalized["resolution"] != "COMPILER_EXACT"
-        || !matches!(
-            d.normalized["declarationKind"].as_str(),
-            Some("METHOD" | "CONSTRUCTOR")
-        )
-    {
+    if !data_state::supported_language(d) {
         return Err(invalid(
-            "sourceDataContext requires an exact retained Java compiler callable",
+            "sourceDataContext requires an exact retained Java or Kotlin compiler callable",
         ));
     }
     let root_bytes: usize = d

@@ -18,6 +18,15 @@ const AUTHORITY: &str = "SOURCE_SYNTAX_WITH_COMPILER_VARIABLE_IDENTITY";
 const MAX_BYTES: usize = 1024 * 1024; // Existing source expansion ceiling, not an additional traversal allowance.
 const MAX_ROWS: usize = 4096;
 type Env = BTreeMap<DataStorage, Vec<String>>;
+pub(super) fn supported_language(owner: &Observation) -> bool {
+    (super::source::compiler(owner)
+        && owner.normalized["resolution"] == "COMPILER_EXACT"
+        && matches!(
+            owner.normalized["declarationKind"].as_str(),
+            Some("METHOD" | "CONSTRUCTOR")
+        ))
+        || super::source::compiler::kotlin_admitted(owner)
+}
 #[derive(Clone, Default)]
 struct Path {
     env: Env,
@@ -638,6 +647,10 @@ fn project_with_bindings(
             ));
             return Ok((result, BTreeMap::new()));
         }
+        Prepared::VariablesUnavailable => {
+            result.gaps.push(gap("DATA_COMPILER_VARIABLES_UNAVAILABLE", "This Check does not retain an admitted Kotlin compiler variable input; no spelling fallback or new capture was used."));
+            return Ok((result, BTreeMap::new()));
+        }
     };
     transfer(e, node, &input, result)
 }
@@ -770,6 +783,20 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
         })
         .collect();
     attach_graph(checked, graph, &selected)?;
+    for page in &mut p.pages {
+        if let Some(examined) = &mut page.examined_sources {
+            let versions: Vec<_> = examined
+                .memberships
+                .iter()
+                .map(|member| (member, &graph.nodes[&member.node].examined_source_digest))
+                .collect();
+            examined.examined_source_digest = digest(&(
+                &examined.schema,
+                versions,
+                &examined.handoff_context_digests,
+            ))?;
+        }
+    }
     for page in p.pages.iter_mut().filter(|p| p.selection.expand_data_state) {
         let nodes: Vec<_> = page
             .examined_sources
@@ -790,6 +817,18 @@ pub(super) fn attach(checked: &Check, p: &mut BundleProjection) -> Result<(), Cl
                 )
             })
             .collect();
+        for callable in [
+            Some(&mut page.endpoint),
+            Some(&mut page.worker),
+            page.wiring.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            callable
+                .gaps
+                .retain(|gap| gap.code != "KOTLIN_DATA_STATE_UNAVAILABLE");
+        }
         page.data_state = Some(ExaminedDataState {
             schema: SCHEMA.into(),
             authority: AUTHORITY.into(),
@@ -814,6 +853,21 @@ pub(super) fn attach_graph(
     for id in selected {
         let node = &graph.nodes[id];
         let e = &checked.services[&node.service];
+        if let Some(input) =
+            e.observations[&node.callable.declaration_id].normalized["documentation"]
+                .get("dataInput")
+        {
+            fact_bytes += serde_json::to_vec(input)
+                .map_err(|_| invalid("data input encoding failed"))?
+                .len();
+            fact_count += input["nodes"].as_array().map_or(0, Vec::len)
+                + input["variables"].as_array().map_or(0, Vec::len);
+            if fact_count > MAX_ROWS || fact_bytes > MAX_BYTES {
+                return Err(invalid(
+                    "expandDataState exceeds cumulative retained-fact budget; narrow the selection",
+                ));
+            }
+        }
         for o in e.observations.values().filter(|o| {
             matches!(o.kind.as_str(), "VARIABLE_DECLARATION" | "VARIABLE_ACCESS")
                 && o.normalized["callableObservationId"] == node.callable.declaration_id
@@ -868,7 +922,11 @@ pub(super) fn attach_graph(
                 }
             }
         }
+        node.callable
+            .gaps
+            .retain(|gap| gap.code != "KOTLIN_DATA_STATE_UNAVAILABLE");
         node.data_state = Some(state);
+        node.examined_source_digest = super::linked::node_digest(node)?;
     }
     // Return links belong to each call occurrence; cached callee inputs stay intact.
     let returns: BTreeMap<_, Vec<_>> = graph

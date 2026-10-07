@@ -14,7 +14,9 @@ internal class KotlinDocumentationSource(
     private val compilationScope: String,
     descriptors: List<JsonObject>,
     relations: List<JsonObject>,
+    private val dataFacts: List<JsonObject> = emptyList(),
 ) {
+    private val dataCalls = relations
     private val sourceDigest = "sha256:" + MessageDigest.getInstance("SHA-256")
         .digest(originalSource.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     private val psiCoordinates = CompilerUtf16ToUtf8ByteMap.forSourceText(originalSource, source.text)
@@ -38,7 +40,10 @@ internal class KotlinDocumentationSource(
         val flow = KotlinDocumentationFlow(file, source, sourceDigest, compilationScope, descriptor, coordinates, calls[descriptor["compilerCallableId"]?.jsonPrimitive?.content].orEmpty().filter {
             (it["start"]!!.jsonPrimitive.int >= range.first) && (it["end"]!!.jsonPrimitive.int <= range.last + 1)
         }).read(declaration, descriptor)
-        return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to flow))
+        val data = KotlinDocumentationData(file, originalSource, compilationScope, descriptor,
+            coordinates, compilerCoordinates, dataFacts, dataCalls).read(declaration)
+        val documented = if (data == null) flow else JsonObject(flow + mapOf("dataInput" to data))
+        return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to documented))
     }
 }
 

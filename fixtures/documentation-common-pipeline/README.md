@@ -19,3 +19,12 @@ These projects do not observe runtime activation or gateway success. Kotlin
 source structure and exact compiler targets do not establish queue identity,
 receiver dispatch, state effects or predicate truth. The constructor wiring is
 an input for a later qualified wiring capability, not a source-only proof.
+
+`DataPipeline` adds a bounded parameter/local example in both languages: an
+input selects a guarded local value, a helper copies it, and the caller returns
+the transformed result. Its BOM, CRLF and Unicode text exercise original byte
+coordinates. Kotlin also retains shadowed compiler identities, reordered named
+arguments and an omitted default argument. Default evaluation, external calls,
+property getters, custom nullable operators and varargs remain explicit transfer
+frontiers; subsequent values are not promoted past them. This fixture is public
+synthetic source, not qualification on a production repository.

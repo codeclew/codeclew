@@ -174,6 +174,16 @@ private class FirDocumentationVariablesChecker24(
         ) return
         val identity = "callable:$ownerId#jvm:$descriptor"
         val file = context.containingFilePath ?: return
+        appendFact(output, buildJsonObject {
+            put("recordType", "DOCUMENTATION_VARIABLE_RECEIPT")
+            put("schema", "kotlin-documentation-variable-receipt/1.0")
+            put("file", file)
+            put("ownerSymbolIdentity", identity)
+            put("ownerStart", ownerSource.startOffset)
+            put("ownerEnd", ownerSource.endOffset)
+            put("coordinateDomain", "COMPILER_UTF16_OFFSETS")
+            put("authority", "K2_RESOLVED_VARIABLE_SYMBOL")
+        })
         val bindings = java.util.IdentityHashMap<org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>, JsonObject>()
         val rows = mutableListOf<JsonObject>()
         val boundaries = mutableMapOf<String, JsonObject>()
@@ -246,6 +256,9 @@ private class FirDocumentationVariablesChecker24(
                 put("declarationStart", source.startOffset)
                 put("declarationEnd", source.endOffset)
                 put("name", variable.name.asString())
+                (variable.returnTypeRef as? FirResolvedTypeRef)?.coneType?.let {
+                    put("variableType", it.toString())
+                }
                 slot?.let {
                     put("parameterIndex", it)
                     put("hasDefault", owner.valueParameters[it].defaultValue != null)
@@ -1482,6 +1495,13 @@ private class FirFactsExpressionChecker(
                             put("resolution", "COMPILER_EXACT")
                         } else {
                             put("resolution", "UNKNOWN")
+                        }
+                        val mapping = resolvedArgumentMapping24(callable, arguments)
+                        if (mapping.unknownCode == null) {
+                            put("dataArgumentToParameter", JsonArray(mapping.rows.orEmpty()))
+                            put("dataOmittedDefaultParameterIndices", JsonArray(mapping.omittedDefaultParameterIndices.orEmpty().map(::JsonPrimitive)))
+                        } else {
+                            put("dataArgumentBoundary", mapping.unknownCode)
                         }
                     })
                 }

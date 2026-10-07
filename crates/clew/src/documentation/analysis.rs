@@ -2136,8 +2136,10 @@ pub(crate) fn project_scoped(
         let has_outline_spans = fact["documentation"]["events"]
             .as_array()
             .is_some_and(|events| events.iter().any(|event| event.get("sourceSpan").is_some()));
-        let exact_outline_owner =
-            has_outline_spans || fact["schema"] == "codeclew-rust-syntax-fact/1.2";
+        let exact_outline_owner = has_outline_spans
+            || fact["schema"] == "codeclew-rust-syntax-fact/1.2"
+            || (fact["schema"] == "declaration-descriptor/0.1"
+                && fact["documentation"]["dataInput"].is_object());
         let mut outline_owner_source = None;
         if exact_outline_owner {
             let exact_owner = json!({"file":fact["file"],

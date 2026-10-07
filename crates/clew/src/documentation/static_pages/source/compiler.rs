@@ -186,7 +186,7 @@ pub(in crate::documentation::static_pages) fn admitted(owner: &Observation) -> b
     })
 }
 
-fn kotlin_admitted(owner: &Observation) -> bool {
+pub(in crate::documentation::static_pages) fn kotlin_admitted(owner: &Observation) -> bool {
     let n = &owner.normalized;
     owner.kind == "SYMBOL"
         && n["schema"] == "declaration-descriptor/0.1"

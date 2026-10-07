@@ -6,11 +6,21 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlinx.serialization.json.*
 import org.jetbrains.kotlin.cli.jvm.K2JVMCompiler
+import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
+import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
+import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.kotlin.config.CompilerConfiguration
+import org.jetbrains.kotlin.psi.KtNamedFunction
+import org.jetbrains.kotlin.psi.KtPsiFactory
 import kotlin.test.*
 
 /** Real K2 2.4 compiler occurrences; no manufactured name-to-symbol bindings. */
 class KotlinDocumentationVariablesTest {
-    private fun compile(source: String): List<JsonObject> {
+    private fun compile(source: String): List<JsonObject> = compileAll(source).filter {
+        it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_DATA_BOUNDARY")
+    }
+    private fun compileAll(source: String): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-documentation-variables").toRealPath()
         try {
             val input = Files.writeString(root.resolve("Variables.kt"), source)
@@ -26,9 +36,111 @@ class KotlinDocumentationVariablesTest {
             }
             assertEquals(0, status.code, output.toString())
             return Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
-                .filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_DATA_BOUNDARY") }
         } finally {
             root.toFile().deleteRecursively()
+        }
+    }
+
+    private fun extractData(source: String): Map<String, JsonObject> {
+        val rows = compileAll(source)
+        val coordinates = assertNotNull(CompilerUtf16ToUtf8ByteMap.fromCompilerInput(source))
+        val descriptors = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" }.map { row ->
+            val range = assertNotNull(coordinates.range(row["start"]!!.jsonPrimitive.int, row["end"]!!.jsonPrimitive.int))
+            JsonObject(row + mapOf("start" to JsonPrimitive(range.first), "end" to JsonPrimitive(range.last + 1)))
+        }
+        val disposable = Disposer.newDisposable("kotlin-documentation-data-test")
+        try {
+            val environment = KotlinCoreEnvironment.createForProduction(disposable, CompilerConfiguration(), EnvironmentConfigFiles.JVM_CONFIG_FILES)
+            val file = KtPsiFactory(environment.project, markGenerated = false).createFile("Variables.kt", source)
+            val documentation = KotlinDocumentationSource("src/Variables.kt", file, source, ":/main", descriptors,
+                rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" },
+                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY") })
+            return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).associate { function ->
+                val enriched = documentation.enrich(function, buildJsonObject { put("name", function.name) })
+                function.name!! to assertNotNull(enriched["documentation"]?.jsonObject?.get("dataInput"), enriched.toString()).jsonObject
+            }
+        } finally { Disposer.dispose(disposable) }
+    }
+
+    @Test
+    fun normalizedInputPreservesExactByteSyntaxAndCompilerNamedDefaultArgumentSlots() {
+        val source = "\uFEFF" + """
+            package docs
+            // π🙂 before exact spans
+            fun helper(input: String): String { val chosen = input; return chosen }
+            fun format(input: String, flag: Boolean): String {
+                var chosen = input
+                if (flag) { chosen = "π🙂" } else { chosen = input }
+                val transformed = helper(chosen)
+                return transformed
+            }
+            fun pair(first: String, second: String = "default"): String { val copy = first; return copy + second }
+            fun named(input: String): String = pair(second = input, first = "prefix")
+            fun omitted(input: String): String = pair(first = input)
+            fun constant(): String = "literal"
+        """.trimIndent().replace("\n", "\r\n") + "\r\n"
+        val data = extractData(source)
+        assertEquals(setOf("helper", "format", "pair", "named", "omitted", "constant"), data.keys)
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        for ((_, input) in data) {
+            assertEquals("codeclew-kotlin-documentation-data/1.0", input["schema"]!!.jsonPrimitive.content)
+            assertEquals("ORIGINAL_UTF8_BYTES", input["coordinateDomain"]!!.jsonPrimitive.content)
+            val nodes = input["nodes"]!!.jsonArray
+            assertTrue(nodes.isNotEmpty())
+            assertTrue(input["body"]!!.jsonPrimitive.int in nodes.indices)
+            for (node in nodes.map { it.jsonObject }) {
+                val start = node["byteStart"]!!.jsonPrimitive.int; val end = node["byteEnd"]!!.jsonPrimitive.int
+                assertTrue(start >= input["ownerByteStart"]!!.jsonPrimitive.int && end <= input["ownerByteEnd"]!!.jsonPrimitive.int && start < end)
+                assertTrue(bytes.copyOfRange(start, end).decodeToString().isNotEmpty())
+                assertTrue(node["children"]!!.jsonArray.all { it.jsonPrimitive.int in nodes.indices })
+                if (node["kind"]!!.jsonPrimitive.content == "LOCAL") {
+                    assertTrue(input["variables"]!!.jsonArray.map { it.jsonObject }.any {
+                        it["kind"]!!.jsonPrimitive.content == "VARIABLE_DECLARATION" && it["byteStart"] == node["byteStart"] && it["byteEnd"] == node["byteEnd"]
+                    }, "local syntax requires the exact FIR declaration span")
+                }
+            }
+        }
+        val formatKinds = data["format"]!!["nodes"]!!.jsonArray.map { it.jsonObject["kind"]!!.jsonPrimitive.content }
+        assertTrue(setOf("LOCAL", "IF", "ASSIGNMENT", "CALL", "RETURN").all(formatKinds::contains), formatKinds.toString())
+        val named = data["named"]!!["nodes"]!!.jsonArray.map { it.jsonObject }.single { it["kind"]!!.jsonPrimitive.content == "CALL" }
+        assertEquals(listOf(1, 0), named["actuals"]!!.jsonArray.map { it.jsonObject["formalSlot"]!!.jsonPrimitive.int })
+        val namedArguments = named["actuals"]!!.jsonArray.map { it.jsonObject["expression"]!!.jsonPrimitive.int }
+            .map { data["named"]!!["nodes"]!!.jsonArray[it].jsonObject }
+            .map { bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() }
+        assertEquals(listOf("input", "\"prefix\""), namedArguments)
+        val omitted = data["omitted"]!!["nodes"]!!.jsonArray.map { it.jsonObject }.single { it["kind"]!!.jsonPrimitive.content == "CALL" }
+        assertEquals(listOf(1), omitted["defaultArguments"]!!.jsonArray.map { it.jsonPrimitive.int })
+        assertTrue(data["constant"]!!["variables"]!!.jsonArray.isEmpty(), "a compiler receipt qualifies even an empty variable set")
+    }
+
+    @Test
+    fun normalizedInputDoesNotTreatCustomOperatorsPropertiesOrExternalCallsAsPureTransfers() {
+        val source = """
+            package docs
+            class Box(val value: String) { operator fun plus(other: Box): Box = this }
+            fun operator(value: Box): String { val result = value + value; return "later" }
+            fun property(value: Box): String { val result = value.value; return "later" }
+            fun external(value: String): String { val result = value.trim(); return "later" }
+            fun trigger(): Boolean = true
+            val enabled: Boolean get() = trigger()
+            operator fun Boolean?.not(): Boolean = trigger()
+            fun getter(): String { if (enabled) {}; return "later" }
+            fun nullable(flag: Boolean?): String { if (!flag) {}; return "later" }
+            fun variable(vararg value: String): String = "result"
+            fun zero(): String = variable()
+        """.trimIndent()
+        // Class methods using `this` are outside this bounded pure-expression slice.
+        val data = extractData(source)
+        for (name in listOf("operator", "property", "external", "getter", "nullable", "zero")) {
+            assertTrue(data[name]!!["nodes"]!!.jsonArray.map { it.jsonObject }.any { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }, name)
+        }
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        for ((name, text) in listOf("getter" to "enabled", "nullable" to "!flag", "zero" to "variable()")) {
+            val matched = data[name]!!["nodes"]!!.jsonArray.map { it.jsonObject }.filter {
+                it["kind"]!!.jsonPrimitive.content != "RETURN" && bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() == text
+            }
+            assertEquals(1, matched.size, "$name must retain its exact unsupported expression")
+            assertEquals("UNSUPPORTED", matched.single()["kind"]!!.jsonPrimitive.content)
         }
     }
 

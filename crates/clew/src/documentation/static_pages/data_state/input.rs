@@ -2,15 +2,27 @@
 //! Syntax preserves evaluation order; compiler bindings identify storage and
 //! formal slots independently of spelling, grammar and source argument order.
 mod java;
+mod kotlin;
 
 use crate::{documentation::model::Source, error::ClewError};
 use std::collections::BTreeMap;
 
-pub(super) use java::prepare;
+pub(super) fn prepare<'a>(
+    evidence: &'a crate::documentation::model::ServiceEvidence,
+    node: &super::super::model::SourceCallNode,
+) -> Result<Prepared<'a>, ClewError> {
+    let owner = &evidence.observations[&node.callable.declaration_id];
+    if super::super::source::compiler::kotlin_admitted(owner) {
+        kotlin::prepare(evidence, node)
+    } else {
+        java::prepare(evidence, node)
+    }
+}
 #[cfg(test)]
 pub(super) use java::site_range as java_site_range;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(super) enum Kind {
     Variable,
     Field,
@@ -34,7 +46,8 @@ pub(super) enum Kind {
     Unsupported,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(super) enum Role {
     Receiver,
     Operand,
@@ -111,6 +124,7 @@ pub(super) enum Prepared<'a> {
     Body(Input<'a>),
     Unavailable,
     Partial,
+    VariablesUnavailable,
 }
 
 #[derive(Clone, Copy)]
