@@ -1203,7 +1203,7 @@ impl Check {
         Self::from_manifest(repo, Self::decode_manifest(raw)?)
     }
 
-    fn decode_manifest(raw: &[u8]) -> Result<CheckManifest, ClewError> {
+    pub(super) fn decode_manifest(raw: &[u8]) -> Result<CheckManifest, ClewError> {
         if raw.len() as u64 > PORTABLE_CACHE_MAX_BYTES {
             return Err(crate::error::ClewError::new(
                 crate::error::ErrorCode::ResourceLimit,
@@ -1411,6 +1411,153 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn support_collection_keeps_failed_capture_identity_without_store_writes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let docs = temporary.path().join("docs");
+        Repository::init(&docs, "Private diagnostic title").unwrap();
+        let repo = Repository::open(&docs).unwrap();
+        for id in ["failed", "healthy", "unselected"] {
+            add_kotlin_service(&repo, id);
+        }
+        let checked = capture_selected_with(
+            &repo,
+            &BTreeSet::from(["failed".into(), "healthy".into()]),
+            repo.inputs().unwrap(),
+            |service, _, _| {
+                if service.id == "failed" {
+                    Err(ClewError::new(
+                        crate::error::ErrorCode::WorkerCrashed,
+                        "PRIVATE_SENTINEL /private/home token=example",
+                    ))
+                } else {
+                    Ok(kotlin_scheduled_evidence(service))
+                }
+            },
+        )
+        .unwrap();
+        let snapshot = checked.save_snapshot(&repo).unwrap();
+        let manifest_size = snapshot
+            .rsplit_once('/')
+            .unwrap()
+            .1
+            .parse::<usize>()
+            .unwrap();
+        drop(repo);
+        fn files(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+            let mut result = BTreeMap::new();
+            for entry in fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    result.extend(files(&path));
+                } else {
+                    result.insert(path.clone(), fs::read(path).unwrap());
+                }
+            }
+            result
+        }
+        let before = files(&docs);
+        let output = temporary.path().join("bundle");
+        let summary =
+            super::super::support_collect::collect(&docs, None, None, &output, false).unwrap();
+        assert_eq!(summary["snapshot"], snapshot);
+        assert_eq!(summary["manifestBytes"], manifest_size);
+        assert_eq!(summary["status"], "PARTIAL"); // Unit fixture has no admitted runtime.
+        let report: Value =
+            serde_json::from_slice(&fs::read(output.join("report.json")).unwrap()).unwrap();
+        let entries = report["services"].as_array().unwrap();
+        assert_eq!(report["checkStatus"], "UNRESOLVED");
+        assert!(
+            entries
+                .iter()
+                .any(|s| s["failure"]["reason"] == "WORKER_CRASHED" && s["selected"] == true)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|s| s["outcome"] == "NOT_SELECTED" && s["selected"] == false)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|s| s["entrypoints"] == 1 && s["outcome"] == "CAPTURED")
+        );
+        assert_eq!(report["heavyObjects"], "NOT_VERIFIED");
+        for data in files(&output).values() {
+            let text = String::from_utf8_lossy(data);
+            assert!(!text.contains("PRIVATE_SENTINEL"));
+            assert!(!text.contains("@Scheduled"));
+            assert!(!text.contains("/private/home"));
+        }
+        assert_eq!(before, files(&docs));
+        assert!(super::super::support_collect::collect(&docs, None, None, &output, false).is_err());
+        assert!(
+            super::super::support_collect::collect(
+                &docs,
+                None,
+                None,
+                &docs.join("forbidden"),
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(before, files(&docs));
+        // Historical diagnostics remain usable after declarations become invalid.
+        fs::write(
+            docs.join("codeclew-docs.yaml"),
+            "invalid: current declarations",
+        )
+        .unwrap();
+        let changed = files(&docs);
+        let private = temporary.path().join("private");
+        let summary = super::super::support_collect::collect(
+            &docs,
+            Some(&snapshot),
+            Some("failed"),
+            &private,
+            true,
+        )
+        .unwrap();
+        assert_eq!(summary["status"], "PARTIAL");
+        assert!(
+            fs::read_to_string(private.join("PRIVATE_SAVED_DETAILS.json"))
+                .unwrap()
+                .contains("PRIVATE_SENTINEL")
+        );
+        assert_eq!(changed, files(&docs));
+        // A nonempty WAL is explicit, not silently ignored by immutable SQLite.
+        let layout: Value = serde_json::from_slice(
+            &fs::read(docs.join(".codeclew/cache/object-layout.json")).unwrap(),
+        )
+        .unwrap();
+        let wal = docs.join(format!("{}-wal", layout["database"].as_str().unwrap()));
+        fs::write(&wal, "active writer sentinel").unwrap();
+        let before_wal = files(&docs);
+        let busy = temporary.path().join("busy");
+        let summary =
+            super::super::support_collect::collect(&docs, Some(&snapshot), None, &busy, false)
+                .unwrap();
+        assert_eq!(summary["status"], "PARTIAL");
+        assert!(
+            fs::read_to_string(busy.join("report.json"))
+                .unwrap()
+                .contains("ACTIVE_STORE")
+        );
+        assert_eq!(before_wal, files(&docs));
+        fs::remove_file(wal).unwrap();
+        // Missing minimal metadata yields an actionable partial bundle.
+        fs::remove_file(docs.join(".codeclew/cache/object-layout.json")).unwrap();
+        let partial = temporary.path().join("missing");
+        assert_eq!(
+            super::super::support_collect::collect(&docs, Some(&snapshot), None, &partial, false)
+                .unwrap()["status"],
+            "PARTIAL"
+        );
+        let link = temporary.path().join("symlink");
+        std::os::unix::fs::symlink(&output, &link).unwrap();
+        assert!(super::super::support_collect::collect(&docs, None, None, &link, false).is_err());
     }
 
     #[test]

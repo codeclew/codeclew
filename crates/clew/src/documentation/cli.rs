@@ -437,7 +437,18 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             let debug_output = request
                 .debug_output
                 .as_deref()
-                .map(crate::maven_diagnostics::DebugOutput::open)
+                .map(|path| {
+                    if std::env::var_os("CLEW_DIAGNOSTIC_DEBUG_DIR")
+                        .is_some_and(|directory| std::path::Path::new(&directory) == path)
+                    {
+                        crate::maven_diagnostics::DebugOutput::open_bounded(
+                            path,
+                            2 * super::support_collect::FILE_LIMIT,
+                        )
+                    } else {
+                        crate::maven_diagnostics::DebugOutput::open(path)
+                    }
+                })
                 .transpose()?;
             let (checked, snapshot) =
                 check::run_and_save_selected(&repo, &requested_services, debug_output.as_ref())?;

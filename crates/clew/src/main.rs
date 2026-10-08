@@ -33,7 +33,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[command(
     name = "clew",
     version,
-    about = "Codeclew managed semantic change runtime"
+    about = "Codeclew managed semantic change runtime",
+    after_help = "Diagnostic launcher: clew --diagnostics NEWDIR [--include-private-logs] COMMAND ...\nCollect a saved Check: clew support collect --root DOCS --output NEWDIR"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -192,6 +193,8 @@ enum WorkspaceCommand {
 enum SupportCommand {
     /// Build an allowlist-only summary from a private Codeclew JSON artifact.
     Summarize(SupportSummarizeArgs),
+    /// Collect saved Check metadata offline into a new diagnostic directory.
+    Collect(SupportCollectArgs),
 }
 
 #[derive(Subcommand)]
@@ -417,6 +420,23 @@ struct SupportSummarizeArgs {
     /// Absolute caller-owned mode-0600 file containing one Codeclew JSON result.
     #[arg(long)]
     input: PathBuf,
+}
+
+#[derive(Args)]
+struct SupportCollectArgs {
+    #[arg(long)]
+    root: PathBuf,
+    /// Exact immutable handle; otherwise pin the latest manifest bytes once.
+    #[arg(long)]
+    snapshot: Option<String>,
+    #[arg(long)]
+    service: Option<String>,
+    /// New directory; existing paths and symlinks are refused.
+    #[arg(long)]
+    output: PathBuf,
+    /// Include bounded original saved failure text in a separate private file.
+    #[arg(long)]
+    include_private_logs: bool,
 }
 
 #[derive(Args)]
@@ -1039,7 +1059,30 @@ fn main() -> ExitCode {
     let started = std::time::Instant::now();
     let cli = Cli::parse();
     let output_mode = OutputMode::from_cli(&cli);
+    let diagnostic_root = match &cli.command {
+        Command::Docs {
+            command: clew::documentation::cli::Command::Check(args),
+        } => Some(args.page.root.clone()),
+        _ => None,
+    };
+    let diagnostic_services = match &cli.command {
+        Command::Docs {
+            command: clew::documentation::cli::Command::Check(args),
+        } => args.services.clone(),
+        _ => Vec::new(),
+    };
     let result = run(cli);
+    if clew::documentation::support_collect::invocation_report(
+        diagnostic_root.as_deref(),
+        &diagnostic_services,
+        &result,
+    )
+    .is_err()
+    {
+        eprintln!(
+            "Codeclew diagnostics: core metadata could not be saved; original command result is preserved."
+        );
+    }
     if output_mode == OutputMode::Json {
         eprintln!(
             "{}",
@@ -2001,6 +2044,15 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 .map_err(|_| invalid("diagnostic input is not one JSON object"))?;
             support_summary(&value)
         }
+        Command::Support {
+            command: SupportCommand::Collect(args),
+        } => clew::documentation::support_collect::collect(
+            &args.root,
+            args.snapshot.as_deref(),
+            args.service.as_deref(),
+            &args.output,
+            args.include_private_logs,
+        ),
         Command::Storage {
             command: StorageCommand::Gc(args),
         } => {

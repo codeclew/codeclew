@@ -95,9 +95,11 @@ fn run_managed_exact_path(
         arguments,
         Some(path),
         true,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_managed_with_path(
     binary: &Path,
     state_root: &Path,
@@ -106,6 +108,7 @@ fn run_managed_with_path(
     arguments: &[&str],
     path: Option<&Path>,
     exact_path: bool,
+    diagnostics: Option<&Path>,
 ) -> std::process::Output {
     let state_handle = File::open(state_root).unwrap();
     let runtime_handle = File::open(runtime_root).unwrap();
@@ -128,6 +131,9 @@ fn run_managed_with_path(
         .env("CODECLEW_RUNTIME_ROOT_FD", "101")
         .env("CODECLEW_RUNTIME_LEASE_FD", "102")
         .stdin(Stdio::null());
+    if let Some(directory) = diagnostics {
+        command.env("CLEW_DIAGNOSTIC_REPORT_DIR", directory);
+    }
     if let Some(prefix) = path {
         if exact_path {
             command.env("PATH", prefix);
@@ -242,6 +248,25 @@ impl Fixture {
             &args,
             Some(path),
             false,
+            None,
+        )
+    }
+    pub fn run_raw_with_diagnostics(
+        &self,
+        args: &[&str],
+        directory: &Path,
+    ) -> std::process::Output {
+        let mut args = args.to_vec();
+        args.extend(["--root", self.docs.to_str().unwrap()]);
+        run_managed_with_path(
+            &self.binary,
+            &self.state,
+            &self.runtime,
+            &self.lease,
+            &args,
+            Some(&self.tools),
+            true,
+            Some(directory),
         )
     }
     pub fn tools_dir(&self) -> &Path {

@@ -152,6 +152,15 @@ fn termination(child: Option<&mut Child>) -> Value {
 }
 
 fn persist_tail(state: Option<&StateAuthority>, tail: &Tail) -> Value {
+    let directory = crate::documentation::support_collect::live_private_directory();
+    persist_tail_with_invocation(state, tail, directory.as_deref())
+}
+
+fn persist_tail_with_invocation(
+    state: Option<&StateAuthority>,
+    tail: &Tail,
+    directory: Option<&Path>,
+) -> Value {
     let metadata = json!({
         "retainedBytes":tail.bytes.len(), "observedBytes":tail.total,
         "limitBytes":STDERR_LIMIT, "truncated":tail.total > tail.bytes.len() as u64,
@@ -172,7 +181,23 @@ fn persist_tail(state: Option<&StateAuthority>, tail: &Tail) -> Value {
     } else {
         result["status"] = json!("UNAVAILABLE");
     }
+    result["invocationTail"] = persist_live_tail(directory, tail);
     result
+}
+
+fn persist_live_tail(directory: Option<&Path>, tail: &Tail) -> Value {
+    let Some(directory) = directory else {
+        return json!({"status":"NOT_CAPTURED"});
+    };
+    let name = format!("worker-{}.stderr", uuid::Uuid::new_v4().simple());
+    let stored = crate::documentation::support_collect::write_private_artifacts(
+        directory,
+        &[(&name, &tail.bytes)],
+    )
+    .is_ok();
+    json!({"status":if stored { "CAPTURED_PRIVATE" } else { "UNAVAILABLE" },
+        "observedBytes":tail.total,"retainedBytes":if stored {tail.bytes.len()} else {0},
+        "truncated":!stored || tail.total > tail.bytes.len() as u64})
 }
 
 pub(crate) fn annotate_failure(
@@ -234,7 +259,16 @@ pub(crate) fn safe_summary(value: &Value) -> Option<Value> {
     let signal = value["process"]["signal"]
         .as_u64()
         .filter(|signal| (1..=127).contains(signal));
-    Some(json!({"stage":stage,"processStatus":status,"exitCode":code,"signal":signal}))
+    let mut safe = json!({"stage":stage,"processStatus":status,"exitCode":code,"signal":signal});
+    if let (Some(observed), Some(retained)) = (
+        value["stderr"]["observedBytes"].as_u64(),
+        value["stderr"]["retainedBytes"].as_u64(),
+    ) && retained <= STDERR_LIMIT as u64
+        && retained <= observed
+    {
+        safe["stderrCounts"] = json!({"observedBytes":observed,"retainedBytes":retained,"truncated":observed > retained});
+    }
+    Some(safe)
 }
 
 #[cfg(all(test, unix))]
@@ -242,6 +276,68 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn live_private_worker_tail_is_opt_in_bounded_and_preserves_state_capture() {
+        let mut child = Command::new("/bin/sh").args(["-c", "i=0; while [ $i -lt 4000 ]; do printf '%064d' 0 >&2; i=$((i+1)); done; printf 'PRIVATE_WORKER_SENTINEL' >&2; exit 17"])
+            .stderr(Stdio::piped()).spawn().unwrap();
+        let mut stderr = WorkerStderr::start(child.stderr.take().unwrap()).unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(17));
+        let tail = stderr.finish();
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("state")).unwrap();
+        let directory = temporary.path().join("private");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let default = persist_tail_with_invocation(Some(&state), &tail, None);
+        assert_eq!(default["invocationTail"]["status"], "NOT_CAPTURED");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        let private = persist_tail_with_invocation(Some(&state), &tail, Some(&directory));
+        assert_eq!(private["status"], "CAPTURED_PRIVATE");
+        assert_eq!(private["invocationTail"]["status"], "CAPTURED_PRIVATE");
+        assert_eq!(private["invocationTail"]["retainedBytes"], STDERR_LIMIT);
+        assert_eq!(private["invocationTail"]["truncated"], true);
+        for diagnostic in [&default, &private] {
+            assert_eq!(
+                std::fs::read(diagnostic["path"].as_str().unwrap()).unwrap(),
+                tail.bytes
+            );
+            assert!(!diagnostic.to_string().contains("PRIVATE_WORKER_SENTINEL"));
+        }
+        let artifact = std::fs::read_dir(&directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            std::fs::metadata(&artifact).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            std::fs::read(artifact)
+                .unwrap()
+                .ends_with(b"PRIVATE_WORKER_SENTINEL")
+        );
+        // Worker and Maven share one live directory budget, including leftovers.
+        let filler = vec![b'x'; crate::documentation::support_collect::FILE_LIMIT];
+        crate::documentation::support_collect::write_private_artifacts(
+            &directory,
+            &[("filler", &filler)],
+        )
+        .unwrap();
+        let more = vec![b'y'; crate::documentation::support_collect::FILE_LIMIT - STDERR_LIMIT];
+        crate::documentation::support_collect::write_private_artifacts(
+            &directory,
+            &[("more", &more)],
+        )
+        .unwrap();
+        assert_eq!(
+            persist_live_tail(Some(&directory), &tail)["status"],
+            "UNAVAILABLE"
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 3);
+    }
 
     #[test]
     fn stderr_is_drained_bounded_and_saved_only_in_a_private_file() {

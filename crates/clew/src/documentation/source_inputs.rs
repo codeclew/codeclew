@@ -355,6 +355,38 @@ fn load_manifest(
     Ok(manifest)
 }
 
+/// Decode only the selection envelope; never hydrate source or catalogue objects.
+pub(super) type DiagnosticSelection = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+
+pub(super) fn diagnostic_selection(
+    raw: &[u8],
+    expected_digest: &str,
+) -> Result<DiagnosticSelection, ClewError> {
+    let manifest: Manifest = serde_json::from_slice(raw)
+        .map_err(|_| state_corrupt("source input metadata is malformed"))?;
+    if manifest.schema != MANIFEST_SCHEMA
+        || manifest.input_digest != expected_digest
+        || manifest.update_state.schema != UPDATE_STATE_SCHEMA
+        || manifest.services.len() > MAX_ITEMS
+        || !manifest
+            .selected_services
+            .is_disjoint(&manifest.retained_services)
+        || manifest
+            .selected_services
+            .iter()
+            .chain(&manifest.retained_services)
+            .any(|id| !manifest.services.contains_key(id))
+    {
+        return Err(state_corrupt("source input metadata is inconsistent"));
+    }
+    validate_reference_map(&manifest.services, SERVICE_SCHEMA)?;
+    Ok((
+        manifest.services.into_keys().collect(),
+        manifest.selected_services,
+        manifest.retained_services,
+    ))
+}
+
 /// Load only explicitly selected service declarations from an immutable source
 /// input envelope. Historical scenarios, entities, notes, and other service
 /// objects remain unread and cannot become active in a recovered destination.

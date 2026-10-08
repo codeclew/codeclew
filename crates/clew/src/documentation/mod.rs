@@ -70,6 +70,7 @@ pub(crate) mod sqlite_objects;
 pub mod static_pages;
 pub mod status;
 pub mod store;
+pub mod support_collect;
 mod syntax;
 mod syntax_file_cache;
 #[cfg(test)]

@@ -26,6 +26,7 @@ const SCHEMA: &str = "codeclew-maven-build-diagnostic/1.0";
 pub struct DebugOutput {
     #[cfg(unix)]
     directory: File,
+    budget: Option<std::sync::Mutex<usize>>,
 }
 
 impl DebugOutput {
@@ -74,13 +75,22 @@ impl DebugOutput {
             {
                 return Err(invalid("debug output directory changed during validation"));
             }
-            Ok(Self { directory })
+            Ok(Self {
+                directory,
+                budget: None,
+            })
         }
         #[cfg(not(unix))]
         {
             let _ = metadata;
             Err(invalid("debug output capture requires POSIX"))
         }
+    }
+
+    pub(crate) fn open_bounded(path: &Path, bytes: usize) -> Result<Self, ClewError> {
+        let mut output = Self::open(path)?;
+        output.budget = Some(std::sync::Mutex::new(bytes));
+        Ok(output)
     }
 
     fn persist(
@@ -108,17 +118,45 @@ impl DebugOutput {
             "stdout": {"artifact": stdout_name, "tail": stream_metadata(stdout)},
             "stderr": {"artifact": stderr_name, "tail": stream_metadata(stderr)},
         });
+        let manifest_bytes = serde_json::to_vec(&manifest).ok();
+        let required =
+            stdout.bytes.len() + stderr.bytes.len() + manifest_bytes.as_ref().map_or(0, Vec::len);
+        let mut budget = self.budget.as_ref().and_then(|budget| budget.lock().ok());
+        let budget_available = self.budget.is_none()
+            || budget
+                .as_ref()
+                .is_some_and(|remaining| **remaining >= required);
         // Publish the manifest last: its presence means both raw tails were
         // durably written. Interrupted writes can leave inaccessible orphan
         // artifacts, but never a false completed capture record.
-        let stored = serde_json::to_vec(&manifest)
-            .map_err(|_| ())
+        let stored = manifest_bytes
+            .ok_or(())
+            .and_then(|bytes| if budget_available { Ok(bytes) } else { Err(()) })
             .and_then(|manifest| {
-                self.write_new(&stdout_name, &stdout.bytes)
-                    .and_then(|_| self.write_new(&stderr_name, &stderr.bytes))
-                    .and_then(|_| self.write_new(&manifest_name, &manifest))
+                if self.budget.is_some() {
+                    let directory =
+                        crate::documentation::support_collect::live_private_directory().ok_or(())?;
+                    crate::documentation::support_collect::write_private_artifacts(
+                        &directory,
+                        &[
+                            (&stdout_name, &stdout.bytes),
+                            (&stderr_name, &stderr.bytes),
+                            (&manifest_name, &manifest),
+                        ],
+                    )
+                    .map_err(|_| ())
+                } else {
+                    self.write_new(&stdout_name, &stdout.bytes)
+                        .and_then(|_| self.write_new(&stderr_name, &stderr.bytes))
+                        .and_then(|_| self.write_new(&manifest_name, &manifest))
+                }
             })
             .is_ok();
+        // Reserve even interrupted/orphaned writes, so many failing services
+        // cannot exceed the wrapper's private-directory budget.
+        if budget_available && let Some(remaining) = budget.as_mut() {
+            **remaining = remaining.saturating_sub(required);
+        }
         let mut evidence = metadata;
         evidence["status"] = json!(if stored {
             "CAPTURED_PRIVATE"

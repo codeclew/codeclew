@@ -397,6 +397,7 @@ def selected_source(relative: str, registry: dict[str, object]) -> bool:
         return True
     if relative.startswith("bootstrap/"):
         return relative in {
+            "bootstrap/diagnostics.py",
             "bootstrap/clew_bootstrap.py",
             "bootstrap/host_resources.py",
             "bootstrap/runtime_components.json",

@@ -19,6 +19,7 @@ checkout for source development; direct capsule binaries are unsupported.
 | Find a previously approved method answer after a source update | [Capture, question, review and exact reuse](docs/operations/field-documentation.md#capture-question-review-and-exact-reuse) and [discovery limits](docs/operations/docs-snapshot-store.md#find-an-approved-answer-by-exact-request-source-candidate) |
 | Try the internal Java process draft | [historical v0.13.1 example and limits](#historical-v0131-example-and-limits), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
+| Save diagnostics for a failed Check or command | [Support bundles (source checkout; unreleased)](docs/operations/support-diagnostics.md) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
 <a id="current-release-v01315"></a>

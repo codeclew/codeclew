@@ -21,6 +21,9 @@ done
 
 LAUNCHER_DIR=$(CDPATH= cd -- "$(dirname -- "$LAUNCHER")" && pwd -P)
 RELEASE_ROOT=$(CDPATH= cd -- "$LAUNCHER_DIR/.." && pwd -P)
+if [ "${1:-}" = --diagnostics ]; then
+  exec python3 -I -S -B "$RELEASE_ROOT/source/bootstrap/diagnostics.py" --launcher "$ENTRYPOINT" "$@"
+fi
 PROFILE_FILE=$RELEASE_ROOT/PROFILE
 [ -f "$PROFILE_FILE" ] && [ ! -L "$PROFILE_FILE" ] || {
   printf '%s\n' '{"schema":"codeclew-installation-error/1.0","error":"installed release profile is unavailable"}' >&2

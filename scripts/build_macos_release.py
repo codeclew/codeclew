@@ -105,6 +105,7 @@ RELEASE_PROFILES = {
 }
 
 MINIMAL_SOURCE_FILES = (
+    "bootstrap/diagnostics.py",
     "bootstrap/clew_bootstrap.py",
     "bootstrap/host_resources.py",
     "clew",

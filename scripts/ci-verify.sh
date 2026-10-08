@@ -79,6 +79,7 @@ python3 -I -S scripts/build_cli_documentation.py --check
 python3 -I -S scripts/test_agent_skill.py
 python3 -I -S scripts/test_pilot.py
 python3 -I -S scripts/test_macos_distribution.py
+python3 -I -S scripts/test_support_diagnostics.py
 python3 -I -S scripts/test_build_macos_release.py
 python3 -I -S scripts/test_build_local_release_candidate.py
 python3 -I -S scripts/test_runtime_attach_canary.py
@@ -87,6 +88,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 qualify_csharp
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
+cargo test --locked -p clew --test support_collect -- --test-threads=1
 cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
 cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
 cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1

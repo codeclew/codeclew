@@ -1,5 +1,8 @@
 # Maven build failure diagnostics
 
+For a complete invocation package, including pre-runtime failures and live worker
+stderr, use the opt-in [support diagnostic mode](support-diagnostics.md).
+
 Java Maven model extraction invokes three stages from the repository root:
 
 1. Effective POM: selected module POM, `-B -q -N help:effective-pom`, temporary output file.

@@ -67,6 +67,47 @@ pub struct RuntimeWorker {
 }
 
 impl RuntimeAuthority {
+    /// Diagnostic metadata only: read the inherited capsule manifest without
+    /// rehashing binaries, probing toolchains, or starting runtime preparation.
+    pub fn diagnostic_metadata() -> Result<Option<Value>, ClewError> {
+        let Some(value) = std::env::var_os("CODECLEW_RUNTIME_ROOT_FD") else {
+            return Ok(None);
+        };
+        let fd = parse_fd(&value, "runtime root")?;
+        validate_directory_fd(fd, 0o077, "runtime root")?;
+        let root = descriptor_path(fd)?;
+        let mut manifest: Value = serde_json::from_slice(&read_regular(
+            &root.join("runtime.json"),
+            1024 * 1024,
+            None,
+        )?)
+        .map_err(|_| invalid("runtime diagnostic manifest is invalid"))?;
+        let expected = manifest["manifestDigest"]
+            .as_str()
+            .filter(|v| is_digest(v))
+            .ok_or_else(|| invalid("runtime diagnostic identity is invalid"))?
+            .to_owned();
+        let key = manifest["runtimeKey"]
+            .as_str()
+            .filter(|v| is_digest(v))
+            .ok_or_else(|| invalid("runtime diagnostic identity is invalid"))?
+            .to_owned();
+        let mode: RuntimeMode = serde_json::from_value(manifest["mode"].clone())
+            .map_err(|_| invalid("runtime diagnostic mode is invalid"))?;
+        if manifest["schema"] != RUNTIME_SCHEMA {
+            return Err(invalid("runtime diagnostic schema is invalid"));
+        }
+        manifest["manifestDigest"] = Value::String(String::new());
+        if canonical::hash(&manifest).map_err(internal)? != expected {
+            return Err(invalid("runtime diagnostic manifest is corrupt"));
+        }
+        Ok(Some(
+            serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"mode":mode,
+            "platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+            "runtimeKey":key,"manifestDigest":expected,"inspectionScope":"CAPSULE_MANIFEST_METADATA"}),
+        ))
+    }
+
     pub fn load(root: &Path) -> Result<Self, ClewError> {
         let metadata = fs::symlink_metadata(root).map_err(io_error)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
