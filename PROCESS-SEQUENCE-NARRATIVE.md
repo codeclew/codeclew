@@ -1,80 +1,97 @@
-# Замечание: авторизация внутренних процессов как sequence-операций даёт технический дамп вместо читаемой документации
+# Observation: authoring internal processes as sequence operations produces a technical dump
 
-## Наблюдение
+Historical issue report translated from the original Russian note. Counts,
+examples and alternatives below retain the original report's context; they do
+not establish runtime execution or impose new implementation requirements.
 
-Чтобы внутренний процесс сервиса (оркестратор, напр. `AggregateDealService.process`)
-попал в документацию как отдельная операция, мы авторизуем его как **sequence-операцию**
-(entrypoint с `participants`/`events`). Для этого render требует покрыть **каждое**
-структурное ветвление исходника (`render.rs`, `required_sequence_flows` +
-`sequence_event_kinds`) событием в последовательности, иначе операция отклоняется:
+## Observation
 
-```
+To include an internal service process (an orchestrator such as
+`AggregateDealService.process`) as a separate documented operation, it is
+accepted as a **sequence operation**: an entrypoint with participants/events.
+Render requires **every** structural branch in the source (`required_sequence_flows`
+and `sequence_event_kinds` in `render.rs`) to be covered by a sequence event,
+otherwise it rejects the operation:
+
+```text
 sequence omits a source-backed condition or return: motor-deal-service:flow:<id>
 ```
 
-Чтобы пройти авторизацию, пришлось сгенерировать по событию на каждый flow
-(IF/TRY/DEFERRED/RETURN/THROW + необязательные CALL) с автоматическим текстом вида:
+To pass this validation, one event per flow was generated (IF/TRY/DEFERRED/
+RETURN/THROW plus optional CALL), with automatic prose. English translation of
+the originally emitted Russian example:
 
+```text
+The source contains fetchAllContactsAndBuildMap(subjectRefs, integrationId) (CALL).
+The record captures lexical structure.
 ```
-Исходник содержит fetchAllContactsAndBuildMap(subjectRefs, integrationId) (CALL).
-Запись фиксирует лексическую структуру.
-```
 
-## Проблема
+## Problem
 
-1. **Читатель не получает ценности.** Такие строки — технический след механизма
-   авторизации, а не описание бизнес-процесса. Они «проталкивают» операцию через
-   валидатор, но засоряют документ десятками строк (у `proc_process` до 106 flow-событий).
-2. **CALL-события не обязательны** (`sequence_event_kinds("CALL") = []`), но при
-   текущем подходе их всё равно генерируют — основной источник шума.
-3. **Обязательные ветвления** (IF/TRY/DEFERRED/RETURN/THROW) требуют события, но их
-   текст-лексема из исходника не объясняет бизнес-решение.
+1. **The reader gains little value.** These lines describe the authoring
+   mechanism's technical trace rather than the business process. They get the
+   operation through validation but fill the document with dozens of lines:
+   the reported `proc_process` had up to 106 flow events.
+2. **CALL events are optional** (`sequence_event_kinds("CALL") = []`), but the
+   current approach still generated them, creating most of the noise.
+3. **Mandatory branches** (IF/TRY/DEFERRED/RETURN/THROW) need events, but their
+   source lexemes do not explain the business decision.
 
-## Корень
+## Root of the problem
 
-Механизм «авторизуй процесс как sequence-операцию» вынуждает отражать **лексическую
-структуру кода**, а не семантику процесса. Это фундаментальное несоответствие:
-вариант «описать процесс читаемым текстом в секции» (Обзор/Назначение) работал и давал
-чистый результат, но тогда процесс не присутствует как отдельная операция/диаграмма.
+The reported mechanism of accepting a process as a sequence operation reflects
+**lexical code structure**, rather than process meaning. Writing a readable
+process explanation in an Overview/Purpose section gave a clean result, but
+then the process did not appear as a separate operation or diagram.
 
-## Варианты, которые стоит рассмотреть в движке
+## Alternatives originally proposed
 
-### A. Отделять обязательные ветвления от «декоративных» событий
-Разрешить авторизованной операции включать **минимальный набор** событий (request,
-внешние вызовы, response, обязательные IF/TRY/DEFERRED/RETURN/THROW), а CALL-покрытие
-не требовать и не показывать. Сейчас CALL-события и генерируются, и рендерятся.
+### A. Separate mandatory branches from decorative events
 
-### B. Тексты для ветвлений должны быть осмысленными
-Дать автору способ указывать **бизнес-смысл** ветвления, а не лексему из исходника.
-Если render требует событие для каждого flow, текст события должен быть
-человекочитаемым описанием условия/решения, а не «Исходник содержит …».
+Allow an accepted operation to include a **minimal event set**: request,
+external calls, response and mandatory IF/TRY/DEFERRED/RETURN/THROW. Do not
+require CALL coverage or display optional technical calls. In the reported
+approach, CALL events were both generated and rendered.
 
-### C. Процесс как текст, а не sequence
-Признать, что для многих внутренних процессов правильная форма — это авторизованное
-**текстовое описание** в секции (как `section-process-*`), а не sequence-диаграмма.
-Сейчас кастомные `section-process-*` отклоняются («duplicate or out-of-scope operation»),
-потому что не входят в фиксированный `sections::REQUIRED`.
+### B. Give branches meaningful text
 
-### D. Диагностика
-Пользователю не видно, почему процесс отклонён. Ошибка «sequence omits a source-backed
-condition or return: <flow>» не объясняет, что нужно добавить событие для flow и какое
-именно. Улучшить сообщение: указать, какого события (`kind=alt/opt/...`) и для какого
-flow не хватает.
+Allow the author to state the branch's **business meaning**, rather than repeat
+a source lexeme. When render requires an event for each flow, its text should
+explain the supported condition or decision, rather than say “the source
+contains ...”.
 
-## Рекомендация
+### C. Represent a process as prose rather than a sequence
 
-Для читаемой документации внутренних процессов в текущей версии движка:
-- либо описывать процессы **текстом** в секциях (без sequence-операций) — чисто, но без
-  отдельной операции;
-- либо авторизовать как sequence-операцию, но **убрать CALL-события** и дать обязательным
-  ветвлениям осмысленные тексты — приемлемо, но требует ручной работы и остаётся шум.
+For many internal processes, the appropriate form may be an accepted **prose
+explanation** in a section such as `section-process-*`, rather than a sequence
+diagram. Custom `section-process-*` operations were rejected as duplicate or
+out-of-scope because they were absent from the fixed `sections::REQUIRED` list.
 
-В движке желательно внести вариант A (не требовать/не показывать необязательные CALL)
-и улучшить тексты ветвлений (B) и диагностику (D).
+### D. Improve diagnostics
 
-## Где смотреть
+The old error `sequence omits a source-backed condition or return: <flow>` did
+not explain which event to add. Report the missing flow and its required event
+kind (`alt`, `opt`, etc.).
 
-- `crates/clew/src/documentation/render.rs` — `required_sequence_flows`,
-  `sequence_event_kinds`, `sequence_step_requires_endpoints`, валидация «sequence omits…».
-- `crates/clew/src/documentation/sections.rs` — фиксированный `REQUIRED` список секций.
-- `crates/clew/src/documentation/notes.rs` — `expected` (какие id допустимы в narrative).
+## Original recommendation
+
+For readable internal-process documentation with the reported engine:
+
+- Explain the process **as prose** in existing sections, without a sequence
+  operation: clean output, but no separate operation.
+- Or accept a sequence operation, **remove optional CALL events**, and give
+  mandatory branches meaningful text. This required manual work and could
+  still remain noisy.
+
+The original recommendation was to implement A, improve branch text (B), and
+improve diagnostics (D). Useful business calls must still remain available;
+these alternatives do not establish runtime chronology or justify dropping
+mandatory source-backed branch coverage.
+
+## Relevant code
+
+- `crates/clew/src/documentation/render.rs`: `required_sequence_flows`,
+  `sequence_event_kinds`, `sequence_step_requires_endpoints`, and missing-flow
+  validation.
+- `crates/clew/src/documentation/sections.rs`: the fixed REQUIRED section list.
+- `crates/clew/src/documentation/notes.rs`: expected narrative IDs.

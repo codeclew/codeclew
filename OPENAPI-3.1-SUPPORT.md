@@ -1,82 +1,98 @@
-# Указание: поддержка OpenAPI 3.1.x в контрактах сервисов
+# Request: support OpenAPI 3.1.x service contracts
 
-## Проблема (наблюдаемое поведение)
+Historical issue report translated from the original Russian note. Version
+allowlists and family gates below are recorded proposals, superseded by the
+subsequent user requirement to attempt bounded reading through OpenAPI 3.x.
 
-Сервис объявляет контракт `src/main/resources/openapi/openapi.yml` с `openapi: 3.1.2`.
-При `docs render`/`docs check` контракт не интерпретируется:
+## Problem (observed behavior)
 
-- в статусе сервиса виден boundary `UNSUPPORTED_CONTRACT_VERSION:src/main/resources/openapi/openapi.yml`;
-- операции `CONTRACT_OPERATION` не создаются, `contract-scope` (CONTRACT_SCOPE) остаётся без контрактов;
-- render отдаёт `contracts:[]` и «Операции, объявленные в OpenAPI · 0», хотя операции в контракте есть.
+A service declares `src/main/resources/openapi/openapi.yml` with
+`openapi: 3.1.2`. During `docs render`/`docs check`, it is not interpreted:
 
-Пользователь при этом не видит причину — контракт «молча» игнорируется.
+- The service shows the boundary
+  `UNSUPPORTED_CONTRACT_VERSION:src/main/resources/openapi/openapi.yml`.
+- No `CONTRACT_OPERATION` observations are created; `contract-scope`
+  (`CONTRACT_SCOPE`) has no contracts.
+- Render returns `contracts:[]` and zero operations declared in OpenAPI even
+  though the contract contains operations.
 
-## Корневая причина
+The user cannot see why: the contract is silently ignored.
 
-`crates/clew/src/documentation/contracts.rs` жёстко ограничивает поддержку версий:
+## Root cause
+
+`crates/clew/src/documentation/contracts.rs` imposed a strict version allowlist:
 
 ```rust
 pub const TESTED_VERSIONS: &[&str] = &["3.0.0", "3.0.3"];
 ```
 
-В `contracts.rs`:
-- `capture`/`import` (строка ~145-160): версия из `document["openapi"]` сверяется с `TESTED_VERSIONS`;
-  при отсутствии совпадения статус = `UNSUPPORTED_CONTRACT_VERSION`, контракт **не добавляется** в `evidence.contracts`;
-- `enrich` (строка ~299-306): `if !document["openapi"].as_str().is_some_and(|v| TESTED_VERSIONS.contains(&v)) { continue; }` —
-  операции `CONTRACT_OPERATION` для неподдерживаемых версий не генерируются.
+In that implementation:
 
-В `crates/clew/src/documentation/modules.rs:228` список версий берётся из того же `TESTED_VERSIONS`:
+- `capture`/`import` (approximately lines 145-160) compared `document["openapi"]`
+  with `TESTED_VERSIONS`. On a mismatch it emitted
+  `UNSUPPORTED_CONTRACT_VERSION` and **did not add** the contract to
+  `evidence.contracts`.
+- `enrich` (approximately lines 299-306) used
+  `if !document["openapi"].as_str().is_some_and(|v| TESTED_VERSIONS.contains(&v)) { continue; }`.
+  It did not generate operations for unsupported versions.
+
+`crates/clew/src/documentation/modules.rs:228` obtained the version list from
+the same constant:
 
 ```rust
 openapi["testedVersions"] = json!(super::contracts::TESTED_VERSIONS);
 ```
 
-Поэтому достаточно обновить один источник.
+The report therefore proposed updating this single source.
 
-## Реальный контракт, который нужно поддержать
+## Actual contract reported
 
-`motor-deal-service`: `openapi: 3.1.2`, 5343 строки, структура стандартная
-(`info`, `servers`, `security`, `tags`, `paths`, `components`). 3.1-специфичные
-признаки (`webhooks`, `type: null`, `unevaluatedProperties`, `patternProperties`)
-**не используются** — контракт совместим с 3.0.3, отличается только строкой версии.
-`examples:` присутствует, но он валиден и в 3.0.3.
+`motor-deal-service`: `openapi: 3.1.2`, 5343 lines, standard structure
+(`info`, `servers`, `security`, `tags`, `paths`, `components`). The reported
+contract used **none** of the listed 3.1-specific features (`webhooks`,
+`type: null`, `unevaluatedProperties`, `patternProperties`). The report described
+it as compatible with 3.0.3 apart from its version string. `examples:` was
+present and is also valid in 3.0.3. This preserves the original observation;
+it is not a claim of complete specification validation.
 
-## Что нужно исправить
+## Original requested fixes
 
-### Минимально (добавить конкретную версию)
+### Minimum proposal: add the specific version
 
-В `crates/clew/src/documentation/contracts.rs:17`:
+At the then-current `contracts.rs:17`:
 
 ```rust
 pub const TESTED_VERSIONS: &[&str] = &["3.0.0", "3.0.3", "3.1.0", "3.1.1", "3.1.2"];
 ```
 
-### Правильнее (поддержка семейства 3.1.x)
+### Preferred original proposal: support the 3.1.x family
 
-Вместо точечного списка — совместимость по мажор/минор, например добавить
-вспомогательную проверку `supported_openapi_version(&str)`, которая допускает
-`3.0.x` и `3.1.x` (а не только тестовые 3.0.0/3.0.3), и использовать её в обоих
-местах (`capture`/`import` и `enrich`). Это уберёт хрупкость, когда каждый патч
-3.1 нужно заносить в список.
+Replace the exact list with major/minor compatibility, for example a
+`supported_openapi_version(&str)` helper admitting `3.0.x` and `3.1.x`, and use
+it in both `capture`/`import` and `enrich`. This would avoid adding each new
+3.1 patch separately.
 
-Важно сохранить поведение для 3.1-специфичных фич:
-- если контракт использует `webhooks`, `type: null`, `2020-12` и т.п. — он структурно
-  отличается от 3.0; такие случаи должны по-прежнему оставаться в явном ограничении,
-  а не молча игнорироваться;
-- `Resolver` (`contracts.rs`) уже резолвит `$ref`/фрагменты — 3.1-совместимый парсинг
-  путей/параметров/security не требует новой логики для описанного выше контракта.
+Preserve explicit boundaries for 3.1-specific features:
 
-## Диагностика (полезно добавить в движок)
+- `webhooks`, `type: null`, `2020-12`, etc. differ structurally from 3.0. Such
+  cases must retain explicit limits rather than disappearing silently.
+- The existing Resolver handles `$ref` and fragments. For the reported
+  contract, 3.1-compatible path/parameter/security parsing requires no new
+  resolver logic.
 
-Пользователю не видно, почему контракт игнорируется. Рекомендуется:
-- в `render`/`check` выводе, когда контракт отклонён из-за версии, указывать явно
-  `UNSUPPORTED_CONTRACT_VERSION:<path> (openapi=<ver>; supported=3.0.x, 3.1.x)`;
-- не прятать этот boundary в общий статус, а показывать как причину `contracts:[]`.
+## Suggested diagnostic improvement
 
-## Критерий приёмки
+Make a version-related rejection explicit in render/check output, for example
+`UNSUPPORTED_CONTRACT_VERSION:<path> (openapi=<ver>; supported=3.0.x, 3.1.x)`.
+Show it as the reason for `contracts:[]`, rather than hiding it in general status.
+This is the original suggested diagnostic, not the current attempt-first policy.
 
-- `motor-deal-service` с `openapi: 3.1.2` захватывается: в `evidence.contracts`
-  появляется контракт, `enrich` создаёт `CONTRACT_OPERATION` для каждого `paths.*.*`;
-- render отдаёт ненулевые операции OpenAPI-контракта (исчезает «Операции, объявленные в OpenAPI · 0»);
-- контракты 3.0.x не регрессируют;
-- контракты с 3.1-специфичными фичами (если появятся) остаются явно ограниченными, а не молча пропадают.
+## Acceptance criteria
+
+- Capturing the reported `motor-deal-service` contract with `openapi: 3.1.2`
+  adds it to `evidence.contracts`, and enrich creates a `CONTRACT_OPERATION`
+  for each HTTP operation under `paths`.
+- Render returns a nonzero OpenAPI-operation count.
+- OpenAPI 3.0.x contracts do not regress.
+- Contracts using 3.1-specific features retain explicit limits instead of
+  disappearing silently.

@@ -90,6 +90,7 @@ qualify_csharp
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
 cargo test --locked -p clew --test support_collect -- --test-threads=1
 cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
+cargo test --locked -p clew --test documentation_external_calls -- --test-threads=1
 cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-threads=1
 cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1
