@@ -4347,12 +4347,14 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         }],
         edges: vec![],
     });
+    let missing_flow = clew::documentation::render::validate(&missing_guard, &checked).unwrap_err();
     assert!(
-        clew::documentation::render::validate(&missing_guard, &checked)
-            .unwrap_err()
+        missing_flow
             .message
-            .contains("omits a source-backed condition")
+            .contains("mandatory source-backed FLOW")
     );
+    assert!(missing_flow.message.contains("flowKind=IF"));
+    assert!(missing_flow.message.contains("allowedEventKinds=[alt]"));
     // A complete service publication includes the standard architecture sections.
     for narrative in narratives
         .iter_mut()

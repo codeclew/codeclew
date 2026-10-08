@@ -1166,8 +1166,8 @@ impl Check {
                 })?;
                 // Recomposition does not upgrade source acquisition authority.
                 // Rebuild all evidence references above, then preserve only this
-                // metadata; validate_parent_manifest still compares the full
-                // envelope, so changed evidence cannot inherit the parent.
+                // metadata; parent validation checks the complete evidence
+                // envelope or an explicit retained-contract refresh receipt.
                 capture.cacheability = original.cacheability.clone();
                 capture.reason = original.reason.clone();
             }

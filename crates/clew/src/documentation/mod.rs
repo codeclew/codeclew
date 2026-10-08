@@ -57,6 +57,7 @@ pub mod progress;
 pub mod proposals;
 mod reader;
 pub mod render;
+mod retained_contracts;
 pub mod review;
 pub mod reviewed_answers;
 mod section_author;

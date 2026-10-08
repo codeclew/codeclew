@@ -115,6 +115,17 @@ be silently recomposed. Ordinary consumers also require current catalogue
 compatibility when an old snapshot handle is specified. Frozen published pages
 remain accessible through history.
 
+To explicitly update the OpenAPI projection of full registered saved files,
+use `docs refresh-contracts --root ROOT --snapshot SOURCE_SNAPSHOT --service ID`.
+Repeat `--service` for up to eight captured services. The current bounded reader
+consumes retained declaration bytes only; no checkout, analyzer, package restore
+or network request runs. Missing or partial files fail. Limits are 128 registered
+files and 8 MiB per selected service. Use the returned immutable snapshot for
+context, Work and render. Source records, revisions, historical pages and latest
+remain unchanged; source and runtime are not reverified. Use the original capture
+as parent for every refresh, including after later catalogue edits. Ordinary
+recomposition retains the original capture's contract projection.
+
 Commit the catalogue, scenarios, manual notes and generated bundle. Version 0.10
 requires a fresh documentation root and reindexing; old formats are rejected and
 there are no migration commands. Existing data is not deleted automatically.

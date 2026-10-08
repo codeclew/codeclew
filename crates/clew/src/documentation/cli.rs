@@ -61,6 +61,15 @@ pub enum Command {
         #[arg(long)]
         snapshot: String,
     },
+    /// Reinterpret registered full retained OpenAPI files into a new immutable snapshot; never reacquire source.
+    RefreshContracts {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long = "service", required = true)]
+        services: Vec<String>,
+    },
     /// Inspect immutable documentation snapshots without rerunning producers or agents.
     History {
         #[command(subcommand)]
@@ -427,6 +436,23 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             value["snapshot"] = json!(derived);
             value["parentSnapshot"] = json!(snapshot);
             value["authority"] = json!("RECOMPOSED_DECLARATIONS_SOURCE_NOT_REVERIFIED");
+            Ok(value)
+        }
+        Command::RefreshContracts {
+            root,
+            snapshot,
+            services,
+        } => {
+            let repo = Repository::open(&root)?;
+            let selected = services.into_iter().collect();
+            let (checked, derived) =
+                super::composition::refresh_contracts(&repo, &snapshot, &selected)?;
+            let mut value = checked.summary();
+            value["snapshot"] = json!(derived);
+            value["parentSnapshot"] = json!(snapshot);
+            value["authority"] =
+                json!("REFRESHED_RETAINED_CONTRACT_DECLARATIONS_SOURCE_NOT_REVERIFIED");
+            value["sourceCapturePerformed"] = json!(false);
             Ok(value)
         }
         Command::Check(request) => {

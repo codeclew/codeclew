@@ -288,6 +288,7 @@ fn captured_baseline_projects_child_versions_and_attach_is_pure() {
         input_digest: digest(&inputs_a).unwrap(),
         inputs: inputs_a.clone(),
         retained: retained_a.clone(),
+        contract_refresh: None,
     };
 
     repo.atomic("manual/a.md", b"B changed").unwrap();

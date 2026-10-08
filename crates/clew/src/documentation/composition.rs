@@ -9,7 +9,7 @@ use super::{
 };
 use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const SCHEMA: &str = "codeclew-documentation-composition/1.0";
 const MANIFEST_SCHEMA: &str = "codeclew-documentation-composition-manifest/1.0";
@@ -28,6 +28,8 @@ pub struct Composition {
     pub(super) input_digest: String,
     pub(super) inputs: RepositoryInputs,
     retained: RetainedInputs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract_refresh: Option<super::retained_contracts::Receipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +54,8 @@ struct Manifest {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     influence_scopes: BTreeMap<String, cache::ObjectRef>,
     scopes: BTreeMap<String, cache::ObjectRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract_refresh: Option<super::retained_contracts::Receipt>,
 }
 
 fn compatible(original: &RepositoryInputs, current: &RepositoryInputs) -> Result<(), ClewError> {
@@ -72,6 +76,7 @@ fn composer() -> Result<String, ClewError> {
         &[
             SCHEMA,
             include_str!("composition.rs"),
+            include_str!("retained_contracts.rs"),
             include_str!("check.rs"),
             include_str!("entities.rs"),
             include_str!("notes.rs"),
@@ -101,8 +106,20 @@ pub(super) fn validate_parent_manifest(
         || parent.composition.is_some()
         || parent.source_inputs != derived.source_inputs
         || parent.unresolved != derived.unresolved
-        || digest(&parent.service_manifests)? != digest(&derived.service_manifests)?
     {
+        return Err(invalid(
+            "composition source evidence does not match its original capture parent",
+        ));
+    }
+    if let Some(refresh) = &value.contract_refresh {
+        super::retained_contracts::validate(
+            repo,
+            refresh,
+            &value.inputs.services,
+            &parent,
+            derived,
+        )?;
+    } else if digest(&parent.service_manifests)? != digest(&derived.service_manifests)? {
         return Err(invalid(
             "composition source evidence does not match its original capture parent",
         ));
@@ -180,6 +197,22 @@ pub(super) fn attach_retained(
 /// A new immutable result, never an update to latest, accepted prose or source.
 /// v1 intentionally starts from an original capture, not a chain of derivatives.
 pub fn recompose(repo: &Repository, parent: &str) -> Result<(Check, String), ClewError> {
+    derive(repo, parent, None)
+}
+
+pub fn refresh_contracts(
+    repo: &Repository,
+    parent: &str,
+    services: &BTreeSet<String>,
+) -> Result<(Check, String), ClewError> {
+    derive(repo, parent, Some(services))
+}
+
+fn derive(
+    repo: &Repository,
+    parent: &str,
+    selected: Option<&BTreeSet<String>>,
+) -> Result<(Check, String), ClewError> {
     let original = Check::load_snapshot(repo, parent)?;
     if original.composition.is_some() {
         return Err(invalid(
@@ -193,9 +226,15 @@ pub fn recompose(repo: &Repository, parent: &str) -> Result<(Check, String), Cle
     compatible(&source.inputs, &inputs)?;
     let input_digest = digest(&inputs)?;
     let retained = capture_retained(repo, &inputs)?;
+    let mut services = original.services;
+    let contract_refresh = selected
+        .map(|selected| {
+            super::retained_contracts::refresh(&inputs.services, &mut services, selected)
+        })
+        .transpose()?;
     let mut checked = check::assemble(
         input_digest.clone(),
-        original.services,
+        services,
         original.unresolved,
         &inputs.interactions,
         &inputs.scenarios,
@@ -209,6 +248,7 @@ pub fn recompose(repo: &Repository, parent: &str) -> Result<(Check, String), Cle
         input_digest,
         inputs,
         retained,
+        contract_refresh,
     });
     // Detect a currently different documentation bundle without claiming an
     // atomic filesystem snapshot. All computation above consumed owned values.
@@ -272,7 +312,7 @@ pub(super) fn validate(
     Ok(())
 }
 
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|v| {
         v.len() == 64
             && v.bytes()
@@ -336,6 +376,7 @@ pub(super) fn store(repo: &Repository, value: &Composition) -> Result<cache::Obj
             &review::influence_scopes(&value.retained.versions.accepted_versions)?,
         )?,
         scopes: store_map(repo, SCOPE_SCHEMA, &value.retained.scopes)?,
+        contract_refresh: value.contract_refresh.clone(),
     };
     cache::put_json(repo, MANIFEST_SCHEMA, &manifest)
 }
@@ -367,6 +408,7 @@ pub(super) fn load(
         composer: m.composer,
         input_digest: m.input_digest,
         inputs,
+        contract_refresh: m.contract_refresh,
         retained: RetainedInputs {
             baseline: m.baseline,
             versions: processes::RetainedVersions {

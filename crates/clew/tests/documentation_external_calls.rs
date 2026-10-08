@@ -40,6 +40,26 @@ fn external_call_cli_recomposes_without_receiver_checkout_and_retains_details() 
     let repo = Repository::open(&f.docs).unwrap();
     let original = captured.save_snapshot(&repo).unwrap();
     fs::remove_dir_all(&caller).unwrap();
+    let (refresh_code, refreshed) = f.run(&[
+        "docs",
+        "refresh-contracts",
+        "--snapshot",
+        &original,
+        "--service",
+        "orders",
+    ]);
+    assert_eq!(
+        refresh_code, 3,
+        "syntax coverage remains partial: {refreshed}"
+    );
+    assert_eq!(refreshed["sourceCapturePerformed"], false);
+    assert_eq!(refreshed["parentSnapshot"], original);
+    let refreshed_check =
+        Check::load_snapshot(&repo, refreshed["snapshot"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        refreshed_check.services["orders"].sources,
+        captured.services["orders"].sources
+    );
     let outgoing = captured
         .dependencies
         .values()

@@ -400,6 +400,24 @@ entities, notes, interactions and scenario/process/view declarations may change.
 Newly requested facts can remain unavailable in retained evidence; recomposition
 does not acquire them or claim source freshness.
 
+`docs refresh-contracts --root DOCS --snapshot ORIGINAL_CAPTURE --service ID`
+explicitly reads registered OpenAPI files from their full saved source records
+with the current bounded reader. It returns a new immutable derived snapshot;
+pass that handle to context, Work and render. Repeat `--service` for up to eight
+captured services. Each selected service must have 1..128 registered contract
+files totalling at most 8 MiB. Missing or partial saved files fail without reading
+the checkout, running an analyzer, restoring packages or fetching references.
+
+Contract refresh preserves the original source records, revision and capture
+authority. It changes contract projections and contract-reader diagnostics only;
+it does not establish current source or runtime verification. Historical snapshots,
+publications and the latest-check pointer stay unchanged. Catalogue compatibility
+and the original-capture parent rules above also apply. After editing process or
+interaction declarations, run refresh again from the original capture to keep the
+refreshed contracts in the next derived snapshot; ordinary recomposition preserves
+the original capture's contract projection. Existing derived snapshots continue to
+read their saved projection rather than being silently reinterpreted.
+
 The original `sourceInputs` contract remains unchanged. A separate composition
 manifest binds current granular declaration inputs, the original parent handle,
 composer implementation, exact baseline byte receipts, selected complete child
