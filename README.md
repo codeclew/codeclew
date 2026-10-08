@@ -24,9 +24,9 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.21
+## Current release: v0.13.22
 
-Version 0.13.21 makes saved documentation easier to read and diagnose:
+Version 0.13.22 makes saved documentation easier to read and diagnose:
 
 - Invalid narrative inputs report safe field names and operation locations,
   with explicit whole-input rejection and retained-content status.
@@ -39,7 +39,7 @@ Version 0.13.21 makes saved documentation easier to read and diagnose:
   environments, with an inline saved outgoing contract. Exact receiver links
   reuse an unambiguous contract; explicit bindings need no external checkout.
 
-See the [release notes](docs/releases/v0.13.21.md),
+See the [release notes](docs/releases/v0.13.22.md),
 [readable-process guide](docs/operations/readable-process-narratives.md) and
 [outgoing-call guide](docs/operations/outgoing-service-calls.md).
 Addresses and contracts are declarations, not proof of runtime routing.
@@ -176,7 +176,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.21 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.22 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -205,7 +205,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.21 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.22 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -248,7 +248,7 @@ cannot change those old installed bytes. Alternatively install current core
 directly with the public installer and the pack setting cleared:
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.21 CODECLEW_PACKS= sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.22 CODECLEW_PACKS= sh
 ```
 
 ## Install the agent skill
