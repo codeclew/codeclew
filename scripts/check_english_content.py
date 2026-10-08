@@ -272,6 +272,7 @@ def _mask_rust_string_literals(content: str) -> str:
 GENERATED_DOCS_PREFIXES = (
     "site/examples/codeclew-source/docs/",
     "site/examples/current-workflow/docs/",
+    "site/examples/clew-starter/docs/",
 )
 GENERATED_SERVICE = re.compile(r"generated/[0-9a-f]{64}/services/[^/]+\.(html|json)\Z")
 GENERATED_BINDINGS = re.compile(r"generated/[0-9a-f]{64}/bindings\.json\Z")

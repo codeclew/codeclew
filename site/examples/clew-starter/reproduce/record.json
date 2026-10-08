@@ -1,0 +1,973 @@
+{
+  "status": "NATIVE_PUBLICATION_SOURCE_AND_COPY_VERIFIED",
+  "version": "v0.13.18",
+  "release": "https://github.com/codeclew/codeclew/releases/tag/v0.13.18",
+  "sourceCommit": "b810c1aa5c9765f3056f763a8367c57de070e7ba",
+  "sourceScope": "crates/clew/assets/documentation/examples/first-document.py",
+  "sourceDigest": "sha256:c001e49a00690734ed17c91b56ca61a2b44c08ddbbebc8260e714d30d3405f06",
+  "sourceClassification": "ACTUAL_SHIPPED_PRODUCT_STARTER",
+  "snapshot": "sha256:465efa03cea3c980d78078b6ea55fbf16836fa1ddb555804077fc8fb41c708cf/5736",
+  "work": "81dc55089c5ca14efa2ff9d86b5d21513bc8dcf8fbe409f9239eefb85e818df1",
+  "proposal": "2365649c9b6bf15ab72e6173e6dbf4a0a59ca51e0367e8255b9c1a03e77e1a09",
+  "submitStatus": "READY_WITH_LIMITATIONS",
+  "submitMeaning": "UNASSESSED",
+  "publish": {
+    "analysisGaps": 11,
+    "bundle": "fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0",
+    "contextDigest": "sha256:be27aed7c51cfd774b65d5875ea481c170386f74deee1d328769a63aef45f5d1",
+    "documentationLanguage": "en",
+    "documentedOperations": 0,
+    "documentedSections": 1,
+    "documentedViews": 0,
+    "endpointPublicationPolicyDigest": "sha256:3c7a2745456f3c9dd96f497f088b9392dcd96d3540ee718a343ce66d13246d1f",
+    "evidenceAuthority": "PINNED_SNAPSHOT_NOT_REVERIFIED",
+    "excludedEndpoints": 0,
+    "explicitGaps": 11,
+    "index": "docs/index.html",
+    "inputDigest": "sha256:7bf046d78dc91cb9aaed7e163c53f762d576333ecbbd466aba2f21448fccc88b",
+    "meaningReview": "UNASSESSED",
+    "proposal": "2365649c9b6bf15ab72e6173e6dbf4a0a59ca51e0367e8255b9c1a03e77e1a09",
+    "released": false,
+    "runtime": "UNKNOWN",
+    "scenarios": 0,
+    "schema": "codeclew-docs-render/1.0",
+    "services": 1,
+    "snapshot": "sha256:465efa03cea3c980d78078b6ea55fbf16836fa1ddb555804077fc8fb41c708cf/5736",
+    "status": "PARTIAL",
+    "translationComplete": true,
+    "translationGaps": 0,
+    "unresolved": {},
+    "updateFailures": {}
+  },
+  "sourceParts": [
+    {
+      "reference": "s1",
+      "sourceId": "clew-starter-004b3601fdf276206122",
+      "startLine": 78,
+      "endLine": 210,
+      "startByte": 2791,
+      "endByte": 11067,
+      "textBytes": 8276,
+      "textDigest": "sha256:ef440d7b92eda84848eb1b6859ba92cd39712a0a1b167750b9625e6d73720bf3",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L78-L210"
+    },
+    {
+      "reference": "s116",
+      "sourceId": "clew-starter-84859d07e1d84ae05b84",
+      "startLine": 12,
+      "endLine": 12,
+      "startByte": 410,
+      "endByte": 427,
+      "textBytes": 17,
+      "textDigest": "sha256:7d8752c4c7ea34c2c6d04a15aa31a1f25f62848f8c3c82528fd62439c01a225b",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L12-L12"
+    },
+    {
+      "reference": "s121",
+      "sourceId": "clew-starter-8d1eb8f0d0f518a5aa79",
+      "startLine": 13,
+      "endLine": 13,
+      "startByte": 428,
+      "endByte": 438,
+      "textBytes": 10,
+      "textDigest": "sha256:9e77b3746ea081eb4c557e71cc84ca29dc66a89d18a07e85dba66a336e7310ae",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L13-L13"
+    },
+    {
+      "reference": "s133",
+      "sourceId": "clew-starter-96bdaedc53edec5ffa19",
+      "startLine": 213,
+      "endLine": 236,
+      "startByte": 11070,
+      "endByte": 12663,
+      "textBytes": 1593,
+      "textDigest": "sha256:5d092afbd4682474d74081594f529a3a9fbc075eec338fe05260ad515ae29b0b",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L213-L236"
+    },
+    {
+      "reference": "s166",
+      "sourceId": "clew-starter-b63c43868a85dd52609c",
+      "startLine": 17,
+      "endLine": 18,
+      "startByte": 457,
+      "endByte": 555,
+      "textBytes": 98,
+      "textDigest": "sha256:46c57e50bdddce76a0af9328f4f6e7abbd6d373cad952fcaa0437014cac19c25",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L17-L18"
+    },
+    {
+      "reference": "s201",
+      "sourceId": "clew-starter-db60ed9e004537ffa28b",
+      "startLine": 39,
+      "endLine": 61,
+      "startByte": 1295,
+      "endByte": 2367,
+      "textBytes": 1072,
+      "textDigest": "sha256:06bff850242cc064fbf8daf8917b00076b159a4ac8c76ec9d1c086bc656dd65f",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L39-L61"
+    },
+    {
+      "reference": "s206",
+      "sourceId": "clew-starter-e089f390a7d80e3f52cb",
+      "startLine": 10,
+      "endLine": 10,
+      "startByte": 372,
+      "endByte": 396,
+      "textBytes": 24,
+      "textDigest": "sha256:6d69f2ac09017b8a49d050ab336e953b8fa02ae08c24396916ea7ea42418e627",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L10-L10"
+    },
+    {
+      "reference": "s230",
+      "sourceId": "clew-starter-ff8a6f84a0f4b07c51ba",
+      "startLine": 64,
+      "endLine": 75,
+      "startByte": 2370,
+      "endByte": 2788,
+      "textBytes": 418,
+      "textDigest": "sha256:ba2e52e3d0980b229026910893adfdcd3df9ac8642f3cf386ca316624a1fe7e5",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L64-L75"
+    },
+    {
+      "reference": "s31",
+      "sourceId": "clew-starter-25af9b7d5b00521bfebc",
+      "startLine": 9,
+      "endLine": 9,
+      "startByte": 360,
+      "endByte": 371,
+      "textBytes": 11,
+      "textDigest": "sha256:ff3e4d4dcf7250cae8d622d77c9a6d69aefcf4ab04ef9920218fafe93c0f1991",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L9-L9"
+    },
+    {
+      "reference": "s32",
+      "sourceId": "clew-starter-263d46d52e5ebfe853fb",
+      "startLine": 11,
+      "endLine": 11,
+      "startByte": 397,
+      "endByte": 409,
+      "textBytes": 12,
+      "textDigest": "sha256:192bd75268acb9e95cde675063e660e5130e8d5d1eb0b18a9d3d252d0a4c9c4a",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L11-L11"
+    },
+    {
+      "reference": "s33",
+      "sourceId": "clew-starter-27c14f13b7658bbf2b7f",
+      "startLine": 8,
+      "endLine": 8,
+      "startByte": 344,
+      "endByte": 359,
+      "textBytes": 15,
+      "textDigest": "sha256:f534a72c58d199602723840a24761409f227f4238759b1f6b1982afb8956b460",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L8-L8"
+    },
+    {
+      "reference": "s71",
+      "sourceId": "clew-starter-565f0733ea2c735f79b1",
+      "startLine": 21,
+      "endLine": 36,
+      "startByte": 558,
+      "endByte": 1292,
+      "textBytes": 734,
+      "textDigest": "sha256:d16a321e37281b3c97e1b550042b0bf503bccd5f59f58a3821c7b8a6f7acc4dd",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L21-L36"
+    },
+    {
+      "reference": "s90",
+      "sourceId": "clew-starter-66495232ad2a4d509740",
+      "startLine": 14,
+      "endLine": 14,
+      "startByte": 439,
+      "endByte": 454,
+      "textBytes": 15,
+      "textDigest": "sha256:09d25239ae3d62e91c70b74fa5baa1d52a22c5c2397a785935889e61f91a8557",
+      "url": "https://github.com/codeclew/codeclew/blob/b810c1aa5c9765f3056f763a8367c57de070e7ba/crates/clew/assets/documentation/examples/first-document.py#L14-L14"
+    }
+  ],
+  "completeSourceParts": 13,
+  "sourceByteVerification": "ALL_PARTS_EXACT_RELEASED_BYTES",
+  "nativeReview": "UNASSESSED",
+  "runtime": "UNKNOWN",
+  "capturePreparationModelCalls": 0,
+  "authorModel": "gpt-6.1-sol",
+  "authorReasoning": "high",
+  "nativeIsolationReceipt": false,
+  "priorUntrackedWork": "e441b9e029d49832b36698ff91619fddba7175bf0b9ca94a07ac75a96d9ba3f0",
+  "priorUntrackedProposalStatus": "NEEDS_REPAIR_INCOMPLETE_INFLUENCE",
+  "authorVerification": {
+    "schema": "codeclew-documentation-author-verification/1.0",
+    "work": "81dc55089c5ca14efa2ff9d86b5d21513bc8dcf8fbe409f9239eefb85e818df1",
+    "snapshot": "sha256:465efa03cea3c980d78078b6ea55fbf16836fa1ddb555804077fc8fb41c708cf/5736",
+    "overviewReference": "section1",
+    "status": "LOCAL_AUTHOR_CHECKS_PASSED_NATIVE_REVIEW_NOT_RUN",
+    "scope": "One overview and a six-node execution-flow proposal from the recorded authoring package only.",
+    "readCoverage": "Recorded file reads and retained-reference text completeness only; execution and complete author influence are not attested.",
+    "observedReads": [
+      {
+        "path": "context-0000.json",
+        "bytes": 24367,
+        "sha256": "56ee39bbc2ec212540b2697bb1f4e36a3625304942222ea45c6830f5be131f25",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0000.json",
+        "bytes": 47641,
+        "sha256": "363ceb663690f15f521c90dbfcfd0b2d88cb2cf726d703a98bc75f881704ffd4",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0001.json",
+        "bytes": 49838,
+        "sha256": "f92f94c047174ee399129f7a899fdcb776cb9d66e70f62636c7020bd32368851",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0002.json",
+        "bytes": 49753,
+        "sha256": "55b9a4918f490ef1d40340ff4e60c077b02646f153446b5a2e34274267502bd5",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0003.json",
+        "bytes": 49693,
+        "sha256": "14647a54b7231bc64fd38112f898581659a9fcd2c768b7503f3488bb3232c903",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0004.json",
+        "bytes": 48649,
+        "sha256": "c5a6253d3b08c06e5556d27ece267c1870390874c60330b112781792f613d2c5",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0005.json",
+        "bytes": 49864,
+        "sha256": "bf8dafcf77fa64bfea3d4cd82ba56ad1e15e2bd23196ba3d5ec019d41e6ea90a",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "inventory-0006.json",
+        "bytes": 14911,
+        "sha256": "a0d4f99cbe8a38c49188f7994ed3c5a163ad022791ba7db632c738bf486bf726",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "packet.md",
+        "bytes": 60432,
+        "sha256": "3535b78071a2bef7022e2d5c80f6b34b32b1d10566ae204d0a6338c2bd4ddae9",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "proposal.json",
+        "bytes": 316,
+        "sha256": "aa1241ed28f50182672e333baf07804c039ea3213a7d903c19496ec5133b8c90",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "result.json",
+        "bytes": 453,
+        "sha256": "ec422af3ec713c1ca61b7105085b75e1e92489608faab6d8754badcea112acf3",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0000-0000.json",
+        "bytes": 10401,
+        "sha256": "5997cb479f8afb256be381c9968121c36fe54584aee4aab9017fff5e318a34f5",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0001-0000.json",
+        "bytes": 1674,
+        "sha256": "ab5fbb6af38e249fead66521247b66665e03b7cff0ae8f17bb27f7d834742505",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0002-0000.json",
+        "bytes": 1667,
+        "sha256": "4b567f1bc7835b0d2376c4e2c4fbb4cbf3032863c9e0fe36a1595e1912fb2a13",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0003-0000.json",
+        "bytes": 3346,
+        "sha256": "71ab0dadbaa391b375aa264f42b63a212bdb77482b2877d7e4f9c9752ed69acd",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0004-0000.json",
+        "bytes": 1759,
+        "sha256": "2f6f224d18bcb4ae98a995ba3db2d19f195c9e53aaa6f60af1b9d32089091e37",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0005-0000.json",
+        "bytes": 2785,
+        "sha256": "f841588f547125cb3c8fc5c6525c6ce20428af30160bcdbc0c0779a1f93a0c52",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0006-0000.json",
+        "bytes": 1681,
+        "sha256": "b87437a328525be8242d264d1db6e406664b4b775d1c91a19fb8012fcb0fb676",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0007-0000.json",
+        "bytes": 2096,
+        "sha256": "179b12731ed5efa33652099cc552ba52a6519c51bb28deae2cccd185b602a7f7",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0008-0000.json",
+        "bytes": 1663,
+        "sha256": "6e585d200e13464010dfc30181976ec40ce33064da893a8163212f9d8d2fa49b",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0009-0000.json",
+        "bytes": 1668,
+        "sha256": "14639c693009495554ae9721e9155bc7acc5ec15a200e7eb88c28afdcc240a19",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0010-0000.json",
+        "bytes": 1667,
+        "sha256": "31d991e079f59b1c892014d46d6b0a1cecfb95b2e40761e903020de4f446ea1f",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0011-0000.json",
+        "bytes": 2422,
+        "sha256": "3f731de5d6d95186914ceda23a533743f0a729c2a134d46447c0786645ce0fce",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      },
+      {
+        "path": "source-0012-0000.json",
+        "bytes": 1671,
+        "sha256": "dfbd830539266c85776d4411475a3b8ea9262fa331b946b17da1d51dc5455f48",
+        "inspection": "Full file loaded; JSON fully parsed (packet header inspected and all embedded JSON compared with context/source files)."
+      }
+    ],
+    "accidentalOtherReads": [],
+    "readRestrictions": "No product/repository source, prior drafts, skills, web or other packages were read. Directory enumeration was limited to this package. No product edits, CLI submission or publication were performed.",
+    "completeSourceParts": [
+      {
+        "file": "source-0000-0000.json",
+        "reference": "s1",
+        "startByte": 0,
+        "endByte": 8276,
+        "totalTextBytes": 8276,
+        "observedTextBytes": 8276,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          78,
+          210
+        ]
+      },
+      {
+        "file": "source-0001-0000.json",
+        "reference": "s116",
+        "startByte": 0,
+        "endByte": 17,
+        "totalTextBytes": 17,
+        "observedTextBytes": 17,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          12,
+          12
+        ]
+      },
+      {
+        "file": "source-0002-0000.json",
+        "reference": "s121",
+        "startByte": 0,
+        "endByte": 10,
+        "totalTextBytes": 10,
+        "observedTextBytes": 10,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          13,
+          13
+        ]
+      },
+      {
+        "file": "source-0003-0000.json",
+        "reference": "s133",
+        "startByte": 0,
+        "endByte": 1593,
+        "totalTextBytes": 1593,
+        "observedTextBytes": 1593,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          213,
+          236
+        ]
+      },
+      {
+        "file": "source-0004-0000.json",
+        "reference": "s166",
+        "startByte": 0,
+        "endByte": 98,
+        "totalTextBytes": 98,
+        "observedTextBytes": 98,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          17,
+          18
+        ]
+      },
+      {
+        "file": "source-0005-0000.json",
+        "reference": "s201",
+        "startByte": 0,
+        "endByte": 1072,
+        "totalTextBytes": 1072,
+        "observedTextBytes": 1072,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          39,
+          61
+        ]
+      },
+      {
+        "file": "source-0006-0000.json",
+        "reference": "s206",
+        "startByte": 0,
+        "endByte": 24,
+        "totalTextBytes": 24,
+        "observedTextBytes": 24,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          10,
+          10
+        ]
+      },
+      {
+        "file": "source-0007-0000.json",
+        "reference": "s230",
+        "startByte": 0,
+        "endByte": 418,
+        "totalTextBytes": 418,
+        "observedTextBytes": 418,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          64,
+          75
+        ]
+      },
+      {
+        "file": "source-0008-0000.json",
+        "reference": "s31",
+        "startByte": 0,
+        "endByte": 11,
+        "totalTextBytes": 11,
+        "observedTextBytes": 11,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          9,
+          9
+        ]
+      },
+      {
+        "file": "source-0009-0000.json",
+        "reference": "s32",
+        "startByte": 0,
+        "endByte": 12,
+        "totalTextBytes": 12,
+        "observedTextBytes": 12,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          11,
+          11
+        ]
+      },
+      {
+        "file": "source-0010-0000.json",
+        "reference": "s33",
+        "startByte": 0,
+        "endByte": 15,
+        "totalTextBytes": 15,
+        "observedTextBytes": 15,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          8,
+          8
+        ]
+      },
+      {
+        "file": "source-0011-0000.json",
+        "reference": "s71",
+        "startByte": 0,
+        "endByte": 734,
+        "totalTextBytes": 734,
+        "observedTextBytes": 734,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          21,
+          36
+        ]
+      },
+      {
+        "file": "source-0012-0000.json",
+        "reference": "s90",
+        "startByte": 0,
+        "endByte": 15,
+        "totalTextBytes": 15,
+        "observedTextBytes": 15,
+        "completeForReference": true,
+        "nextCursor": null,
+        "fragmentDigestMatchesText": true,
+        "sourceFile": "crates/clew/assets/documentation/examples/first-document.py",
+        "sourceLines": [
+          14,
+          14
+        ]
+      }
+    ],
+    "completeRetainedTextBytes": 12295,
+    "coverageBoundary": "Thirteen complete retained reference spans, not a complete original file. No retained module docstring, footer invocation, imported implementations or Clew CLI implementation is asserted.",
+    "packetConsistency": {
+      "embeddedJsonCount": 14,
+      "contextMatches": true,
+      "completeSourcePartsMatch": true
+    },
+    "inventoryInspection": {
+      "pages": 7,
+      "totalRows": 230,
+      "omittedRows": 0,
+      "lastNextCursor": null,
+      "allRowsSourceKind": true,
+      "allSourceFiles": "crates/clew/assets/documentation/examples/first-document.py",
+      "purpose": "Navigation only; proposal factual claims cite complete source parts."
+    },
+    "summaryClaimMappings": [
+      {
+        "id": "purpose",
+        "claim": "Prepare a first overview or saved-source question",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              181,
+              203
+            ]
+          }
+        ],
+        "mapping": "Question branch and packet construction specify the authoring purpose; no accepted overview content is produced."
+      },
+      {
+        "id": "common-inputs",
+        "claim": "Initialized root, service, audience and launcher",
+        "support": [
+          {
+            "reference": "s133",
+            "lines": [
+              213,
+              221
+            ]
+          }
+        ],
+        "mapping": "Argument declarations; s1 lines 79-81 require codeclew-docs.yaml before preparation. Audience is optional with a default."
+      },
+      {
+        "id": "capture-inputs",
+        "claim": "Capture requires repo, repository URL, language, dialect and repeatable source roots",
+        "support": [
+          {
+            "reference": "s133",
+            "lines": [
+              222,
+              230
+            ]
+          }
+        ],
+        "mapping": "Required argument declarations and their help text specify committed source roots, language choices and declared dialect. No URL validation or compiler support is inferred."
+      },
+      {
+        "id": "read-inputs",
+        "claim": "Read requires snapshot and question",
+        "support": [
+          {
+            "reference": "s133",
+            "lines": [
+              231,
+              233
+            ]
+          }
+        ],
+        "mapping": "Required parser declarations; s1 lines 133-134 select snapshot and 181 select question."
+      },
+      {
+        "id": "capture-behavior",
+        "claim": "Capture resolves committed HEAD, compares registration, adds only a missing service, invokes bind/check, and requires snapshot",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              94,
+              132
+            ]
+          }
+        ],
+        "mapping": "Full capture branch; comparison removes only named empty optional arrays. service add includes expected-input-digest. Commands are source-level invocation forms; allowed check exits are 0 and 3."
+      },
+      {
+        "id": "common-work",
+        "claim": "Both modes record Work context, inventory and complete retained parts",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              136,
+              172
+            ]
+          }
+        ],
+        "mapping": "Work request and prepare; context paging; source query; source selection; paginated read-part; all records saved. s230 lines 64-75 advance native cursors until null and reject a repeated cursor."
+      },
+      {
+        "id": "source-selection",
+        "claim": "Source span selection preserves independent authority groups",
+        "support": [
+          {
+            "reference": "s201",
+            "lines": [
+              39,
+              61
+            ]
+          }
+        ],
+        "mapping": "Rows without occurrence metadata are kept. Remaining rows group by file, revision, authority, occurrence snapshot and blob; sorted spans are selected when extending coverage. This is not a claim that all repository files are captured."
+      },
+      {
+        "id": "cli-boundary",
+        "claim": "Wrapper expects JSON and accepted exit codes",
+        "support": [
+          {
+            "reference": "s71",
+            "lines": [
+              21,
+              36
+            ]
+          }
+        ],
+        "mapping": "Subprocess invocation syntax captures stdout/stderr, appends stderr to progress, parses JSON and rejects return codes outside allowed. CLI implementation is absent."
+      },
+      {
+        "id": "output-directory",
+        "claim": "Fresh authoring/first-document-* directory",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              79,
+              88
+            ]
+          }
+        ],
+        "mapping": "mkdtemp under the initialized root authoring directory, with a separate temporary input file."
+      },
+      {
+        "id": "outputs",
+        "claim": "Work request, context/inventory/source JSON, packet, proposal, result and progress; capture-specific service/check JSON",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              86,
+              210
+            ]
+          }
+        ],
+        "mapping": "save/write expressions at 126,129,141,148,158,171,180,203-206; s166 lines 17-18 define formatted JSON writes; s71 lines 27-29 append CLI stderr."
+      },
+      {
+        "id": "author-action",
+        "claim": "Read packet and complete parts, replace incomplete proposal fields, then use later submit command",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              174,
+              210
+            ]
+          }
+        ],
+        "mapping": "Placeholder title/summary and empty evidence at 176-178; packet author instructions at 188-197; prints submit command at 209-210. This author task creates a separate proposal file and does not execute that command."
+      },
+      {
+        "id": "stop",
+        "claim": "Successful preparation ends READY_FOR_AUTHOR with NOT_PUBLISHED",
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              204,
+              210
+            ]
+          }
+        ],
+        "mapping": "Explicit result fields and printed terminal status; no submission or publication invocation occurs in this complete prepare body. Actual saved result.json agrees."
+      }
+    ],
+    "visualMappings": [
+      {
+        "items": [
+          "inputs",
+          "choose-capture",
+          "choose-read"
+        ],
+        "support": [
+          {
+            "reference": "s133",
+            "lines": [
+              213,
+              236
+            ]
+          },
+          {
+            "reference": "s1",
+            "lines": [
+              79,
+              94
+            ]
+          }
+        ],
+        "mapping": "Parser declares capture/read modes and common inputs; initialized root guard precedes branches. Does not infer the absent module-level main invocation."
+      },
+      {
+        "items": [
+          "capture",
+          "captured-snapshot"
+        ],
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              94,
+              132
+            ]
+          },
+          {
+            "reference": "s71",
+            "lines": [
+              21,
+              36
+            ]
+          }
+        ],
+        "mapping": "Successful capture branch uses committed HEAD and service declaration, optionally adds missing registration, calls bind/check, then demands snapshot. Registration mismatch and absent snapshot are omitted failure branches."
+      },
+      {
+        "items": [
+          "read",
+          "supplied-snapshot"
+        ],
+        "support": [
+          {
+            "reference": "s133",
+            "lines": [
+              231,
+              233
+            ]
+          },
+          {
+            "reference": "s1",
+            "lines": [
+              133,
+              145
+            ]
+          }
+        ],
+        "mapping": "The read alternative supplies args.snapshot to common Work preparation. args.question appears in packet construction at s1 line 181."
+      },
+      {
+        "items": [
+          "retained"
+        ],
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              136,
+              172
+            ]
+          },
+          {
+            "reference": "s201",
+            "lines": [
+              39,
+              61
+            ]
+          },
+          {
+            "reference": "s230",
+            "lines": [
+              64,
+              75
+            ]
+          }
+        ],
+        "mapping": "Modes converge on Work preparation, recorded context, source inventory, authority-preserving source selection and complete source-part pagination. All completeness checks here concern retained reference spans, not whole-repository or runtime coverage."
+      },
+      {
+        "items": [
+          "assemble",
+          "packet"
+        ],
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              174,
+              203
+            ]
+          },
+          {
+            "reference": "s166",
+            "lines": [
+              17,
+              18
+            ]
+          }
+        ],
+        "mapping": "Writes incomplete proposal and packet containing native context and parts. inventory JSON is recorded separately; packet loop embeds context and source parts."
+      },
+      {
+        "items": [
+          "handoff",
+          "ready"
+        ],
+        "support": [
+          {
+            "reference": "s1",
+            "lines": [
+              204,
+              210
+            ]
+          }
+        ],
+        "mapping": "Writes result, prints READY_FOR_AUTHOR and later submit command. Authoring is the next action; no publication node is implied."
+      }
+    ],
+    "authorityLimits": {
+      "recordedContext": "context-0000.json declares IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED, RECORDED_READS_ONLY_EXECUTION_NOT_ATTESTED, CALL_TARGETS_UNRESOLVED, DIALECT_DECLARED_NOT_COMPILER_VALIDATED, ORDER_LEXICAL_ONLY and SCOPE_WATCH_CONSERVATIVE. d174 records wrapper calls as unresolved syntax events.",
+      "imports": [
+        {
+          "reference": "s33",
+          "meaning": "argparse"
+        },
+        {
+          "reference": "s31",
+          "meaning": "json"
+        },
+        {
+          "reference": "s206",
+          "meaning": "pathlib.Path"
+        },
+        {
+          "reference": "s32",
+          "meaning": "shlex"
+        },
+        {
+          "reference": "s116",
+          "meaning": "subprocess"
+        },
+        {
+          "reference": "s121",
+          "meaning": "sys"
+        },
+        {
+          "reference": "s90",
+          "meaning": "tempfile"
+        }
+      ],
+      "interpretation": "These are import declarations, not supplied implementations or resolved runtime bindings. Graph and overview summarize Python syntax/declarations and lexical order; no compiler call resolution, runtime proof, OS sandbox isolation or native reviewer approval is claimed."
+    },
+    "localChecks": {
+      "proposalSchema": "codeclew-documentation-proposal/1.0",
+      "operationCount": 1,
+      "entrypointMatchesSavedOverview": true,
+      "summaryUtf8Bytes": 1613,
+      "summaryLimitBytes": 2048,
+      "allEvidenceInCompleteSavedSourceParts": true,
+      "stepsEmpty": true,
+      "visualNodeCount": 6,
+      "visualEdgeCount": 6,
+      "allEdgesResolve": true,
+      "proposalJsonSerializable": true
+    },
+    "nativeChecks": "Not run by this author; coordinator owns native validation."
+  },
+  "publicationFiles": {
+    "help.html": "sha256:2f69aaa9590b0ad419fff878267eb358c1e2e1c819e51c3f5da65fdf91b2d892",
+    "index.html": "sha256:e0480d40a5a0ff4c8a49c0d86bd75cea0952b12cec941ccbb0397b7b345bfaf3",
+    "catalog.html": "sha256:70cde01c4fd6b17007bfc94a20044e7332e3d03f2b3656aff565322cbd738eb1",
+    "runbooks.html": "sha256:d4673fb4b09deada528005f988c197fdd25bd709c9398cedf1eb5a2cdf5bc398",
+    "history.html": "sha256:d399385b41163d3ed8a7c84988ace58d9499f43ce08390357858e716c854ce48",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/bindings.json": "sha256:5696a6611f8dd7e3395a4ff262c4ede926b6d0d0d3205f72012b9f418947d41b",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/help.html": "sha256:9086e80e1b13861ea0685f5c33c4277e615d99c1f6a8ff4e14aaed15c892baff",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/root-overview.html": "sha256:e0480d40a5a0ff4c8a49c0d86bd75cea0952b12cec941ccbb0397b7b345bfaf3",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/catalog.html": "sha256:7959d478ef54581c3e085430fb844e30c6e115d4171854f5c638c6a3760f6ec9",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/runbooks.html": "sha256:e8669a9b0a62bd7617481af740526fa1c6a9ccbff4f66007545070f0db758831",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/overview.html": "sha256:41b73b571fe2265d1322f8d6d8c744c122e1c3c3cdb849a5446e0360db077c6c",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/inputs.json": "sha256:8928bfdfdb2661caa9897b2dd7e7c5b189745399cb4f1ce07c33238690dcc385",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/publication.json": "sha256:1174150819b763601f4f0e9ab4d5d4df7e3f4a2815b0b74368b7ef599e0a2f6e",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/status.json": "sha256:36374dff04a694a828a8a5134ed09a43bb3657c92aa1fc39102e9a3a2b36bfdc",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-section-overview.mmd": "sha256:8df576f43090fff0e0a93b968688431aca5d76ec6b16f9ed1c442f85531f5b76",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-7d32f25e97fa2d3bbe07.svg": "sha256:f95d7288e8fbc51c6afa9a217fd1f11539ac0ed7ef8d742a48391207aa77357e",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-eba9b837de95912d2297.puml": "sha256:ced86df074521ea6d47ef9f9aabd602e6f46b598a8f778c5903f47ecc1245873",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-98ee337a4ff0300a5bba.puml": "sha256:334c69fc77587962f46957a308d8d78bc184467ef1336c4368c13521e47de2f9",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-02de0c5cdf817561e88f.puml": "sha256:47aac1976ced33855c95a1410e1ec6f4634bb165547360e2aa80d90138df7a0b",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-4d50b7d214ab5825e94e.puml": "sha256:5a14a5e876f82e438c118b00c93f6210132bdcb20f283d4ebcc702fd411c583a",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-98ee337a4ff0300a5bba.svg": "sha256:21f77b2fe322fb64696345809ce56367e86c9343a996636a134c853efd3653f0",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-77171a2c23d3c904bbc3.svg": "sha256:6dbfe552da6f36bd2750cc87797d06bbed23b92894c4f636f031d568f4a93f59",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-d7178391b096d3a306c1.svg": "sha256:c3a373c88774300083908b4d9e367c646f64b6a13929c15f791868f0c865d01f",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-d7178391b096d3a306c1.puml": "sha256:f3a0f6f1acd4cb08ef97aeaa3858460b2fb4a8372ede465858f093ac7c61939a",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-77171a2c23d3c904bbc3.puml": "sha256:36d0bb71459d37ce6b4c1bf3c0c132ef9308d521b373bdb0e646171403c93475",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-eba9b837de95912d2297.svg": "sha256:e78c9d18f95a881e051f851f7d46f5a89796ae79af06390978e68e03ca085326",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-4d50b7d214ab5825e94e.svg": "sha256:441b69681bd14047ee6c0701c069ffbbba2935971d5aff21766a15c61664e44c",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-7d32f25e97fa2d3bbe07.puml": "sha256:d7c83849af2223e215096de0d5064e030dd420cdc72e2f4df8c064b3359e9602",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/diagrams/service-clew-starter-clew-starter-02de0c5cdf817561e88f.svg": "sha256:884238a44ad7eb162554a0015c17319a24c22b1743b087f960a72aa8ca8ccf52",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/services/clew-starter.json": "sha256:30a6c97fec3a72d2c0e410f7e19909e69e624abc3ea720ba4a357a82f0a1de4d",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/services/clew-starter.md": "sha256:b77e3379ae73ee66ca46db6c9071492ff7908d6dc1863f18e5cc08ebeb17c579",
+    "generated/fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/services/clew-starter.html": "sha256:dbfcaf1ed014578e1b7c63b42b14aac69c14556b9e672be0f76ba78f0a48e3eb"
+  },
+  "copyVerification": "ALL_NATIVE_FILES_BYTE_IDENTICAL"
+}
