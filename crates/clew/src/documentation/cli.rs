@@ -408,9 +408,11 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             } => {
                 let repo = Repository::open(&root)?;
                 let i: Interaction = store::read(&input, store::MAX_RECORD)?;
-                store::endpoint(&i.from, &repo.services()?)?;
-                store::endpoint(&i.to, &repo.services()?)?;
-                let selected = BTreeSet::from([i.from.service.clone(), i.to.service.clone()]);
+                store::validate_interaction(&i, &repo.services()?)?;
+                let mut selected = BTreeSet::from([i.from.service.clone()]);
+                if !i.external {
+                    selected.insert(i.to.service.clone());
+                }
                 let (checked, snapshot) =
                     check::Check::retained(&repo, snapshot.as_deref(), &selected)?;
                 Ok(

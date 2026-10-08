@@ -508,7 +508,13 @@ pub fn check_interaction(
     let from = resolution(&i.from, services);
     let to = resolution(&i.to, services);
     let mut calls = Vec::new();
-    if from.status == "RESOLVED" {
+    if from.status == "RESOLVED"
+        || (from.status == "SOURCE_MATCH"
+            && i.from
+                .call_site
+                .as_ref()
+                .is_some_and(|site| site.observation.is_some()))
+    {
         let e = &services[&i.from.service];
         let symbol = &e.observations[&from.candidates[0]].symbol;
         let events = e
@@ -518,7 +524,11 @@ pub fn check_interaction(
         calls = events
             .filter(|o| {
                 if let Some(call) = &i.from.call_site {
-                    o.normalized["target"] == call.target
+                    if let Some(id) = &call.observation {
+                        o.id == *id
+                    } else {
+                        o.normalized["target"] == call.target
+                    }
                 } else {
                     o.normalized[transport]
                         .as_object()
@@ -2357,6 +2367,8 @@ mod tests {
             },
             applicability: None,
             contract_reference: None,
+            addresses: vec![],
+            external: false,
         };
         let scenario = Scenario {
             process: Some(super::super::processes::Details {

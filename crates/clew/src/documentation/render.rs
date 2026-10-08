@@ -1654,6 +1654,26 @@ fn page_data(
             })
             .flat_map(|d| d.source_ids.iter().cloned()),
     );
+    let operation_external_calls: BTreeMap<_, _> = n
+        .operations
+        .iter()
+        .map(|operation| {
+            (
+                operation.id.clone(),
+                super::external_calls::project(operation, checked),
+            )
+        })
+        .collect();
+    for row in operation_external_calls.values().flatten() {
+        sources.extend(
+            row["contract"]["sourceIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned),
+        );
+    }
     let all_sources = checked.sources();
     let chosen_sources: BTreeMap<_, _> = sources
         .iter()
@@ -1682,7 +1702,7 @@ fn page_data(
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"operationExternalCalls":operation_external_calls,"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 struct LifecycleArtifact {
@@ -3556,6 +3576,7 @@ fn publish_internal_phases(
         }
         let mut operation_sources = BTreeMap::new();
         let mut operation_contracts = BTreeMap::new();
+        let mut operation_external_calls = BTreeMap::new();
         for operation in &n.operations {
             let key = format!("{subject}/{}", operation.id);
             let from = if !accepted.contains(&key) {
@@ -3577,6 +3598,20 @@ fn publish_internal_phases(
                     .unwrap_or(&from["contracts"])
                     .clone(),
             );
+            let outgoing = if accepted.contains(&key) {
+                data["operationExternalCalls"]
+                    .get(&operation.id)
+                    .cloned()
+                    .unwrap_or_else(|| json!([]))
+            } else {
+                super::external_calls::retain(
+                    old_data
+                        .as_ref()
+                        .and_then(|old| old["operationExternalCalls"].get(&operation.id)),
+                    &checked,
+                )
+            };
+            operation_external_calls.insert(operation.id.clone(), outgoing);
             if let Some(old) = &old_data {
                 for entry in old["catalogue"]
                     .as_array()
@@ -3615,6 +3650,7 @@ fn publish_internal_phases(
         );
         data["operationSources"] = json!(operation_sources);
         data["operationContracts"] = json!(operation_contracts);
+        data["operationExternalCalls"] = json!(operation_external_calls);
         data["updateFailures"] = json!(
             failures
                 .iter()
