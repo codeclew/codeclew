@@ -96,6 +96,18 @@
     "group": "Tasks"
   },
   {
+    "title": "Use the core analyzer for Kotlin projects",
+    "url": "./documentation.html#kotlin-core",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
+    "title": "Save diagnostics for a documentation problem",
+    "url": "./documentation.html#save-diagnostics",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
     "title": "Select one small committed source scope",
     "url": "./documentation.html#source-snapshot",
     "description": "Create a first document",
