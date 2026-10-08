@@ -162,7 +162,7 @@ pub(super) fn catalog() -> Result<Vec<Value>, ClewError> {
     });
     kotlin["producers"] = json!(engines);
     kotlin["knownAnalyzers"] = json!(
-        KotlinSemanticEngine::all_known()
+        KotlinSemanticEngine::active_analyzers()
             .iter()
             .map(|e| e.authority())
             .collect::<Vec<_>>()

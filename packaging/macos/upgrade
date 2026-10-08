@@ -32,11 +32,7 @@ case "$CURRENT_VERSION" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *) fail "installed version is invalid" ;;
 esac
-case "$CURRENT_PROFILE" in
-  core) CURRENT_PACKS= ;;
-  kotlin23) CURRENT_PACKS=kotlin23 ;;
-  *) fail "installed profile is invalid" ;;
-esac
+[ "$CURRENT_PROFILE" = core ] || fail "installed profile is retired; use the current public installer with CODECLEW_PACKS unset to install core"
 
 [ -f "$INSTALLER" ] && [ ! -L "$INSTALLER" ] || fail "bundled installer is unavailable"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
@@ -106,6 +102,6 @@ esac
 
 progress "Updating Codeclew from $CURRENT_VERSION to $LATEST_VERSION..."
 CODECLEW_VERSION=$LATEST_VERSION
-CODECLEW_PACKS=$CURRENT_PACKS
+CODECLEW_PACKS=
 export CODECLEW_VERSION CODECLEW_PACKS CODECLEW_INSTALL_ROOT CODECLEW_BIN_DIR CODECLEW_RELEASE_BASE
 exec /bin/sh "$INSTALLER"

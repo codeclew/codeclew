@@ -148,7 +148,7 @@ class ReleaseVersionTest(unittest.TestCase):
                     release.release_platform(system, architecture)
 
     def test_installer_smoke_selects_each_profile_and_isolates_state(self) -> None:
-        for profile in ["core", "kotlin23"]:
+        for profile in ["core"]:
             with self.subTest(profile=profile), mock.patch.object(release, "run") as run, mock.patch.object(release, "verify_cli_version") as version:
                 release.verify_installer(Path("/source"), Path("/assets"), Path("/smoke"), "v1.2.3", profile)
                 arguments = run.call_args.args[0]
@@ -170,13 +170,19 @@ class ReleaseVersionTest(unittest.TestCase):
             (package / "VERSION").write_text("v1.2.3\n", encoding="ascii")
             for profile, expected in [
                 ("core", "codeclew-linux-x86_64.tar.gz"),
-                ("kotlin23", "codeclew-kotlin23-linux-x86_64.tar.gz"),
             ]:
                 asset, checksum = release.write_archive(package, output, "x86_64", profile, "linux")
                 self.assertEqual(asset.name, expected)
                 self.assertEqual(checksum.read_text(), f"{release.file_sha256(asset)}  {expected}\n")
                 extracted = release.extract_release_archive(asset, output / f"extracted-{profile}")
                 self.assertEqual((extracted / "VERSION").read_text(), "v1.2.3\n")
+
+    def test_retired_profile_cannot_create_release_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            with self.assertRaisesRegex(release.ReleaseError, "retired"):
+                release.write_archive(root, root, "arm64", "kotlin23")
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_navigation_smoke_declares_the_exact_decision_identifier(self) -> None:
         arguments = release.navigation_smoke_query(
@@ -315,29 +321,21 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertNotIn("Cargo.toml", observed)
             self.assertFalse((source / ".git").exists())
 
-    def test_core_profile_drops_kotlin23_and_build_component_cache(self) -> None:
+    def test_core_profile_preserves_runtime_identity_and_drops_build_component_cache(self) -> None:
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
             state = temporary / "source-state"
             runtime_key = "1" * 64
             capsule = state / "v2" / "runtimes" / runtime_key
-            kotlin23 = capsule / "workers" / "kotlin23" / "build" / "install" / "kotlin23"
             kotlin24 = capsule / "workers" / "kotlin" / "build" / "install" / "kotlin"
             csharp = capsule / "workers" / "dotnet" / "publish"
-            kotlin23.mkdir(parents=True)
             kotlin24.mkdir(parents=True)
             csharp.mkdir(parents=True)
-            (kotlin23 / "worker.jar").write_bytes(b"kotlin23")
             (kotlin24 / "worker.jar").write_bytes(b"kotlin24")
             (csharp / "Codeclew.CSharp.Analyzer.dll").write_bytes(b"roslyn")
             components = state / "v2" / "runtimes" / "components"
-            component23 = "2" * 64
             component24 = "3" * 64
-            (components / component23 / "files").mkdir(parents=True)
             (components / component24 / "files").mkdir(parents=True)
-            (components / component23 / "files" / "worker.jar").write_bytes(
-                b"kotlin23"
-            )
             (components / component24 / "files" / "worker.jar").write_bytes(
                 b"kotlin24"
             )
@@ -345,21 +343,16 @@ class ReleaseVersionTest(unittest.TestCase):
                 "artifacts": {"clew": {"sha256": "sha256:" + "4" * 64}},
                 "components": {
                     "csharp": "sha256:" + "8" * 64,
-                    "kotlin23": "sha256:" + component23,
                     "kotlin24": "sha256:" + component24,
                 },
                 "manifestDigest": "sha256:" + "5" * 64,
                 "mode": "RELEASE",
                 "runtimeKey": "sha256:" + runtime_key,
-                "workerIds": ["csharp", "kotlin23", "kotlin24"],
+                "workerIds": ["csharp", "kotlin24"],
                 "workers": {
                     "csharp": {
                         "distribution": "workers/dotnet/publish",
                         "treeHash": "sha256:" + "9" * 64,
-                    },
-                    "kotlin23": {
-                        "distribution": "workers/kotlin23/build/install/kotlin23",
-                        "treeHash": "sha256:" + "6" * 64,
                     },
                     "kotlin24": {
                         "distribution": "workers/kotlin/build/install/kotlin",
@@ -377,7 +370,13 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(set(core_manifest["workers"]), {"csharp", "kotlin24"})
             self.assertEqual(set(core_manifest["components"]), {"csharp", "kotlin24"})
             self.assertEqual((core_capsule / "workers/dotnet/publish/Codeclew.CSharp.Analyzer.dll").read_bytes(), b"roslyn")
+            self.assertEqual(core_manifest["runtimeKey"], "sha256:" + runtime_key)
+            self.assertEqual((core_capsule / "runtime.json").read_bytes(), (capsule / "runtime.json").read_bytes())
             self.assertFalse((core_capsule / "workers" / "kotlin23").exists())
+            manifest["workers"]["kotlin23"] = {"distribution": "retired"}
+            (capsule / "runtime.json").write_bytes(release.canonical(manifest) + b"\n")
+            with self.assertRaisesRegex(release.ReleaseError, "sole core"):
+                release.prepare_profile_state(state, temporary / "retired-state", "core")
             self.assertEqual(
                 list((destination / "v2" / "runtimes" / "components").iterdir()),
                 [],

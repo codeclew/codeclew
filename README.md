@@ -24,15 +24,20 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.19
+## Current release: v0.13.20
 
-Version 0.13.19 saves a diagnostic bundle from an existing Check without another
+Version 0.13.20 saves a diagnostic bundle from an existing Check without another
 source capture: `clew support collect --root DOCS --output NEWDIR`. Use
 `clew --diagnostics NEWDIR COMMAND ...` to retain diagnostics from the next
 invocation, including failures before the core starts. Original output and exit
 status are preserved; private bounded terminal, compiler-worker and Maven logs
-require `--include-private-logs`. See the [release notes](docs/releases/v0.13.19.md)
+require `--include-private-logs`. See the [release notes](docs/releases/v0.13.20.md)
 and [diagnostic guide](docs/operations/support-diagnostics.md) for scope and limits.
+
+Core now includes the sole Kotlin 2.4.10 analyzer for supported Kotlin 1.9–2.4
+projects, including 2.3.0. Separate Kotlin 2.3 packages are retired; see the
+[installation guide](#install-on-macos-linux-or-windows-through-wsl2) for migration
+from an older optional package. C# Roslyn remains included in the public archives.
 
 ### Included from v0.13.18
 
@@ -156,7 +161,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.19 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.20 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -185,12 +190,11 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.19 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.20 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
-release that includes Linux assets, then pin that release's version. The optional
-Kotlin 2.3.0 archive is `codeclew-kotlin23-linux-x86_64.tar.gz`.
+release that includes Linux assets, then pin that release's version.
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
 verification as the online installer. It refuses `latest`, relative asset
@@ -208,13 +212,28 @@ CODECLEW_ASSET_DIR=/absolute/path/to/downloads \
 clew --version
 ```
 
-The default `core` profile contains Kotlin 2.4.10. Kotlin 2.3.0 remains an
-optional read-only preview and is downloaded only when requested:
+Core contains the sole Kotlin 2.4.10 analyzer for supported Kotlin 1.9–2.4
+projects, including Kotlin 2.3.0. Project compiler, language and API versions
+remain separate from the analyzer identity. Compiler-plugin, `-X` and Kotlin
+1.9 language-upgrade boundaries remain explicit; this does not imply native
+compiler equivalence, mutation qualification or support for Kotlin 2.5+.
+Language pack commands and explicit `CODECLEW_PACKS=kotlin23` requests are retired.
+
+If an older release has the optional Kotlin 2.3 profile installed, first switch
+that **old release** to its existing core archive, then upgrade:
 
 ```bash
-clew pack install kotlin23
-clew pack list
 clew pack remove kotlin23
+clew upgrade
+```
+
+This transition uses the older launcher's supported commands. Its old updater
+otherwise preserves `kotlin23` and requests a removed asset; new updater code
+cannot change those old installed bytes. Alternatively install current core
+directly with the public installer and the pack setting cleared:
+
+```bash
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.20 CODECLEW_PACKS= sh
 ```
 
 ## Install the agent skill
@@ -466,9 +485,8 @@ boundary between editing Codeclew and using its installed-release skill.
 - Cargo on `PATH` for Rust repositories
 - Maven on `PATH` only for Maven projects without `./mvnw`
 
-The exact Kotlin 2.4.10 worker is packaged into the default immutable runtime
-capsule; the optional `kotlin23` profile adds the exact Kotlin 2.3.0 worker. A
-cold source runtime start may build the capsule. A warm runtime invocation
+The sole Kotlin 2.4.10 analyzer is packaged into the immutable core runtime
+capsule. A cold source runtime start may build the capsule. A warm runtime invocation
 verifies and reuses it without running Cargo, Rustc, Gradle, or Maven. The
 workers execute directly from that sealed capsule under its shared lease; the
 runtime warm path does not copy their distributions. Project analysis may still
@@ -670,9 +688,11 @@ Syntax-only namesakes are never promoted to resolved edges. There is no
 truncation.
 
 The strict compiler-backed mutation contour is Kotlin 2.4.10, Gradle,
-`PROJECT_NATIVE`, and one exact compilation. Exact Kotlin 2.3.0 with Maven is a
-read-only compiler-backed context preview: it has real-project context
-acceptance, but no mutation or publish claim. Kotlin 2.1, multiple
+`PROJECT_NATIVE`, and one exact compilation. Baseline Kotlin 2.3.0 projects,
+including Maven, use the core 2.4.10 analyzer for read-only context and
+documentation. Original project compiler/language/API identity remains retained;
+this does not establish exact project-compiler semantics or a mutation/publish
+claim. Kotlin 2.1, multiple
 compilations, Android/KMP and `EXTERNAL` remain unqualified until they have
 their own acceptance tests. Rust and Python are operationally `PILOT_READY` for
 conditional mutation, with the weaker evidence boundaries described below.
@@ -1552,10 +1572,13 @@ Ordinary development and GitHub CI use the same repository-owned entrypoint:
 The stabilization controller and its receipts remain optional research/release
 evidence. They do not gate product development or CI. Cold/multi-compilation
 performance, BTA24, self-hosting and agent comparisons are qualification work,
-not prerequisites for the supported Kotlin 2.4 publish path. Kotlin 2.3.0
-qualification covers exact worker admission, capsule identity, privacy-safe
-fact translation, incremental receipt construction, and read-only context on a
-representative Maven repository; it does not extend the publish contour.
+not prerequisites for the supported Kotlin 2.4 publish path. Historical Kotlin
+2.3.0 qualification used the now-retired exact 2.3 analyzer. Its recorded
+admission, capsule, fact-translation and read-only context results remain
+historical evidence; they do not qualify the current core 2.4.10 analyzer's
+semantics or extend the publish contour. Current CI separately verifies that a
+baseline 2.3 project opens once with core while retaining its declared compiler,
+language and API versions, and that retired analyzer startup fails explicitly.
 
 The CLI writes canonical JSON to stdout and diagnostics to stderr. The system is
 fail-closed for stale authorities, ambiguous anchors, unsupported project

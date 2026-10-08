@@ -7,6 +7,10 @@ SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 if [ "${1:-}" = --diagnostics ]; then
   exec python3 -I -S -B "$SOURCE_ROOT/bootstrap/diagnostics.py" --launcher "$SOURCE_ROOT/clew" "$@"
 fi
+if [ "${1:-}" = pack ]; then
+  printf '%s\n' 'Language packs are retired. Core includes the sole Kotlin 2.4.10 analyzer for supported Kotlin projects, including Kotlin 2.3.' >&2
+  exit 2
+fi
 if [ "${1:-}" = skill ]; then
   shift
   exec python3 -I -S -B "$SOURCE_ROOT/scripts/install_agent_skill.py" "$@"

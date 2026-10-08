@@ -5,19 +5,16 @@ default branch. End-user machines never compile Codeclew.
 
 ## Release contents
 
-The `macOS and Linux release` GitHub Actions workflow builds six fixed asset names:
+The `macOS and Linux release` GitHub Actions workflow publishes eight assets from three core archives:
 
 - `codeclew-macos-arm64.tar.gz`;
 - `codeclew-macos-x86_64.tar.gz`;
-- `codeclew-kotlin23-macos-arm64.tar.gz`;
-- `codeclew-kotlin23-macos-x86_64.tar.gz`;
 - `codeclew-linux-x86_64.tar.gz`;
-- `codeclew-kotlin23-linux-x86_64.tar.gz`;
 - one `.sha256` file for each archive;
 - `install.sh` and `install.sh.sha256` for offline installation.
 
-The default archive contains the Kotlin 2.4.10 `core` profile. The optional
-`kotlin23` archive adds the Kotlin 2.3.0 read-only preview. Each archive contains
+Each archive contains the sole Kotlin 2.4.10 analyzer and C# Roslyn in the
+`core` profile. Each archive contains
 one immutable executable runtime capsule, its source-bound seed authority, the
 installed launcher, and a minimal hash-closed bootstrap payload. Build-only
 component-cache copies and the full Git checkout are excluded. The bootstrap
@@ -77,9 +74,6 @@ native host; the same launcher and updater work on both macOS and Linux.
    curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
    clew capabilities --human
    clew doctor attach --human
-   clew pack install kotlin23
-   clew pack list
-   clew pack remove kotlin23
    clew upgrade
    ```
 
@@ -153,9 +147,8 @@ CODECLEW_ASSET_DIR="$PWD" \
 The directory must be an absolute, non-symlink path. Local mode refuses
 `CODECLEW_VERSION=latest`, selects the archive for the current architecture,
 rejects symlinked inputs, verifies SHA-256, and then performs the same embedded
-version, profile, and runtime checks as the online installer. Set
-`CODECLEW_PACKS=kotlin23` and download the matching `codeclew-kotlin23-*` pair
-to install that optional profile.
+version, profile, and runtime checks as the online installer. Explicit language
+pack requests are retired; keep `CODECLEW_PACKS` unset.
 
 Upgrade from local files by downloading the newer archive/checksum pair and
 re-running the installer with the newer explicit tag. Use the same install and
@@ -172,3 +165,14 @@ The versions remain side by side under `CODECLEW_INSTALL_ROOT/releases`; the
 launcher symlink is switched atomically only after checksum, embedded-version,
 profile, and runtime verification pass. Managed state in `CODECLEW_HOME` is
 not migrated or rewritten by installation or upgrade.
+
+## Transition from an older optional Kotlin 2.3 installation
+
+The old updater uses its old bundled installer and preserves the installed
+profile. It cannot select a new core asset while still in `kotlin23`.
+Before upgrading, use that old release's supported `clew pack remove kotlin23`
+command to activate its existing core archive, then run `clew upgrade`.
+Alternatively run the current public installer with `CODECLEW_PACKS` cleared.
+Verify the installed version and `packagedWorkers`: only `kotlin24` and C#
+Roslyn should be present. Keep historical documentation and state evidence
+unchanged; old engine identities are not relabeled as current analysis.

@@ -94,8 +94,7 @@ cargo test --locked -p clew --test documentation_system docsys_t17_ -- --test-th
 cargo test --locked -p clew --test documentation_system reviewed_ -- --test-threads=1
 cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1
 ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest --tests dev.semanticthread.worker.SpringCompilerPluginCompatibilityTest \
-  :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest \
-  :workers:kotlin23:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest
+  :workers:kotlin21:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest
 cargo test --locked -p clew --lib documentation::check::tests::two_java_services_resolve_and_compose_declared_http_with_branches -- --exact --ignored --test-threads=1
 cargo test --locked -p clew --test managed_cli durable_documentation_cli_recovers_and_reports_route_fragments -- --exact --test-threads=1
 cargo test --locked -p clew --test managed_cli durable_source_documentation_without_build_tools_rebinds_and_preserves_publication -- --exact --test-threads=1
@@ -129,6 +128,9 @@ cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'cas::' -- --test-threads=1
 cargo test --locked -p clew --lib 'kotlin_engine::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib worker::tests::kotlin_23_project_uses_core_once_and_preserves_original_compiler_identity -- --exact --test-threads=1
+cargo test --locked -p clew --lib worker::tests::retired_kotlin23_engine_cannot_prepare_or_execute_a_worker -- --exact --test-threads=1
+cargo test --locked -p clew --lib worker::tests::kotlin23_baseline_uses_core_and_preserves_option_boundaries -- --exact --test-threads=1
 ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'working_tree' -- --test-threads=1

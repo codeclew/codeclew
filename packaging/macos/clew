@@ -31,7 +31,7 @@ PROFILE_FILE=$RELEASE_ROOT/PROFILE
 }
 CURRENT_PROFILE=$(sed -n '1p' "$PROFILE_FILE")
 case "$CURRENT_PROFILE" in
-  core|kotlin23) ;;
+  core) ;;
   *)
     printf '%s\n' '{"schema":"codeclew-installation-error/1.0","error":"installed release profile is invalid"}' >&2
     exit 7
@@ -85,42 +85,9 @@ if [ "${1:-}" = upgrade ] && [ "$#" -eq 1 ]; then
 fi
 
 if [ "${1:-}" = pack ]; then
-  case "${2:-}:${3:-}:$#" in
-    list::2)
-      printf 'Installed language packs:\n'
-      if [ "$CURRENT_PROFILE" = kotlin23 ]; then
-        printf '  kotlin23 (Kotlin 2.3.0 preview)\n'
-      else
-        printf '  none\n'
-      fi
-      exit 0
-      ;;
-    install:kotlin23:3)
-      [ "$CURRENT_PROFILE" != kotlin23 ] || {
-        printf '%s\n' 'Kotlin 2.3.0 language pack is already installed.'
-        exit 0
-      }
-      TARGET_PACKS=kotlin23
-      ;;
-    remove:kotlin23:3)
-      [ "$CURRENT_PROFILE" = kotlin23 ] || {
-        printf '%s\n' 'Kotlin 2.3.0 language pack is not installed.'
-        exit 0
-      }
-      TARGET_PACKS=
-      ;;
-    *)
-      printf '%s\n' 'Usage: clew pack list | clew pack install kotlin23 | clew pack remove kotlin23' >&2
-      exit 2
-      ;;
-  esac
-  installed_context
-  CODECLEW_VERSION=$CURRENT_VERSION
-  CODECLEW_PACKS=$TARGET_PACKS
-  CODECLEW_INSTALL_ROOT=$INSTALL_ROOT
-  CODECLEW_BIN_DIR=$ENTRYPOINT_DIR
-  export CODECLEW_VERSION CODECLEW_PACKS CODECLEW_INSTALL_ROOT CODECLEW_BIN_DIR
-  exec /bin/sh "$INSTALLER_PATH"
+  printf '%s\n' 'Language packs are retired. Core includes the sole Kotlin 2.4.10 analyzer for supported Kotlin projects, including Kotlin 2.3.' >&2
+  printf '%s\n' 'Use clew upgrade to update the core installation.' >&2
+  exit 2
 fi
 
 SEED_PATH=

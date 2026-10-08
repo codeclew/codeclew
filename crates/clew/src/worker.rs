@@ -143,7 +143,6 @@ pub struct RequestProfile {
 }
 
 pub struct WorkerClient {
-    workspace: PathBuf,
     engine: KotlinSemanticEngine,
     qualification_engine: Option<KotlinSemanticEngine>,
     process: OwnedWorkerProcess,
@@ -157,9 +156,8 @@ pub struct WorkerClient {
     authority_session: Uuid,
     trusted_distribution: TrustedWorkerDistribution,
     worker_jvm: crate::jvm_runtime::WorkerJvm,
-    build_state_root: Option<PathBuf>,
-    compiler_index_root: Option<ManagedDirectory>,
-    build_namespace_digest: String,
+    // Keep the compiler-store descriptor alive for the worker lifetime.
+    _compiler_index_root: Option<ManagedDirectory>,
     _transport_root: tempfile::TempDir,
     transport_root: PathBuf,
     issued_index_facts: BTreeMap<Uuid, String>,
@@ -1741,7 +1739,7 @@ impl KotlinSemanticEngine {
     fn install_task(self) -> &'static str {
         match self {
             Self::Kotlin21 => ":workers:kotlin21:installDist",
-            Self::Kotlin23 => ":workers:kotlin23:installDist",
+            Self::Kotlin23 => panic!("Kotlin 2.3 analyzer is retired"),
             Self::Kotlin24 => ":workers:kotlin:installDist",
         }
     }
@@ -1750,7 +1748,7 @@ impl KotlinSemanticEngine {
     fn distribution_relative(self) -> &'static str {
         match self {
             Self::Kotlin21 => "workers/kotlin21/build/install/kotlin21",
-            Self::Kotlin23 => "workers/kotlin23/build/install/kotlin23",
+            Self::Kotlin23 => panic!("Kotlin 2.3 analyzer is retired"),
             Self::Kotlin24 => "workers/kotlin/build/install/kotlin",
         }
     }
@@ -1758,7 +1756,7 @@ impl KotlinSemanticEngine {
     fn launcher_name(self) -> &'static str {
         match self {
             Self::Kotlin21 => "kotlin21",
-            Self::Kotlin23 => "kotlin23",
+            Self::Kotlin23 => unreachable!("retired analyzer cannot be prepared"),
             Self::Kotlin24 => "kotlin",
         }
     }
@@ -1766,7 +1764,7 @@ impl KotlinSemanticEngine {
     fn plugin_jar_name(self) -> &'static str {
         match self {
             Self::Kotlin21 => "kotlin21-0.1.0.jar",
-            Self::Kotlin23 => "kotlin23-0.1.0.jar",
+            Self::Kotlin23 => unreachable!("retired analyzer cannot be prepared"),
             Self::Kotlin24 => "kotlin-0.1.0.jar",
         }
     }
@@ -1775,14 +1773,7 @@ impl KotlinSemanticEngine {
     fn pinned_inputs(self) -> PinnedInputs {
         match self {
             Self::Kotlin21 => panic!("Kotlin 2.1 is qualification-only and not a packaged runtime"),
-            Self::Kotlin23 => PinnedInputs {
-                roots: PINNED_KOTLIN23_INPUT_ROOTS,
-                files: PINNED_KOTLIN23_INPUT_FILES,
-                entries: PINNED_KOTLIN23_INPUTS,
-                digest: PINNED_KOTLIN23_INPUT_DIGEST,
-                outputs: PINNED_KOTLIN23_OUTPUTS,
-                output_digest: PINNED_KOTLIN23_OUTPUT_DIGEST,
-            },
+            Self::Kotlin23 => panic!("Kotlin 2.3 analyzer is retired"),
             Self::Kotlin24 => PinnedInputs {
                 roots: PINNED_KOTLIN24_INPUT_ROOTS,
                 files: PINNED_KOTLIN24_INPUT_FILES,
@@ -1894,16 +1885,15 @@ impl WorkerClient {
         )
     }
 
-    /// A previous engine is a startup hint only. Fresh OpenProject still selects
-    /// and qualifies the current project's engine, with normal discovery retries.
-    pub(crate) fn start_with_managed_states_hint(
+    /// Start the sole packaged analyzer. Fresh OpenProject validates the
+    /// original project semantics without choosing or retrying another engine.
+    pub(crate) fn start_with_managed_states(
         workspace: &Path,
         build_state_root: Option<&Path>,
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: &str,
-        preferred_engine: Option<KotlinSemanticEngine>,
     ) -> Result<Self, ClewError> {
-        let engine = preferred_discovery_engine(preferred_engine, &available_project_engines()?);
+        let engine = KotlinSemanticEngine::Kotlin24;
         Self::start_engine(
             workspace,
             engine,
@@ -1942,6 +1932,12 @@ impl WorkerClient {
     ) -> Result<Self, ClewError> {
         #[cfg(unix)]
         use std::os::unix::process::CommandExt;
+        if engine == KotlinSemanticEngine::Kotlin23 {
+            return Err(ClewError::new(
+                ErrorCode::UnsupportedProjectConfiguration,
+                "Kotlin 2.3 analyzer is retired; use the core Kotlin 2.4.10 analyzer",
+            ));
+        }
         let build_namespace_digest = build_namespace_digest
             .map(validate_build_namespace_digest)
             .transpose()?
@@ -2077,7 +2073,6 @@ impl WorkerClient {
             ));
         }
         Ok(Self {
-            workspace: workspace.to_path_buf(),
             engine,
             qualification_engine,
             process,
@@ -2091,9 +2086,7 @@ impl WorkerClient {
             authority_session: Uuid::new_v4(),
             trusted_distribution,
             worker_jvm,
-            build_state_root: canonical_build_state,
-            compiler_index_root: compiler_index_root.cloned(),
-            build_namespace_digest,
+            _compiler_index_root: compiler_index_root.cloned(),
             _transport_root: transport_root,
             transport_root: canonical_transport_root,
             issued_index_facts: BTreeMap::new(),
@@ -2105,24 +2098,6 @@ impl WorkerClient {
 
     pub(crate) fn cancellation_handle(&self) -> WorkerCancellationHandle {
         self.process.cancellation_handle()
-    }
-
-    fn switch_engine(&mut self, engine: KotlinSemanticEngine) -> Result<(), ClewError> {
-        if self.engine == engine {
-            return Ok(());
-        }
-        let mut replacement = Self::start_engine(
-            &self.workspace,
-            engine,
-            self.build_state_root.as_deref(),
-            self.compiler_index_root.as_ref(),
-            Some(&self.build_namespace_digest),
-            None,
-        )?;
-        replacement.request_counters = self.request_counters;
-        replacement.physical_request_counters = self.physical_request_counters;
-        let previous = std::mem::replace(self, replacement);
-        previous.shutdown()
     }
 
     fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
@@ -2139,37 +2114,31 @@ impl WorkerClient {
             }
             _ => {}
         }
-        self.request_with_discovery_variants(kind, payload, 0)
-            .map_err(|error| {
-                if worker_diagnostics::from_evidence(&error.evidence).is_some() {
-                    return error;
-                }
-                let stage = match kind {
-                    RequestKind::OpenProject => "OPEN_PROJECT",
-                    RequestKind::IndexFiles => "INDEX_FILES",
-                    RequestKind::Shutdown => "SHUTDOWN",
-                    _ => return error,
-                };
-                worker_diagnostics::annotate_failure(
-                    error,
-                    Some(&mut self.process.child),
-                    &mut self.stderr,
-                    stage,
-                    worker_diagnostic_identity(
-                        self.engine,
-                        &self.trusted_distribution,
-                        &self.worker_jvm,
-                    ),
-                )
-            })
+        self.request_once(kind, payload).map_err(|error| {
+            if worker_diagnostics::from_evidence(&error.evidence).is_some() {
+                return error;
+            }
+            let stage = match kind {
+                RequestKind::OpenProject => "OPEN_PROJECT",
+                RequestKind::IndexFiles => "INDEX_FILES",
+                RequestKind::Shutdown => "SHUTDOWN",
+                _ => return error,
+            };
+            worker_diagnostics::annotate_failure(
+                error,
+                Some(&mut self.process.child),
+                &mut self.stderr,
+                stage,
+                worker_diagnostic_identity(
+                    self.engine,
+                    &self.trusted_distribution,
+                    &self.worker_jvm,
+                ),
+            )
+        })
     }
 
-    fn request_with_discovery_variants(
-        &mut self,
-        kind: RequestKind,
-        payload: &Value,
-        tried_discovery_variants: u8,
-    ) -> Result<Value, ClewError> {
+    fn request_once(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
         let request_id = self.next_id;
         self.next_id += 1;
         let request_serialization_started = Instant::now();
@@ -2228,8 +2197,7 @@ impl WorkerClient {
         let request_construction_micros =
             request_serialization_started.elapsed().as_micros() as u64;
         let (encode_micros, write_micros) = write_message_profiled(&mut self.stdin, &request)?;
-        // Discovery can resend one logical OpenProject to another compiler
-        // engine. Count actual successful transport writes separately.
+        // Count actual transport writes independently from logical requests.
         match kind {
             RequestKind::OpenProject => {
                 self.physical_request_counters.open_project_requests = self
@@ -2286,17 +2254,6 @@ impl WorkerClient {
                     relevant_anchors_or_symbols: relevant.into_boxed_slice(),
                     retryable: error.retryable,
                 };
-                if self.qualification_engine.is_none()
-                    && kind == RequestKind::OpenProject
-                    && failure.code == ErrorCode::UnsupportedCompilerPluginAbi
-                {
-                    let tried = tried_discovery_variants | self.engine.discovery_bit();
-                    let available = available_project_engines()?;
-                    if let Some(next) = next_available_discovery_engine(tried, &available) {
-                        self.switch_engine(next)?;
-                        return self.request_with_discovery_variants(kind, payload, tried);
-                    }
-                }
                 return Err(failure);
             }
             Some(worker_response::Payload::OpenProject(value)) => {
@@ -2346,19 +2303,13 @@ impl WorkerClient {
             let desired = if let Some(engine) = self.qualification_engine {
                 KotlinEngineRegistry.qualify(&project_semantics, engine)?
             } else {
-                let available = available_project_engines()?;
-                select_available_project_engine(&project_semantics, &available)?
+                KotlinEngineRegistry.select(&project_semantics)?
             };
             if desired != self.engine {
-                let tried = tried_discovery_variants | self.engine.discovery_bit();
-                if tried & desired.discovery_bit() != 0 {
-                    return Err(ClewError::new(
-                        ErrorCode::UnsupportedCompilerPluginAbi,
-                        "qualified Kotlin semantic engine could not open the project with its compiler plugins",
-                    ));
-                }
-                self.switch_engine(desired)?;
-                return self.request_with_discovery_variants(kind, payload, tried);
+                return Err(ClewError::new(
+                    ErrorCode::UnsupportedProjectConfiguration,
+                    "project requires the sole core Kotlin 2.4.10 analyzer",
+                ));
             }
             self.snapshot = Some(SnapshotId {
                 base_revision: snapshot_from(payload).base_revision,
@@ -3164,72 +3115,23 @@ fn worker_launcher(workspace: &Path, engine: KotlinSemanticEngine) -> PathBuf {
         KotlinSemanticEngine::Kotlin21 => {
             workspace.join("workers/kotlin21/build/install/kotlin21/bin/kotlin21")
         }
-        KotlinSemanticEngine::Kotlin23 => {
-            workspace.join("workers/kotlin23/build/install/kotlin23/bin/kotlin23")
-        }
+        KotlinSemanticEngine::Kotlin23 => panic!("Kotlin 2.3 analyzer is retired"),
         KotlinSemanticEngine::Kotlin24 => {
             workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin")
         }
     }
 }
 
-fn available_project_engines() -> Result<Vec<KotlinSemanticEngine>, ClewError> {
-    let runtime = RuntimeAuthority::from_environment()?;
-    Ok(KotlinSemanticEngine::all_known()
-        .into_iter()
-        .filter(|engine| {
-            runtime.as_ref().is_none_or(|runtime| {
-                runtime
-                    .workers
-                    .get(engine.runtime_name())
-                    .is_some_and(|worker| {
-                        worker.compiler_version == engine.analyzer_compiler_version()
-                    })
-            })
-        })
-        .collect())
-}
-
-fn preferred_discovery_engine(
-    hint: Option<KotlinSemanticEngine>,
-    available: &[KotlinSemanticEngine],
-) -> KotlinSemanticEngine {
-    hint.filter(|engine| available.contains(engine))
-        .unwrap_or(KotlinSemanticEngine::Kotlin24)
-}
-
-// A compiler-plugin rejection must not trigger preparation of an optional
-// engine absent from the verified runtime. Preserve the original rejection
-// when no available engine remains instead of masking it with a missing pack.
-fn next_available_discovery_engine(
-    tried: u8,
-    available: &[KotlinSemanticEngine],
-) -> Option<KotlinSemanticEngine> {
-    KotlinSemanticEngine::packaged_by_preference()
-        .into_iter()
-        .find(|engine| tried & engine.discovery_bit() == 0 && available.contains(engine))
-}
-
-// Default discovery may use the core analysis engine when an optional exact
-// engine is absent. Explicit qualification requests bypass this selection.
-fn select_available_project_engine(
-    project: &KotlinProjectSemantics,
-    available: &[KotlinSemanticEngine],
-) -> Result<KotlinSemanticEngine, ClewError> {
-    let desired = KotlinEngineRegistry.select(project)?;
-    if desired == KotlinSemanticEngine::Kotlin23
-        && !available.contains(&desired)
-        && available.contains(&KotlinSemanticEngine::Kotlin24)
-    {
-        return KotlinEngineRegistry.qualify(project, KotlinSemanticEngine::Kotlin24);
-    }
-    Ok(desired)
-}
-
 fn prepare_trusted_worker_distribution(
     workspace: &Path,
     engine: KotlinSemanticEngine,
 ) -> Result<TrustedWorkerDistribution, ClewError> {
+    if engine == KotlinSemanticEngine::Kotlin23 {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedProjectConfiguration,
+            "Kotlin 2.3 analyzer is retired; use the core Kotlin 2.4.10 analyzer",
+        ));
+    }
     let canonical = workspace.canonicalize().map_err(internal)?;
     let runtime = match RuntimeAuthority::from_environment()? {
         Some(runtime) => runtime,
@@ -5521,26 +5423,37 @@ mod tests {
     }
 
     #[test]
-    fn compiler_plugin_abi_discovery_visits_each_packaged_engine_once() {
-        let mut tried = 0;
-        let first = KotlinEngineRegistry::next_untried_for_discovery(tried).unwrap();
-        assert_eq!(first, KotlinSemanticEngine::Kotlin24);
-        tried |= first.discovery_bit();
-
-        let second = KotlinEngineRegistry::next_untried_for_discovery(tried).unwrap();
-        assert_eq!(second, KotlinSemanticEngine::Kotlin23);
-        tried |= second.discovery_bit();
-
-        assert!(KotlinEngineRegistry::next_untried_for_discovery(tried).is_none());
+    fn retired_kotlin23_engine_cannot_prepare_or_execute_a_worker() {
+        // Reject before inspecting or building any workspace/runtime.
+        let error = prepare_trusted_worker_distribution(
+            Path::new("/nonexistent/retired-engine"),
+            KotlinSemanticEngine::Kotlin23,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(error.message.contains("retired"));
+        let error = WorkerClient::start_engine(
+            Path::new("/nonexistent/retired-engine"),
+            KotlinSemanticEngine::Kotlin23,
+            None,
+            None,
+            None,
+            None,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(error.message.contains("retired"));
     }
 
     #[test]
-    fn kotlin_23_discovery_switches_once_and_preserves_logical_request_count() {
+    fn kotlin_23_project_uses_core_once_and_preserves_original_compiler_identity() {
         let _workspace_worker_guard = workspace_worker_test_lock();
         let workspace = workspace_root();
         let source = workspace.join("fixtures/kotlin-basic");
         let temporary = tempfile::Builder::new()
-            .prefix("kotlin23-discovery-")
+            .prefix("kotlin23-core-analysis-")
             .tempdir_in(workspace.join("fixtures"))
             .unwrap();
         for entry in WalkDir::new(&source).into_iter().map(Result::unwrap) {
@@ -5565,6 +5478,9 @@ mod tests {
         let build = std::fs::read_to_string(&build_file)
             .unwrap()
             .replace("2.4.10", "2.3.0");
+        let build = format!(
+            "{build}\nkotlin {{ compilerOptions {{ languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_3); apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_3) }} }}\n"
+        );
         std::fs::write(build_file, build).unwrap();
 
         let mut worker = WorkerClient::start(&workspace).unwrap();
@@ -5575,13 +5491,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(project["declaredCompilerVersion"], "2.3.0");
-        assert_eq!(project["compilerVersion"], "2.3.0");
-        assert_eq!(worker.engine, KotlinSemanticEngine::Kotlin23);
-        assert_eq!(worker.capabilities.compiler_version, "2.3.0");
+        assert_eq!(project["compilerVersion"], "2.4.10");
+        assert_eq!(project["languageVersion"], "2.3");
+        assert_eq!(project["apiVersion"], "2.3");
+        assert_eq!(worker.engine, KotlinSemanticEngine::Kotlin24);
+        assert_eq!(worker.capabilities.compiler_version, "2.4.10");
         assert_eq!(
             worker.physical_request_counters(),
             WorkerRequestCounters {
-                open_project_requests: 2,
+                open_project_requests: 1,
                 index_files_requests: 0,
             }
         );
@@ -5596,87 +5514,32 @@ mod tests {
     }
 
     #[test]
-    fn discovery_hint_never_selects_an_unavailable_engine() {
-        let only_current = [KotlinSemanticEngine::Kotlin24];
-        assert_eq!(
-            preferred_discovery_engine(Some(KotlinSemanticEngine::Kotlin23), &only_current),
-            KotlinSemanticEngine::Kotlin24,
-        );
-        assert_eq!(
-            preferred_discovery_engine(
-                Some(KotlinSemanticEngine::Kotlin23),
-                &KotlinSemanticEngine::packaged_by_preference(),
-            ),
-            KotlinSemanticEngine::Kotlin23,
-        );
-    }
-
-    #[test]
-    fn plugin_discovery_never_selects_an_absent_optional_engine() {
-        let core = KotlinSemanticEngine::Kotlin24;
-        let optional = KotlinSemanticEngine::Kotlin23;
-        assert_eq!(next_available_discovery_engine(0, &[core]), Some(core));
-        assert_eq!(
-            next_available_discovery_engine(core.discovery_bit(), &[core]),
-            None
-        );
-        assert_eq!(
-            next_available_discovery_engine(core.discovery_bit(), &[core, optional]),
-            Some(optional)
-        );
-        assert_eq!(
-            next_available_discovery_engine(
-                core.discovery_bit() | optional.discovery_bit(),
-                &[core, optional]
-            ),
-            None
-        );
-        assert_eq!(next_available_discovery_engine(0, &[]), None);
-    }
-
-    #[test]
-    fn default_project_engine_uses_core_when_optional_kotlin23_is_absent() {
-        let mut model = serde_json::json!({
+    fn kotlin23_baseline_uses_core_and_preserves_option_boundaries() {
+        let mut model = json!({
             "declaredCompilerVersion":"2.3.0", "languageVersion":"2.3", "apiVersion":"2.3",
             "jvmTarget":"17", "requestedCompilerPlugins":[], "freeCompilerArguments":[]
         });
         let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
         assert_eq!(
-            select_available_project_engine(&project, &[KotlinSemanticEngine::Kotlin24]).unwrap(),
+            KotlinEngineRegistry.select(&project).unwrap(),
             KotlinSemanticEngine::Kotlin24
         );
-        assert_eq!(
-            select_available_project_engine(
-                &project,
-                &[
-                    KotlinSemanticEngine::Kotlin23,
-                    KotlinSemanticEngine::Kotlin24
-                ]
-            )
-            .unwrap(),
-            KotlinSemanticEngine::Kotlin23
-        );
-        assert_eq!(
-            select_available_project_engine(&project, &[]).unwrap(),
-            KotlinSemanticEngine::Kotlin23
-        );
-        assert_eq!(
-            KotlinEngineRegistry
-                .qualify(&project, KotlinSemanticEngine::Kotlin23)
-                .unwrap(),
-            KotlinSemanticEngine::Kotlin23
-        );
-        model["freeCompilerArguments"] = serde_json::json!(["-Xcontext-parameters"]);
+        assert_eq!(project.project_compiler_version, "2.3.0");
+        assert_eq!(project.language_version.as_deref(), Some("2.3"));
+        assert_eq!(project.api_version.as_deref(), Some("2.3"));
+        let error = KotlinEngineRegistry
+            .qualify(&project, KotlinSemanticEngine::Kotlin23)
+            .unwrap_err();
+        assert!(error.message.contains("retired"));
+        model["freeCompilerArguments"] = json!(["-Xcontext-parameters"]);
         let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
-        assert!(
-            select_available_project_engine(&project, &[KotlinSemanticEngine::Kotlin24]).is_err()
-        );
+        assert!(KotlinEngineRegistry.select(&project).is_err());
     }
 
     #[test]
     fn project_semantics_route_through_qualified_engine_registry() {
         for (version, expected) in [
-            ("2.3.0", KotlinSemanticEngine::Kotlin23),
+            ("2.3.0", KotlinSemanticEngine::Kotlin24),
             ("2.4.0", KotlinSemanticEngine::Kotlin24),
             ("2.4.10", KotlinSemanticEngine::Kotlin24),
         ] {

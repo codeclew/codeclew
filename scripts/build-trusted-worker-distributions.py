@@ -20,7 +20,6 @@ CSHARP_PROJECT = "workers/dotnet/src/Codeclew.CSharp.Analyzer.csproj"
 CSHARP_DISTRIBUTION = "workers/dotnet/publish"
 VARIANTS = (
     ("kotlin21", ":workers:kotlin21:installDist", "workers/kotlin21/build/install/kotlin21"),
-    ("kotlin23", ":workers:kotlin23:installDist", "workers/kotlin23/build/install/kotlin23"),
     ("kotlin24", ":workers:kotlin:installDist", "workers/kotlin/build/install/kotlin"),
     ("csharp", f"dotnet publish {CSHARP_PROJECT} --configuration Release --output {CSHARP_DISTRIBUTION} -p:UseAppHost=false -p:RestoreLockedMode=true", CSHARP_DISTRIBUTION),
 )

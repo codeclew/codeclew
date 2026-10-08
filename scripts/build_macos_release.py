@@ -99,9 +99,6 @@ def validate_tree(root: Path) -> None:
 
 RELEASE_PROFILES = {
     "core": {"kotlin24": "2.4.10", "csharp": "roslyn-5.9.0"},
-    "kotlin23": {
-        "kotlin23": "2.3.0", "kotlin24": "2.4.10", "csharp": "roslyn-5.9.0",
-    },
 }
 
 MINIMAL_SOURCE_FILES = (
@@ -174,7 +171,7 @@ def build_runtime_state(
         capabilities = json.loads(completed.stdout)
     except (TypeError, ValueError) as error:
         raise ReleaseError("release capabilities are invalid") from error
-    verify_worker_profile(capabilities, "kotlin23")
+    verify_worker_profile(capabilities, "core")
     verify_cli_version(root / "clew", release_version, runtime_home, root)
 
     runtime_parent = runtime_home / "v2" / "runtimes"
@@ -242,16 +239,6 @@ def assemble_source(root: Path, package: Path, revision: str, source_tree: str) 
     return str(manifest["manifestDigest"])
 
 
-def make_editable(path: Path) -> None:
-    metadata = path.lstat()
-    if stat.S_ISDIR(metadata.st_mode):
-        path.chmod(0o700)
-        for child in path.iterdir():
-            make_editable(child)
-    elif stat.S_ISREG(metadata.st_mode):
-        path.chmod(0o700 if metadata.st_mode & 0o111 else 0o600)
-
-
 def seal_capsule_tree(path: Path) -> None:
     for child in path.rglob("*"):
         metadata = child.lstat()
@@ -288,40 +275,10 @@ def prepare_profile_state(source: Path, destination: Path, profile: str) -> Path
     capsule = runtime_capsule(destination)
     manifest_path = capsule / "runtime.json"
     manifest = json.loads(manifest_path.read_bytes())
-    if profile == "core":
-        make_editable(capsule)
-        worker = manifest.get("workers", {}).pop("kotlin23", None)
-        component_key = manifest.get("components", {}).pop("kotlin23", None)
-        if not isinstance(worker, dict) or not isinstance(component_key, str):
-            raise ReleaseError("full runtime does not contain the Kotlin 2.3 profile")
-        distribution = capsule / str(worker.get("distribution"))
-        if not distribution.is_dir() or not distribution.is_relative_to(capsule):
-            raise ReleaseError("Kotlin 2.3 distribution path is invalid")
-        make_removable(distribution)
-        shutil.rmtree(distribution)
-        parent = distribution.parent
-        while parent != capsule:
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
-        manifest["workerIds"] = sorted(manifest["workers"])
-        old_key = str(manifest.get("runtimeKey"))
-        new_key = sha256(canonical({
-            "baseRuntimeKey": old_key,
-            "profile": profile,
-            "workerIds": manifest["workerIds"],
-        }))
-        manifest["runtimeKey"] = new_key
-        manifest["manifestDigest"] = ""
-        manifest["manifestDigest"] = sha256(canonical(manifest))
-        manifest_path.write_bytes(canonical(manifest) + b"\n")
-        (capsule / "READY").write_text(new_key + "\n", encoding="ascii")
-        target = capsule.parent / new_key.removeprefix("sha256:")
-        capsule.rename(target)
-        capsule = target
-        seal_capsule_tree(capsule)
+    workers = manifest.get("workers")
+    if not isinstance(workers, dict) or set(workers) != set(RELEASE_PROFILES["core"]):
+        raise ReleaseError("release requires the sole core Kotlin analyzer and C# Roslyn worker")
+    seal_capsule_tree(capsule)
     components = destination / "v2" / "runtimes" / "components"
     if components.exists():
         make_removable(components)
@@ -405,11 +362,9 @@ def write_archive(
     package: Path, output: Path, architecture: str, profile: str,
     operating_system: str = "macos",
 ) -> tuple[Path, Path]:
-    name = (
-        f"codeclew-{operating_system}-{architecture}.tar.gz"
-        if profile == "core"
-        else f"codeclew-{profile}-{operating_system}-{architecture}.tar.gz"
-    )
+    if profile != "core":
+        raise ReleaseError("language pack release profiles are retired; only core is supported")
+    name = f"codeclew-{operating_system}-{architecture}.tar.gz"
     asset = output / name
     with tarfile.open(asset, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
         archive.add(package, arcname="codeclew", recursive=True)
@@ -423,11 +378,13 @@ def verify_installer(
     root: Path, output: Path, work: Path, version: str, profile: str
 ) -> None:
     """Install the published bytes through the same offline path users invoke."""
+    if profile != "core":
+        raise ReleaseError("language pack release profiles are retired; only core is supported")
     environment = dict(os.environ)
     environment.update({
         "CODECLEW_ASSET_DIR": str(output),
         "CODECLEW_VERSION": version,
-        "CODECLEW_PACKS": "" if profile == "core" else profile,
+        "CODECLEW_PACKS": "",
         "CODECLEW_INSTALL_ROOT": str(work / "install"),
         "CODECLEW_BIN_DIR": str(work / "bin"),
         "CODECLEW_HOME": str(work / "state"),

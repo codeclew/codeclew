@@ -103,17 +103,7 @@ class MacosDistributionTest(unittest.TestCase):
             initial_asset, initial_checksum = publish(
                 document_root / "releases" / "download" / "v0.1.0", "v0.1.0"
             )
-            publish(
-                document_root / "releases" / "download" / "v0.1.0",
-                "v0.1.0",
-                "kotlin23",
-            )
             publish(document_root / "releases" / "download" / "v0.1.1", "v0.1.1")
-            publish(
-                document_root / "releases" / "download" / "v0.1.1",
-                "v0.1.1",
-                "kotlin23",
-            )
             release_api = document_root / "release-api.json"
             release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
 
@@ -311,39 +301,23 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertEqual(current_again.returncode, 0, current_again.stderr)
                 self.assertIn("v0.1.1 is already up to date", current_again.stdout)
 
-                packed = subprocess.run(
-                    [str(installed), "pack", "install", "kotlin23"],
-                    env=environment,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                    text=True,
+                original_launcher = installed.resolve()
+                for arguments in [["pack", "list"], ["pack", "install", "kotlin23"], ["pack", "remove", "kotlin23"]]:
+                    retired = subprocess.run(
+                        [str(installed), *arguments], env=environment,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, text=True,
+                    )
+                    self.assertEqual(retired.returncode, 2, retired.stderr)
+                    self.assertIn("retired", retired.stderr)
+                    self.assertEqual(installed.resolve(), original_launcher)
+                retired_environment = dict(environment, CODECLEW_PACKS="kotlin23")
+                retired_install = subprocess.run(
+                    ["/bin/sh", str(INSTALLER)], env=retired_environment,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, text=True,
                 )
-                self.assertEqual(packed.returncode, 0, packed.stderr)
-                self.assertIn("kotlin23 profile", packed.stdout)
-                self.assertIn(
-                    f"v0.1.1-{suffix}-kotlin23", str(installed.resolve())
-                )
-                listed = subprocess.run(
-                    [str(installed), "pack", "list"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                    text=True,
-                )
-                self.assertEqual(listed.returncode, 0, listed.stderr)
-                self.assertIn("Kotlin 2.3.0 preview", listed.stdout)
-                unpacked = subprocess.run(
-                    [str(installed), "pack", "remove", "kotlin23"],
-                    env=environment,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                    text=True,
-                )
-                self.assertEqual(unpacked.returncode, 0, unpacked.stderr)
-                self.assertIn("core profile", unpacked.stdout)
-                self.assertIn(f"v0.1.1-{suffix}-core", str(installed.resolve()))
+                self.assertNotEqual(retired_install.returncode, 0)
+                self.assertIn("retired", retired_install.stderr)
+                self.assertEqual(installed.resolve(), original_launcher)
 
                 binary.chmod(0o700)
                 binary.write_text(

@@ -799,60 +799,6 @@ fn content_history_is_a_storage_root_for_the_complete_cas_closure() {
 }
 
 #[test]
-fn engine_startup_hint_is_scoped_and_never_requires_analysis_authority() {
-    let fixture = fixture();
-    let hint = || {
-        cached_engine_hint(
-            &fixture.state,
-            &fixture.store,
-            &fixture.path,
-            &fixture.session.runtime_key,
-            &fixture.ready.compilation,
-        )
-    };
-    assert_eq!(hint(), None);
-    let publish_hint = |ready: &ReadyGeneration| {
-        let head = IncrementalHead {
-            schema: INCREMENTAL_HEAD_SCHEMA.into(),
-            compiler_store_key: fixture.compiler_store.key.clone(),
-            receipt: ready.incremental_receipt.clone(),
-            ready: fixture
-                .store
-                .put(READY_GENERATION_SCHEMA, &canonical::bytes(ready).unwrap())
-                .unwrap(),
-        };
-        fixture
-            .state
-            .write_private_atomic(&fixture.path, &canonical::bytes(&head).unwrap())
-            .unwrap();
-    };
-    publish_hint(&fixture.ready);
-    assert_eq!(hint(), Some(KotlinSemanticEngine::Kotlin24));
-    for field in ["runtime", "compilation", "compiler", "schema"] {
-        let mut ready = fixture.ready.clone();
-        match field {
-            "runtime" => ready.runtime_key = digest('9'),
-            "compilation" => ready.compilation = "other".into(),
-            "compiler" => ready.compiler_version = "unknown".into(),
-            _ => ready.schema = "unknown".into(),
-        }
-        publish_hint(&ready);
-        assert_eq!(hint(), None, "{field} must not qualify a startup hint");
-    }
-    // A launch hint does not certify any analysis closure. The normal live
-    // OpenProject and exact-analysis validation remain mandatory downstream.
-    let mut ready = fixture.ready.clone();
-    ready.generation.digest = digest('6');
-    publish_hint(&ready);
-    assert_eq!(hint(), Some(KotlinSemanticEngine::Kotlin24));
-    fixture
-        .state
-        .write_private_atomic(&fixture.path, b"invalid hint")
-        .unwrap();
-    assert_eq!(hint(), None);
-}
-
-#[test]
 fn java_checkpoint_rejects_absent_raw_receipt_and_prior_envelope_version() {
     let fixture = fixture_for_language(true);
     let checkpoint = fixture.path.with_file_name("checkpoint.json");

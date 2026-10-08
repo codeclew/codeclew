@@ -853,7 +853,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
         )
         self.assertEqual(
             [spec["componentId"] for spec in first],
-            ["clew", "kotlin23", "kotlin24"],
+            ["clew", "kotlin24"],
         )
         unrelated = [dict(row) for row in inputs]
         bootstrap_row = next(
@@ -869,12 +869,12 @@ class BootstrapAuthorityTest(unittest.TestCase):
         )
 
         changed = [dict(row) for row in inputs]
-        kotlin23_row = next(
+        kotlin24_row = next(
             row
             for row in changed
-            if str(row["path"]).startswith("workers/kotlin23/src/main/")
+            if str(row["path"]).startswith("workers/kotlin/src/main/")
         )
-        kotlin23_row["sha256"] = "sha256:" + "6" * 64
+        kotlin24_row["sha256"] = "sha256:" + "6" * 64
         third = bootstrap.runtime_component_specs("RELEASE", changed, tools, registry)
         changed_ids = {
             before["componentId"]
@@ -882,7 +882,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
             if before["authority"]["componentKey"]
             != after["authority"]["componentKey"]
         }
-        self.assertEqual(changed_ids, {"kotlin23"})
+        self.assertEqual(changed_ids, {"kotlin24"})
 
     def test_documentation_embedded_resources_are_in_staged_runtime_inputs(self) -> None:
         import re

@@ -35,7 +35,7 @@ for current language and profile entry points.
 | Profile | Read | Change and publish |
 |---|---:|---:|
 | Kotlin 2.4.10, Gradle wrapper, one compilation, `PROJECT_NATIVE` | yes, K2 | yes, pilot |
-| Kotlin 2.3.0, Maven, optional `kotlin23` pack | yes, preview | no |
+| Kotlin 2.3.0, Maven, core Kotlin 2.4.10 analysis | yes, with explicit compatibility boundaries | no |
 | Python, Tree-sitter syntax | yes | yes, conditional pilot |
 | Rust, bounded syntax | yes | yes, conditional pilot |
 | Thread of 2–8 repositories | yes | no |
@@ -87,14 +87,13 @@ clew capabilities --human
 clew doctor attach --human
 ```
 
-The default `core` profile downloads only Kotlin 2.4.10. Enable or remove the
-Kotlin 2.3.0 read-only preview between tasks:
-
-```bash
-clew pack install kotlin23
-clew pack list
-clew pack remove kotlin23
-```
+Core contains the sole Kotlin 2.4.10 analyzer, including baseline analysis of
+supported Kotlin 2.3 projects. Separate language packs are retired. For an old
+installation already using the optional Kotlin 2.3 profile, run that old
+release's `clew pack remove kotlin23` before `clew upgrade`, or use the current
+public installer with `CODECLEW_PACKS` cleared. Do not request a retired pack
+from a new release. Original project compiler/language/API identity and
+compiler-plugin, `-X` and Kotlin 1.9 upgrade boundaries stay explicit.
 
 Omit `--human` to receive canonical JSON for automation and retained baselines.
 
@@ -590,7 +589,8 @@ current, it exits without downloading the release bundle. If an update exists,
 it preserves the current install root and launcher directory, downloads the
 exact newer release, verifies its published SHA-256 checksum, and atomically
 switches the launcher. Codeclew state, repositories, sessions, and threads are
-not modified. The updater preserves the installed `core` or `kotlin23` profile.
+not modified. Current releases contain only the core profile. An old optional
+Kotlin 2.3 installation needs the explicit transition above before upgrading.
 
 Releases older than v0.1.3 do not contain the updater. Upgrade such an existing
 installation once by rerunning the one-line installer:

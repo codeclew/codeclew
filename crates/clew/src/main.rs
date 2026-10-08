@@ -1413,7 +1413,6 @@ fn doctor_check_label(id: &str) -> &str {
         "tool.dotnet" => ".NET SDK is available",
         "state.free-space" => "At least 6 GiB is free in Codeclew state",
         "runtime.kotlin24" => "Qualified Kotlin 2.4 runtime is installed",
-        "runtime.kotlin23" => "Kotlin 2.3 preview runtime is installed",
         "runtime.capsule" => "Runtime capsule identity is verified",
         "runtime.language-adapter" => "Required language adapter is installed",
         "task.profile" => "Requested support profile is admitted",
@@ -1446,7 +1445,9 @@ fn remediation_label(id: &str) -> &str {
         }
         "FREE_6_GIB_ON_STATE_VOLUME" => "free at least 6 GiB on the state volume",
         "INSTALL_QUALIFIED_RUNTIME" => "install or rebuild the qualified runtime",
-        "INSTALL_KOTLIN23_PREVIEW_COMPONENT" => "install the optional Kotlin 2.3 preview component",
+        "INSTALL_KOTLIN23_PREVIEW_COMPONENT" => {
+            "the Kotlin 2.3 component is retired; upgrade to the core Kotlin 2.4.10 analyzer"
+        }
         "SELECT_SUPPORTED_PROFILE" => "select a profile listed by clew capabilities",
         "SELECT_SUPPORTED_OPERATION" => "select an operation admitted by the exact profile",
         "SELECT_EXACT_COMPILATION" => "provide the exact project compilation selector",
@@ -4806,7 +4807,7 @@ mod tests {
             "--compilation",
             ":workers:kotlin/main",
             "--compilation",
-            ":workers:kotlin23/main",
+            ":workers:kotlin21/main",
         ])
         .unwrap();
         let Command::Session {
@@ -4817,7 +4818,7 @@ mod tests {
         };
         assert_eq!(
             args.compilation,
-            [":workers:kotlin/main", ":workers:kotlin23/main"]
+            [":workers:kotlin/main", ":workers:kotlin21/main"]
         );
         assert!(matches!(args.language, SessionLanguageArg::Kotlin));
         assert!(

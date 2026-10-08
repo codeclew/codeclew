@@ -11,14 +11,16 @@ pub const KOTLIN_PROJECT_SEMANTICS_SCHEMA: &str = "codeclew-kotlin-project-seman
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KotlinSemanticEngine {
+    // Retained identities decode immutable historical evidence. They do not
+    // advertise or authorize an active packaged analyzer.
     Kotlin21,
     Kotlin23,
     Kotlin24,
 }
 
 impl KotlinSemanticEngine {
-    pub const fn packaged_by_preference() -> [Self; 2] {
-        [Self::Kotlin24, Self::Kotlin23]
+    pub const fn active_analyzers() -> [Self; 1] {
+        [Self::Kotlin24]
     }
 
     pub const fn all_known() -> [Self; 3] {
@@ -70,14 +72,6 @@ impl KotlinSemanticEngine {
             Self::Kotlin21 => "kotlin-bta-2.1.21",
             Self::Kotlin23 => "none",
             Self::Kotlin24 => "kotlin-bta-2.4.10",
-        }
-    }
-
-    pub const fn discovery_bit(self) -> u8 {
-        match self {
-            Self::Kotlin21 => 1 << 2,
-            Self::Kotlin23 => 1 << 0,
-            Self::Kotlin24 => 1 << 1,
         }
     }
 
@@ -245,7 +239,6 @@ enum CompatibilityKind {
     ExactCompilerAbi,
     QualifiedPatchLine,
     CompatibleAnalysis,
-    QualificationCandidate,
     ExperimentalCandidate,
 }
 
@@ -267,15 +260,6 @@ struct QualifiedCompatibility {
 }
 
 const QUALIFIED_COMPATIBILITY: &[QualifiedCompatibility] = &[
-    QualifiedCompatibility {
-        project_compiler_version: "2.3.0",
-        language_version: None,
-        api_version: None,
-        engine: KotlinSemanticEngine::Kotlin23,
-        kind: CompatibilityKind::ExactCompilerAbi,
-        default_route: true,
-        allow_serialization_rebind: true,
-    },
     QualifiedCompatibility {
         project_compiler_version: "2.4.10",
         language_version: None,
@@ -299,8 +283,8 @@ const QUALIFIED_COMPATIBILITY: &[QualifiedCompatibility] = &[
         language_version: None,
         api_version: None,
         engine: KotlinSemanticEngine::Kotlin24,
-        kind: CompatibilityKind::QualificationCandidate,
-        default_route: false,
+        kind: CompatibilityKind::CompatibleAnalysis,
+        default_route: true,
         allow_serialization_rebind: true,
     },
     QualifiedCompatibility {
@@ -330,18 +314,17 @@ impl KotlinEngineRegistry {
         project: &KotlinProjectSemantics,
         requested_engine: KotlinSemanticEngine,
     ) -> Result<KotlinSemanticEngine, ClewError> {
+        if requested_engine == KotlinSemanticEngine::Kotlin23 {
+            return Err(unsupported(
+                "Kotlin 2.3 analyzer is retired; use the core Kotlin 2.4.10 analyzer",
+            ));
+        }
         select_from_rows(
             project,
             QUALIFIED_COMPATIBILITY,
             false,
             Some(requested_engine),
         )
-    }
-
-    pub fn next_untried_for_discovery(tried: u8) -> Option<KotlinSemanticEngine> {
-        KotlinSemanticEngine::packaged_by_preference()
-            .into_iter()
-            .find(|engine| tried & engine.discovery_bit() == 0)
     }
 }
 
@@ -440,7 +423,7 @@ fn select_from_rows(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(unsupported(&format!(
-                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. Qualified analysis options: -Xannotation-default-target=param-property; with the Kotlin 2.4.10 analyzer, -Xjsr305=strict|warn|ignore and -Xjvm-default=disable|all|all-compatibility (one value per option, independent of project patch version). Project language/API and JVM target support are checked separately; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and use a qualified matching compiler pack when available, or report these option names and compiler versions for Codeclew qualification.",
+                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. Qualified analysis options: -Xannotation-default-target=param-property; with the Kotlin 2.4.10 analyzer, -Xjsr305=strict|warn|ignore and -Xjvm-default=disable|all|all-compatibility (one value per option, independent of project patch version). Project language/API and JVM target support are checked separately; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and report these option names and compiler versions for Codeclew qualification.",
                 project.project_compiler_version,
                 row.engine.analyzer_compiler_version(),
                 unqualified.len(),
@@ -544,7 +527,7 @@ mod tests {
         let registry = KotlinEngineRegistry;
         assert_eq!(
             registry.select(&project("2.3.0", "2.3", &[])).unwrap(),
-            KotlinSemanticEngine::Kotlin23
+            KotlinSemanticEngine::Kotlin24
         );
         assert_eq!(
             registry.select(&project("2.4.10", "2.4", &[])).unwrap(),

@@ -50,7 +50,7 @@ pub fn registered(runtime: &RuntimeAuthority) -> Vec<AnalysisModule> {
         ],
         operation_scope: "READ_ONLY_PROJECT_ADMISSION_REQUIRED",
     }];
-    for engine in KotlinSemanticEngine::all_known() {
+    for engine in KotlinSemanticEngine::active_analyzers() {
         if let Some(worker) = runtime.workers.get(engine.runtime_name()) {
             modules.push(AnalysisModule {
                 schema: "codeclew-analysis-module/1.0",

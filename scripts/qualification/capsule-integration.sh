@@ -62,8 +62,8 @@ current = json.loads((seed_home / "current.json").read_bytes())
 seed = json.loads((seed_home / current["epoch"] / "seed.json").read_bytes())
 reuse_bytes = (evidence_root / "reuse.json").read_bytes()
 reuse = json.loads(reuse_bytes)
-expected_components = ["clew", "kotlin23", "kotlin24"]
-expected_versions = {"kotlin23": "2.3.0", "kotlin24": "2.4.10"}
+expected_components = ["clew", "kotlin24"]
+expected_versions = {"kotlin24": "2.4.10"}
 runtime_path = (
     seed_home
     / current["epoch"]

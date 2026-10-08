@@ -1,6 +1,6 @@
 # Save a diagnostic bundle
 
-Available in Codeclew v0.13.19. Use the installed `clew` launcher, or `./clew`
+Available in Codeclew v0.13.20. Use the installed `clew` launcher, or `./clew`
 when developing from the source checkout. Both expose the same switches.
 
 To diagnose an existing documentation Check, save its metadata without another

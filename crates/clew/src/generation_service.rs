@@ -3344,19 +3344,11 @@ fn ensure_generation(
     let compiler_namespace = compiler_store_key(&runtime, compilation)?;
     let external_build_state = session.external_build_state_path()?;
     let head_path = incremental_head_path(&repository.root, compilation)?;
-    let preferred_engine = cached_engine_hint(
-        &state,
-        &store,
-        &head_path,
-        &runtime.runtime_key,
-        compilation,
-    );
-    let live_attempt = workspace.open_compilation_from_set_with_hint(
+    let live_attempt = workspace.open_compilation_from_set(
         &state,
         compilation,
         digest_component(&compiler_namespace)?,
         external_build_state.as_deref(),
-        preferred_engine,
     )?;
     let prepared = ensure_prepared_authority(
         &state,
@@ -4891,38 +4883,6 @@ fn load_incremental_head(
         return Err(corrupt("incremental head objects are not mutually bound"));
     }
     Ok(Some(LoadedIncrementalHead { receipt, ready }))
-}
-
-/// An old result may suggest which worker to start, never which model to trust.
-/// Keep this optional read small and independent of the analysis closure: the
-/// ordinary live OpenProject still qualifies and can switch the selected engine.
-fn cached_engine_hint(
-    state: &StateAuthority,
-    store: &CasStore,
-    path: &Path,
-    runtime_key: &str,
-    compilation: &str,
-) -> Option<KotlinSemanticEngine> {
-    const MAX_HINT_BYTES: usize = 64 * 1024;
-    let bytes = state.read_private_file(path, MAX_HINT_BYTES).ok()?;
-    let head: IncrementalHead = serde_json::from_slice(&bytes).ok()?;
-    if canonical::bytes(&head).ok()? != bytes
-        || head.schema != INCREMENTAL_HEAD_SCHEMA
-        || head.ready.object_schema != READY_GENERATION_SCHEMA
-        || head.ready.size > MAX_HINT_BYTES as u64
-    {
-        return None;
-    }
-    let lease = store.read(&head.ready, MAX_HINT_BYTES).ok()?;
-    let ready: ReadyGeneration = serde_json::from_slice(lease.bytes()).ok()?;
-    if canonical::bytes(&ready).ok()? != lease.bytes()
-        || ready.schema != READY_GENERATION_SCHEMA
-        || ready.runtime_key != runtime_key
-        || ready.compilation != compilation
-    {
-        return None;
-    }
-    KotlinSemanticEngine::from_analyzer_compiler_version(&ready.compiler_version).ok()
 }
 
 /// Reuse an exact historical analysis only after the caller obtained current

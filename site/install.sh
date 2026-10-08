@@ -41,8 +41,8 @@ fi
 
 case "$REQUESTED_PACKS" in
   '') PROFILE=core ;;
-  kotlin23) PROFILE=kotlin23 ;;
-  *) fail "CODECLEW_PACKS must be empty or kotlin23" ;;
+  kotlin23) fail "the Kotlin 2.3 language pack is retired; unset CODECLEW_PACKS to install core with the Kotlin 2.4.10 analyzer" ;;
+  *) fail "language packs are no longer supported; unset CODECLEW_PACKS to install core" ;;
 esac
 
 case "$REQUESTED_VERSION" in
@@ -85,11 +85,7 @@ raise SystemExit(0 if match and tuple(map(int, match.groups())) >= (2, 35) else 
 ' "$LIBC_VERSION" || fail "Linux releases require glibc 2.35 or newer"
 fi
 
-if [ "$PROFILE" = core ]; then
-  ASSET=codeclew-$OS-$ARCH.tar.gz
-else
-  ASSET=codeclew-$PROFILE-$OS-$ARCH.tar.gz
-fi
+ASSET=codeclew-$OS-$ARCH.tar.gz
 CHECKSUM=$ASSET.sha256
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-install.XXXXXX")
 cleanup() {

@@ -355,7 +355,6 @@ impl ProjectNativeKotlinWorkspace {
         self.allow_materialization_mutation = allow;
     }
 
-    #[cfg(test)]
     pub(crate) fn open_compilation_from_set(
         &self,
         state: &StateAuthority,
@@ -369,25 +368,6 @@ impl ProjectNativeKotlinWorkspace {
             compiler_store_component,
             build_state_root,
             None,
-            None,
-        )
-    }
-
-    pub(crate) fn open_compilation_from_set_with_hint(
-        &self,
-        state: &StateAuthority,
-        native_compilation: &str,
-        compiler_store_component: &str,
-        build_state_root: Option<&std::path::Path>,
-        preferred_engine: Option<KotlinSemanticEngine>,
-    ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
-        self.open_compilation_with_engine(
-            state,
-            native_compilation,
-            compiler_store_component,
-            build_state_root,
-            None,
-            preferred_engine,
         )
     }
 
@@ -406,7 +386,6 @@ impl ProjectNativeKotlinWorkspace {
             compiler_store_component,
             build_state_root,
             Some(engine),
-            None,
         )
     }
 
@@ -417,7 +396,6 @@ impl ProjectNativeKotlinWorkspace {
         compiler_store_component: &str,
         build_state_root: Option<&std::path::Path>,
         qualification_engine: Option<KotlinSemanticEngine>,
-        preferred_engine: Option<KotlinSemanticEngine>,
     ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
         if !self.authorized_compilations.contains(native_compilation) {
@@ -462,12 +440,11 @@ impl ProjectNativeKotlinWorkspace {
                 unreachable!("qualification engine is test-only")
             }
         } else {
-            WorkerClient::start_with_managed_states_hint(
+            WorkerClient::start_with_managed_states(
                 &workspace_root(),
                 build_state_root,
                 Some(&compiler_store),
                 &compiler_store_namespace,
-                preferred_engine,
             )?
         };
         let startup_micros = elapsed_micros(startup_started);

@@ -27,18 +27,6 @@ fn generate_worker_input_manifests() {
     ];
     let variants = [
         (
-            "KOTLIN23",
-            "kotlin23",
-            ":workers:kotlin23:installDist",
-            "workers/manifests/kotlin23.json",
-            vec![common_roots[0], "workers/kotlin23/src/main"],
-            common_files
-                .iter()
-                .copied()
-                .chain(["workers/kotlin23/build.gradle.kts"])
-                .collect::<Vec<_>>(),
-        ),
-        (
             "KOTLIN24",
             "kotlin24",
             ":workers:kotlin:installDist",
