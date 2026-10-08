@@ -19,12 +19,22 @@ checkout for source development; direct capsule binaries are unsupported.
 | Find a previously approved method answer after a source update | [Capture, question, review and exact reuse](docs/operations/field-documentation.md#capture-question-review-and-exact-reuse) and [discovery limits](docs/operations/docs-snapshot-store.md#find-an-approved-answer-by-exact-request-source-candidate) |
 | Try the internal Java process draft | [historical v0.13.1 example and limits](#historical-v0131-example-and-limits), [reproduction recipe](docs/operations/task-promotion-draft.md), and [live sample reader](https://codeclew.github.io/codeclew/examples/task-promotion/index.html) |
 | Compare saved local edits | [Analysis with local edits](#analysis-with-local-edits) |
-| Save diagnostics for a failed Check or command | [Support bundles (source checkout; unreleased)](docs/operations/support-diagnostics.md) |
+| Save diagnostics for a failed Check or command | [Support bundles](docs/operations/support-diagnostics.md) |
 | Prepare a managed change | [Workflow](#workflow) and [conditional evidence](#conditional-evidence) |
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.18
+## Current release: v0.13.19
+
+Version 0.13.19 saves a diagnostic bundle from an existing Check without another
+source capture: `clew support collect --root DOCS --output NEWDIR`. Use
+`clew --diagnostics NEWDIR COMMAND ...` to retain diagnostics from the next
+invocation, including failures before the core starts. Original output and exit
+status are preserved; private bounded terminal, compiler-worker and Maven logs
+require `--include-private-logs`. See the [release notes](docs/releases/v0.13.19.md)
+and [diagnostic guide](docs/operations/support-diagnostics.md) for scope and limits.
+
+### Included from v0.13.18
 
 Version 0.13.18 renders linked offline HTML and MDX from selected retained Java,
 Kotlin, C#, TypeScript and Rust declarations. New Kotlin compiler evidence can
@@ -146,7 +156,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.18 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.19 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -175,7 +185,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.18 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.19 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a

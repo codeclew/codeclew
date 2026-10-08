@@ -1,8 +1,7 @@
 # Save a diagnostic bundle
 
-This feature is available from the source checkout. It has not yet been included
-in a public release. Use `./clew` during development; the installed launcher gains
-the same switches when these changes are released.
+Available in Codeclew v0.13.19. Use the installed `clew` launcher, or `./clew`
+when developing from the source checkout. Both expose the same switches.
 
 To diagnose an existing documentation Check, save its metadata without another
 source capture:
