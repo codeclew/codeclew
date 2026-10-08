@@ -173,6 +173,53 @@ pub(super) fn sequence_event_kinds(flow_kind: &str) -> &'static [&'static str] {
     }
 }
 
+fn sequence_diagnostic_id(id: &str) -> &str {
+    // Evidence IDs are opaque handles. Never echo a path, snippet, or control
+    // character from malformed imported evidence into a validation error.
+    if !id.is_empty()
+        && id.len() <= 256
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_'))
+    {
+        id
+    } else {
+        "[redacted unsafe ID]"
+    }
+}
+
+fn missing_sequence_flow(dependency: &Observation) -> ClewError {
+    let flow_kind = dependency.normalized["kind"].as_str().unwrap_or("");
+    let expected = sequence_event_kinds(flow_kind);
+    let source_ids: Vec<_> = dependency
+        .source_ids
+        .iter()
+        .take(8)
+        .map(|id| sequence_diagnostic_id(id))
+        .collect();
+    let group_action = if expected
+        .iter()
+        .any(|kind| matches!(*kind, "alt" | "opt" | "loop"))
+    {
+        " Close the group with end; include supported branch actions inside it."
+    } else {
+        ""
+    };
+    invalid(format!(
+        "sequence omits a mandatory source-backed FLOW: flowId={}, flowKind={}, sourceIds=[{}], sourceIdsOmitted={}, allowedEventKinds=[{}]. Add an event with one of these kinds and dependencyIds containing this FLOW; author its supported condition or outcome in text. Summary or explanation citations alone do not cover it.{}",
+        sequence_diagnostic_id(&dependency.id),
+        if expected.is_empty() {
+            "UNKNOWN"
+        } else {
+            flow_kind
+        },
+        source_ids.join(", "),
+        dependency.source_ids.len().saturating_sub(source_ids.len()),
+        expected.join(", "),
+        group_action,
+    ))
+}
+
 pub(super) fn sequence_step_requires_endpoints(step_kind: &str) -> bool {
     matches!(step_kind, "message" | "return" | "declared")
 }
@@ -554,10 +601,7 @@ pub(super) fn validate_with_retained(
                 event.dependency_ids.contains(&dependency.id)
                     && expected_kinds.contains(&event.kind.as_str())
             }) {
-                return Err(invalid(format!(
-                    "sequence omits a source-backed condition or return: {}",
-                    dependency.id
-                )));
+                return Err(missing_sequence_flow(dependency));
             }
         }
         if o.explanation.len() > 128 {
@@ -3233,6 +3277,50 @@ fn publish_internal_phases(
             )
         })
         .collect();
+    // An unreadable incoming envelope cannot safely identify its subject. Report
+    // retained content for the publication as a whole, after reader selection,
+    // rather than attributing an unrelated retained subject to that input.
+    let rejected_input_count = failures
+        .values()
+        .filter(|failure| failure["rejectionScope"] == "ENTIRE_NARRATIVE")
+        .count();
+    let narrative_input_summary = (rejected_input_count > 0).then(|| {
+        let retained_narrative_used = previous.as_ref().is_some_and(|(_, old)| {
+            published_narratives.iter().any(|(subject, narrative)| {
+                let Some(retained) = old.narratives.get(subject) else {
+                    return false;
+                };
+                narrative.operations.iter().any(|operation| {
+                    !accepted.contains(&format!("{subject}/{}", operation.id))
+                        && requested_language.as_deref().is_none_or(|language| {
+                            operation.documentation_language.as_deref() == Some(language)
+                        })
+                        && retained.operations.contains(operation)
+                }) || narrative.gaps.iter().any(|(id, gap)| {
+                    !updated_gaps.contains_key(&(subject.clone(), id.clone()))
+                        && *gap != default_gap(id)
+                        && retained.gaps.get(id) == Some(gap)
+                })
+            })
+        });
+        let message = if retained_narrative_used {
+            "Incoming narratives were rejected in full. This publication uses retained authored narrative content."
+        } else {
+            "Incoming narratives were rejected in full. No retained authored narrative content was used in this publication."
+        };
+        for failure in failures.values_mut().filter(|failure| {
+            failure["rejectionScope"] == "ENTIRE_NARRATIVE"
+        }) {
+            failure["publication"] = json!({
+                "scope":"PUBLICATION", "retainedNarrativeUsed":retained_narrative_used,
+                "message":message,
+            });
+        }
+        json!({
+            "scope":"PUBLICATION", "rejectedIncomingNarratives":rejected_input_count,
+            "retainedNarrativeUsed":retained_narrative_used, "message":message,
+        })
+    });
     let analysis_translation_gap_count = requested_language
         .as_deref()
         .map(|language| {
@@ -3801,9 +3889,11 @@ fn publish_internal_phases(
         before_switch,
         Some(expected_baseline.as_ref()),
     )?;
-    Ok(
-        json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"analysisGaps":narratives.values().map(|n|n.gaps.len()).sum::<usize>(),"endpointPublicationPolicyDigest":endpoint_policy.digest()?,"excludedEndpoints":endpoint_selection.selectors.keys().map(|id|endpoint_selection.hidden(&endpoint_policy,&format!("service:{id}")).len()).sum::<usize>(),"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot}),
-    )
+    let mut response = json!({"schema":"codeclew-docs-render/1.0","documentationLanguage":requested_language,"released":released,"translationGaps":translation_gap_count,"translationComplete":translation_gap_count==0,"status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|o.dataflow.is_some()).count(),"documentedSections":published_narratives.values().flat_map(|n|n.operations.iter()).filter(|o|requested_language.as_deref().is_none_or(|language|o.documentation_language.as_deref()==Some(language))).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"analysisGaps":narratives.values().map(|n|n.gaps.len()).sum::<usize>(),"endpointPublicationPolicyDigest":endpoint_policy.digest()?,"excludedEndpoints":endpoint_selection.selectors.keys().map(|id|endpoint_selection.hidden(&endpoint_policy,&format!("service:{id}")).len()).sum::<usize>(),"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN","evidenceAuthority":if refreshing{"CURRENT_SOURCE_CHECK"}else{"PINNED_SNAPSHOT_NOT_REVERIFIED"},"snapshot":snapshot});
+    if let Some(summary) = narrative_input_summary {
+        response["narrativeInputSummary"] = summary;
+    }
+    Ok(response)
 }
 
 #[allow(clippy::too_many_arguments)]

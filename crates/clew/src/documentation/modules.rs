@@ -220,19 +220,20 @@ pub(super) fn catalog() -> Result<Vec<Value>, ClewError> {
         "openapi",
         json!(["java", "kotlin", "python"]),
         "DECLARED_OPENAPI",
-        json!(["openapi/3.0.0", "openapi/3.0.3"]),
+        json!(["openapi/through-3.x"]),
         json!([super::contracts::SCHEMA]),
         crate::canonical::hash_bytes(include_bytes!("contracts.rs")),
     );
     openapi["availability"] = json!("BUILT_IN_NO_BUILD_TOOLS");
     openapi["testedVersions"] = json!(super::contracts::TESTED_VERSIONS);
-    openapi["limitations"] = json!([
-        "EXPLICIT_COMMITTED_FILES_ONLY",
-        "NO_IMPLICIT_NETWORK",
-        "DECLARATIONS_NOT_RUNTIME_ENFORCEMENT",
-        "CALLBACKS_RETAINED_NOT_SOURCE_MAPPED",
-        "NO_SCHEMA_INSTANCE_VALIDATION"
-    ]);
+    openapi["supportedVersionRange"] = json!(super::contracts::SUPPORTED_VERSION_RANGE);
+    openapi["reader"] = json!(super::contracts::READER);
+    openapi["compatibilityAnchors"] = json!(super::contracts::COMPATIBILITY_ANCHORS);
+    openapi["versionPolicy"] = json!("ATTEMPT_NEAREST_COMPATIBILITY_PROFILE");
+    openapi["compatibilityScope"] = json!("RETAINED_PATH_OPERATIONS_AND_BOUNDED_REFERENCES");
+    let mut limitations = vec!["EXPLICIT_COMMITTED_FILES_ONLY"];
+    limitations.extend_from_slice(super::contracts::LIMITATIONS);
+    openapi["limitations"] = json!(limitations);
     Ok(vec![
         source, java, kotlin, roslyn, spring, aspnetcore, openapi,
     ])

@@ -228,6 +228,125 @@ fn publish(repo: &Repository, snapshot: &str, incoming: Vec<Narrative>) -> (Valu
     (result, binding)
 }
 
+fn render_narrative_files(fixture: &Fixture, inputs: &[Value]) -> Value {
+    let paths = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let path = fixture
+                ._temporary
+                .path()
+                .join(format!("incoming-{index}.json"));
+            std::fs::write(&path, serde_json::to_vec(input).unwrap()).unwrap();
+            path
+        })
+        .collect();
+    cli::run(cli::Command::Render {
+        root: fixture.repo.root.clone(),
+        language: None,
+        input: paths,
+        require_complete: false,
+        refresh: false,
+        snapshot: Some(fixture.snapshot.clone()),
+        publish: false,
+    })
+    .unwrap()
+}
+
+#[test]
+fn narrative_rejection_reports_actual_retained_publication_without_applying_valid_siblings() {
+    let fixture = fixture();
+    let (first, before) = publish(
+        &fixture.repo,
+        &fixture.snapshot,
+        vec![fixture.narrative.clone()],
+    );
+    let mut rejected = serde_json::to_value(&fixture.narrative).unwrap();
+    rejected["operations"][0]["summary"]["text"] = json!("REJECTED_PRIVATE_SUMMARY");
+    rejected["operations"][1]["interaction"] = json!("REJECTED_PRIVATE_VALUE");
+    let result = render_narrative_files(&fixture, &[rejected]);
+    assert_eq!(
+        result["narrativeInputSummary"]["rejectedIncomingNarratives"],
+        1
+    );
+    assert_eq!(
+        result["narrativeInputSummary"]["retainedNarrativeUsed"],
+        true
+    );
+    assert_eq!(result["narrativeInputSummary"]["scope"], "PUBLICATION");
+    let failure = &result["updateFailures"]["input-0"];
+    assert_eq!(failure["diagnostics"][0]["field"], "interaction");
+    assert_eq!(failure["diagnostics"][0]["path"], "operations[1]");
+    assert_eq!(failure["publication"]["retainedNarrativeUsed"], true);
+    assert_eq!(result["inputDigest"], first["inputDigest"]);
+    let (_, after) = bindings::baseline(&fixture.repo).unwrap().unwrap();
+    assert_eq!(after.narratives[SUBJECT], before.narratives[SUBJECT]);
+    for output in [
+        result.to_string(),
+        std::fs::read_to_string(fixture.repo.path("docs/index.html").unwrap()).unwrap(),
+        std::fs::read_to_string(file(&fixture.repo, &result, "status.json")).unwrap(),
+    ] {
+        assert!(!output.contains("REJECTED_PRIVATE_SUMMARY"));
+        assert!(!output.contains("REJECTED_PRIVATE_VALUE"));
+        assert!(output.contains("retained authored narrative content"));
+    }
+}
+
+#[test]
+fn narrative_rejection_without_retained_authored_content_reports_no_fallback() {
+    let fixture = fixture();
+    let mut rejected = serde_json::to_value(&fixture.narrative).unwrap();
+    rejected["operationId"] = json!("REJECTED_PRIVATE_VALUE");
+    let result = render_narrative_files(&fixture, &[rejected.clone()]);
+    assert_eq!(
+        result["narrativeInputSummary"]["retainedNarrativeUsed"],
+        false
+    );
+    let (_, binding) = bindings::baseline(&fixture.repo).unwrap().unwrap();
+    assert!(binding.narratives[SUBJECT].operations.is_empty());
+    // A previous bundle containing generated placeholders is also insufficient
+    // to claim that authored narrative content was reused.
+    let repeated = render_narrative_files(&fixture, &[rejected]);
+    assert_eq!(
+        repeated["narrativeInputSummary"]["retainedNarrativeUsed"],
+        false
+    );
+}
+
+#[test]
+fn narrative_rejection_mixed_with_accepted_complete_input_does_not_claim_retained_fallback() {
+    let fixture = fixture();
+    publish(
+        &fixture.repo,
+        &fixture.snapshot,
+        vec![fixture.narrative.clone()],
+    );
+    let mut rejected = serde_json::to_value(&fixture.narrative).unwrap();
+    rejected["interaction"] = json!("REJECTED_PRIVATE_VALUE");
+    let mut accepted = fixture.narrative.clone();
+    for operation in &mut accepted.operations {
+        operation.summary.text = "A replacement decision is accepted from the second input.".into();
+    }
+    let result = render_narrative_files(
+        &fixture,
+        &[rejected, serde_json::to_value(&accepted).unwrap()],
+    );
+    assert_eq!(
+        result["narrativeInputSummary"]["retainedNarrativeUsed"],
+        false
+    );
+    assert_eq!(
+        result["narrativeInputSummary"]["rejectedIncomingNarratives"],
+        1
+    );
+    let (_, binding) = bindings::baseline(&fixture.repo).unwrap().unwrap();
+    assert_eq!(binding.narratives[SUBJECT].operations, accepted.operations);
+    assert!(!result.to_string().contains("REJECTED_PRIVATE_VALUE"));
+    let valid_result = render_narrative_files(&fixture, &[serde_json::to_value(accepted).unwrap()]);
+    assert_eq!(valid_result["updateFailures"], json!({}));
+    assert!(valid_result.get("narrativeInputSummary").is_none());
+}
+
 fn file(repo: &Repository, result: &Value, relative: &str) -> std::path::PathBuf {
     repo.path(&format!(
         "docs/generated/{}/{relative}",

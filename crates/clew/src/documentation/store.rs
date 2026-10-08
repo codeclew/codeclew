@@ -13,6 +13,10 @@ use std::path::{Component, Path, PathBuf};
 pub const MAX_RECORD: u64 = 128 * 1024 * 1024;
 pub const MAX_RECORDS: usize = 1024;
 
+#[path = "narrative_input.rs"]
+mod narrative_input;
+pub use narrative_input::read_narrative;
+
 #[derive(Debug)]
 pub struct Repository {
     pub root: PathBuf,
@@ -72,6 +76,12 @@ pub fn relative(path: &str) -> Result<(), ClewError> {
 }
 
 pub fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<T, ClewError> {
+    let data = read_bytes(path, limit)?;
+    serde_yaml_ng::from_slice(&data)
+        .map_err(|_| invalid("documentation input violates its closed JSON/YAML schema"))
+}
+
+fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> {
     let metadata = fs::symlink_metadata(path).map_err(io_error)?;
     if !metadata.is_file() || metadata.len() > limit {
         return Err(invalid("documentation input is not a bounded regular file"));
@@ -80,8 +90,7 @@ pub fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<T, ClewError
     if data.len() as u64 > limit {
         return Err(invalid("documentation input grew beyond its bound"));
     }
-    serde_yaml_ng::from_slice(&data)
-        .map_err(|_| invalid("documentation input violates its closed JSON/YAML schema"))
+    Ok(data)
 }
 
 pub fn safe_url(url: &str) -> bool {
