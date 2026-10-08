@@ -2399,6 +2399,17 @@ pub fn mermaid(o: &Operation) -> String {
     out
 }
 
+fn explanation_display_key(paragraph: &Explanation) -> String {
+    json!([
+        paragraph.text,
+        paragraph.event_ids,
+        paragraph.dependency_ids,
+        paragraph.source_ids,
+        paragraph.authorship,
+    ])
+    .to_string()
+}
+
 pub(super) fn markdown(
     title: &str,
     n: &Narrative,
@@ -2455,10 +2466,7 @@ pub(super) fn markdown(
         ));
         let mut shown = BTreeSet::new();
         for paragraph in o.explanation.iter().filter(|p| !p.detail) {
-            if !shown.insert((
-                &paragraph.text,
-                paragraph.authorship.as_ref().map(|a| &a.edit_digest),
-            )) {
+            if !shown.insert(explanation_display_key(paragraph)) {
                 continue;
             }
             out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
@@ -2489,10 +2497,7 @@ pub(super) fn markdown(
         ));
         let mut shown = BTreeSet::new();
         for paragraph in o.explanation.iter().filter(|p| p.detail) {
-            if !shown.insert((
-                &paragraph.text,
-                paragraph.authorship.as_ref().map(|a| &a.edit_digest),
-            )) {
+            if !shown.insert(explanation_display_key(paragraph)) {
                 continue;
             }
             out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
