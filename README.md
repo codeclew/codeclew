@@ -692,7 +692,8 @@ The strict compiler-backed mutation contour is Kotlin 2.4.10, Gradle,
 including Maven, use the core 2.4.10 analyzer for read-only context and
 documentation. Original project compiler/language/API identity remains retained;
 this does not establish exact project-compiler semantics or a mutation/publish
-claim. Kotlin 2.1, multiple
+claim. The existing `kotlin-2.3.0-maven-single` read-only profile also requires
+core 2.4.10 and reports conditional analysis authority. Kotlin 2.1, multiple
 compilations, Android/KMP and `EXTERNAL` remain unqualified until they have
 their own acceptance tests. Rust and Python are operationally `PILOT_READY` for
 conditional mutation, with the weaker evidence boundaries described below.

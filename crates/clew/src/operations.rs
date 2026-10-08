@@ -993,6 +993,63 @@ mod tests {
     }
 
     #[test]
+    fn kotlin_doctor_profiles_require_core_and_ignore_retired_workers() {
+        let (_root, mut runtime) = runtime_authority_fixture();
+        let worker = |version: &str| crate::runtime::RuntimeWorker {
+            protocol: crate::runtime::KOTLIN_WORKER_PROTOCOL.into(),
+            compiler_version: version.into(),
+            distribution: "fixture".into(),
+            tree_hash: format!("sha256:{}", "7".repeat(64)),
+            files: vec![],
+        };
+        runtime.workers.insert("kotlin24".into(), worker("2.4.10"));
+        runtime.workers.insert("kotlin23".into(), worker("2.3.0"));
+        let modules = crate::analysis_modules::registered(&runtime);
+        assert_eq!(
+            modules
+                .iter()
+                .filter(|module| module.language == Some("kotlin"))
+                .map(|module| module.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kotlin24"]
+        );
+        runtime.workers.remove("kotlin23");
+        let matrix = support_matrix().unwrap();
+        let repo = doctor_git_fixture();
+        let compilations = vec![":/main".into()];
+        for profile in matrix["profiles"].as_array().unwrap() {
+            if profile["language"] != "kotlin" {
+                continue;
+            }
+            let profile_id = profile["profileId"].as_str().unwrap();
+            let task = DoctorTask {
+                language: SessionLanguage::Kotlin,
+                profile_id,
+                operation: DoctorOperation::Analysis,
+                compilations: &compilations,
+                committed: false,
+                working_tree: false,
+                maven_settings: None,
+            };
+            let checks = task_checks(&runtime, &matrix, repo.path(), Some("main"), &task);
+            assert!(
+                doctor_check(&checks, "runtime.language-adapter").passed,
+                "{profile_id} must admit the sole core analyzer"
+            );
+            let mut retired_only = runtime.clone();
+            retired_only.workers.remove("kotlin24");
+            retired_only
+                .workers
+                .insert("kotlin23".into(), worker("2.3.0"));
+            let checks = task_checks(&retired_only, &matrix, repo.path(), Some("main"), &task);
+            assert!(
+                !doctor_check(&checks, "runtime.language-adapter").passed,
+                "{profile_id} must not admit a retired analyzer"
+            );
+        }
+    }
+
+    #[test]
     #[cfg(unix)]
     fn csharp_doctor_checks_host_inventory_even_with_an_older_project_sdk_pin() {
         use std::os::unix::fs::PermissionsExt;
