@@ -85,9 +85,34 @@ a budget fails the capture rather than silently dropping the remaining files.
 Set `contractFiles` on the service record to an explicit list such as
 `["api/openapi.yaml", "api/types.yaml"]`. These committed files are captured
 independently of language roots and compiler availability. The `openapi` module
-exposes its tested versions through `docs modules show --id openapi`: 3.0.0 and
-3.0.3. Other versions remain unsupported with a named gap and retained input.
-Reference-only registered files do not need an `openapi` header.
+exposes `supportedVersionRange`, `testedVersions`, the shared `reader` and its
+`compatibilityAnchors` through `docs modules show --id openapi`. Support is
+advertised through OpenAPI 3.x for retained path operations and bounded
+references. Versions do not gate admission: the declared version selects the
+nearest available compatibility anchor (3.0 or 3.1), then the same structural
+reader attempts the document. These anchors describe assumptions, not separate
+version-specific parsers or full specification validation.
+
+Future 3.x declarations use the nearest anchor; versions above 3.x are also
+attempted with an explicit best-effort boundary outside the advertised range.
+Missing or malformed version fields with readable paths use an explicit
+assumption. `readerSelection` in contract inventory and operations records the
+reader, chosen anchor, selection mode and advertised-range status without
+echoing malformed version values. Tested versions are synthetic evidence, not an
+allowlist: operation tests cover 3.0 and 3.1 patches, 3.2.0, hypothetical 3.99.7
+and best-effort 4.0.0 declarations with readable path structures.
+
+Malformed JSON/YAML and unreadable API `paths`, Path Items or known method
+operations fail with named parse/shape boundaries and retained input.
+Unknown future Path Item fields remain retained with an explicit structural-reader
+limitation while readable known operations are extracted. Reference-only
+registered files do not need an `openapi` header and remain available to the
+bounded reference resolver, including boolean schema roots and array fragments.
+The catalog does not assign separate API and reference-file roles: a registered
+value without top-level `openapi` or `paths` is treated as a reference document,
+regardless of its JSON root shape. Such fragments never independently produce
+path operations; using an unreadable fragment as a Path Item still produces a
+shape boundary.
 
 The reader preserves nested schemas and constraints, inherited/overridden
 parameters, responses, security schemes, and server declarations. Relative file
@@ -96,10 +121,21 @@ missing files, cycles and unresolved pointers remain visible gaps. No network
 fetch, schema instance validation or runtime enforcement is performed. Callbacks
 are retained inside their declaring operation but are not mapped to source routes.
 Reference siblings are flagged rather than silently treated as merged schemas.
+OpenAPI 3.1 webhooks remain retained declarations and have an explicit
+`OPENAPI_WEBHOOKS_NOT_SOURCE_MAPPED` boundary; they do not become path operations.
+Schema dialect declarations, boolean schemas, null/union types and newer JSON
+Schema keywords remain retained values with named `OPENAPI_SCHEMA_*` or
+`OPENAPI_JSON_SCHEMA_KEYWORDS_NOT_INTERPRETED` boundaries in the contract scope,
+service evidence and affected path operations. The reader does not interpret
+JSON Schema 2020-12 semantics, resolve schema identifiers/anchors/dynamic
+references, or validate schema instances. Feature inspection excludes instance
+examples/defaults and stops with `CONTRACT_FEATURE_INSPECTION_LIMIT` when its
+100,000-value or 32-level budget is reached. Feature boundaries report codes,
+without contract values or reference paths.
 Capture is bounded to 128 files, 2 MiB each, 16 MiB total, 100,000 expanded values
 and 32 levels. Excessive expansion fails with an explicit diagnostic.
 
-Every declared operation appears in the service contract data, even without a
+Every readable operation for a known path method appears in the service contract data, even without a
 matching source endpoint. The HTML navigation also shows unmatched declarations.
 A unique method/path match is only a source-route comparison; it does not prove
 payload compatibility or deployed behavior. Changing a registered contract or
@@ -148,6 +184,8 @@ Write narrative schema 1.3 using the
 Explain inputs, decisions, state changes, and outcomes. Bind statements and
 diagram elements to source/observation IDs. The renderer checks references and
 requires relevant branch/return coverage; it cannot prove arbitrary prose true.
+For concise branch labels, useful optional calls, and corrective FLOW diagnostics,
+see [Author readable process narratives](readable-process-narratives.md).
 A unique source selector returns `SOURCE_MATCH`, never compiler `RESOLVED`.
 Lexical events retain parent ordinals, syntax kinds, and exact snippets. They do
 not establish runtime order, resolved call targets, overload selection, inferred
@@ -177,8 +215,21 @@ clew docs changes --root /work/architecture --fragment RETURNED_FRAGMENT_ID --li
 Default `docs render` publishes valid operations despite unrelated unavailable
 repositories or rejected inputs. A failed operation update retains its previous
 text, exact snippets and source revision; another operation on the same page may
-use newer evidence. Inspect `updateFailures` and operation states. Selective
-`docs check --service` replaces only the selected service's check. Compatible
+use newer evidence. Inspect `updateFailures` and operation states.
+
+A file that violates the closed narrative schema is rejected in full; valid
+operations in that same file are not applied. Its `input-N` failure reports
+`rejectionScope: ENTIRE_NARRATIVE`, `applied: false`, and up to 16 safe diagnostics.
+Unknown fields at the narrative or operation level identify the field and a
+zero-based location such as `operations[1]`. Unsafe field names are redacted;
+nested schema errors report a safe operation location without submitted values
+or source snippets. Correct the file and resubmit the complete narrative.
+`narrativeInputSummary.retainedNarrativeUsed` describes the publication as a
+whole: it is true only when retained authored content actually reaches that
+publication. A rejected file with no prior authored content, or an accepted
+complete replacement from another file, does not imply retained fallback.
+
+Selective `docs check --service` replaces only the selected service's check. Compatible
 saved sibling results remain available, with an explicit retained-source status:
 they have not been reverified against current sources by this command. Changed
 service declarations or check policy cannot borrow an incompatible old result;

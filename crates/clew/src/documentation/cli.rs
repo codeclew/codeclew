@@ -497,13 +497,10 @@ fn run_inner(command: Command) -> Result<Value, ClewError> {
             let mut narratives = Vec::new();
             let mut failures = BTreeMap::new();
             for (index, path) in input.iter().enumerate() {
-                match store::read::<Narrative>(path, store::MAX_RECORD) {
+                match store::read_narrative(path) {
                     Ok(narrative) => narratives.push(narrative),
                     Err(error) => {
-                        failures.insert(
-                            format!("input-{index}"),
-                            json!({"reason":error.code,"nextAction":error.message}),
-                        );
+                        failures.insert(format!("input-{index}"), error.update_failure());
                     }
                 }
             }

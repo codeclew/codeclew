@@ -5506,7 +5506,14 @@ fn docsys_t07_declared_operations_without_source_routes_preserve_full_contracts(
     assert_eq!(capability["record"]["configured"], true);
     assert_eq!(
         capability["record"]["testedVersions"],
-        serde_json::json!(["3.0.0", "3.0.3"])
+        serde_json::json!([
+            "3.0.0", "3.0.3", "3.0.4", "3.0.123", "3.1.0", "3.1.1", "3.1.2", "3.1.123", "3.2.0",
+            "3.99.7", "4.0.0"
+        ])
+    );
+    assert_eq!(
+        capability["record"]["supportedVersionRange"],
+        "OPENAPI_THROUGH_3_X"
     );
     let input = f.author("orders", &checked);
     let rendered = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
@@ -5521,7 +5528,63 @@ fn docsys_t07_declared_operations_without_source_routes_preserve_full_contracts(
 }
 
 #[test]
-fn docsys_t07_reference_cycles_missing_files_external_urls_and_versions_are_gaps() {
+fn docsys_t07_openapi_versions_attempt_capture_and_render_declared_operations() {
+    let (f, repo) = openapi_fixture();
+    for version in ["3.1.0", "3.1.1", "3.1.2", "3.2.0", "3.99.7", "4.0.0"] {
+        fs::write(
+            repo.join("api/api.yaml"),
+            include_str!("../../../fixtures/documentation-system/openapi/api.yaml")
+                .replace("3.0.3", version),
+        )
+        .unwrap();
+        commit(&repo);
+        let checked = f.checked();
+        let evidence = &checked.services["orders"];
+        assert_eq!(evidence.contracts["api/api.yaml"]["openapi"], version);
+        let operations: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "CONTRACT_OPERATION")
+            .collect();
+        assert_eq!(operations.len(), 2, "{version}");
+        assert!(
+            operations
+                .iter()
+                .all(|o| o.normalized["openapi"] == version)
+        );
+        assert!(
+            operations
+                .iter()
+                .flat_map(|o| &o.source_ids)
+                .all(|id| evidence.sources[id].occurrence.is_some())
+        );
+        assert!(
+            !evidence
+                .boundaries
+                .iter()
+                .any(|b| b.starts_with("UNSUPPORTED_CONTRACT_VERSION"))
+        );
+        assert!(
+            operations
+                .iter()
+                .all(|o| o.normalized["readerSelection"]["reader"]
+                    == "BOUNDED_OPENAPI_PATH_OPERATION_READER")
+        );
+        assert!(operations.iter().all(
+            |o| o.normalized["readerSelection"]["outsideAdvertisedRange"]
+                == version.starts_with("4.")
+        ));
+        if version == "3.99.7" {
+            let input = f.author("orders", &checked);
+            let rendered = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+            let data = read(f.bundle(rendered["bundle"].as_str().unwrap(), "services/orders.json"));
+            assert_eq!(data["contracts"].as_array().unwrap().len(), 2);
+        }
+    }
+}
+
+#[test]
+fn docsys_t07_reference_gaps_and_actual_parse_or_shape_failures_remain_visible() {
     let (f, repo) = openapi_fixture();
     let doc = serde_json::json!({"openapi":"3.0.0","paths":{"/unknown":{"get":{"responses":{"200":{"description":"OK","content":{"application/json":{"schema":{"type":"object","properties":{"cycle":{"$ref":"#/components/schemas/Loop"},"missing":{"$ref":"#/components/schemas/Absent"},"external":{"$ref":"http://127.0.0.1:1/private"},"file":{"$ref":"unregistered.yaml#/Secret"},"escape":{"$ref":"../../outside.yaml"}}}}}}}}}},"components":{"schemas":{"Loop":{"$ref":"#/components/schemas/Loop"}}}});
     fs::write(repo.join("api/api.yaml"), serde_json::to_vec(&doc).unwrap()).unwrap();
@@ -5553,7 +5616,7 @@ fn docsys_t07_reference_cycles_missing_files_external_urls_and_versions_are_gaps
         assert!(gaps.contains(gap), "{gaps}");
     }
     assert!(!serde_json::to_string(e).unwrap().contains("do-not-import"));
-    for content in ["openapi: 3.1.0\npaths: {}\n", "openapi: [broken\n"] {
+    for content in ["openapi: 3.2.0\npaths: []\n", "openapi: [broken\n"] {
         fs::write(repo.join("api/api.yaml"), content).unwrap();
         commit(&repo);
         let checked = f.checked();
@@ -5569,8 +5632,8 @@ fn docsys_t07_reference_cycles_missing_files_external_urls_and_versions_are_gaps
         assert!(
             e.boundaries
                 .iter()
-                .any(|g| g.starts_with(if content.contains("3.1.0") {
-                    "UNSUPPORTED_CONTRACT_VERSION"
+                .any(|g| g.starts_with(if content.contains("3.2.0") {
+                    "UNREADABLE_CONTRACT_PATHS"
                 } else {
                     "INVALID_CONTRACT_JSON_YAML"
                 })),
