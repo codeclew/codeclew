@@ -24,15 +24,30 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.20
+## Current release: v0.13.21
 
-Version 0.13.20 saves a diagnostic bundle from an existing Check without another
-source capture: `clew support collect --root DOCS --output NEWDIR`. Use
-`clew --diagnostics NEWDIR COMMAND ...` to retain diagnostics from the next
-invocation, including failures before the core starts. Original output and exit
-status are preserved; private bounded terminal, compiler-worker and Maven logs
-require `--include-private-logs`. See the [release notes](docs/releases/v0.13.20.md)
-and [diagnostic guide](docs/operations/support-diagnostics.md) for scope and limits.
+Version 0.13.21 makes saved documentation easier to read and diagnose:
+
+- Invalid narrative inputs report safe field names and operation locations,
+  with explicit whole-input rejection and retained-content status.
+- OpenAPI path-operation reading attempts declarations through 3.x without a
+  patch-version allowlist, retaining limits for features it cannot interpret.
+- Process authoring explains business decisions while preserving mandatory
+  source-backed branches. The HTML reader hides exact step-prose copies only
+  when their text and evidence are already displayed; Markdown keeps main prose.
+- External-call steps show declared addresses, provenance and optional
+  environments, with an inline saved outgoing contract. Exact receiver links
+  reuse an unambiguous contract; explicit bindings need no external checkout.
+
+See the [release notes](docs/releases/v0.13.21.md),
+[readable-process guide](docs/operations/readable-process-narratives.md) and
+[outgoing-call guide](docs/operations/outgoing-service-calls.md).
+Addresses and contracts are declarations, not proof of runtime routing.
+
+Saved diagnostic bundles from 0.13.20 remain available through
+`clew support collect` and `clew --diagnostics NEWDIR COMMAND ...`; bounded
+private logs remain opt-in. See the
+[diagnostic guide](docs/operations/support-diagnostics.md) for scope and limits.
 
 Core now includes the sole Kotlin 2.4.10 analyzer for supported Kotlin 1.9–2.4
 projects, including 2.3.0. Separate Kotlin 2.3 packages are retired; see the
@@ -161,7 +176,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.20 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.21 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -190,7 +205,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.20 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.21 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -233,7 +248,7 @@ cannot change those old installed bytes. Alternatively install current core
 directly with the public installer and the pack setting cleared:
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.20 CODECLEW_PACKS= sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.21 CODECLEW_PACKS= sh
 ```
 
 ## Install the agent skill
