@@ -6061,6 +6061,107 @@ mod input_cap_tests {
     }
 
     #[test]
+    fn ordinary_proposal_markdown_keeps_main_explanations_and_distinct_context() {
+        let work = sequence_work();
+        let state = read_state(&work, &["entry-ref", "flow-ref"]);
+        let mut proposal = proposal_input("entry-ref", "return", "entry-ref", "flow-ref");
+        proposal.operations[0].explanation = vec![super::super::proposals::Claim {
+            text: "The prepared result completes this request.".into(),
+            evidence: vec!["flow-ref".into()],
+            checks: Vec::new(),
+            uncertainty: None,
+        }];
+        let (narrative, _, _) =
+            super::super::proposals::materialize(&work, &proposal, &state).unwrap();
+        super::super::render::validate(&narrative, &work.checked).unwrap();
+        let canonical = serde_json::to_value(&narrative).unwrap();
+        let echo = narrative.operations[0].explanation[0].clone();
+        assert_eq!(echo.text, narrative.operations[0].events[0].text);
+        let markdown =
+            super::super::render::markdown("Reader fixture", &narrative, &BTreeMap::new());
+        assert_eq!(markdown.matches(&echo.text).count(), 2);
+        assert!(markdown.find(&echo.text).unwrap() < markdown.find("<details>").unwrap());
+        assert!(markdown.contains("The prepared result completes this request."));
+        assert_eq!(serde_json::to_value(&narrative).unwrap(), canonical);
+
+        let mut expanded = narrative.clone();
+        let operation = &mut expanded.operations[0];
+        let mut dependency_context = echo.clone();
+        dependency_context.id = "dependency-context".into();
+        dependency_context
+            .dependency_ids
+            .push("orders:symbol:context".into());
+        operation.explanation.push(dependency_context);
+        let mut source_context = echo.clone();
+        source_context.id = "source-context".into();
+        source_context.source_ids.push("source-extra".into());
+        operation.explanation.push(source_context);
+        let mut authored = echo.clone();
+        authored.id = "authored-context".into();
+        authored.authorship = Some(
+            serde_json::from_value(json!({
+                "authority":"USER_DOCUMENTATION", "author":"Synthetic editor",
+                "meaningReview":"UNASSESSED", "contextRole":"RETAINED_UNVERIFIED_CONTEXT",
+                "editDigest":"edit-synthetic", "sourceSnapshot":"snapshot-synthetic",
+                "sourceRefs":{}, "dependencyRefs":{}
+            }))
+            .unwrap(),
+        );
+        operation.explanation.push(authored);
+        let mut detail = echo.clone();
+        detail.id = "detail-context".into();
+        detail.detail = true;
+        operation.explanation.push(detail);
+        let mut related = operation.events[0].clone();
+        related.id = "related-event".into();
+        related.kind = "note".into();
+        related.text = "Related retained action.".into();
+        operation.events.push(related);
+        let mut thematic = echo.clone();
+        thematic.id = "thematic-context".into();
+        thematic.event_ids.push("related-event".into());
+        operation.explanation.push(thematic);
+        let mut unrendered = echo.clone();
+        unrendered.id = "unrendered-context".into();
+        unrendered.event_ids = vec!["unrendered-event".into()];
+        operation.explanation.push(unrendered);
+        let markdown =
+            super::super::render::markdown("Reader fixture", &expanded, &BTreeMap::new());
+        // Main prose stays visible; one diagram label and six added contexts remain.
+        assert_eq!(markdown.matches(&echo.text).count(), 8);
+        assert!(markdown.contains("User documentation by Synthetic editor"));
+        assert!(markdown.contains("The prepared result completes this request."));
+
+        let mut overview = narrative.clone();
+        overview.operations[0].overview_diagram = Some(super::super::model::OverviewDiagram {
+            nodes: vec![super::super::model::DiagramNode {
+                id: "overview-node".into(),
+                text: "Bounded overview".into(),
+                participant: narrative.operations[0].participants[0].id.clone(),
+                column: 0,
+                row: 0,
+                event_ids: vec![narrative.operations[0].events[0].id.clone()],
+            }],
+            edges: Vec::new(),
+        });
+        let markdown =
+            super::super::render::markdown("Reader fixture", &overview, &BTreeMap::new());
+        assert_eq!(markdown.matches(&echo.text).count(), 1);
+        assert!(markdown.contains(&format!("\n\n{}\n\n", echo.text)));
+        let mut bounded = narrative.clone();
+        for index in 1..65 {
+            let mut event = bounded.operations[0].events[0].clone();
+            event.id = format!("additional-event-{index}");
+            event.kind = "note".into();
+            event.text = "Additional retained action.".into();
+            bounded.operations[0].events.push(event);
+        }
+        let markdown = super::super::render::markdown("Reader fixture", &bounded, &BTreeMap::new());
+        assert!(markdown.contains("A bounded overview has not been authored"));
+        assert!(markdown.contains(&format!("\n\n{}\n\n", echo.text)));
+    }
+
+    #[test]
     fn missing_sequence_flow_diagnostics_cover_all_kinds_and_bound_safe_ids() {
         let mut work = sequence_work();
         let mut context = work.checked.dependencies["orders:flow:return"].clone();

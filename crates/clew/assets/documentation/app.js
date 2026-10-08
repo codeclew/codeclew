@@ -575,10 +575,18 @@ function behaviorPseudocode(o){
  if(!rows.length)return '';
  return chromeHtml`<section class="diagram-card behavior-pseudocode" aria-label="${esc(t('Readable behavior'))}"><div class="section-label"><b>${esc(t('Readable behavior'))}</b><span>${esc(t('Projection of documented step narratives; not executable code or an observed runtime trace.'))}</span></div><div class="behavior-pseudocode-lines" role="list">${rows.map(({event,line,depth})=>chromeHtml`<div class="behavior-pseudocode-line" role="listitem" style="--indent:${depth*20}px;--indent-mobile:${depth*13}px"><code class="pseudocode-keyword">${esc(line.keyword)}</code><span class="pseudocode-text">${esc(line.text)}</span>${stepEvidence(o,event)}</div>`).join('')}</div></section>`;
 }
-function explanation(o,detail=false){
+function redundantDisplayedExplanation(p,displayedEvents){
+ if(p.detail||p.authorship||!p.text||!Array.isArray(p.eventIds)||p.eventIds.length!==1)return false;
+ const linked=displayedEvents.filter(event=>event.id===p.eventIds[0]);
+ if(linked.length!==1||linked[0].kind==='end'||linked[0].text!==p.text)return false;
+ const sameReferences=(a,b)=>Array.isArray(a)&&Array.isArray(b)&&a.every(id=>typeof id==='string')&&b.every(id=>typeof id==='string')&&new Set(a).size===new Set(b).size&&a.every(id=>b.includes(id));
+ return sameReferences(p.dependencyIds,linked[0].dependencyIds)&&sameReferences(p.sourceIds,linked[0].sourceIds);
+}
+function explanation(o,detail=false,displayedEvents=[]){
  const paragraphs=new Map();
  for(const p of (o.explanation||[]).filter(p=>!!p.detail===detail)){
-  const key=JSON.stringify([p.text,p.authorship||null]);
+  if(redundantDisplayedExplanation(p,displayedEvents))continue;
+  const key=JSON.stringify([p.text,p.eventIds||null,p.dependencyIds||null,p.sourceIds||null,p.authorship||null]);
   const previous=paragraphs.get(key);
   if(previous)previous.sourceIds=[...new Set([...previous.sourceIds,...p.sourceIds])];
   else paragraphs.set(key,{...p,sourceIds:[...p.sourceIds]});
@@ -610,10 +618,11 @@ function overviewDiagram(o){
 function sequence(e,o){if(!o)return chromeHtml`<p class="empty-note">${esc(D.gaps[e.id]||t('Behavior documentation has not been authored for this entrypoint.'))}</p>`;
  const state=D.stateDiagram?chromeHtml`<div class="diagram-card"><div class="section-label"><b>${esc(t('State diagram'))}</b><span>${esc(t('Declared process-state schema'))} · ${esc(t('Static source bindings do not show runtime execution.'))}</span></div>${plantumlPreview(D.stateDiagram,D.stateDiagramSvg,'State diagram')}<div class="diagram-footer"><span>${esc(t('States and transitions come from the captured process-state schema.'))} scenarios/${esc(D.subject.split(':').pop())}-states.yaml</span><a download href="../diagrams/${esc(D.stateDiagram)}.puml">PlantUML ↓</a></div></div>`:'';
  const pseudocode=behaviorPseudocode(o);
+ const displayedEvents=pseudocode?(o.events||[]).filter(event=>event.kind!=='end'&&typeof event.text==='string'&&event.text.length>0&&pseudocodeEvent(o,event).text.includes(event.text)):[];
  const sequenceFlow=chromeHtml`<div class="diagram-card"><div class="section-label"><b>Scenario overview</b><span>Select a node or connection to inspect its source</span></div><div class="overview-scroll">${overviewDiagram(o)}</div><div class="diagram-footer"><span>Source-based interpretation; declared links do not prove runtime delivery.</span><a download href="../diagrams/${esc(D.subject.replace(':','-'))}-${esc(o.id)}.mmd">Mermaid ↓</a></div></div>`;
  const accessible=o.overviewDiagram?chromeHtml`<details class="steps-accessible"><summary>Diagram as text</summary><ul>${o.overviewDiagram.nodes.map(n=>chromeHtml`<li><button data-overview-node="${esc(n.id)}">${esc(n.text)}</button></li>`).join('')}</ul><ul>${o.overviewDiagram.edges.map(e=>chromeHtml`<li>${esc(o.overviewDiagram.nodes.find(n=>n.id===e.from).text)} → ${esc(o.overviewDiagram.nodes.find(n=>n.id===e.to).text)}${e.text?' · '+esc(e.text):''}</li>`).join('')}</ul></details>`:'';
  const flow=pseudocode?chromeHtml`<details class="sequence-details"><summary>${esc(t(o.overviewDiagram?'Scenario overview':'Sequence diagram'))}</summary>${sequenceFlow}${accessible}</details>`:chromeHtml`${sequenceFlow}${accessible}`;
- const narrativeDetails=pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o)}${explanation(o,true)}</details>`:explanation(o);
+ const narrativeDetails=pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o,false,displayedEvents)}${explanation(o,true)}</details>`:explanation(o);
  const implementationDetails=!pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o,true)}</details>`:'';
  return chromeHtml`${(o.visuals||[]).map(v=>visualCard(o,v)).join('')}${pseudocode}${state}${flow}${narrativeDetails}${o.boundaries.length?chromeHtml`<details class="technical-evidence"><summary>Scope and evidence boundaries</summary><ul>${o.boundaries.map(b=>chromeHtml`<li>${esc(b)}</li>`).join('')}</ul></details>`:''}${implementationDetails}<details class="technical-evidence"><summary>Declared service links</summary>${interactionOverview(o)||chromeHtml`<p>No cross-service connections selected.</p>`}</details>`;}
 function interfaceContracts(e){

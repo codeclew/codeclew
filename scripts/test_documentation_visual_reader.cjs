@@ -144,6 +144,60 @@ test('documented events render as localized, evidence-linked pseudocode while th
  assert.match(ruHtml,/Подтверждение шага/);
  assert.match(ruHtml,/<summary>Диаграмма последовательности<\/summary>/);
 });
+test('ordinary step echoes display once while canonical explanations remain intact',()=>{
+ const data=behaviorFixture(),operation=data.operations[0];
+ for(const event of operation.events)event.dependencyIds=['documented-flow'];
+ operation.explanation=operation.events.filter(event=>event.kind!=='end').map(event=>({id:`paragraph-${event.id}`,text:event.text,eventIds:[event.id],dependencyIds:[...event.dependencyIds],sourceIds:[...event.sourceIds],detail:false}));
+ operation.explanation.push({...operation.explanation[0],id:'expanded-outcome',text:'The prepared result completes this request.'});
+ const canonical=JSON.stringify(operation),r=load(data),html=r.e('scenario-content').innerHTML;
+ assert.match(html,/class="diagram-card behavior-pseudocode"/);
+ assert.match(html,/For each supplied reservation:/);
+ assert.doesNotMatch(html,/<p>For each supplied reservation<\/p>/);
+ assert.doesNotMatch(html,/<p>the accepted result<\/p>/);
+ assert.match(html,/<p>The prepared result completes this request\.<\/p>/);
+ assert.equal(r.run('JSON.stringify(D.operations[0])'),canonical);
+ const noDisplay=r.run('explanation(D.operations[0])');
+ assert.match(noDisplay,/<p>For each supplied reservation<\/p>/);
+});
+test('sequence preserves an otherwise explanation when only the localized keyword is displayed',()=>{
+ const data=behaviorFixture(),operation=data.operations[0],event=operation.events.find(event=>event.id==='inner-else');
+ event.dependencyIds=['alternative-flow'];
+ operation.explanation=[{id:'alternative-explanation',text:event.text,eventIds:[event.id],dependencyIds:[...event.dependencyIds],sourceIds:[...event.sourceIds],detail:false}];
+ const canonical=JSON.stringify(operation),en=load(data);
+ assert.match(en.e('scenario-content').innerHTML,/<code class="pseudocode-keyword">Otherwise<\/code><span class="pseudocode-text"><\/span>/);
+ assert.match(en.e('scenario-content').innerHTML,/<p>Otherwise<\/p>/);
+ assert.equal(en.run('JSON.stringify(D.operations[0])'),canonical);
+ const ru=load({...data,language:'ru'});
+ assert.match(ru.e('scenario-content').innerHTML,/<code class="pseudocode-keyword">Иначе<\/code><span class="pseudocode-text"><\/span>/);
+ assert.match(ru.e('scenario-content').innerHTML,/<p>Otherwise<\/p>/);
+});
+test('redundant-copy filtering preserves distinct evidence, thematic, authored, detail and unresolved context',()=>{
+ const data=behaviorFixture(),operation=data.operations[0],event=operation.events[0];
+ event.dependencyIds=['loop-flow'];
+ const echo={id:'copied-loop',text:event.text,eventIds:[event.id],dependencyIds:[...event.dependencyIds],sourceIds:[...event.sourceIds],detail:false};
+ operation.explanation=[echo,
+  {...echo,id:'extra-dependency',dependencyIds:[...echo.dependencyIds,'extra-dependency']},
+  {...echo,id:'extra-source',sourceIds:[...echo.sourceIds,'extra-source']},
+  {...echo,id:'thematic',eventIds:[event.id,operation.events[1].id]},
+  {...echo,id:'unresolved',eventIds:['unrendered-event']},
+  {...echo,id:'missing-metadata',dependencyIds:undefined},
+  {...echo,id:'authored',authorship:{author:'Synthetic editor',sourceSnapshot:'synthetic-snapshot',editDigest:'synthetic-edit'}},
+  {...echo,id:'detail',detail:true},
+ ];
+ const canonical=JSON.stringify(operation),r=load(data),displayed='D.operations[0].events.filter(event=>event.kind!=="end")';
+ const prose=r.run(`explanation(D.operations[0],false,${displayed})`),detail=r.run(`explanation(D.operations[0],true,${displayed})`);
+ assert.equal((prose.match(/<p>For each supplied reservation<\/p>/g)||[]).length,6);
+ assert.match(prose,/data-sources="loop-source extra-source"/);
+ assert.match(prose,/User documentation by Synthetic editor/);
+ assert.equal((detail.match(/<p>For each supplied reservation<\/p>/g)||[]).length,1);
+ assert.equal(r.run('JSON.stringify(D.operations[0])'),canonical);
+ // An overview still has displayed original labels in the HTML behavior view.
+ operation.overviewDiagram={nodes:[{id:'summary',text:'Bounded overview',participant:'service',column:0,row:0,eventIds:[event.id]}],edges:[]};
+ operation.explanation=[echo];
+ const overview=load(data).e('scenario-content').innerHTML;
+ assert.match(overview,/For each supplied reservation:/);
+ assert.doesNotMatch(overview,/<p>For each supplied reservation<\/p>/);
+});
 test('meaning review labels identify model approval in English and Russian',()=>{
  const data=fixture();
  data.sectionState.verification='VERIFIED';

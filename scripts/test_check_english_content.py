@@ -196,6 +196,12 @@ class GeneratedPublicationEnglishTest(unittest.TestCase):
             "site/examples/current-workflow/docs/generated/"
             "bf1cf2b887bd2cd30062cc00d6da3ac18722ddd76f8310d1df1006f37f7310ab/"
             "services/cli-documentation.html",
+            "site/examples/clew-starter/docs/generated/"
+            "fe231260a788793c8125f84cd34c23eaac4a1bec360efd7fd570cf4126d109d0/"
+            "services/clew-starter.html",
+            "site/examples/current-workflow/docs/generated/"
+            "55925743c99a25e7caedad2327b2998160fa0e8c1f2d9a3215f0a046faf9fd88/"
+            "services/cli-documentation.html",
         )
         for relative in paths:
             with self.subTest(publication=relative):

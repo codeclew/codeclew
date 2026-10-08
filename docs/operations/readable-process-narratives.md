@@ -57,10 +57,16 @@ structure".
 Generic proposals currently materialize each step meaning into both an event
 label and a linked explanation paragraph. Explicit operation explanations are
 additional paragraphs, so they should add context rather than repeat the step.
-The Markdown renderer deduplicates identical explanation text within each of its
-main-prose and detail sections, accounting for authored edit identity. It does
-not deduplicate explanation against diagram labels or across those sections.
-Author guidance does not change this materialization or hide accepted events.
+The HTML reader suppresses an explanation copy only when it has the exact text
+and evidence of one linked event whose original text appears in the visible
+behavior view. Distinct evidence,
+multi-event thematic paragraphs, authored context and detail paragraphs remain
+visible. Markdown always keeps main explanation prose: its Mermaid diagram is
+inside collapsed implementation details, so its labels cannot replace the
+reader's main text. This also preserves prose when an overview or bounded fallback
+replaces the original labels. Identical explanation paragraphs are deduplicated within each
+display section only when their evidence, linked events and authorship match.
+Canonical records, fragment IDs, source links and accepted events remain intact.
 
 ## Correct missing-flow errors
 
