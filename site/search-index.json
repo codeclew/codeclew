@@ -24,6 +24,12 @@
     "group": "Start"
   },
   {
+    "title": "Follow an outgoing call without losing the process",
+    "url": "./index.html#release-0-13-23",
+    "description": "Start with Clew",
+    "group": "Start"
+  },
+  {
     "title": "From selected source to an answer",
     "url": "./index.html#how-it-works",
     "description": "Start with Clew",
@@ -92,6 +98,18 @@
   {
     "title": "Export linked pages from a saved Check",
     "url": "./documentation.html#retained-source-pages",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
+    "title": "Follow an outgoing service call",
+    "url": "./documentation.html#outgoing-service-call",
+    "description": "Create a first document",
+    "group": "Tasks"
+  },
+  {
+    "title": "Keep process explanations readable",
+    "url": "./documentation.html#readable-processes",
     "description": "Create a first document",
     "group": "Tasks"
   },
