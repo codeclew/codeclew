@@ -97,7 +97,11 @@ pub struct Endpoint {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallSite {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub target: String,
+    /// Exact captured FLOW/CALL within the selected caller symbol. No target proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordinal: Option<usize>,
 }
@@ -129,6 +133,16 @@ pub struct Applicability {
     pub environments: Vec<String>,
 }
 
+/// User-provided destination data, never a verified runtime binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeclaredAddress {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Interaction {
@@ -143,6 +157,11 @@ pub struct Interaction {
     pub applicability: Option<Applicability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<DeclaredAddress>,
+    /// Destination identity only; no receiver checkout or source selector.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
 }
 
 fn depth() -> usize {

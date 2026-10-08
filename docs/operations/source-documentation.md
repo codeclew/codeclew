@@ -723,3 +723,6 @@ process, desired contracts, branches, quantity examples, operational questions
 and acceptable gaps. There is no universal detail-level switch. `maxItems` and
 `maxBytes` bound evidence pages; `maxDepth` and `maxNodes` bound traversal. They
 do not guarantee interpretation quality or exhaustive coverage.
+
+For declared addresses and saved outgoing API contracts at individual call steps,
+see [Addresses and contracts at outgoing service calls](outgoing-service-calls.md).

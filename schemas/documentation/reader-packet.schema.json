@@ -425,12 +425,21 @@
         "selector": { "$ref": "#/$defs/interactionSelector" },
         "callSite": {
           "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "target": { "type": "string", "minLength": 1 },
-            "ordinal": { "type": "integer", "minimum": 0 }
-          },
-          "required": ["target"]
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false,
+              "properties": {
+                "target": { "type": "string", "minLength": 1 },
+                "ordinal": { "type": "integer", "minimum": 0 }
+              },
+              "required": ["target"]
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "properties": { "observation": { "type": "string", "minLength": 1, "maxLength": 512 } },
+              "required": ["observation"]
+            }
+          ]
         }
       },
       "required": ["service"]
@@ -472,6 +481,19 @@
             "environments": { "type": "array", "items": { "type": "string" } }
           },
           "required": ["environments"]
+        },
+        "external": { "type": "boolean" },
+        "addresses": {
+          "type": "array", "maxItems": 16,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "url": { "type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://" },
+              "environment": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "source": { "type": "string", "minLength": 1, "maxLength": 2048 }
+            },
+            "required": ["url", "source"]
+          }
         },
         "contractReference": { "type": "string" }
       },

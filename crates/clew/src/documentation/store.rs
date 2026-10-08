@@ -695,16 +695,24 @@ pub fn endpoint(e: &Endpoint, services: &BTreeMap<String, Service>) -> Result<()
     {
         return Err(invalid("endpoint selector is incomplete or unsupported"));
     }
-    if e.call_site
-        .as_ref()
-        .is_some_and(|c| c.target.is_empty() || c.ordinal.is_some_and(|i| i > 4096))
-    {
+    if e.call_site.as_ref().is_some_and(|c| {
+        c.ordinal.is_some_and(|i| i > 4096)
+            || if let Some(id) = &c.observation {
+                id.is_empty()
+                    || id.len() > 512
+                    || id.chars().any(char::is_control)
+                    || !c.target.is_empty()
+                    || c.ordinal.is_some()
+            } else {
+                c.target.is_empty()
+            }
+    }) {
         return Err(invalid("invalid call-site selector"));
     }
     Ok(())
 }
 
-fn validate_interaction(
+pub(super) fn validate_interaction(
     i: &Interaction,
     services: &BTreeMap<String, Service>,
 ) -> Result<(), ClewError> {
@@ -723,7 +731,53 @@ fn validate_interaction(
         ));
     }
     endpoint(&i.from, services)?;
-    endpoint(&i.to, services)?;
+    if i.external {
+        if !valid_id(&i.to.service) || i.to.selector.is_some() || i.to.call_site.is_some() {
+            return Err(invalid(
+                "external interactions require a destination service identity without a source selector or callSite",
+            ));
+        }
+    } else {
+        endpoint(&i.to, services)?;
+    }
+    if i.addresses.len() > 16
+        || i.addresses.iter().any(|address| {
+            let authority = address
+                .url
+                .split_once("://")
+                .filter(|(scheme, _)| {
+                    scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+                })
+                .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""));
+            address.url.len() > 2048
+                || address
+                    .url
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace())
+                || authority.is_none_or(|host| host.is_empty() || host.contains('@'))
+                || address.environment.as_ref().is_some_and(|environment| {
+                    environment.trim().is_empty()
+                        || environment.len() > 256
+                        || environment.chars().any(char::is_control)
+                })
+                || address.source.trim().is_empty()
+                || address.source.len() > 2048
+                || address.source.chars().any(char::is_control)
+        })
+    {
+        return Err(invalid(
+            "interaction addresses require bounded HTTP(S) URLs without credentials and a source; optional environments must be nonempty; at most 16 addresses",
+        ));
+    }
+    if i.contract_reference.as_ref().is_some_and(|reference| {
+        reference.trim().is_empty()
+            || reference.len() > 512
+            || reference.chars().any(char::is_control)
+    }) {
+        return Err(invalid(
+            "contractReference must be a bounded exact saved contract operation ID",
+        ));
+    }
     if i.from.service == i.to.service {
         return Err(invalid("an interaction must connect two distinct services"));
     }

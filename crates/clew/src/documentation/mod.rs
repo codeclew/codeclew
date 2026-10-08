@@ -28,6 +28,7 @@ mod endpoint_render_tests;
 pub mod entities;
 pub mod evidence_package;
 mod explanation_authorship;
+mod external_calls;
 pub mod fact_index;
 pub mod flow_dsl;
 pub mod history;

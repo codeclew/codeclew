@@ -144,6 +144,52 @@ test('documented events render as localized, evidence-linked pseudocode while th
  assert.match(ruHtml,/Подтверждение шага/);
  assert.match(ruHtml,/<summary>Диаграмма последовательности<\/summary>/);
 });
+function externalCallFixture(){
+ const data=behaviorFixture(),operation=data.operations[0],event=operation.events.find(event=>event.kind==='message');
+ data.subject='service:sample';
+ const outgoing={id:'contract-outgoing',sourceIds:['outgoing-contract'],normalized:{method:'POST',path:'/external-reservations',sourceMapping:'EXPLICIT_DECLARATION',boundaries:[],parameters:[],operation:{requestBody:{required:true,content:{'application/json':{schema:{type:'object',properties:{quantity:{type:'integer'}},required:['quantity']}}}},responses:{201:{description:'External reservation created',content:{'application/json':{schema:{type:'object',properties:{reservationId:{type:'string'}}}}}}}},servers:[{url:'https://contract-server.example.invalid'}],security:[],securitySchemes:{}}};
+ const incoming={...outgoing,id:'contract-incoming',normalized:{...outgoing.normalized,path:'/incoming-orders',entrypoint:operation.id,operation:{responses:{200:{description:'Incoming caller operation'}}}}};
+ data.contracts=[incoming];data.operationContracts={[operation.id]:[incoming]};
+ data.operationSources[operation.id]={...data.operationSources[operation.id],'outgoing-contract':source('SAVED EXTERNAL CONTRACT')};
+ data.sources['outgoing-contract']=source('CURRENT DIFFERENT CONTRACT');
+ data.operationExternalCalls={[operation.id]:[{eventId:event.id,interactionId:'inventory-reservation',to:'inventory',title:'Reserve external inventory',addresses:[{url:'https://inventory.example.invalid/v1',environment:'staging',source:'Deployment inventory'}],declaration:{origin:'human',rationale:'The operator declared this outgoing binding.'},applicability:{environments:['staging']},bindingStatus:'EXPLICIT_INTERACTION',contractStatus:'EXPLICIT_SAVED_CONTRACT',contract:outgoing,snapshotContextDigest:'saved-snapshot',retained:false,targetChanged:false}]};
+ return data;
+}
+test('ordinary message step displays a declared address and its exact outgoing saved contract',()=>{
+ const data=externalCallFixture(),r=load(data),html=r.e('scenario-content').innerHTML,operation=data.operations[0];
+ assert.match(html,/external-call-details/);assert.match(html,/https:\/\/inventory\.example\.invalid\/v1/);
+ assert.match(html,/Environment: staging/);assert.match(html,/Provided from: Deployment inventory/);
+ assert.match(html,/<summary>Contract · POST \/external-reservations<\/summary>/);
+ assert.match(html,/quantity/);assert.match(html,/External reservation created/);assert.match(html,/reservationId/);
+ assert.doesNotMatch(html,/Incoming caller operation/);assert.doesNotMatch(html,/href="https:\/\/inventory/);
+ r.click({sources:'outgoing-contract',sourceOperation:operation.id});
+ assert.match(r.e('source-code').innerHTML,/SAVED EXTERNAL CONTRACT/);assert.doesNotMatch(r.e('source-code').innerHTML,/CURRENT DIFFERENT CONTRACT/);
+ r.click({tab:'contract'});assert.match(r.e('scenario-content').innerHTML,/Incoming caller operation/);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/External reservation created/);
+ const ru=load({...data,language:'ru'});assert.match(ru.e('scenario-content').innerHTML,/Внешний сервис/);assert.match(ru.e('scenario-content').innerHTML,/<summary>Контракт · POST/);
+});
+test('external call missing and multiple declarations remain explicit; old pages do not infer bindings',()=>{
+ const data=externalCallFixture(),operation=data.operations[0],row=data.operationExternalCalls[operation.id][0];
+ delete row.addresses[0].environment;assert.match(load(data).e('scenario-content').innerHTML,/Environment: unspecified/);
+ row.addresses=[];row.contract=null;row.contractStatus='REFERENCE_UNAVAILABLE';row.bindingStatus='MULTIPLE_DECLARED_INTERACTIONS';
+ let html=load(data).e('scenario-content').innerHTML;
+ assert.match(html,/Address not provided/);assert.match(html,/referenced contract is unavailable/);assert.match(html,/exact saved CONTRACT_OPERATION ID/);assert.match(html,/Multiple declarations match/);
+ assert.doesNotMatch(html,/Incoming caller operation/);
+ row.contractStatus='AMBIGUOUS_RECEIVER_CONTRACT';
+ html=load(data).e('scenario-content').innerHTML;assert.match(html,/Multiple saved receiver contracts match/);assert.doesNotMatch(html,/Incoming caller operation/);
+ row.contractStatus='NOT_BOUND';row.targetChanged=true;row.retained=true;
+ html=load(data).e('scenario-content').innerHTML;assert.match(html,/No outgoing contract is bound/);assert.match(html,/earlier accepted operation/);
+ delete data.operationExternalCalls;
+ html=load(data).e('scenario-content').innerHTML;assert.doesNotMatch(html,/external-call-details/);assert.doesNotMatch(html,/inventory\.example/);
+});
+test('external destination and contract strings remain inert escaped data',()=>{
+ const data=externalCallFixture(),row=data.operationExternalCalls[data.operations[0].id][0];
+ row.addresses=[{url:'javascript:alert(1)',environment:'<img src=x onerror=alert(1)>',source:'"<script>attack()</script>'},{url:'data:text/html,<script>attack()</script>',environment:'test',source:'User declaration'}];
+ row.title='<script>attack()</script>';row.contract.normalized.operation.responses['201'].description='<img src=x onerror=attack()>';
+ const html=load(data).e('scenario-content').innerHTML;
+ assert.match(html,/javascript:alert\(1\)/);assert.match(html,/&lt;script&gt;attack\(\)&lt;\/script&gt;/);
+ assert.doesNotMatch(html,/<script>|<img src=x|href="(?:javascript:|data:)/);
+});
 test('ordinary step echoes display once while canonical explanations remain intact',()=>{
  const data=behaviorFixture(),operation=data.operations[0];
  for(const event of operation.events)event.dependencyIds=['documented-flow'];
