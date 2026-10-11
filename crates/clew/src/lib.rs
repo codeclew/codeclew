@@ -66,6 +66,7 @@ pub mod thread_impact;
 pub mod thread_impact_service;
 pub mod thread_question;
 pub mod thread_question_control;
+pub mod thread_values;
 pub mod typescript_adapter_v2;
 pub mod typescript_project_model;
 pub mod worker;
