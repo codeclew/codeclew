@@ -445,6 +445,23 @@ final class CodeclewJavaAnalyzer {
                     identity, owner, descriptor, executable, tree);
             if (tree.getBody() != null) {
                 declaration.put("documentation", new DocumentationFlow().read(tree, executable));
+                if (executable.getKind() == ElementKind.METHOD) {
+                    ValueProjection projection = new ValueProjection();
+                    Map<String, Object> values = projection.read(tree, executable, identity);
+                    if (utf8(values) > 32 * 1024) {
+                        boundary("JAVA_VALUE_PROJECTION_BYTES_UNSUPPORTED", tree);
+                    } else {
+                        declaration.put("valueProjection", values);
+                        if (utf8(declaration) > 256 * 1024) {
+                            values = projection.unknown(tree, identity);
+                            declaration.put("valueProjection", values);
+                        }
+                        if (utf8(values) > 32 * 1024 || utf8(declaration) > 256 * 1024) {
+                            declaration.remove("valueProjection");
+                            boundary("JAVA_VALUE_DECLARATION_BYTES_UNSUPPORTED", tree);
+                        }
+                    }
+                }
             }
             facts.add(declaration);
             if (tree.getBody() != null) new VariablePaths().scan(tree.getBody(), null);
@@ -455,6 +472,126 @@ final class CodeclewJavaAnalyzer {
             super.visitMethod(tree, unused);
             executableOwners.pop();
             return null;
+        }
+
+        /** A closed immutable-local profile. No name-based reaching definitions. */
+        private final class ValueProjection {
+            private final Map<Element, String> definitions = new IdentityHashMap<>();
+            private final Map<String, Map<String, Object>> nodes = new TreeMap<>();
+            private static final int LIMIT = 128;
+            private boolean unsupported;
+
+            Map<String, Object> read(MethodTree method, ExecutableElement executable, String owner) {
+                // Any write, including one nested in an initializer, invalidates
+                // immutable definitions. Budget the preflight independently.
+                new TreeScanner<Void, Void>() {
+                    int visited;
+                    int depth;
+                    @Override public Void scan(Tree tree, Void unused) {
+                        if (tree == null || unsupported) return null;
+                        if (depth >= 64 || ++visited > 4096 || tree instanceof AssignmentTree
+                                || tree instanceof CompoundAssignmentTree
+                                || tree instanceof UnaryTree unary && Set.of(Tree.Kind.PREFIX_INCREMENT,
+                                    Tree.Kind.POSTFIX_INCREMENT, Tree.Kind.PREFIX_DECREMENT,
+                                    Tree.Kind.POSTFIX_DECREMENT).contains(unary.getKind())) {
+                            unsupported = true; return null;
+                        }
+                        depth++;
+                        try { return super.scan(tree, unused); }
+                        finally { depth--; }
+                    }
+                }.scan(method.getBody(), null);
+                if (!unsupported) {
+                    try {
+                        for (VariableTree parameter : method.getParameters()) {
+                            Element element = element(parameter);
+                            if (!(element instanceof VariableElement variable)) throw new IllegalStateException();
+                            String kind = variable.asType().getKind().isPrimitive() ? "NON_NULL" : "INPUT";
+                            definitions.put(element, node(parameter, Map.of("kind", kind), List.of()));
+                        }
+                        boolean returned = false;
+                        for (Tree statement : method.getBody().getStatements()) {
+                            if (returned) throw new IllegalStateException();
+                            if (statement instanceof VariableTree variable && variable.getInitializer() != null) {
+                                Element element = element(variable);
+                                if (!(element instanceof VariableElement)) throw new IllegalStateException();
+                                String operand = expression(variable.getInitializer(), 0);
+                                definitions.put(element, node(variable, Map.of("kind", "COPY", "value", operand), List.of()));
+                            } else if (statement instanceof ReturnTree result && result.getExpression() != null) {
+                                String operand = expression(result.getExpression(), 0);
+                                node("result", result, Map.of("kind", "COPY", "value", operand), List.of());
+                                returned = true;
+                            } else throw new IllegalStateException();
+                        }
+                        if (!returned) throw new IllegalStateException();
+                    } catch (IllegalStateException failure) { unsupported = true; }
+                }
+                if (unsupported) {
+                    nodes.clear();
+                    node("result", method, Map.of("kind", "UNKNOWN", "boundary", "JAVA_VALUE_BODY_OR_BUDGET_UNSUPPORTED"), List.of());
+                }
+                Map<String, Object> projection = Map.of("schema", "javac-value-projection/0.1", "owner", owner,
+                        "nodes", new ArrayList<>(nodes.values()),
+                        "globalBoundaries", List.of("JAVA_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"));
+                if (utf8(projection) > 32 * 1024) {
+                    nodes.clear();
+                    node("result", method, Map.of("kind", "UNKNOWN", "boundary", "JAVA_VALUE_BODY_OR_BUDGET_UNSUPPORTED"), List.of());
+                    projection = Map.of("schema", "javac-value-projection/0.1", "owner", owner,
+                            "nodes", new ArrayList<>(nodes.values()),
+                            "globalBoundaries", List.of("JAVA_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"));
+                }
+                return projection;
+            }
+            Map<String, Object> unknown(MethodTree method, String owner) {
+                nodes.clear();
+                node("result", method, Map.of("kind", "UNKNOWN", "boundary", "JAVA_VALUE_BODY_OR_BUDGET_UNSUPPORTED"), List.of());
+                return Map.of("schema", "javac-value-projection/0.1", "owner", owner,
+                        "nodes", new ArrayList<>(nodes.values()),
+                        "globalBoundaries", List.of("JAVA_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"));
+            }
+            private Element element(Tree tree) {
+                TreePath path = TreePath.getPath(getCurrentPath(), tree);
+                return path == null ? null : trees.getElement(path);
+            }
+            private String expression(Tree expression, int depth) {
+                if (depth > 32) throw new IllegalStateException();
+                if (expression instanceof ParenthesizedTree paren) return expression(paren.getExpression(), depth + 1);
+                if (expression instanceof LiteralTree literal) {
+                    return node(expression, Map.of("kind", literal.getValue() == null ? "NULL" : "NON_NULL"), List.of());
+                }
+                if (expression instanceof IdentifierTree) {
+                    String definition = definitions.get(element(expression));
+                    if (definition != null) return node(expression, Map.of("kind", "COPY", "value", definition), List.of());
+                }
+                if (expression instanceof ConditionalExpressionTree conditional
+                        && conditional.getCondition() instanceof BinaryTree comparison
+                        && comparison.getKind() == Tree.Kind.EQUAL_TO) {
+                    Tree candidate = comparison.getLeftOperand();
+                    Tree nullValue = comparison.getRightOperand();
+                    if (candidate instanceof LiteralTree literal && literal.getValue() == null) {
+                        candidate = comparison.getRightOperand(); nullValue = comparison.getLeftOperand();
+                    }
+                    if (candidate instanceof IdentifierTree && nullValue instanceof LiteralTree literal
+                            && literal.getValue() == null && conditional.getFalseExpression() instanceof IdentifierTree
+                            && element(candidate) != null && element(candidate).equals(element(conditional.getFalseExpression()))
+                            && definitions.containsKey(element(candidate))) {
+                        String left = expression(candidate, depth + 1);
+                        String right = expression(conditional.getTrueExpression(), depth + 1);
+                        return node(expression, Map.of("kind", "COALESCE", "left", left, "right", right), List.of(left));
+                    }
+                }
+                return node(expression, Map.of("kind", "UNKNOWN", "boundary", "JAVA_VALUE_EXPRESSION_UNSUPPORTED"), List.of());
+            }
+            private String node(Tree tree, Map<String, Object> operation, List<String> guards) {
+                CompilationUnitTree unit = getCurrentPath().getCompilationUnit();
+                return node("v" + positions.getStartPosition(unit, tree) + "_" + positions.getEndPosition(unit, tree), tree, operation, guards);
+            }
+            private String node(String id, Tree tree, Map<String, Object> operation, List<String> guards) {
+                if (nodes.size() >= LIMIT || !hasSourceRange(tree)) throw new IllegalStateException();
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("id", id); value.put("operation", operation); value.put("guards", guards);
+                anchor(value, tree); nodes.put(id, value); return id;
+            }
         }
 
         @Override

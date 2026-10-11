@@ -4,7 +4,8 @@ The S2a prototype separates a language-neutral analysis kernel from language
 extraction. `clew_facts::values` defines `portable-value-model/0.1`;
 `clew::thread_values::analyze` calculates a bounded backward slice and nullness
 of values on **modeled normal completion**. It is a Rust API prototype, not a
-public CLI operation, automatic source slicer or accepted compiler projection.
+public CLI operation or program-wide source slicer. A first automatic javac
+immutable-local projection is described in `javac-value-extraction.md`.
 The existing `thread question` command retains its earlier Kotlin flow profile.
 It does not become a multi-language flow loader through this addition.
 
@@ -93,11 +94,15 @@ Evidence locations include `java_adapter_v2.rs` (`JavaVariableDeclaration`,
 `variableDeclaration`, `variableAccess`), versioned Kotlin worker plugins,
 `csharp_adapter_v2.rs`, `workers/dotnet/src/FactWalker.cs`,
 `typescript_adapter_v2.rs`, `python_adapter_v2.rs`, and `rust_adapter_v2.rs`.
-No adapter currently emits the new schema. This table is an extraction backlog,
-not a declaration that all languages now support this profile.
+Java now emits `javac-value-projection/0.1` on source methods with bodies;
+`java_values::project_index` maps it into this portable model. That restricted
+profile covers parameters, literals, immutable local copies and one exact null
+default pattern. General SSA/control/alias transfers remain unavailable. Other
+adapters do not yet emit a qualified projection. This table remains an extraction
+backlog, not a declaration of multi-language support.
 
-The next small bridge should qualify Java and Kotlin on the same immutable-local
-fixtures: parameter input, literal null/non-null, direct copy, branch merge and
+The next bridge should qualify Kotlin against the javac immutable-local profile
+on the same fixtures: parameter input, literal null/non-null, direct copy, branch merge and
 null default. Each bridge must prove exact definition/operand/evidence bindings
 and emit boundaries for every unsupported construct. Do not infer assignments
 from source offsets or choose a reaching definition by name. Null defaults in

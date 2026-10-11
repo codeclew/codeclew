@@ -186,6 +186,8 @@ pub enum JavaCompilerFact {
         jvm_annotations: Option<Box<serde_json::Value>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         documentation: Option<Box<serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_projection: Option<Box<crate::java_values::JavaValueProjection>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         interfaces: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1418,6 +1420,7 @@ pub(crate) fn validate_fact(fact: &JavaCompilerFact) -> Result<(), ClewError> {
             "JAVAC_RESOLVED_ANNOTATIONS",
         )?;
     }
+    crate::java_values::validate_projection_fact(fact)?;
     Ok(())
 }
 
@@ -1505,7 +1508,7 @@ fn validate_variable_identity(
     Ok(())
 }
 
-fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
+pub(crate) fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
     verify_model(&index.model)?;
     if index.schema != JAVA_INDEX_SCHEMA
         || index.compilation != index.model.compilation
