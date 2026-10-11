@@ -887,3 +887,135 @@ test('source panel becomes modal only at mobile widths and releases background o
  r.media.matches=false;r.run('navigationViewport()');assert.equal(panel.attributes.role,undefined);assert.equal(background.inert,undefined);assert.equal(r.key('Tab',true),false);
  r.media.matches=true;r.run('navigationViewport()');r.click({sources:'missing-source'});assert.equal(panel.hidden,true);assert.equal(background.inert,undefined);assert.equal(panel.attributes['aria-modal'],undefined);
 });
+
+test('declared process keeps one collapsed source section, exact line links and inert source text',()=>{
+ const data=processFixture(false);data.process.definition.summary='A declared checkout path';
+ data.processThread={status:'SOURCE_BOUND_DECLARATION',scope:'One bounded source path',rootMethod:'create',methodOrder:['create'],methods:{create:{label:'Order creation',source:{...source('fun create() {\n if (ready) save() else throw Error("<script>")\n return order\n}'),startLine:10,endLine:13}}},steps:[{id:'create',title:'Create <order>',text:'Save only when ready',method:'create',startLine:11,endLine:12,children:[{id:'return',title:'Return',text:'Return the order',method:'create',startLine:12,endLine:12,children:[]}]}],boundaries:['Delivery is unresolved']};
+ data.processOutline={status:'GAP',gap:'FLOW_AUTHORITY_NOT_QUALIFIED'};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.equal((html.match(/id="thread-source"/g)||[]).length,1);
+ assert.match(html,/<details id="thread-source" class="thread-source">/);
+ assert.match(html,/href="#thread-source-create-L11" data-thread-end="12"/);
+ assert.match(html,/id="thread-source-create-L12" data-line="12"/);
+ assert.match(html,/Create &lt;order&gt;/);assert.match(html,/Error\(&quot;&lt;script&gt;&quot;\)/);
+ assert.doesNotMatch(html,/<script>/);
+ assert.match(html,/<details class="process-supporting"><summary>Additional diagrams and source outlines/);
+ assert.match(html,/Declared interpretation bound to exact retained source/);
+});
+test('shared source anchors reveal parents, focus the exact line, select a range and preserve navigation hash',()=>{
+ const data=processFixture(false);data.processThread={status:'SOURCE_BOUND_DECLARATION',steps:[],methods:{},methodOrder:[]};
+ const r=load(data);r.run("showEntry('process-overview')");
+ const details=r.e('thread-source');details.tagName='DETAILS';details.open=false;
+ const method=r.e('method');method.tagName='SECTION';method.parentElement=details;
+ const line=r.e('thread-source-create-L10'),next=r.e('thread-source-create-L11');
+ line.dataset={line:'10'};next.dataset={line:'11'};line.parentElement=method;line.closest=()=>method;
+ const selected=[];line.classList.add=()=>selected.push(10);next.classList.add=()=>selected.push(11);
+ method.querySelectorAll=()=>[line,next];
+ r.run("revealThreadAnchor('thread-source-create-L10',11)");
+ assert.equal(details.open,true);assert.equal(line.focused,true);assert.equal(line.scrolled,true);assert.deepEqual(selected,[10,11]);
+ r.run("location.hash='#thread-source-create-L10';routeReaderHash()");
+ assert.equal(r.run('location.hash'),'#thread-source-create-L10');
+});
+
+test('source navigation restores the process after catalogue or coverage and never drops out-of-thread evidence',()=>{
+ const data=processFixture(false);data.processThread={status:'SOURCE_BOUND_DECLARATION',steps:[],methods:{create:{label:'Selected creation',source:{...source('fun create() = Order()'),id:'created-source',startLine:10}}},methodOrder:['create']};
+ const r=load(data);r.run("showEntry('process-overview')");
+ r.e('scenario-content').querySelector=()=>({});
+ for(const view of ['catalogue()', 'coverage()']){
+  r.run(view);assert.equal(r.e('scenario-content').hidden,true);
+  r.run("location.hash='#thread-source-create-L10';routeReaderHash()");
+  assert.equal(r.e('scenario-content').hidden,false);assert.equal(r.e('catalogue-view').hidden,true);assert.equal(r.e('coverage-view').hidden,true);
+  assert.equal(r.run('location.hash'),'#thread-source-create-L10');
+ }
+ const links=r.run("threadEvidenceLinks(['created-source','checkout-root'])");
+ assert.match(links,/href="#thread-source-create-L10"/);assert.match(links,/data-sources="checkout-root"/);assert.match(links,/Retained source outside the selected thread/);
+});
+
+
+function declaredThreadFixture(){
+ const data=processFixture(false);data.operations=data.operations.filter(o=>o.id!=='process-overview');
+ data.process.definition.summary='Create the request and return its representation';
+ data.boundaries=['UNRELATED_PUBLICATION_DIAGNOSTIC'];
+ data.processThread={status:'SOURCE_BOUND_DECLARATION',scope:'Two selected methods',rootMethod:'client',methodOrder:['client','receiver'],methods:{client:{label:'Create client',source:{...source('fun create() = client.send()'),id:'client-source',service:'caller',startLine:10,endLine:10}},receiver:{label:'Declared receiver',source:{...source('fun accept() = save()'),id:'receiver-source',service:'provider',startLine:20,endLine:20}}},steps:[{id:'send',title:'Submit request',text:'Call the client',method:'client',startLine:10,endLine:10,target:'receiver',children:[{id:'receive',kind:'DECISION',title:'Check request',text:'When request is valid',method:'receiver',startLine:20,endLine:20,children:[]}]}],boundaries:['Configuration and delivery are unresolved']};
+ return data;
+}
+test('process reader distinguishes declared connections, reading order and scoped limits',()=>{
+ const r=load(declaredThreadFixture());r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Create the request and return its representation/);
+ assert.match(html,/Summary from the process declaration; no reviewed overview is implied/);
+ assert.match(html,/Declared service connections/);assert.match(html,/caller → provider/);
+ assert.match(html,/href="#thread-step-send"/);assert.match(html,/Delivery unverified/);
+ assert.match(html,/Nesting groups explanations; it does not prove execution order or branch exclusivity/);
+ assert.match(html,/<ul class="thread-steps">/);assert.doesNotMatch(html,/<ol class="thread-steps">/);
+ assert.match(html,/thread-child-preview">Check request/);assert.match(html,/>Decision<\/span>/);
+ assert.match(html,/<details class="process-captured"><summary>Declared scope, goals and outcomes/);
+ assert.match(html,/Declared goals and outcomes are not proven program results/);
+ assert.match(html,/<details class="process-publication-limits"><summary>Publication evidence details \(1\)/);
+ assert.match(html,/UNRELATED_PUBLICATION_DIAGNOSTIC/);assert.match(html,/Configuration and delivery are unresolved/);
+ assert.equal((html.match(/id="thread-source"/g)||[]).length,1);
+});
+test('process chrome is localized and source and authored content stay inert',()=>{
+ const data=declaredThreadFixture();data.language='ru';data.processThread.steps[0].title='<script>unsafe</script>';
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Объявленные связи сервисов/);assert.match(html,/Доставка не подтверждена/);
+ assert.match(html,/Порядок|порядок исполнения/);assert.match(html,/&lt;script&gt;unsafe&lt;\/script&gt;/);
+ assert.doesNotMatch(html,/<script>unsafe/);assert.match(html,/fun create\(\) = client.send\(\)/);
+});
+test('selected interaction declaration remains visible without an inferred cross-service step target',()=>{
+ const data=declaredThreadFixture();delete data.processThread.steps[0].target;
+ data.process.definition.interactions=['declared-send'];
+ data.interactions=[{id:'declared-send',origin:'human',runtime:'UNKNOWN',contractStatus:'NOT_ASSESSED',callSite:{status:'MISSING'},from:{status:'SOURCE_MATCH',sourceIds:['client-source']},to:{status:'SOURCE_MATCH',sourceIds:['receiver-source']},destination:{status:'UNRESOLVED'},boundaries:['RUNTIME_UNKNOWN'],declaration:{title:'Declared submit',from:{service:'caller'},to:{service:'provider'},transport:{kind:'http',method:'POST',destinationConfigKey:'provider.base-url'}}},{id:'unselected',declaration:{title:'Unrelated transport',from:{service:'other'},to:{service:'provider'}}}];
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Declared submit/);assert.match(html,/Declared transport: http · POST/);
+ assert.match(html,/provider.base-url/);assert.match(html,/callSite.*MISSING/s);
+ assert.match(html,/href="#thread-source-client-L10"/);assert.match(html,/href="#thread-source-receiver-L20"/);
+ assert.doesNotMatch(html,/Unrelated transport/);
+ assert.match(html,/Delivery unverified/);
+});
+test('retained process case preserves selected source bytes and actual declared interactions', {skip:!process.env.CODECLEW_PROCESS_CASE_DIR},()=>{
+ const folder=process.env.CODECLEW_PROCESS_CASE_DIR;
+ const files=fs.readdirSync(folder).filter(file=>file.endsWith('.json'));
+ let checked=0;
+ for(const file of files){
+  const data=JSON.parse(fs.readFileSync(path.join(folder,file),'utf8'));
+  if(!data.processThread)continue;
+  checked++;
+  const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+  assert.equal((html.match(/id="thread-source"/g)||[]).length,1);
+  const escape=text=>text.replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  for(const id of data.processThread.methodOrder){
+   const record=data.processThread.methods[id].source;
+   for(const [index,line] of record.text.split('\n').entries()){
+    assert.ok(html.includes(`id="thread-source-${id}-L${record.startLine+index}" data-line="${record.startLine+index}" tabindex="-1">${escape(line)}</span>`),`${file}: selected method ${id}, line ${record.startLine+index}`);
+   }
+  }
+  for(const interaction of data.interactions||[]){
+   if(!data.process.definition.interactions.includes(interaction.id)||!interaction.declaration)continue;
+   assert.ok(html.includes(escape(interaction.declaration.title)),`${file}: declared interaction disappeared`);
+   assert.match(html,/thread-connection-status/);
+  }
+  assert.match(html,/process-publication-limits/);
+ }
+ assert.ok(checked>0,'at least one retained process thread must be checked');
+});
+
+test('explicit first-match arms and selected effects remain separate and source linked',()=>{
+ const data=declaredThreadFixture(),row=data.processThread.steps[0];delete row.children;
+ const step=(id,title)=>({id,title,text:title,method:'client',startLine:10,endLine:10});
+ row.branchGroup={mode:'FIRST_MATCH',arms:[{id:'failed',condition:'failedChunks > 0',guard:{method:'client',startLine:10,endLine:10},steps:[step('fail','Set Task.status to FAILED')]},{id:'error-rows',condition:'failedRows > 0',guard:{method:'client',startLine:10,endLine:10},steps:[{...step('errors','Select result status'),branchGroup:{mode:'IF_ELSE',arms:[{id:'missing-url',condition:'resultUrl.isNullOrBlank()',guard:{method:'client',startLine:10,endLine:10},steps:[step('wait-file','Assign IN_PROGRESS')]},{id:'result-url',condition:null,steps:[step('errors-file','Assign COMPLETED_WITH_ERRORS')]}]}}]},{id:'default-complete',condition:null,steps:[step('complete','Assign COMPLETED')]}]};
+ row.effects=[{id:'save-call',kind:'STORAGE_CALL',label:'Invoke save <script>unsafe</script>',citation:{method:'client',startLine:10,endLine:10}}];
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/First matching arm/);assert.match(html,/One guarded arm or its default/);
+ assert.match(html,/id="thread-step-failed"/);assert.match(html,/id="thread-step-missing-url"/);
+ assert.match(html,/Selected declared effects/);assert.match(html,/calls do not prove commit or delivery/);
+ assert.match(html,/Invoke save &lt;script&gt;unsafe&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>unsafe/);
+ assert.match(html,/href="#thread-source-client-L10" data-thread-end="10"/);
+ assert.equal((html.match(/id="thread-source"/g)||[]).length,1);
+});
+test('extraction packet keeps unknown outcomes and budget cuts visible without changing thread authority',()=>{
+ const data=declaredThreadFixture();data.processExtraction={status:'TRUNCATED',methods:[{id:'root'}],events:[{id:'guard',detail:{kind:'IF',condition:'ready <script>unsafe</script>'},sourceIds:['client-source']}],query:{outcomeEventIds:['missing']},outcomes:[{eventId:'missing',discovery:'NOT_FOUND_UNKNOWN'}],frontier:[{category:'BUDGET',code:'METHOD_BUDGET'}],interpretationPlan:{actualModelCalls:0}};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Extracted evidence envelope/);assert.match(html,/METHOD_BUDGET/);assert.match(html,/NOT_FOUND_UNKNOWN/);
+ assert.match(html,/ready &lt;script&gt;unsafe&lt;\/script&gt;/);assert.match(html,/runtime effects are not established/);
+ assert.equal((html.match(/id="thread-source"/g)||[]).length,1);
+});

@@ -1702,7 +1702,13 @@ fn page_data(
             (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
         })
     }).collect::<BTreeMap<_,_>>();
-    json!({"operationExternalCalls":operation_external_calls,"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"operationExternalCalls":operation_external_calls,"processCandidates":process_candidates,"savedProcesses":saved_processes,"sourceAuthorities":checked.source_authorities(),"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"stateDiagram":state_diagram,"stateDiagramSvg":false,"activityTransitions":activity_transitions,"activityTransitionsSvg":false,"lifecycleOperations":lifecycle.iter().map(|artifact|json!({"name":artifact.name,"tree":artifact.tree,"origin":artifact.origin,"diagramStem":artifact.diagram_stem,"svgAvailable":false})).collect::<Vec<_>>(),"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).map(|interaction| {
+        let mut row = json!(interaction);
+        row["declaration"] = checked.dependencies.get(&format!("interaction:{}", interaction.id))
+            .filter(|dependency| dependency.kind == "DECLARED_INTERACTION")
+            .map(|dependency| dependency.normalized.clone()).unwrap_or(Value::Null);
+        row
+    }).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 struct LifecycleArtifact {
@@ -2102,7 +2108,7 @@ fn process_root_resolution<'a>(checked: &'a Check, id: &str) -> ProcessRootResol
         };
     };
     let selector_scope = selector.scope.clone();
-    if selector.language != "java" {
+    if !matches!(selector.language.as_str(), "java" | "kotlin") {
         return ProcessRootResolution {
             service: Some(service_id.to_owned()),
             selector_scope,
@@ -3484,6 +3490,33 @@ fn publish_internal_phases(
             let (current_root_sources, current_source_digests) =
                 process_root_source_records(&checked, &root)?;
             let root_metadata = root.metadata(&current_source_digests);
+            data["processThread"] =
+                super::process_thread::project(&checked, subject, &root_metadata)?
+                    .unwrap_or(Value::Null);
+            data["processExtraction"] =
+                super::process_extract::project(&checked, subject, &selected_snapshot)?
+                    .unwrap_or(Value::Null);
+            if let Some(refs) = data["processExtraction"]["sourceRefs"].as_object() {
+                let refs: Vec<_> = refs
+                    .iter()
+                    .map(|(id, row)| (id.clone(), row["service"].as_str().unwrap_or("").to_owned()))
+                    .collect();
+                for (id, service) in refs {
+                    let source = checked
+                        .services
+                        .get(&service)
+                        .and_then(|s| s.sources.get(&id))
+                        .ok_or_else(|| invalid("extraction source reference is unavailable"))?;
+                    let value = json!(source);
+                    if !data["sources"][&id].is_null() && data["sources"][&id] != value {
+                        return Err(invalid(
+                            "extraction source ID conflicts with existing page source",
+                        ));
+                    }
+                    data["sources"][&id] = value;
+                }
+            }
+
             let overview_key = format!("{subject}/{}", super::processes::OVERVIEW);
             let retained_overview = n
                 .operations
@@ -3675,6 +3708,15 @@ fn publish_internal_phases(
             prose += &super::processes::markdown(&data["process"]);
             prose += &super::dataflow::markdown(&data["view"], &displayed);
         }
+        prose += &super::process_thread::markdown(&data["processThread"], subject, ui_language);
+        if !data["processExtraction"].is_null() {
+            prose += &format!(
+                "\n## {}\n\n```json\n{}\n```\n",
+                super::reader::process_thread_text(ui_language, "Extraction evidence packet"),
+                serde_json::to_string_pretty(&data["processExtraction"]).map_err(io_error)?
+            );
+        }
+
         files.insert(format!("{folder}/{id}.md"), prose.into_bytes());
         for operation in &displayed.operations {
             let state = &binding.section_states[&format!("{subject}/{}", operation.id)];
@@ -4203,6 +4245,9 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         SCRIPT,
         include_str!("history.rs"),
         include_str!("process_candidates.rs"),
+        include_str!("process_thread.rs"),
+        include_str!("process_extract.rs"),
+        include_str!("process_graph.rs"),
         include_str!("reader.rs"),
         super::reader::HELP,
         super::reader::RUNBOOKS,
@@ -4217,6 +4262,38 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
 #[cfg(test)]
 mod process_catalog_tests {
     use super::*;
+
+    #[test]
+    fn page_interaction_keeps_exact_checked_declaration_separate_from_resolution() {
+        let declaration = json!({"id":"link","title":"Declared link","from":{"service":"svc"},"to":{"service":"other"},"transport":{"kind":"http","method":"POST"}});
+        let resolution = json!({"status":"MISSING","candidates":[],"sourceIds":[],"details":[]});
+        let checked: Check = serde_json::from_value(json!({
+            "schema":"test","inputDigest":"input","contextDigest":"context","services":{},"unresolved":{},"scenarios":{},
+            "interactions":{"link":{"id":"link","origin":"human","declarationDigest":"digest","from":resolution,"to":resolution,"callSite":resolution,"method":null,"path":null,"destination":null,"contractStatus":"NOT_ASSESSED","runtime":"UNKNOWN","applicability":null,"boundaries":[]}},
+            "dependencies":{"interaction:link":{"id":"interaction:link","kind":"DECLARED_INTERACTION","service":"","symbol":"link","digest":"digest","normalized":declaration,"sourceIds":[]}}
+        })).unwrap();
+        let narrative = Narrative {
+            schema: "test".into(),
+            subject: "service:svc".into(),
+            context_digest: "context".into(),
+            operations: vec![],
+            gaps: BTreeMap::new(),
+        };
+        let data = page_data(
+            "service:svc",
+            "Service",
+            "",
+            &narrative,
+            &checked,
+            &BTreeSet::new(),
+            None,
+            &[],
+            None,
+        );
+        assert_eq!(data["interactions"][0]["declaration"], declaration);
+        assert_eq!(data["interactions"][0]["from"]["status"], "MISSING");
+        assert_eq!(data["interactions"][0]["runtime"], "UNKNOWN");
+    }
 
     #[test]
     fn summary_text_enforces_utf8_byte_boundary_and_plain_prose() {
@@ -5295,6 +5372,33 @@ public void checkout() {
         assert_eq!(
             method_source(&checked, resolved).as_deref(),
             Some(source_text)
+        );
+    }
+
+    #[test]
+    fn kotlin_process_root_uses_retained_identity_without_promoting_authority() {
+        let mut checked = checked_with_process_root(None, false);
+        checked
+            .dependencies
+            .get_mut("process:checkout")
+            .unwrap()
+            .normalized["definition"]["root"]["selector"]["language"] = json!("kotlin");
+        let root = process_root_resolution(&checked, "checkout");
+        assert_eq!(root.gap, None);
+        assert_eq!(root.observations.len(), 1);
+        let (sources, _) = process_root_source_records(&checked, &root).unwrap();
+        assert_eq!(
+            sources["checkout-source"].authority,
+            "RETAINED_SOURCE_NOT_REVERIFIED"
+        );
+        checked
+            .dependencies
+            .get_mut("process:checkout")
+            .unwrap()
+            .normalized["definition"]["root"]["selector"]["language"] = json!("unsupported");
+        assert_eq!(
+            process_root_resolution(&checked, "checkout").gap,
+            Some("PROCESS_ROOT_LANGUAGE_UNSUPPORTED")
         );
     }
 

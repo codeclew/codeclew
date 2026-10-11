@@ -2378,6 +2378,8 @@ mod tests {
                 trigger: "Checkout request".into(),
                 outcomes: vec!["Reservation result".into()],
                 linked_subviews: vec![],
+                thread: None,
+                extraction: None,
             }),
             view: None,
             schema: "codeclew-documentation-process/1.0".into(),

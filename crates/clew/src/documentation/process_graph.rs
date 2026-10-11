@@ -271,6 +271,17 @@ fn collect(
     snapshot: &str,
     input_digest: &str,
 ) -> Result<Value, ClewError> {
+    collect_bounded(evidence, root, snapshot, input_digest, None)
+}
+
+/// Reuse the same retained edge association policy with explicit expansion cuts.
+pub(super) fn collect_bounded(
+    evidence: &ServiceEvidence,
+    root: &Observation,
+    snapshot: &str,
+    input_digest: &str,
+    budget: Option<&super::process_extract::Budgets>,
+) -> Result<Value, ClewError> {
     let mut methods_by_scope_symbol: BTreeMap<(&str, &str), Vec<&Observation>> = BTreeMap::new();
     let mut scopes_by_symbol: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut unscoped_methods_by_symbol: BTreeMap<&str, Vec<&Observation>> = BTreeMap::new();
@@ -360,6 +371,48 @@ fn collect(
         let scope = exact_scope(method).ok_or_else(|| {
             invalid("reachable method has no exact retained scope; graph cannot merge unscoped declarations")
         })?;
+        if let Some(budget) = budget {
+            let pending_flows = flows_by_scope_symbol
+                .get(&(scope, method.symbol.as_str()))
+                .into_iter()
+                .flatten()
+                .chain(
+                    unscoped_flows_by_symbol
+                        .get(method.symbol.as_str())
+                        .into_iter()
+                        .flatten(),
+                )
+                .collect::<Vec<_>>();
+            let source_ids = sources_by_id
+                .keys()
+                .map(String::as_str)
+                .chain(method.source_ids.iter().map(String::as_str))
+                .chain(
+                    pending_flows
+                        .iter()
+                        .flat_map(|flow| flow.source_ids.iter().map(String::as_str)),
+                )
+                .collect::<BTreeSet<_>>();
+            let source_bytes: usize = source_ids
+                .iter()
+                .filter_map(|id| evidence.sources.get(*id))
+                .map(|source| source.text.len())
+                .sum();
+            let code = if methods.len() >= budget.max_methods {
+                Some("METHOD_BUDGET")
+            } else if events.len() + unbound_events.len() + pending_flows.len() > budget.max_events
+            {
+                Some("EVENT_BUDGET")
+            } else if source_bytes > budget.max_source_bytes {
+                Some("SOURCE_BYTE_BUDGET")
+            } else {
+                None
+            };
+            if let Some(code) = code {
+                frontiers.push(json!({"kind":"BUDGET","code":code,"methodId":method.id,"semanticClosure":"UNKNOWN","requiredCheck":"expand budget; excluded code is not certified irrelevant"}));
+                continue;
+            }
+        }
         let method_key = (scope, method.symbol.as_str());
         let mut method_frontiers = Vec::new();
         for flow in unscoped_flows_by_symbol
@@ -693,7 +746,11 @@ fn collect(
             .flatten()
             .map(|id| (*id).to_owned())
             .collect::<Vec<_>>();
-        if let Some(proof) = prove_accessor(evidence, method, &fields_by_scope_owner_name) {
+        if let Some(proof) = budget
+            .is_none()
+            .then(|| prove_accessor(evidence, method, &fields_by_scope_owner_name))
+            .flatten()
+        {
             let mut accessor_source_ids =
                 method.source_ids.iter().cloned().collect::<BTreeSet<_>>();
             accessor_source_ids.extend(proof.field.source_ids.iter().cloned());
@@ -752,7 +809,7 @@ fn collect(
         },
         "frontiers": frontiers,
         "coverage": {
-            "knownReachableCollection": "EXHAUSTED",
+            "knownReachableCollection": if frontiers.iter().any(|frontier| frontier["kind"] == "BUDGET") { "TRUNCATED" } else { "EXHAUSTED" },
             "runtimeGraphCompleteness": "NOT_ESTABLISHED",
             "evidenceGapsPresent": evidence_gaps,
             "interpretation": "All retained FLOW observations for collected methods are preserved. This artifact does not establish the complete runtime call graph.",
@@ -1015,6 +1072,8 @@ mod tests {
                 trigger: "An explicit request".into(),
                 outcomes: vec!["A result".into()],
                 linked_subviews: vec![],
+                thread: None,
+                extraction: None,
             }),
             schema: "codeclew-documentation-process/1.0".into(),
             id: "flow".into(),

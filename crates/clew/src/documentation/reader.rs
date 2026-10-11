@@ -28,6 +28,21 @@ pub(super) fn text<'a>(language: &str, en: &'a str, ru: &'a str) -> &'a str {
     if language == "ru" { ru } else { en }
 }
 
+/// Localization for the declared-thread Markdown reader.
+pub(super) fn process_thread_text<'a>(language: &str, en: &'a str) -> &'a str {
+    let ru = match en {
+        "Process steps" => "Шаги процесса",
+        "Extraction evidence packet" => "Пакет доказательств извлечения",
+        "Declared reading order does not prove execution order. Call targets and delivery are not established." => {
+            "Объявленный порядок чтения не доказывает порядок исполнения. Цели вызовов и доставка не подтверждены."
+        }
+        "Scope and boundaries" => "Область и границы",
+        "Selected thread sources" => "Исходники выбранной нити",
+        _ => en,
+    };
+    text(language, en, ru)
+}
+
 pub(super) fn page_language(title: &str, body: &str, language: &str) -> String {
     let language = text(language, "en", "ru");
     format!(

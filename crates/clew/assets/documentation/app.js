@@ -5,6 +5,66 @@ const publication=JSON.parse(document.getElementById('document-data').textConten
 // Translate only trusted renderer literals, never interpolated author text or code.
 const language=publication.language==='ru'?'ru':'en';
 const RU_MESSAGES={
+ "Declared transport": "Объявленный транспорт",
+ "Declared configuration key": "Объявленный ключ конфигурации",
+ "Connection evidence and unresolved checks": "Основание связи и неподтверждённые проверки",
+ "Explicit step target; transport is not inferred.": "Явно выбранная цель шага; транспорт по ней не определяется.",
+ "Process steps": "Шаги процесса",
+ "Declared source-bound process": "Объявленный процесс с привязками к коду",
+ "Declared target": "Объявленная цель",
+ "Detailed steps": "Подробности",
+ "Source revision": "Ревизия исходников",
+ "Relevant source for the whole thread": "Исходники выбранной нити",
+ "Scope and unresolved boundaries": "Область и неподтверждённые границы",
+ "Retained source outside the selected thread": "Код вне выбранной нити",
+ "Declared interpretation bound to exact retained source; call targets and runtime delivery are not established.": "Описание привязано к точному сохранённому коду. Цели вызовов, маршрутизация и доставка в работающей системе не подтверждены.",
+ "Declared service connection": "Объявленная связь сервисов",
+ "Declared service connections": "Объявленные связи сервисов",
+ "Delivery unverified": "Доставка не подтверждена",
+ "These source-linked connections do not prove routing or delivery.": "Привязки к коду этих связей не доказывают маршрутизацию или доставку.",
+ "Step": "Шаг",
+ "Action": "Действие",
+ "Decision": "Решение",
+ "Alternative": "Альтернатива",
+ "Error path": "Путь ошибки",
+ "Evidence boundary": "Граница доказательств",
+ "Exact source binding": "Точная привязка к исходнику",
+ "Process sections": "Разделы процесса",
+ "Cards follow the declared reading order. Nesting groups explanations; it does not prove execution order or branch exclusivity.": "Карточки следуют объявленному порядку чтения. Вложенность группирует пояснения и не доказывает порядок исполнения или исключительность ветвей.",
+ "No boundaries were declared; completeness is not established.": "Границы не объявлены; полнота не установлена.",
+ "Complete selected methods are shown here. Selection does not establish a complete program slice.": "Здесь показаны полные выбранные методы. Выборка не доказывает полноту среза программы.",
+ "Declared scope, goals and outcomes": "Заявленная область, цели и результаты",
+ "Declared goals and outcomes are not proven program results.": "Заявленные цели и результаты не доказывают результаты выполнения программы.",
+ "Accepted overview; its source freshness and meaning review are separate.": "Сохранённый обзор: актуальность исходников и смысловое ревью оцениваются отдельно.",
+ "Summary from the process declaration; no reviewed overview is implied.": "Резюме из декларации процесса; оно не означает наличия прошедшего ревью обзора.",
+ "Trigger": "Запуск",
+ "Participants": "Участники",
+ "Extracted evidence envelope": "Извлечённый контекст процесса",
+ "Potential static behavior; business intent and runtime effects are not established.": "Потенциальное статическое поведение; предметная цель и runtime-эффекты не установлены.",
+ "retained method envelopes": "сохранённых контекстов методов",
+ "retained events": "сохранённых событий",
+ "Extraction frontiers and provenance": "Границы извлечения и происхождение",
+ "State assignment": "Присваивание состояния",
+ "Storage call": "Обращение к хранилищу",
+ "Message send": "Отправка сообщения",
+ "External call": "Внешний вызов",
+ "Return": "Возврат",
+ "Throw": "Исключение",
+ "Transaction scope": "Область транзакции",
+ "Selected declared effects": "Выбранные заявленные эффекты",
+ "Effect labels are declarations; calls do not prove commit or delivery.": "Подписи эффектов заявлены автором; вызовы не доказывают commit или доставку.",
+ "One guarded arm or its default": "Одна условная ветвь или иначе",
+ "First matching arm": "Первая подходящая ветвь",
+ "Independent conditions": "Независимые условия",
+ "Declared control interpretation": "Заявленная интерпретация ветвления",
+ "Otherwise": "Иначе",
+ "Selected source": "Выбранный код",
+ "complete methods": "полных методов",
+ "Runtime execution was not observed.": "Выполнение в работающей системе не наблюдалось.",
+ "Additional diagrams and source outlines": "Дополнительные диаграммы и структура кода",
+ "Publication evidence details": "Подробности доказательств публикации",
+ "These diagnostics describe retained publication evidence; they are not a list of bugs or additional process steps.": "Эти диагностические сведения относятся к сохранённой публикации. Они не являются списком ошибок программы или дополнительными шагами процесса.",
+
  "Saved source snapshot": "Сохранённая версия исходного кода",
  "Current checkout freshness was not rechecked for this publication.": "При публикации актуальность относительно текущего кода не проверялась.",
  "Source and review details": "Подробности об исходном коде и проверке",
@@ -489,6 +549,76 @@ function sourceLabel(symbol){
 }
 const label=e=>(e.kind==='SECTION'?sectionTitles[e.id]:['NOTE','VISUAL'].includes(e.kind)?e.symbol:operation(e)?.title)||e.trigger.paths?.join(' · ')||sourceLabel(e.symbol)||e.id;
 function plantumlPreview(stem,available,alt){return available?chromeHtml`<div class="diagram-img-wrap"><img class="diagram-img" src="../diagrams/${esc(stem)}.svg" alt="${esc(alt)}"></div>`:chromeHtml`<p class="renderer-unavailable">${esc(t('PlantUML SVG preview is unavailable; the .puml file and text steps remain available.'))}</p>`;}
+function threadEvidenceLinks(sourceIds){
+ const thread=D.processThread;if(!thread)return button(sourceIds,t('Source'),true);
+ const ids=(thread.methodOrder||[]).filter(id=>(sourceIds||[]).includes(thread.methods[id].source.id));
+ const selected=new Set(ids.map(id=>thread.methods[id].source.id));const outside=(sourceIds||[]).filter(id=>!selected.has(id));
+ return ids.map(id=>chromeHtml`<a class="source-link" href="${esc(threadSourceHref(id,thread.methods[id].source.startLine))}">${esc(t('Source'))} · ${esc(thread.methods[id].label)}</a>`).join(' ')+(outside.length?' '+button(outside,t('Retained source outside the selected thread'),true):'');
+}
+function threadSourceHref(method,line){return '#thread-source-'+method+'-L'+line;}
+function processExtractionCard(packet){
+ if(!packet)return '';
+ const events=packet.events||[],kinds=new Set(['IF','TRY','LOOP','RETURN','THROW','FINALLY']);
+ const selected=new Set((packet.query?.outcomeEventIds)||[]);
+ const rows=events.filter(e=>selected.has(e.id)||kinds.has(e.detail?.kind));
+ return chromeHtml`<section class="process-extraction"><h3>${esc(t('Extracted evidence envelope'))}</h3><p>${esc(t('Potential static behavior; business intent and runtime effects are not established.'))}</p><p>${esc(packet.status)} · ${packet.methods?.length||0} ${esc(t('retained method envelopes'))} · ${events.length} ${esc(t('retained events'))}</p><ul>${rows.map(e=>chromeHtml`<li><strong>${esc(e.detail?.kind||'UNKNOWN')}</strong> ${esc(e.detail?.condition||e.detail?.target||e.id)} ${threadEvidenceLinks(e.sourceIds||[])}</li>`).join('')}</ul><details><summary>${esc(t('Extraction frontiers and provenance'))} (${packet.frontier?.length||0})</summary><pre>${pretty({snapshot:packet.snapshot,packetDigest:packet.packetDigest,policy:packet.policy,query:packet.query,outcomes:packet.outcomes,frontier:packet.frontier,interpretationPlan:packet.interpretationPlan})}</pre></details></section>`;
+}
+function processThreadCard(thread){
+ if(!thread||thread.status!=='SOURCE_BOUND_DECLARATION')return '';
+ const methods=thread.methods||{},order=thread.methodOrder||Object.keys(methods);
+ const kinds={STEP:'Step',ACTION:'Action',DECISION:'Decision',ALTERNATIVE:'Alternative',ERROR:'Error path',BOUNDARY:'Evidence boundary'};
+ function steps(rows){return '<ul class="thread-steps">'+rows.map(row=>{
+  const method=methods[row.method],target=row.target?methods[row.target]:null;
+  const crossService=target&&method?.source.service!==target.source.service;
+  const citation=chromeHtml`<a class="source-link thread-citation" href="${esc(threadSourceHref(row.method,row.startLine))}" data-thread-end="${row.endLine}">${esc(t('Source'))} · ${esc(method?.source.service||'')}:${row.startLine}${row.endLine!==row.startLine?'–'+row.endLine:''}</a>`;
+  const targetLink=target?chromeHtml` <a class="thread-target" href="${esc(threadSourceHref(row.target,target.source.startLine))}">${esc(t(crossService?'Declared service connection':'Declared target'))}: ${esc(target.label)}</a>`:'';
+  const preview=(row.children||[]).map(child=>child.title).join(' · ');
+  const cite=c=>chromeHtml`<a class="source-link thread-citation" href="${esc(threadSourceHref(c.method,c.startLine))}" data-thread-end="${c.endLine}">${esc(t('Source'))} · ${esc(methods[c.method]?.source.service||'')}:${c.startLine}–${c.endLine}</a>`;
+  const effectKinds={STATE_ASSIGNMENT:'State assignment',STORAGE_CALL:'Storage call',MESSAGE_SEND:'Message send',EXTERNAL_CALL:'External call',RETURN:'Return',THROW:'Throw',TRANSACTION_SCOPE:'Transaction scope'};
+  const effects=row.effects?.length?chromeHtml`<div class="thread-effects"><h5>${esc(t('Selected declared effects'))}</h5><ul>${row.effects.map(effect=>chromeHtml`<li><span>${esc(t(effectKinds[effect.kind]||effect.kind))}</span> ${esc(effect.label)} ${cite(effect.citation)}</li>`).join('')}</ul><p>${esc(t('Effect labels are declarations; calls do not prove commit or delivery.'))}</p></div>`:'';
+  const branchModes={IF_ELSE:'One guarded arm or its default',FIRST_MATCH:'First matching arm',INDEPENDENT:'Independent conditions'};
+  const branch=row.branchGroup?chromeHtml`<section class="thread-branches"><p class="thread-branch-mode">${esc(t(branchModes[row.branchGroup.mode]))} · ${esc(t('Declared control interpretation'))}</p><div class="thread-branch-arms">${row.branchGroup.arms.map(arm=>chromeHtml`<section id="thread-step-${esc(arm.id)}" tabindex="-1"><h5>${esc(arm.condition??t('Otherwise'))}</h5>${arm.guard?cite(arm.guard):''}${steps(arm.steps||[])}</section>`).join('')}</div></section>`:'';
+
+  return chromeHtml`<li id="thread-step-${esc(row.id)}" tabindex="-1"><article><div class="thread-step-meta"><span>${esc(method?.source.service||'')}</span><span>${esc(t(kinds[row.kind||'STEP']||'Step'))}</span>${crossService?chromeHtml`<span class="thread-boundary-badge">${esc(t('Delivery unverified'))}</span>`:''}</div><h4>${esc(row.title)}</h4><p>${esc(row.text)}</p><p class="thread-citations">${citation}${targetLink}</p>${effects}${branch}${row.children?.length?chromeHtml`<details class="thread-children"><summary>${esc(t('Detailed steps'))} (${row.children.length})<span class="thread-child-preview">${esc(preview)}</span></summary>${steps(row.children)}</details>`:''}</article></li>`;
+ }).join('')+'</ul>';}
+ const connections=[];
+ function collect(rows){for(const row of rows||[]){const a=methods[row.method],b=methods[row.target];if(a&&b&&a.source.service!==b.source.service)connections.push({row,from:a.source.service,to:b.source.service});collect(row.children);for(const arm of row.branchGroup?.arms||[])collect(arm.steps);}}
+ collect(thread.steps);
+ const selectedInteractions=new Set(D.process?.definition.interactions||[]);
+ const declarations=(D.interactions||[]).filter(interaction=>selectedInteractions.has(interaction.id)&&interaction.declaration?.from?.service&&interaction.declaration?.to?.service);
+ const declarationCards=declarations.map(interaction=>{
+  const d=interaction.declaration,transport=d.transport||{};
+  const sourceIds=[...new Set([...(interaction.from?.sourceIds||[]),...(interaction.to?.sourceIds||[])])];
+  return chromeHtml`<li><span>${esc(d.from.service)} → ${esc(d.to.service)}</span><p>${esc(d.title||interaction.id)}</p><p class="thread-connection-status">${esc(t('Declared transport'))}: ${esc([transport.kind,transport.method,transport.path,transport.topic].filter(Boolean).join(' · ')||t('unspecified'))} · ${esc(t('Delivery unverified'))}</p>${transport.destinationConfigKey?chromeHtml`<p>${esc(t('Declared configuration key'))}: <code>${esc(transport.destinationConfigKey)}</code></p>`:''}${threadEvidenceLinks(sourceIds)}<details><summary>${esc(t('Connection evidence and unresolved checks'))}</summary><pre>${pretty({id:interaction.id,origin:interaction.origin,from:interaction.from?.status,to:interaction.to?.status,callSite:interaction.callSite?.status,destination:interaction.destination,runtime:interaction.runtime,contractStatus:interaction.contractStatus,boundaries:interaction.boundaries||[]})}</pre></details></li>`;
+ }).join('');
+ const transfers=connections.length||declarations.length?chromeHtml`<section class="thread-connections"><h3>${esc(t('Declared service connections'))}</h3><p>${esc(t('These source-linked connections do not prove routing or delivery.'))}</p><ul>${declarationCards}${connections.map(({row,from,to})=>chromeHtml`<li><span>${esc(from)} → ${esc(to)}</span> <a href="#thread-step-${esc(row.id)}">${esc(row.title)}</a><p>${esc(t('Explicit step target; transport is not inferred.'))}</p></li>`).join('')}</ul></section>`:'';
+ const source=order.map(id=>{
+  const method=methods[id],record=method.source,lines=record.text.split('\n');
+  return chromeHtml`<section class="thread-method" data-thread-method="${esc(id)}"><h4>${esc(method.label)}</h4><p class="thread-provenance">${esc(record.service)} · ${esc(record.file)}:${record.startLine}–${record.endLine}<br>${esc(t('Source revision'))}: <code>${esc(record.revision)}</code></p><pre class="thread-code"><code>${lines.map((line,index)=>chromeHtml`<span class="thread-code-line" id="thread-source-${esc(id)}-L${record.startLine+index}" data-line="${record.startLine+index}" tabindex="-1">${esc(line)}</span>${index<lines.length-1?'\n':''}`).join('')}</code></pre><details class="thread-binding"><summary>${esc(t('Exact source binding'))}</summary><p>${esc(record.authority)} · ${esc(record.id)} · ${esc(record.textDigest)}</p></details></section>`;
+ }).join('');
+ return chromeHtml`<section class="process-thread"><nav class="thread-jump-links" aria-label="${esc(t('Process sections'))}"><a href="#thread-steps">${esc(t('Process steps'))}</a><a href="#thread-source">${esc(t('Source'))} (${order.length})</a><a href="#thread-limits">${esc(t('Evidence limits'))}</a></nav>${transfers}<h3 id="thread-steps" tabindex="-1">${esc(t('Process steps'))}</h3><p class="thread-reading-note">${esc(t('Cards follow the declared reading order. Nesting groups explanations; it does not prove execution order or branch exclusivity.'))}</p>${steps(thread.steps||[])}<section id="thread-limits" tabindex="-1" class="thread-boundaries"><h3>${esc(t('Scope and unresolved boundaries'))}</h3><p>${esc(thread.scope)}</p>${thread.boundaries?.length?chromeHtml`<ul>${thread.boundaries.map(row=>chromeHtml`<li>${esc(row)}</li>`).join('')}</ul>`:chromeHtml`<p>${esc(t('No boundaries were declared; completeness is not established.'))}</p>`}</section><details id="thread-source" class="thread-source"><summary>${esc(t('Relevant source for the whole thread'))} (${order.length})</summary><p>${esc(t('Complete selected methods are shown here. Selection does not establish a complete program slice.'))}</p>${source}</details></section>`;
+}
+function isThreadAnchor(id){return ['thread-source','thread-steps','thread-limits'].includes(id)||id.startsWith('thread-source-')||id.startsWith('thread-step-');}
+function revealThreadAnchor(id,endLine){
+ const target=$(id);if(!target)return;
+ let parent=target.parentElement;while(parent){if(parent.tagName==='DETAILS')parent.open=true;parent=parent.parentElement;}
+ document.querySelectorAll('.thread-code-line.source-selected').forEach(line=>line.classList.remove('source-selected'));
+ if(id.startsWith('thread-source-')){
+  const start=Number(target.dataset?.line),end=Number(endLine)||start;
+  const method=target.closest('.thread-method');
+  method?.querySelectorAll('.thread-code-line').forEach(line=>{const n=Number(line.dataset.line);if(n>=start&&n<=end)line.classList.add('source-selected');});
+ }
+ target.scrollIntoView({block:'center'});target.focus({preventScroll:true});
+}
+function routeReaderHash(){
+ const id=location.hash.slice(1);
+ if(isThreadAnchor(id)&&D.processThread){
+  if(current?.id!=='process-overview'||$('scenario-content').hidden||!$('catalogue-view').hidden||!$('coverage-view').hidden||!$('scenario-content').querySelector?.('.process-thread'))showEntry('process-overview');
+  history.replaceState(null,'','#'+id);revealThreadAnchor(id);return;
+ }
+ if(location.hash!=='#content')showEntry(id);
+}
+
 function processOutlineCard(outline){
  if(!outline)return '';
  if(outline.status!=='STATIC_SOURCE_OUTLINE'){
@@ -722,7 +852,14 @@ function showEntry(id,nextTab='sequence'){freshness();current=entries.find(e=>e.
   const overviewOwner=D.operations.find(operation=>operation.id==='process-overview');
   const authoredOverviewVisuals=overviewOwner?.visuals?.length?chromeHtml`<section class="visual-gallery process-overview-visuals"><h3>${esc(t('Authored process overview visuals'))}</h3>${overviewOwner.visuals.map(visual=>visualCard(overviewOwner,visual)).join('')}</section>`:'';
   const processOutline=processOutlineCard(D.processOutline);
-  $('scenario-content').innerHTML=chromeHtml`<div class="process-view"><div class="eyebrow">SAVED PROCESS</div><h2>${esc(D.process.definition.title)}</h2><p>${esc(p.authority)}</p>${p.targetChanged?chromeHtml`<p class="finding-strip">This captured definition or a linked child has changed. Retained explanations need review.</p>`:''}${state}${transitions}<section class="gap-card"><h3>Explicit requested scope</h3><p>${esc(v.scope)}</p><p><b>Trigger:</b> ${esc(v.trigger)}</p><p><b>Participants:</b> ${v.participants.map(esc).join(', ')}</p>${v.objects.length?chromeHtml`<p><b>Domain objects:</b> ${v.objects.map(esc).join(', ')}</p>`:''}<h4>Requested outcomes</h4><ul>${v.outcomes.map(x=>chromeHtml`<li>${esc(x)}</li>`).join('')}</ul><p>These are human-requested scope and outcomes; source support is assessed separately.</p></section><h3>Process overview</h3><p class="summary">${esc(o?.summary.text||D.gaps[e.id]||t('No overview has been accepted.'))}</p>${button(o?.summary.sourceIds,t('Overview evidence'))}${authoredOverviewVisuals}${processOutline}${detailed}<h3>Linked child views · captured versions</h3>${p.linkedSubviews.length?p.linkedSubviews.map(c=>chromeHtml`<article class="gap-card"><h4>${c.gap==='LINKED_PROCESS_MISSING'?esc(c.child):chromeHtml`<a href="${esc(c.href)}#process-overview">${esc(c.child)} ↗</a>`}</h4><p>${esc(c.gap||meaningReviewLabel(c.accepted.verification))}</p>${c.accepted?chromeHtml`<p>${esc(c.accepted.summary.text)}</p><p>${[...c.accepted.limitations,...c.accepted.boundaries].map(esc).join(' · ')}</p><details><summary>Accepted child version and influence</summary><pre class="note-original">${pretty(c.accepted)}</pre></details>`:chromeHtml`<p>No current accepted explanation is available for composition.</p>`}</article>`).join(''):chromeHtml`<p>No linked child views were selected.</p>`}<section class="gap-card"><h3>Evidence limits</h3><ul>${[...new Set([...D.boundaries,...(o?.boundaries||[]),...(p.targetGaps||[])])].map(x=>chromeHtml`<li>${esc(x)}</li>`).join('')}</ul></section>${relatedNotes(D.subject)}</div>`;
+  const thread=D.processThread?.status==='SOURCE_BOUND_DECLARATION'?D.processThread:null;
+  const summary=o?.summary.text||p.definition.summary||D.gaps[e.id]||t('No overview has been accepted.');
+  const services=thread?[...new Set((thread.methodOrder||Object.keys(thread.methods)).map(id=>thread.methods[id].source.service))]:v.participants;
+  const limits=[...new Set([...D.boundaries,...(o?.boundaries||[]),...(p.targetGaps||[])])];
+  const captured=chromeHtml`<details class="process-captured"><summary>${esc(t('Declared scope, goals and outcomes'))}</summary><p>${esc(v.scope)}</p>${v.objects.length?chromeHtml`<p><b>Domain objects:</b> ${v.objects.map(esc).join(', ')}</p>`:''}<ul>${v.outcomes.map(x=>chromeHtml`<li>${esc(x)}</li>`).join('')}</ul><p>${esc(t('Declared goals and outcomes are not proven program results.'))}</p><p>${esc(p.authority)}</p></details>`;
+  const children=p.linkedSubviews.length?chromeHtml`<section><h3>Linked child views · captured versions</h3>${p.linkedSubviews.map(c=>chromeHtml`<article class="gap-card"><h4>${c.gap==='LINKED_PROCESS_MISSING'?esc(c.child):chromeHtml`<a href="${esc(c.href)}#process-overview">${esc(c.child)} ↗</a>`}</h4><p>${esc(c.gap||meaningReviewLabel(c.accepted.verification))}</p>${c.accepted?chromeHtml`<p>${esc(c.accepted.summary.text)}</p><p>${[...c.accepted.limitations,...c.accepted.boundaries].map(esc).join(' · ')}</p><details><summary>Accepted child version and influence</summary><pre class="note-original">${pretty(c.accepted)}</pre></details>`:chromeHtml`<p>No current accepted explanation is available for composition.</p>`}</article>`).join('')}</section>`:'';
+  const supporting=(thread?'':state)+transitions+authoredOverviewVisuals+processOutline+detailed+children;
+  $('scenario-content').innerHTML=chromeHtml`<div class="process-view"><header class="process-introduction"><div class="eyebrow">${esc(t(thread?'Declared source-bound process':'SAVED PROCESS'))}</div><h2>${esc(D.process.definition.title)}</h2><p class="summary">${esc(summary)}</p><p class="process-summary-authority">${esc(t(o?'Accepted overview; its source freshness and meaning review are separate.':'Summary from the process declaration; no reviewed overview is implied.'))}</p>${button(o?.summary.sourceIds,t('Overview evidence'))}<dl class="process-facts"><div><dt>${esc(t('Trigger'))}</dt><dd>${esc(v.trigger)}</dd></div><div><dt>${esc(t('Participants'))}</dt><dd>${services.map(esc).join(' · ')}</dd></div>${thread?chromeHtml`<div><dt>${esc(t('Selected source'))}</dt><dd>${thread.methodOrder.length} ${esc(t('complete methods'))} · ${esc(t('Runtime execution was not observed.'))}</dd></div>`:''}</dl>${thread?chromeHtml`<p class="thread-authority">${esc(t('Declared interpretation bound to exact retained source; call targets and runtime delivery are not established.'))}</p>`:''}${p.targetChanged?chromeHtml`<p class="finding-strip">This captured definition or a linked child has changed. Retained explanations need review.</p>`:''}${captured}</header>${thread?state+processThreadCard(thread):supporting}${processExtractionCard(D.processExtraction)}${thread&&supporting?chromeHtml`<details class="process-supporting"><summary>${esc(t('Additional diagrams and source outlines'))}</summary>${supporting}</details>`:''}${limits.length?chromeHtml`<details class="process-publication-limits"><summary>${esc(t('Publication evidence details'))} (${limits.length})</summary><p>${esc(t('These diagnostics describe retained publication evidence; they are not a list of bugs or additional process steps.'))}</p><ul>${limits.map(x=>chromeHtml`<li>${esc(x)}</li>`).join('')}</ul></details>`:''}${relatedNotes(D.subject)}</div>`;
   nav();history.replaceState(null,'','#'+e.id);document.title=t('Process overview')+' · '+D.title;return;
  }
  if(e.kind==='SECTION'){
@@ -767,7 +904,7 @@ function openSource(title){lastFocus=document.activeElement;$('source-title').te
 function source(ids,title=t('Source evidence'),currentSnapshot=false,owner='',fragment=''){sourceScope=currentSnapshot?'current':'';sourceOperation=owner;sourceFragment=fragment;const records=sourceRecords(),valid=ids.filter(id=>records[id]),missing=ids.filter(id=>!records[id]);if(!valid.length||missing.length){sourceId='';closeSource(false);$('source-select').innerHTML='';$('source-meta').innerHTML='';$('source-code').innerHTML='';$('copy-status').textContent='';if(!fragment&&!valid.length)return;const message=fragment?t('Selected fragment source context is unavailable.'):t('Selected source context is incomplete.');$('source-foot').textContent=message+(missing.length?' '+t('Missing sources: ')+missing.join(', '):'');openSource(title);return;}sourceId=valid[0];$('source-select').innerHTML=valid.map(id=>chromeHtml`<option value="${esc(id)}">${esc(records[id].service+' / '+records[id].file+':'+records[id].startLine)}</option>`).join('');sourceContent();openSource(title);}
 function sourceContent(){const s=sourceRecords()[sourceId];$('source-meta').innerHTML=chromeHtml`${s.url?chromeHtml`<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.file)}:${s.startLine}–${s.endLine} ↗</a>`:esc(s.file)}<br>${esc(s.service)} · ${esc(s.revision.slice(0,12))} · ${esc(s.authority)}`;$('source-code').innerHTML=s.text.split('\n').map((line,i)=>chromeHtml`<span class="code-line highlight"><span class="line-number">${s.startLine+i}</span><code>${esc(line)||' '}</code></span>`).join('');$('source-code').scrollTop=0;$('source-foot').innerHTML=chromeHtml`<p>The highlighted fragment is exact retained source. Linked code does not verify the narrative meaning.</p><details><summary>Source binding</summary>Text: ${esc(s.textDigest)}<br>Evidence: ${esc(s.evidenceDigest)}</details>`;$('copy-status').textContent='';}
 function closeSource(focus=true){const wasOpen=!$('source-panel').hidden;$('source-panel').hidden=true;sourceViewport();document.body.classList.remove('source-open');document.querySelectorAll('.selected[data-event]').forEach(e=>e.classList.remove('selected'));if(wasOpen&&focus&&lastFocus?.isConnected)lastFocus.focus();}
-document.addEventListener('click',e=>{const el=e.target.closest('[data-visual-target],[data-entry],[data-tab],[data-sources],[data-event],[data-overview-node],[data-overview-edge],[data-view-node],[data-view-edge]');if(!el)return;e.preventDefault();if(el.dataset.entry||el.dataset.visualTarget)readerSelection();if(el.dataset.visualTarget){navigateEntry(el.dataset.visualTarget);if(el.dataset.visualNodeTarget){const node=$(el.dataset.visualNodeTarget);node?.scrollIntoView({block:'center'});node?.focus();}else window.scrollTo(0,0);}else if(el.dataset.entry){navigateEntry(el.dataset.entry,el.dataset.tab||'sequence');window.scrollTo(0,0);}else if(el.dataset.tab)showEntry(current.id,el.dataset.tab);else if(el.dataset.sources)source(el.dataset.sources.split(' '),t('Source evidence'),el.hasAttribute('data-current-sources'),el.dataset.sourceOperation||'',el.dataset.sourceFragment||'');else if(el.dataset.viewNode||el.dataset.viewEdge){const g=operation(current)?.dataflow,item=el.dataset.viewNode?g?.nodes.find(n=>n.id===el.dataset.viewNode):g?.edges.find(e=>e.id===el.dataset.viewEdge);if(item)source(item.meaning.sourceIds,item.meaning.text);}else if(el.dataset.overviewNode||el.dataset.overviewEdge){const o=operation(current),d=o.overviewDiagram,item=el.dataset.overviewNode?d.nodes.find(n=>n.id===el.dataset.overviewNode):d.edges.find(n=>n.id===el.dataset.overviewEdge);if(item){source([...new Set(o.events.filter(e=>item.eventIds.includes(e.id)).flatMap(e=>e.sourceIds))],item.text);}}else if(el.dataset.event){const event=operation(current)?.events.find(e=>e.id===el.dataset.event);if(event){source(event.sourceIds,event.text);el.classList.add('selected');}}});
+document.addEventListener('click',e=>{const threadLink=e.target.closest('a[href]');const threadHref=threadLink?.getAttribute?.('href')||'';if(threadHref.startsWith('#')&&isThreadAnchor(threadHref.slice(1))&&D.processThread){e.preventDefault();if(location.hash!==threadHref)history.pushState(null,'',threadHref);revealThreadAnchor(threadHref.slice(1),threadLink.dataset.threadEnd);return;}const el=e.target.closest('[data-visual-target],[data-entry],[data-tab],[data-sources],[data-event],[data-overview-node],[data-overview-edge],[data-view-node],[data-view-edge]');if(!el)return;e.preventDefault();if(el.dataset.entry||el.dataset.visualTarget)readerSelection();if(el.dataset.visualTarget){navigateEntry(el.dataset.visualTarget);if(el.dataset.visualNodeTarget){const node=$(el.dataset.visualNodeTarget);node?.scrollIntoView({block:'center'});node?.focus();}else window.scrollTo(0,0);}else if(el.dataset.entry){navigateEntry(el.dataset.entry,el.dataset.tab||'sequence');window.scrollTo(0,0);}else if(el.dataset.tab)showEntry(current.id,el.dataset.tab);else if(el.dataset.sources)source(el.dataset.sources.split(' '),t('Source evidence'),el.hasAttribute('data-current-sources'),el.dataset.sourceOperation||'',el.dataset.sourceFragment||'');else if(el.dataset.viewNode||el.dataset.viewEdge){const g=operation(current)?.dataflow,item=el.dataset.viewNode?g?.nodes.find(n=>n.id===el.dataset.viewNode):g?.edges.find(e=>e.id===el.dataset.viewEdge);if(item)source(item.meaning.sourceIds,item.meaning.text);}else if(el.dataset.overviewNode||el.dataset.overviewEdge){const o=operation(current),d=o.overviewDiagram,item=el.dataset.overviewNode?d.nodes.find(n=>n.id===el.dataset.overviewNode):d.edges.find(n=>n.id===el.dataset.overviewEdge);if(item){source([...new Set(o.events.filter(e=>item.eventIds.includes(e.id)).flatMap(e=>e.sourceIds))],item.text);}}else if(el.dataset.event){const event=operation(current)?.events.find(e=>e.id===el.dataset.event);if(event){source(event.sourceIds,event.text);el.classList.add('selected');}}});
 document.addEventListener('change',e=>{const kind=e.target.dataset.contractSelect;if(!kind)return;if(kind==='boundary')contractId=e.target.value;else payloadId=e.target.value;showEntry(current.id,'contract');if(kind==='payload')document.querySelector('.payload-library').open=true;document.querySelector(chromeHtml`[data-contract-select="${kind}"]`)?.focus();});
 document.addEventListener('keydown',e=>{if(sourceKeyboard(e))return;if(e.target.matches('[role=tab]')&&['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const tabs=['sequence','contract','findings'];const next=tabs[(tabs.indexOf(tab)+(e.key==='ArrowRight'?1:2))%3];showEntry(current.id,next);$('tab-'+next).focus();}});
 $('search').addEventListener('input',nav);$('source-select').onchange=e=>{sourceId=e.target.value;sourceContent();};$('close-source').onclick=()=>closeSource();$('catalogue-button').onclick=()=>{catalogue();readerSelection();};$('coverage-button').onclick=()=>{coverage();readerSelection();};
@@ -778,4 +915,4 @@ function navigateEntry(id,nextTab='sequence'){if(location.hash!=='#'+id)history.
 function readerSelection(){if(navigationMedia?.matches)$('reader-navigation').open=false;$('content').focus();}
 function navigationViewport(){const navigation=$('reader-navigation');if(navigation&&navigationMedia)navigation.open=!navigationMedia.matches;sourceViewport();}
 navigationViewport();navigationMedia?.addEventListener?.('change',navigationViewport);
-window.addEventListener('hashchange',()=>{if(location.hash!=='#content')showEntry(location.hash.slice(1));});showEntry(location.hash.slice(1));
+window.addEventListener('hashchange',routeReaderHash);routeReaderHash();
