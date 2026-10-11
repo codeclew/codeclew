@@ -245,6 +245,8 @@ enum ThreadCommand {
     Context(ThreadContextArgs),
     Callables(ThreadCallablesArgs),
     Flow(ThreadFlowArgs),
+    /// Build a read-only question packet from an existing retained flow.
+    Question(ThreadQuestionArgs),
     Explain(ThreadExplainArgs),
     Render(ThreadRenderArgs),
     ExplanationStatus(ThreadExplanationStatusArgs),
@@ -938,6 +940,15 @@ struct ThreadExplainArgs {
     /// Closed, canonical codeclew-explanation-claim-input/0.1 JSON file.
     #[arg(long)]
     claims: PathBuf,
+}
+
+#[derive(Args)]
+struct ThreadQuestionArgs {
+    #[arg(long)]
+    thread: String,
+    /// Closed codeclew-question-request/0.1 JSON with an exact flow digest.
+    #[arg(long)]
+    request: PathBuf,
 }
 
 #[derive(Args)]
@@ -1833,6 +1844,20 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let (thread, _) = ThreadAuthority::load(&args.thread)?;
             let root = clew::explanation_service::create(&thread, &args.flow, document)?;
             clew::explanation_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Question(args),
+        } => {
+            let bytes = read_bounded_regular_file(
+                &args.request,
+                clew::thread_question::MAX_REQUEST_BYTES,
+                "question request is missing, unsafe, or exceeds 64 KiB",
+            )?;
+            let request = clew::thread_question::parse_request(&bytes)?;
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let packet = clew::thread_flow_service::question(&thread, request)?;
+            clew::canonical::value(&packet)
+                .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))
         }
         Command::Thread {
             command: ThreadCommand::Render(args),

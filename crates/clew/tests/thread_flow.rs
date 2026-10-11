@@ -22,6 +22,303 @@ const WRITE: &str = "callable:sample/Service.write#jvm:()Ljava/lang/String;";
 const AUDIT: &str = "callable:sample/Service.audit#jvm:()Ljava/lang/String;";
 const CLIENT: &str = "callable:sample/Client.save#jvm:()Ljava/lang/String;";
 
+fn question_request(
+    flow: &clew::thread_flow::PreparedFlowSlice,
+) -> clew::thread_question::QuestionRequest {
+    use clew::thread_question::{Criterion, Purpose, QuestionRequest, REQUEST_SCHEMA, Selector};
+    QuestionRequest {
+        schema: REQUEST_SCHEMA.into(),
+        flow_id: flow.slice.flow_id.clone(),
+        flow_digest: flow.slice_ref.digest.clone(),
+        purpose: Purpose::Problems,
+        criteria: vec![
+            Criterion {
+                id: "root".into(),
+                label: "Selected entry".into(),
+                selector: Selector::Callable {
+                    member_alias: "left".into(),
+                    symbol_identity: ROOT.into(),
+                },
+            },
+            Criterion {
+                id: "missing".into(),
+                label: "An unresolved effect".into(),
+                selector: Selector::RelationFact {
+                    fact_id: "absent-exact-fact".into(),
+                },
+            },
+        ],
+        max_methods: 128,
+        local_order_queries: Vec::new(),
+    }
+}
+
+#[test]
+fn question_resolution_is_exact_deterministic_and_does_not_close_semantics() {
+    use clew::thread_question::{self, Discovery, SemanticClosure};
+    let facts = fixture();
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 4), &facts).unwrap();
+    let mut query = question_request(&flow);
+    let first = thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        query.clone(),
+    )
+    .unwrap();
+    query.criteria.reverse();
+    let second = thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        query,
+    )
+    .unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.criteria[0].discovery, Discovery::NotFoundUnknown);
+    assert_eq!(first.criteria[1].discovery, Discovery::FoundInRetainedFlow);
+    assert!(
+        first
+            .criteria
+            .iter()
+            .all(|c| c.semantic_closure == SemanticClosure::Unknown)
+    );
+    assert_eq!(first.traversal, FlowStatus::Complete);
+    assert_eq!(first.presentation_method_ids.len(), flow.slice.counts.nodes);
+    assert!(
+        first
+            .frontier
+            .iter()
+            .any(|f| f.code == "DEPENDENCE_MODEL_UNAVAILABLE")
+    );
+    thread_question::verify_packet(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        &first,
+    )
+    .unwrap();
+}
+
+#[test]
+fn question_budget_cuts_and_parent_boundaries_affect_every_criterion() {
+    use clew::thread_question::{self, FrontierKind};
+    let facts = fixture();
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 1), &facts).unwrap();
+    let mut query = question_request(&flow);
+    query.max_methods = 1;
+    let packet = thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        query,
+    )
+    .unwrap();
+    assert_eq!(packet.traversal, FlowStatus::Truncated);
+    assert!(!packet.presentation_complete);
+    assert!(!packet.omitted_method_ids.is_empty());
+    for code in ["PARENT_TRAVERSAL_TRUNCATED", "PRESENTATION_METHOD_BUDGET"] {
+        let frontier = packet.frontier.iter().find(|f| f.code == code).unwrap();
+        assert_eq!(frontier.kind, FrontierKind::Budget);
+        assert_eq!(frontier.affected_criteria, vec!["missing", "root"]);
+    }
+    assert!(flow.slice.boundaries.iter().all(|b| {
+        packet
+            .frontier
+            .iter()
+            .any(|f| f.origin_ids.contains(&b.boundary_id))
+    }));
+}
+
+#[test]
+fn question_foreign_binding_and_forged_acceptance_are_rejected() {
+    use clew::thread_question;
+    let facts = fixture();
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 4), &facts).unwrap();
+    let mut query = question_request(&flow);
+    query.flow_digest = digest("foreign");
+    assert_eq!(
+        thread_question::build_verified(
+            &flow.slice,
+            &flow.slice_ref,
+            &facts.authority.completeness,
+            query
+        )
+        .unwrap_err()
+        .code,
+        clew::error::ErrorCode::BindingChanged
+    );
+    let mut packet = thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        question_request(&flow),
+    )
+    .unwrap();
+    packet.frontier.clear();
+    assert_eq!(
+        thread_question::verify_packet(
+            &flow.slice,
+            &flow.slice_ref,
+            &facts.authority.completeness,
+            &packet
+        )
+        .unwrap_err()
+        .code,
+        clew::error::ErrorCode::StateCorrupt
+    );
+}
+
+#[test]
+fn question_request_is_closed_bounded_and_duplicate_keys_are_rejected() {
+    use clew::thread_question;
+    let facts = fixture();
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 4), &facts).unwrap();
+    let query = question_request(&flow);
+    let bytes = canonical::bytes(&query).unwrap();
+    assert_eq!(thread_question::parse_request(&bytes).unwrap(), query);
+    let mut value = serde_json::to_value(&query).unwrap();
+    value["criteria"][0]["selector"]["guessedTarget"] = json!("save");
+    assert!(thread_question::parse_request(&canonical::bytes(&value).unwrap()).is_err());
+    let mut duplicate = query.clone();
+    duplicate.criteria.push(duplicate.criteria[0].clone());
+    assert!(thread_question::parse_request(&canonical::bytes(&duplicate).unwrap()).is_err());
+    assert!(thread_question::parse_request(br#"{"schema":"a","schema":"b"}"#).is_err());
+    assert!(
+        thread_question::parse_request(&vec![b' '; thread_question::MAX_REQUEST_BYTES + 1])
+            .is_err()
+    );
+    let mut invalid = query;
+    invalid.max_methods = 129;
+    assert!(thread_question::parse_request(&canonical::bytes(&invalid).unwrap()).is_err());
+}
+
+#[test]
+fn question_cli_help_exposes_only_an_explicit_request_and_thread() {
+    let binary = env!("CARGO_BIN_EXE_clew");
+    let help = Command::new(binary)
+        .args(["thread", "question", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    assert!(text.contains("--request") && text.contains("--thread"));
+    assert!(!text.contains("--model") && !text.contains("--publish"));
+    assert!(
+        !Command::new(binary)
+            .args(["thread", "question", "--thread", "thread:test"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn question_finds_a_relation_retained_only_in_an_unresolved_boundary() {
+    use clew::thread_question::{self, Discovery, Selector};
+    let left = member("left");
+    let left_compilation = compilation("left");
+    let facts = build_fact_set(
+        vec![
+            qualified(
+                left.clone(),
+                left_compilation.clone(),
+                descriptor("sample/Service.save", "src/Service.kt", 0),
+            ),
+            qualified(
+                left,
+                left_compilation,
+                relation_with_cfg(
+                    "sample/Service.save",
+                    "callable:sample/External.missing#jvm:()Ljava/lang/String;",
+                    "src/Service.kt",
+                    10,
+                    false,
+                ),
+            ),
+            qualified(
+                member("right"),
+                compilation("right"),
+                descriptor("sample/Client.read", "src/Client.kt", 0),
+            ),
+        ],
+        RelationshipAuthority::DeclaredTopology,
+    );
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 4), &facts).unwrap();
+    assert!(flow.slice.edges.is_empty());
+    let boundary = flow
+        .slice
+        .boundaries
+        .iter()
+        .find(|b| b.code == "UNBOUND_COMPONENT_TARGET")
+        .unwrap();
+    let selected_fact = boundary.support_refs[0].fact_id.clone();
+    let mut query = question_request(&flow);
+    query.criteria.truncate(1);
+    query.criteria[0].selector = Selector::RelationFact {
+        fact_id: selected_fact,
+    };
+    let packet = thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        query,
+    )
+    .unwrap();
+    assert_eq!(packet.criteria[0].discovery, Discovery::FoundInRetainedFlow);
+    assert!(
+        packet.criteria[0]
+            .matched_ids
+            .contains(&boundary.boundary_id)
+    );
+}
+
+#[test]
+fn question_small_packet_prioritizes_matched_owner_and_deduplicates_source() {
+    use clew::thread_question::{self, Selector};
+    let facts = fixture();
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 4), &facts).unwrap();
+    let mut query = question_request(&flow);
+    query.criteria.truncate(1);
+    query.criteria[0].selector = Selector::Callable {
+        member_alias: "left".into(),
+        symbol_identity: WRITE.into(),
+    };
+    query.max_methods = 1;
+    let packet = thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        query,
+    )
+    .unwrap();
+    let selected = flow
+        .slice
+        .nodes
+        .iter()
+        .find(|n| n.symbol_identity == WRITE)
+        .unwrap();
+    assert_eq!(
+        packet.presentation_method_ids,
+        vec![selected.node_id.clone()]
+    );
+    assert_eq!(packet.callable_envelope_summaries.len(), 1);
+    assert_eq!(packet.interpretation_plan.workers, 1);
+    assert_eq!(packet.interpretation_plan.actual_model_calls, 0);
+    assert_eq!(packet.interpretation_plan.duplicated_source_bytes, 0);
+    let expected_bytes = packet
+        .interpretation_plan
+        .shared_source_objects
+        .iter()
+        .map(|s| s.size)
+        .sum::<u64>();
+    assert_eq!(
+        packet.interpretation_plan.unique_source_bytes,
+        expected_bytes
+    );
+}
+
 #[test]
 fn exact_root_cycle_is_bounded_deterministic_and_evidence_linked() {
     let facts = fixture();
