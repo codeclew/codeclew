@@ -1077,6 +1077,7 @@ fn normalize_file_fact(row: &Value) -> Result<Value, ClewError> {
         .to_owned();
     let mut normalized = row.clone();
     normalize_operational_paths(&mut normalized, &relative, 0)?;
+    crate::kotlin_values::validate_file_fact(&normalized)?;
     let object = normalized.as_object_mut().ok_or_else(|| {
         ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
@@ -1228,7 +1229,7 @@ fn normalize_operational_path(path: &str, outer_relative: &str) -> Result<String
     }
 }
 
-fn safe_relative_source_path(path: &str) -> bool {
+pub(crate) fn safe_relative_source_path(path: &str) -> bool {
     !path.is_empty()
         && !Path::new(path).is_absolute()
         && Path::new(path)

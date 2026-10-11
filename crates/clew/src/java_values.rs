@@ -499,6 +499,22 @@ mod tests {
             ("byteWide", "()", Nullness::Unknown),
             ("deep", "()", Nullness::Unknown),
         ] {
+            // The native K2 fixture uses the same language-neutral result cases.
+            let cases: BTreeMap<String, Nullness> =
+                serde_json::from_str(include_str!("../../../fixtures/value-nullness-cases.json"))
+                    .unwrap();
+            let case = match name {
+                "choose" => "coalesce",
+                "copy" if signature == "(Ljava/lang/String;)" => "input",
+                "copy" | "literal" => "literal",
+                "nullable" => "null",
+                "readField" => "field",
+                "call" => "call",
+                "mutate" => "write",
+                "branch" => "control",
+                _ => "budget",
+            };
+            assert_eq!(expected, cases[case]);
             let owner = format!("method:class:Values#{name}{signature}Ljava/lang/String;");
             let m = project_index(&i, &owner).unwrap();
             let r = analyze(

@@ -6,6 +6,8 @@ extraction. `clew_facts::values` defines `portable-value-model/0.1`;
 of values on **modeled normal completion**. It is a Rust API prototype, not a
 public CLI operation or program-wide source slicer. A first automatic javac
 immutable-local projection is described in `javac-value-extraction.md`.
+A bounded K2 2.4.10 projection is described in
+[Kotlin value extraction](kotlin-value-extraction.md).
 The existing `thread question` command retains its earlier Kotlin flow profile.
 It does not become a multi-language flow loader through this addition.
 

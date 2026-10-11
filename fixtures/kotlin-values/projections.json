@@ -1,0 +1,600 @@
+[
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.booleanValue#jvm:()Z",
+    "ownerByteStart": 384,
+    "ownerByteEnd": 419,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v411_416"
+        },
+        "guards": [],
+        "start": 411,
+        "end": 416,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 414,
+        "byteEnd": 419,
+        "startLine": 13,
+        "endLine": 13
+      },
+      {
+        "id": "v411_416",
+        "operation": {
+          "kind": "NON_NULL"
+        },
+        "guards": [],
+        "start": 411,
+        "end": 416,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 414,
+        "byteEnd": 419,
+        "startLine": 13,
+        "endLine": 13
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.branched#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+    "ownerByteStart": 631,
+    "ownerByteEnd": 742,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "UNKNOWN",
+          "boundary": "KOTLIN_VALUE_BODY_OR_BUDGET_UNSUPPORTED"
+        },
+        "guards": [],
+        "start": 628,
+        "end": 739,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 631,
+        "byteEnd": 742,
+        "startLine": 21,
+        "endLine": 24
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.choose#jvm:(I)I",
+    "ownerByteStart": 244,
+    "ownerByteEnd": 285,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v272_282"
+        },
+        "guards": [],
+        "start": 272,
+        "end": 282,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 275,
+        "byteEnd": 285,
+        "startLine": 10,
+        "endLine": 10
+      },
+      {
+        "id": "v252_263",
+        "operation": {
+          "kind": "INPUT"
+        },
+        "guards": [],
+        "start": 252,
+        "end": 263,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 255,
+        "byteEnd": 266,
+        "startLine": 10,
+        "endLine": 10
+      },
+      {
+        "id": "v272_277",
+        "operation": {
+          "kind": "COPY",
+          "value": "v252_263"
+        },
+        "guards": [],
+        "start": 272,
+        "end": 277,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 275,
+        "byteEnd": 280,
+        "startLine": 10,
+        "endLine": 10
+      },
+      {
+        "id": "v272_282",
+        "operation": {
+          "kind": "COALESCE",
+          "left": "v272_277",
+          "right": "v281_282"
+        },
+        "guards": [
+          "v272_277"
+        ],
+        "start": 272,
+        "end": 282,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 275,
+        "byteEnd": 285,
+        "startLine": 10,
+        "endLine": 10
+      },
+      {
+        "id": "v281_282",
+        "operation": {
+          "kind": "NON_NULL"
+        },
+        "guards": [],
+        "start": 281,
+        "end": 282,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 284,
+        "byteEnd": 285,
+        "startLine": 10,
+        "endLine": 10
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.choose#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+    "ownerByteStart": 69,
+    "ownerByteEnd": 239,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v222_230"
+        },
+        "guards": [],
+        "start": 222,
+        "end": 230,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 225,
+        "byteEnd": 233,
+        "startLine": 8,
+        "endLine": 8
+      },
+      {
+        "id": "v111_142",
+        "operation": {
+          "kind": "COPY",
+          "value": "v123_142"
+        },
+        "guards": [],
+        "start": 111,
+        "end": 142,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 114,
+        "byteEnd": 145,
+        "startLine": 5,
+        "endLine": 5
+      },
+      {
+        "id": "v123_128",
+        "operation": {
+          "kind": "COPY",
+          "value": "v77_91"
+        },
+        "guards": [],
+        "start": 123,
+        "end": 128,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 126,
+        "byteEnd": 131,
+        "startLine": 5,
+        "endLine": 5
+      },
+      {
+        "id": "v123_142",
+        "operation": {
+          "kind": "COALESCE",
+          "left": "v123_128",
+          "right": "v132_142"
+        },
+        "guards": [
+          "v123_128"
+        ],
+        "start": 123,
+        "end": 142,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 126,
+        "byteEnd": 145,
+        "startLine": 5,
+        "endLine": 5
+      },
+      {
+        "id": "v132_142",
+        "operation": {
+          "kind": "NON_NULL"
+        },
+        "guards": [],
+        "start": 132,
+        "end": 142,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 135,
+        "byteEnd": 145,
+        "startLine": 5,
+        "endLine": 5
+      },
+      {
+        "id": "v151_168",
+        "operation": {
+          "kind": "COPY",
+          "value": "v163_168"
+        },
+        "guards": [],
+        "start": 151,
+        "end": 168,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 154,
+        "byteEnd": 171,
+        "startLine": 6,
+        "endLine": 6
+      },
+      {
+        "id": "v163_168",
+        "operation": {
+          "kind": "COPY",
+          "value": "v111_142"
+        },
+        "guards": [],
+        "start": 163,
+        "end": 168,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 166,
+        "byteEnd": 171,
+        "startLine": 6,
+        "endLine": 6
+      },
+      {
+        "id": "v177_206",
+        "operation": {
+          "kind": "COPY",
+          "value": "v192_206"
+        },
+        "guards": [],
+        "start": 177,
+        "end": 206,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 180,
+        "byteEnd": 209,
+        "startLine": 7,
+        "endLine": 7
+      },
+      {
+        "id": "v192_197",
+        "operation": {
+          "kind": "COPY",
+          "value": "v151_168"
+        },
+        "guards": [],
+        "start": 192,
+        "end": 197,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 195,
+        "byteEnd": 200,
+        "startLine": 7,
+        "endLine": 7
+      },
+      {
+        "id": "v192_206",
+        "operation": {
+          "kind": "COALESCE",
+          "left": "v192_197",
+          "right": "v201_206"
+        },
+        "guards": [
+          "v192_197"
+        ],
+        "start": 192,
+        "end": 206,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 195,
+        "byteEnd": 209,
+        "startLine": 7,
+        "endLine": 7
+      },
+      {
+        "id": "v201_206",
+        "operation": {
+          "kind": "COPY",
+          "value": "v111_142"
+        },
+        "guards": [],
+        "start": 201,
+        "end": 206,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 204,
+        "byteEnd": 209,
+        "startLine": 7,
+        "endLine": 7
+      },
+      {
+        "id": "v222_230",
+        "operation": {
+          "kind": "COPY",
+          "value": "v177_206"
+        },
+        "guards": [],
+        "start": 222,
+        "end": 230,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 225,
+        "byteEnd": 233,
+        "startLine": 8,
+        "endLine": 8
+      },
+      {
+        "id": "v77_91",
+        "operation": {
+          "kind": "INPUT"
+        },
+        "guards": [],
+        "start": 77,
+        "end": 91,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 80,
+        "byteEnd": 94,
+        "startLine": 4,
+        "endLine": 4
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.defaulted#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+    "ownerByteStart": 290,
+    "ownerByteEnd": 343,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v335_340"
+        },
+        "guards": [],
+        "start": 335,
+        "end": 340,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 338,
+        "byteEnd": 343,
+        "startLine": 11,
+        "endLine": 11
+      },
+      {
+        "id": "v301_322",
+        "operation": {
+          "kind": "INPUT"
+        },
+        "guards": [],
+        "start": 301,
+        "end": 322,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 304,
+        "byteEnd": 325,
+        "startLine": 11,
+        "endLine": 11
+      },
+      {
+        "id": "v335_340",
+        "operation": {
+          "kind": "COPY",
+          "value": "v301_322"
+        },
+        "guards": [],
+        "start": 335,
+        "end": 340,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 338,
+        "byteEnd": 343,
+        "startLine": 11,
+        "endLine": 11
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.field#jvm:()Ljava/lang/String;",
+    "ownerByteStart": 481,
+    "ownerByteEnd": 509,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v500_506"
+        },
+        "guards": [],
+        "start": 500,
+        "end": 506,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 503,
+        "byteEnd": 509,
+        "startLine": 15,
+        "endLine": 15
+      },
+      {
+        "id": "v500_506",
+        "operation": {
+          "kind": "UNKNOWN",
+          "boundary": "KOTLIN_VALUE_EXPRESSION_UNSUPPORTED"
+        },
+        "guards": [],
+        "start": 500,
+        "end": 506,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 503,
+        "byteEnd": 509,
+        "startLine": 15,
+        "endLine": 15
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.missing#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+    "ownerByteStart": 424,
+    "ownerByteEnd": 476,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v460_473"
+        },
+        "guards": [],
+        "start": 460,
+        "end": 473,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 463,
+        "byteEnd": 476,
+        "startLine": 14,
+        "endLine": 14
+      },
+      {
+        "id": "v433_447",
+        "operation": {
+          "kind": "INPUT"
+        },
+        "guards": [],
+        "start": 433,
+        "end": 447,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 436,
+        "byteEnd": 450,
+        "startLine": 14,
+        "endLine": 14
+      },
+      {
+        "id": "v460_473",
+        "operation": {
+          "kind": "UNKNOWN",
+          "boundary": "KOTLIN_VALUE_EXPRESSION_UNSUPPORTED"
+        },
+        "guards": [],
+        "start": 460,
+        "end": 473,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 463,
+        "byteEnd": 476,
+        "startLine": 14,
+        "endLine": 14
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.mutated#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+    "ownerByteStart": 514,
+    "ownerByteEnd": 626,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "UNKNOWN",
+          "boundary": "KOTLIN_VALUE_BODY_OR_BUDGET_UNSUPPORTED"
+        },
+        "guards": [],
+        "start": 511,
+        "end": 623,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 514,
+        "byteEnd": 626,
+        "startLine": 16,
+        "endLine": 20
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  },
+  {
+    "schema": "k2-value-projection/0.1",
+    "compilerVersion": "2.4.10",
+    "owner": "callable:values/Values.nullValue#jvm:()Ljava/lang/String;",
+    "ownerByteStart": 348,
+    "ownerByteEnd": 379,
+    "fullCompilationSourceDigest": "sha256:2156ce8c4c3f800fc21312b363faa1c50ec0ef00d6ee67d9a15d2469f2d5d5a9",
+    "nodes": [
+      {
+        "id": "result",
+        "operation": {
+          "kind": "COPY",
+          "value": "v372_376"
+        },
+        "guards": [],
+        "start": 372,
+        "end": 376,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 375,
+        "byteEnd": 379,
+        "startLine": 12,
+        "endLine": 12
+      },
+      {
+        "id": "v372_376",
+        "operation": {
+          "kind": "NULL"
+        },
+        "guards": [],
+        "start": 372,
+        "end": 376,
+        "file": "fixtures/kotlin-values/Values.kt",
+        "byteStart": 375,
+        "byteEnd": 379,
+        "startLine": 12,
+        "endLine": 12
+      }
+    ],
+    "globalBoundaries": [
+      "KOTLIN_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE"
+    ]
+  }
+]

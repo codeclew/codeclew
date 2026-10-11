@@ -182,6 +182,7 @@ private class FirDocumentationVariablesChecker24(
         val identity = "callable:$ownerId#jvm:$descriptor"
         val file = context.containingFilePath ?: return
         if (owner.receiverParameter != null || owner.contextParameters.isNotEmpty()) return
+        kotlinValueProjection24(owner, file, identity)?.let { appendFact(output, it) }
         appendFact(output, buildJsonObject {
             put("recordType", "DOCUMENTATION_VARIABLE_RECEIPT")
             put("schema", "kotlin-documentation-variable-receipt/1.0")

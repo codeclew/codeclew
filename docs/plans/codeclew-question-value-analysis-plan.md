@@ -39,9 +39,20 @@ digests in fact identity reconstruction; it was corrected before the passing
 native test. Formatting, Clippy for both affected packages, English-content and
 privacy checks passed. This is focused qualification, not full CI.
 
-Next slice: one independently qualified Kotlin worker/version (S2c). General
-calls, heap fields, effects/exceptions and concrete enum-value semantics remain
-explicitly outside the qualified nullness profile.
+S2c now emits a bounded immutable-local projection from the Kotlin 2.4.10 FIR
+worker and translates it to the same portable equations. Native compiler tests
+cover exact shadowing/repeated-use definitions, overloads, literals/defaulted
+inputs, null-only Elvis, Unicode/CRLF coordinate mapping and explicit unsupported
+or budget results. Rust consumes the native golden projection and shared
+Java/Kotlin nullness expectations. Smart casts retain their original resolved
+occurrences without importing type refinements. The shared host code also
+compiles with 2.1.21; that worker gains no projection capability. The Kotlin
+retained public loader is not implemented by this bridge.
+
+Next slice: bounded exact direct-call summaries and interprocedural dependency
+transfer. General heap fields, effects/exceptions and concrete enum-value
+semantics remain outside the qualified nullness profile. See
+[Kotlin extraction](../operations/kotlin-value-extraction.md) for bounds.
 
 ## Implemented baseline
 

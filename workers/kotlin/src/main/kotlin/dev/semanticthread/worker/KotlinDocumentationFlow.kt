@@ -54,7 +54,9 @@ internal class KotlinDocumentationSource(
         val data = KotlinDocumentationData(file, originalSource, compilationScope, descriptor,
             coordinates, compilerCoordinates, dataFacts, dataCalls, storageDescriptors).read(function)
         val documented = if (data == null) flow else JsonObject(flow + mapOf("dataInput" to data))
-        return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to documented))
+        val values = normalizeKotlinValueProjection(dataFacts, descriptor, file, originalSource, compilerCoordinates, sourceDigest)
+        return JsonObject(row + mapOf("documentationSymbol" to JsonPrimitive(identity), "documentation" to documented) +
+            if (values == null) emptyMap() else mapOf("valueProjection" to values))
     }
 }
 

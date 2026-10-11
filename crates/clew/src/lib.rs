@@ -31,6 +31,7 @@ pub mod jvm_navigation_service;
 pub mod jvm_runtime;
 pub mod kotlin_adapter_v2;
 pub mod kotlin_engine;
+pub mod kotlin_values;
 pub(crate) mod limits;
 pub mod maven;
 pub(crate) mod maven_diagnostics;
