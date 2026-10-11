@@ -20,6 +20,10 @@ pub struct Thread {
     pub methods: Vec<Method>,
     pub steps: Vec<Step>,
     pub boundaries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_fragments: Vec<ServiceFragment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_contracts: Vec<BoundaryContract>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,6 +35,63 @@ pub struct Method {
     pub source_id: String,
     pub text_digest: String,
 }
+/// Addresses are process-scoped; source identity remains bound to the captured Check.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceFragment {
+    pub id: String,
+    pub entry_method: String,
+    pub root_step: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContractEvidence {
+    pub service: String,
+    pub source_id: String,
+    pub revision: String,
+    pub text_digest: String,
+    pub start_line: u64,
+    pub end_line: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContractClaim {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+    /// Required when evidence is absent; never silently convert missing evidence to fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_evidence: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BoundaryContract {
+    pub id: String,
+    pub call_step: String,
+    /// None is an explicit frontier (for example an uncaptured message consumer).
+    pub receiver_fragment: Option<String>,
+    pub transport: String,
+    pub operation: ContractClaim,
+    pub request: Vec<ContractClaim>,
+    pub response: Vec<ContractClaim>,
+    pub failures: Vec<ContractClaim>,
+    pub guarantees: Vec<ContractClaim>,
+    pub evidence: BTreeMap<String, ContractEvidence>,
+}
+
+fn find_step<'a>(steps: &'a [Step], id: &str) -> Option<&'a Step> {
+    for step in steps {
+        if step.id == id { return Some(step); }
+        if let Some(found) = find_step(&step.children, id) { return Some(found); }
+        if let Some(group) = &step.branch_group {
+            for arm in &group.arms {
+                if let Some(found) = find_step(&arm.steps, id) { return Some(found); }
+            }
+        }
+    }
+    None
+}
+
 /// Presentation labels are declarations; they do not prove control-flow semantics.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -244,7 +305,51 @@ impl Thread {
             }
             Ok(())
         }
-        walk(&self.steps, &ids, &mut BTreeSet::new(), &mut 0, 0)
+        walk(&self.steps, &ids, &mut BTreeSet::new(), &mut 0, 0)?;
+        if self.service_fragments.len() > 64 || self.boundary_contracts.len() > 64 {
+            return Err(invalid("too many process boundary records"));
+        }
+        let mut fragment_ids = BTreeSet::new();
+        for fragment in &self.service_fragments {
+            if !store::valid_id(&fragment.id) || !fragment_ids.insert(fragment.id.clone())
+                || find_step(&self.steps, &fragment.root_step).is_none_or(|s| s.method != fragment.entry_method)
+                || !ids.contains(fragment.entry_method.as_str()) {
+                return Err(invalid("invalid service fragment entry or root step"));
+            }
+        }
+        let mut contract_ids = BTreeSet::new();
+        let mut claim_bytes = 0usize;
+        for contract in &self.boundary_contracts {
+            if !store::valid_id(&contract.id) || !contract_ids.insert(contract.id.clone())
+                || find_step(&self.steps, &contract.call_step).is_none()
+                || contract.receiver_fragment.as_ref().is_some_and(|id| !fragment_ids.contains(id))
+                || !matches!(contract.transport.as_str(), "HTTP" | "KAFKA")
+                || contract.evidence.len() > 64
+                || contract.evidence.iter().any(|(id, e)| !store::valid_id(id)
+                    || !participants.contains(&e.service) || e.start_line == 0 || e.end_line < e.start_line) {
+                return Err(invalid("invalid boundary contract binding"));
+            }
+            if let Some(receiver) = &contract.receiver_fragment {
+                let fragment = self.service_fragments.iter().find(|f| &f.id == receiver).unwrap();
+                if find_step(&self.steps, &contract.call_step).unwrap().target.as_ref() != Some(&fragment.entry_method) {
+                    return Err(invalid("contract receiver must match the explicit call step target"));
+                }
+            }
+            let claims = std::iter::once(&contract.operation).chain(&contract.request)
+                .chain(&contract.response).chain(&contract.failures).chain(&contract.guarantees);
+            let mut count = 0;
+            for claim in claims {
+                count += 1;
+                claim_bytes += claim.text.len() + claim.missing_evidence.as_ref().map_or(0, String::len);
+                if claim_bytes > 1024 * 1024 || count > 128 || !bounded(&claim.text) || claim.evidence_refs.len() > 64
+                    || claim.evidence_refs.iter().any(|id| !contract.evidence.contains_key(id))
+                    || claim.missing_evidence.as_ref().is_some_and(|s| !bounded(s))
+                    || (claim.evidence_refs.is_empty() && claim.missing_evidence.is_none()) {
+                    return Err(invalid("boundary claim needs evidence or an explicit missing capture"));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -592,14 +697,98 @@ pub(super) fn project(
         }
         Ok(())
     }
+    let mut contract_sources = BTreeMap::new();
+    let mut contract_source_bytes = 0usize;
+    for contract in &thread.boundary_contracts {
+        for evidence in contract.evidence.values() {
+            let service = checked.services.get(&evidence.service)
+                .ok_or_else(|| invalid("contract evidence service is unavailable"))?;
+            let source = service.sources.get(&evidence.source_id)
+                .ok_or_else(|| invalid("contract evidence source is unavailable"))?;
+            if evidence.revision != service.revision || source.revision != evidence.revision
+                || source.text_digest != evidence.text_digest
+                || source.service != evidence.service
+                || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
+                || source.end_line.checked_sub(source.start_line).map(|n| n + 1) != Some(source.text.lines().count() as u64)
+                || evidence.start_line < source.start_line || evidence.end_line > source.end_line
+                || evidence.start_line == 0 || evidence.end_line < evidence.start_line {
+                return Err(invalid("contract evidence differs from retained source binding"));
+            }
+            if let Some(previous) = contract_sources.get(&evidence.source_id) {
+                if previous != &json!(source) { return Err(invalid("contract source identity conflicts across services")); }
+            } else {
+                contract_source_bytes += source.text.len();
+                if contract_source_bytes > 1024 * 1024 { return Err(invalid("contract sources exceed 1 MiB")); }
+                contract_sources.insert(evidence.source_id.clone(), json!(source));
+            }
+        }
+    }
     let mut used = BTreeSet::new();
     citations(&thread.steps, &methods, &mut used)?;
     if used.len() != methods.len() {
         return Err(invalid("thread source section contains an unused method"));
     }
+    let mut contracts = serde_json::to_value(&thread.boundary_contracts)
+        .map_err(|_| invalid("contract projection failed"))?;
+    for contract in contracts.as_array_mut().into_iter().flatten() {
+        for evidence in contract["evidence"].as_object_mut().into_iter().flat_map(|m| m.values_mut()) {
+            let service = evidence["service"].as_str().unwrap_or("");
+            let id = evidence["sourceId"].as_str().unwrap_or("");
+            let source = &checked.services[service].sources[id];
+            evidence["source"] = json!({"id":source.id,"file":source.file,"revision":source.revision,"url":source.url,"textDigest":source.text_digest});
+        }
+    }
     Ok(Some(
-        json!({"schema":"codeclew-declared-process-thread/1.0","status":"SOURCE_BOUND_DECLARATION","authority":"DECLARED_MEANING_EXACT_RETAINED_SOURCE_NOT_COMPILER_CALL_GRAPH","rootMethod":thread.root_method,"declaredBranchCoverage":"NOT_PROVEN","selectedEffectCompleteness":"NOT_PROVEN","scope":thread.scope,"methods":methods,"methodOrder":thread.methods.iter().map(|m| &m.id).collect::<Vec<_>>(),"steps":thread.steps,"boundaries":thread.boundaries}),
+        json!({"schema":"codeclew-declared-process-thread/1.0","status":"SOURCE_BOUND_DECLARATION","authority":"DECLARED_MEANING_EXACT_RETAINED_SOURCE_NOT_COMPILER_CALL_GRAPH","rootMethod":thread.root_method,"declaredBranchCoverage":"NOT_PROVEN","selectedEffectCompleteness":"NOT_PROVEN","scope":thread.scope,"methods":methods,"methodOrder":thread.methods.iter().map(|m| &m.id).collect::<Vec<_>>(),"steps":thread.steps,"boundaries":thread.boundaries,"serviceFragments":thread.service_fragments,"boundaryContracts":contracts,"contractSources":contract_sources,"contractAuthority":"DECLARED_SOURCE_INTERPRETATION_NOT_WIRE_OR_RUNTIME_PROOF","processId":id}),
     ))
+}
+
+/// Service pages reuse admitted process fragments, never a parallel explanation generator.
+pub(super) fn service_fragments(checked: &Check, service: &str) -> Result<Vec<Value>, ClewError> {
+    let mut result = Vec::new();
+    for dependency in checked.dependencies.values().filter(|d| d.kind == "PROCESS_DEFINITION") {
+        let scenario: super::model::Scenario = serde_json::from_value(dependency.normalized["definition"].clone())
+            .map_err(|_| invalid("captured process declaration is invalid"))?;
+        let Some(thread) = scenario.process.as_ref().and_then(|p| p.thread.as_ref()) else { continue; };
+        if !thread.service_fragments.iter().any(|f| thread.methods.iter().any(|m| m.id == f.entry_method && m.service == service)) { continue; }
+        let root_metadata = super::render::selected_process_root_metadata(checked, &scenario.id)?;
+        let projected = project(checked, &format!("scenario:{}", scenario.id), &root_metadata)?
+            .ok_or_else(|| invalid("fragment process projection is unavailable"))?;
+        for fragment in &thread.service_fragments {
+            if projected["methods"][&fragment.entry_method]["source"]["service"] != service { continue; }
+            let step = find_step(&thread.steps, &fragment.root_step).ok_or_else(|| invalid("fragment step is missing"))?;
+            let mut fragment_thread = projected.clone();
+            let mut used = BTreeSet::new();
+            fn collect(step: &Step, used: &mut BTreeSet<String>) {
+                used.insert(step.method.clone());
+                if let Some(target) = &step.target { used.insert(target.clone()); }
+                for effect in &step.effects { used.insert(effect.citation.method.clone()); }
+                for child in &step.children { collect(child, used); }
+                if let Some(group) = &step.branch_group {
+                    for arm in &group.arms {
+                        if let Some(guard) = &arm.guard { used.insert(guard.method.clone()); }
+                        for child in &arm.steps { collect(child, used); }
+                    }
+                }
+            }
+            collect(step, &mut used);
+            if used.iter().any(|id| projected["methods"][id]["source"]["service"] != service) {
+                return Err(invalid("service fragment must contain only its receiving service methods"));
+            }
+            fragment_thread["methods"].as_object_mut().unwrap().retain(|id, _| used.contains(id));
+            fragment_thread["methodOrder"].as_array_mut().unwrap().retain(|id| used.contains(id.as_str().unwrap_or("")));
+            fragment_thread["steps"] = json!([step]);
+            fragment_thread["rootMethod"] = json!(fragment.entry_method);
+            fragment_thread["sourcePage"] = json!(format!("../scenarios/{}",scenario.id));
+            fragment_thread["boundaryContracts"] = json!([]);
+            fragment_thread["contractSources"] = json!({});
+            fragment_thread["serviceFragments"] = json!([]);
+            result.push(json!({"id":format!("service-fragment-{}:{}",scenario.id,fragment.id),"fragmentId":fragment.id,
+                "processId":scenario.id,"title":scenario.title,"entryMethod":fragment.entry_method,
+                "thread":fragment_thread,"steps":[step],"returnHref":format!("../scenarios/{}.html#thread-step-{}",scenario.id,fragment.root_step)}));
+        }
+    }
+    Ok(result)
 }
 
 /// Markdown keeps authored interpretation and exact selected sources together.
@@ -611,7 +800,7 @@ pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String 
     }
     let label = |en| super::reader::process_thread_text(language, en);
     let esc = super::render::escape;
-    let page = subject.strip_prefix("scenario:").unwrap_or("");
+    let page = thread["sourcePage"].as_str().unwrap_or_else(|| subject.strip_prefix("scenario:").unwrap_or(""));
     let mut out = format!(
         "\n## {}\n\n{}\n\n",
         label("Process steps"),
@@ -619,6 +808,25 @@ pub(super) fn markdown(thread: &Value, subject: &str, language: &str) -> String 
             "Declared reading order does not prove execution order. Call targets and delivery are not established."
         )
     );
+    for contract in thread["boundaryContracts"].as_array().into_iter().flatten() {
+        out.push_str(&format!("### Boundary contract: {}\n\nDeclared source interpretation; wire compatibility and runtime are unproven.\n\n", esc(contract["id"].as_str().unwrap_or(""))));
+        for key in ["operation", "request", "response", "failures", "guarantees"] {
+            let claims: Vec<&Value> = if key == "operation" { vec![&contract[key]] } else { contract[key].as_array().into_iter().flatten().collect() };
+            for claim in claims {
+                out.push_str(&format!("- {}: {}\n", key, esc(claim["text"].as_str().unwrap_or(""))));
+                if let Some(missing) = claim["missingEvidence"].as_str() { out.push_str(&format!("  Unresolved: {}\n", esc(missing))); }
+                for id in claim["evidenceRefs"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    let e = &contract["evidence"][id];
+                    out.push_str(&format!("  Evidence: {} / {} @ {} #L{}-L{}\n", esc(e["service"].as_str().unwrap_or("")), esc(e["source"]["file"].as_str().unwrap_or("")), esc(e["revision"].as_str().unwrap_or("")), e["startLine"], e["endLine"]));
+                }
+            }
+        }
+        out.push('\n');
+    }
+    for fragment in thread["serviceFragments"].as_array().into_iter().flatten() {
+        let service = thread["methods"][fragment["entryMethod"].as_str().unwrap_or("")]["source"]["service"].as_str().unwrap_or("");
+        out.push_str(&format!("[Receiving fragment {}](../services/{}.html#service-fragment-{}:{})\n\n", esc(fragment["id"].as_str().unwrap_or("")), service, page, fragment["id"].as_str().unwrap_or("")));
+    }
     fn steps(out: &mut String, rows: &[Value], page: &str, depth: usize) {
         for row in rows {
             let text = |key: &str| row[key].as_str().unwrap_or("");
@@ -802,6 +1010,8 @@ mod tests {
                 effects: vec![],
             }],
             boundaries: vec![],
+            service_fragments: vec![],
+            boundary_contracts: vec![],
         };
         let definition = json!({"schema":"codeclew-documentation-process/1.0","id":"order","title":"Order creation","summary":"Declared creation","root":{"service":"svc","selector":{"language":"kotlin","owner":"OrderService","name":"create"}},"process":{"scope":"Order creation","participants":["svc"],"trigger":"Request","outcomes":["Order"],"thread":thread}});
         let evidence = super::super::model::ServiceEvidence {
@@ -841,8 +1051,44 @@ mod tests {
             source_inputs: None,
             composition: None,
         };
+        checked.services.get_mut("svc").unwrap().observations.insert("root-symbol".into(), super::super::model::Observation {
+            id: "root-symbol".into(), kind: "SYMBOL".into(), service: "svc".into(), symbol: entry.symbol.clone(),
+            normalized: json!({"ownerIdentity":"class:OrderService","name":"create","scope":":main","documentation":{"events":[]}}),
+            digest: "root-digest".into(), source_ids: vec!["svc-source".into()],
+        });
         let root = json!({"service":"svc","symbol":entry.symbol});
         let page = project(&checked, "scenario:order", &root).unwrap().unwrap();
+        assert_eq!(page["boundaryContracts"], json!([]));
+        assert_eq!(service_fragments(&checked, "svc").unwrap(), Vec::<Value>::new());
+        let evidence_source = &checked.services["svc"].sources["svc-source"];
+        let contract_evidence = json!({"service":"svc","sourceId":evidence_source.id,
+            "revision":"rev","textDigest":evidence_source.text_digest,"startLine":10,"endLine":12});
+        let original = checked.dependencies["process:order"].normalized.clone();
+        {
+            let declaration = &mut checked.dependencies.get_mut("process:order").unwrap().normalized["definition"]["process"]["thread"];
+            declaration["steps"][0]["target"] = json!("create");
+            declaration["serviceFragments"] = json!([{"id":"receiver","entryMethod":"create","rootStep":"return"}]);
+            declaration["boundaryContracts"] = json!([{"id":"post","callStep":"return","receiverFragment":"receiver","transport":"HTTP",
+                "operation":{"text":"POST declared path","evidenceRefs":["route"]},"request":[],"response":[],"failures":[],
+                "guarantees":[{"text":"Commit unproven","missingEvidence":"Transaction activation capture"}],"evidence":{"route":contract_evidence}}]);
+        }
+        assert!(project(&checked, "scenario:order", &root).is_ok());
+        let fragments = service_fragments(&checked, "svc").unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0]["id"], "service-fragment-order:receiver");
+        assert_eq!(fragments[0]["thread"]["methodOrder"], json!(["create"]));
+        assert_eq!(fragments[0]["returnHref"], "../scenarios/order.html#thread-step-return");
+        assert!(service_fragments(&checked, "other").unwrap().is_empty());
+        let admitted = checked.dependencies["process:order"].normalized.clone();
+        for (field, invalid_value) in [("revision",json!("other")),("endLine",json!(999)),("textDigest",json!("sha256:forged"))] {
+            checked.dependencies.get_mut("process:order").unwrap().normalized["definition"]["process"]["thread"]["boundaryContracts"][0]["evidence"]["route"][field] = invalid_value;
+            assert!(project(&checked, "scenario:order", &root).is_err());
+            checked.dependencies.get_mut("process:order").unwrap().normalized = admitted.clone();
+        }
+        checked.dependencies.get_mut("process:order").unwrap().normalized["definition"]["process"]["thread"]["boundaryContracts"][0]["operation"]["evidenceRefs"] = json!([]);
+        assert!(project(&checked, "scenario:order", &root).is_err());
+        checked.dependencies.get_mut("process:order").unwrap().normalized = original;
+
         assert_eq!(page["status"], "SOURCE_BOUND_DECLARATION");
         assert!(
             project(
@@ -919,6 +1165,8 @@ mod tests {
             methods: vec![method],
             steps: vec![step.clone()],
             boundaries: vec![],
+            service_fragments: vec![],
+            boundary_contracts: vec![],
         };
         thread.validate(&["svc".into()]).unwrap();
         thread.steps[0].children.push(step);

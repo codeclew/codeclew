@@ -93,3 +93,40 @@ compiler-backed semantic qualification remains separate. The bounded portable
 extraction packet supplements a saved process via `process.extraction`; see
 [process-extraction.md](process-extraction.md). Responsive geometry and
 accessibility require a real browser run in addition to DOM tests.
+
+## Declared boundary contracts and receiving fragments
+
+Optional `serviceFragments` contain `id`, `entryMethod` and `rootStep`. The root
+must name an actual step using that entry method. IDs are scoped to the saved
+process. Receiving-service projection reuses the normal exact process selector
+and full thread admission, then selects only the receiver subtree and its used
+methods. A service fragment cannot silently include another service's methods.
+The rendered anchor is `service-fragment-<process>:<fragment>`; identity survives
+line relocation, but revision/digest binding must still validate on each Check.
+
+Optional `boundaryContracts` contain `id`, `callStep`, `receiverFragment` (nullable
+for an uncaptured consumer), `transport` (HTTP/KAFKA), an `operation` claim and
+`request`, `response`, `failures`, `guarantees` claim arrays. The receiver must
+match the call step's explicit target; adjacency and names never establish a
+link. Claims have `text`, `evidenceRefs` and optional `missingEvidence`. Every
+claim needs evidence or a nonempty minimal missing capture. Evidence records
+bind `service`, `sourceId`, `revision`, `textDigest`, `startLine`, `endLine` to
+retained Check sources, including DTO/configuration/advice spans outside the
+selected method source block. See the process-thread JSON schema for shape and
+bounds. Rust admission additionally checks references and inclusive source bounds.
+
+These are declared interpretations, not native framework/DTO extraction, wire
+schemas, semantic approval or runtime proof. Keep URI expression, configuration
+value, static route equivalence and runtime destination distinct. Describe save
+calls separately from commit, synchronous producer exceptions separately from
+asynchronous acknowledgement failure, and retry/idempotency/compensation only
+when evidence supports them. Empty claim arrays never prove completeness.
+
+The process offers receiver expansion at its exact step and a receiving service
+page link. The service offers the same subtree, one closed selected-source block
+and a return link to the process step. Source deep links on a service include
+fragment ownership: `#service-fragment-<process>:<fragment>~thread-source-<method>-L<line>`.
+Reload does not guess a fragment. Contract and fragment text is escaped; source
+links only expose retained provenance. Markdown retains contract claims, source
+ranges, service links and the return path. Browser geometry/accessibility
+qualification remains independent of deterministic admission and DOM tests.

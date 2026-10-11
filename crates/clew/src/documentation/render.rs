@@ -2179,6 +2179,12 @@ impl ProcessRootResolution<'_> {
     }
 }
 
+pub(super) fn selected_process_root_metadata(checked: &Check, id: &str) -> Result<Value, ClewError> {
+    let root = process_root_resolution(checked, id);
+    let (_, digests) = process_root_source_records(checked, &root)?;
+    Ok(root.metadata(&digests))
+}
+
 type ProcessRootSourceRecords = (BTreeMap<String, Source>, BTreeMap<String, String>);
 type ProcessOutlineProjection = (Value, BTreeMap<String, Source>, Option<(String, String)>);
 
@@ -3225,6 +3231,19 @@ fn publish_internal_phases(
             );
         }
     }
+    binding.fragments.retain(|key, _| !key.contains("/service-fragment-"));
+    for service in checked.services.keys() {
+        let subject = format!("service:{service}");
+        for fragment in super::process_thread::service_fragments(&checked, service)? {
+            let process_id = fragment["processId"].as_str().unwrap_or("");
+            let dependencies = checked.scenarios.get(process_id).map(|s| s.dependency_ids.clone())
+                .unwrap_or_else(|| vec![format!("process:{process_id}")]);
+            let source_ids: Vec<_> = fragment["thread"]["methods"].as_object().into_iter()
+                .flat_map(|m| m.values()).filter_map(|m| m["source"]["id"].as_str().map(str::to_owned)).collect();
+            binding.fragments.insert(format!("{subject}/{}",fragment["id"].as_str().unwrap_or("")),
+                bindings::fragment(&subject, &fragment, &dependencies, &source_ids, &checked)?);
+        }
+    }
     binding.observations.extend(
         checked
             .dependencies
@@ -3485,6 +3504,9 @@ fn publish_internal_phases(
             &lifecycle,
             activity_transitions.as_deref(),
         );
+        if kind == "service" {
+            data["serviceFragments"] = json!(super::process_thread::service_fragments(&checked, id)?);
+        }
         if kind == "scenario" && !data["process"].is_null() {
             let root = process_root_resolution(&checked, id);
             let (current_root_sources, current_source_digests) =
@@ -3493,6 +3515,15 @@ fn publish_internal_phases(
             data["processThread"] =
                 super::process_thread::project(&checked, subject, &root_metadata)?
                     .unwrap_or(Value::Null);
+            if let Some(contract_sources) = data["processThread"]["contractSources"].as_object() {
+                let sources: Vec<_> = contract_sources.iter().map(|(id, source)| (id.clone(), source.clone())).collect();
+                for (id, source) in sources {
+                    if !data["sources"][&id].is_null() && data["sources"][&id] != source {
+                        return Err(invalid("contract source ID conflicts with existing page source"));
+                    }
+                    data["sources"][id] = source;
+                }
+            }
             data["processExtraction"] =
                 super::process_extract::project(&checked, subject, &selected_snapshot)?
                     .unwrap_or(Value::Null);
@@ -3709,6 +3740,10 @@ fn publish_internal_phases(
             prose += &super::dataflow::markdown(&data["view"], &displayed);
         }
         prose += &super::process_thread::markdown(&data["processThread"], subject, ui_language);
+        for fragment in data["serviceFragments"].as_array().into_iter().flatten() {
+            prose += &format!("\n## Receiving service fragment: {}\n\n[Return to process]({})\n", escape(fragment["fragmentId"].as_str().unwrap_or("")), fragment["returnHref"].as_str().unwrap_or(""));
+            prose += &super::process_thread::markdown(&fragment["thread"], &format!("scenario:{}",fragment["processId"].as_str().unwrap_or("")), ui_language);
+        }
         if !data["processExtraction"].is_null() {
             prose += &format!(
                 "\n## {}\n\n```json\n{}\n```\n",

@@ -1019,3 +1019,55 @@ test('extraction packet keeps unknown outcomes and budget cuts visible without c
  assert.match(html,/ready &lt;script&gt;unsafe&lt;\/script&gt;/);assert.match(html,/runtime effects are not established/);
  assert.equal((html.match(/id="thread-source"/g)||[]).length,1);
 });
+
+function contractThreadFixture(){
+ const data=declaredThreadFixture(),thread=data.processThread;
+ thread.processId='checkout';
+ thread.serviceFragments=[{id:'accept',entryMethod:'receiver',rootStep:'receive'}];
+ const evidence={route:{service:'provider',sourceId:'receiver-source',revision:'frozen-revision',textDigest:'sha256:'+ 'a'.repeat(64),startLine:20,endLine:20,source:thread.methods.receiver.source}};
+ thread.boundaryContracts=[{id:'submit',callStep:'send',receiverFragment:'accept',transport:'HTTP',operation:{text:'POST baseDomain + basePath + RESOURCE_PATH',evidenceRefs:['route']},request:[{text:'Required request type; optional message defaults null',evidenceRefs:['route']}],response:[{text:'Return only after save returns',evidenceRefs:['route']}],failures:[{text:'A synchronous send failure skips caller continuation',evidenceRefs:['route']}],guarantees:[{text:'Commit and delivery are unresolved',missingEvidence:'Transaction activation and broker acknowledgement capture'}],evidence}];
+ return data;
+}
+test('contracts reveal the exact receiving subtree and reciprocal service fragment address',()=>{
+ const r=load(contractThreadFixture());r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/href="#thread-step-receive"/);
+ assert.match(html,/\.\.\/services\/provider.html#service-fragment-checkout:accept/);
+ assert.match(html,/thread-contract-submit/);assert.match(html,/POST baseDomain \+ basePath \+ RESOURCE_PATH/);
+ assert.match(html,/Transaction activation and broker acknowledgement capture/);
+ assert.equal((html.match(/<details id="thread-source"/g)||[]).length,1);
+ assert.doesNotMatch(html,/runtime delivery (is |was )proven/);
+});
+test('service fragment selection and source reload preserve the owner without guessing an entrypoint',()=>{
+ const data=contractThreadFixture(),thread=data.processThread;
+ data.subject='service:provider';data.process=null;delete data.processThread;
+ data.serviceFragments=[{id:'service-fragment-checkout:accept',fragmentId:'accept',processId:'checkout',title:'Checkout',entryMethod:'receiver',thread,steps:thread.steps[0].children,returnHref:'../scenarios/checkout.html#thread-step-receive'}];
+ const r=load(data,true);r.run("showEntry('service-fragment-checkout:accept')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/href="\.\.\/scenarios\/checkout.html#thread-step-receive"/);
+ assert.match(html,/href="#service-fragment-checkout:accept~thread-source-receiver-L20"/);
+ assert.doesNotMatch(html,/data-thread-method="client"/);
+ assert.equal((html.match(/<details id="thread-source"/g)||[]).length,1);
+ r.run("location.hash='#service-fragment-checkout:accept~thread-source-receiver-L20'; routeReaderHash()");
+ assert.equal(r.run('current.id'),'service-fragment-checkout:accept');
+ assert.equal(r.run('location.hash'),'#service-fragment-checkout:accept~thread-source-receiver-L20');
+ assert.equal(r.e('thread-source-receiver-L20').focused,true);
+ assert.equal(r.run('inventoryEntries().some(e=>e.kind===\"SERVICE_FRAGMENT\")'),false);
+});
+test('contract source strings are inert and message frontier never invents a consumer',()=>{
+ const data=contractThreadFixture(),c=data.processThread.boundaryContracts[0];c.receiverFragment=null;c.transport='KAFKA';c.operation.text='<script>execute()</script>';c.guarantees[0].missingEvidence='<img onerror="execute()">';
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/&lt;script&gt;execute\(\)&lt;\/script&gt;/);assert.match(html,/&lt;img onerror=/);
+ assert.match(html,/Receiver capture is missing; no consumer is inferred/);
+ assert.doesNotMatch(html,/<script>execute|<img onerror/);
+});
+test('Russian contract chrome retains authored field and path bytes',()=>{
+ const data=contractThreadFixture();data.language='ru';const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Развернуть принимающую точку входа здесь/);assert.match(html,/Сценарии сбоя/);assert.match(html,/POST baseDomain \+ basePath \+ RESOURCE_PATH/);
+});
+test('fragment address separates process and fragment identity without hyphen collisions',()=>{
+ const a=contractThreadFixture(),b=contractThreadFixture();
+ a.processThread.processId='a-b';a.processThread.serviceFragments[0].id='c';a.processThread.boundaryContracts[0].receiverFragment='c';
+ b.processThread.processId='a';b.processThread.serviceFragments[0].id='b-c';b.processThread.boundaryContracts[0].receiverFragment='b-c';
+ const x=load(a),y=load(b);x.run("showEntry('process-overview')");y.run("showEntry('process-overview')");
+ assert.match(x.e('scenario-content').innerHTML,/#service-fragment-a-b:c/);
+ assert.match(y.e('scenario-content').innerHTML,/#service-fragment-a:b-c/);
+});
