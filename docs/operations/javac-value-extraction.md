@@ -54,7 +54,9 @@ The analyzer source participates in adapter/index digests. Changing extraction
 invalidates stale cached compiler authority. Old readers may reject the optional
 field under their closed schema; new readers accept old facts, but the value
 bridge reports missing/stale projections instead of an empty successful result.
-Only an authenticated retained-run loader may assert compiler-run authenticity.
+The authenticated `session values` loader verifies saved compiler-run bindings;
+see [retained value queries](retained-value-queries.md). Structural index parsing
+alone does not assert compiler-run authenticity.
 The solver still returns `DECLARED_MODEL_EQUATIONS` and semantic closure false.
 
 ## Verification
@@ -81,4 +83,4 @@ TypeScript/JavaScript and syntax adapters do not gain this capability merely by
 having a compiler registry entry or using the same portable solver. The next
 bridge must independently prove definition/operand/evidence mappings against
 shared fixtures. General SSA, path refinement, interprocedural summaries,
-exceptions, field/alias transfers and publication integration remain next slices.
+exceptions, field/alias transfers and process publication integration remain next slices.

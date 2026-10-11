@@ -1,9 +1,47 @@
 # Question slices and portable value analysis
 
-Date: 2026-10-11. Status: bounded prototypes implemented; subsequent slices
-proposed. This is an implementation roadmap, not a new approval or admission
+Date: 2026-10-11. Status: prototypes integrated; subsequent slices authorized
+and in progress. This is an implementation roadmap, not a new approval or admission
 layer. It records the current branch results without claiming release-wide
 qualification or measured agent savings.
+
+## Current implementation checkpoint
+
+The authorized implementation order is: integrate the prototype, correct the two
+confirmed lifecycle description errors through native rendering, expose an
+authenticated retained Java value query (S2d), qualify one Kotlin bridge (S2c),
+then implement bounded call summaries, selected effects/process composition,
+and source-bound publication. Measured agent scheduling follows useful retained
+queries and summaries. No new paid authoring or benchmark arms are authorized.
+
+The primary `develop` checkout was fast-forwarded from `fa0b374` to the actual
+remote tip `0327221` on 2026-10-11. The fetched branch uses rewritten commit IDs
+`e12e0f8`, `8a9e514`, `e603e17`, and `0327221`; the historical cloud IDs in the
+baseline table below remain as recorded provenance. The separate documentation
+worktree and its uncommitted changes were preserved.
+
+Confirmed locally after integration: formatting; 14 retained-flow tests, five
+control-query tests, and 12 portable-value tests; and
+`cargo clippy --locked -p clew-facts -p clew --lib --tests -- -D warnings`.
+The two reported collapsible-if diagnostics are already fixed in the fetched
+source. Native Java qualification is being checked separately. Full CI has not
+been run.
+
+S2d now exposes `session values` through an existing saved Java session generation.
+Four component binding tests and one managed Maven/javac public-path test passed;
+the latter covers deterministic repeats, exact retained source references,
+operation without analysis tools on PATH, later live checkout edits, unknown
+owners/targets, node/transfer cuts, and long owner/path packet reduction.
+Selected equations and occurrences are materialized with the complete model
+digest; omitted dependencies remain explicit frontiers. An initial public-path
+test found a mismatch between canonical payload hashes and schema-bound CAS
+digests in fact identity reconstruction; it was corrected before the passing
+native test. Formatting, Clippy for both affected packages, English-content and
+privacy checks passed. This is focused qualification, not full CI.
+
+Next slice: one independently qualified Kotlin worker/version (S2c). General
+calls, heap fields, effects/exceptions and concrete enum-value semantics remain
+explicitly outside the qualified nullness profile.
 
 ## Implemented baseline
 
@@ -172,7 +210,7 @@ Pass/fail conditions for each qualified contour:
   unknown. Broader soundness/completeness claims require a stated model and
   separate qualification.
 
-The immediate next action is S2c: inspect and qualify one Kotlin worker bridge,
-then S2d: make the already working value analysis accessible through authenticated
-retained evidence. Full cross-service semantics and agent parallelism follow
+The immediate next action is S2d: make the existing Java value analysis accessible
+through authenticated retained evidence, then S2c: qualify one Kotlin worker
+bridge against the same contract. Full cross-service semantics and agent parallelism follow
 only after those contracts can preserve authority and incompleteness end to end.

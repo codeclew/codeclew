@@ -24,6 +24,7 @@ pub mod java_analysis_scratch;
 pub(crate) mod java_analyzer_output;
 pub(crate) mod java_archive_inputs;
 pub mod java_project_model;
+pub mod java_value_service;
 pub mod java_values;
 pub mod jvm_navigation;
 pub mod jvm_navigation_service;

@@ -213,6 +213,8 @@ struct StorageGcArgs {
 enum SessionCommand {
     Open(SessionOpenArgs),
     Inspect(SessionIdArgs),
+    /// Query bounded value equations from an existing retained Java generation.
+    Values(SessionValuesArgs),
     Close(SessionIdArgs),
     Abort(SessionIdArgs),
     Relocate(SessionRelocateArgs),
@@ -633,6 +635,24 @@ struct WorkspaceRecoverArgs {
 struct SessionIdArgs {
     #[arg(long)]
     session: String,
+}
+
+#[derive(Args)]
+struct SessionValuesArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    compilation: String,
+    /// Exact compiler method identity, including its JVM descriptor.
+    #[arg(long)]
+    owner: String,
+    /// Exact definition ID within that method's retained value projection.
+    #[arg(long, default_value = "result")]
+    target: String,
+    #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u32).range(1..=4096))]
+    max_nodes: u32,
+    #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(1..=1_000_000))]
+    max_transfers: u32,
 }
 
 #[derive(Args)]
@@ -1713,6 +1733,19 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 json!({"schema":"codeclew-session-inspect/4.0","session":session,"lifecycle":lifecycle}),
             )
         }
+        Command::Session {
+            command: SessionCommand::Values(args),
+        } => serde_json::to_value(clew::java_value_service::query(
+            &args.session,
+            &args.compilation,
+            &args.owner,
+            clew::thread_values::ValueQuery {
+                target: args.target,
+                max_nodes: args.max_nodes as usize,
+                max_transfers: args.max_transfers as usize,
+            },
+        )?)
+        .map_err(internal),
         Command::Session {
             command: SessionCommand::Close(args),
         } => {
