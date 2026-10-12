@@ -1,0 +1,50 @@
+[
+  {
+    "id": "commands",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:8ad9e0866662fdd39215a820",
+    "workerDeclaration": "clew-core:symbol:8ad9e0866662fdd39215a820"
+  },
+  {
+    "id": "capture",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:6a81f5e4e6aa13a0b1ebaa17",
+    "workerDeclaration": "clew-core:symbol:6a81f5e4e6aa13a0b1ebaa17"
+  },
+  {
+    "id": "prepare",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:85b9186e292f1877e329f186",
+    "workerDeclaration": "clew-core:symbol:85b9186e292f1877e329f186"
+  },
+  {
+    "id": "read",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:b7c6fa223bffc083f62f6418",
+    "workerDeclaration": "clew-core:symbol:b7c6fa223bffc083f62f6418"
+  },
+  {
+    "id": "submit",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:0144132fdd423fa0d9f8661f",
+    "workerDeclaration": "clew-core:symbol:0144132fdd423fa0d9f8661f"
+  },
+  {
+    "id": "publish",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:5735625b9bdf42e957927bcc",
+    "workerDeclaration": "clew-core:symbol:5735625b9bdf42e957927bcc"
+  },
+  {
+    "id": "render",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:6e994bbdee8dff3ab42a8f5c",
+    "workerDeclaration": "clew-core:symbol:6e994bbdee8dff3ab42a8f5c"
+  },
+  {
+    "id": "pins",
+    "service": "clew-core",
+    "endpointDeclaration": "clew-core:symbol:ce8532c9754e31e9cc4d07e2",
+    "workerDeclaration": "clew-core:symbol:ce8532c9754e31e9cc4d07e2"
+  }
+]

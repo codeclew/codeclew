@@ -1,0 +1,327 @@
+{
+  "schema": "codeclew-public-selfdocs-claims/1.0",
+  "claims": [
+    {
+      "id": "workflow-overview",
+      "claim": "Source-described workflow uses capture, prepare, read, submit and separate publication.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "capture",
+          "sourceLines": [
+            179,
+            190
+          ]
+        },
+        {
+          "methodId": "prepare",
+          "sourceLines": [
+            2037,
+            2320
+          ]
+        },
+        {
+          "methodId": "read",
+          "sourceLines": [
+            3296,
+            3299
+          ]
+        },
+        {
+          "methodId": "submit",
+          "sourceLines": [
+            1381,
+            1475
+          ]
+        },
+        {
+          "methodId": "publish",
+          "sourceLines": [
+            272,
+            316
+          ]
+        },
+        {
+          "methodId": "render",
+          "sourceLines": [
+            2829,
+            4043
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli-progress",
+      "claim": "Documentation CLI command families are routed through phase-labeled progress.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "commands",
+          "sourceLines": [
+            334,
+            346
+          ]
+        }
+      ]
+    },
+    {
+      "id": "capture-sequence",
+      "claim": "Selected check runs under a repository lock, saves a snapshot and returns the check plus snapshot.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "capture",
+          "sourceLines": [
+            179,
+            190
+          ]
+        }
+      ]
+    },
+    {
+      "id": "capture-observation",
+      "claim": "A confirmed check was CHECKED with unresolved MISSING_BASELINE freshness, exit code 3, and an immutable snapshot.",
+      "basis": "confirmed_cli_observation",
+      "evidence": [
+        {
+          "methodId": "capture",
+          "sourceLines": [
+            179,
+            190
+          ]
+        }
+      ]
+    },
+    {
+      "id": "prepare-work",
+      "claim": "Work preparation requires explicit retained snapshot for process-graph-v1, validates inputs, persists Work and returns its initial page.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "prepare",
+          "sourceLines": [
+            2037,
+            2320
+          ]
+        }
+      ]
+    },
+    {
+      "id": "read-work",
+      "claim": "Saved Work reads load by Work ID and selection; one confirmed oversized read returned ITEM_EXCEEDS_WORK_BYTE_BUDGET and a reference.",
+      "basis": "source_and_confirmed_cli_observation",
+      "evidence": [
+        {
+          "methodId": "read",
+          "sourceLines": [
+            3296,
+            3299
+          ]
+        }
+      ]
+    },
+    {
+      "id": "proposal-checks",
+      "claim": "Submission checks Work currentness and read state, validates/materializes the proposal, emits repair diagnostics, and rechecks digest before storing.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "submit",
+          "sourceLines": [
+            1381,
+            1475
+          ]
+        }
+      ]
+    },
+    {
+      "id": "proposal-status",
+      "claim": "Proposal statuses distinguish repair/limitations/review readiness; meaning review stays UNASSESSED and submission does not publish.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "submit",
+          "sourceLines": [
+            1381,
+            1475
+          ]
+        }
+      ]
+    },
+    {
+      "id": "publish-gate",
+      "claim": "Publication checks Work currentness and proposal read-digest equality before rendering; changed reads require resubmission.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "publish",
+          "sourceLines": [
+            272,
+            316
+          ]
+        }
+      ]
+    },
+    {
+      "id": "render-result",
+      "claim": "Renderer commits bundle files and returns bundle/index/status while runtime remains UNKNOWN; publication keeps meaning review UNASSESSED.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "render",
+          "sourceLines": [
+            2829,
+            4043
+          ]
+        },
+        {
+          "methodId": "publish",
+          "sourceLines": [
+            272,
+            316
+          ]
+        }
+      ]
+    },
+    {
+      "id": "snapshot-retention",
+      "claim": "Snapshot commands include pin/show/list/unpin/recover; export recovery requires an export and source snapshot together.",
+      "basis": "source",
+      "evidence": [
+        {
+          "methodId": "pins",
+          "sourceLines": [
+            82,
+            107
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recovery-evidence-limit",
+      "claim": "Recovery source includes dispatch but not helper implementation or confirmed restore outcome.",
+      "basis": "source-boundary",
+      "evidence": [
+        {
+          "methodId": "pins",
+          "sourceLines": [
+            82,
+            107
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust-authority-limit",
+      "claim": "Rust source authority is syntax-only with call-graph/data-state/runtime and explicit CFG/control boundaries.",
+      "basis": "packet-authority",
+      "evidence": [
+        {
+          "methodId": "commands",
+          "sourceLines": [
+            334,
+            346
+          ]
+        },
+        {
+          "methodId": "capture",
+          "sourceLines": [
+            179,
+            190
+          ]
+        },
+        {
+          "methodId": "prepare",
+          "sourceLines": [
+            2037,
+            2320
+          ]
+        },
+        {
+          "methodId": "read",
+          "sourceLines": [
+            3296,
+            3299
+          ]
+        },
+        {
+          "methodId": "submit",
+          "sourceLines": [
+            1381,
+            1475
+          ]
+        },
+        {
+          "methodId": "publish",
+          "sourceLines": [
+            272,
+            316
+          ]
+        },
+        {
+          "methodId": "render",
+          "sourceLines": [
+            2829,
+            4043
+          ]
+        },
+        {
+          "methodId": "pins",
+          "sourceLines": [
+            82,
+            107
+          ]
+        }
+      ]
+    },
+    {
+      "id": "observed-vs-declared",
+      "claim": "Check, Work prepare/read and oversized-read observations are separated from source-described proposal/publish/recover branches.",
+      "basis": "confirmed_cli_observations_and_source",
+      "evidence": [
+        {
+          "methodId": "capture",
+          "sourceLines": [
+            179,
+            190
+          ]
+        },
+        {
+          "methodId": "prepare",
+          "sourceLines": [
+            2037,
+            2320
+          ]
+        },
+        {
+          "methodId": "read",
+          "sourceLines": [
+            3296,
+            3299
+          ]
+        },
+        {
+          "methodId": "submit",
+          "sourceLines": [
+            1381,
+            1475
+          ]
+        },
+        {
+          "methodId": "publish",
+          "sourceLines": [
+            272,
+            316
+          ]
+        },
+        {
+          "methodId": "pins",
+          "sourceLines": [
+            82,
+            107
+          ]
+        }
+      ]
+    }
+  ]
+}

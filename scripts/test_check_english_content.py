@@ -27,6 +27,15 @@ class EnglishContentTest(unittest.TestCase):
     def rejected(self, content: str, path: str = LOCALIZED_SOURCE) -> list[int]:
         return english.rejected_cyrillic_line_numbers(path, content)
 
+    def test_frozen_self_documentation_admits_only_the_verified_export_bytes(self) -> None:
+        for relative in english.FROZEN_SELF_DOCUMENTATION_DIGESTS:
+            content = (english.ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(path=relative):
+                self.assertEqual([], self.rejected(content, relative))
+                self.assertTrue(self.rejected(content + RUSSIAN, relative))
+                self.assertTrue(self.rejected(content, "site/codeclew.html"))
+                self.assertTrue(self.rejected(content, relative + ".copy"))
+
     def test_only_complete_strings_in_the_explicit_source_are_localized(self) -> None:
         source = r'''let ordinary = "@RU@ \" reader // /*";
 let multiline = "first line

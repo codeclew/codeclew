@@ -210,6 +210,48 @@
     "group": "Tasks"
   },
   {
+    "title": "Codeclew documents itself",
+    "url": "./codeclew.html",
+    "description": "Capture once. Publish by choice. Follow eight real declarations from the released source.",
+    "group": "Reference"
+  },
+  {
+    "title": "1. Capture one selected source scope",
+    "url": "./codeclew.html#capture-source",
+    "description": "Codeclew documents itself",
+    "group": "Reference"
+  },
+  {
+    "title": "2. Prepare and read a saved Work",
+    "url": "./codeclew.html#prepare-read-work",
+    "description": "Codeclew documents itself",
+    "group": "Reference"
+  },
+  {
+    "title": "3. Submit proposed prose and inspect its status",
+    "url": "./codeclew.html#submit-proposal",
+    "description": "Codeclew documents itself",
+    "group": "Reference"
+  },
+  {
+    "title": "4. Publish as a separate action",
+    "url": "./codeclew.html#publish-proposal",
+    "description": "Codeclew documents itself",
+    "group": "Reference"
+  },
+  {
+    "title": "5. Retain and recover the evidence trail",
+    "url": "./codeclew.html#retain-recover",
+    "description": "Codeclew documents itself",
+    "group": "Reference"
+  },
+  {
+    "title": "Read the evidence at its boundary",
+    "url": "./codeclew.html#evidence-limits-title",
+    "description": "Codeclew documents itself",
+    "group": "Reference"
+  },
+  {
     "title": "Checks and limits",
     "url": "./evidence.html",
     "description": "Read current qualification status and distinguish historical evidence.",

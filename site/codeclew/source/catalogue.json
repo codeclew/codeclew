@@ -1,0 +1,130 @@
+{
+  "authority": "SELECTED_AND_EXAMINED_DOCUMENTATION_CONTEXT_NOT_RUNTIME_IMPACT",
+  "contextDigest": "sha256:67ea962781e0ab3e865cda4e081a08a961cd64c35eb2d85c98771c4327f0622c",
+  "inputDigest": "sha256:e1480d3db5974875a85fe37d3e87a4cc2d9816a8ca8764d121648cbdf05f346a",
+  "rows": [
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "capture-overview.html",
+      "id": "declarations-capture",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/check.rs#function:run_and_save_selected@7117-7706",
+        "rust-syntax:crates/clew/src/documentation/check.rs#function:run_and_save_selected@7117-7706"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/check.rs#function:run_and_save_selected@7117-7706"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "commands-overview.html",
+      "id": "declarations-commands",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/cli.rs#function:run@10537-11060",
+        "rust-syntax:crates/clew/src/documentation/cli.rs#function:run@10537-11060"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/cli.rs#function:run@10537-11060"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "publish-overview.html",
+      "id": "declarations-publish",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/proposals.rs#function:run@8655-10255",
+        "rust-syntax:crates/clew/src/documentation/proposals.rs#function:run@8655-10255"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/proposals.rs#function:run@8655-10255"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "submit-overview.html",
+      "id": "declarations-submit",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/proposals.rs#function:submit@55142-59068",
+        "rust-syntax:crates/clew/src/documentation/proposals.rs#function:submit@55142-59068"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/proposals.rs#function:submit@55142-59068"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "render-overview.html",
+      "id": "declarations-render",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/render.rs#function:publish_internal_phases@105756-160314",
+        "rust-syntax:crates/clew/src/documentation/render.rs#function:publish_internal_phases@105756-160314"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/render.rs#function:publish_internal_phases@105756-160314"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "pins-overview.html",
+      "id": "declarations-pins",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/snapshot_pins.rs#function:run@2327-3236",
+        "rust-syntax:crates/clew/src/documentation/snapshot_pins.rs#function:run@2327-3236"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/snapshot_pins.rs#function:run@2327-3236"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "prepare-overview.html",
+      "id": "declarations-prepare",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/work.rs#function:prepare_with_snapshot@74887-85863",
+        "rust-syntax:crates/clew/src/documentation/work.rs#function:prepare_with_snapshot@74887-85863"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/work.rs#function:prepare_with_snapshot@74887-85863"
+    },
+    {
+      "context": "clew-core · cargo:crates/clew/Cargo.toml#clew#lib#clew",
+      "href": "read-overview.html",
+      "id": "declarations-read",
+      "kind": "Selected declarations",
+      "relatedLinks": [],
+      "searchText": [
+        "clew-core",
+        "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+        "rust-syntax:crates/clew/src/documentation/work.rs#function:read@126003-126169",
+        "rust-syntax:crates/clew/src/documentation/work.rs#function:read@126003-126169"
+      ],
+      "summary": "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.",
+      "title": "Selected functions: rust-syntax:crates/clew/src/documentation/work.rs#function:read@126003-126169"
+    }
+  ],
+  "schema": "codeclew-native-catalogue/1.0",
+  "selectionDigest": "sha256:0a33f8ffa5052ac26f2ff885bc1ed6271e8d14192f62ff87b5dc6f528e102fbc",
+  "snapshot": "sha256:9552435394fac60f880a0bc941bd7f63e00f8752926b32ba8a4363a3d3e4efd8/2132"
+}

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Capture once. Publish by choice. Source-linked Codeclew documentation built with installed Clew 0.13.24."><meta name="theme-color" content="#fdfaf2">
+<title>Codeclew documents itself — Codeclew</title><link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./theme.css?v=4922f29a1861"><link rel="stylesheet" href="./tasks.css?v=aa3e0669698e"></head>
+<body class="task-site"><!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Tasks <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a></div></div></details>
+    <a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a>
+    <a href="./evidence.html">Checks and limits</a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search</span><kbd>Ctrl / ⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “source”, “saved edits” or “document”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER --><!-- SITE_SIDEBAR -->
+
+<!-- /SITE_SIDEBAR -->
+<main id="main-content" class="shell task-main"><!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Reference</span><span aria-hidden="true">/</span><span aria-current="page">Codeclew documents itself</span></nav>
+<!-- /SITE_BREADCRUMB -->
+  <section class="task-hero">
+    <div>
+      <div class="kicker">Source-linked guide · Codeclew 0.13.24</div>
+      <h1>Capture once. Publish by choice.</h1>
+      <p class="lede" data-claim="workflow-overview">Turn a selected source scope into a saved Work, prepare and read its evidence, submit proposed prose, then publish it as a separate, explicit step. Keep the check, Work, proposal and publication references together so each handoff can be traced.</p>
+      <p data-claim="cli-progress">The documentation CLI routes checks, Work, proposals and rendering through a phase-labeled progress wrapper. The source-linked workflow below follows those command families. <a href="./codeclew/source/commands-overview.html">Command overview</a> · <a href="./codeclew/source/commands-endpoint.html">Run declaration</a></p>
+    </div>
+    <p class="reference-links"><a href="./codeclew/source/index.html">Native evidence index</a> · <a href="./codeclew/source/sources.html">Full source index</a> · <a href="./codeclew/verification.json">Verification record</a></p>
+  </section>
+
+  <section class="task-section" id="capture-source">
+    <h2>1. Capture one selected source scope</h2>
+    <p data-claim="capture-sequence"><strong>Input:</strong> a repository and an explicit set of selected services. <strong>Output:</strong> the check result and a saved snapshot reference. In source order, the capture operation acquires the repository run lock, checks the selection, saves the snapshot, and returns both values. <strong>Inference:</strong> save that snapshot reference for Work preparation; a separate freshness result should not be mistaken for the presence or absence of captured evidence.</p>
+    <p data-claim="capture-observation"><strong>Confirmed result:</strong> one check returned <code>CHECKED</code> while freshness was <code>UNRESOLVED</code> with reason <code>MISSING_BASELINE</code> (exit code 3); an immutable snapshot was still returned. Treat the missing baseline as an unresolved comparison, not as a freshness pass.</p>
+    <p><a href="./codeclew/source/capture-overview.html">Capture overview</a> · <a href="./codeclew/source/capture-endpoint.html">run_and_save_selected declaration</a></p>
+  </section>
+
+  <section class="task-section" id="prepare-read-work">
+    <h2>2. Prepare and read a saved Work</h2>
+    <p data-claim="prepare-work"><strong>Input:</strong> a subject and Work request, with the saved snapshot reference. The request selects an audience and context profile. For <code>process-graph-v1</code>, the source requires an explicit saved snapshot and states that it performs no source capture. Preparation reads retained evidence, validates the request and registered inputs, assembles exact handles and obligations, stores the Work, then returns its ID with the initial read. If repository declarations or external inputs change during preparation, the final consistency checks reject the Work instead of storing that mixed view. <strong>Source order:</strong> validate → load snapshot → construct Work → persist → return first page.</p>
+    <p data-claim="read-work"><strong>Read input:</strong> the saved Work ID and a selection. The read entry point loads that Work before requesting the selected page. The confirmed prepare/read steps completed. One oversized dependency read returned <code>ITEM_EXCEEDS_WORK_BYTE_BUDGET</code> with its item reference; a successful part-read continuation was not observed, so keep the reference and verify the available continuation before relying on it.</p>
+    <p><a href="./codeclew/source/prepare-overview.html">Work preparation overview</a> · <a href="./codeclew/source/prepare-endpoint.html">prepare_with_snapshot declaration</a> · <a href="./codeclew/source/read-overview.html">Work read overview</a> · <a href="./codeclew/source/read-endpoint.html">read declaration</a></p>
+  </section>
+
+  <section class="task-section" id="submit-proposal">
+    <h2>3. Submit proposed prose and inspect its status</h2>
+    <p data-claim="proposal-checks"><strong>Input:</strong> the Work ID and a structured proposal. Submission reloads the Work, checks that it is current, digests its read state, validates the edit context and materializes the narrative. It reports missing initial reads, required inputs or untracked reads as repair diagnostics. In source order, the proposal artifact is written only after a second read-digest check; if Work reads changed during submission, the call returns an error and asks for a retry.</p>
+    <p data-claim="proposal-status"><strong>Output:</strong> a stored proposal with <code>NEEDS_REPAIR</code>, <code>READY_WITH_LIMITATIONS</code> or <code>READY_FOR_REVIEW</code>. These statuses describe context and declared limitations; they do not amount to formal meaning acceptance. The proposal records <code>meaningReview: UNASSESSED</code>, and submitting does not publish it.</p>
+    <p><a href="./codeclew/source/submit-overview.html">Proposal overview</a> · <a href="./codeclew/source/submit-endpoint.html">submit declaration</a></p>
+  </section>
+
+  <section class="task-section" id="publish-proposal">
+    <h2>4. Publish as a separate action</h2>
+    <p data-claim="publish-gate"><strong>Input:</strong> the proposal ID. Publication reloads its Work, verifies currentness, and compares the current read digest with the digest saved in the proposal. If reads have changed, it rejects publication and requires a new submission. If the proposal has canonical content and the checks pass, it hands the narrative to the renderer. <strong>Inference:</strong> the gate ties publication to the submitted Work state; it does not certify the prose's meaning or runtime effects.</p>
+    <p data-claim="render-result">The renderer builds page and status files, commits the resulting bundle, and returns a bundle reference and <code>docs/index.html</code>. Its status may be <code>RENDERED</code> or <code>PARTIAL</code>, and its response keeps runtime <code>UNKNOWN</code>. Publication explicitly leaves <code>meaningReview: UNASSESSED</code>. The resulting pages are documentation outputs, not evidence that a call succeeded or a service delivered work.</p>
+    <p><a href="./codeclew/source/publish-overview.html">Publication overview</a> · <a href="./codeclew/source/publish-endpoint.html">Publish match arm in proposals::run</a> · <a href="./codeclew/source/render-overview.html">Renderer overview</a> · <a href="./codeclew/source/render-endpoint.html">publish_internal_phases declaration</a></p>
+  </section>
+
+  <section class="task-section" id="retain-recover">
+    <h2>5. Retain and recover the evidence trail</h2>
+    <p data-claim="snapshot-retention"><strong>Keep:</strong> the snapshot, Work, proposal and bundle references together. The snapshot interface provides pin, show, list, unpin and recover actions. Recovery accepts existing capture references, or an export together with its source-snapshot reference; supplying only one of the paired export inputs is rejected. <strong>Inference:</strong> verify the pin or recovery result before discarding the original reference.</p>
+    <p data-claim="recovery-evidence-limit">The supplied recovery source shows command routing only. It does not include the recovery helpers or a confirmed successful restore, so this guide does not claim which files a recovery recreates or that a recovery completed.</p>
+    <p><a href="./codeclew/source/pins-overview.html">Snapshot evidence overview</a> · <a href="./codeclew/source/pins-endpoint.html">snapshot command declaration</a></p>
+  </section>
+
+  <aside class="task-section" id="evidence-limits" aria-labelledby="evidence-limits-title">
+    <h2 id="evidence-limits-title">Read the evidence at its boundary</h2>
+    <p data-claim="rust-authority-limit">These Rust dossiers retain syntax and source, not compiler-resolved call targets, complete statement effects or a closed data-flow model. The question-mark operator, loops, closures and nested callables, macros, configuration-gated code and CFG behavior retain explicit gaps. Follow the linked declarations for source order; do not infer a callee's behavior, complete control flow, a runtime commit or delivery from them.</p>
+    <p data-claim="observed-vs-declared">Observed in the confirmed CLI path: the check and snapshot result, successful Work preparation and read, and one oversized-read error. Proposal, publication and recovery branches here are source-described workflows; that does not claim every branch was executed.</p>
+  </aside>
+</main>
+<!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start</p>
+<a href="./index.html">Start with Clew</a>
+</div>
+<div class="nav-group"><p>Tasks</p>
+<a href="./nav-query.html">Find the code</a>
+<a href="./documentation.html">Create a first document</a>
+<a href="./working-tree.html">Review saved edits</a>
+</div>
+<div class="nav-group"><p>Reference</p>
+<a href="./codeclew.html" aria-current="page">Codeclew documents itself</a>
+<a href="./evidence.html">Checks and limits</a>
+</div>
+<div class="nav-group"><p>Contribute</p>
+<a href="./extend.html">Contribute</a>
+</div><div class="nav-group"><p>History</p><a href="./pilot.html">Historical Spring case</a></div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER --><script src="./app.js?v=96cc5dc96bed" defer></script></body></html>

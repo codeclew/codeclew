@@ -18,6 +18,7 @@ PAGES = [
     ("nav-query.html", "Find the code", "Tasks", "Find an exact function, read its source and handle a no-match result."),
     ("documentation.html", "Create a first document", "Tasks", "Write one useful overview, inspect a citation and ask the saved source a question."),
     ("working-tree.html", "Review saved edits", "Tasks", "Inspect a changed body, signature or removed call and choose the next checks."),
+    ("codeclew.html", "Codeclew documents itself", "Reference", "Capture once. Publish by choice. Follow eight real declarations from the released source."),
     ("evidence.html", "Checks and limits", "Reference", "Read current qualification status and distinguish historical evidence."),
     ("extend.html", "Contribute", "Contribute", "Choose the source layer for a capability, adapter or build provider."),
 ]

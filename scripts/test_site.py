@@ -14,8 +14,8 @@ import xml.etree.ElementTree as ET
 
 SITE = Path(__file__).resolve().parents[1] / 'site'
 GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs',
-                        'examples/clew-starter/docs')
-ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html'}
+                        'examples/clew-starter/docs', 'codeclew/source')
+ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html', 'codeclew.html'}
 TASKS = {'./nav-query.html', './documentation.html', './working-tree.html'}
 
 
@@ -261,6 +261,23 @@ class SiteTests(unittest.TestCase):
 
 
 class GeneratedDocumentationTests(unittest.TestCase):
+    def test_self_documentation_preserves_native_manifest_and_selected_root_sources(self):
+        root = SITE / 'codeclew/source'
+        manifest = json.loads((root / 'manifest.json').read_text())
+        for entry in manifest['files']:
+            with self.subTest(file=entry['path']):
+                self.assertEqual(entry['digest'], 'sha256:' + hashlib.sha256((root / entry['path']).read_bytes()).hexdigest())
+        projection = json.loads((root / 'projection.json').read_text())
+        verification = json.loads((SITE / 'codeclew/verification.json').read_text())
+        checks = {check['id']: check for check in verification['checks']}
+        for page in projection['pages']:
+            with self.subTest(root=page['id']):
+                source = page['sources'][page['citations'][page['endpoint']['citationId']]['sourceId']]
+                check = checks[page['id']]
+                self.assertEqual(check['rawSourceSha256'], hashlib.sha256(source['text'].encode()).hexdigest())
+                self.assertEqual(check['revision'], source['revision'])
+        self.assertEqual(set(checks), {page['id'] for page in projection['pages']})
+
     def test_copied_generated_documentation_local_closure_and_anchors(self):
         if not generated_documentation_roots(SITE):
             self.skipTest('Generated documentation has not been copied to the site')

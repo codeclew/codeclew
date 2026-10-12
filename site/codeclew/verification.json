@@ -1,0 +1,100 @@
+{
+  "schema": "codeclew-public-selfdocs-verification/1.0",
+  "status": "PASSED",
+  "checks": [
+    {
+      "id": "commands",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "6f84dda88702fde7838a30760ca2a8eda24fb51e2b9e24a299ccfb721cc768f6",
+      "sourceDigestVerified": true,
+      "byteStart": 10537,
+      "byteEnd": 11060
+    },
+    {
+      "id": "capture",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "1871007d32542d9a4f35dfdc0451124d4821db5281575ad52ea7ff6e8749d720",
+      "sourceDigestVerified": true,
+      "byteStart": 7117,
+      "byteEnd": 7706
+    },
+    {
+      "id": "prepare",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "a656e36097279e78a3f9dcda27ce1a1fcb55018babb8fd98b0bd9c8fa9c5b6c9",
+      "sourceDigestVerified": true,
+      "byteStart": 74887,
+      "byteEnd": 85863
+    },
+    {
+      "id": "read",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "f55549926449318eb1c3abcb41689fdd04488a40e72bbd6ca2979ec269545a24",
+      "sourceDigestVerified": true,
+      "byteStart": 126003,
+      "byteEnd": 126169
+    },
+    {
+      "id": "submit",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "c8dbb9e5d3989e16c1261f7c2864f150b9cec21b1f206bee64ac72a0c9104230",
+      "sourceDigestVerified": true,
+      "byteStart": 55142,
+      "byteEnd": 59068
+    },
+    {
+      "id": "publish",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "4b2bb1fba1af4171b109bc6dbba1929bfaf5e167729a54e09344f934731771e9",
+      "sourceDigestVerified": true,
+      "byteStart": 8655,
+      "byteEnd": 10255
+    },
+    {
+      "id": "render",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "f7ad426a993007c444ffcda625897da6a6539fd1e12169e5adf22ad58bbe5405",
+      "sourceDigestVerified": true,
+      "byteStart": 105756,
+      "byteEnd": 160314
+    },
+    {
+      "id": "pins",
+      "fullRootSourceMatchesCommittedBlob": true,
+      "revision": "512ecc13be557e0cd7a61441111a82c69dbe8c03",
+      "rawSourceSha256": "ff521d346af3269ef603de337c305eae380c30760fb60790d615dbb0298c57d2",
+      "sourceDigestVerified": true,
+      "byteStart": 2327,
+      "byteEnd": 3236
+    }
+  ],
+  "producer": "Official installed Clew 0.13.24 RELEASE",
+  "sourceTag": "v0.13.24",
+  "snapshot": "sha256:9552435394fac60f880a0bc941bd7f63e00f8752926b32ba8a4363a3d3e4efd8/2132",
+  "nativeFilesCopiedByteExactly": 89,
+  "manifestHashesVerified": 88,
+  "authority": "Rust SYNTAX_DECLARATION; unresolved callees and runtime UNKNOWN",
+  "observedCommands": [
+    "docs check: CHECKED, exit 3, MISSING_BASELINE, saved snapshot returned",
+    "docs work prepare and read: succeeded",
+    "oversized dependency read: ITEM_EXCEEDS_WORK_BYTE_BUDGET with retained reference",
+    "docs pages render: exit 0, eight declaration dossiers"
+  ],
+  "sourceDescribedOnly": [
+    "proposal submission",
+    "proposal publication",
+    "snapshot recovery"
+  ],
+  "formalMeaningReview": "UNASSESSED",
+  "claims": "claims.json",
+  "nativeManifest": "source/manifest.json",
+  "nativeProjection": "source/projection.json",
+  "selection": "selection.json"
+}
