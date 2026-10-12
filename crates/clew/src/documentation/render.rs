@@ -3111,6 +3111,24 @@ fn publish_internal_phases(
             combined.operations.push(operation.clone());
         }
         combined.operations.sort_by(|a, b| a.id.cmp(&b.id));
+        // Internal methods need no new narrative, but an explicitly saved gap
+        // remains part of the publication until an operation replaces it.
+        let optional_gaps: BTreeMap<_, _> = combined
+            .gaps
+            .iter()
+            .filter(|(id, _)| {
+                subject
+                    .strip_prefix("service:")
+                    .and_then(|service| checked.services.get(service))
+                    .is_some_and(|service| {
+                        service.entrypoints.iter().any(|entry| {
+                            entry.id == **id && !super::process_candidates::public_boundary(entry)
+                        })
+                    })
+                    && !combined.operations.iter().any(|o| o.id == **id)
+            })
+            .map(|(id, reason)| (id.clone(), reason.clone()))
+            .collect();
         combined.gaps = n
             .gaps
             .iter()
@@ -3126,6 +3144,9 @@ fn publish_internal_phases(
                 )
             })
             .collect();
+        for (id, reason) in optional_gaps {
+            combined.gaps.entry(id).or_insert(reason);
+        }
     }
     // A service whose first capture failed still has a reader-visible actionable gap.
     for id in services.keys() {

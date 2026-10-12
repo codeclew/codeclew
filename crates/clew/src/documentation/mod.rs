@@ -116,3 +116,4 @@ pub mod modules;
 
 mod source_annotations;
 mod source_inheritance;
+mod support_cache;

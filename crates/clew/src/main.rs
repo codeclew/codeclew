@@ -441,6 +441,15 @@ struct SupportCollectArgs {
     /// Include bounded original saved failure text in a separate private file.
     #[arg(long)]
     include_private_logs: bool,
+    /// Copy the private documentation cache, saved declarations and selected Work; includes cached source fragments, never a Git checkout.
+    #[arg(long)]
+    include_cache: bool,
+    /// Select the saved Work and its immutable snapshot for reproduction.
+    #[arg(long, requires = "include_cache", conflicts_with = "snapshot")]
+    work: Option<String>,
+    /// Maximum bytes copied into the private cache directory.
+    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    cache_max_bytes: u64,
 }
 
 #[derive(Args)]
@@ -2105,12 +2114,17 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }
         Command::Support {
             command: SupportCommand::Collect(args),
-        } => clew::documentation::support_collect::collect(
+        } => clew::documentation::support_collect::collect_with_cache(
             &args.root,
             args.snapshot.as_deref(),
             args.service.as_deref(),
             &args.output,
             args.include_private_logs,
+            args.include_cache
+                .then_some(clew::documentation::support_collect::CacheOptions {
+                    work: args.work.as_deref(),
+                    max_bytes: args.cache_max_bytes,
+                }),
         ),
         Command::Storage {
             command: StorageCommand::Gc(args),

@@ -19,6 +19,7 @@ const METADATA_LIMIT: u64 = 8 * 1024 * 1024;
 pub const FILE_LIMIT: usize = 1024 * 1024;
 pub const REPORT_SCHEMA: &str = "codeclew-support-report/1.0";
 pub const BUNDLE_SCHEMA: &str = "codeclew-support-bundle/1.0";
+const CACHE_README: &str = include_str!("../../../../docs/operations/support-cache-bundle.md");
 const README: &str = "# Codeclew diagnostic bundle\n\nreport.json contains allowlisted metadata only. Snapshot/content digests and hashed\nservice identities can correlate a repository; review before sharing. No source,\nenvironment values, arguments, arbitrary error text or URLs are included there.\n\nPRIVATE_SAVED_DETAILS.json, when present, contains original private error text.\nDo not share it without review. All files are mode 0600 in a mode 0700 directory.\n\nInspection is MANIFEST_METADATA only. Sources, compiler facts, dependencies and\nthe full object closure are NOT_VERIFIED. Current declarations are not checked;\na historical snapshot remains diagnostic evidence after declarations change.\nA nonempty SQLite WAL/journal yields PARTIAL: finish the active writer and retry.\nNo store files are copied or changed, and no compiler, doctor, model or network\noperation is started by collection. A cold source launcher may build its runtime.\nNo upload is performed. manifest.json is finalized last.\n";
 
 #[derive(Deserialize)]
@@ -30,8 +31,8 @@ struct Layout {
     database: String,
 }
 
-type Signature = (u64, u64, u64, i64, i64, i64, i64);
-fn signature(path: &Path) -> Result<Signature, ClewError> {
+pub(super) type Signature = (u64, u64, u64, i64, i64, i64, i64);
+pub(super) fn signature(path: &Path) -> Result<Signature, ClewError> {
     let m =
         fs::symlink_metadata(path).map_err(|_| invalid("diagnostic metadata is unavailable"))?;
     if !m.is_file() {
@@ -48,7 +49,7 @@ fn signature(path: &Path) -> Result<Signature, ClewError> {
     ))
 }
 
-fn path(root: &Path, relative: &str) -> Result<PathBuf, ClewError> {
+pub(super) fn path(root: &Path, relative: &str) -> Result<PathBuf, ClewError> {
     super::store::relative(relative)?;
     let mut result = root.to_path_buf();
     for component in Path::new(relative).components() {
@@ -65,7 +66,7 @@ fn path(root: &Path, relative: &str) -> Result<PathBuf, ClewError> {
     Ok(result)
 }
 
-fn read(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> {
+pub(super) fn read(path: &Path, limit: u64) -> Result<Vec<u8>, ClewError> {
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -584,6 +585,22 @@ pub fn collect(
     output: &Path,
     private: bool,
 ) -> Result<Value, ClewError> {
+    collect_with_cache(root, snapshot, service, output, private, None)
+}
+
+pub struct CacheOptions<'a> {
+    pub work: Option<&'a str>,
+    pub max_bytes: u64,
+}
+
+pub fn collect_with_cache(
+    root: &Path,
+    snapshot: Option<&str>,
+    service: Option<&str>,
+    output: &Path,
+    private: bool,
+    cache: Option<CacheOptions<'_>>,
+) -> Result<Value, ClewError> {
     // Refuse writes anywhere beneath the inspected root, even through a symlink.
     let parent = output
         .parent()
@@ -599,19 +616,73 @@ pub fn collect(
     if let Some(snapshot) = snapshot {
         handle(snapshot)?;
     }
+    if let Some(options) = &cache {
+        if options.max_bytes == 0 || options.max_bytes > 2 * 1024 * 1024 * 1024 {
+            return Err(invalid(
+                "cache diagnostic budget must be between 1 byte and 2 GiB",
+            ));
+        }
+        if let Some(work) = options.work {
+            super::work::directory(work)?;
+        }
+    }
     fresh_directory(output)?;
-    let (report, private_details) = inspect(root, snapshot, service, private);
+    let work_snapshot = cache
+        .as_ref()
+        .and_then(|options| options.work)
+        .map(|work| super::support_cache::work_snapshot(root, work));
+    let selected = work_snapshot
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .map(String::as_str)
+        .or(snapshot);
+    let (mut report, private_details) = inspect(root, selected, service, private);
+    let mut cache_artifacts = vec![];
+    if let Some(options) = &cache {
+        if work_snapshot.as_ref().is_some_and(Result::is_err) {
+            issue(&mut report, "WORK_METADATA_UNAVAILABLE_OR_INVALID");
+        }
+        match super::support_cache::copy(root, output, options.work, options.max_bytes) {
+            Ok((artifacts, summary)) => {
+                cache_artifacts = artifacts;
+                report["cache"] = summary;
+                if let Some(work) = options.work {
+                    let copied =
+                        super::support_cache::work_snapshot(&output.join("PRIVATE_CACHE"), work);
+                    let agrees = copied.as_ref().ok().map(String::as_str) == selected;
+                    report["cache"]["workSnapshotMatchesReport"] = json!(agrees);
+                    if !agrees {
+                        issue(&mut report, "WORK_SNAPSHOT_MISMATCH");
+                    }
+                }
+            }
+            Err(error) => {
+                issue(&mut report, "CACHE_COPY_INCOMPLETE");
+                report["cache"] = json!({"status":"NOT_INCLUDED","errorCode":error.code,"sourceFragmentsMayBeIncluded":false,"gitRepositoryIncluded":false});
+            }
+        }
+    }
     let mut artifacts = vec![
         write_file(output, "report.json", &super::bytes(&report)?)?,
-        write_file(output, "README.md", README.as_bytes())?,
+        write_file(
+            output,
+            "README.md",
+            if cache.is_some() {
+                CACHE_README
+            } else {
+                README
+            }
+            .as_bytes(),
+        )?,
     ];
+    artifacts.extend(cache_artifacts);
     let mut truncation = Value::Null;
     if let Some(details) = private_details {
         truncation = write_private_details(output, &details)?;
         artifacts.push(truncation["artifact"].clone());
     }
-    let manifest = json!({"schema":BUNDLE_SCHEMA,"status":report["status"],"sharing":if private {"PRIVATE_REVIEW_REQUIRED"} else {"ALLOWLISTED_METADATA"},
-        "inspectionScope":"MANIFEST_METADATA","artifacts":artifacts,"limits":{"fileBytes":FILE_LIMIT,"totalBytes":4*FILE_LIMIT},"privateTruncation":truncation});
+    let manifest = json!({"schema":BUNDLE_SCHEMA,"status":report["status"],"sharing":if cache.is_some() {"PRIVATE_SOURCE_CACHE"} else if private {"PRIVATE_REVIEW_REQUIRED"} else {"ALLOWLISTED_METADATA"},
+        "inspectionScope":"MANIFEST_METADATA","cache":report.get("cache"),"artifacts":artifacts,"limits":{"fileBytes":FILE_LIMIT,"totalBytes":4*FILE_LIMIT as u64 + cache.as_ref().map_or(0,|c|c.max_bytes),"cacheBytes":cache.as_ref().map(|c|c.max_bytes)},"privateTruncation":truncation});
     write_file(output, "manifest.pending", &super::bytes(&manifest)?)?;
     fs::rename(
         output.join("manifest.pending"),

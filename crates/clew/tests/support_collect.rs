@@ -2,10 +2,257 @@
 #![cfg(unix)]
 #[path = "support/documentation.rs"]
 mod support;
-use clew::documentation::{check, store::Repository};
-use serde_json::Value;
+use clew::{
+    canonical,
+    documentation::{check, store::Repository},
+};
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::Path};
 use support::Fixture;
+
+#[test]
+fn private_cache_bundle_replays_saved_work_offline_without_git_or_source_bindings() {
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let checked = f.checked();
+    let repo = Repository::open(&f.docs).unwrap();
+    let snapshot = checked.save_snapshot(&repo).unwrap();
+    drop(repo);
+    let request=f.input("support-work.json", &json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainer","maxItems":100,"maxBytes":49152}));
+    let prepared = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        &snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
+    let work = prepared["work"].as_str().unwrap();
+    // Saved diagnostics do not need a new provider invocation. Derive copied
+    // paths from bounded IDs; never follow a persisted outputDirectory.
+    let run = "a".repeat(32);
+    let invocation = "b".repeat(32);
+    let proposal = "c".repeat(64);
+    let saved = [
+        (
+            format!(".codeclew/work/{work}/latest-run.json"),
+            json!({"run":run}),
+        ),
+        (
+            format!(".codeclew/jobs/{run}.json"),
+            json!({"run":run,"work":work,"proposal":proposal,"attempts":[{"invocation":invocation}],"draft":{"outputDirectory":source.join(".git")}}),
+        ),
+        (
+            format!(".codeclew/jobs/{run}/checkpoints/saved.json"),
+            json!({"checkpoint":"saved failure"}),
+        ),
+        (
+            format!(".codeclew/job-inputs/{invocation}.json"),
+            json!({"request":"frozen input"}),
+        ),
+        (
+            format!(".codeclew/job-results/{invocation}.json"),
+            json!({"result":"frozen output"}),
+        ),
+        (
+            format!(".codeclew/job-model-inputs/{invocation}.json"),
+            json!({"modelInput":"frozen wire input"}),
+        ),
+        (
+            format!(".codeclew/job-model-wire-results/{invocation}.json"),
+            json!({"result":"frozen wire output"}),
+        ),
+        (
+            format!(".codeclew/drafts/{work}/answer.json"),
+            json!({"answer":"saved draft"}),
+        ),
+        (
+            format!(".codeclew/model-id-maps/{run}/author/head.json"),
+            json!({"map":"frozen IDs"}),
+        ),
+        (
+            format!(".codeclew/proposals/{proposal}.json"),
+            json!({"proposal":"saved proposal"}),
+        ),
+    ];
+    for (name, value) in &saved {
+        let path = f.docs.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    }
+    fs::write(
+        source.join(".git/private-sentinel"),
+        "PRIVATE_GIT_MUST_NOT_BE_COPIED",
+    )
+    .unwrap();
+    fs::rename(&source, source.with_extension("offline")).unwrap();
+    let before = tree(&f.docs);
+    let output = f.temp.path().join("cache-bundle");
+    let summary = f.ok(&[
+        "support",
+        "collect",
+        "--work",
+        work,
+        "--include-cache",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(summary["sharing"], "PRIVATE_SOURCE_CACHE");
+    assert_eq!(summary["snapshot"], snapshot);
+    assert_eq!(before, tree(&f.docs));
+    for (name, _) in &saved {
+        assert_eq!(
+            fs::read(output.join("PRIVATE_CACHE").join(name)).unwrap(),
+            fs::read(f.docs.join(name)).unwrap()
+        );
+    }
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    for artifact in manifest["artifacts"].as_array().unwrap() {
+        let name = artifact["path"].as_str().unwrap();
+        assert!(
+            !name.contains(".git")
+                && !name.contains("/bindings/")
+                && !name.contains("private-sentinel")
+        );
+        let bytes = fs::read(output.join(name)).unwrap();
+        assert_eq!(artifact["digest"], canonical::hash_bytes(&bytes));
+        assert_eq!(artifact["bytes"], bytes.len());
+        assert_eq!(
+            fs::metadata(output.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    let selection = f.input(
+        "support-selection.json",
+        &json!({"query":{"kind":"SYMBOL","symbolContains":"reserve"}}),
+    );
+    let (code, page) = f.run_unrooted(&[
+        "docs",
+        "work",
+        "read",
+        "--root",
+        output.join("PRIVATE_CACHE").to_str().unwrap(),
+        "--work",
+        work,
+        "--input",
+        selection.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{page}");
+    assert_eq!(page["snapshot"], snapshot);
+    assert!(!page["items"].as_array().unwrap().is_empty());
+    let restored = Repository::open(&output.join("PRIVATE_CACHE")).unwrap();
+    let actual = check::Check::load_snapshot(&restored, &snapshot).unwrap();
+    assert_eq!(
+        actual.services["orders"].sources,
+        checked.services["orders"].sources
+    );
+    assert_eq!(before, tree(&f.docs));
+}
+
+#[test]
+fn cache_budget_and_symlink_refusals_leave_source_and_metadata_diagnostics_available() {
+    let f = Fixture::new();
+    f.service("orders");
+    f.checked();
+    let before = tree(&f.docs);
+    let output = f.temp.path().join("small-cache-bundle");
+    let summary = f.ok(&[
+        "support",
+        "collect",
+        "--include-cache",
+        "--cache-max-bytes",
+        "1",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(summary["status"], "PARTIAL");
+    assert_eq!(before, tree(&f.docs));
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["cache"]["status"], "NOT_INCLUDED");
+    assert!(!output.join("PRIVATE_CACHE").exists());
+    let secret = f.temp.path().join("not-cache.json");
+    fs::write(&secret, "PRIVATE_NON_CACHE_SENTINEL").unwrap();
+    std::os::unix::fs::symlink(&secret, f.docs.join(".codeclew/cache/escape.json")).unwrap();
+    let output = f.temp.path().join("symlink-cache-bundle");
+    let summary = f.ok(&[
+        "support",
+        "collect",
+        "--include-cache",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(summary["status"], "PARTIAL");
+    assert!(!output.join("PRIVATE_CACHE").exists());
+    assert!(output.join("report.json").exists());
+    assert_eq!(fs::read(&secret).unwrap(), b"PRIVATE_NON_CACHE_SENTINEL");
+}
+
+#[test]
+fn stable_committed_wal_is_copied_without_checkpointing_the_source() {
+    let f = Fixture::new();
+    f.service("orders");
+    f.checked();
+    let layout: Value = serde_json::from_slice(
+        &fs::read(f.docs.join(".codeclew/cache/object-layout.json")).unwrap(),
+    )
+    .unwrap();
+    let database = layout["database"].as_str().unwrap();
+    let connection = rusqlite::Connection::open(f.docs.join(database)).unwrap();
+    connection
+        .execute_batch("PRAGMA wal_autocheckpoint=0")
+        .unwrap();
+    let bytes = b"Committed WAL diagnostic fixture";
+    let digest = canonical::hash_bytes(bytes);
+    connection
+        .execute(
+            "INSERT INTO objects (payload, byte_len, digest) VALUES (?1, ?2, ?3)",
+            rusqlite::params![bytes.as_slice(), bytes.len() as i64, digest],
+        )
+        .unwrap();
+    let wal = format!("{database}-wal");
+    assert!(fs::metadata(f.docs.join(&wal)).unwrap().len() > 0);
+    let before = tree(&f.docs);
+    let output = f.temp.path().join("wal-cache-bundle");
+    let summary = f.ok(&[
+        "support",
+        "collect",
+        "--include-cache",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(summary["status"], "PARTIAL");
+    assert_eq!(before, tree(&f.docs));
+    assert_eq!(
+        fs::read(output.join("PRIVATE_CACHE").join(&wal)).unwrap(),
+        before[&f.docs.join(&wal)]
+    );
+    assert!(
+        !output
+            .join("PRIVATE_CACHE")
+            .join(format!("{database}-shm"))
+            .exists()
+    );
+    let copied = rusqlite::Connection::open(output.join("PRIVATE_CACHE").join(database)).unwrap();
+    let actual: Vec<u8> = copied
+        .query_row(
+            "SELECT payload FROM objects WHERE digest=?1",
+            [&digest],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(actual, bytes);
+    assert_eq!(before, tree(&f.docs));
+    drop(connection);
+}
 
 fn tree(root: &Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();

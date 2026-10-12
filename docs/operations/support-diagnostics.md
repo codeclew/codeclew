@@ -112,3 +112,23 @@ a finalized manifest is an incomplete collection, not a complete bundle.
 The narrower [support summary workflow](p0-runbook.md) remains available for a
 single caller-owned JSON artifact. [Maven diagnostics](maven-build-failure-diagnostics.md)
 describe the underlying private stage captures.
+
+## Collect and inspect a private support cache
+
+Collect only to a new output directory outside the docs root. Bundle directories use mode `0700` and files `0600`. Collection copies rather than changes source data, checks for source changes during copying, and refuses symlinks and non-regular files. These cache switches are available in v0.13.26; v0.13.20 support remains metadata-only.
+
+```sh
+clew support collect --root /path/to/docs-root --include-cache --work 'PASTE_64_HEX_WORK_ID' --output /path/to/new-bundle
+```
+
+Replace the quoted placeholder with the saved Work's 64-character hexadecimal ID. `--include-cache` is required; default collection copies no cache. `--work` selects its immutable snapshot and conflicts with `--snapshot`; otherwise select `--snapshot` or latest. `--cache-max-bytes` defaults to 268435456 bytes (256 MiB), maximum 2 GiB. `--service` filters report metadata only.
+
+Cache mode copies docs-local `.codeclew/cache` (SQLite, stable raw WAL/journal, manifests/pins), docs manifest/catalog, selected Work receipts, and latest saved job/checkpoints. It includes frozen invocation `job-inputs`, `job-results`, `job-model-inputs`, and `job-model-wire-results` JSON, fixed-role `model-ID-map` JSON, known Work/run draft JSON directories, and selected proposal JSON. Inline review stays in the saved job. `PRIVATE_CACHE` is a relocated docs root. Paths derive from validated IDs; persisted `outputDirectory` is never followed. `PRIVATE_SOURCE_CACHE` may include unsanitized cached fragments/private records, including application data, not a fresh repository snapshot. Source bindings, Git history, and global `CODECLEW_HOME` are excluded. Collection does not inspect live environment, start compiler/doctor/model/network actions, or upload.
+
+Read a saved Work offline from the bundle:
+
+```sh
+clew docs work read --root BUNDLE/PRIVATE_CACHE --work 'PASTE_64_HEX_WORK_ID' --input selection.json
+```
+
+`COPIED_NOT_HYDRATED` means no hydration or full semantic/cache-object closure verification; stable WAL may be copied and source SQLite is never checkpointed or repaired. Corruption is preserved and reports may be `PARTIAL`. The six-test support-cache suite passed in 75.62s; offline replay verified exact saved input/result/checkpoint/draft bytes and refused a `.git` outputDirectory.
