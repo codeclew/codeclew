@@ -590,8 +590,11 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
         ),
         _ => false,
     };
-    let source_profile =
-        s.profile == "source-syntax" && matches!(s.language.as_str(), "python" | "java" | "kotlin");
+    let source_profile = s.profile == "source-syntax"
+        && matches!(
+            s.language.as_str(),
+            "python" | "java" | "kotlin" | "typescript"
+        );
     if source_profile {
         let config = s
             .source

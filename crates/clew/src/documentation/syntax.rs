@@ -158,6 +158,9 @@ fn capture_with_store_selected(
             "python" => entry.path.ends_with(".py"),
             "java" => entry.path.ends_with(".java"),
             "kotlin" => entry.path.ends_with(".kt") || entry.path.ends_with(".kts"),
+            "typescript" => [".ts", ".mts", ".cts"]
+                .iter()
+                .any(|extension| entry.path.ends_with(extension)),
             _ => false,
         };
         let file = File {
@@ -264,6 +267,7 @@ fn capture_with_store_selected(
     if e.boundaries.iter().any(|b| {
         b.starts_with("UNSAFE_FILE:")
             || b.starts_with("MISSING_SOURCE_ROOT:")
+            || b.starts_with("SOURCE_CALLABLE_VARIABLE_NOT_ENUMERATED:")
             || b == "EMPTY_SOURCE_SCOPE"
     }) {
         e.coverage = "PARTIAL".into();
@@ -285,6 +289,7 @@ fn parse(language: &str, text: &str) -> Result<tree_sitter::Tree, ClewError> {
         "python" => tree_sitter_python::LANGUAGE.into(),
         "java" => tree_sitter_java::LANGUAGE.into(),
         "kotlin" => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         _ => return Err(invalid("unsupported source language")),
     };
     parser
@@ -338,6 +343,7 @@ fn callable(kind: &str) -> bool {
         "function_definition"
             | "function_declaration"
             | "method_declaration"
+            | "method_definition"
             | "constructor_declaration"
             | "secondary_constructor"
     )
@@ -472,7 +478,11 @@ fn replay_file(
             .starts_with(&format!("source:{}/", file.path))
             || recipe
                 .identity
-                .starts_with(&format!("syntax:{}/", file.path)))
+                .starts_with(&format!("syntax:{}/", file.path))
+            || (file.service.language == "typescript"
+                && recipe.identity == format!("file:{}", file.path)
+                && recipe.start == 0
+                && recipe.end == file.text.len()))
         {
             return Err(corrupt());
         }
@@ -588,6 +598,11 @@ pub(super) fn observe(
 }
 
 fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(), ClewError> {
+    if file.service.language == "typescript" && !file.text.is_empty() {
+        // Retain module constants, aliases and registration statements even
+        // when they do not form an enumerated callable declaration.
+        file.source(e, &format!("file:{}", file.path), 0, file.text.len())?;
+    }
     if root.has_error() {
         e.coverage = "PARTIAL".into();
         e.boundaries.push(format!("PARSE_ERROR:{}", file.path));
@@ -624,6 +639,19 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
             .child_by_field_name("name")
             .map(|n| spelling(n, file.text).to_owned());
         let mut nested = owners.clone();
+        if file.service.language == "typescript"
+            && owners.is_empty()
+            && node.kind() == "variable_declarator"
+            && node.child_by_field_name("value").is_some_and(|value| {
+                matches!(value.kind(), "arrow_function" | "function_expression")
+            })
+        {
+            e.coverage = "PARTIAL".into();
+            e.boundaries.push(format!(
+                "SOURCE_CALLABLE_VARIABLE_NOT_ENUMERATED:{}",
+                file.path
+            ));
+        }
         if callable(node.kind()) || class(node.kind()) {
             if let Some(name) = name {
                 let owner = if owners.is_empty() {
@@ -861,7 +889,11 @@ fn event_kind(node: Node<'_>) -> Option<&'static str> {
         "finally_clause" | "finally_block" => "FINALLY",
         "break_statement" => "BREAK",
         "continue_statement" => "CONTINUE",
-        "lambda" | "lambda_literal" | "lambda_expression" => "DEFERRED",
+        "lambda"
+        | "lambda_literal"
+        | "lambda_expression"
+        | "arrow_function"
+        | "function_expression" => "DEFERRED",
         "call" | "call_expression" | "method_invocation" | "object_creation_expression" => "CALL",
         "navigation_expression" => "ACCESS",
         "binary_expression"
@@ -1053,6 +1085,90 @@ mod tests {
         analysis::verify_evidence(&e).unwrap();
         e
     }
+    #[test]
+    fn typescript_module_constants_aliases_and_arrow_roots_remain_readable() {
+        let text = r#"
+const TOPIC = 'weather.forecast-updated';
+type Payload = { temperature: number | null };
+export const handler = async (value: Payload) => { await save(TOPIC, value); };
+"#;
+        let evidence = fixture("typescript", text);
+        assert!(evidence.sources.values().any(|source| source.text == text));
+        assert_eq!(evidence.coverage, "PARTIAL");
+        assert!(
+            evidence
+                .boundaries
+                .iter()
+                .any(|boundary| boundary.starts_with("SOURCE_CALLABLE_VARIABLE_NOT_ENUMERATED:"))
+        );
+        assert!(
+            evidence
+                .entrypoints
+                .iter()
+                .all(|entry| entry.trigger["name"] != "handler")
+        );
+    }
+
+    #[test]
+    fn typescript_named_functions_and_methods_keep_unresolved_deferred_flow() {
+        let text = r#"
+interface Forecast { updatedAt: number; temperature: number | null }
+export async function applyForecast(incoming: Forecast, retained: Forecast): Promise<Forecast> {
+    if (incoming.updatedAt <= retained.updatedAt) return retained;
+    const callback = async () => { await persist(incoming); };
+    await callback();
+    return incoming;
+}
+class Reader {
+    async read(id: string): Promise<Forecast> { return await load(id); }
+}
+"#;
+        let service = service("typescript");
+        store::validate_service(&service).unwrap();
+        let evidence = fixture("typescript", text);
+        for name in ["applyForecast", "read"] {
+            assert!(
+                evidence
+                    .entrypoints
+                    .iter()
+                    .any(|entry| entry.trigger["name"] == name)
+            );
+        }
+        for kind in ["IF", "DEFERRED", "CALL", "RETURN"] {
+            assert!(
+                evidence.observations.values().any(|observation| {
+                    observation.kind == "FLOW" && observation.normalized["kind"] == kind
+                }),
+                "missing {kind}"
+            );
+        }
+        assert_eq!(evidence.coverage, "SYNTAX");
+        assert!(
+            evidence
+                .entrypoints
+                .iter()
+                .all(|entry| entry.kind == "SOURCE_DECLARATION")
+        );
+        assert!(
+            evidence
+                .observations
+                .values()
+                .filter(|observation| observation.kind == "FLOW")
+                .all(|observation| {
+                    observation.normalized["authority"] == "SYNTAX"
+                        && observation.normalized["targetStatus"] == "UNRESOLVED"
+                        && observation.normalized.get("target").is_none()
+                })
+        );
+        for source in evidence.sources.values() {
+            let occurrence = source.occurrence.as_ref().unwrap();
+            assert_eq!(
+                source.text,
+                text[occurrence.start_byte..occurrence.end_byte]
+            );
+        }
+    }
+
     #[test]
     fn three_languages_expose_real_declarations_and_unresolved_flow_without_compilers() {
         for (language, text) in [("python", PYTHON), ("java", JAVA), ("kotlin", KOTLIN)] {

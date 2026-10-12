@@ -95,6 +95,28 @@ fn service(language: &str) -> Service {
 }
 
 #[test]
+fn typescript_full_file_and_partial_enumeration_match_uncached_cold_and_warm() {
+    let fixture = Fixture::new();
+    let service = service("typescript");
+    let text = "const TOPIC = 'weather.forecast-updated';\ntype Payload = { temperature: number };\nexport const handler = async (value: Payload) => { await save(TOPIC, value); };\nexport function named(value: Payload) { return value; }\n";
+    fixture.write("weather.ts", text);
+    let revision = fixture.commit();
+    let fresh = fixture.uncached(&service, &revision);
+    assert_eq!(fresh.coverage, "PARTIAL");
+    assert!(fresh.sources.values().any(|source| source.text == text));
+    syntax::take_file_cache_stats();
+    let cold = fixture.cached(&service, &revision);
+    let stats = syntax::take_file_cache_stats();
+    assert_eq!((stats.hits, stats.misses, stats.parses), (0, 1, 1));
+    assert_eq!(cold, fresh);
+    syntax::take_file_cache_stats();
+    let warm = fixture.cached(&service, &revision);
+    let stats = syntax::take_file_cache_stats();
+    assert_eq!((stats.hits, stats.misses, stats.parses), (1, 0, 0));
+    assert_eq!(warm, fresh);
+}
+
+#[test]
 fn changed_file_parses_once_while_hits_rebind_all_current_source_evidence() {
     let fixture = Fixture::new();
     let service = service("python");
