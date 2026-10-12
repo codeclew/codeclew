@@ -131,6 +131,7 @@ fn dependency(work: &Work, id: &str) -> Result<Value, ClewError> {
 }
 
 impl<'a> Record<'a> {
+    #[cfg(test)]
     fn new(work: &'a Work, id: &'a str) -> Result<Self, ClewError> {
         Self::new_kind(work, id, RECORD_KIND)
     }
