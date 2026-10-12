@@ -342,9 +342,14 @@ pub(super) fn read_record_part_loaded(
         REQUEST_SCHEMA
     };
     if request.schema != schema || request.kind != kind {
-        return Err(invalid(
-            "part request schema and kind must match the selected retained-operation or dependency command",
-        ));
+        let command = if kind == DEPENDENCY_KIND {
+            "dependency-part"
+        } else {
+            "retained-part"
+        };
+        return Err(invalid(format!(
+            "{command} request requires {schema} and kind {kind}"
+        )));
     }
     let record = Record::new_kind(work, &request.id, kind)?;
     let start = request
