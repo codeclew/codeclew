@@ -111,6 +111,7 @@ fn private_cache_bundle_replays_saved_work_offline_without_git_or_source_binding
     }
     let manifest: Value =
         serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["cache"]["workSnapshotMatchesReport"], true);
     for artifact in manifest["artifacts"].as_array().unwrap() {
         let name = artifact["path"].as_str().unwrap();
         assert!(
@@ -155,6 +156,47 @@ fn private_cache_bundle_replays_saved_work_offline_without_git_or_source_binding
         checked.services["orders"].sources
     );
     assert_eq!(before, tree(&f.docs));
+
+    // Preserve corrupt Work bytes for diagnosis, but never attest that its
+    // invalid snapshot matches an inspection that could not select one.
+    let work_file = f.docs.join(format!(".codeclew/work/{work}/work.json"));
+    let mut stored: Value = serde_json::from_slice(&fs::read(&work_file).unwrap()).unwrap();
+    stored["snapshot"] = json!("invalid-snapshot");
+    fs::write(&work_file, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let corrupt_before = tree(&f.docs);
+    let output = f.temp.path().join("corrupt-work-cache-bundle");
+    let summary = f.ok(&[
+        "support",
+        "collect",
+        "--work",
+        work,
+        "--include-cache",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(summary["status"], "PARTIAL");
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("report.json")).unwrap()).unwrap();
+    assert!(report["snapshot"].is_null());
+    assert_eq!(report["cache"]["status"], "COPIED_NOT_HYDRATED");
+    assert_eq!(report["cache"]["workSnapshotMatchesReport"], false);
+    assert!(
+        report["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"] == "WORK_SNAPSHOT_MISMATCH")
+    );
+    assert_eq!(
+        fs::read(
+            output
+                .join("PRIVATE_CACHE")
+                .join(format!(".codeclew/work/{work}/work.json"))
+        )
+        .unwrap(),
+        fs::read(&work_file).unwrap()
+    );
+    assert_eq!(corrupt_before, tree(&f.docs));
 }
 
 #[test]

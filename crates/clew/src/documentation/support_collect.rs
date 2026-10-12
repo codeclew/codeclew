@@ -666,7 +666,9 @@ pub fn collect_with_cache(
                 if let Some(work) = options.work {
                     let copied =
                         super::support_cache::work_snapshot(&output.join("PRIVATE_CACHE"), work);
-                    let agrees = copied.as_ref().ok().map(String::as_str) == selected;
+                    let agrees = copied.as_ref().ok().is_some_and(|snapshot| {
+                        Some(snapshot.as_str()) == report["snapshot"].as_str()
+                    });
                     report["cache"]["workSnapshotMatchesReport"] = json!(agrees);
                     if !agrees {
                         issue(&mut report, "WORK_SNAPSHOT_MISMATCH");
