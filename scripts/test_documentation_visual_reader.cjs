@@ -319,10 +319,12 @@ test('publications without visuals retain normal overview and operations',()=>{
  const r=load(data),html=r.e('scenario-content').innerHTML;
  assert.doesNotMatch(html,/artifact-svg|visual-preview/);
  assert.match(html,/Awaiting overview/);
- assert.match(html,/Explore internal processes/);
+ assert.doesNotMatch(html,/Explore internal processes/);
+ assert.doesNotMatch(r.e('scenario-nav').innerHTML,/data-entry="process-catalog"/);
 });
 test('process catalog lists typed visuals without requiring an HTTP selection',()=>{
- const r=load();r.run("showEntry('process-catalog')");
+ const data=fixture();data.savedProcesses=[{id:'saved',title:'Saved workflow',href:'../scenarios/saved.html',status:'AUTHORED'}];
+ const r=load(data);r.run("showEntry('process-catalog')");
  const html=r.e('scenario-content').innerHTML;
  assert.match(html,/Processes and diagrams · 2/);
  assert.match(html,/<svg class="artifact-svg"/);
@@ -432,7 +434,8 @@ test('missing profile sections and discovered but unauthored entries remain expl
  assert.match(html,/Thread-to-call links and complete outgoing coverage are not inferred/);
 });
 test('entity section shows only its accepted local visuals while the process gallery still includes all owners',()=>{
- const r=load(entitySectionFixture());r.run("showEntry('section-entities')");
+ const data=entitySectionFixture();data.savedProcesses=[{id:'saved',title:'Saved workflow',href:'../scenarios/saved.html',status:'AUTHORED'}];
+ const r=load(data);r.run("showEntry('section-entities')");
  const html=r.e('scenario-content').innerHTML;
  assert.match(html,/Current entity declarations/);assert.match(html,/Synthetic Order/);
  assert.match(html,/<h3>Entity views<\/h3>/);assert.match(html,/Order identity map/);assert.match(html,/Ownership criteria/);
@@ -1070,4 +1073,32 @@ test('fragment address separates process and fragment identity without hyphen co
  const x=load(a),y=load(b);x.run("showEntry('process-overview')");y.run("showEntry('process-overview')");
  assert.match(x.e('scenario-content').innerHTML,/#service-fragment-a-b:c/);
  assert.match(y.e('scenario-content').innerHTML,/#service-fragment-a:b-c/);
+});
+
+test('internal discovery is absent by default even when internal candidates exist',()=>{
+ const data=fixture();data.processCandidates={internal:[{name:'Helper candidate'}],summary:{internalCandidateCount:8}};
+ const r=load(data);r.run("showEntry('section-overview')");
+ assert.equal(r.run("entries.some(e=>e.id==='process-catalog')"),false);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/data-entry="process-catalog"|Internal processes/);
+});
+test('saved processes remain navigable without showing speculative internal discovery',()=>{
+ const data=fixture();data.savedProcesses=[{id:'checkout',title:'Checkout workflow',href:'../scenarios/checkout.html',status:'AUTHORED',trigger:'Request received'}];
+ data.processCandidates={internal:[{name:'Helper candidate'}],summary:{internalCandidateCount:8}};
+ const r=load(data);r.run("showEntry('process-catalog')");
+ assert.match(r.e('scenario-content').innerHTML,/Checkout workflow/);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/Internal candidates|Helper candidate/);
+});
+test('internal discovery is available only by explicit reader option and real candidates',()=>{
+ const data=fixture();data.readerOptions={showInternalProcesses:true};
+ data.processCandidates={internal:[{name:'Candidate',root:{status:'MISSING'},gaps:[],sourceIds:[],localCallTargetCount:1,controlEventCount:0}],summary:{internalCandidateCount:1}};
+ const r=load(data);assert.equal(r.run("entries.some(e=>e.id==='process-catalog')"),true);
+ r.run("showEntry('process-catalog')");assert.match(r.e('scenario-content').innerHTML,/Internal candidates/);
+ const empty=fixture();empty.readerOptions={showInternalProcesses:true};const e=load(empty);
+ assert.equal(e.run("entries.some(e=>e.id==='process-catalog')"),false);
+});
+test('source helpers remain accessible in inventory but do not demand separate navigation narratives',()=>{
+ const data=fixture();data.catalogue=[{id:'http',kind:'HTTP_ENDPOINT',symbol:'Controller.accept',trigger:{methods:['POST'],paths:['/accept']},sourceIds:[]},{id:'helper',kind:'SOURCE_DECLARATION',symbol:'Mapper.convert',trigger:{},sourceIds:[]}];data.publicBoundaryIds=['http'];
+ const r=load(data);assert.equal(r.run("entries.some(e=>e.id==='http')"),true);assert.equal(r.run("entries.some(e=>e.id==='helper')"),false);
+ assert.equal(r.run('inventoryEntries().length'),2);r.run("catalogue();showEntry('helper')");
+ assert.equal(r.run('current.id'),'helper');assert.match(r.e('scenario-content').innerHTML,/No separate narrative is required/);
 });

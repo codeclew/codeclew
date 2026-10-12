@@ -22,7 +22,7 @@ pub(super) use super::work_parts::{
     completed_source_references, initial_context_complete_with_parts,
 };
 pub use super::work_retained_parts::{
-    RetainedPartReceipt, RetainedPartRequest, read_retained_part,
+    RetainedPartReceipt, RetainedPartRequest, read_retained_part, read_dependency_part,
 };
 
 #[derive(Debug, Subcommand)]
@@ -138,6 +138,8 @@ pub enum Command {
     ReadPart(ReadPartArgs),
     /// Read canonical JSON of one retained operation in bounded recorded parts.
     ReadRetainedPart(ReadPartArgs),
+    /// Read a captured dependency as bounded canonical JSON with recorded complete coverage.
+    ReadDependencyPart(ReadPartArgs),
     Packet {
         #[arg(long)]
         root: PathBuf,
@@ -967,6 +969,9 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             &Repository::open(&args.root)?,
             &args.work,
             store::read(&args.input, store::MAX_RECORD)?,
+        ),
+        Command::ReadDependencyPart(args) => read_dependency_part(
+            &Repository::open(&args.root)?, &args.work, store::read(&args.input, store::MAX_RECORD)?,
         ),
         Command::Packet {
             root,
@@ -2671,7 +2676,7 @@ pub(super) fn audit_rows(work: &Work, selection: &Selection) -> Result<Vec<Value
     rows(work, selection)
 }
 
-fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
+pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     validate_selection(selection)?;
     if work.request.context_profile.as_deref() == Some(super::endpoint_context::PROFILE)
         && selection.references.is_empty()
@@ -3371,6 +3376,9 @@ pub(super) fn read_loaded_with_requested(
                 break;
             }
             omitted.push(json!({"index":consumed,"kind":item["kind"],"id":item["id"],"reference":item["reference"],"reason":"ITEM_EXCEEDS_WORK_BYTE_BUDGET"}));
+            if item["kind"] == "DEPENDENCY" {
+                omitted.last_mut().unwrap()["recovery"] = json!({"command":"docs work read-dependency-part", "input":{"schema":super::work_retained_parts::DEPENDENCY_REQUEST_SCHEMA,"kind":"DEPENDENCY","id":item["id"],"cursor":null},"continueUntil":"nextCursor is null"});
+            }
             output["omitted"] = json!(omitted);
             consumed += 1;
             break;

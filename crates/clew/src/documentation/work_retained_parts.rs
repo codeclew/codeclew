@@ -1,8 +1,10 @@
-//! Bounded canonical JSON reads of an immutable Work's retained operations.
+//! Bounded canonical JSON reads of an immutable Work's retained operations and dependencies.
 //!
 //! Retained authoring is context, not freshly verified source evidence. These
 //! receipts satisfy only the exact retained-operation omission in manual Work
 //! reads; automatic author/reviewer packets must establish their own delivery.
+//! Captured dependency parts reuse the same cursor/range engine with a distinct
+//! kind, request schema and authority; they never waive required context.
 
 use super::{
     bytes, digest, invalid,
@@ -19,6 +21,10 @@ pub(super) const REQUEST_SCHEMA: &str = "codeclew-documentation-retained-part-re
 const RESPONSE_SCHEMA: &str = "codeclew-documentation-retained-part/1.0";
 const RECEIPT_SCHEMA: &str = "codeclew-documentation-retained-part-receipt/1.0";
 pub(super) const RECORD_KIND: &str = "RETAINED_OPERATION";
+pub(super) const DEPENDENCY_KIND: &str = "DEPENDENCY";
+pub(super) const DEPENDENCY_REQUEST_SCHEMA: &str = "codeclew-documentation-dependency-part-request/1.0";
+const DEPENDENCY_RESPONSE_SCHEMA: &str = "codeclew-documentation-dependency-part/1.0";
+const DEPENDENCY_RECEIPT_SCHEMA: &str = "codeclew-documentation-dependency-part-receipt/1.0";
 const CURSOR_VERSION: &str = "retained-part-v1";
 const MAX_CURSOR_BYTES: usize = 256;
 const MAX_READ_LEDGER_BYTES: usize = 16 * 1024 * 1024;
@@ -55,6 +61,7 @@ struct Record<'a> {
     work: &'a Work,
     snapshot: &'a str,
     id: &'a str,
+    kind: &'static str,
     digest: String,
     text: String,
 }
@@ -100,19 +107,38 @@ pub(super) fn retained_record_digest(work: &Work, id: &str) -> Result<String, Cl
     digest(retained_operation(work, id)?)
 }
 
+/// Use the same explicit expansion admission as ordinary Work reads. A handle
+/// alone is not permission to read another service's captured dependency.
+fn dependency(work: &Work, id: &str) -> Result<Value, ClewError> {
+    let reference = work.handles.iter().find(|(_, h)| h.kind == DEPENDENCY_KIND && h.id == id)
+        .map(|(reference, _)| reference.clone())
+        .ok_or_else(|| invalid("unknown dependency in this immutable Work"))?;
+    let rows = work::rows(work, &work::Selection { references: vec![reference], ..Default::default() })?;
+    rows.into_iter().find(|row| row["kind"] == DEPENDENCY_KIND && row["id"] == id)
+        .map(|row| row["record"].clone())
+        .ok_or_else(|| invalid("dependency is outside this Work's admitted expansion scope"))
+}
+
 impl<'a> Record<'a> {
     fn new(work: &'a Work, id: &'a str) -> Result<Self, ClewError> {
+        Self::new_kind(work, id, RECORD_KIND)
+    }
+
+    fn new_kind(work: &'a Work, id: &'a str, kind: &'static str) -> Result<Self, ClewError> {
+        if id.is_empty() || id.chars().count() > 256 { return Err(invalid("part record identity must contain 1..256 characters")); }
         let snapshot = work
             .snapshot
             .as_deref()
             .filter(|snapshot| !snapshot.is_empty())
             .ok_or_else(|| invalid("retained-part reads require an immutable Work snapshot"))?;
-        let encoded = bytes(retained_operation(work, id)?)?;
+        let encoded = if kind == DEPENDENCY_KIND { bytes(&dependency(work, id)?)? }
+            else { bytes(retained_operation(work, id)?)? };
         let text = String::from_utf8(encoded).map_err(super::io_error)?;
         Ok(Self {
             work,
             snapshot,
             id,
+            kind,
             digest: hash_bytes(text.as_bytes()),
             text,
         })
@@ -123,7 +149,7 @@ impl<'a> Record<'a> {
             CURSOR_VERSION,
             &self.work.id,
             self.snapshot,
-            RECORD_KIND,
+            self.kind,
             self.id,
             &self.digest,
             offset,
@@ -177,13 +203,13 @@ impl<'a> Record<'a> {
             None
         };
         let mut response = json!({
-            "schema": RESPONSE_SCHEMA, "work": self.work.id, "snapshot": self.snapshot,
-            "kind": RECORD_KIND, "id": self.id,
-            "authority": "RETAINED_NARRATIVE_NOT_REVERIFIED",
+            "schema": if self.kind == DEPENDENCY_KIND { DEPENDENCY_RESPONSE_SCHEMA } else { RESPONSE_SCHEMA }, "work": self.work.id, "snapshot": self.snapshot,
+            "kind": self.kind, "id": self.id,
+            "authority": if self.kind == DEPENDENCY_KIND { "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED" } else { "RETAINED_NARRATIVE_NOT_REVERIFIED" },
             "recordDigest": self.digest, "startByte": start, "endByte": end,
             "totalRecordBytes": self.text.len(), "text": fragment,
             "fragmentDigest": hash_bytes(fragment.as_bytes()), "nextCursor": next_cursor,
-            "receiptType": "RETAINED_OPERATION_PART",
+            "receiptType": if self.kind == DEPENDENCY_KIND { "DEPENDENCY_PART" } else { "RETAINED_OPERATION_PART" },
         });
         response["receiptDigest"] = json!(digest(&response)?);
         Ok(response)
@@ -197,7 +223,7 @@ impl<'a> Record<'a> {
         object.remove("text");
         object.remove("authority");
         object.remove("receiptType");
-        object.insert("schema".into(), json!(RECEIPT_SCHEMA));
+        object.insert("schema".into(), json!(if self.kind == DEPENDENCY_KIND { DEPENDENCY_RECEIPT_SCHEMA } else { RECEIPT_SCHEMA }));
         serde_json::from_value(value).map_err(super::io_error)
     }
 
@@ -267,12 +293,23 @@ pub(super) fn read_retained_part_loaded(
     work: &Work,
     request: RetainedPartRequest,
 ) -> Result<Value, ClewError> {
-    if request.schema != REQUEST_SCHEMA || request.kind != RECORD_KIND {
+    read_record_part_loaded(repo, work, request, RECORD_KIND)
+}
+
+pub fn read_dependency_part(repo: &Repository, id: &str, request: RetainedPartRequest) -> Result<Value, ClewError> {
+    read_record_part_loaded(repo, &work::load(repo, id)?, request, DEPENDENCY_KIND)
+}
+
+pub(super) fn read_record_part_loaded(
+    repo: &Repository, work: &Work, request: RetainedPartRequest, kind: &'static str,
+) -> Result<Value, ClewError> {
+    let schema = if kind == DEPENDENCY_KIND { DEPENDENCY_REQUEST_SCHEMA } else { REQUEST_SCHEMA };
+    if request.schema != schema || request.kind != kind {
         return Err(invalid(
-            "retained-part request requires codeclew-documentation-retained-part-request/1.0 and kind RETAINED_OPERATION",
+            "part request schema and kind must match the selected retained-operation or dependency command",
         ));
     }
-    let record = Record::new(work, &request.id)?;
+    let record = Record::new_kind(work, &request.id, kind)?;
     let start = request
         .cursor
         .as_deref()
@@ -315,23 +352,25 @@ pub(super) fn retained_part_complete(
     state: &ReadState,
     id: &str,
 ) -> Result<bool, ClewError> {
-    if state.work != work.id {
-        return Ok(false);
-    }
-    let record = match Record::new(work, id) {
+    part_complete(work, state, id, RECORD_KIND)
+}
+
+fn part_complete(work: &Work, state: &ReadState, id: &str, kind: &'static str) -> Result<bool, ClewError> {
+    if state.work != work.id { return Ok(false); }
+    let record = match Record::new_kind(work, id, kind) {
         Ok(record) => record,
         Err(_) => return Ok(false),
     };
     let mut ranges = Vec::new();
     for (key, receipt) in &state.retained_part_receipts {
-        if receipt.id != id {
+        if receipt.id != id || receipt.kind != kind {
             continue;
         }
         if key != &receipt.receipt_digest
-            || receipt.schema != RECEIPT_SCHEMA
+            || receipt.schema != (if kind == DEPENDENCY_KIND { DEPENDENCY_RECEIPT_SCHEMA } else { RECEIPT_SCHEMA })
             || receipt.work != work.id
             || receipt.snapshot != record.snapshot
-            || receipt.kind != RECORD_KIND
+            || receipt.kind != kind
             || receipt.record_digest != record.digest
             || receipt.total_record_bytes != record.text.len()
             || receipt.start_byte >= receipt.end_byte
@@ -370,12 +409,24 @@ pub(super) fn completed_retained_operation_ids(
     let candidates: BTreeSet<_> = state
         .retained_part_receipts
         .values()
+        .filter(|receipt| receipt.kind == RECORD_KIND)
         .map(|receipt| receipt.id.as_str())
         .collect();
     let mut completed = BTreeSet::new();
     for id in candidates {
         if retained_part_complete(work, state, id)? {
             completed.insert(id.to_owned());
+        }
+    }
+    Ok(completed)
+}
+
+pub(super) fn completed_dependency_references(work: &Work, state: &ReadState) -> Result<BTreeSet<String>, ClewError> {
+    let mut completed = BTreeSet::new();
+    for (reference, handle) in &work.handles {
+        if handle.kind == DEPENDENCY_KIND && state.retained_part_receipts.values().any(|r| r.kind == DEPENDENCY_KIND && r.id == handle.id)
+            && part_complete(work, state, &handle.id, DEPENDENCY_KIND)? {
+            completed.insert(reference.clone());
         }
     }
     Ok(completed)
@@ -776,4 +827,99 @@ mod tests {
         assert!(!smaller["nextCursor"].is_null());
         assert!(response_size(&smaller).unwrap() < exact);
     }
+
+    fn dependency_fixture() -> Work {
+        let mut work = fixture(49_152);
+        work.retained = None;
+        work.request.entrypoint = Some("accept".into());
+        let id = "orders:contract-operation:large";
+        let normalized = json!({"operation":{"method":"POST","path":"/accept"},
+            "boundaries":["REFERENCE_SIBLINGS_NOT_INTERPRETED:synthetic λ🔥 quoted \" schema".repeat(4000)]});
+        let observation = super::super::model::Observation {
+            id: id.into(), kind: "CONTRACT_OPERATION".into(), service: "orders".into(), symbol: "accept".into(),
+            digest: digest(&normalized).unwrap(), normalized, source_ids: vec![],
+        };
+        let evidence = serde_json::from_value(json!({"schema":"codeclew-documentation-service-evidence/1.0",
+            "service":"orders","revision":"frozen-revision","serviceDigest":"service-digest","extractor":"source-syntax","runtimeMode":"source","coverage":"SYNTAX","boundaries":[],
+            "entrypoints":[{"id":"accept","service":"orders","symbol":"Controller.accept","kind":"HTTP_ENDPOINT","trigger":{"methods":["POST"],"paths":["/accept"]},"sourceIds":[],"dependencyIds":[id],"boundaries":[]}],
+            "observations":{},"sources":{},"contracts":{}})).unwrap();
+        work.checked.services.insert("orders".into(), evidence);
+        work.checked.dependencies.insert(id.into(), observation);
+        work.handles.insert("d1".into(), work::Handle {kind: DEPENDENCY_KIND.into(), id: id.into()});
+        work.handles.insert("e1".into(), work::Handle {kind: "ENTRYPOINT".into(), id: "accept".into()});
+        work
+    }
+
+    #[test]
+    fn oversized_dependency_has_a_bounded_recovery_and_unlocks_only_after_exact_delivery() {
+        let work = dependency_fixture();
+        let id = "orders:contract-operation:large";
+        let original = bytes(&work).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Dependency recovery test").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let mut selection = Selection::default();
+        let mut omitted = false;
+        loop {
+            let page = work::read_loaded(&repo, &work, selection.clone()).unwrap();
+            for row in page["omitted"].as_array().unwrap() {
+                if row["kind"] == DEPENDENCY_KIND {
+                    omitted = true;
+                    assert_eq!(row["recovery"]["command"], "docs work read-dependency-part");
+                    assert_eq!(row["recovery"]["input"]["id"], id);
+                }
+            }
+            let Some(cursor) = page["nextCursor"].as_str() else { break; };
+            selection.cursor = Some(cursor.into());
+        }
+        assert!(omitted);
+        let initial = work::read_state(&repo, &work.id).unwrap();
+        assert!(!super::super::work_parts::initial_context_complete_with_parts(&work, &initial).unwrap());
+        let mut cursor = None;
+        let mut reassembled = String::new();
+        let mut pages = 0;
+        loop {
+            let request = RetainedPartRequest {schema: DEPENDENCY_REQUEST_SCHEMA.into(),kind: DEPENDENCY_KIND.into(),id: id.into(),cursor};
+            let page = read_record_part_loaded(&repo, &work, request, DEPENDENCY_KIND).unwrap();
+            assert!(response_size(&page).unwrap() <= 49_152);
+            assert_eq!(page["startByte"].as_u64().unwrap() as usize, reassembled.len());
+            reassembled.push_str(page["text"].as_str().unwrap());
+            pages += 1;
+            cursor = page["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() { break; }
+            assert!(!super::super::work_parts::initial_context_complete_with_parts(&work, &work::read_state(&repo, &work.id).unwrap()).unwrap());
+        }
+        assert!(pages > 3);
+        assert_eq!(reassembled.as_bytes(), bytes(&dependency(&work,id).unwrap()).unwrap());
+        let state = work::read_state(&repo, &work.id).unwrap();
+        assert!(super::super::work_parts::initial_context_complete_with_parts(&work, &state).unwrap());
+        assert_eq!(completed_dependency_references(&work, &state).unwrap(), BTreeSet::from(["d1".into()]));
+        assert!(!super::super::work_parts::initial_context_complete_with_packet_parts(&work, &state, &BTreeSet::new()).unwrap());
+        let mut corrupt = state.clone();
+        let first = corrupt.retained_part_receipts.keys().next().unwrap().clone();
+        corrupt.retained_part_receipts.get_mut(&first).unwrap().fragment_digest = "forged".into();
+        assert!(!part_complete(&work, &corrupt, id, DEPENDENCY_KIND).unwrap());
+        let mut missing = state.clone();
+        missing.retained_part_receipts.remove(&first);
+        assert!(!part_complete(&work, &missing, id, DEPENDENCY_KIND).unwrap());
+        let mut changed = work.clone();
+        changed.snapshot = Some("another-snapshot".into());
+        assert!(!part_complete(&changed, &state, id, DEPENDENCY_KIND).unwrap());
+        assert_eq!(bytes(&work).unwrap(), original);
+    }
+
+    #[test]
+    fn dependency_reads_do_not_accept_another_kind_or_service() {
+        let work = dependency_fixture();
+        let record = Record::new_kind(&work, "orders:contract-operation:large", DEPENDENCY_KIND).unwrap();
+        let cursor = record.cursor(100).unwrap();
+        let mut other = work.clone();
+        other.id = "b".repeat(64);
+        assert!(Record::new_kind(&other, "orders:contract-operation:large", DEPENDENCY_KIND).unwrap().parse_cursor(&cursor).is_err());
+        other = work.clone();
+        other.checked.dependencies.get_mut("orders:contract-operation:large").unwrap().service = "another-service".into();
+        assert!(dependency(&other, "orders:contract-operation:large").is_err());
+        assert!(dependency(&work, "not-in-work").is_err());
+    }
+
 }

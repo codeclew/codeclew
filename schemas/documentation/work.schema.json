@@ -17,7 +17,9 @@
     },
     {
       "$ref": "#/$defs/sourcePart"
-    }
+    },
+    {"$ref": "dependency-part-request.schema.json"},
+    {"$ref": "dependency-part.schema.json"}
   ],
   "$defs": {
     "sourcePartRequest": {
@@ -566,6 +568,16 @@
               },
               "reason": {
                 "const": "ITEM_EXCEEDS_WORK_BYTE_BUDGET"
+              },
+              "recovery": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["command", "input", "continueUntil"],
+                "properties": {
+                  "command": {"const": "docs work read-dependency-part"},
+                  "input": {"$ref": "dependency-part-request.schema.json"},
+                  "continueUntil": {"const": "nextCursor is null"}
+                }
               }
             },
             "required": [

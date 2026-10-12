@@ -523,6 +523,7 @@ pub(super) fn initial_context_complete_with_parts(
         return Ok(false);
     }
     let completed = completed_source_references(work, state)?;
+    let dependencies_completed = super::work_retained_parts::completed_dependency_references(work, state)?;
     let retained_completed =
         super::work_retained_parts::completed_retained_operation_ids(work, state)?;
     let mut cursor: Option<String> = None;
@@ -547,6 +548,12 @@ pub(super) fn initial_context_complete_with_parts(
                 return !omitted["id"]
                     .as_str()
                     .is_some_and(|id| retained_completed.contains(id));
+            }
+            if omitted["kind"] == "DEPENDENCY" {
+                return !omitted["reference"].as_str().is_some_and(|reference| {
+                    work.handles.get(reference).is_some_and(|handle| handle.kind == "DEPENDENCY"
+                        && omitted["id"] == handle.id && dependencies_completed.contains(reference))
+                });
             }
             if omitted["kind"] != "SOURCE" {
                 return true;
