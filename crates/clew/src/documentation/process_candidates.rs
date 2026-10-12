@@ -25,12 +25,23 @@ pub struct Catalog {
     pub summary: Value,
 }
 pub fn public_boundary(entry: &Entrypoint) -> bool {
+    if entry.kind == "HTTP_ENDPOINT"
+        && entry
+            .boundaries
+            .iter()
+            .any(|b| b == "CONTROLLER_REGISTRATION_UNPROVEN")
+    {
+        return false;
+    }
     !entry.kind.starts_with("SOURCE_")
         || entry
             .trigger
             .get("frameworkDeclarations")
             .and_then(Value::as_array)
-            .is_some_and(|v| !v.is_empty())
+            .is_some_and(|v| {
+                v.iter()
+                    .any(|d| d["kind"] != "HTTP_ENDPOINT" || d["controller"] != false)
+            })
 }
 fn scope(observation: &Observation) -> &str {
     observation.normalized["scope"].as_str().unwrap_or("")

@@ -83,12 +83,17 @@ fn prepare(f: &Fixture, snapshot: &str, entrypoint: &str, audience: &str) -> Str
 }
 
 fn read_pages(f: &Fixture, id: &str) -> Vec<Value> {
+    read_selected_pages(f, id, json!({}))
+}
+
+fn read_selected_pages(f: &Fixture, id: &str, selection: Value) -> Vec<Value> {
     let mut cursor = None;
     let mut pages = Vec::new();
     loop {
-        let selection = cursor
-            .as_ref()
-            .map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
+        let mut selection = selection.clone();
+        if let Some(cursor) = &cursor {
+            selection["cursor"] = json!(cursor);
+        }
         let input = f.input("retained-work-selection.json", &selection);
         let page = successful_json(f.run_raw(&[
             "docs",
@@ -140,6 +145,115 @@ fn submit(f: &Fixture, work: &str, proposal: &Value) -> Value {
         "--input",
         input.to_str().unwrap(),
     ])
+}
+
+#[test]
+fn oversized_openapi_dependency_is_readable_through_the_public_cli() {
+    let f = Fixture::new();
+    let source = f.temp.path().join("orders");
+    fs::create_dir(&source).unwrap();
+    fs::write(
+        source.join("Orders.java"),
+        "class Orders { String accept(String request) { return request; } }",
+    )
+    .unwrap();
+    // Reproduce the reference-sibling boundary that made the real 3.1.2
+    // contract-operation record exceed the Work response budget.
+    let component = "LongReference".repeat(8000);
+    let reference = format!("#/components/schemas/{component}");
+    let contract = json!({"openapi":"3.1.2","info":{"title":"Orders","version":"1"},
+        "paths":{"/accept":{"post":{"operationId":"accept","requestBody":{"content":{"application/json":{"schema":{"$ref":reference,"description":"Reference sibling"}}}},"responses":{"200":{"description":"Accepted"}}}}},
+        "components":{"schemas":{"Small":{"type":"object","properties":{"id":{"type":"string"}}}}}});
+    fs::write(
+        source.join("api.json"),
+        serde_json::to_vec(&contract).unwrap(),
+    )
+    .unwrap();
+    support::git(&source, &["init", "-q"]);
+    support::git(
+        &source,
+        &["remote", "add", "origin", "https://example.invalid/orders"],
+    );
+    support::commit(&source);
+    let record = f.input("dependency-service.json",&json!({"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":"java","profile":"source-syntax","targetRef":"HEAD","source":{"roots":["Orders.java"],"dialect":"17"},"contractFiles":["api.json"]}));
+    let input_digest = f.ok(&["docs", "service", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        record.to_str().unwrap(),
+        "--expected-input-digest",
+        &input_digest,
+    ]);
+    f.ok(&[
+        "docs",
+        "bind",
+        "--service",
+        "orders",
+        "--repo",
+        source.to_str().unwrap(),
+    ]);
+    let (code, checked_result) = f.run(&["docs", "check"]);
+    assert!(matches!(code, 0 | 3 | 4), "{checked_result}");
+    let snapshot = checked_result["snapshot"].as_str().unwrap();
+    let checked = Check::load_snapshot(&Repository::open(&f.docs).unwrap(), snapshot).unwrap();
+    let request=f.input("dependency-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"API integrator","maxItems":100,"maxBytes":MAX_BYTES}));
+    let prepared = f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--snapshot",
+        snapshot,
+        "--input",
+        request.to_str().unwrap(),
+    ]);
+    let work_id = prepared["work"].as_str().unwrap();
+    fs::rename(&source, source.with_extension("offline")).unwrap();
+    let pages = read_selected_pages(
+        &f,
+        work_id,
+        json!({"query":{"kind":"CONTRACT_OPERATION","symbolContains":""}}),
+    );
+    let omitted: Vec<_> = pages
+        .iter()
+        .flat_map(|p| p["omitted"].as_array().unwrap())
+        .filter(|r| r["kind"] == "DEPENDENCY")
+        .collect();
+    assert!(!omitted.is_empty(), "{pages:?}");
+    for row in omitted {
+        assert_eq!(row["reason"], "ITEM_EXCEEDS_WORK_BYTE_BUDGET");
+        assert_eq!(row["recovery"]["command"], "docs work read-dependency-part");
+        let id = row["id"].as_str().unwrap();
+        let mut cursor = None;
+        let mut text = String::new();
+        loop {
+            let request=f.input("dependency-part.json",&json!({"schema":"codeclew-documentation-dependency-part-request/1.0","kind":"DEPENDENCY","id":id,"cursor":cursor}));
+            let part = successful_json(f.run_raw(&[
+                "docs",
+                "work",
+                "read-dependency-part",
+                "--work",
+                work_id,
+                "--input",
+                request.to_str().unwrap(),
+            ]));
+            assert_eq!(part["startByte"].as_u64().unwrap() as usize, text.len());
+            text.push_str(part["text"].as_str().unwrap());
+            assert_eq!(part["endByte"].as_u64().unwrap() as usize, text.len());
+            cursor = part["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let expected = serde_json::to_value(&checked.dependencies[id]).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), expected);
+    }
 }
 
 #[test]

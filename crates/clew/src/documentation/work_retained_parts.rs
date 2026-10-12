@@ -901,10 +901,12 @@ mod tests {
             normalized,
             source_ids: vec![],
         };
-        let evidence = serde_json::from_value(json!({"schema":"codeclew-documentation-service-evidence/1.0",
+        let mut evidence: super::super::model::ServiceEvidence = serde_json::from_value(json!({"schema":"codeclew-documentation-service-evidence/1.0",
             "service":"orders","revision":"frozen-revision","serviceDigest":"service-digest","extractor":"source-syntax","runtimeMode":"source","coverage":"SYNTAX","boundaries":[],
             "entrypoints":[{"id":"accept","service":"orders","symbol":"Controller.accept","kind":"HTTP_ENDPOINT","trigger":{"methods":["POST"],"paths":["/accept"]},"sourceIds":[],"dependencyIds":[id],"boundaries":[]}],
             "observations":{},"sources":{},"contracts":{}})).unwrap();
+        evidence.observations.insert(id.into(), observation.clone());
+        work.influence.insert(id.into(), observation.digest.clone());
         work.checked.services.insert("orders".into(), evidence);
         work.checked.dependencies.insert(id.into(), observation);
         work.handles.insert(

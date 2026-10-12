@@ -14,6 +14,7 @@ pub(super) struct Context<'a> {
     imports: Vec<String>,
     names: BTreeMap<String, BTreeSet<String>>,
     local_types: BTreeSet<String>,
+    package: String,
 }
 fn children(node: Node<'_>) -> Vec<Node<'_>> {
     let mut c = node.walk();
@@ -34,6 +35,131 @@ fn is_type(kind: &str) -> bool {
     )
 }
 impl<'a> Context<'a> {
+    fn type_name(&self, value: &str, package: &str) -> Option<String> {
+        let tokens = analysis::java_tokens(value);
+        let mut name = tokens.join("");
+        let nullable = name.ends_with('?');
+        if nullable {
+            name.pop();
+        }
+        if name.is_empty()
+            || !name.split('.').all(|part| {
+                part.bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                    && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            })
+        {
+            return None;
+        }
+        let qualified = if name.contains('.') {
+            name
+        } else if self.local_types.contains(&name) {
+            qualified_type(package, &name)
+        } else if let Some(imports) = self.names.get(&name) {
+            if imports.len() != 1 {
+                return None;
+            }
+            imports.first()?.clone()
+        } else if [
+            "String", "Int", "Long", "Boolean", "Double", "Float", "Byte", "Short", "Char", "Unit",
+            "Any",
+        ]
+        .contains(&name.as_str())
+        {
+            format!("kotlin.{name}")
+        } else if self.imports.iter().any(|import| import.contains('*')) {
+            return None;
+        } else {
+            qualified_type(package, &name)
+        };
+        Some(format!("{qualified}{}", if nullable { "?" } else { "" }))
+    }
+
+    /// Declared Kotlin names and signatures only; this never resolves an override through a compiler.
+    pub fn inheritance_metadata(
+        &self,
+        node: Node<'_>,
+        owner: &str,
+        name: &str,
+    ) -> Option<serde_json::Value> {
+        if self.language != "kotlin" {
+            return None;
+        }
+        let end = children(node)
+            .into_iter()
+            .find(|n| matches!(n.kind(), "class_body" | "function_body"))
+            .map_or(node.end_byte(), |n| n.start_byte());
+        let header = &self.text[node.start_byte()..end];
+        let tokens = analysis::java_tokens(header);
+        if node.kind() == "class_declaration" {
+            let qualified = qualified_type(
+                owner
+                    .strip_prefix("class:")
+                    .or_else(|| owner.strip_prefix("package:"))
+                    .unwrap_or(""),
+                name,
+            );
+            let mut bases = Vec::new();
+            for child in children(node).into_iter().filter(|child| {
+                matches!(
+                    child.kind(),
+                    "delegation_specifiers" | "delegation_specifier"
+                )
+            }) {
+                let mut stack = vec![child];
+                while let Some(n) = stack.pop() {
+                    if n.kind() == "user_type" {
+                        bases.push(self.type_name(spelling(n, self.text), &self.package));
+                    } else if !matches!(n.kind(), "value_arguments" | "type_arguments") {
+                        stack.extend(children(n).into_iter().rev());
+                    }
+                }
+            }
+            return Some(
+                serde_json::json!({"kind":if tokens.iter().any(|t|t=="interface"){"INTERFACE"}else{"CLASS"},"qualifiedName":qualified,"supertypes":bases,"generic":children(node).iter().any(|n|n.kind()=="type_parameters")}),
+            );
+        }
+        if node.kind() != "function_declaration" || !owner.starts_with("class:") {
+            return None;
+        }
+        let parameters = children(node)
+            .into_iter()
+            .find(|n| n.kind() == "function_value_parameters")?;
+        if children(node).iter().any(|n| {
+            n.kind() == "type_parameters"
+                || (n.start_byte() < parameters.start_byte()
+                    && matches!(n.kind(), "user_type" | "nullable_type"))
+        }) {
+            return None;
+        }
+        let mut types = Vec::new();
+        for parameter in children(parameters) {
+            let tokens = analysis::java_tokens(spelling(parameter, self.text));
+            if tokens.iter().any(|t| t == "vararg") {
+                return None;
+            }
+            let mut depth = 0usize;
+            let mut colon = None;
+            for (i, t) in tokens.iter().enumerate() {
+                match t.as_str() {
+                    "(" | "[" => depth += 1,
+                    ")" | "]" => depth = depth.saturating_sub(1),
+                    ":" if depth == 0 => {
+                        colon = Some(i);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let after = &tokens[colon? + 1..];
+            let end = after.iter().position(|t| t == "=").unwrap_or(after.len());
+            types.push(self.type_name(&after[..end].join(""), &self.package)?);
+        }
+        Some(
+            serde_json::json!({"kind":"METHOD","owner":owner.trim_start_matches("class:"),"name":name,"parameterTypes":types,"overrideDeclared":tokens.iter().any(|t|t=="override")}),
+        )
+    }
     pub fn new(
         language: &'a str,
         file: &'a str,
@@ -86,6 +212,17 @@ impl<'a> Context<'a> {
             imports,
             names,
             local_types,
+            package: children(root)
+                .into_iter()
+                .find(|n| matches!(n.kind(), "package_header" | "package_declaration"))
+                .map(|n| {
+                    analysis::java_tokens(spelling(n, text))
+                        .into_iter()
+                        .filter(|t| t != "package" && t != ";")
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .unwrap_or_default(),
         })
     }
     fn qualify(&self, name: &str) -> Option<(String, String)> {
@@ -318,4 +455,12 @@ fn split<'a>(tokens: &'a [String], delimiter: &str) -> Vec<&'a [String]> {
     }
     result.push(&tokens[start..]);
     result
+}
+
+fn qualified_type(owner: &str, name: &str) -> String {
+    if owner.is_empty() {
+        name.into()
+    } else {
+        format!("{owner}.{name}")
+    }
 }

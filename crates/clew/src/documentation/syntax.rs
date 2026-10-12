@@ -268,6 +268,7 @@ fn capture_with_store_selected(
     }) {
         e.coverage = "PARTIAL".into();
     }
+    super::source_inheritance::apply(&mut e)?;
     let scope = json!({"roots":config.roots,"dialect":config.dialect,"language":service.language,"extractor":SOURCE_EXTRACTOR,"inventory":inventory,"boundaries":e.boundaries});
     observe(&mut e, "SOURCE_SCOPE", "source-scope", scope, vec![])?;
     e.boundaries.sort();
@@ -563,7 +564,7 @@ pub(super) fn replay_file_for_test(
         evidence,
     )
 }
-fn observe(
+pub(super) fn observe(
     e: &mut ServiceEvidence,
     kind: &str,
     symbol: &str,
@@ -767,7 +768,13 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
                     .unwrap_or_else(|| spelling(n, file.text).to_owned())
             })
             .collect();
-        let normalized = json!({"kind":"DECLARATION","authority":"SYNTAX","name":name,"ownerIdentity":owner,"symbolIdentity":identity,"syntaxKind":node.kind(),"fingerprint":fingerprint(node,file.text)?,"documentation":{"parameterTypes":parameter_types,"events":events,"boundaries":["CALL_TARGETS_UNRESOLVED","ORDER_LEXICAL_ONLY"]}});
+        let mut normalized = json!({"kind":"DECLARATION","authority":"SYNTAX","name":name,"ownerIdentity":owner,"symbolIdentity":identity,"syntaxKind":node.kind(),"fingerprint":fingerprint(node,file.text)?,"documentation":{"parameterTypes":parameter_types,"events":events,"boundaries":["CALL_TARGETS_UNRESOLVED","ORDER_LEXICAL_ONLY"]}});
+        if let Some(metadata) = annotation_context
+            .as_ref()
+            .and_then(|context| context.inheritance_metadata(node, &owner, &name))
+        {
+            normalized["sourceInheritance"] = metadata;
+        }
         let dep = observe(e, "SYMBOL", &identity, normalized, vec![source.clone()])?;
         if callable(node.kind()) {
             let mut spring = None;
@@ -803,10 +810,17 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
             ];
             if let Some(metadata) = spring {
                 boundaries.extend(metadata.boundaries.clone());
-                trigger["frameworkDeclarations"]=json!(metadata.entries.iter().map(|entry|json!({"kind":entry.kind,"trigger":crate::spring_entrypoints::describe_trigger(entry),"registration":entry.registration})).collect::<Vec<_>>());
+                trigger["frameworkDeclarations"]=json!(metadata.entries.iter().map(|entry|json!({"kind":entry.kind,"trigger":crate::spring_entrypoints::describe_trigger(entry),"registration":entry.registration,"controller":entry.controller})).collect::<Vec<_>>());
                 trigger["frameworkDerivation"] = json!(metadata.derivation);
                 if metadata.entries.len() == 1 {
-                    kind = metadata.entries[0].kind.clone();
+                    boundaries.retain(|b| b != "TRIGGER_NOT_FRAMEWORK_RESOLVED");
+                    kind = if metadata.entries[0].kind == "HTTP_ENDPOINT"
+                        && metadata.entries[0].controller == Some(false)
+                    {
+                        "SOURCE_HTTP_MAPPING".into()
+                    } else {
+                        metadata.entries[0].kind.clone()
+                    };
                     let derived = crate::spring_entrypoints::describe_trigger(&metadata.entries[0]);
                     for (key, value) in derived.as_object().into_iter().flatten() {
                         trigger[key] = value.clone();
@@ -974,6 +988,7 @@ pub(super) fn source_for_provider_test(
         )
         .unwrap();
     }
+    super::source_inheritance::apply(&mut source).unwrap();
     observe(
         &mut source,
         "SOURCE_SCOPE",

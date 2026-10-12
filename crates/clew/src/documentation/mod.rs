@@ -115,3 +115,4 @@ pub(crate) fn is_compiler_declaration_schema(schema: &serde_json::Value) -> bool
 pub mod modules;
 
 mod source_annotations;
+mod source_inheritance;
