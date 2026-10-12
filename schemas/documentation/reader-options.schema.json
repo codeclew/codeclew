@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/reader-options.schema.json",
+  "title": "Documentation reader discovery options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "showInternalProcesses": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

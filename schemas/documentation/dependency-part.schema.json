@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/dependency-part.schema.json",
+  "title": "Bounded immutable dependency delivery",
+  "description": "text is a UTF-8 slice of canonical JSON; concatenate all exact contiguous parts before parsing it as a record. Recorded reads do not establish semantic review or delivery to an automatic role packet.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-dependency-part/1.0"
+    },
+    "work": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "snapshot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "const": "DEPENDENCY"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "authority": {
+      "const": "IMMUTABLE_WORK_CAPTURE_NOT_REVERIFIED"
+    },
+    "recordDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "startByte": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "endByte": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "totalRecordBytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fragmentDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "receiptType": {
+      "const": "DEPENDENCY_PART"
+    },
+    "receiptDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema",
+    "work",
+    "snapshot",
+    "kind",
+    "id",
+    "authority",
+    "recordDigest",
+    "startByte",
+    "endByte",
+    "totalRecordBytes",
+    "text",
+    "fragmentDigest",
+    "nextCursor",
+    "receiptType",
+    "receiptDigest"
+  ]
+}

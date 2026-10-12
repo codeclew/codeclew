@@ -755,13 +755,23 @@ pub(super) fn validate_with_retained(
         }
     }
     if expected.difference(&covered).any(|id| {
-        !super::sections::contains(id)
+        let internal_source = n
+            .subject
+            .strip_prefix("service:")
+            .and_then(|service| checked.services.get(service))
+            .is_some_and(|service| {
+                service.entrypoints.iter().any(|entry| {
+                    &entry.id == id && !super::process_candidates::public_boundary(entry)
+                })
+            });
+        !internal_source
+            && !super::sections::contains(id)
             && !super::notes::is_root(id)
             && id != super::processes::OVERVIEW
             && id != super::dataflow::ROOT
     }) {
         return Err(invalid(
-            "full scope requires every discovered entrypoint to have an operation or an explicit gap",
+            "full scope requires every discovered public boundary to have an operation or an explicit gap",
         ));
     }
     Ok(())
@@ -935,17 +945,46 @@ fn overview_refs(o: &Operation, ids: &[String]) -> (Vec<String>, Vec<String>) {
     )
 }
 
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReaderOptions {
+    #[serde(default)]
+    show_internal_processes: bool,
+}
+
+fn reader_options(repo: &Repository) -> Result<ReaderOptions, ClewError> {
+    let path = repo.path("catalog/reader.json")?;
+    if path.try_exists().map_err(io_error)? {
+        store::read(&path, 8192)
+    } else {
+        Ok(ReaderOptions::default())
+    }
+}
+
 fn default_narrative(
     subject: String,
     ids: impl Iterator<Item = String>,
     checked: &Check,
 ) -> Narrative {
+    let ids = ids
+        .filter(|id| {
+            !subject
+                .strip_prefix("service:")
+                .and_then(|service| checked.services.get(service))
+                .is_some_and(|service| {
+                    service.entrypoints.iter().any(|entry| {
+                        &entry.id == id && !super::process_candidates::public_boundary(entry)
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
     Narrative {
         schema: "codeclew-documentation-narrative/1.3".into(),
         subject,
         context_digest: checked.context_digest.clone(),
         operations: vec![],
         gaps: ids
+            .into_iter()
             .map(|id| {
                 let gap = default_gap(&id);
                 (id, gap)
@@ -2872,6 +2911,7 @@ fn publish_internal_phases(
         bindings::verify_outputs(repo, id, binding)?;
     }
     let suppress = super::process_candidates::load_suppress(repo)?;
+    let reader_options = reader_options(repo)?;
     let root = repo.path("docs/index.html")?;
     let previous_bytes = if root.exists() {
         Some(fs::read(&root).map_err(io_error)?)
@@ -3518,7 +3558,20 @@ fn publish_internal_phases(
             &lifecycle,
             activity_transitions.as_deref(),
         );
+        data["readerOptions"] = json!(reader_options);
         if kind == "service" {
+            data["publicBoundaryIds"] = json!(
+                checked
+                    .services
+                    .get(id)
+                    .map(|s| s
+                        .entrypoints
+                        .iter()
+                        .filter(|entry| super::process_candidates::public_boundary(entry))
+                        .map(|entry| &entry.id)
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
+            );
             data["serviceFragments"] =
                 json!(super::process_thread::service_fragments(&checked, id)?);
         }
@@ -4325,6 +4378,36 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
 #[cfg(test)]
 mod process_catalog_tests {
     use super::*;
+
+    #[test]
+    fn source_helpers_are_not_required_standalone_gaps_and_explicit_authoring_remains_allowed() {
+        let checked: Check = serde_json::from_value(json!({"schema":"test","inputDigest":"input","contextDigest":"context",
+            "services":{"svc":{"schema":"evidence","service":"svc","revision":"revision","serviceDigest":"digest","extractor":"source-syntax","runtimeMode":"source","coverage":"SYNTAX","boundaries":[],
+                "entrypoints":[
+                    {"id":"accept","service":"svc","symbol":"Controller.accept","kind":"HTTP_ENDPOINT","trigger":{"methods":["POST"]},"sourceIds":[],"dependencyIds":[],"boundaries":[]},
+                    {"id":"convert","service":"svc","symbol":"Mapper.convert","kind":"SOURCE_DECLARATION","trigger":{},"sourceIds":[],"dependencyIds":[],"boundaries":[]}],
+                "observations":{},"sources":{},"contracts":{}}},"unresolved":{},"scenarios":{},"interactions":{},"dependencies":{}})).unwrap();
+        let expected = super::super::notes::expected(&checked, "svc");
+        let mut narrative = default_narrative("service:svc".into(), expected.into_iter(), &checked);
+        assert!(narrative.gaps.contains_key("accept"));
+        assert!(!narrative.gaps.contains_key("convert"));
+        validate(&narrative, &checked).unwrap();
+        narrative.gaps.remove("accept");
+        assert!(validate(&narrative, &checked).is_err());
+        narrative
+            .gaps
+            .insert("accept".into(), "Public boundary awaits explanation".into());
+        narrative.gaps.insert(
+            "convert".into(),
+            "Explicitly selected helper question".into(),
+        );
+        validate(&narrative, &checked).unwrap();
+        assert!(
+            serde_json::from_value::<ReaderOptions>(json!({"showInternalProcesses":"false"}))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<ReaderOptions>(json!({"unknown":true})).is_err());
+    }
 
     #[test]
     fn page_interaction_keeps_exact_checked_declaration_separate_from_resolution() {
