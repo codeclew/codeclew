@@ -136,6 +136,12 @@ fn statement(s: &Statement, ext: &str) -> String {
     out
 }
 fn callable_label(symbol: &str) -> String {
+    if let Some(identity) = symbol.strip_prefix("callable:") {
+        return identity
+            .split_once("#jvm:")
+            .map_or(identity, |(name, _)| name)
+            .replace('/', ".");
+    }
     symbol
         .strip_prefix("method:class:")
         .or_else(|| symbol.strip_prefix("method:"))
@@ -1189,6 +1195,25 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                         .unwrap_or_default()
                 );
             }
+            if !state.accessor_attempts.is_empty() {
+                out += "<h3>Property accessor attempts</h3>";
+                out += &paragraph(
+                    "These are attempts to invoke a getter or setter. Actual dispatch, returned values and storage changes remain unknown; subsequent steps require normal completion.",
+                );
+                for attempt in &state.accessor_attempts {
+                    out += &format!(
+                        "<details><summary>{} {}</summary><pre>{}</pre>{}</details>",
+                        escape(&attempt.access_mode),
+                        escape(&attempt.property_identity),
+                        escape(&serde_json::to_string_pretty(attempt).unwrap()),
+                        attempt
+                            .citation_id
+                            .as_ref()
+                            .map(|c| cite(c, ext))
+                            .unwrap_or_default()
+                    );
+                }
+            }
             out += "<h3>Per-occurrence argument and return mappings</h3>";
             out += &format!(
                 "<pre>{}</pre><ul>{}</ul></details>",
@@ -2070,6 +2095,21 @@ pub(super) fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn callable_labels_keep_modern_kotlin_names_without_jvm_suffixes() {
+        assert_eq!(
+            callable_label("callable:example/Worker.run#jvm:(I)V"),
+            "example.Worker.run"
+        );
+        assert_eq!(
+            callable_label("callable:example/run#jvm:()V"),
+            "example.run"
+        );
+        assert_eq!(
+            callable_label("method:class:example.Worker#run(I)V"),
+            "example.Worker.run"
+        );
+    }
     #[test]
     fn mdx_source_text_is_inert_and_common_body_links_resolve_by_format() {
         let input = "@EXT@ {evil()} <script> import x from 'evil' `tick` [x] \\ * _\n";

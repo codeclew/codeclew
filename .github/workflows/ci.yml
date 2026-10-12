@@ -28,7 +28,7 @@ jobs:
       - name: Install the required C# preview SDK
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.401'
           architecture: x64
       - uses: dtolnay/rust-toolchain@1.92.0
         with: { components: 'rustfmt,clippy' }

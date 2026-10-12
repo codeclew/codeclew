@@ -275,10 +275,23 @@ pub(super) fn build_roots(
     checked: &Check,
     roots: &[(String, String)],
 ) -> Result<SourceCallGraph, ClewError> {
+    build_roots_with_depth(checked, roots, MAX_DEPTH)
+}
+
+pub(super) fn build_roots_with_depth(
+    checked: &Check,
+    roots: &[(String, String)],
+    max_depth: usize,
+) -> Result<SourceCallGraph, ClewError> {
+    if max_depth > MAX_DEPTH {
+        return Err(crate::documentation::invalid(
+            "source-data depth must be between zero and two",
+        ));
+    }
     let mut graph = SourceCallGraph {
         schema: GRAPH_SCHEMA_JAVA.into(),
         authority: AUTHORITY.into(),
-        max_depth: MAX_DEPTH,
+        max_depth,
         max_additional_bodies: MAX_ADDITIONAL_BODIES,
         max_additional_source_bytes: MAX_ADDITIONAL_SOURCE_BYTES,
         nodes: BTreeMap::new(),
@@ -386,7 +399,7 @@ pub(super) fn build_roots(
             edge.target_declaration = Some(declaration.id.clone());
             let target_id = root_key(evidence, &declaration.id)?;
             if !graph.nodes.contains_key(&target_id) {
-                if depth >= MAX_DEPTH {
+                if depth >= graph.max_depth {
                     edge.status = "DEPTH_FRONTIER".into();
                     edge.frontiers.push(frontier("SOURCE_CALL_DEPTH_FRONTIER", "The fixed source-call expansion depth was reached; the target body remains unexamined.", &citation));
                     continue;
@@ -562,7 +575,7 @@ pub(super) fn expand_kotlin_edge(
 
     let target_id = root_key(evidence, &declaration.id)?;
     if !graph.nodes.contains_key(&target_id) {
-        if depth >= MAX_DEPTH {
+        if depth >= graph.max_depth {
             edge.status = "DEPTH_FRONTIER".into();
             edge.frontiers.push(frontier("SOURCE_CALL_DEPTH_FRONTIER", "The fixed source-call expansion depth was reached; the target body remains unexamined.", citation));
             return Ok(());

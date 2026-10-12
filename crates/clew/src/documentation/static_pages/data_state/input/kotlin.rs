@@ -28,7 +28,27 @@ struct Envelope {
     variables: Vec<RawVariable>,
     #[serde(default)]
     members: Vec<RawMember>,
+    #[serde(default)]
+    accessor_attempts: Vec<RawMember>,
+    #[serde(default)]
+    string_constants: Vec<RawMember>,
+    #[serde(default)]
+    enum_entries: Vec<RawEnumEntry>,
     boundaries: Vec<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawEnumEntry {
+    schema: String,
+    owner_symbol_identity: String,
+    enum_class_identity: String,
+    entry_identity: String,
+    entry_name: String,
+    authority: String,
+    resolution: String,
+    compilation_scope: String,
+    byte_start: usize,
+    byte_end: usize,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,6 +61,16 @@ struct RawNode {
     actuals: Vec<RawActual>,
     default_arguments: Vec<usize>,
     target_identity: Option<String>,
+    static_qualifier: Option<RawStaticQualifier>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawStaticQualifier {
+    schema: String,
+    authority: String,
+    class_identity: String,
+    byte_start: usize,
+    byte_end: usize,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,6 +103,8 @@ struct RawVariable {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawMember {
     schema: String,
+    string_constant: Option<String>,
+    authority: Option<String>,
     owner_symbol_identity: String,
     property_identity: String,
     access_mode: String,
@@ -149,7 +181,21 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
         || site["sourceDigest"] != source.text_digest
         || site["evidenceDigest"] != source.evidence_digest
         || source.text_digest != hash_bytes(source.text.as_bytes())
-        || envelope.schema != "codeclew-kotlin-documentation-data/1.0"
+        || !matches!(
+            envelope.schema.as_str(),
+            "codeclew-kotlin-documentation-data/1.0"
+                | "codeclew-kotlin-documentation-data/1.1"
+                | "codeclew-kotlin-documentation-data/1.2"
+                | "codeclew-kotlin-documentation-data/1.3"
+        )
+        || (envelope.schema == "codeclew-kotlin-documentation-data/1.0"
+            && !envelope.enum_entries.is_empty())
+        || (!matches!(
+            envelope.schema.as_str(),
+            "codeclew-kotlin-documentation-data/1.2" | "codeclew-kotlin-documentation-data/1.3"
+        ) && !envelope.accessor_attempts.is_empty())
+        || (envelope.schema != "codeclew-kotlin-documentation-data/1.3"
+            && !envelope.string_constants.is_empty())
         || envelope.authority != "KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES"
         || envelope.coordinate_domain != "ORIGINAL_UTF8_BYTES"
         || envelope.owner_symbol_identity != owner.symbol
@@ -166,7 +212,12 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
         || owner.normalized["analysis"]["analyzerCompilerVersion"] != "2.4.10"
         || envelope.nodes.is_empty()
         || envelope.nodes.len() > super::super::MAX_ROWS
-        || envelope.variables.len() + envelope.members.len() > super::super::MAX_ROWS
+        || envelope.variables.len()
+            + envelope.members.len()
+            + envelope.accessor_attempts.len()
+            + envelope.string_constants.len()
+            + envelope.enum_entries.len()
+            > super::super::MAX_ROWS
         || envelope.body >= envelope.nodes.len()
         || envelope.boundaries.len() > 32
         || envelope.boundaries.iter().any(|code| {
@@ -197,12 +248,24 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
         nodes: vec![],
         body: Some(envelope.body),
         variables: BTreeMap::new(),
+        enum_constants: BTreeMap::new(),
+        accessors: BTreeMap::new(),
+        string_constants: BTreeMap::new(),
+        static_qualifiers: BTreeMap::new(),
         calls: BTreeMap::new(),
         missing_sites: false,
     };
     let mut references = 0;
     for (index, raw) in envelope.nodes.iter().enumerate() {
         let range = local(raw.byte_start, raw.byte_end)?;
+        if raw.kind == Kind::Accessor
+            && (raw.roles.keys().any(|r| *r != Role::Receiver)
+                || raw.children != raw.roles.values().copied().collect::<Vec<_>>())
+        {
+            return Err(invalid(
+                "Kotlin accessor syntax has unsupported evaluation children",
+            ));
+        }
         if matches!(
             raw.kind,
             Kind::Field | Kind::Super | Kind::Throw | Kind::NestedBody
@@ -285,6 +348,34 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
                 }
             }
         }
+        if let Some(qualifier) = &raw.static_qualifier {
+            let span = local(qualifier.byte_start, qualifier.byte_end)?;
+            if envelope.schema != "codeclew-kotlin-documentation-data/1.3"
+                || raw.kind != Kind::Call
+                || raw.roles.contains_key(&Role::Receiver)
+                || qualifier.schema != "kotlin-documentation-static-qualifier/1.0"
+                || qualifier.authority != "K2_STATIC_FUNCTION_RESOLVED_CLASS_QUALIFIER"
+                || !input.calls.contains_key(&range)
+                || span.0 != range.0
+                || span.1 > range.1
+                || qualifier
+                    .class_identity
+                    .strip_prefix("class:")
+                    .is_none_or(|class| {
+                        raw.target_identity
+                            .as_deref()
+                            .is_none_or(|target| !target.starts_with(&format!("callable:{class}.")))
+                    })
+                || input
+                    .static_qualifiers
+                    .insert(range, qualifier.class_identity.clone())
+                    .is_some()
+            {
+                return Err(invalid(
+                    "Kotlin static qualifier lacks an exact class, call or original-source binding",
+                ));
+            }
+        }
         input.nodes.push(SyntaxNode {
             kind: raw.kind,
             range,
@@ -300,6 +391,52 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
                 .collect(),
             default_arguments: raw.default_arguments.clone(),
         });
+    }
+    for entry in &envelope.enum_entries {
+        let range = local(entry.byte_start, entry.byte_end)?;
+        let class = entry
+            .enum_class_identity
+            .strip_prefix("class:")
+            .filter(|class| {
+                !class.is_empty() && class.len() <= 4096 && !class.chars().any(char::is_control)
+            })
+            .ok_or_else(|| invalid("Kotlin enum class identity is unavailable"))?;
+        if entry.schema != "kotlin-documentation-enum-entry/1.0"
+            || entry.owner_symbol_identity != owner.symbol
+            || entry.compilation_scope != scope
+            || entry.authority != "K2_RESOLVED_ENUM_ENTRY_SYMBOL"
+            || entry.resolution != "COMPILER_EXACT"
+            || entry.entry_name.is_empty()
+            || entry.entry_name.len() > 4096
+            || entry.entry_name.chars().any(char::is_control)
+            || entry.entry_identity != format!("enum-entry:{class}.{}", entry.entry_name)
+            || input
+                .nodes
+                .iter()
+                .filter(|node| node.kind == Kind::EnumConstant && node.range == range)
+                .count()
+                != 1
+        {
+            return Err(invalid(
+                "Kotlin enum access lacks a unique compiler-resolved entry",
+            ));
+        }
+        let value = super::super::super::model::DataValue::EnumConstant {
+            identity: entry.entry_identity.clone(),
+            enum_class: entry.enum_class_identity.clone(),
+            entry: entry.entry_name.clone(),
+            authority: entry.authority.clone(),
+        };
+        if input.enum_constants.insert(range, value).is_some() {
+            return Err(invalid("Kotlin enum occurrence is ambiguous"));
+        }
+    }
+    if input.nodes.iter().any(|node| {
+        node.kind == Kind::EnumConstant && !input.enum_constants.contains_key(&node.range)
+    }) {
+        return Err(invalid(
+            "Kotlin enum syntax has no compiler-resolved identity",
+        ));
     }
     let parameters = owner.normalized["parameterTypes"]
         .as_array()
@@ -409,15 +546,42 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
             ));
         }
     }
-    for member in &envelope.members {
+    for (member, accessor, constant) in envelope
+        .members
+        .iter()
+        .map(|m| (m, false, false))
+        .chain(envelope.accessor_attempts.iter().map(|m| (m, true, false)))
+        .chain(envelope.string_constants.iter().map(|m| (m, false, true)))
+    {
         let range = local(member.byte_start, member.byte_end)?;
-        if member.schema != "kotlin-documentation-member/1.0"
+        if member.schema
+            != if constant {
+                "kotlin-documentation-string-constant/1.0"
+            } else if accessor {
+                "kotlin-documentation-accessor-attempt/1.0"
+            } else {
+                "kotlin-documentation-member/1.0"
+            }
+            || (accessor
+                && member.authority.as_deref()
+                    != Some("K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH"))
+            || (!accessor && !constant && member.authority.is_some())
+            || (!constant && member.string_constant.is_some())
+            || (constant
+                && (member.authority.as_deref() != Some("K2_CONST_PROPERTY_LITERAL_STRING")
+                    || member
+                        .string_constant
+                        .as_ref()
+                        .is_none_or(|s| s.len() > 4096)
+                    || member.variable_type != "kotlin/String"
+                    || member.access_mode != "READ"))
             || member.owner_symbol_identity != owner.symbol
             || member.compilation_scope != scope
             || !matches!(member.access_mode.as_str(), "READ" | "WRITE")
             || member.variable_type.is_empty()
             || member.variable_type.len() > 4096
-            || !member.storage_proof.admitted()
+            || (!accessor && !constant && !member.storage_proof.admitted())
+            || (accessor && !member.storage_proof.accessor_attempt_admitted())
         {
             return Err(invalid(
                 "Kotlin property access lacks an ordinary backing-storage proof",
@@ -482,6 +646,97 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
                 "Kotlin property access and retained original storage declaration disagree",
             ));
         }
+        if constant {
+            let proof = &property.normalized["documentationStringConstant"];
+            if proof["schema"] != "kotlin-documentation-string-constant-value/1.0"
+                || property.normalized["declarationKind"] != "PROPERTY"
+                || proof["authority"] != "K2_CONST_PROPERTY_LITERAL_STRING"
+                || proof["isConst"] != true
+                || proof["literalKind"] != "STRING"
+                || proof["value"].as_str() != member.string_constant.as_deref()
+                || input
+                    .nodes
+                    .iter()
+                    .filter(|n| n.kind == Kind::StringConstant && n.range == range)
+                    .count()
+                    != 1
+                || input.variables.contains_key(&range)
+                || input.accessors.contains_key(&range)
+                || input
+                    .string_constants
+                    .insert(
+                        range,
+                        BoundStringConstant {
+                            declaration_id: property.id.clone(),
+                            value: super::super::super::model::DataValue::StringConstant {
+                                identity: member.property_identity.clone(),
+                                value: member.string_constant.clone().unwrap(),
+                                authority: "K2_CONST_PROPERTY_LITERAL_STRING".into(),
+                            },
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(invalid(
+                    "Kotlin string constant lacks its exact compiler declaration, value or occurrence",
+                ));
+            }
+            continue;
+        }
+        if accessor {
+            let indices: Vec<_> = input
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.kind == Kind::Accessor && n.range == range)
+                .map(|(i, _)| i)
+                .collect();
+            let [index] = indices.as_slice() else {
+                return Err(invalid(
+                    "Kotlin accessor attempt lacks a unique syntax occurrence",
+                ));
+            };
+            let write = input
+                .nodes
+                .iter()
+                .any(|n| n.kind == Kind::Assignment && n.roles.get(&Role::Left) == Some(index));
+            if write
+                && input
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        n.kind == Kind::Assignment && n.roles.get(&Role::Left) == Some(index)
+                    })
+                    .any(|n| {
+                        n.roles
+                            .get(&Role::Operator)
+                            .is_none_or(|i| input.node(*i).text() != "=")
+                    })
+            {
+                return Err(invalid(
+                    "Kotlin accessor compound assignments are not admitted",
+                ));
+            }
+            if write != (member.access_mode == "WRITE")
+                || input.variables.contains_key(&range)
+                || input
+                    .accessors
+                    .insert(
+                        range,
+                        BoundAccessor {
+                            property_identity: member.property_identity.clone(),
+                            declaration_id: property.id.clone(),
+                            access_mode: member.access_mode.clone(),
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(invalid(
+                    "Kotlin accessor attempt mode or occurrence is inconsistent",
+                ));
+            }
+            continue;
+        }
         let binding = Variable {
             identity: member.property_identity.clone(),
             kind: VariableKind::Property,
@@ -499,6 +754,25 @@ pub(in crate::documentation::static_pages) fn prepare_sites<'a>(
                 "Kotlin property occurrence collides with another storage binding",
             ));
         }
+    }
+    if input
+        .nodes
+        .iter()
+        .any(|n| n.kind == Kind::Accessor && !input.accessors.contains_key(&n.range))
+    {
+        return Err(invalid(
+            "Kotlin accessor syntax lacks a compiler property binding",
+        ));
+    }
+    if input.nodes.iter().any(|n| {
+        n.kind == Kind::StringConstant
+            && (!input.string_constants.contains_key(&n.range)
+                || !n.children.is_empty()
+                || !n.roles.is_empty())
+    }) {
+        return Err(invalid(
+            "Kotlin string constant syntax lacks an exact compiler binding",
+        ));
     }
     if input.formals()?.len() != parameters.len() {
         return Err(invalid("Kotlin data formal input closure is incomplete"));

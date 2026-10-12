@@ -45,9 +45,12 @@ pub(in crate::documentation::static_pages) enum Kind {
     Variable,
     Field,
     Member,
+    Accessor,
     This,
     Super,
     Literal,
+    EnumConstant,
+    StringConstant,
     Parenthesized,
     Unary,
     Binary,
@@ -129,6 +132,18 @@ pub(in crate::documentation::static_pages) struct BoundCall {
     pub status: String,
 }
 
+/// Static property identity only; no accessor dispatch or storage proof.
+pub(in crate::documentation::static_pages) struct BoundAccessor {
+    pub property_identity: String,
+    pub declaration_id: String,
+    pub access_mode: String,
+}
+#[derive(Clone)]
+pub(in crate::documentation::static_pages) struct BoundStringConstant {
+    pub value: super::super::model::DataValue,
+    pub declaration_id: String,
+}
+
 pub(in crate::documentation::static_pages) struct SyntaxNode {
     pub kind: Kind,
     pub range: (usize, usize),
@@ -145,6 +160,10 @@ pub(in crate::documentation::static_pages) struct Input<'a> {
     pub nodes: Vec<SyntaxNode>,
     pub body: Option<usize>,
     pub variables: BTreeMap<(usize, usize), Variable>,
+    pub enum_constants: BTreeMap<(usize, usize), super::super::model::DataValue>,
+    pub accessors: BTreeMap<(usize, usize), BoundAccessor>,
+    pub string_constants: BTreeMap<(usize, usize), BoundStringConstant>,
+    pub static_qualifiers: BTreeMap<(usize, usize), String>,
     pub calls: BTreeMap<(usize, usize), BoundCall>,
     pub missing_sites: bool,
 }

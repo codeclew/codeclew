@@ -26,8 +26,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
-const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0";
-const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.3";
+pub(crate) const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0";
+const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.4";
 const RECEIPT_SCHEMA: &str = "codeclew-completeness-receipt/2.0";
 const WORKSPACE_SET_AUTHORIZATION_SCHEMA: &str = "codeclew-kotlin-workspace-set-authorization/1.0";
 
@@ -970,7 +970,7 @@ pub(crate) fn translate_facts(
     let capability = CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?;
     let mut pending = Vec::new();
     let metadata = json!({
-        "schema":"codeclew-kotlin-index-metadata/2.2",
+        "schema":"codeclew-kotlin-index-metadata/2.3",
         "compilation":index.get("compilation"),
         "compilerVersion":index.get("compilerVersion"),
         "projectCompilerVersion":index.get("projectCompilerVersion").or_else(|| index.get("declaredCompilerVersion")),
@@ -982,6 +982,8 @@ pub(crate) fn translate_facts(
         "classpathHash":index.get("classpathHash"),
         "compilerOptionsHash":index.get("compilerOptionsHash"),
         "semanticInputManifestHash":index.get("semanticInputManifestHash"),
+        "declarationDescriptorHash":index.get("declarationDescriptorHash"),
+        "declarationRelationHash":index.get("declarationRelationHash"),
         "localCfgHash":index.get("localCfgHash"),
     });
     push_fact(&capability, "metadata", &metadata, &mut pending)?;
@@ -1077,6 +1079,7 @@ fn normalize_file_fact(row: &Value) -> Result<Value, ClewError> {
         .to_owned();
     let mut normalized = row.clone();
     normalize_operational_paths(&mut normalized, &relative, 0)?;
+    crate::kotlin_values::validate_file_fact(&normalized)?;
     let object = normalized.as_object_mut().ok_or_else(|| {
         ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
@@ -1228,7 +1231,7 @@ fn normalize_operational_path(path: &str, outer_relative: &str) -> Result<String
     }
 }
 
-fn safe_relative_source_path(path: &str) -> bool {
+pub(crate) fn safe_relative_source_path(path: &str) -> bool {
     !path.is_empty()
         && !Path::new(path).is_absolute()
         && Path::new(path)

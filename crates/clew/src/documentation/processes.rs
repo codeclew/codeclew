@@ -29,6 +29,10 @@ pub struct Details {
     pub outcomes: Vec<String>,
     #[serde(default)]
     pub linked_subviews: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<super::process_thread::Thread>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction: Option<super::process_extract::Query>,
 }
 pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<(), ClewError> {
     let Some(p) = &s.process else {
@@ -72,6 +76,12 @@ pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<()
             "invalid saved process scope, participants, objects, outcomes or linked subview bounds",
         ));
     }
+    if let Some(query) = &p.extraction {
+        query.validate()?;
+    }
+    if let Some(thread) = &p.thread {
+        thread.validate(&p.participants)?;
+    }
     Ok(())
 }
 pub fn expected(checked: &Check, id: &str) -> BTreeSet<String> {
@@ -92,6 +102,13 @@ pub fn overview(checked: &Check, subject: &str, root: &str) -> bool {
 }
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Preview a declared thread linking frozen service pages; no authoring or capture.
+    LinkedPreview {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
     /// Discover structural process candidates from saved evidence without capture or model calls.
     Candidates {
         #[command(flatten)]
@@ -161,6 +178,18 @@ pub enum Command {
         #[arg(long)]
         snapshot: Option<String>,
     },
+    /// Save a bounded query packet without running compilers, models or target code.
+    Extract {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        snapshot: String,
+        /// Closed process extraction query JSON with exact root and budgets.
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Save the complete retained call/evidence graph for one exact declaration.
     Graph {
         #[arg(long)]
@@ -189,6 +218,12 @@ pub enum SuppressCommand {
     List {},
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
+    let command = match command {
+        Command::LinkedPreview { input, output_dir } => {
+            return super::process_linked_preview::render(&input, &output_dir);
+        }
+        command => command,
+    };
     let root = match &command {
         Command::List { page } | Command::Candidates { page, .. } => &page.root,
         Command::Show { root, .. }
@@ -196,10 +231,13 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         | Command::Inspect { root, .. }
         | Command::Prepare { root, .. }
         | Command::Graph { root, .. }
+        | Command::Extract { root, .. }
         | Command::Suppress { root, .. } => root,
+        Command::LinkedPreview { .. } => unreachable!(),
     };
     let repo = Repository::open(root)?;
     match command {
+        Command::LinkedPreview { .. } => unreachable!(),
         Command::Candidates {
             page,
             service,
@@ -364,6 +402,25 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 }))
                 .map_err(io_error)?,
                 snapshot.as_deref(),
+            )
+        }
+        Command::Extract {
+            snapshot,
+            input,
+            output,
+            ..
+        } => {
+            let query: super::process_extract::Query = store::read(&input, 64 * 1024)?;
+            query.validate()?;
+            let (checked, handle) = Check::retained(
+                &repo,
+                Some(&snapshot),
+                &BTreeSet::from([query.service.clone()]),
+            )?;
+            let packet = super::process_extract::extract(&checked, &handle, &query)?;
+            work::write_atomic_file(&output, &super::bytes(&packet)?)?;
+            Ok(
+                json!({"schema":"codeclew-process-extract-result/0.1","status":packet["status"],"packetDigest":packet["packetDigest"],"snapshot":handle,"methods":packet["methods"].as_array().map_or(0,Vec::len),"frontiers":packet["frontier"].as_array().map_or(0,Vec::len),"actualModelCalls":0,"output":output.to_string_lossy()}),
             )
         }
         Command::Graph {

@@ -19,6 +19,14 @@ pub(super) fn validate_request(request: &Request) -> Result<(), ClewError> {
     {
         return Err(invalid("sourceDataContext requires process-graph-v1"));
     }
+    if request.source_data_max_depth.is_some()
+        && (!request.source_data_context
+            || request.source_data_max_depth.is_some_and(|depth| depth > 2))
+    {
+        return Err(invalid(
+            "sourceDataMaxDepth requires sourceDataContext=true and a depth between zero and two",
+        ));
+    }
     Ok(())
 }
 fn reference(work: &Work, kind: &str, id: &str) -> Result<String, ClewError> {
@@ -106,8 +114,19 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
     }
     let root =
         super::process_graph::resolve_work_root(&work.subject, &work.request, &work.checked)?;
-    let graph =
-        super::static_pages::source_data_graph(&work.checked, &root.service, &root.declaration.id)?;
+    let graph = match work.request.source_data_max_depth {
+        Some(depth) => super::static_pages::source_data_graph_with_depth(
+            &work.checked,
+            &root.service,
+            &root.declaration.id,
+            depth.into(),
+        )?,
+        None => super::static_pages::source_data_graph(
+            &work.checked,
+            &root.service,
+            &root.declaration.id,
+        )?,
+    };
     let mut retained_bytes = 0usize;
     let mut counted_sources = BTreeSet::new();
     for node in graph.nodes.values() {
@@ -209,6 +228,12 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
             .definitions
             .iter()
             .filter_map(|d| d.citation_id.as_deref())
+            .chain(
+                state
+                    .accessor_attempts
+                    .iter()
+                    .filter_map(|a| a.citation_id.as_deref()),
+            )
             .chain(state.gaps.iter().filter_map(|g| g.citation_id.as_deref()))
             .collect();
         used_spans.extend(
@@ -255,8 +280,13 @@ pub(super) fn build(work: &Work) -> Result<Option<Projection>, ClewError> {
                 .ok_or_else(|| invalid("sourceDataContext has no bounded data projection"))?,
         )
         .map_err(super::io_error)?;
-        for collection in ["definitions", "gaps"] {
-            for item in state[collection].as_array_mut().unwrap() {
+        for collection in ["definitions", "gaps", "accessorAttempts"] {
+            for item in state
+                .get_mut(collection)
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
                 if let Some(span) = item["citationId"].as_str().map(str::to_owned) {
                     let label = bindings
                         .get(&span)

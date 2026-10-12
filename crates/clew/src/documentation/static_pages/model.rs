@@ -559,6 +559,8 @@ pub struct DataStorage {
     rename_all_fields = "camelCase"
 )]
 pub enum DataValue {
+    /// Source `this`, without receiver alias or heap identity inference.
+    ThisReceiver,
     Interference {
         occurrence: String,
         prior_definitions: Vec<String>,
@@ -568,6 +570,23 @@ pub enum DataValue {
     },
     Literal {
         text: String,
+    },
+    /// Symbolic compiler-resolved enum entry; does not prove class initialization
+    /// or runtime completion of the access.
+    EnumConstant {
+        identity: String,
+        enum_class: String,
+        entry: String,
+        authority: String,
+    },
+    AccessorResult {
+        occurrence: String,
+        result: String,
+    },
+    StringConstant {
+        identity: String,
+        value: String,
+        authority: String,
     },
     Input {
         storage: DataStorage,
@@ -636,6 +655,8 @@ pub struct DataArgument {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DataCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_qualifier: Option<String>,
     pub mapping_authority: String,
     pub conditions: Vec<DataGuard>,
     pub occurrence: String,
@@ -646,12 +667,31 @@ pub struct DataCall {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DataAccessorAttempt {
+    pub occurrence: String,
+    pub property_identity: String,
+    pub authority: String,
+    pub access_mode: String,
+    pub receiver: Option<DataValue>,
+    pub argument: Option<DataValue>,
+    pub conditions: Vec<DataGuard>,
+    pub normal_completion_of: Vec<DataCompletion>,
+    pub citation_id: Option<String>,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub dispatch: String,
+    pub storage_outcome: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeDataState {
     pub schema: String,
     pub authority: String,
     pub data_state_digest: String,
     pub definitions: Vec<DataDefinition>,
     pub calls: Vec<DataCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accessor_attempts: Vec<DataAccessorAttempt>,
     pub field_declarations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub property_declarations: Vec<String>,

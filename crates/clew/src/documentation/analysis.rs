@@ -1631,6 +1631,41 @@ pub(crate) fn project_scoped(
         contracts: BTreeMap::new(),
     };
     let variable_lines = validate_variable_facts(&facts, sources, known)?;
+    // Opaque accessors still need an exact declaration source. Retain only
+    // properties named by the admitted producer envelope, without qualifying
+    // their backing storage or widening the transfer profile.
+    let mut accessor_properties = BTreeSet::new();
+    for (fact, _) in &facts {
+        let data = &fact["documentation"]["dataInput"];
+        if fact["schema"] == "declaration-descriptor/0.1"
+            && matches!(
+                data["schema"].as_str(),
+                Some(
+                    "codeclew-kotlin-documentation-data/1.2"
+                        | "codeclew-kotlin-documentation-data/1.3"
+                )
+            )
+        {
+            let scope = resolve_scope_key(&fact["scope"], known)?;
+            for attempt in data["accessorAttempts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(data["stringConstants"].as_array().into_iter().flatten())
+            {
+                if matches!(
+                    attempt["authority"].as_str(),
+                    Some(
+                        "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH"
+                            | "K2_CONST_PROPERTY_LITERAL_STRING"
+                    )
+                ) && let Some(identity) = attempt["propertyIdentity"].as_str()
+                {
+                    accessor_properties.insert(scoped_identity(&scope, identity));
+                }
+            }
+        }
+    }
     let annotation_registry = spring_entrypoints::annotation_registry(facts.iter().map(|(f, _)| f));
     // Track, per symbol, the distinct normalized payload digests observed
     // across admitted compilation scopes. A symbol that resolves to multiple
@@ -2141,6 +2176,8 @@ pub(crate) fn project_scoped(
             || (fact["schema"] == "declaration-descriptor/0.1"
                 && (fact["documentation"]["dataInput"].is_object()
                     || fact["documentationStorage"]["qualified"] == true
+                    || (fact["documentationStorage"].is_object()
+                        && accessor_properties.contains(&scoped))
                     || fact["documentationConstructorStorage"].is_object()));
         let mut outline_owner_source = None;
         if exact_outline_owner {
@@ -4648,6 +4685,99 @@ class UseTask {
             "{:?}",
             evidence.boundaries
         );
+    }
+
+    #[test]
+    fn kotlin_opaque_accessor_dependencies_retain_exact_declaration_bytes_without_storage() {
+        for (schema, collection, authority) in [
+            (
+                "codeclew-kotlin-documentation-data/1.2",
+                "accessorAttempts",
+                "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH",
+            ),
+            (
+                "codeclew-kotlin-documentation-data/1.3",
+                "accessorAttempts",
+                "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH",
+            ),
+            (
+                "codeclew-kotlin-documentation-data/1.3",
+                "stringConstants",
+                "K2_CONST_PROPERTY_LITERAL_STRING",
+            ),
+        ] {
+            let service = projection_service();
+            let file = "src/main/kotlin/example/Shared.kt";
+            let text = "\u{feff}// π🙂\r\nopen var status: String = \"initial\"\r\nfun read(): String = status\r\n";
+            let property_start = text.find("open var").unwrap();
+            let property_end = text.find("\r\nfun").unwrap();
+            let method_start = text.find("fun read").unwrap();
+            let method_end = text.trim_end().len();
+            let table = BTreeMap::from([(file.into(), text.into())]);
+            let sources = compile_sources(
+                vec![(":a/main", table.clone(), true), (":b/main", table, true)],
+                BTreeMap::new(),
+            );
+            let mut facts = vec![];
+            for scope in [":a/main", ":b/main"] {
+                let mut property = declaration_fact(
+                    &json!({"compilation":scope}),
+                    "property:example/status",
+                    file,
+                    2,
+                );
+                property.0["schema"] = json!("declaration-descriptor/0.1");
+                property.0["start"] = json!(property_start);
+                property.0["end"] = json!(property_end);
+                property.0["documentationStorage"] = json!({"qualified":false});
+                facts.push(property);
+                let mut method = declaration_fact(
+                    &json!({"compilation":scope}),
+                    "callable:example/read#jvm:()Ljava/lang/String;",
+                    file,
+                    3,
+                );
+                method.0["schema"] = json!("declaration-descriptor/0.1");
+                method.0["start"] = json!(method_start);
+                method.0["end"] = json!(method_end);
+                method.0["documentation"]["dataInput"] = json!({"schema":schema});
+                method.0["documentation"]["dataInput"][collection] =
+                    json!([{"propertyIdentity":"property:example/status", "authority":authority}]);
+                facts.push(method);
+            }
+            let evidence = project_scoped_ok(&service, facts, &sources, &[":a/main", ":b/main"]);
+            let properties: Vec<_> = evidence
+                .observations
+                .values()
+                .filter(|o| o.symbol == "property:example/status")
+                .collect();
+            assert_eq!(properties.len(), 2);
+            for property in properties {
+                let site = &property.normalized["outlineOwnerSource"];
+                let source = &evidence.sources[site["sourceId"].as_str().unwrap()];
+                assert_eq!(
+                    source.text.as_bytes(),
+                    &text.as_bytes()[property_start..property_end]
+                );
+                assert_eq!(site["byteStart"], property_start);
+                assert_eq!(site["byteEnd"], property_end);
+                assert_eq!(
+                    property.source_ids.as_slice(),
+                    std::slice::from_ref(&source.id)
+                );
+                assert_eq!(
+                    property.normalized["documentationStorage"]["qualified"],
+                    false
+                );
+                assert_eq!(property.digest, digest(&property.normalized).unwrap());
+            }
+            assert!(
+                !evidence
+                    .boundaries
+                    .iter()
+                    .any(|b| b.starts_with("SCOPE_AMBIGUOUS"))
+            );
+        }
     }
 
     #[test]

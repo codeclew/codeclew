@@ -4009,7 +4009,7 @@ fn render_markdown(
     markdown
 }
 
-const OFFLINE_STYLE: &str = r#"
+pub(super) const OFFLINE_STYLE: &str = r#"
 :root{color-scheme:light dark;font:16px/1.55 system-ui,sans-serif;--line:#8792a2;--panel:#171b22;--accent:#73b7ff}
 *{box-sizing:border-box}html,body{width:100%;min-width:0}body{margin:0;background:#101319;color:#e8edf5}main{width:100%;max-width:1120px;min-width:0;margin:auto;padding:2rem;overflow-wrap:anywhere}
 main>*,main section,main details,.document-nav,.claim{max-width:100%;min-width:0}.document-nav{display:flex;flex-wrap:wrap;align-items:baseline;gap:.25rem .65rem}.document-nav a{min-width:0;overflow-wrap:anywhere;word-break:break-word}
@@ -4103,6 +4103,21 @@ fn render_evidence_html(
     )
 }
 
+/// Shared native step container for operation bodies and linked service steps.
+pub(super) fn step_node_open(anchor: &str, kind: Option<&str>) -> String {
+    let mut html = format!(
+        "<li id=\"{}\"><div class=\"step-node\">",
+        html_escape(anchor)
+    );
+    if let Some(kind) = kind {
+        html.push_str(&format!(
+            "<span class=\"step-kind\">{}</span>",
+            html_escape(kind)
+        ));
+    }
+    html
+}
+
 fn render_html_steps(
     steps: &[OperationStep],
     answer: &OperationAnswer,
@@ -4138,19 +4153,10 @@ fn render_html_steps(
             ));
             continue;
         }
-        if ordered || !path_prefix.is_empty() {
-            output.push_str(&format!(
-                "<li id=\"{}\"><div class=\"step-node\"><span class=\"step-kind\">",
-                html_escape(&anchor)
-            ));
-            output.push_str(&html_escape(&step.kind));
-            output.push_str("</span>");
-        } else {
-            output.push_str(&format!(
-                "<li id=\"{}\"><div class=\"step-node\">",
-                html_escape(&anchor)
-            ));
-        }
+        output.push_str(&step_node_open(
+            &anchor,
+            (ordered || !path_prefix.is_empty()).then_some(step.kind.as_str()),
+        ));
         output.push_str("<span class=\"step-text\">");
         if let Some(predicate) = predicate_for_step(step, &answer.predicates) {
             output.push_str(&format!(

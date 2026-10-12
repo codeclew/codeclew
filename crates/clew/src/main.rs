@@ -213,6 +213,8 @@ struct StorageGcArgs {
 enum SessionCommand {
     Open(SessionOpenArgs),
     Inspect(SessionIdArgs),
+    /// Query bounded value equations from an existing retained Java generation.
+    Values(SessionValuesArgs),
     Close(SessionIdArgs),
     Abort(SessionIdArgs),
     Relocate(SessionRelocateArgs),
@@ -245,6 +247,8 @@ enum ThreadCommand {
     Context(ThreadContextArgs),
     Callables(ThreadCallablesArgs),
     Flow(ThreadFlowArgs),
+    /// Build a read-only question packet from an existing retained flow.
+    Question(ThreadQuestionArgs),
     Explain(ThreadExplainArgs),
     Render(ThreadRenderArgs),
     ExplanationStatus(ThreadExplanationStatusArgs),
@@ -634,6 +638,24 @@ struct SessionIdArgs {
 }
 
 #[derive(Args)]
+struct SessionValuesArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    compilation: String,
+    /// Exact compiler method identity, including its JVM descriptor.
+    #[arg(long)]
+    owner: String,
+    /// Exact definition ID within that method's retained value projection.
+    #[arg(long, default_value = "result")]
+    target: String,
+    #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u32).range(1..=4096))]
+    max_nodes: u32,
+    #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(1..=1_000_000))]
+    max_transfers: u32,
+}
+
+#[derive(Args)]
 struct SessionRunArgs {
     #[arg(long)]
     session: String,
@@ -938,6 +960,15 @@ struct ThreadExplainArgs {
     /// Closed, canonical codeclew-explanation-claim-input/0.1 JSON file.
     #[arg(long)]
     claims: PathBuf,
+}
+
+#[derive(Args)]
+struct ThreadQuestionArgs {
+    #[arg(long)]
+    thread: String,
+    /// Closed codeclew-question-request/0.1 JSON with an exact flow digest.
+    #[arg(long)]
+    request: PathBuf,
 }
 
 #[derive(Args)]
@@ -1703,6 +1734,19 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             )
         }
         Command::Session {
+            command: SessionCommand::Values(args),
+        } => serde_json::to_value(clew::java_value_service::query(
+            &args.session,
+            &args.compilation,
+            &args.owner,
+            clew::thread_values::ValueQuery {
+                target: args.target,
+                max_nodes: args.max_nodes as usize,
+                max_transfers: args.max_transfers as usize,
+            },
+        )?)
+        .map_err(internal),
+        Command::Session {
             command: SessionCommand::Close(args),
         } => {
             let (session, _) = SessionAuthority::load_for_lifecycle_cleanup(&args.session)?;
@@ -1833,6 +1877,20 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let (thread, _) = ThreadAuthority::load(&args.thread)?;
             let root = clew::explanation_service::create(&thread, &args.flow, document)?;
             clew::explanation_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Question(args),
+        } => {
+            let bytes = read_bounded_regular_file(
+                &args.request,
+                clew::thread_question::MAX_REQUEST_BYTES,
+                "question request is missing, unsafe, or exceeds 64 KiB",
+            )?;
+            let request = clew::thread_question::parse_request(&bytes)?;
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let packet = clew::thread_flow_service::question(&thread, request)?;
+            clew::canonical::value(&packet)
+                .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))
         }
         Command::Thread {
             command: ThreadCommand::Render(args),

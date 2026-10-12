@@ -11,6 +11,16 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct KotlinStringConstantProof {
+    schema: String,
+    authority: String,
+    is_const: bool,
+    literal_kind: String,
+    value: String,
+}
+
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct KotlinPropertyStorageProof {
@@ -28,6 +38,14 @@ pub(crate) struct KotlinPropertyStorageProof {
     lateinit: bool,
 }
 impl KotlinPropertyStorageProof {
+    /// This admits a source property identity, never backing storage or dispatch.
+    pub(crate) fn accessor_attempt_admitted(&self) -> bool {
+        self.schema == "kotlin-documentation-property-storage/1.0"
+            && self.authority == "K2_DEFAULT_BACKING_PROPERTY"
+            && !self.qualified
+            && !self.extension
+            && self.context_parameters == 0
+    }
     pub(crate) fn admitted(&self) -> bool {
         self.schema == "kotlin-documentation-property-storage/1.0"
             && self.authority == "K2_DEFAULT_BACKING_PROPERTY"
@@ -626,6 +644,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
                     "declaredType",
                     "declaredNullable",
                     "documentationStorage",
+                    "documentationStringConstant",
                 ]);
             }
         }
@@ -763,6 +782,25 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
                 return Err(payload_invalid(
                     "property compiler identity is inconsistent",
                 ));
+            }
+            if let Some(constant) = value.get("documentationStringConstant") {
+                let proof: KotlinStringConstantProof = serde_json::from_value(constant.clone())
+                    .map_err(|_| {
+                        payload_invalid("property string constant proof shape is invalid")
+                    })?;
+                if proof.schema != "kotlin-documentation-string-constant-value/1.0"
+                    || proof.authority != "K2_CONST_PROPERTY_LITERAL_STRING"
+                    || !proof.is_const
+                    || proof.literal_kind != "STRING"
+                    || proof.value.len() > 4096
+                    || kind != "PROPERTY"
+                    || value["declaredType"] != "kotlin/String"
+                    || value["declaredNullable"] != false
+                {
+                    return Err(payload_invalid(
+                        "property string constant proof authority is inconsistent",
+                    ));
+                }
             }
             if let Some(storage) = value.get("documentationStorage") {
                 let proof: KotlinPropertyStorageProof = serde_json::from_value(storage.clone())
@@ -2767,6 +2805,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "declaredType",
                 "declaredNullable",
                 "documentationStorage",
+                "documentationStringConstant",
             ]),
             "CLASS" => allowed.extend(["compilerClassId", "spring", "jvmAnnotations"]),
             _ => return Err(invalid("unknown declaration descriptor kind")),
@@ -3821,6 +3860,66 @@ mod tests {
         function["documentationStorage"] = property["documentationStorage"].clone();
         assert!(validate_declaration_descriptor_fact(&function).is_err());
         assert!(verify_snapshot(&function).is_err());
+    }
+
+    #[test]
+    fn property_string_constant_transport_is_closed_and_compiler_authoritative() {
+        let mut property = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        for field in ["returnType", "returnNullable", "parameterTypes"] {
+            property.as_object_mut().unwrap().remove(field);
+        }
+        property["declarationKind"] = json!("PROPERTY");
+        property["symbolIdentity"] = json!("property:p/Derived.title");
+        property["compilerCallableId"] = json!("p/Derived.title");
+        property["isOverride"] = json!(false);
+        property["declaredType"] = json!("kotlin/String");
+        property["declaredNullable"] = json!(false);
+        property["documentationStringConstant"] = json!({
+            "schema":"kotlin-documentation-string-constant-value/1.0",
+            "authority":"K2_CONST_PROPERTY_LITERAL_STRING", "isConst":true,
+            "literalKind":"STRING", "value":"hello"
+        });
+        let verify = |row: &Value| {
+            let mut facts = verified_facts();
+            facts["declarationDescriptors"]["descriptors"] = json!([row]);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            validate_declaration_descriptor_snapshot(&facts).map(|_| ())
+        };
+        validate_declaration_descriptor_fact(&property).unwrap();
+        verify(&property).unwrap();
+        for (field, value) in [
+            ("schema", json!("future")),
+            ("authority", json!("PSI_GUESS")),
+            ("isConst", json!(false)),
+            ("literalKind", json!("INT")),
+            ("value", json!("x".repeat(4097))),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = property.clone();
+            invalid["documentationStringConstant"][field] = value;
+            assert!(
+                validate_declaration_descriptor_fact(&invalid).is_err(),
+                "{field}"
+            );
+            assert!(verify(&invalid).is_err(), "snapshot {field}");
+        }
+        for (field, value) in [
+            ("declarationKind", json!("MUTABLE_PROPERTY")),
+            ("declaredType", json!("kotlin/Int")),
+            ("declaredNullable", json!(true)),
+        ] {
+            let mut invalid = property.clone();
+            invalid[field] = value;
+            assert!(
+                validate_declaration_descriptor_fact(&invalid).is_err(),
+                "{field}"
+            );
+            assert!(verify(&invalid).is_err(), "snapshot {field}");
+        }
     }
 
     #[test]

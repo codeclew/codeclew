@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 mod clr;
+pub mod values;
 pub use clr::{
     CLR_ATTRIBUTE_AUTHORITY, CLR_ATTRIBUTE_SCHEMA, CLR_ATTRIBUTE_SCOPE, ClrAttributeFacts,
     ClrAttributeUse, ClrMethod, ClrType, ClrValue,

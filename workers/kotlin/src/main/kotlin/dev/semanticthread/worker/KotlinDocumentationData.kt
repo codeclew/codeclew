@@ -34,6 +34,9 @@ internal class KotlinDocumentationData(
     private val nodes = mutableListOf<JsonObject>()
     private val variables = mutableListOf<JsonObject>()
     private val members = mutableListOf<JsonObject>()
+    private val accessorAttempts = mutableListOf<JsonObject>()
+    private val stringConstants = mutableListOf<JsonObject>()
+    private val enumEntries = mutableListOf<JsonObject>()
     private val operations = mutableMapOf<Pair<Int, Int>, String>()
     private val boundaries = sortedSetOf<String>()
     private val variableTypes = mutableMapOf<Pair<Int, Int>, String>()
@@ -51,6 +54,21 @@ internal class KotlinDocumentationData(
             ) throw Unavailable()
             for (row in records) {
                 when (row["recordType"]?.jsonPrimitive?.content) {
+                    "DOCUMENTATION_ENUM_ENTRY" -> {
+                        if (row["schema"]?.jsonPrimitive?.content != "kotlin-documentation-enum-entry/1.0"
+                            || row["authority"]?.jsonPrimitive?.content != "K2_RESOLVED_ENUM_ENTRY_SYMBOL"
+                            || row["resolution"]?.jsonPrimitive?.content != "COMPILER_EXACT"
+                            || compilerRange(row, "ownerStart", "ownerEnd") != ownerStart to ownerEnd) throw Unavailable()
+                        val span = compilerRange(row, "start", "end")
+                        if (span.first < ownerStart || span.second > ownerEnd || span.first >= span.second) throw Unavailable()
+                        enumEntries += buildJsonObject {
+                            put("schema", "kotlin-documentation-enum-entry/1.0"); put("ownerSymbolIdentity", owner)
+                            put("enumClassIdentity", row["enumClassIdentity"]!!); put("entryIdentity", row["entryIdentity"]!!)
+                            put("entryName", row["entryName"]!!); put("authority", row["authority"]!!)
+                            put("resolution", row["resolution"]!!); put("compilationScope", scope)
+                            put("byteStart", span.first); put("byteEnd", span.second)
+                        }
+                    }
                     "DOCUMENTATION_DATA_BOUNDARY" -> {
                         val code = row["code"]!!.jsonPrimitive.content
                         if (code in setOf("DOCUMENTATION_VARIABLE_BUDGET", "DOCUMENTATION_VARIABLE_SOURCE_UNAVAILABLE")) throw Unavailable()
@@ -62,18 +80,26 @@ internal class KotlinDocumentationData(
                             || compilerRange(row, "ownerStart", "ownerEnd") != ownerStart to ownerEnd) throw Unavailable()
                         operations[compilerRange(row, "start", "end")] = row["proof"]!!.jsonPrimitive.content
                     }
-                    "DOCUMENTATION_MEMBER" -> {
-                        if (row["schema"]?.jsonPrimitive?.content != "kotlin-documentation-member/1.0"
-                            || row["authority"]?.jsonPrimitive?.content != "K2_RESOLVED_PROPERTY_SYMBOL"
+                    "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT" -> {
+                        val constant = row["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_STRING_CONSTANT"
+                        val accessor = row["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_ACCESSOR_ATTEMPT"
+                        val schema = if (constant) "kotlin-documentation-string-constant/1.0" else if (accessor) "kotlin-documentation-accessor-attempt/1.0" else "kotlin-documentation-member/1.0"
+                        val authority = if (constant) "K2_CONST_PROPERTY_LITERAL_STRING" else if (accessor) "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH" else "K2_RESOLVED_PROPERTY_SYMBOL"
+                        if (row["schema"]?.jsonPrimitive?.content != schema
+                            || row["authority"]?.jsonPrimitive?.content != authority
                             || row["resolution"]?.jsonPrimitive?.content != "COMPILER_EXACT"
                             || compilerRange(row, "ownerStart", "ownerEnd") != ownerStart to ownerEnd) throw Unavailable()
                         val property = descriptors.singleOrNull { it["symbolIdentity"] == row["propertyIdentity"]
-                            && it["documentationStorage"]?.jsonObject?.get("qualified")?.jsonPrimitive?.boolean == true
+                            && if (constant) it["documentationStringConstant"]?.jsonObject?.get("value") == row["stringConstant"]
+                            else it["documentationStorage"]?.jsonObject?.get("qualified")?.jsonPrimitive?.boolean == !accessor
                             } ?: continue
                         val span = compilerRange(row, "start", "end")
                         if (span.first < ownerStart || span.second > ownerEnd || span.first >= span.second) throw Unavailable()
-                        members += buildJsonObject {
-                            put("schema", "kotlin-documentation-member/1.0"); put("ownerSymbolIdentity", owner)
+                        val selected = if (constant) stringConstants else if (accessor) accessorAttempts else members
+                        selected += buildJsonObject {
+                            put("schema", schema); put("ownerSymbolIdentity", owner)
+                            if (accessor || constant) put("authority", authority)
+                            if (constant) put("stringConstant", row["stringConstant"]!!)
                             put("propertyIdentity", row["propertyIdentity"]!!); put("accessMode", row["accessMode"]!!)
                             put("variableType", row["variableType"]!!); put("byteStart", span.first); put("byteEnd", span.second)
                             put("propertyByteStart", property["start"]!!); put("propertyByteEnd", property["end"]!!)
@@ -102,11 +128,19 @@ internal class KotlinDocumentationData(
                     }
                 }
             }
-            if (variables.size + members.size > 4096 || function.hasModifier(KtTokens.SUSPEND_KEYWORD) || function.receiverTypeReference != null) throw Unavailable()
+            if (variables.size + members.size + accessorAttempts.size + stringConstants.size + enumEntries.size > 4096 || function.hasModifier(KtTokens.SUSPEND_KEYWORD) || function.receiverTypeReference != null) throw Unavailable()
             val body = function.bodyExpression ?: return null
             val root = if (function.hasBlockBody()) statement(body) else add("RETURN", body, listOf(expression(body)))
+            // An opaque expression (for example an interpolated string) does
+            // not expose its internal evaluation order. Keep its stop node;
+            // do not promote compiler occurrences inside it as transfer nodes.
+            fun activeRanges(kind: String) = nodes.filter { it["kind"]!!.jsonPrimitive.content == kind }
+                .map { it["byteStart"]!!.jsonPrimitive.int to it["byteEnd"]!!.jsonPrimitive.int }.toSet()
+            val activeAccessors = activeRanges("ACCESSOR")
+            val activeEnums = activeRanges("ENUM_CONSTANT")
+            val activeConstants = activeRanges("STRING_CONSTANT")
             buildJsonObject {
-                put("schema", "codeclew-kotlin-documentation-data/1.0")
+                put("schema", "codeclew-kotlin-documentation-data/1.3")
                 put("authority", "KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES")
                 put("coordinateDomain", "ORIGINAL_UTF8_BYTES")
                 put("ownerSymbolIdentity", owner)
@@ -114,6 +148,9 @@ internal class KotlinDocumentationData(
                 put("file", file); put("compilationScope", scope)
                 put("fullCompilationSourceDigest", sourceDigest)
                 put("body", root); put("nodes", JsonArray(nodes)); put("variables", JsonArray(variables)); put("members", JsonArray(members))
+                put("enumEntries", JsonArray(enumEntries.filter { it["byteStart"]!!.jsonPrimitive.int to it["byteEnd"]!!.jsonPrimitive.int in activeEnums }))
+                put("stringConstants", JsonArray(stringConstants.filter { it["byteStart"]!!.jsonPrimitive.int to it["byteEnd"]!!.jsonPrimitive.int in activeConstants }))
+                put("accessorAttempts", JsonArray(accessorAttempts.filter { it["byteStart"]!!.jsonPrimitive.int to it["byteEnd"]!!.jsonPrimitive.int in activeAccessors }))
                 put("boundaries", JsonArray(boundaries.map(::JsonPrimitive)))
             }
         } catch (_: Unavailable) {
@@ -133,7 +170,7 @@ internal class KotlinDocumentationData(
     }
     private fun add(kind: String, element: PsiElement, children: List<Int> = emptyList(),
         roles: Map<String, Int> = emptyMap(), actuals: List<JsonObject> = emptyList(), defaults: List<JsonElement> = emptyList(),
-        target: String? = null): Int {
+        target: String? = null, staticQualifier: JsonObject? = null): Int {
         if (nodes.size >= 4096) throw Unavailable()
         val span = range(element)
         val index = nodes.size
@@ -143,6 +180,7 @@ internal class KotlinDocumentationData(
             put("roles", JsonObject(roles.mapValues { JsonPrimitive(it.value) }))
             put("actuals", JsonArray(actuals)); put("defaultArguments", JsonArray(defaults))
             target?.let { put("targetIdentity", it) }
+            staticQualifier?.let { put("staticQualifier", it) }
         }
         return index
     }
@@ -172,7 +210,9 @@ internal class KotlinDocumentationData(
                 add("RETURN", element, listOfNotNull(element.returnedExpression?.let(::expression)))
             }
             is KtBinaryExpression -> {
-                if (element.operationToken == KtTokens.EQ && element.left is KtNameReferenceExpression && element.right != null) {
+                if (element.operationToken == KtTokens.EQ
+                    && (element.left is KtNameReferenceExpression || element.left is KtDotQualifiedExpression)
+                    && element.right != null) {
                     val roles = mapOf("LEFT" to expression(element.left!!), "RIGHT" to expression(element.right!!),
                         "OPERATOR" to add("UNSUPPORTED", element.operationReference))
                     add("EXPRESSION", element, listOf(add("ASSIGNMENT", element, roles.values.toList(), roles)))
@@ -189,9 +229,15 @@ internal class KotlinDocumentationData(
         else -> null
     }
     private fun expression(element: KtExpression): Int = bounded {
+        if (stringConstants.any { it["byteStart"]!!.jsonPrimitive.int == range(element).first && it["byteEnd"]!!.jsonPrimitive.int == range(element).second }) return@bounded add("STRING_CONSTANT", element)
+        if (enumEntries.any { it["byteStart"]!!.jsonPrimitive.int == range(element).first
+                && it["byteEnd"]!!.jsonPrimitive.int == range(element).second }) {
+            return@bounded add("ENUM_CONSTANT", element)
+        }
         when (element) {
             is KtNameReferenceExpression -> {
                 val span = range(element)
+                if (accessorAttempts.any { it["byteStart"]!!.jsonPrimitive.int == span.first && it["byteEnd"]!!.jsonPrimitive.int == span.second }) return@bounded add("ACCESSOR", element)
                 val exact = (variables + members).any { it["byteStart"]!!.jsonPrimitive.int == span.first && it["byteEnd"]!!.jsonPrimitive.int == span.second }
                 add(if (exact) "VARIABLE" else "UNSUPPORTED", element)
             }
@@ -213,7 +259,9 @@ internal class KotlinDocumentationData(
                 val stringConcat = element.operationToken == KtTokens.PLUS && type(left) == "kotlin/String" && type(right) == "kotlin/String"
                 val intEquality = element.operationToken in setOf(KtTokens.EQEQ, KtTokens.EXCLEQ)
                     && operations[range(element)] == "NON_NULL_INT_EQUALITY"
-                if (!nullCompare && !stringConcat && !intEquality) return@bounded add("UNSUPPORTED", element)
+                val intOrder = element.operationToken in setOf(KtTokens.GT, KtTokens.GTEQ, KtTokens.LT, KtTokens.LTEQ)
+                    && operations[range(element)] == "NON_NULL_INT_ORDER"
+                if (!nullCompare && !stringConcat && !intEquality && !intOrder) return@bounded add("UNSUPPORTED", element)
                 val roles = mapOf("LEFT" to expression(left), "RIGHT" to expression(right),
                     "OPERATOR" to add("UNSUPPORTED", element.operationReference))
                 add("BINARY", element, roles.values.toList(), roles)
@@ -222,6 +270,10 @@ internal class KotlinDocumentationData(
             is KtDotQualifiedExpression -> {
                 val selector = element.selectorExpression as? KtCallExpression
                 if (selector != null) call(element, selector, element.receiverExpression)
+                else if (accessorAttempts.any { it["byteStart"]!!.jsonPrimitive.int == range(element).first && it["byteEnd"]!!.jsonPrimitive.int == range(element).second }) {
+                    val receiver = expression(element.receiverExpression)
+                    add("ACCESSOR", element, listOf(receiver), mapOf("RECEIVER" to receiver))
+                }
                 else if (members.any { it["byteStart"]!!.jsonPrimitive.int == range(element).first && it["byteEnd"]!!.jsonPrimitive.int == range(element).second }) {
                     val receiver = expression(element.receiverExpression)
                     add("MEMBER", element, listOf(receiver), mapOf("RECEIVER" to receiver))
@@ -243,7 +295,13 @@ internal class KotlinDocumentationData(
         if (selected.containsKey("dataArgumentBoundary") || selected["dataArgumentToParameter"] !is JsonArray || selected["dataOmittedDefaultParameterIndices"] !is JsonArray) {
             return add("UNSUPPORTED", site)
         }
-        val roles = receiver?.let { mapOf("RECEIVER" to expression(it)) }.orEmpty()
+        val qualifier = if (receiver != null && selected["dataStaticQualifierAuthority"]?.jsonPrimitive?.content == "K2_STATIC_FUNCTION_RESOLVED_CLASS_QUALIFIER"
+            && compilerRange(selected, "dataStaticQualifierStart", "dataStaticQualifierEnd") == range(receiver)) buildJsonObject {
+                put("schema", "kotlin-documentation-static-qualifier/1.0"); put("authority", selected["dataStaticQualifierAuthority"]!!)
+                put("classIdentity", selected["dataStaticQualifierClass"]!!)
+                put("byteStart", range(receiver).first); put("byteEnd", range(receiver).second)
+            } else null
+        val roles = if (qualifier != null) emptyMap() else receiver?.let { mapOf("RECEIVER" to expression(it)) }.orEmpty()
         val mapping = selected["dataArgumentToParameter"]?.jsonArray.orEmpty().map { it.jsonObject }
         val actuals = call.valueArguments.map { argument ->
             val expr = argument.getArgumentExpression() ?: throw Unavailable()
@@ -256,6 +314,6 @@ internal class KotlinDocumentationData(
             }
         }
         return add(kind, site, roles.values.toList() + actuals.map { it["expression"]!!.jsonPrimitive.int }, roles,
-            actuals, selected["dataOmittedDefaultParameterIndices"]?.jsonArray.orEmpty(), selected["target"]?.jsonPrimitive?.content)
+            actuals, selected["dataOmittedDefaultParameterIndices"]?.jsonArray.orEmpty(), selected["target"]?.jsonPrimitive?.content, qualifier)
     }
 }

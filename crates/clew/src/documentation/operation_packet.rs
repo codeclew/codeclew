@@ -3431,7 +3431,25 @@ mod tests {
         forged.as_object_mut().unwrap().remove("packetDigest");
         forged["packetDigest"] = json!(digest(&forged).unwrap());
         assert!(audit_saved_packet(&work, &forged).is_err());
+        work.request.source_data_max_depth = Some(0);
+        let (bounded, _) = build(&work).unwrap();
+        assert_eq!(bounded["sourceDataContext"]["bounds"]["maxDepth"], 0);
+        assert_eq!(
+            bounded["sourceDataContext"]["nodes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_ne!(bounded["packetDigest"], packet["packetDigest"]);
+        assert!(audit_saved_packet(&work, &packet).is_err());
+        assert!(audit_saved_packet(&work, &bounded).is_ok());
+        work.request.source_data_max_depth = Some(3);
+        assert!(build(&work).is_err());
+        work.request.source_data_max_depth = Some(0);
         work.request.source_data_context = false;
+        assert!(build(&work).is_err());
+        work.request.source_data_max_depth = None;
         assert_eq!((legacy, legacy_audit), build(&work).unwrap());
     }
 

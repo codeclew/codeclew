@@ -661,6 +661,7 @@ mod tests {
                     spring: None,
                     jvm_annotations: None,
                     documentation: None,
+                    value_projection: None,
                     interfaces: Vec::new(),
                     superclass: None,
                     file: "src/main/java/api/Service.java".into(),

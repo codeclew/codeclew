@@ -203,6 +203,10 @@ pub(in super::super) fn prepare<'a>(
         nodes: vec![],
         body: None,
         variables: BTreeMap::new(),
+        enum_constants: BTreeMap::new(),
+        accessors: BTreeMap::new(),
+        string_constants: BTreeMap::new(),
+        static_qualifiers: BTreeMap::new(),
         calls: BTreeMap::new(),
         missing_sites: false,
     };

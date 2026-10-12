@@ -1,0 +1,617 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "scope": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "rootMethod": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/method"
+      },
+      "maxItems": 64,
+      "minItems": 1
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "maxItems": 256,
+      "minItems": 1
+    },
+    "boundaries": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "serviceFragments": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fragment"
+      },
+      "maxItems": 64,
+      "minItems": 0
+    },
+    "boundaryContracts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contract"
+      },
+      "maxItems": 64,
+      "minItems": 0
+    },
+    "processPages": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/processPage"
+      }
+    }
+  },
+  "required": [
+    "scope",
+    "rootMethod",
+    "methods",
+    "steps",
+    "boundaries"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/process-thread.schema.json",
+  "title": "Declared source-bound process thread (not runtime proof)",
+  "$defs": {
+    "citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "method",
+        "startLine",
+        "endLine"
+      ]
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "service": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "entrypoint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "textDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-fA-F0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "service",
+        "entrypoint",
+        "sourceId",
+        "textDigest"
+      ]
+    },
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "kind": {
+          "enum": [
+            "STATE_ASSIGNMENT",
+            "STORAGE_CALL",
+            "MESSAGE_SEND",
+            "EXTERNAL_CALL",
+            "RETURN",
+            "THROW",
+            "TRANSACTION_SCOPE"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "citation": {
+          "$ref": "#/$defs/citation"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "citation"
+      ]
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "guard": {
+          "$ref": "#/$defs/citation"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          },
+          "maxItems": 256,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "id",
+        "condition",
+        "steps"
+      ]
+    },
+    "branchGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "IF_ELSE",
+            "FIRST_MATCH",
+            "INDEPENDENT"
+          ]
+        },
+        "arms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/arm"
+          },
+          "maxItems": 32,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "mode",
+        "arms"
+      ]
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "method": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "STEP",
+            "ACTION",
+            "DECISION",
+            "ALTERNATIVE",
+            "ERROR",
+            "BOUNDARY"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          },
+          "maxItems": 256,
+          "minItems": 0
+        },
+        "branchGroup": {
+          "$ref": "#/$defs/branchGroup"
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect"
+          },
+          "maxItems": 256,
+          "minItems": 0
+        },
+        "processPage": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "text",
+        "method",
+        "startLine",
+        "endLine"
+      ]
+    },
+    "fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "entryMethod": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "rootStep": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        }
+      },
+      "required": [
+        "id",
+        "entryMethod",
+        "rootStep"
+      ]
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          }
+        },
+        "missingEvidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "evidenceRefs"
+          ],
+          "properties": {
+            "evidenceRefs": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "missingEvidence"
+          ]
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "service": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "textDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-fA-F0-9]{64}$"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "service",
+        "sourceId",
+        "revision",
+        "textDigest",
+        "startLine",
+        "endLine"
+      ]
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "callStep": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "receiverFragment": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transport": {
+          "enum": [
+            "HTTP",
+            "KAFKA"
+          ]
+        },
+        "operation": {
+          "$ref": "#/$defs/claim"
+        },
+        "request": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          },
+          "maxItems": 128,
+          "minItems": 0
+        },
+        "response": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          },
+          "maxItems": 128,
+          "minItems": 0
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          },
+          "maxItems": 128,
+          "minItems": 0
+        },
+        "guarantees": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          },
+          "maxItems": 128,
+          "minItems": 0
+        },
+        "evidence": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "callStep",
+        "receiverFragment",
+        "transport",
+        "operation",
+        "request",
+        "response",
+        "failures",
+        "guarantees",
+        "evidence"
+      ]
+    },
+    "processPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "service": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "CATALOGUE_PAGE"
+                },
+                "directory": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "exportDigest": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "route": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "pageDigest": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operation": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operationDigest": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "directory",
+                "exportDigest",
+                "route",
+                "pageDigest",
+                "operation",
+                "operationDigest"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "NATIVE_SCENARIO_PAGE"
+                },
+                "directory": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "publicationDigest": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scenario": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scenarioDigest": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "directory",
+                "publicationDigest",
+                "scenario",
+                "scenarioDigest"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "service",
+        "revision",
+        "binding"
+      ]
+    }
+  }
+}

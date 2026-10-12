@@ -14,6 +14,10 @@ import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtPsiFactory
 import kotlin.test.*
+import org.jetbrains.org.objectweb.asm.ClassReader
+import org.jetbrains.org.objectweb.asm.ClassVisitor
+import org.jetbrains.org.objectweb.asm.MethodVisitor
+import org.jetbrains.org.objectweb.asm.Opcodes
 
 /** Real K2 2.4 compiler occurrences; no manufactured name-to-symbol bindings. */
 class KotlinDocumentationVariablesTest {
@@ -21,7 +25,7 @@ class KotlinDocumentationVariablesTest {
         it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_DATA_BOUNDARY")
     }
     private fun compileAll(source: String): List<JsonObject> = compileSources(mapOf("Variables.kt" to source))
-    private fun compileSources(sources: Map<String, String>): List<JsonObject> {
+    private fun compileSources(sources: Map<String, String>, verifyBytecode: ((Path, List<JsonObject>) -> Unit)? = null): List<JsonObject> {
         val root = Files.createTempDirectory("kotlin-documentation-variables").toRealPath()
         try {
             val inputs = sources.map { (name, text) -> Files.writeString(root.resolve(name), text).toString() }
@@ -36,7 +40,9 @@ class KotlinDocumentationVariablesTest {
                 }
             }
             assertEquals(0, status.code, output.toString())
-            return Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
+            val rows = Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
+            verifyBytecode?.invoke(root.resolve("classes"), rows)
+            return rows
         } finally {
             root.toFile().deleteRecursively()
         }
@@ -58,8 +64,8 @@ class KotlinDocumentationVariablesTest {
             val file = KtPsiFactory(environment.project, markGenerated = false).createFile(selectedFile, source)
             val documentation = KotlinDocumentationSource("src/$selectedFile", file, source, ":/main", descriptors.filter { it["file"]!!.jsonPrimitive.content == "src/$selectedFile" },
                 rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile },
-                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_OPERATION") && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile }, descriptors)
-            return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).filter { it.bodyExpression != null && it.receiverTypeReference == null }.associate { function ->
+                rows.filter { it["recordType"]?.jsonPrimitive?.content in setOf("DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT", "DOCUMENTATION_OPERATION", "DOCUMENTATION_ENUM_ENTRY") && Path.of(it["file"]!!.jsonPrimitive.content).fileName.toString() == selectedFile }, descriptors)
+            return PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java).filter { it.name != null && it.bodyExpression != null && it.receiverTypeReference == null }.associate { function ->
                 val enriched = documentation.enrich(function, buildJsonObject { put("name", function.name) })
                 function.name!! to assertNotNull(enriched["documentation"]?.jsonObject?.get("dataInput"), enriched.toString()).jsonObject
             }
@@ -88,7 +94,7 @@ class KotlinDocumentationVariablesTest {
         assertEquals(setOf("helper", "format", "pair", "named", "omitted", "constant"), data.keys)
         val bytes = source.toByteArray(Charsets.UTF_8)
         for ((_, input) in data) {
-            assertEquals("codeclew-kotlin-documentation-data/1.0", input["schema"]!!.jsonPrimitive.content)
+            assertEquals("codeclew-kotlin-documentation-data/1.3", input["schema"]!!.jsonPrimitive.content)
             assertEquals("ORIGINAL_UTF8_BYTES", input["coordinateDomain"]!!.jsonPrimitive.content)
             val nodes = input["nodes"]!!.jsonArray
             assertTrue(nodes.isNotEmpty())
@@ -143,7 +149,7 @@ class KotlinDocumentationVariablesTest {
         """.trimIndent()
         // Class methods using `this` are outside this bounded pure-expression slice.
         val data = extractData(source)
-        for (name in listOf("operator", "property", "external", "getter", "nullable", "zero")) {
+        for (name in listOf("operator", "external", "nullable", "zero")) {
             assertTrue(data[name]!!["nodes"]!!.jsonArray.map { it.jsonObject }.any { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }, name)
         }
         val bytes = source.toByteArray(Charsets.UTF_8)
@@ -152,7 +158,7 @@ class KotlinDocumentationVariablesTest {
                 it["kind"]!!.jsonPrimitive.content != "RETURN" && bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() == text
             }
             assertEquals(1, matched.size, "$name must retain its exact unsupported expression")
-            assertEquals("UNSUPPORTED", matched.single()["kind"]!!.jsonPrimitive.content)
+            assertEquals(if (name == "getter") "ACCESSOR" else "UNSUPPORTED", matched.single()["kind"]!!.jsonPrimitive.content)
         }
     }
 
@@ -229,7 +235,12 @@ class KotlinDocumentationVariablesTest {
         for (name in listOf("custom", "virtual")) {
             assertTrue(data[name]!!["members"]!!.jsonArray.isEmpty(), name)
             val body = data[name]!!["nodes"]!!.jsonArray.map { it.jsonObject }.filter { it["kind"]!!.jsonPrimitive.content != "RETURN" }
-            assertEquals(1, body.size); assertEquals("UNSUPPORTED", body.single()["kind"]!!.jsonPrimitive.content)
+            assertEquals(2, body.size)
+            assertEquals(1, body.count { it["kind"]!!.jsonPrimitive.content == "ACCESSOR" })
+            val attempt = data[name]!!["accessorAttempts"]!!.jsonArray.single().jsonObject
+            assertEquals("READ", attempt["accessMode"]!!.jsonPrimitive.content)
+            assertEquals("K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH", attempt["authority"]!!.jsonPrimitive.content)
+            assertFalse(attempt["storageProof"]!!.jsonObject["qualified"]!!.jsonPrimitive.boolean)
         }
     }
 
@@ -261,6 +272,151 @@ class KotlinDocumentationVariablesTest {
         assertTrue(nodes.filter { it["kind"]!!.jsonPrimitive.content == "UNSUPPORTED" }.all {
             bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString() in setOf("=", "==", "!=", "+", "!")
         }, nodes.toString())
+    }
+
+    @Test
+    fun enumIdentitiesAndGuardedQualifiedWritesComeFromK2Symbols() {
+        val source = "\uFEFF" + """
+            package docs
+            import docs.TaskStatus.COMPLETED as Finished
+            // π🙂 before the guarded writes
+            fun finalize(task: Task, failedChunks: Int, failedRows: Int, hasResult: Boolean) {
+                if (failedChunks > 0) { task.status = TaskStatus.FAILED }
+                else if (failedRows > 0) {
+                    if (hasResult) { task.status = TaskStatus.COMPLETED_WITH_ERRORS }
+                    else { task.status = TaskStatus.IN_PROGRESS }
+                } else { task.status = Finished }
+            }
+            fun shadow(): String = Other.FAILED
+            fun custom(value: Counter): Boolean = value > 0
+        """.trimIndent().replace("\n", "\r\n")
+        val data = extractDataSources(mapOf(
+            "Status.kt" to "package docs\nenum class TaskStatus { FAILED, COMPLETED_WITH_ERRORS, IN_PROGRESS, COMPLETED }\nclass Task(var status: TaskStatus)\nobject Other { val FAILED = \"failed\" }\nclass Counter { operator fun compareTo(other: Int): Int = 0 }",
+            "Process.kt" to source,
+        ), "Process.kt")
+        val process = data["finalize"]!!
+        val entries = process["enumEntries"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(setOf("FAILED", "COMPLETED_WITH_ERRORS", "IN_PROGRESS", "COMPLETED"), entries.map { it["entryName"]!!.jsonPrimitive.content }.toSet())
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        for (entry in entries) {
+            assertEquals("class:docs/TaskStatus", entry["enumClassIdentity"]!!.jsonPrimitive.content)
+            assertEquals("enum-entry:docs/TaskStatus." + entry["entryName"]!!.jsonPrimitive.content, entry["entryIdentity"]!!.jsonPrimitive.content)
+            assertEquals("K2_RESOLVED_ENUM_ENTRY_SYMBOL", entry["authority"]!!.jsonPrimitive.content)
+            val syntax = bytes.copyOfRange(entry["byteStart"]!!.jsonPrimitive.int, entry["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+            assertEquals(if (entry["entryName"]!!.jsonPrimitive.content == "COMPLETED") "Finished" else "TaskStatus." + entry["entryName"]!!.jsonPrimitive.content, syntax)
+        }
+        val nodes = process["nodes"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(4, nodes.count { it["kind"]!!.jsonPrimitive.content == "ENUM_CONSTANT" })
+        assertEquals(4, nodes.count { it["kind"]!!.jsonPrimitive.content == "ASSIGNMENT" })
+        assertEquals(2, nodes.count { it["kind"]!!.jsonPrimitive.content == "BINARY" })
+        val writes = process["members"]!!.jsonArray.map { it.jsonObject }.filter { it["accessMode"]!!.jsonPrimitive.content == "WRITE" }
+        assertEquals(4, writes.size)
+        assertTrue(writes.all { it["propertyIdentity"]!!.jsonPrimitive.content == "property:docs/Task.status" })
+        assertTrue(data["shadow"]!!["enumEntries"]!!.jsonArray.isEmpty())
+        assertTrue(data["custom"]!!["nodes"]!!.jsonArray.none { it.jsonObject["kind"]!!.jsonPrimitive.content == "BINARY" })
+    }
+
+    @Test
+    fun virtualAndThrowingOverriddenAccessorsKeepStaticIdentityAndExactAttemptOrder() {
+        val source = "\uFEFF" + """
+            package docs
+            // π🙂 preserves the original coordinate domain
+            enum class Status { FAILED, COMPLETED }
+            const val FINALIZED = "FINALIZED"
+            fun constant(): String = FINALIZED
+            fun opaque(task: Task): Boolean = task.status == Status.FAILED
+            open class Task { open var status: Status = Status.COMPLETED; open val failed: Int = 0 }
+            class Throwing : Task() {
+                override var status: Status
+                    get() = error("getter")
+                    set(value) { error("setter") }
+                override val failed: Int get() = error("counter")
+            }
+            fun finalize(task: Task) {
+                if (task.failed > 0) { task.status = Status.FAILED }
+                else { task.status = Status.COMPLETED }
+                val after = task.status
+                val message = "failed ${'$'}{task.failed}"
+            }
+        """.trimIndent().replace("\n", "\r\n")
+        val extracted = extractData(source)
+        assertTrue(extracted["constant"]!!["accessorAttempts"]!!.jsonArray.isEmpty())
+        assertEquals("FINALIZED", extracted["constant"]!!["stringConstants"]!!.jsonArray.single().jsonObject["stringConstant"]!!.jsonPrimitive.content)
+        assertEquals(1, extracted["constant"]!!["nodes"]!!.jsonArray.count { it.jsonObject["kind"]!!.jsonPrimitive.content == "STRING_CONSTANT" })
+        assertTrue(extracted["opaque"]!!["accessorAttempts"]!!.jsonArray.isEmpty())
+        assertTrue(extracted["opaque"]!!["enumEntries"]!!.jsonArray.isEmpty())
+        val data = extracted["finalize"]!!
+        assertTrue(data["members"]!!.jsonArray.isEmpty())
+        val attempts = data["accessorAttempts"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("READ", "WRITE", "WRITE", "READ"), attempts.map { it["accessMode"]!!.jsonPrimitive.content })
+        assertEquals(listOf("property:docs/Task.failed", "property:docs/Task.status", "property:docs/Task.status", "property:docs/Task.status"), attempts.map { it["propertyIdentity"]!!.jsonPrimitive.content })
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        assertEquals(listOf("task.failed", "task.status", "task.status", "task.status"), attempts.map {
+            bytes.copyOfRange(it["byteStart"]!!.jsonPrimitive.int, it["byteEnd"]!!.jsonPrimitive.int).decodeToString()
+        })
+        assertTrue(attempts.all { !it["storageProof"]!!.jsonObject["qualified"]!!.jsonPrimitive.boolean })
+        assertEquals(4, data["nodes"]!!.jsonArray.count { it.jsonObject["kind"]!!.jsonPrimitive.content == "ACCESSOR" })
+        assertEquals(1, data["nodes"]!!.jsonArray.count { it.jsonObject["kind"]!!.jsonPrimitive.content == "BINARY" })
+    }
+
+    @Test
+    fun staticClassQualifierRequiresResolvedJavaStaticFunctionAndNeverObjectOrShadowedReceiver() {
+        val source = "\uFEFF" + """
+            package docs
+            import java.time.LocalDateTime
+            // π🙂 precedes the exact class qualifier
+            object Clock { fun now(): Int = 1; @JvmStatic fun staticNow(): Int = 3 }
+            class InstanceClock { fun now(): Int = 2 }
+            fun javaStatic(): LocalDateTime = LocalDateTime.now()
+            fun objectCall(): Int = Clock.now()
+            fun kotlinStatic(): Int = Clock.staticNow()
+            fun shadow(LocalDateTime: InstanceClock): Int = LocalDateTime.now()
+        """.trimIndent().replace("\n", "\r\n")
+        val data = extractData(source)
+        val call = data["javaStatic"]!!["nodes"]!!.jsonArray.map { it.jsonObject }.single { it["kind"]!!.jsonPrimitive.content == "CALL" }
+        val qualifier = assertNotNull(call["staticQualifier"]).jsonObject
+        assertEquals("class:java/time/LocalDateTime", qualifier["classIdentity"]!!.jsonPrimitive.content)
+        assertEquals("K2_STATIC_FUNCTION_RESOLVED_CLASS_QUALIFIER", qualifier["authority"]!!.jsonPrimitive.content)
+        assertTrue(call["roles"]!!.jsonObject.isEmpty())
+        val bytes = source.toByteArray(Charsets.UTF_8)
+        assertEquals("LocalDateTime", bytes.copyOfRange(qualifier["byteStart"]!!.jsonPrimitive.int, qualifier["byteEnd"]!!.jsonPrimitive.int).decodeToString())
+        for (name in listOf("objectCall", "shadow", "kotlinStatic")) {
+            val calls = data[name]!!["nodes"]!!.jsonArray.map { it.jsonObject }.filter { it["kind"]!!.jsonPrimitive.content == "CALL" }
+            assertEquals(1, calls.size)
+            assertNull(calls.single()["staticQualifier"])
+            assertNotNull(calls.single()["roles"]!!.jsonObject["RECEIVER"])
+        }
+    }
+
+    @Test
+    fun extensionReceiverPositionAndNullablePrimitiveSlotsMatchEmittedBytecode() {
+        compileSources(mapOf("Extensions.kt" to """
+            package docs
+            class Extensions {
+                fun String.join(input: Int?): String = this
+                fun Int?.echo(input: Int?): Int? = input
+                fun stringCaller(input: Int?): String = "prefix".join(input)
+                fun intCaller(input: Int?): Int? = input.echo(input)
+            }
+        """.trimIndent()), verifyBytecode = { classes, rows ->
+            val methods = mutableSetOf<String>()
+            ClassReader(Files.readAllBytes(classes.resolve("docs/Extensions.class"))).accept(object : ClassVisitor(Opcodes.ASM9) {
+                override fun visitMethod(access: Int, name: String, descriptor: String, signature: String?, exceptions: Array<out String>?): MethodVisitor? {
+                    methods += "$name#jvm:$descriptor"
+                    return null
+                }
+            }, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+            val declarations = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR"
+                && it["symbolIdentity"]?.jsonPrimitive?.content?.let { id -> ".join#" in id || ".echo#" in id } == true }
+            assertEquals(2, declarations.size)
+            for (row in declarations) assertTrue(row["symbolIdentity"]!!.jsonPrimitive.content.substringAfter("Extensions.") in methods, row.toString())
+            val calls = rows.filter { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL"
+                && it["target"]?.jsonPrimitive?.content?.let { id -> ".join#" in id || ".echo#" in id } == true }
+            assertEquals(2, calls.size)
+            for (row in calls) assertTrue(row["target"]!!.jsonPrimitive.content.substringAfter("Extensions.") in methods, row.toString())
+            assertTrue("join#jvm:(Ljava/lang/String;Ljava/lang/Integer;)Ljava/lang/String;" in methods)
+            assertTrue("echo#jvm:(Ljava/lang/Integer;Ljava/lang/Integer;)Ljava/lang/Integer;" in methods)
+        })
     }
 
     @Test

@@ -3874,6 +3874,7 @@ mod tests {
                 maintained_paragraph: None,
                 maintained_from_bundle: None,
                 source_data_context: false,
+                source_data_max_depth: None,
                 max_items: 100,
                 max_bytes: 128 * 1024,
                 external_inputs: Vec::new(),

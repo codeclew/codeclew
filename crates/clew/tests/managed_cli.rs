@@ -2643,7 +2643,29 @@ fn managed_java17_maven_local_config_returns_indexed_source_without_commits() {
         ),
         (
             "src/main/java/example/OwnerController.java",
-            "package example;\n// Unicode before the declaration: 🩺 Café\nimport org.springframework.web.bind.annotation.*;\n@RestController\npublic class OwnerController {\n    @RequestMapping(path = \"/owners\")\n    public OwnerDto listOwners() {\n        return new OwnerDto(\"Ada\");\n    }\n}\n",
+            "package example;\n// Unicode before the declaration: 🩺 Café\nimport org.springframework.web.bind.annotation.*;\n@RestController\npublic class OwnerController {\n    @RequestMapping(path = \"/owners\")\n    public OwnerDto listOwners() {\n        return new OwnerDto(\"Ada\");\n    }\n    public String choose(String input) { String selected = input == null ? \"fallback\" : input; return selected; }\n}\n",
+        ),
+        (
+            "src/main/java/example/ValueHelper.java",
+            "package example; class ValueHelper { static String identity(String input) { return input; } static String identity(int input) { return null; } }\n",
+        ),
+        (
+            "src/main/java/example/ValueCalls.java",
+            r#"package example;
+class ValueCalls {
+    static String field = "field";
+    static String combined() { String a = ValueHelper.identity(null); String b = ValueHelper.identity("ok"); return a == null ? b : a; }
+    static String onlyNull() { return ValueHelper.identity(null); }
+    static String pickInt() { return ValueHelper.identity(1); }
+    static String localUnused() { String a = ValueHelper.identity(null); String b = ValueHelper.identity("ok"); return a; }
+    static String recurse(String input) { return recurse(input); }
+    static String recurseNull() { return recurse(null); }
+    static String readField() { return field; }
+    static String opaque() { return readField(); }
+    static String viaVirtual(ValueCalls receiver) { return receiver.virtual(); }
+    String virtual() { return "ok"; }
+}
+"#,
         ),
         (
             "mvnw",
@@ -2688,6 +2710,14 @@ esac
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
     }
+    let wide_file = format!("src/main/java/{}WideValues.java", "segment/".repeat(50));
+    let wide = repository.join(&wide_file);
+    fs::create_dir_all(wide.parent().unwrap()).unwrap();
+    let long_method = format!("choose{}", "Value".repeat(60));
+    let unused = (0..12)
+        .map(|i| format!("String unused{i} = \"value\";"))
+        .collect::<String>();
+    fs::write(&wide, format!("package example; class WideValues {{ String {long_method}(String input) {{ {unused} String selected = input == null ? \"fallback\" : input; return selected; }} }}\n")).unwrap();
     fs::set_permissions(repository.join("mvnw"), fs::Permissions::from_mode(0o644)).unwrap();
     run_git(&repository, &["init", "-q", "-b", "main"]);
     run_git(&repository, &["add", "."]);
@@ -2811,6 +2841,312 @@ esac
             .to_string()
             .contains("FIX_JAVA_CLASSPATH_OR_DIAGNOSTIC")
     );
+    let owner = "method:class:example.OwnerController#choose(Ljava/lang/String;)Ljava/lang/String;";
+    let value_args = [
+        "session",
+        "values",
+        "--session",
+        session,
+        "--compilation",
+        ":/main",
+        "--owner",
+        owner,
+    ];
+    let values = run(&value_args);
+    assert!(
+        values.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&values.stdout),
+        String::from_utf8_lossy(&values.stderr)
+    );
+    let value: Value = serde_json::from_slice(&values.stdout).unwrap();
+    assert_eq!(value["status"], "AVAILABLE", "{value}");
+    assert_eq!(
+        value["observationAuthority"],
+        "AUTHENTICATED_RETAINED_COMPILER_PROJECTION"
+    );
+    assert_eq!(value["programSemanticClosure"], false);
+    assert!(
+        value["sources"][0]["contentDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(value["occurrences"].as_array().unwrap().len() > 1);
+    assert_eq!(
+        value["result"]["calculationAuthority"],
+        "DECLARED_MODEL_EQUATIONS"
+    );
+    assert_eq!(
+        value["result"]["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|observation| observation["id"] == "result")
+            .unwrap()["normalValueNullness"],
+        "NON_NULL"
+    );
+    assert!(
+        value["result"]["frontier"]
+            .to_string()
+            .contains("JAVA_VALUE_EFFECT_EXCEPTION_MODEL_UNAVAILABLE")
+    );
+    assert_eq!(values.stdout, run(&value_args).stdout);
+    let no_tools = temporary.path().join("no-analysis-tools");
+    fs::create_dir(&no_tools).unwrap();
+    let offline_values = run_managed_exact_path(
+        &binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &value_args,
+        &no_tools,
+    );
+    assert!(
+        offline_values.status.success(),
+        "{}",
+        String::from_utf8_lossy(&offline_values.stdout)
+    );
+    assert_eq!(values.stdout, offline_values.stdout);
+    let mut absent = value_args.to_vec();
+    absent.extend(["--target", "missing"]);
+    let absent: Value = serde_json::from_slice(&run(&absent).stdout).unwrap();
+    assert_eq!(absent["status"], "UNKNOWN");
+    assert!(
+        absent["unknownCodes"]
+            .to_string()
+            .contains("VALUE_NOT_FOUND_UNKNOWN")
+    );
+    let mut foreign = value_args;
+    foreign[7] = "method:class:Foreign#choose(Ljava/lang/String;)Ljava/lang/String;";
+    let foreign: Value = serde_json::from_slice(&run(&foreign).stdout).unwrap();
+    assert_eq!(foreign["status"], "UNKNOWN");
+    assert_eq!(foreign["observationAuthority"], "NONE");
+    assert!(foreign["modelDigest"].is_null());
+    let mut bounded = value_args.to_vec();
+    bounded.extend(["--max-nodes", "1"]);
+    let bounded: Value = serde_json::from_slice(&run(&bounded).stdout).unwrap();
+    assert_eq!(bounded["equations"].as_array().unwrap().len(), 1);
+    assert_eq!(bounded["occurrences"].as_array().unwrap().len(), 1);
+    assert_eq!(bounded["modelDigest"], value["modelDigest"]);
+    assert!(
+        bounded["result"]["frontier"]
+            .to_string()
+            .contains("RELEVANCE_NODE_BUDGET")
+    );
+    let wide_owner = format!(
+        "method:class:example.WideValues#{long_method}(Ljava/lang/String;)Ljava/lang/String;"
+    );
+    let wide_args = [
+        "session",
+        "values",
+        "--session",
+        session,
+        "--compilation",
+        ":/main",
+        "--owner",
+        &wide_owner,
+    ];
+    let wide_packet = run(&wide_args);
+    assert!(
+        wide_packet.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wide_packet.stdout)
+    );
+    let wide_value: Value = serde_json::from_slice(&wide_packet.stdout).unwrap();
+    assert_eq!(wide_value["status"], "AVAILABLE", "{wide_value}");
+    assert!(
+        wide_value["retainedDefinitionCount"].as_u64().unwrap()
+            > wide_value["equations"].as_array().unwrap().len() as u64
+    );
+    let mut wide_cut = wide_args.to_vec();
+    wide_cut.extend(["--max-nodes", "1"]);
+    let wide_cut = run(&wide_cut);
+    assert!(
+        wide_cut.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wide_cut.stdout)
+    );
+    assert!(wide_cut.stdout.len() < wide_packet.stdout.len());
+    let wide_cut: Value = serde_json::from_slice(&wide_cut.stdout).unwrap();
+    assert_eq!(wide_cut["equations"].as_array().unwrap().len(), 1);
+    assert_eq!(wide_cut["occurrences"].as_array().unwrap().len(), 1);
+    assert_eq!(wide_cut["modelDigest"], wide_value["modelDigest"]);
+    let mut cut = value_args.to_vec();
+    cut.extend(["--max-transfers", "1"]);
+    let cut: Value = serde_json::from_slice(&run(&cut).stdout).unwrap();
+    assert_eq!(cut["result"]["equationsConverged"], false);
+    assert!(
+        cut["result"]["frontier"]
+            .to_string()
+            .contains("FIXPOINT_TRANSFER_BUDGET")
+    );
+    // Historical retained bytes stay usable after the live checkout changes.
+    let call_packet = |name: &str, parameters: &str| {
+        let call_owner =
+            format!("method:class:example.ValueCalls#{name}{parameters}Ljava/lang/String;");
+        let mut args = value_args;
+        args[7] = &call_owner;
+        let output = run(&args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(output.stdout, run(&args).stdout);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let nullness = |packet: &Value, id: &str| {
+        packet["result"]["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id)
+            .unwrap()["normalValueNullness"]
+            .clone()
+    };
+    let combined = call_packet("combined", "()");
+    assert_eq!(nullness(&combined, "result"), "NON_NULL", "{combined}");
+    assert_eq!(combined["callExpansion"]["contextCount"], 3);
+    assert_eq!(combined["callExpansion"]["summaryCacheHits"], 1);
+    assert_eq!(nullness(&combined, "c1/result"), "NULL");
+    assert_eq!(nullness(&combined, "c2/result"), "NON_NULL");
+    assert!(combined["occurrences"].as_array().unwrap().iter().any(|n| n["owner"] == "method:class:example.ValueHelper#identity(Ljava/lang/String;)Ljava/lang/String;"));
+    assert_eq!(combined["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(nullness(&call_packet("onlyNull", "()"), "result"), "NULL");
+    let overload = call_packet("pickInt", "()");
+    assert_eq!(nullness(&overload, "result"), "NULL");
+    assert!(overload["occurrences"].as_array().unwrap().iter().any(|n| n["owner"] == "method:class:example.ValueHelper#identity(I)Ljava/lang/String;"));
+    assert!(!overload["occurrences"].as_array().unwrap().iter().any(|n| n["owner"] == "method:class:example.ValueHelper#identity(Ljava/lang/String;)Ljava/lang/String;"));
+    // Export an actual public query for inspection. The fixture session is
+    // later collected; preserved sources do not make its temporary CAS durable.
+    if let Some(directory) = std::env::var_os("CODECLEW_TEST_QUERY_EXAMPLE_DIRECTORY") {
+        let directory = std::path::PathBuf::from(directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("combined-query.json"),
+            serde_json::to_vec_pretty(&combined).unwrap(),
+        )
+        .unwrap();
+        for (path, source) in &files {
+            if [
+                "src/main/java/example/ValueHelper.java",
+                "src/main/java/example/ValueCalls.java",
+            ]
+            .contains(path)
+            {
+                fs::write(directory.join(Path::new(path).file_name().unwrap()), source).unwrap();
+            }
+        }
+    }
+    let unused = call_packet("localUnused", "()");
+    assert_eq!(nullness(&unused, "result"), "NULL");
+    assert_eq!(unused["callExpansion"]["contextCount"], 2);
+    let call_source = files
+        .iter()
+        .find(|(path, _)| *path == "src/main/java/example/ValueCalls.java")
+        .unwrap()
+        .1;
+    let method_start = call_source.find("static String localUnused()").unwrap();
+    let local_start = method_start + call_source[method_start..].find("String b =").unwrap();
+    let local_end = local_start + call_source[local_start..].find(';').unwrap() + 1;
+    let local_target = format!(
+        "v{}_{}",
+        call_source[..local_start].encode_utf16().count(),
+        call_source[..local_end].encode_utf16().count()
+    );
+    let local_owner = "method:class:example.ValueCalls#localUnused()Ljava/lang/String;";
+    let mut local_args = value_args.to_vec();
+    local_args[7] = local_owner;
+    local_args.extend(["--target", &local_target]);
+    let local = run(&local_args);
+    assert!(
+        local.status.success(),
+        "{}",
+        String::from_utf8_lossy(&local.stdout)
+    );
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(nullness(&local, &local_target), "NON_NULL", "{local}");
+    let recursive = call_packet("recurseNull", "()");
+    assert_eq!(nullness(&recursive, "result"), "UNKNOWN");
+    assert_eq!(recursive["result"]["equationsConverged"], true);
+    assert!(
+        recursive["result"]["frontier"]
+            .to_string()
+            .contains("VALUE_RECURSIVE_CONTEXT_JOINED")
+    );
+    let opaque = call_packet("opaque", "()");
+    assert_eq!(nullness(&opaque, "result"), "UNKNOWN");
+    assert!(
+        opaque["result"]["frontier"]
+            .to_string()
+            .contains("VALUE_CALL_TARGET_OR_PURE_PROFILE_UNAVAILABLE")
+    );
+    let virtual_call = call_packet("viaVirtual", "(Lexample/ValueCalls;)");
+    assert_eq!(nullness(&virtual_call, "result"), "UNKNOWN");
+    assert!(virtual_call["callExpansion"].is_null());
+    let combined_owner = "method:class:example.ValueCalls#combined()Ljava/lang/String;";
+    let mut combined_args = value_args;
+    combined_args[7] = combined_owner;
+    let offline_calls = run_managed_exact_path(
+        &binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &combined_args,
+        &no_tools,
+    );
+    assert!(
+        offline_calls.status.success(),
+        "{}",
+        String::from_utf8_lossy(&offline_calls.stdout)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&offline_calls.stdout).unwrap(),
+        combined
+    );
+    let mut missing_call_target = combined_args.to_vec();
+    missing_call_target.extend(["--target", "missing"]);
+    let missing_call_target = run(&missing_call_target);
+    assert!(
+        missing_call_target.status.success(),
+        "{}",
+        String::from_utf8_lossy(&missing_call_target.stdout)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&missing_call_target.stdout).unwrap()["status"],
+        "UNKNOWN"
+    );
+    fs::write(
+        repository.join("src/main/java/example/ValueHelper.java"),
+        "changed live helper source",
+    )
+    .unwrap();
+    assert_eq!(call_packet("combined", "()"), combined);
+    fs::write(
+        repository.join("src/main/java/example/ValueHelper.java"),
+        files
+            .iter()
+            .find(|(path, _)| *path == "src/main/java/example/ValueHelper.java")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    fs::write(
+        repository.join("src/main/java/example/OwnerController.java"),
+        "changed live source",
+    )
+    .unwrap();
+    assert_eq!(values.stdout, run(&value_args).stdout);
+    fs::write(
+        repository.join("src/main/java/example/OwnerController.java"),
+        files
+            .iter()
+            .find(|(path, _)| *path == "src/main/java/example/OwnerController.java")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
     assert_eq!(status(), before);
     assert!(!repository.join("target").exists());
     assert_eq!(

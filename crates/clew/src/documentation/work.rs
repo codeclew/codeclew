@@ -346,6 +346,9 @@ pub struct Request {
     /// Opt-in exact callable source transformations; omitted false preserves old identity.
     #[serde(default, skip_serializing_if = "source_data_false")]
     pub source_data_context: bool,
+    /// Explicit source-data expansion depth; omitted preserves legacy packet identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_data_max_depth: Option<u8>,
     #[serde(default = "default_limit")]
     pub max_items: u32,
     #[serde(default = "default_bytes")]
@@ -3525,6 +3528,7 @@ mod section_context_tests {
                 maintained_paragraph: None,
                 maintained_from_bundle: None,
                 source_data_context: false,
+                source_data_max_depth: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: vec![],
@@ -5159,6 +5163,7 @@ pub(super) mod api_contract_tests {
                 maintained_paragraph: None,
                 maintained_from_bundle: None,
                 source_data_context: false,
+                source_data_max_depth: None,
                 max_items: 100,
                 max_bytes: 49152,
                 external_inputs: Vec::new(),

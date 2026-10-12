@@ -233,6 +233,100 @@ impl Flow<'_> {
             opaque(n.text(), "EXACT_VARIABLE_SITE_UNAVAILABLE")
         }
     }
+    fn interfere(&mut self, occurrence: &str, path: &mut Path, n: Node<'_>) {
+        let fields: Vec<_> = path
+            .env
+            .keys()
+            .filter(|s| matches!(s.kind.as_str(), "FIELD" | "PROPERTY"))
+            .cloned()
+            .collect();
+        for storage in fields {
+            let prior_definitions = path.env.get(&storage).cloned().unwrap_or_default();
+            self.frontier("CALL_FIELD_INTERFERENCE", "Calls can change field state through aliases or callbacks; preceding field definitions do not exhaust the post-call value.");
+            self.define(
+                format!(
+                    "after/{occurrence}/{}",
+                    hash_bytes(&serde_json::to_vec(&storage).unwrap())
+                ),
+                Some(storage),
+                DataValue::Interference {
+                    occurrence: occurrence.into(),
+                    prior_definitions,
+                },
+                path,
+                n,
+            );
+        }
+    }
+    fn accessor(
+        &mut self,
+        n: Node<'_>,
+        receiver: Option<DataValue>,
+        argument: Option<DataValue>,
+        path: &mut Path,
+    ) -> DataValue {
+        let Some(binding) = self.input.accessors.get(&n.range()) else {
+            self.stop_effects(
+                path,
+                "ACCESSOR_IDENTITY_UNAVAILABLE",
+                "No exact compiler property binding is retained for this accessor attempt.",
+            );
+            return opaque(n.text(), "ACCESSOR_IDENTITY_UNAVAILABLE");
+        };
+        if path.terminated {
+            return opaque(String::new(), "CHILD_EFFECTS_WITHHELD");
+        }
+        let range = n.range();
+        let occurrence = format!("property-access/{}/{}/{}", self.node.id, range.0, range.1);
+        let attempt = DataAccessorAttempt {
+            occurrence: occurrence.clone(),
+            property_identity: binding.property_identity.clone(),
+            authority: "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH".into(),
+            access_mode: binding.access_mode.clone(),
+            receiver,
+            argument,
+            conditions: path.guards.clone(),
+            normal_completion_of: path.completed.clone(),
+            citation_id: self
+                .node
+                .citations
+                .values()
+                .find(|c| {
+                    c.source_id == self.source_id
+                        && c.start_byte <= range.0
+                        && c.end_byte >= range.1
+                })
+                .map(|c| c.id.clone()),
+            start_byte: range.0,
+            end_byte: range.1,
+            dispatch: "UNKNOWN".into(),
+            storage_outcome: "UNKNOWN".into(),
+        };
+        if !self.reserve(serde_json::to_vec(&attempt).unwrap().len()) {
+            path.terminated = true;
+            return opaque(String::new(), "DATA_STATE_BUDGET");
+        }
+        if !self
+            .result
+            .property_declarations
+            .contains(&binding.declaration_id)
+        {
+            self.result
+                .property_declarations
+                .push(binding.declaration_id.clone());
+        }
+        self.result.accessor_attempts.push(attempt);
+        self.frontier("ACCESSOR_DISPATCH_STORAGE_UNKNOWN", "The compiler identifies the attempted property access, but accessor dispatch, result, effects and backing storage remain unknown. Later attempts require its normal completion.");
+        path.completed.push(DataCompletion {
+            occurrence: occurrence.clone(),
+            conditions: path.guards.clone(),
+        });
+        self.interfere(&occurrence, path, n);
+        DataValue::AccessorResult {
+            occurrence,
+            result: "UNKNOWN".into(),
+        }
+    }
     fn expression(&mut self, n: Node<'_>, path: &mut Path) -> DataValue {
         if path.terminated {
             return opaque(String::new(), "TRANSFER_ALREADY_WITHHELD");
@@ -242,6 +336,37 @@ impl Flow<'_> {
             return opaque(String::new(), "DATA_STATE_BUDGET");
         }
         match n.kind() {
+            Kind::This => {
+                if self.result.schema != "codeclew-source-data-state/1.3" {
+                    self.result.schema = "codeclew-source-data-state/1.2".into();
+                }
+                DataValue::ThisReceiver
+            }
+            Kind::StringConstant => {
+                let Some(binding) = self.input.string_constants.get(&n.range()).cloned() else {
+                    self.stop_effects(
+                        path,
+                        "STRING_CONSTANT_IDENTITY_UNAVAILABLE",
+                        "No exact compiler constant declaration and literal value are retained.",
+                    );
+                    return opaque(n.text(), "STRING_CONSTANT_IDENTITY_UNAVAILABLE");
+                };
+                self.result.schema = "codeclew-source-data-state/1.3".into();
+                if !self
+                    .result
+                    .property_declarations
+                    .contains(&binding.declaration_id)
+                {
+                    self.result
+                        .property_declarations
+                        .push(binding.declaration_id);
+                }
+                binding.value
+            }
+            Kind::Accessor => {
+                let receiver = n.child(Role::Receiver).map(|r| self.expression(r, path));
+                self.accessor(n, receiver, None, path)
+            }
             Kind::Variable | Kind::Field | Kind::Member => {
                 if !Self::simple_target(n) {
                     self.stop_effects(path,"OPAQUE_RECEIVER_EFFECTS","Unsupported field receiver evaluation may have effects; this and following transformations are withheld.");
@@ -250,6 +375,17 @@ impl Flow<'_> {
                 self.read(n, path)
             }
             Kind::Literal => DataValue::Literal { text: n.text() },
+            Kind::EnumConstant => {
+                if self.result.schema == SCHEMA {
+                    self.result.schema = "codeclew-source-data-state/1.1".into();
+                }
+                let Some(value) = self.input.enum_constants.get(&n.range()).cloned() else {
+                    self.stop_effects(path, "ENUM_IDENTITY_UNAVAILABLE", "An enum access lacks its exact compiler identity; following transformations are withheld.");
+                    return opaque(n.text(), "ENUM_IDENTITY_UNAVAILABLE");
+                };
+                self.frontier("ENUM_INITIALIZATION_UNPROVEN", "The compiler identifies the enum entry; class initialization and normal completion of its access remain unproven.");
+                value
+            }
             Kind::Parenthesized => n
                 .children()
                 .first()
@@ -343,6 +479,7 @@ impl Flow<'_> {
                     return opaque(String::new(), "DATA_STATE_BUDGET");
                 }
                 self.result.calls.push(DataCall {
+                    static_qualifier: self.input.static_qualifiers.get(&range).cloned(),
                     mapping_authority: "DECLARED_TARGET_SOURCE_CONDITIONAL".into(),
                     conditions: path.guards.clone(),
                     occurrence: occurrence.clone(),
@@ -360,35 +497,15 @@ impl Flow<'_> {
                     return_definitions: vec![],
                     normal_completion_of: path.completed.clone(),
                 });
+                if self.input.static_qualifiers.contains_key(&range) {
+                    self.result.schema = "codeclew-source-data-state/1.3".into();
+                    self.frontier("STATIC_CLASS_INITIALIZATION_UNPROVEN", "A compiler-resolved static class qualifier is not an evaluated object receiver. Class initialization and call completion remain unproven.");
+                }
                 path.completed.push(DataCompletion {
                     occurrence: occurrence.clone(),
                     conditions: path.guards.clone(),
                 });
-                // Any call can change fields through receivers, aliases or callbacks.
-                // Locals/formals keep their compiler bindings; no receiver solver is implied.
-                let fields: Vec<_> = path
-                    .env
-                    .keys()
-                    .filter(|s| matches!(s.kind.as_str(), "FIELD" | "PROPERTY"))
-                    .cloned()
-                    .collect();
-                for storage in fields {
-                    let prior_definitions = path.env.get(&storage).cloned().unwrap_or_default();
-                    self.frontier("CALL_FIELD_INTERFERENCE","Calls can change field state through aliases or callbacks; preceding field definitions do not exhaust the post-call value.");
-                    self.define(
-                        format!(
-                            "after/{occurrence}/{}",
-                            hash_bytes(&serde_json::to_vec(&storage).unwrap())
-                        ),
-                        Some(storage),
-                        DataValue::Interference {
-                            occurrence: occurrence.clone(),
-                            prior_definitions,
-                        },
-                        path,
-                        n,
-                    );
-                }
+                self.interfere(&occurrence, path, n);
                 DataValue::CallResult {
                     occurrence,
                     receiver,
@@ -452,7 +569,11 @@ impl Flow<'_> {
         if path.terminated {
             return vec![path];
         }
-        if self.result.definitions.len() + self.result.calls.len() >= MAX_ROWS {
+        if self.result.definitions.len()
+            + self.result.calls.len()
+            + self.result.accessor_attempts.len()
+            >= MAX_ROWS
+        {
             self.exhausted = true;
             path.terminated = true;
             return vec![path];
@@ -544,6 +665,18 @@ impl Flow<'_> {
                         if let (Some(left), Some(right)) =
                             (expr.child(Role::Left), expr.child(Role::Right))
                         {
+                            if left.kind() == Kind::Accessor {
+                                // Kotlin evaluates the receiver, then RHS, then invokes
+                                // the setter. A plain assignment does not invoke a getter.
+                                let receiver = left
+                                    .child(Role::Receiver)
+                                    .map(|r| self.expression(r, &mut path));
+                                let argument = self.expression(right, &mut path);
+                                if !path.terminated {
+                                    self.accessor(left, receiver, Some(argument), &mut path);
+                                }
+                                return vec![path];
+                            }
                             if !Self::simple_target(left) {
                                 self.stop_effects(&mut path,"OPAQUE_ASSIGNMENT_TARGET_EFFECTS","Unsupported assignment receiver or array-index evaluation may have effects; this and following transformations are withheld.");
                                 return vec![path];
@@ -616,6 +749,7 @@ fn project_with_bindings(
         data_state_digest: String::new(),
         definitions: vec![],
         calls: vec![],
+        accessor_attempts: vec![],
         field_declarations: vec![],
         property_declarations: vec![],
         gaps: vec![],
@@ -738,6 +872,11 @@ fn transfer(
             "expandDataState exceeds bounded path/definition budget; narrow the selection",
         ));
     }
+    if !flow.result.accessor_attempts.is_empty()
+        && flow.result.schema != "codeclew-source-data-state/1.3"
+    {
+        flow.result.schema = "codeclew-source-data-state/1.2".into();
+    }
     flow.result.field_declarations.sort();
     flow.result.field_declarations.dedup();
     flow.result.property_declarations.sort();
@@ -755,6 +894,9 @@ fn semantic_digest(state: &NodeDataState) -> Result<String, ClewError> {
     semantic.property_declarations.clear();
     for d in &mut semantic.definitions {
         d.citation_id = None;
+    }
+    for attempt in &mut semantic.accessor_attempts {
+        attempt.citation_id = None;
     }
     digest(&semantic)
 }
@@ -911,7 +1053,7 @@ pub(super) fn attach_graph(
         for (slot, identity) in bindings {
             formals.insert((id.clone(), slot), identity);
         }
-        rows += state.definitions.len() + state.calls.len();
+        rows += state.definitions.len() + state.calls.len() + state.accessor_attempts.len();
         bytes += serde_json::to_vec(&state)
             .map_err(|_| invalid("data-state encoding failed"))?
             .len();
@@ -1362,6 +1504,10 @@ mod tests {
             nodes,
             body: Some(3),
             variables: BTreeMap::new(),
+            enum_constants: BTreeMap::new(),
+            accessors: BTreeMap::new(),
+            string_constants: BTreeMap::new(),
+            static_qualifiers: BTreeMap::new(),
             calls,
             missing_sites: false,
         }
@@ -1379,6 +1525,7 @@ mod tests {
                 data_state_digest: String::new(),
                 definitions: vec![],
                 calls: vec![],
+                accessor_attempts: vec![],
                 field_declarations: vec![],
                 property_declarations: vec![],
                 gaps: vec![],
@@ -2211,5 +2358,86 @@ mod tests {
                 .get("dataState")
                 .is_none()
         );
+    }
+    #[test]
+    fn opaque_accessor_normal_completion_invalidates_preceding_fields() {
+        use input::{BoundAccessor, SyntaxNode};
+        let source = source("property");
+        let input = Input {
+            source: &source,
+            nodes: vec![SyntaxNode {
+                kind: Kind::Accessor,
+                range: (0, 8),
+                children: vec![],
+                roles: BTreeMap::new(),
+                actuals: vec![],
+                default_arguments: vec![],
+            }],
+            body: Some(0),
+            variables: BTreeMap::new(),
+            enum_constants: BTreeMap::new(),
+            accessors: BTreeMap::from([(
+                (0, 8),
+                BoundAccessor {
+                    property_identity: "property:Fixture.value".into(),
+                    declaration_id: "property".into(),
+                    access_mode: "READ".into(),
+                },
+            )]),
+            string_constants: BTreeMap::new(),
+            static_qualifiers: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            missing_sites: false,
+        };
+        let node = node();
+        let mut flow = Flow {
+            input: &input,
+            node: &node,
+            source_id: &source.id,
+            exhausted: false,
+            construction_bytes: 0,
+            result: NodeDataState {
+                schema: SCHEMA.into(),
+                authority: AUTHORITY.into(),
+                data_state_digest: String::new(),
+                definitions: vec![],
+                calls: vec![],
+                accessor_attempts: vec![],
+                field_declarations: vec![],
+                property_declarations: vec![],
+                gaps: vec![],
+            },
+        };
+        let storage = DataStorage {
+            identity: "field:Fixture.known".into(),
+            kind: "FIELD".into(),
+            receiver: Some("THIS".into()),
+        };
+        let mut path = Path {
+            env: BTreeMap::from([(storage.clone(), vec!["before".into()])]),
+            ..Path::default()
+        };
+        let result = flow.expression(input.node(0), &mut path);
+        assert!(matches!(result, DataValue::AccessorResult { result, .. } if result=="UNKNOWN"));
+        assert!(!path.terminated);
+        assert_eq!(flow.result.accessor_attempts.len(), 1);
+        let interference = &flow.result.definitions[0];
+        assert!(
+            matches!(&interference.value, DataValue::Interference { prior_definitions, .. } if prior_definitions==&["before"])
+        );
+        assert_eq!(
+            path.env[&storage].as_slice(),
+            std::slice::from_ref(&interference.id)
+        );
+        assert_eq!(interference.normal_completion_of, path.completed);
+        assert_eq!(
+            path.completed[0].occurrence,
+            flow.result.accessor_attempts[0].occurrence
+        );
+        assert!(flow.result.definitions.iter().all(|d| {
+            d.storage
+                .as_ref()
+                .is_none_or(|s| s.identity != "property:Fixture.value")
+        }));
     }
 }

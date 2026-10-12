@@ -43,6 +43,15 @@ pub(super) fn source_data_graph(
     service: &str,
     declaration: &str,
 ) -> Result<model::SourceCallGraph, ClewError> {
+    source_data_graph_with_depth(checked, service, declaration, 2)
+}
+
+pub(super) fn source_data_graph_with_depth(
+    checked: &Check,
+    service: &str,
+    declaration: &str,
+    max_depth: usize,
+) -> Result<model::SourceCallGraph, ClewError> {
     let e = checked
         .services
         .get(service)
@@ -67,7 +76,11 @@ pub(super) fn source_data_graph(
             "sourceDataContext root exceeds 1 MiB before parsing; narrow the selection",
         ));
     }
-    let mut graph = linked::build_roots(checked, &[(service.into(), declaration.into())])?;
+    let mut graph = linked::build_roots_with_depth(
+        checked,
+        &[(service.into(), declaration.into())],
+        max_depth,
+    )?;
     for node in graph.nodes.values_mut() {
         node.examined_source_digest = linked::node_digest(node)?;
     }

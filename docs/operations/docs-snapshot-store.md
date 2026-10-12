@@ -641,8 +641,15 @@ not compiler identities or source citation labels. Definitions still reference
 prior definitions instead of copying paths. Full variable facts remain in the
 immutable audit and are bound by per-node count/digest; unused statement spans
 and duplicate variable-fact citation descriptions are not author evidence rows.
-The fixed traversal bounds remain depth two, 64 additional bodies and one MiB of
-additional source. Complete added context and exact sources must fit 65,536 bytes;
+The default traversal bounds remain depth two, 64 additional bodies and one MiB of
+additional source. An explicit `sourceDataMaxDepth` between zero and two narrows
+source-data expansion and is part of immutable Work identity. Zero retains the
+complete root callable, its data facts and explicit helper depth frontiers;
+helper implementation bodies are not delivered or assumed. Increasing the depth
+requires preparing another Work from the same retained snapshot, without a capture.
+The ordinary process context remains available independently of this source-data
+selection. Omitted depth preserves the legacy projection and packet identity.
+Complete added context and exact sources must fit 65,536 bytes;
 preparation refuses larger selections before any model reservation. This bound is
 not a provider token or monetary cap. Existing role preflight still counts the whole
 model envelope. Authoring, review, repair and export validate the exact saved context

@@ -2509,7 +2509,7 @@ internal class Worker(
         val documentationCalls = analysis.facts.filter { it["recordType"].safeString() == "DOCUMENTATION_CALL" }
             .groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
         val documentationData = analysis.facts.filter { it["recordType"].safeString() in setOf(
-            "DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_OPERATION",
+            "DOCUMENTATION_VARIABLE", "DOCUMENTATION_VARIABLE_RECEIPT", "DOCUMENTATION_DATA_BOUNDARY", "DOCUMENTATION_MEMBER", "DOCUMENTATION_ACCESSOR_ATTEMPT", "DOCUMENTATION_STRING_CONSTANT", "DOCUMENTATION_OPERATION", "DOCUMENTATION_ENUM_ENTRY", "PORTABLE_VALUE_PROJECTION",
         ) }.groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
         val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path, bytes); val pkg = kt.packageFqName.asString()

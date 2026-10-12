@@ -32,7 +32,7 @@ private class JvmAnnotationReader24(private val context: CheckerContext) {
     private var annotationDepth = 0
     private var visits = 0
 
-    private fun identity(function: FirNamedFunction): String? = compilerJvmMethodDescriptor(function)
+    private fun identity(function: FirNamedFunction): String? = compilerJvmMethodDescriptor(function, session)
         ?.let { "callable:${function.symbol.callableId}#jvm:$it" }
 
     fun read(function: FirNamedFunction): JsonObject {

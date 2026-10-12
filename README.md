@@ -24,28 +24,18 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.23
+## Current release: v0.13.24
 
-Version 0.13.23 makes saved documentation easier to read and diagnose:
+Version 0.13.24 makes declared service processes easier to follow from a boundary contract into retained source:
 
-- Invalid narrative inputs report safe field names and operation locations,
-  with explicit whole-input rejection and retained-content status.
-- OpenAPI path-operation reading attempts declarations through 3.x without a
-  patch-version allowlist, retaining limits for features it cannot interpret.
-- `docs refresh-contracts` explicitly reads full registered saved OpenAPI files
-  into a new immutable snapshot without reacquiring source. Historical evidence
-  and publications keep their original bytes and authority.
-- Process authoring explains business decisions while preserving mandatory
-  source-backed branches. The HTML reader hides exact step-prose copies only
-  when their text and evidence are already displayed; Markdown keeps main prose.
-- External-call steps show declared addresses, provenance and optional
-  environments, with an inline saved outgoing contract. Exact receiver links
-  reuse an unambiguous contract; explicit bindings need no external checkout.
+- Service documentation can record declared boundary contracts and receiving fragments. Frozen canonical process-page links bind a pinned service revision and published page digest to source and operation details while reusing the existing page.
+- Canonical fragments keep source-ordered steps with declared side effects and explicit failure and boundary paths. Guarded property and enum accessor attempts show selected normal-completion prerequisites; setter dispatch and storage outcomes remain unknown. These are source declarations and retained relationships; they do not prove deployed routing, delivery, or runtime completion.
+- `clew thread question` returns bounded, read-only packets over retained flows, with selector matches and optional control-flow observations. Results preserve parent boundaries; a match does not mean complete program discovery.
 
-See the [release notes](docs/releases/v0.13.23.md),
-[readable-process guide](docs/operations/readable-process-narratives.md) and
-[outgoing-call guide](docs/operations/outgoing-service-calls.md).
-Addresses and contracts are declarations, not proof of runtime routing.
+See the [release notes](docs/releases/v0.13.24.md),
+[readable-process guide](docs/operations/readable-process-narratives.md),
+[outgoing-call guide](docs/operations/outgoing-service-calls.md) and
+[question packet guide](docs/operations/question-packets.md).
 
 Saved diagnostic bundles from 0.13.20 remain available through
 `clew support collect` and `clew --diagnostics NEWDIR COMMAND ...`; bounded
@@ -179,7 +169,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.23 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.24 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -208,7 +198,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.23 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.24 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -251,7 +241,7 @@ cannot change those old installed bytes. Alternatively install current core
 directly with the public installer and the pack setting cleared:
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.23 CODECLEW_PACKS= sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.24 CODECLEW_PACKS= sh
 ```
 
 ## Install the agent skill
@@ -498,7 +488,7 @@ boundary between editing Codeclew and using its installed-release skill.
 - Node.js 22 for the development/CI reader tests (not needed to open generated documentation)
 - Git
 - JDK 21
-- .NET 10+ SDK for C# analysis, full CI and release qualification; otherwise the source bootstrap omits the optional C# worker
+- .NET SDK 10.0.401 for building the optional C# worker, full CI and release qualification; analyzing projects with a published worker requires .NET 10+
 - the Rust toolchain pinned by `rust-toolchain.toml`
 - Cargo on `PATH` for Rust repositories
 - Maven on `PATH` only for Maven projects without `./mvnw`
@@ -767,8 +757,9 @@ previews and reject candidate generation.
 
 C# uses a Roslyn worker included in the published macOS and Linux archives.
 Analyzing a project requires a .NET 10+ SDK (`dotnet`) on `PATH`; the SDK is
-not bundled. Source bootstrap builds this optional worker only when that SDK
-is available; otherwise `clew capabilities` omits `csharp-roslyn` and C#
+not bundled. Source bootstrap builds this optional worker with the exact SDK
+10.0.401 pinned in `workers/dotnet/global.json`; when no .NET 10+ SDK is
+available, `clew capabilities` omits `csharp-roslyn` and C#
 sessions report `INSTALL_CSHARP_COMPONENT`. Open a
 session with `--language csharp`, profile `csharp-dotnet-msbuild-read-only`, and
 an exact `csproj:<path>[@<tfm>]` or `sln:<path>` (`.sln`/`.slnx`) selector. The

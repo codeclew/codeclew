@@ -1733,6 +1733,36 @@ fn kotlin_exact_source_calls_expand_two_sites_to_one_cached_function_body() {
             .unwrap();
     assert_eq!(graph.schema, "codeclew-native-source-calls/1.1");
     assert_eq!(graph.nodes.len(), 2);
+    let root_only = super::super::linked::build_roots_with_depth(
+        &checked,
+        &[("sample".into(), "answer-next".into())],
+        0,
+    )
+    .unwrap();
+    assert_eq!(root_only.max_depth, 0);
+    assert_eq!(root_only.nodes.len(), 1);
+    assert!(
+        root_only
+            .nodes
+            .values()
+            .next()
+            .unwrap()
+            .calls
+            .iter()
+            .all(|edge| {
+                edge.target_declaration.is_some()
+                    && edge.target_node.is_none()
+                    && edge.status == "DEPTH_FRONTIER"
+            })
+    );
+    assert!(
+        super::super::linked::build_roots_with_depth(
+            &checked,
+            &[("sample".into(), "answer-next".into())],
+            3,
+        )
+        .is_err()
+    );
     let caller = graph
         .nodes
         .values()
@@ -3528,6 +3558,271 @@ fn kotlin_property_input_refuses_custom_virtual_delegated_or_unbound_declaration
             _ => "Kotlin property access and retained original storage declaration disagree",
         };
         assert!(error.contains(expected), "{case}: {error}");
+    }
+}
+
+// Structural conformance only. Native K2 extraction of guarded receiver writes
+// and enum aliases is exercised by KotlinDocumentationVariablesTest.
+fn kotlin_enum_write_contract_fixture() -> ServiceEvidence {
+    let mut evidence = kotlin_property_contract_fixture();
+    let text = "fun render(flag: Boolean): Status { if (flag) { this.status = Status.FAILED } else { this.status = Status.COMPLETED }; return this.status }";
+    let offset = 37;
+    let owner = evidence.observations.get_mut("render").unwrap();
+    owner.symbol = "callable:example/Sample.render#jvm:(Z)Lexample/Status;".into();
+    owner.normalized["symbolIdentity"] = json!(owner.symbol);
+    owner.normalized["jvmDescriptor"] = json!("(Z)Lexample/Status;");
+    owner.normalized["parameterTypes"] = json!([{"index":0,"hasDefault":false}]);
+    let source = evidence.sources.get_mut(&owner.source_ids[0]).unwrap();
+    source.text = text.into();
+    source.text_digest = crate::canonical::hash_bytes(text.as_bytes());
+    source.occurrence.as_mut().unwrap().end_byte = text.len();
+    source.occurrence.as_mut().unwrap().blob = source.text_digest.clone();
+    owner.normalized["outlineOwnerSource"]["byteEnd"] = json!(offset + text.len());
+    owner.normalized["outlineOwnerSource"]["sourceDigest"] = json!(source.text_digest);
+    let source_id = source.id.clone();
+    let file = source.file.clone();
+    let mut nodes = vec![];
+    let mut add =
+        |kind: &str, start: usize, end: usize, children: Vec<usize>, roles: serde_json::Value| {
+            let index = nodes.len();
+            nodes.push(
+                json!({"kind":kind,"byteStart":offset+start,"byteEnd":offset+end,
+            "children":children,"roles":roles,"actuals":[],"defaultArguments":[]}),
+            );
+            index
+        };
+    let flag_start = text.find("flag)").unwrap();
+    let flag = add("VARIABLE", flag_start, flag_start + 4, vec![], json!({}));
+    let mut members = vec![];
+    let mut entries = vec![];
+    let template = owner.normalized["documentation"]["dataInput"]["members"][0].clone();
+    let mut branches = vec![];
+    for name in ["FAILED", "COMPLETED"] {
+        let assignment = format!("this.status = Status.{name}");
+        let start = text.find(&assignment).unwrap();
+        let end = start + assignment.len();
+        let receiver = add("THIS", start, start + 4, vec![], json!({}));
+        let left = add(
+            "MEMBER",
+            start,
+            start + 11,
+            vec![receiver],
+            json!({"RECEIVER":receiver}),
+        );
+        let constant_start = start + 14;
+        let right = add("ENUM_CONSTANT", constant_start, end, vec![], json!({}));
+        let operator = add("UNSUPPORTED", start + 12, start + 13, vec![], json!({}));
+        let assignment = add(
+            "ASSIGNMENT",
+            start,
+            end,
+            vec![left, right, operator],
+            json!({"LEFT":left,"RIGHT":right,"OPERATOR":operator}),
+        );
+        let expression = add("EXPRESSION", start, end, vec![assignment], json!({}));
+        branches.push(add(
+            "BLOCK",
+            start - 2,
+            end + 2,
+            vec![expression],
+            json!({}),
+        ));
+        let mut member = template.clone();
+        member["ownerSymbolIdentity"] = json!(owner.symbol);
+        member["propertyIdentity"] = json!("property:example/Sample.status");
+        member["variableType"] = json!("example/Status");
+        member["accessMode"] = json!("WRITE");
+        member["byteStart"] = json!(offset + start);
+        member["byteEnd"] = json!(offset + start + 11);
+        members.push(member);
+        entries.push(json!({"schema":"kotlin-documentation-enum-entry/1.0","ownerSymbolIdentity":owner.symbol,
+            "enumClassIdentity":"class:example/Status","entryIdentity":format!("enum-entry:example/Status.{name}"),
+            "entryName":name,"authority":"K2_RESOLVED_ENUM_ENTRY_SYMBOL","resolution":"COMPILER_EXACT",
+            "compilationScope":":/main","byteStart":offset+constant_start,"byteEnd":offset+end}));
+    }
+    let if_start = text.find("if (").unwrap();
+    let if_end = text.find("; return").unwrap();
+    let branch = add(
+        "IF",
+        if_start,
+        if_end,
+        vec![flag, branches[0], branches[1]],
+        json!({"CONDITION":flag,"THEN":branches[0],"ELSE":branches[1]}),
+    );
+    let return_start = text.find("return ").unwrap();
+    let receiver_start = return_start + 7;
+    let receiver = add(
+        "THIS",
+        receiver_start,
+        receiver_start + 4,
+        vec![],
+        json!({}),
+    );
+    let value = add(
+        "MEMBER",
+        receiver_start,
+        receiver_start + 11,
+        vec![receiver],
+        json!({"RECEIVER":receiver}),
+    );
+    let returned = add(
+        "RETURN",
+        return_start,
+        receiver_start + 11,
+        vec![value],
+        json!({}),
+    );
+    let body = add(
+        "BLOCK",
+        text.find('{').unwrap(),
+        text.len(),
+        vec![branch, returned],
+        json!({}),
+    );
+    let mut member = members[0].clone();
+    member["accessMode"] = json!("READ");
+    member["byteStart"] = json!(offset + receiver_start);
+    member["byteEnd"] = json!(offset + receiver_start + 11);
+    members.push(member);
+    let param_start = text.find("flag:").unwrap();
+    let param_end = param_start + "flag: Boolean".len();
+    let variable = |start, end, kind, mode: Option<&str>| {
+        let mut row = json!({"schema":"kotlin-documentation-variable/1.0","ownerSymbolIdentity":owner.symbol,
+            "variableIdentity":format!("{}/parameter/0",owner.symbol),"variableKind":"PARAMETER","kind":kind,
+            "name":"flag","parameterIndex":0,"hasDefault":false,"variableType":"kotlin/Boolean",
+            "resolution":"COMPILER_EXACT","authority":"K2_RESOLVED_VARIABLE_SYMBOL","byteStart":offset+start,
+            "byteEnd":offset+end,"declarationByteStart":offset+param_start,"declarationByteEnd":offset+param_end});
+        if let Some(mode) = mode {
+            row["accessMode"] = json!(mode);
+        }
+        row
+    };
+    owner.normalized["documentation"]["dataInput"] = json!({"schema":"codeclew-kotlin-documentation-data/1.1",
+        "authority":"KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES","coordinateDomain":"ORIGINAL_UTF8_BYTES",
+        "ownerSymbolIdentity":owner.symbol,"ownerByteStart":offset,"ownerByteEnd":offset+text.len(),"file":file,
+        "compilationScope":":/main","fullCompilationSourceDigest":"sha256:synthetic-original-file","body":body,
+        "nodes":nodes,"variables":[variable(param_start,param_end,"VARIABLE_DECLARATION",None),variable(flag_start,flag_start+4,"VARIABLE_ACCESS",Some("READ"))],
+        "members":members,"enumEntries":entries,"boundaries":[]});
+    owner.source_ids = vec![source_id];
+    owner.digest = digest(&owner.normalized).unwrap();
+    let property = evidence.observations.get_mut("title-property").unwrap();
+    property.symbol = "property:example/Sample.status".into();
+    property.normalized["symbolIdentity"] = json!(property.symbol);
+    property.normalized["ownerIdentity"] = json!("class:example/Sample");
+    property.normalized["declaredType"] = json!("example/Status");
+    let property_source = evidence.sources.get_mut(&property.source_ids[0]).unwrap();
+    property_source.text = "var status: Status = Status.PENDING".into();
+    property_source.text_digest = crate::canonical::hash_bytes(property_source.text.as_bytes());
+    property_source.occurrence.as_mut().unwrap().end_byte = property_source.text.len();
+    property_source.occurrence.as_mut().unwrap().blob = property_source.text_digest.clone();
+    let property_end = 111 + property_source.text.len();
+    property.normalized["outlineOwnerSource"]["byteEnd"] = json!(property_end);
+    property.normalized["outlineOwnerSource"]["sourceDigest"] = json!(property_source.text_digest);
+    property.digest = digest(&property.normalized).unwrap();
+    let owner = evidence.observations.get_mut("render").unwrap();
+    for member in owner.normalized["documentation"]["dataInput"]["members"]
+        .as_array_mut()
+        .unwrap()
+    {
+        member["propertyByteEnd"] = json!(property_end);
+    }
+    owner.digest = digest(&owner.normalized).unwrap();
+    evidence
+}
+
+#[test]
+fn kotlin_guarded_enum_writes_retain_exact_entries_and_join_only_qualified_storage() {
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let projection = project(
+        &kotlin_check(kotlin_enum_write_contract_fixture()),
+        &[selection],
+    )
+    .unwrap();
+    let node = projection
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .next()
+        .unwrap();
+    let state = node.data_state.as_ref().unwrap();
+    let writes: Vec<_> = state
+        .definitions
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.value,
+                crate::documentation::static_pages::model::DataValue::EnumConstant { .. }
+            )
+        })
+        .collect();
+    assert_eq!(writes.len(), 2);
+    for (write, name, holds) in [(writes[0], "FAILED", true), (writes[1], "COMPLETED", false)] {
+        assert!(
+            matches!(&write.value,crate::documentation::static_pages::model::DataValue::EnumConstant{identity,entry,authority,..} if identity==&format!("enum-entry:example/Status.{name}") && entry==name && authority=="K2_RESOLVED_ENUM_ENTRY_SYMBOL")
+        );
+        assert_eq!(
+            write.conditions,
+            vec![crate::documentation::static_pages::model::DataGuard {
+                expression: "flag".into(),
+                holds
+            }]
+        );
+        assert_eq!(
+            write.storage.as_ref().unwrap().receiver.as_deref(),
+            Some("THIS")
+        );
+    }
+    assert!(state.definitions.iter().any(|d|matches!(&d.value,crate::documentation::static_pages::model::DataValue::Choice{alternatives} if alternatives.len()==2 && alternatives.iter().all(|a|a.definitions.len()==1 && a.conditions.len()==1))));
+    assert!(
+        state
+            .gaps
+            .iter()
+            .any(|g| g.code == "ENUM_INITIALIZATION_UNPROVEN")
+    );
+    assert!(!state.gaps.iter().any(|g| g.code == "OPAQUE_EXPRESSION"));
+}
+
+#[test]
+fn kotlin_enum_input_rejects_unbound_foreign_duplicate_or_unqualified_entries() {
+    for case in [
+        "missing",
+        "duplicate",
+        "identity",
+        "authority",
+        "scope",
+        "span",
+        "legacy",
+    ] {
+        let mut evidence = kotlin_enum_write_contract_fixture();
+        let owner = evidence.observations.get_mut("render").unwrap();
+        let input = &mut owner.normalized["documentation"]["dataInput"];
+        match case {
+            "missing" => input["enumEntries"] = json!([]),
+            "duplicate" => {
+                let row = input["enumEntries"][0].clone();
+                input["enumEntries"].as_array_mut().unwrap().push(row);
+            }
+            "identity" => {
+                input["enumEntries"][0]["entryIdentity"] = json!("enum-entry:other/Status.FAILED")
+            }
+            "authority" => input["enumEntries"][0]["authority"] = json!("SOURCE_SPELLING"),
+            "scope" => input["enumEntries"][0]["compilationScope"] = json!(":other/main"),
+            "span" => input["enumEntries"][0]["byteEnd"] = json!(38),
+            "legacy" => input["schema"] = json!("codeclew-kotlin-documentation-data/1.0"),
+            _ => unreachable!(),
+        }
+        owner.digest = digest(&owner.normalized).unwrap();
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = true;
+        selection.expand_data_state = true;
+        assert!(
+            project(&kotlin_check(evidence), &[selection]).is_err(),
+            "{case}"
+        );
     }
 }
 
@@ -6650,4 +6945,434 @@ fn excluding_kotlin_from_mixed_pages_restores_frozen_java_projection_shape() {
     assert_eq!(excluded.source_call_graph, java.source_call_graph);
     let output = tempfile::tempdir().unwrap();
     super::super::publish::write(output.path(), "mixed-filtered", &excluded).unwrap();
+}
+
+// Structural admission tests; native custom/overridden accessor capture is
+// covered by KotlinDocumentationVariablesTest.
+fn kotlin_accessor_contract_fixture() -> ServiceEvidence {
+    let mut e = kotlin_enum_write_contract_fixture();
+    let owner = e.observations.get_mut("render").unwrap();
+    let data = &mut owner.normalized["documentation"]["dataInput"];
+    data["schema"] = json!("codeclew-kotlin-documentation-data/1.2");
+    data["accessorAttempts"] = data["members"].take();
+    data["members"] = json!([]);
+    for attempt in data["accessorAttempts"].as_array_mut().unwrap() {
+        attempt["schema"] = json!("kotlin-documentation-accessor-attempt/1.0");
+        attempt["authority"] = json!("K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH");
+        attempt["storageProof"]["qualified"] = json!(false);
+        attempt["storageProof"]["modality"] = json!("OPEN");
+    }
+    for node in data["nodes"].as_array_mut().unwrap() {
+        if node["kind"] == "MEMBER" {
+            node["kind"] = json!("ACCESSOR");
+        }
+    }
+    owner.digest = digest(&owner.normalized).unwrap();
+    let property = e.observations.get_mut("title-property").unwrap();
+    property.normalized["documentationStorage"]["qualified"] = json!(false);
+    property.normalized["documentationStorage"]["modality"] = json!("OPEN");
+    property.digest = digest(&property.normalized).unwrap();
+    e
+}
+
+#[test]
+fn kotlin_virtual_setters_are_guarded_attempts_and_never_field_definitions() {
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let p = project(
+        &kotlin_check(kotlin_accessor_contract_fixture()),
+        &[selection],
+    )
+    .unwrap();
+    let n = p
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .next()
+        .unwrap();
+    let state = n.data_state.as_ref().unwrap();
+    assert_eq!(state.accessor_attempts.len(), 3);
+    assert!(
+        state
+            .definitions
+            .iter()
+            .all(|d| d.storage.as_ref().is_none_or(|s| s.kind != "PROPERTY"))
+    );
+    let writes: Vec<_> = state
+        .accessor_attempts
+        .iter()
+        .filter(|a| a.access_mode == "WRITE")
+        .collect();
+    assert_eq!(writes.len(), 2);
+    for (write, name, holds) in [(writes[0], "FAILED", true), (writes[1], "COMPLETED", false)] {
+        assert_eq!(
+            write.authority,
+            "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH"
+        );
+        assert_eq!(write.dispatch, "UNKNOWN");
+        assert_eq!(write.storage_outcome, "UNKNOWN");
+        assert_eq!(write.conditions[0].expression, "flag");
+        assert_eq!(write.conditions[0].holds, holds);
+        assert!(
+            matches!(&write.argument,Some(crate::documentation::static_pages::model::DataValue::EnumConstant{entry,..}) if entry==name)
+        );
+        assert!(write.citation_id.is_some());
+        assert!(
+            write.normal_completion_of.is_empty(),
+            "plain setter must not read a getter"
+        );
+    }
+    let getter = state.accessor_attempts.last().unwrap();
+    assert!(getter.argument.is_none());
+    assert_eq!(getter.normal_completion_of.len(), 2);
+    assert!(getter.normal_completion_of.iter().all(|c| {
+        writes
+            .iter()
+            .any(|w| w.occurrence == c.occurrence && w.conditions == c.conditions)
+    }));
+    assert_ne!(writes[0].occurrence, writes[1].occurrence);
+    assert_eq!(state.property_declarations, ["title-property"]);
+}
+
+#[test]
+fn kotlin_accessor_attempts_refuse_drift_and_stop_before_unsupported_receiver_or_rhs() {
+    for case in [
+        "authority",
+        "legacy",
+        "property",
+        "mode",
+        "duplicate",
+        "missing",
+        "receiver",
+        "rhs",
+    ] {
+        let mut e = kotlin_accessor_contract_fixture();
+        let owner = e.observations.get_mut("render").unwrap();
+        let data = &mut owner.normalized["documentation"]["dataInput"];
+        match case {
+            "authority" => {
+                data["accessorAttempts"][0]["authority"] = json!("K2_DEFAULT_BACKING_PROPERTY")
+            }
+            "legacy" => data["schema"] = json!("codeclew-kotlin-documentation-data/1.1"),
+            "property" => data["accessorAttempts"][0]["propertyByteEnd"] = json!(112),
+            "mode" => data["accessorAttempts"][0]["accessMode"] = json!("READ"),
+            "duplicate" => {
+                let copy = data["accessorAttempts"][0].clone();
+                data["accessorAttempts"].as_array_mut().unwrap().push(copy);
+            }
+            "missing" => {
+                data["accessorAttempts"].as_array_mut().unwrap().remove(0);
+            }
+            "receiver" | "rhs" => {
+                // Every setter branch loses one required evaluation. No later
+                // setter or getter may be emitted by silently skipping it.
+                let indices: Vec<_> = data["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|n| n["kind"] == "ASSIGNMENT")
+                    .map(|n| {
+                        if case == "rhs" {
+                            n["roles"]["RIGHT"].as_u64().unwrap() as usize
+                        } else {
+                            let left = n["roles"]["LEFT"].as_u64().unwrap() as usize;
+                            data["nodes"][left]["roles"]["RECEIVER"].as_u64().unwrap() as usize
+                        }
+                    })
+                    .collect();
+                for index in indices {
+                    if case == "rhs" {
+                        let start = data["nodes"][index]["byteStart"].clone();
+                        let end = data["nodes"][index]["byteEnd"].clone();
+                        data["enumEntries"]
+                            .as_array_mut()
+                            .unwrap()
+                            .retain(|e| e["byteStart"] != start || e["byteEnd"] != end);
+                    }
+                    data["nodes"][index]["kind"] = json!("UNSUPPORTED");
+                }
+            }
+            _ => unreachable!(),
+        }
+        owner.digest = digest(&owner.normalized).unwrap();
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = true;
+        selection.expand_data_state = true;
+        let result = project(&kotlin_check(e), &[selection]);
+        if matches!(case, "receiver" | "rhs") {
+            let p = result.unwrap();
+            let n = p
+                .source_call_graph
+                .as_ref()
+                .unwrap()
+                .nodes
+                .values()
+                .next()
+                .unwrap();
+            assert!(
+                n.data_state.as_ref().unwrap().accessor_attempts.is_empty(),
+                "{case}"
+            );
+            assert!(
+                n.data_state
+                    .as_ref()
+                    .unwrap()
+                    .gaps
+                    .iter()
+                    .any(|g| g.code == "OPAQUE_EXPRESSION")
+            );
+        } else {
+            assert!(result.is_err(), "{case}");
+        }
+    }
+}
+
+fn kotlin_string_constant_contract_fixture() -> ServiceEvidence {
+    let mut e = kotlin_property_contract_fixture();
+    let property = e.observations.get_mut("title-property").unwrap();
+    property.normalized["declarationKind"] = json!("PROPERTY");
+    property.normalized["documentationStringConstant"] = json!({"schema":"kotlin-documentation-string-constant-value/1.0", "authority":"K2_CONST_PROPERTY_LITERAL_STRING", "isConst":true, "literalKind":"STRING", "value":"hello"});
+    let source = e.sources.get_mut(&property.source_ids[0]).unwrap();
+    source.text = "const val title: String = \"hello\"".into();
+    source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+    source.occurrence.as_mut().unwrap().end_byte = source.text.len();
+    source.occurrence.as_mut().unwrap().blob = source.text_digest.clone();
+    let end = 111 + source.text.len();
+    property.normalized["outlineOwnerSource"]["byteEnd"] = json!(end);
+    property.normalized["outlineOwnerSource"]["sourceDigest"] = json!(source.text_digest);
+    property.digest = digest(&property.normalized).unwrap();
+    let owner = e.observations.get_mut("render").unwrap();
+    let data = &mut owner.normalized["documentation"]["dataInput"];
+    data["schema"] = json!("codeclew-kotlin-documentation-data/1.3");
+    data["stringConstants"] = data["members"].take();
+    data["members"] = json!([]);
+    let row = &mut data["stringConstants"][0];
+    row["schema"] = json!("kotlin-documentation-string-constant/1.0");
+    row["authority"] = json!("K2_CONST_PROPERTY_LITERAL_STRING");
+    row["stringConstant"] = json!("hello");
+    row["propertyByteEnd"] = json!(end);
+    data["nodes"][0]["kind"] = json!("STRING_CONSTANT");
+    owner.digest = digest(&owner.normalized).unwrap();
+    e
+}
+
+#[test]
+fn kotlin_string_constant_binds_compiler_literal_and_source_without_getter_or_storage() {
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let p = project(
+        &kotlin_check(kotlin_string_constant_contract_fixture()),
+        &[selection],
+    )
+    .unwrap();
+    let n = p
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .next()
+        .unwrap();
+    let state = n.data_state.as_ref().unwrap();
+    assert_eq!(state.schema, "codeclew-source-data-state/1.3");
+    assert!(state.calls.is_empty());
+    assert!(state.accessor_attempts.is_empty());
+    assert_eq!(state.property_declarations, ["title-property"]);
+    assert_eq!(state.definitions.len(), 1);
+    assert!(state.definitions[0].storage.is_none());
+    assert!(
+        matches!(&state.definitions[0].value, crate::documentation::static_pages::model::DataValue::StringConstant { identity, value, authority } if identity=="property:example/title" && value=="hello" && authority=="K2_CONST_PROPERTY_LITERAL_STRING")
+    );
+    assert!(n.sources.contains_key("property-source"));
+}
+
+#[test]
+fn kotlin_string_constant_rejects_mutability_literal_identity_and_source_drift() {
+    for case in [
+        "value",
+        "const",
+        "kind",
+        "authority",
+        "declaration",
+        "legacy",
+        "mode",
+        "missing",
+        "mutable",
+    ] {
+        let mut e = kotlin_string_constant_contract_fixture();
+        let owner = e.observations.get_mut("render").unwrap();
+        let data = &mut owner.normalized["documentation"]["dataInput"];
+        match case {
+            "value" => data["stringConstants"][0]["stringConstant"] = json!("other"),
+            "authority" => {
+                data["stringConstants"][0]["authority"] = json!("K2_RESOLVED_PROPERTY_SYMBOL")
+            }
+            "declaration" => data["stringConstants"][0]["propertyByteEnd"] = json!(112),
+            "legacy" => data["schema"] = json!("codeclew-kotlin-documentation-data/1.2"),
+            "mode" => data["stringConstants"][0]["accessMode"] = json!("WRITE"),
+            "missing" => data["stringConstants"] = json!([]),
+            "const" | "kind" | "mutable" => {}
+            _ => unreachable!(),
+        }
+        owner.digest = digest(&owner.normalized).unwrap();
+        if matches!(case, "const" | "kind" | "mutable") {
+            let property = e.observations.get_mut("title-property").unwrap();
+            if case == "const" {
+                property.normalized["documentationStringConstant"]["isConst"] = json!(false);
+            } else if case == "mutable" {
+                property.normalized["declarationKind"] = json!("MUTABLE_PROPERTY");
+            } else {
+                property.normalized["documentationStringConstant"]["literalKind"] = json!("INT");
+            }
+            property.digest = digest(&property.normalized).unwrap();
+        }
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = true;
+        selection.expand_data_state = true;
+        assert!(project(&kotlin_check(e), &[selection]).is_err(), "{case}");
+    }
+}
+
+fn kotlin_static_qualifier_contract_fixture() -> ServiceEvidence {
+    let mut e = kotlin_property_contract_fixture();
+    let text = "fun render(): LocalDateTime { return LocalDateTime.now() }";
+    let expression = "LocalDateTime.now()";
+    let offset = 37;
+    let start = text.find(expression).unwrap();
+    let end = start + expression.len();
+    let symbol = configure_kotlin_function(
+        &mut e,
+        "render",
+        "example/Sample.render",
+        "()Ljava/time/LocalDateTime;",
+        ":/main",
+    );
+    let owner = e.observations.get_mut("render").unwrap();
+    let source = e.sources.get_mut(&owner.source_ids[0]).unwrap();
+    source.evidence_digest = format!("sha256:{}", "b".repeat(64));
+    owner.normalized["outlineOwnerSource"]["evidenceDigest"] = json!(source.evidence_digest);
+    source.text = text.into();
+    source.text_digest = crate::canonical::hash_bytes(text.as_bytes());
+    source.occurrence.as_mut().unwrap().end_byte = text.len();
+    source.occurrence.as_mut().unwrap().blob = source.text_digest.clone();
+    owner.normalized["outlineOwnerSource"]["byteEnd"] = json!(offset + text.len());
+    owner.normalized["outlineOwnerSource"]["sourceDigest"] = json!(source.text_digest);
+    let full_digest =
+        crate::canonical::hash_bytes(format!("{}{}", "\n".repeat(offset), text).as_bytes());
+    owner.normalized["outlineOwnerSource"]["fullCompilationSourceDigest"] = json!(full_digest);
+    let target = "callable:java/time/LocalDateTime.now#jvm:()Ljava/time/LocalDateTime;";
+    let node = |kind: &str, start: usize, end: usize, children: Vec<usize>| json!({"kind":kind,"byteStart":offset+start,"byteEnd":offset+end,"children":children,"roles":{},"actuals":[],"defaultArguments":[]});
+    let mut call = node("CALL", start, end, vec![]);
+    call["targetIdentity"] = json!(target);
+    call["staticQualifier"] = json!({"schema":"kotlin-documentation-static-qualifier/1.0", "authority":"K2_STATIC_FUNCTION_RESOLVED_CLASS_QUALIFIER", "classIdentity":"class:java/time/LocalDateTime", "byteStart":offset+start,"byteEnd":offset+start+"LocalDateTime".len()});
+    owner.normalized["documentation"]["dataInput"] = json!({"schema":"codeclew-kotlin-documentation-data/1.3", "authority":"KOTLIN_PSI_WITH_K2_VARIABLE_IDENTITIES", "coordinateDomain":"ORIGINAL_UTF8_BYTES", "ownerSymbolIdentity":symbol, "ownerByteStart":offset,"ownerByteEnd":offset+text.len(),"file":source.file,"compilationScope":":/main","fullCompilationSourceDigest":full_digest, "body":2,"variables":[],"boundaries":[],"nodes":[call,node("RETURN",text.find("return").unwrap(),end,vec![0]),node("BLOCK",text.find('{').unwrap(),text.len(),vec![1])]});
+    owner.digest = digest(&owner.normalized).unwrap();
+    let mut call_source = source.clone();
+    call_source.evidence_digest = format!("sha256:{}", "c".repeat(64));
+    call_source.id = "static-call-source".into();
+    call_source.text = expression.into();
+    call_source.text_digest = crate::canonical::hash_bytes(expression.as_bytes());
+    call_source.occurrence = None;
+    e.sources
+        .insert(call_source.id.clone(), call_source.clone());
+    let normalized = json!({"schema":"codeclew-kotlin-documentation-call/1.0","kind":"RELATION","relationKind":"CALLS", "resolution":"COMPILER_EXACT","compilerResolution":"PROVEN","provider":"K2_FIR","compilerSchema":"declaration-relation/0.1","sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES", "sourceIdentity":symbol,"sourceCompilerCallableId":"example/Sample.render","sourceJvmDescriptor":"()Ljava/time/LocalDateTime;","targetCompilerCallableId":"java/time/LocalDateTime.now","targetJvmDescriptor":"()Ljava/time/LocalDateTime;","targetIdentity":target,"scope":":/main","evidenceBinding":call_source.evidence_digest, "argumentBindings":{"schema":"codeclew-call-argument-bindings/1.0","argumentToParameter":[],"omittedDefaultParameterIndices":[]},"callSite":{"file":call_source.file,"startLine":call_source.start_line,"endLine":call_source.end_line,"byteStart":offset+start,"byteEnd":offset+end,"sourceId":call_source.id,"sourceDigest":call_source.text_digest,"sourceStatus":"SOURCE_RETAINED","evidenceDigest":call_source.evidence_digest,"fullCompilationSourceDigest":full_digest}});
+    e.observations.insert(
+        "static-call".into(),
+        Observation {
+            id: "static-call".into(),
+            kind: "CALL_RELATION".into(),
+            service: e.service.clone(),
+            symbol,
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec![call_source.id],
+        },
+    );
+    e
+}
+
+#[test]
+fn kotlin_static_qualifier_keeps_call_completion_and_unknown_class_initialization() {
+    let mut selection = kotlin_selection("render", "render");
+    selection.expand_source_calls = true;
+    selection.expand_data_state = true;
+    let p = project(
+        &kotlin_check(kotlin_static_qualifier_contract_fixture()),
+        &[selection],
+    )
+    .unwrap();
+    let state = p
+        .source_call_graph
+        .as_ref()
+        .unwrap()
+        .nodes
+        .values()
+        .next()
+        .unwrap()
+        .data_state
+        .as_ref()
+        .unwrap();
+    assert_eq!(state.calls.len(), 1);
+    assert_eq!(
+        state.calls[0].static_qualifier.as_deref(),
+        Some("class:java/time/LocalDateTime")
+    );
+    assert_eq!(state.schema, "codeclew-source-data-state/1.3");
+    assert!(
+        state
+            .gaps
+            .iter()
+            .any(|g| g.code == "STATIC_CLASS_INITIALIZATION_UNPROVEN")
+    );
+    let returned = state
+        .definitions
+        .iter()
+        .find(|d| d.storage.is_none())
+        .unwrap();
+    assert_eq!(
+        returned.normal_completion_of[0].occurrence,
+        state.calls[0].occurrence
+    );
+    assert!(
+        matches!(&returned.value,crate::documentation::static_pages::model::DataValue::CallResult { receiver, .. } if receiver.is_none())
+    );
+}
+
+#[test]
+fn kotlin_static_qualifier_rejects_foreign_class_legacy_range_receiver_or_unbound_call() {
+    for case in [
+        "class",
+        "authority",
+        "range",
+        "legacy",
+        "receiver",
+        "unbound",
+    ] {
+        let mut e = kotlin_static_qualifier_contract_fixture();
+        let owner = e.observations.get_mut("render").unwrap();
+        let data = &mut owner.normalized["documentation"]["dataInput"];
+        match case {
+            "class" => {
+                data["nodes"][0]["staticQualifier"]["classIdentity"] = json!("class:example/Other")
+            }
+            "authority" => data["nodes"][0]["staticQualifier"]["authority"] = json!("SYNTAX_NAME"),
+            "range" => data["nodes"][0]["staticQualifier"]["byteEnd"] = json!(usize::MAX),
+            "legacy" => data["schema"] = json!("codeclew-kotlin-documentation-data/1.2"),
+            "receiver" => data["nodes"][0]["roles"] = json!({"RECEIVER":0}),
+            "unbound" => {}
+            _ => unreachable!(),
+        }
+        owner.digest = digest(&owner.normalized).unwrap();
+        if case == "unbound" {
+            e.observations.remove("static-call");
+        }
+        let mut selection = kotlin_selection("render", "render");
+        selection.expand_source_calls = true;
+        selection.expand_data_state = true;
+        assert!(project(&kotlin_check(e), &[selection]).is_err(), "{case}");
+    }
 }

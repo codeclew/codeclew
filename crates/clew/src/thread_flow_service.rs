@@ -105,6 +105,23 @@ pub fn load(thread: &ThreadAuthority, flow_id: &str) -> Result<ThreadFlowRoot, C
     load_verified(&state, &store, thread, flow_id).map(|(root, _, _)| root)
 }
 
+/// Resolve exact question criteria over a retained parent without starting a
+/// compiler, invoking a model, or publishing another managed root.
+pub fn question(
+    thread: &ThreadAuthority,
+    request: crate::thread_question::QuestionRequest,
+) -> Result<crate::thread_question::QuestionPacket, ClewError> {
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
+    let (_, facts, flow) = load_verified(&state, &store, thread, &request.flow_id)?;
+    crate::thread_question::build_verified(
+        &flow.slice,
+        &flow.slice_ref,
+        &facts.authority.completeness,
+        request,
+    )
+}
+
 /// Return the retained slice when it fits stdout, otherwise an explicit
 /// path-free reference-only projection. This never starts a compiler.
 pub fn inspect(thread: &ThreadAuthority, flow_id: &str) -> Result<Value, ClewError> {

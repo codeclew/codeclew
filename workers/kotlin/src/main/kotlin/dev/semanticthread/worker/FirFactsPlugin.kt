@@ -48,6 +48,7 @@ import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.FirSafeCallExpression
 import org.jetbrains.kotlin.fir.expressions.FirEqualityOperatorCall
+import org.jetbrains.kotlin.fir.expressions.FirComparisonExpression
 import org.jetbrains.kotlin.fir.expressions.FirThisReceiverExpression
 import org.jetbrains.kotlin.fir.declarations.impl.FirDefaultPropertyGetter
 import org.jetbrains.kotlin.fir.declarations.impl.FirDefaultPropertySetter
@@ -64,6 +65,8 @@ import org.jetbrains.kotlin.fir.resolve.dfa.FirControlFlowGraphReferenceImpl
 import org.jetbrains.kotlin.fir.resolve.providers.getRegularClassSymbolByClassId
 import org.jetbrains.kotlin.fir.scopes.getDirectOverriddenSafe
 import org.jetbrains.kotlin.fir.scopes.jvm.computeJvmDescriptor
+import org.jetbrains.kotlin.fir.backend.jvm.FirJvmTypeMapper
+import org.jetbrains.org.objectweb.asm.Type
 import org.jetbrains.kotlin.fir.scopes.unsubstitutedScope
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirClassSymbol
@@ -71,6 +74,7 @@ import org.jetbrains.kotlin.fir.symbols.impl.FirConstructorSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirValueParameterSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirPropertySymbol
+import org.jetbrains.kotlin.fir.symbols.impl.FirEnumEntrySymbol
 import org.jetbrains.kotlin.fir.types.FirResolvedTypeRef
 import org.jetbrains.kotlin.fir.types.ConeKotlinType
 import org.jetbrains.kotlin.fir.types.classId
@@ -174,7 +178,7 @@ private class FirDocumentationVariablesChecker24(
         val owner = declaration as? FirNamedFunction ?: return
         val ownerId = owner.symbol.callableId ?: return
         val ownerSource = owner.source ?: return
-        val descriptor = compilerJvmMethodDescriptor(owner) ?: return
+        val descriptor = compilerJvmMethodDescriptor(owner, context.session) ?: return
         if (ownerId.isLocal || !owner.origin.fromSource || owner.origin.generated
             || ownerSource.kind !== KtRealSourceElementKind
             || owner.hasAnnotationSafe(JvmStandardClassIds.Annotations.JvmName, context.session)
@@ -182,6 +186,7 @@ private class FirDocumentationVariablesChecker24(
         val identity = "callable:$ownerId#jvm:$descriptor"
         val file = context.containingFilePath ?: return
         if (owner.receiverParameter != null || owner.contextParameters.isNotEmpty()) return
+        kotlinValueProjection24(owner, file, identity)?.let { appendFact(output, it) }
         appendFact(output, buildJsonObject {
             put("recordType", "DOCUMENTATION_VARIABLE_RECEIPT")
             put("schema", "kotlin-documentation-variable-receipt/1.0")
@@ -245,25 +250,34 @@ private class FirDocumentationVariablesChecker24(
         fun member(symbol: org.jetbrains.kotlin.fir.symbols.FirBasedSymbol<*>?, access: FirQualifiedAccessExpression?, mode: String): Boolean {
             val source = access?.source
             val property = (symbol as? FirPropertySymbol)?.fir ?: return false
-            if (documentationPropertyStorage24(property)["qualified"]?.jsonPrimitive?.boolean != true
+            val constant = if (property.status.isConst) (property.initializer as? org.jetbrains.kotlin.fir.expressions.FirLiteralExpression)?.value as? String else null
+            val storage = documentationPropertyStorage24(property)["qualified"]?.jsonPrimitive?.boolean == true
+            // Resolving a property symbol does not resolve virtual/custom accessor
+            // dispatch. Retain the attempted access separately from backing storage.
+            if (property.isLocal || !property.origin.fromSource || property.origin.generated
+                || property.receiverParameter != null || property.contextParameters.isNotEmpty()
                 || source == null || source.kind !== KtRealSourceElementKind
                 || source.startOffset < ownerSource.startOffset || source.endOffset > ownerSource.endOffset
                 || source.startOffset >= source.endOffset) return false
-            if (property.symbol.callableId?.classId != null && access.explicitReceiver == null) {
+            if (property.status.isConst && (constant == null || constant.toByteArray(Charsets.UTF_8).size > 4096 || mode != "READ"
+                    || (access.explicitReceiver != null && access.explicitReceiver !is org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier))) return false
+            if (constant == null && property.symbol.callableId?.classId != null && access.explicitReceiver == null) {
                 val dispatch = access.dispatchReceiver as? FirThisReceiverExpression ?: return false
                 val ownClass = context.containingElements.filterIsInstance<FirRegularClass>().lastOrNull()
                 if (dispatch.calleeReference.boundSymbol !== ownClass?.symbol) return false
             }
             if (rows.size >= 4096) { exhausted = true; boundary("DOCUMENTATION_VARIABLE_BUDGET", source); return false }
             rows += buildJsonObject {
-                put("recordType", "DOCUMENTATION_MEMBER")
-                put("schema", "kotlin-documentation-member/1.0")
+                put("recordType", if (constant != null) "DOCUMENTATION_STRING_CONSTANT" else if (storage) "DOCUMENTATION_MEMBER" else "DOCUMENTATION_ACCESSOR_ATTEMPT")
+                put("schema", if (constant != null) "kotlin-documentation-string-constant/1.0" else if (storage) "kotlin-documentation-member/1.0" else "kotlin-documentation-accessor-attempt/1.0")
                 put("file", file); put("ownerSymbolIdentity", identity)
                 put("ownerStart", ownerSource.startOffset); put("ownerEnd", ownerSource.endOffset)
                 put("start", source.startOffset); put("end", source.endOffset)
                 put("propertyIdentity", "property:${property.symbol.callableId}")
                 put("accessMode", mode); put("variableType", (property.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString().orEmpty())
-                put("authority", "K2_RESOLVED_PROPERTY_SYMBOL"); put("resolution", "COMPILER_EXACT")
+                put("authority", if (constant != null) "K2_CONST_PROPERTY_LITERAL_STRING" else if (storage) "K2_RESOLVED_PROPERTY_SYMBOL" else "K2_RESOLVED_PROPERTY_SYMBOL_NOT_ACCESSOR_DISPATCH")
+                constant?.let { put("stringConstant", it) }
+                put("resolution", "COMPILER_EXACT")
             }
             return true
         }
@@ -299,6 +313,24 @@ private class FirDocumentationVariablesChecker24(
             }
             bindings[variable.symbol] = binding
             row(binding, source, "VARIABLE_DECLARATION", null)
+        }
+        fun enumEntry(symbol: FirEnumEntrySymbol, access: FirQualifiedAccessExpression) {
+            val source = access.source ?: return
+            val enumClass = symbol.callableId.classId ?: return
+            if (enumClass.isLocal || source.kind !== KtRealSourceElementKind
+                || source.startOffset < ownerSource.startOffset || source.endOffset > ownerSource.endOffset
+                || source.startOffset >= source.endOffset) return
+            if (rows.size >= 4096) { exhausted = true; boundary("DOCUMENTATION_VARIABLE_BUDGET", source); return }
+            rows += buildJsonObject {
+                put("recordType", "DOCUMENTATION_ENUM_ENTRY"); put("schema", "kotlin-documentation-enum-entry/1.0")
+                put("file", file); put("ownerSymbolIdentity", identity)
+                put("ownerStart", ownerSource.startOffset); put("ownerEnd", ownerSource.endOffset)
+                put("start", source.startOffset); put("end", source.endOffset)
+                put("enumClassIdentity", "class:${enumClass.asString()}")
+                put("entryName", symbol.callableId.callableName.asString())
+                put("entryIdentity", "enum-entry:${symbol.callableId}")
+                put("authority", "K2_RESOLVED_ENUM_ENTRY_SYMBOL"); put("resolution", "COMPILER_EXACT")
+            }
         }
         owner.valueParameters.forEachIndexed { slot, parameter -> bind(parameter, slot) }
         // First collect declarations; references then join by the exact compiler
@@ -344,6 +376,7 @@ private class FirDocumentationVariablesChecker24(
                     val symbol = (element.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol
                     val binding = symbol?.let(bindings::get)
                     if (binding != null) row(binding, element.source, "VARIABLE_ACCESS", "READ")
+                    else if (symbol is FirEnumEntrySymbol) enumEntry(symbol, element)
                     else if (symbol is FirPropertySymbol && !member(symbol, element, "READ")) boundary("DOCUMENTATION_PROPERTY_STORAGE_OPAQUE", element.source)
                     element.acceptChildren(visitor)
                 }
@@ -359,6 +392,25 @@ private class FirDocumentationVariablesChecker24(
                             put("ownerStart", ownerSource.startOffset); put("ownerEnd", ownerSource.endOffset)
                             put("start", source.startOffset); put("end", source.endOffset)
                             put("proof", "NON_NULL_INT_EQUALITY"); put("authority", "K2_RESOLVED_OPERAND_TYPES")
+                        }
+                    }
+                    element.acceptChildren(visitor)
+                }
+                element is FirComparisonExpression -> {
+                    val source = element.source
+                    val call = element.compareToCall
+                    val target = (call.calleeReference as? FirResolvedNamedReference)?.resolvedSymbol as? FirNamedFunctionSymbol
+                    val operands = listOfNotNull(call.explicitReceiver ?: call.dispatchReceiver) + call.argumentList.arguments
+                    if (source != null && source.kind === KtRealSourceElementKind
+                        && target?.callableId?.toString() == "kotlin/Int.compareTo" && operands.size == 2
+                        && operands.all { it.resolvedType.classId?.asString() == "kotlin/Int" && !it.resolvedType.isMarkedNullable }) {
+                        if (rows.size >= 4096) { exhausted = true; boundary("DOCUMENTATION_VARIABLE_BUDGET", source) }
+                        else rows += buildJsonObject {
+                            put("recordType", "DOCUMENTATION_OPERATION"); put("schema", "kotlin-documentation-operation/1.0")
+                            put("file", file); put("ownerSymbolIdentity", identity)
+                            put("ownerStart", ownerSource.startOffset); put("ownerEnd", ownerSource.endOffset)
+                            put("start", source.startOffset); put("end", source.endOffset)
+                            put("proof", "NON_NULL_INT_ORDER"); put("authority", "K2_RESOLVED_OPERAND_TYPES")
                         }
                     }
                     element.acceptChildren(visitor)
@@ -427,7 +479,7 @@ private class FirFactsConstructorDescriptorChecker(
             resolvedDescriptorType(it.returnTypeRef)
         }
         val status = runCatching { declaration.symbol.resolvedStatus }.getOrNull()
-        val jvmDescriptor = compilerJvmMethodDescriptor(declaration)
+        val jvmDescriptor = compilerJvmMethodDescriptor(declaration, context.session)
         if (ownerClassId == null || parameterTypes.any { it == null }
             || status == null || jvmDescriptor.isNullOrEmpty()
         ) {
@@ -509,13 +561,33 @@ private class FirFactsConstructorDescriptorChecker(
 
 private fun FirCallableSymbol<*>.relationSymbol(): String = callableId.toString()
 
-internal fun compilerJvmMethodDescriptor(declaration: FirFunction): String? = runCatching {
-    declaration.computeJvmDescriptor(null, true)
+internal fun compilerJvmMethodDescriptor(declaration: FirFunction, session: FirSession): String? = runCatching {
+    val raw = declaration.computeJvmDescriptor(null, true).substringAfter('(', "")
+    val descriptor = canonicalJvmMethodDescriptor("($raw") ?: return null
+    val argumentTypes = Type.getArgumentTypes(descriptor)
+    // SignatureUtils.computeJvmDescriptor only emits value parameters. JVM
+    // context/extension receiver slots must be prepended, not zipped against
+    // these tokens (including compiler-selected library extension functions).
+    val parameters = declaration.valueParameters.map { it.returnTypeRef }
+    if (argumentTypes.size != parameters.size) return null
+    // FIR's signature helper erases nullable primitives as their unboxed type.
+    // Use the backend's own type mapper for these slots instead of collapsing
+    // Int and Int? overloads into one identity. Other signature tokens retain
+    // the compiler helper's existing mapping and canonical binary class names.
+    fun mapped(rawType: Type, ref: org.jetbrains.kotlin.fir.types.FirTypeRef): Type {
+        val type = (ref as? FirResolvedTypeRef)?.coneType ?: return rawType
+        return if (type.isMarkedNullable && rawType.sort in Type.VOID..Type.DOUBLE)
+            FirJvmTypeMapper(session).mapType(type) else rawType
+    }
+    val result = mapped(Type.getReturnType(descriptor), declaration.returnTypeRef)
+    val implicitArguments = (declaration.contextParameters.map { it.returnTypeRef } +
+        listOfNotNull(declaration.receiverParameter?.typeRef)).map { ref ->
+        val type = (ref as? FirResolvedTypeRef)?.coneType ?: return null
+        FirJvmTypeMapper(session).mapType(type)
+    }
+    val valueArguments = argumentTypes.mapIndexed { index, type -> mapped(type, parameters[index]) }
+    canonicalJvmMethodDescriptor(Type.getMethodDescriptor(result, *(implicitArguments + valueArguments).toTypedArray()))
 }.getOrNull()
-    ?.substringAfter('(', "")
-    ?.takeIf(String::isNotEmpty)
-    ?.let { "($it" }
-    ?.let(::canonicalJvmMethodDescriptor)
 
 private data class ResolvedCallableTarget24(
     val compilerCallableId: String,
@@ -555,7 +627,7 @@ private fun resolvedCallableTarget24(
         is FirNamedFunctionSymbol -> "callable:"
         else -> return ResolvedCallableTargetResult24(null, "UNSUPPORTED_CALLABLE_SYMBOL_KIND")
     }
-    val descriptor = compilerJvmMethodDescriptor(function)
+    val descriptor = compilerJvmMethodDescriptor(function, session)
         ?: return ResolvedCallableTargetResult24(null, "UNRESOLVED_TARGET_JVM_DESCRIPTOR")
     val compilerId = callableId.toString()
     return ResolvedCallableTargetResult24(
@@ -681,7 +753,7 @@ private class FirFactsFunctionDescriptorChecker(
         val parameterTypes = declaration.valueParameters.map { resolvedDescriptorType(it.returnTypeRef) }
         val receiverType = declaration.receiverParameter?.typeRef?.let(::resolvedDescriptorType)
         val typeParameters = typeParameterDescriptors(declaration.typeParameters)
-        val jvmDescriptor = compilerJvmMethodDescriptor(declaration)
+        val jvmDescriptor = compilerJvmMethodDescriptor(declaration, context.session)
         val status = runCatching { symbol.resolvedStatus }.getOrNull()
         if (declaration.hasAnnotationSafe(JvmStandardClassIds.Annotations.JvmName, context.session)) {
             appendFact(
@@ -823,6 +895,15 @@ private class FirFactsPropertyDescriptorChecker(
         record["declaredType"] = JsonPrimitive(declaredType.toString())
         record["declaredNullable"] = JsonPrimitive(declaredType.isMarkedNullable)
         record["documentationStorage"] = documentationPropertyStorage24(declaration)
+        val constant = (declaration.initializer as? org.jetbrains.kotlin.fir.expressions.FirLiteralExpression)?.value as? String
+        if (status.isConst && constant != null && constant.toByteArray(Charsets.UTF_8).size <= 4096) {
+            record["documentationStringConstant"] = buildJsonObject {
+                put("schema", "kotlin-documentation-string-constant-value/1.0")
+                put("authority", "K2_CONST_PROPERTY_LITERAL_STRING")
+                put("isConst", true); put("literalKind", "STRING")
+                put("value", constant)
+            }
+        }
         record["typeParameters"] = kotlinx.serialization.json.JsonArray(typeParameters)
         appendFact(output, kotlinx.serialization.json.JsonObject(record))
     }
@@ -1161,7 +1242,7 @@ private class FirFactsCfgChecker(
             put("end", source.endOffset)
             put("name", graph.name)
             (declaration.symbol as? FirCallableSymbol<*>)?.let { put("symbol", it.callableId.toString()) }
-            compilerJvmMethodDescriptor(declaration)?.let { put("jvmDescriptor", it) }
+            compilerJvmMethodDescriptor(declaration, context.session)?.let { put("jvmDescriptor", it) }
             put(
                 "returnType",
                 (declaration.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString() ?: "<unresolved>",
@@ -1584,7 +1665,7 @@ private class FirFactsExpressionChecker(
                 // This separate projection does not widen the mutation relation contract.
                 if (relationKind == "CALLS" || relationKind == "CONSTRUCTS") {
                     val function = callable.fir as? FirFunction
-                    val descriptor = function?.let(::compilerJvmMethodDescriptor)
+                    val descriptor = function?.let { compilerJvmMethodDescriptor(it, context.session) }
                     val compilerId = callable.callableId
                     appendFact(output, buildJsonObject {
                         put("recordType", "DOCUMENTATION_CALL")
@@ -1601,6 +1682,18 @@ private class FirFactsExpressionChecker(
                             put("resolution", "COMPILER_EXACT")
                         } else {
                             put("resolution", "UNKNOWN")
+                        }
+                        val qualifier = explicitReceiver as? org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
+                        val qualifierSource = qualifier?.source
+                        if (relationKind == "CALLS" && function?.status?.isStatic == true
+                            && (function.origin is org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin.Java
+                                || function.origin === org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin.Enhancement)
+                            && qualifier?.classId != null && qualifier.classId == compilerId?.classId
+                            && qualifierSource?.kind === KtRealSourceElementKind) {
+                            put("dataStaticQualifierAuthority", "K2_STATIC_FUNCTION_RESOLVED_CLASS_QUALIFIER")
+                            put("dataStaticQualifierClass", "class:${qualifier.classId!!.asString()}")
+                            put("dataStaticQualifierStart", qualifierSource.startOffset)
+                            put("dataStaticQualifierEnd", qualifierSource.endOffset)
                         }
                         val mapping = resolvedArgumentMapping24(callable, arguments, documentationOnly = true)
                         if (mapping.unknownCode == null) {
