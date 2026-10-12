@@ -24,6 +24,12 @@
     "group": "Start"
   },
   {
+    "title": "Explore Codeclew’s source-backed self-documentation",
+    "url": "./index.html#release-0-13-25",
+    "description": "Start with Clew",
+    "group": "Start"
+  },
+  {
     "title": "Follow a service contract into its process",
     "url": "./index.html#release-0-13-24",
     "description": "Start with Clew",

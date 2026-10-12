@@ -24,18 +24,15 @@ checkout for source development; direct capsule binaries are unsupported.
 
 <a id="current-release-v01315"></a>
 
-## Current release: v0.13.24
+<a id="current-release-v01325"></a>
 
-Version 0.13.24 makes declared service processes easier to follow from a boundary contract into retained source:
+## Current release: v0.13.25
 
-- Service documentation can record declared boundary contracts and receiving fragments. Frozen canonical process-page links bind a pinned service revision and published page digest to source and operation details while reusing the existing page.
-- Canonical fragments keep source-ordered steps with declared side effects and explicit failure and boundary paths. Guarded property and enum accessor attempts show selected normal-completion prerequisites; setter dispatch and storage outcomes remain unknown. These are source declarations and retained relationships; they do not prove deployed routing, delivery, or runtime completion.
-- `clew thread question` returns bounded, read-only packets over retained flows, with selector matches and optional control-flow observations. Results preserve parent boundaries; a match does not mean complete program discovery.
+Version 0.13.25 brings Codeclew’s source-backed self-documentation to the public site. Its five-step guide follows a real source capture through saved Work, proposal checks, explicit publication, and evidence retention or recovery. It was generated with officially installed Clew 0.13.24; the example remains pinned to that source release.
 
-See the [release notes](docs/releases/v0.13.24.md),
-[readable-process guide](docs/operations/readable-process-narratives.md),
-[outgoing-call guide](docs/operations/outgoing-service-calls.md) and
-[question packet guide](docs/operations/question-packets.md).
+The guide links real Codeclew functions and marks Rust syntax limits. It does not claim resolved calls, complete dataflow, runtime execution or meaning approval. Proposal, publication and recovery are described from source, not executed in this example.
+
+See the [release notes](docs/releases/v0.13.25.md), [public self-documentation](https://codeclew.github.io/codeclew/codeclew.html), and [documentation workflow](docs/operations/field-documentation.md#capture-question-review-and-exact-reuse).
 
 Saved diagnostic bundles from 0.13.20 remain available through
 `clew support collect` and `clew --diagnostics NEWDIR COMMAND ...`; bounded
@@ -169,7 +166,7 @@ The current public release ships prebuilt bundles for Apple Silicon and Intel Ma
 Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.24 sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.25 sh
 ```
 
 This pins the version documented above. Omit `CODECLEW_VERSION` to install the
@@ -198,7 +195,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.13.24 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.13.25 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
@@ -241,7 +238,7 @@ cannot change those old installed bytes. Alternatively install current core
 directly with the public installer and the pack setting cleared:
 
 ```bash
-curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.24 CODECLEW_PACKS= sh
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | CODECLEW_VERSION=v0.13.25 CODECLEW_PACKS= sh
 ```
 
 ## Install the agent skill
