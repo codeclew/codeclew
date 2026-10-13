@@ -2147,7 +2147,10 @@ fn process_root_resolution<'a>(checked: &'a Check, id: &str) -> ProcessRootResol
         };
     };
     let selector_scope = selector.scope.clone();
-    if !matches!(selector.language.as_str(), "java" | "kotlin") {
+    if !matches!(
+        selector.language.as_str(),
+        "java" | "kotlin" | "typescript" | "csharp"
+    ) {
         return ProcessRootResolution {
             service: Some(service_id.to_owned()),
             selector_scope,

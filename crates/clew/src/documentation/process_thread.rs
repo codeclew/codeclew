@@ -1373,6 +1373,101 @@ mod tests {
         }
     }
     #[test]
+    fn saved_typescript_and_csharp_roots_project_exact_receiving_fragments() {
+        for (language, file, owner, symbol, text) in [
+            (
+                "typescript",
+                "Order.ts",
+                "package:",
+                "source:Order.ts/package:/create/signature",
+                "function create() {\n return order\n}",
+            ),
+            (
+                "csharp",
+                "Order.cs",
+                "class:OrderService",
+                "method:class:OrderService#create()LSystem/Object;",
+                "public object create() {\n return order;\n}",
+            ),
+        ] {
+            let (method, mut source, mut entry) = sample(text);
+            source.file = file.into();
+            entry.symbol = symbol.into();
+            let source_digest = source.text_digest.clone();
+            let definition = json!({
+                "schema":"codeclew-documentation-process/1.0", "id":"order",
+                "title":"Order", "summary":"Declared order return",
+                "root":{"service":"svc","selector":{"language":language,"owner":owner,"name":"create"}},
+                "process":{"scope":"One retained callable","participants":["svc"],"trigger":"Request","outcomes":["Order"],
+                    "thread":{"scope":"One retained callable","rootMethod":"create","methods":[method],"boundaries":[],
+                        "steps":[{"id":"return","title":"Return","text":"Declared return","method":"create","startLine":11,"endLine":11}],
+                        "serviceFragments":[{"id":"receiver","entryMethod":"create","rootStep":"return"}]}}
+            });
+            let observation = super::super::model::Observation {
+                id: "root-symbol".into(),
+                kind: "SYMBOL".into(),
+                service: "svc".into(),
+                symbol: symbol.into(),
+                normalized: json!({"ownerIdentity":owner,"name":"create","documentation":{"events":[]}}),
+                digest: "root-digest".into(),
+                source_ids: vec![source.id.clone()],
+            };
+            let evidence = super::super::model::ServiceEvidence {
+                schema: "evidence".into(),
+                service: "svc".into(),
+                revision: "rev".into(),
+                service_digest: "digest".into(),
+                extractor: "syntax".into(),
+                runtime_mode: "source".into(),
+                coverage: "SYNTAX".into(),
+                boundaries: vec![],
+                entrypoints: vec![entry],
+                observations: BTreeMap::from([(observation.id.clone(), observation)]),
+                sources: BTreeMap::from([(source.id.clone(), source)]),
+                contracts: BTreeMap::new(),
+            };
+            let checked = Check {
+                schema: "check".into(),
+                input_digest: "input".into(),
+                context_digest: "context".into(),
+                services: BTreeMap::from([("svc".into(), evidence)]),
+                unresolved: BTreeMap::new(),
+                interactions: BTreeMap::new(),
+                scenarios: BTreeMap::new(),
+                dependencies: BTreeMap::from([(
+                    "process:order".into(),
+                    super::super::model::Observation {
+                        id: "process:order".into(),
+                        kind: "PROCESS_DEFINITION".into(),
+                        service: "svc".into(),
+                        symbol: "order".into(),
+                        normalized: json!({"definition":definition}),
+                        digest: "definition-digest".into(),
+                        source_ids: vec![],
+                    },
+                )]),
+                source_inputs: None,
+                composition: None,
+            };
+            let root =
+                super::super::render::selected_process_root_metadata(&checked, "order").unwrap();
+            assert_eq!(root["symbol"], symbol, "{language}");
+            let thread = project(&checked, "scenario:order", &root).unwrap().unwrap();
+            assert_eq!(thread["status"], "SOURCE_BOUND_DECLARATION");
+            assert_eq!(
+                thread["methods"]["create"]["source"]["textDigest"],
+                source_digest
+            );
+            let fragments = service_fragments(&checked, "svc").unwrap();
+            assert_eq!(fragments.len(), 1);
+            assert_eq!(
+                fragments[0]["thread"]["methods"]["create"]["symbol"],
+                symbol
+            );
+        }
+    }
+
+    #[test]
     fn native_projection_rejects_citation_overflow_and_a_different_selected_root() {
         let (method, source, mut entry) = sample("fun create() {\n return order\n}");
         entry.symbol = "callable:example/OrderService.create#jvm:()Ljava/lang/Object;".into();

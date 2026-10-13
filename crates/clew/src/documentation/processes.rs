@@ -351,10 +351,10 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             let interactions = repo.interactions()?;
             for id in &definition.interactions {
                 let interaction = &interactions[id];
-                selected.extend([
-                    interaction.from.service.clone(),
-                    interaction.to.service.clone(),
-                ]);
+                selected.insert(interaction.from.service.clone());
+                if !interaction.external {
+                    selected.insert(interaction.to.service.clone());
+                }
             }
             let (saved, snapshot) =
                 super::check::Check::retained(&repo, snapshot.as_deref(), &selected)?;

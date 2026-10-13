@@ -310,6 +310,54 @@ fn unrelated_service_snapshot_fails_without_capturing_available_source() {
 }
 
 #[test]
+fn transient_process_inspection_keeps_external_destination_outside_capture_selection() {
+    let f = Fixture::new();
+    f.service("orders");
+    let interaction = f.input("external.json", &json!({
+        "schema":"codeclew-documentation-interaction/1.0", "id":"provider",
+        "title":"Declared external provider", "from":{"service":"orders"},
+        "to":{"service":"external-provider"}, "external":true,
+        "transport":{"kind":"http","method":"GET","path":"/quantity"},
+        "declaration":{"origin":"human","rationale":"The provider source is outside the captured system."}
+    }));
+    let digest = f.ok(&["docs", "service", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "interaction",
+        "put",
+        "--input",
+        interaction.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ]);
+    f.checked();
+    let marker = install_git_sentinel(&f);
+    let process = f.input("external-process.json", &json!({
+        "schema":"codeclew-documentation-process/1.0", "id":"external-flow",
+        "title":"Quantity flow", "summary":"A declared external boundary over saved evidence.",
+        "root":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}},
+        "interactions":["provider"],
+        "process":{"scope":"Saved quantity flow","participants":["orders"],"trigger":"Quantity request","outcomes":["Quantity result"]}
+    }));
+    let inspected = f.ok(&[
+        "docs",
+        "process",
+        "inspect",
+        "--input",
+        process.to_str().unwrap(),
+    ]);
+    assert_eq!(inspected["saved"], false);
+    assert_eq!(inspected["definition"]["interactions"], json!(["provider"]));
+    assert!(
+        !marker.exists(),
+        "external inspection attempted acquisition"
+    );
+}
+
+#[test]
 fn auxiliary_readers_use_saved_evidence_with_producers_unavailable() {
     let f = Fixture::new();
     f.service("orders");
