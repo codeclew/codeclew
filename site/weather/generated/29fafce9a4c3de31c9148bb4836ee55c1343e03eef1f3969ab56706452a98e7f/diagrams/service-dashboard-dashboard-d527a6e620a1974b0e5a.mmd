@@ -1,0 +1,34 @@
+%% Source freshness: UNVERIFIED; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-dashboard as dashboard
+    participant validation-call as validateEvent call target (unresolved)
+    participant rejection-query as pool.query call target (unresolved)
+    participant offset-call as consumer.commitOffsets call target (unresolved)
+    participant apply-event-call as applyEvent call target (unresolved)
+    %% claim-ff3791dcc1ad16ce5481: dependencies dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:a4627e5e868830287e83e0dc
+    alt Evaluate the conversion, JSON parse, and validateEvent expression under try. If it completes, assign the returned value to event and continue&#59; if any part throws, the catch path below runs.
+    %% claim-839f99eedccbf652533f: dependencies dashboard:flow:0c9e2425ea81d2e2e4f781a1, dashboard:flow:1198b0d44dde70fcd80329fc, dashboard:symbol:a4627e5e868830287e83e0dc
+    Note over caller: Read message.value?.toString() and use an empty string when that result is nullish, then call JSON.parse. A conversion or parse exception enters catch.
+    %% claim-49d5c9d2d5bd0707367d: dependencies dashboard:flow:886390b176392fdbad06fc3a, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard->>validation-call: Call validateEvent with the parsed value and topic&#59; if it returns, assign that value to event. This wrapper does not describe the validator’s checks.
+    %% claim-64c0d01116e12da836b8: dependencies dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:a4627e5e868830287e83e0dc
+    else Otherwise
+    %% claim-c67b2fe5df7f4bee2160: dependencies dashboard:flow:59f03a0653cc7a3798b8ceaf, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard->>rejection-query: Await pool.query for an INSERT into rejected_messages with topic, partition, message.offset, and reason INVALID_EVENT&#59; the SQL uses ON CONFLICT DO NOTHING.
+    %% claim-9dad88348400d67f3d39: dependencies dashboard:flow:59f03a0653cc7a3798b8ceaf, dashboard:flow:654eeebd7e0618b0c6dd58f9, dashboard:symbol:a4627e5e868830287e83e0dc
+    Note over caller: The INSERT is awaited before offset handling. If it rejects, the offset call is not reached&#59; the catch body has no nested handler.
+    %% claim-cb4d50832e00d5782e77: dependencies dashboard:flow:5f3ddc5ec529c16f3f1143f8, dashboard:flow:654eeebd7e0618b0c6dd58f9, dashboard:flow:667235490ded3f35c51f99f1, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard->>offset-call: Then await consumer.commitOffsets with (BigInt(message.offset) + 1n).toString(). If the conversion or call fails, the following return is not reached.
+    %% claim-90da7476b8308f92a14f: dependencies dashboard:flow:f4a336f51f8e91a3da04831a, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard-->>caller: After the rejection query and next-offset call return, exit without applying event.
+    %% claim-331f4f6e31042a4541d5: dependencies dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:a4627e5e868830287e83e0dc
+    end
+    %% claim-a31383d61462fd30cbdd: dependencies dashboard:flow:37dec2bf70bc69d603cb8d4b, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard->>apply-event-call: On the nonthrowing try path, await applyEvent(event) before attempting the normal-path offset call&#59; its effect is not established by this wrapper.
+    %% claim-310055d7070e9c8ca715: dependencies dashboard:flow:37dec2bf70bc69d603cb8d4b, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:symbol:a4627e5e868830287e83e0dc
+    Note over caller: If applyEvent rejects, the following offset call is not reached&#59; no catch surrounds this path in the captured body.
+    %% claim-215f729f998c07e6957d: dependencies dashboard:flow:049a97e649d7feb212e6c67f, dashboard:flow:82ca6f23f0ad8605f0571692, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard->>offset-call: After applyEvent returns, await consumer.commitOffsets with the same next-offset expression. A conversion or commit error has no local handler here.

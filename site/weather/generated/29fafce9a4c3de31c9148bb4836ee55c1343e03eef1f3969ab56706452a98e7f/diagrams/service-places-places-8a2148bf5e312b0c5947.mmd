@@ -1,0 +1,19 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-places as places
+    participant places-db as Places PostgreSQL
+    %% claim-8709ff6b6b1d866b8b13: dependencies places:entrypoint:a34d7257660a5d643c0d9c73, places:symbol:19e12857365e6c3ab8c199bd
+    caller->>service-places: GET /places enters PlacesController.List, which forwards the request cancellation token to the repository.
+    %% claim-6d6494bb61a8d693816f: dependencies places:symbol:93a350e119c095d258221cb9
+    service-places->>places-db: The repository selects the place fields ordered by name.
+    %% claim-5518a18df6908479ad8c: dependencies places:flow:19710e183d3cbefd518fe845, places:symbol:93a350e119c095d258221cb9
+    loop Read each database row and map its id, name, latitude, and longitude to a Place until the reader is exhausted.
+    %% claim-37c5b7cb1d6a19188d5d: dependencies places:flow:19710e183d3cbefd518fe845, places:symbol:93a350e119c095d258221cb9
+    end
+    %% claim-99a3b0c384aa7d90c93e: dependencies places:entrypoint:a34d7257660a5d643c0d9c73, places:flow:5186c682af4611de338b774d, places:symbol:19e12857365e6c3ab8c199bd, places:symbol:93a350e119c095d258221cb9
+    service-places-->>caller: On normal completion, the repository returns the materialized list and the handler returns it.
+    %% claim-b9718517ffd22ea01291: dependencies places:entrypoint:a34d7257660a5d643c0d9c73, places:symbol:19e12857365e6c3ab8c199bd, places:symbol:707eb762b8c1f4718a5b89e7
+    Note over caller: If opening the database connection fails, Open disposes and rethrows&#59; the handler does not catch it.

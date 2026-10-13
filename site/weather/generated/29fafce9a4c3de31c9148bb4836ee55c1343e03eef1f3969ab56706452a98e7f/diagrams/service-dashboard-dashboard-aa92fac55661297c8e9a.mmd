@@ -1,0 +1,44 @@
+%% Source freshness: UNVERIFIED; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-dashboard as dashboard
+    participant applyEvent as Dashboard applyEvent helper
+    participant database as SQL database
+    %% claim-855f2f61d1c41ca9a151: dependencies dashboard:flow:05d6c53782065c056deee939, dashboard:flow:41d01107b6ced5e4d4ffa25a, dashboard:flow:4f5f126e3bf63fdac028a7f5, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    applyEvent->>database: Acquire a pool client, send BEGIN, then insert event.id into inbox with ON CONFLICT DO NOTHING RETURNING event_id.
+    %% claim-07649a05021ebd3fc79e: dependencies dashboard:flow:9e928e7e01e6f4f57297f644, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    alt If the inbox insert returns no row, take the duplicate branch.
+    %% claim-c28a672d6236e4b7e04e: dependencies dashboard:flow:223f1fc24249023e2f0c0bea, dashboard:flow:282ee420abe115949937bbce, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    service-dashboard-->>caller: Send COMMIT and return DUPLICATE without writing a weather card.
+    %% claim-3b5309bdd86e17ad2da3: dependencies dashboard:flow:9e928e7e01e6f4f57297f644, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    else Otherwise
+    %% claim-8e5c69cba9c0eadaab1e: dependencies dashboard:flow:05d6c53782065c056deee939, dashboard:flow:9e928e7e01e6f4f57297f644, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: A newly inserted inbox id continues to the card branch.
+    %% claim-7e9d1e6eb68cf56babcb: dependencies dashboard:flow:9e928e7e01e6f4f57297f644, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    end
+    %% claim-df1cbcaac485b32fea51: dependencies dashboard:flow:854efdf0a86011aa192f1d67, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    alt The forecast branch requires both event.type === forecast.updated and a truthy event.forecast.
+    %% claim-ca3012c01c3e3c04ea23: dependencies dashboard:flow:2b29c8029290550013351947, dashboard:flow:fe9fc2018876b96b81765f2b, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: Upsert forecast fields&#59; on conflict, update only when the stored updated_at is NULL or the incoming updatedAt is strictly greater. The function calls JSON.stringify(event.forecast) to prepare the query parameter passed to client.query.
+    %% claim-0581be73b4bcefd140bd: dependencies dashboard:flow:854efdf0a86011aa192f1d67, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    else Otherwise
+    %% claim-a37047d79116c12434e9: dependencies dashboard:flow:b2f7fd0e0db7cc6be8729756, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: All other types or a falsy forecast use the place-only upsert&#59; this branch is not validation that the event is place.requested.
+    %% claim-2bc6aea997a0770a558f: dependencies dashboard:flow:854efdf0a86011aa192f1d67, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    end
+    %% claim-3abe5337366b9d5c4bb4: dependencies dashboard:flow:05d6c53782065c056deee939, dashboard:flow:0e727ee03a01470009eeee9f, dashboard:flow:2c732614425111f1a7e9e96d, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    applyEvent-->>caller: After the card query, send COMMIT and return OLDER_OR_EQUAL when rowCount is zero, otherwise APPLIED. A skipped stale/equal forecast still reaches COMMIT after the inbox insert.
+    %% claim-0dbdfbb6788003c14da8: dependencies dashboard:flow:70034b350410935125197a03, dashboard:flow:8a070f0f153e2cc2cdcbf66e, dashboard:flow:c5c282421f8bbbf4078a0f14, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    alt If a statement inside try throws, catch awaits ROLLBACK and then throws the caught error.
+    %% claim-da61aa21515cd5abbcc1: dependencies dashboard:flow:8a070f0f153e2cc2cdcbf66e, dashboard:flow:c5c282421f8bbbf4078a0f14, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: If ROLLBACK itself rejects, that failure escapes instead of the original caught error.
+    %% claim-d166c9b4233e3456e81c: dependencies dashboard:flow:70034b350410935125197a03, dashboard:flow:8a070f0f153e2cc2cdcbf66e, dashboard:flow:c5c282421f8bbbf4078a0f14, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    else Otherwise
+    %% claim-52f213052001e754f89a: dependencies dashboard:flow:70034b350410935125197a03, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: When try completes without throwing, the return path proceeds to finally.
+    %% claim-ab19853e3d424f63ed76: dependencies dashboard:flow:70034b350410935125197a03, dashboard:flow:8a070f0f153e2cc2cdcbf66e, dashboard:flow:c5c282421f8bbbf4078a0f14, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    end
+    %% claim-497f238a8b0454a1dd59: dependencies dashboard:flow:4f5f126e3bf63fdac028a7f5, dashboard:flow:bb8da6794fd6a206607eda6a, dashboard:flow:e67af5a2ad85af409bd6d68c, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: After a client is acquired, finally calls client.release on normal and caught-error exits&#59; a release exception may replace the pending result. pool.connect runs before try, so its rejection bypasses this catch and finally.

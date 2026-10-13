@@ -1,0 +1,50 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-dashboard as dashboard
+    participant dashboard-kafka as Kafka topic weather.forecast-updated
+    participant dashboard-db as Dashboard PostgreSQL
+    %% claim-96d7f6d416c0fedd9aac: dependencies dashboard:symbol:a4627e5e868830287e83e0dc, interaction:forecasts-forecast-updated-to-dashboard, process-scope:dashboard-forecast-updated-consumer, process:dashboard-forecast-updated-consumer, scenario:dashboard-forecast-updated-consumer
+    Note over caller: The saved process associates weather.forecast-updated with Dashboard.consumeMessage as an agent-proposed topic mapping. It leaves topic subscription configuration and runtime delivery unverified.
+    %% claim-446e6c2329b37b7bc2e3: dependencies dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:021fcd0ff7baa53bd3c51930, dashboard:symbol:a4627e5e868830287e83e0dc
+    alt JSON parsing and validateEvent succeed for a weather.forecast-updated message, producing a valid forecast.updated event.
+    %% claim-0e2d7ace81dc22974434: dependencies dashboard:symbol:021fcd0ff7baa53bd3c51930, dashboard:symbol:7d0d09a16ac25de86e5beb53
+    Note over caller: The common envelope requires an object, string id, version 1, a place with id oslo, helsinki, or lisbon, string name, and finite latitude and longitude. The forecast branch requires updatedAt and fetchedAt accepted by isTimestamp, mode fixture or live, and a periods array of length 1 through 6. Each period requires a valid time, finite temperatureC, precipitationMm null or finite and nonnegative, and a string symbol. isTimestamp accepts a UTC ISO-like value with seconds and optional fractional seconds, and also requires Date.parse to be finite.
+    %% claim-48972f4d4c6203f6ae51: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    service-dashboard->>dashboard-db: Begin a transaction and insert the event id into inbox with conflict ignored. If it already exists, commit and return DUPLICATE without changing the weather card.
+    %% claim-fd8faa1594379cf31d5a: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    alt The inbox insert reports an existing event id.
+    %% claim-c93fdad5457395f7b859: dependencies dashboard:flow:049a97e649d7feb212e6c67f, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:symbol:a4627e5e868830287e83e0dc, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: The duplicate path commits and returns DUPLICATE&#59; consumeMessage then commits this partition's offset plus one.
+    %% claim-823cd741657db88dad7b: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    else Otherwise
+    %% claim-ebeef3c264171b01cd39: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    service-dashboard->>dashboard-db: For a new forecast event, insert the card from event.place when no card exists, without checking for a prior place-requested event&#59; for an existing card, update its place fields and forecast only when stored updated_at is null or the incoming timestamp is strictly newer.
+    %% claim-17d4ba7ac8ddbe4f6f8e: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    alt The card insert or timestamp-gated update affects a row.
+    %% claim-14d800cb6eb3b41173a3: dependencies dashboard:flow:049a97e649d7feb212e6c67f, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:symbol:a4627e5e868830287e83e0dc, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: Commit the transaction and return APPLIED&#59; after applyEvent resolves, consumeMessage commits offset plus one.
+    %% claim-638c041a2a7a1f82d8ab: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    else Otherwise
+    %% claim-b438013a6e503a7046eb: dependencies dashboard:flow:049a97e649d7feb212e6c67f, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:symbol:a4627e5e868830287e83e0dc, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: For an existing card with an equal or newer stored timestamp, the SQL update condition affects no row. The transaction still commits the inbox insert and returns OLDER_OR_EQUAL without changing the card&#59; consumeMessage then commits offset plus one.
+    %% claim-94f21d423ba2dd719a90: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    end
+    %% claim-b948fdda4f38f0ee54e6: dependencies dashboard:symbol:ac3aadb76be6fea3e790cb85
+    end
+    %% claim-8485c4c6795cffd18c51: dependencies dashboard:flow:049a97e649d7feb212e6c67f, dashboard:flow:37dec2bf70bc69d603cb8d4b, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:symbol:a4627e5e868830287e83e0dc
+    service-dashboard->>dashboard-kafka: After applyEvent resolves on the valid path, commit this partition's offset plus one.
+    %% claim-f7dea6136e5065db201f: dependencies dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:021fcd0ff7baa53bd3c51930, dashboard:symbol:a4627e5e868830287e83e0dc
+    else Otherwise
+    %% claim-0b1e97374ab832082b1d: dependencies dashboard:flow:59f03a0653cc7a3798b8ceaf, dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:021fcd0ff7baa53bd3c51930
+    service-dashboard->>dashboard-db: On JSON parse or validation failure, including an unrecognized topic that throws UNKNOWN_TOPIC, insert topic, partition, offset, and reason INVALID_EVENT into rejected_messages&#59; ignore a duplicate rejection row.
+    %% claim-2bc228fbe1d00118816c: dependencies dashboard:flow:049a97e649d7feb212e6c67f, dashboard:flow:654eeebd7e0618b0c6dd58f9, dashboard:flow:a190efb9bca6603f1d2abc58
+    service-dashboard->>dashboard-kafka: After the rejection row is written, commit this partition's offset plus one and return.
+    %% claim-171b883d8fb946af3647: dependencies dashboard:flow:59f03a0653cc7a3798b8ceaf, dashboard:flow:654eeebd7e0618b0c6dd58f9, dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:flow:f4a336f51f8e91a3da04831a
+    Note over caller: A rejection-write or rejection-path offset-commit failure propagates. When both writes succeed, consumeMessage returns after advancing the offset.
+    %% claim-d5b5ff6501bfef747acd: dependencies dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:021fcd0ff7baa53bd3c51930, dashboard:symbol:a4627e5e868830287e83e0dc
+    end
+    %% claim-b811b0fb9bbccaf5140e: dependencies dashboard:flow:37dec2bf70bc69d603cb8d4b, dashboard:flow:8a4f6855cb7f1a476a0484e4, dashboard:flow:a190efb9bca6603f1d2abc58, dashboard:symbol:a4627e5e868830287e83e0dc, dashboard:symbol:ac3aadb76be6fea3e790cb85
+    Note over caller: pool.connect runs before applyEvent's try. If it fails, there is no transaction rollback or client release. Once connected, errors inside the try attempt ROLLBACK, rethrow, and release the client in finally&#59; either error prevents consumeMessage from reaching its valid-path offset commit. The DB transaction commits before the offset commit, so an offset failure can replay the message&#59; the inbox duplicate check prevents a second card update, but does not establish exactly-once delivery.

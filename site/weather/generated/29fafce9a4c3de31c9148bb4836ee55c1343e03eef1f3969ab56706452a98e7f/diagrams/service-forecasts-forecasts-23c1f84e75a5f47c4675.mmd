@@ -1,0 +1,36 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-forecasts as forecasts
+    participant forecast-db as Forecasts database
+    participant broker as Kafka weather.forecast-updated
+    %% claim-32b4710025f069cbb305: dependencies forecasts:source_annotations:3d7b217355f2e6a34064e800, forecasts:symbol:3d7b217355f2e6a34064e800
+    Note over caller: The source declaration uses PUBLISH_INTERVAL_MS with a 1000 millisecond fallback&#59; this Work does not prove scheduler registration or runtime invocation.
+    %% claim-e5ce1ccc606eea2f86b4: dependencies forecasts:flow:44c1216c3e37f45f4ff9ceca
+    alt The source attempts the publisher transaction callback, or catches an exception and logs it.
+    %% claim-adb532bae89d7224583a: dependencies forecasts:flow:c276c8bbe48869c1c665424d
+    opt The query, send, and published-flag update are inside a deferred transaction callback&#59; runtime commit behavior and atomicity with Kafka are not established.
+    %% claim-068abd97afa84193912a: dependencies forecasts:flow:c276c8bbe48869c1c665424d, forecasts:source_annotations:3d7b217355f2e6a34064e800, forecasts:symbol:3d7b217355f2e6a34064e800
+    service-forecasts->>forecast-db: Select at most one unpublished outbox row, ordered by id, using FOR UPDATE SKIP LOCKED.
+    %% claim-ade9e205f0a00ae09021: dependencies forecasts:flow:a91ff11cffbbe839dcfe0e41
+    alt No row is returned, or one pending row is read for publication.
+    %% claim-bdd42d45885877cee64d: dependencies forecasts:flow:ca69bbde23a96263a8aa460b
+    Note over caller: If the query returns no row, the transaction callback returns without sending.
+    %% claim-d9a220ac3846c3911c3c: dependencies forecasts:flow:a91ff11cffbbe839dcfe0e41
+    else Otherwise
+    %% claim-9297199d5b2d287b52e6: dependencies forecasts:flow:c276c8bbe48869c1c665424d, forecasts:source_annotations:3d7b217355f2e6a34064e800, forecasts:symbol:3d7b217355f2e6a34064e800
+    service-forecasts->>broker: Read the selected payload, send weather.forecast-updated with place id as key, and wait up to 10 seconds for the send result.
+    %% claim-52e2229715644c4a4116: dependencies forecasts:flow:c276c8bbe48869c1c665424d, forecasts:source_annotations:3d7b217355f2e6a34064e800, forecasts:symbol:3d7b217355f2e6a34064e800
+    service-forecasts->>forecast-db: After the send call returns, update this outbox row to published=true.
+    %% claim-91a5b3ef90cd5b908024: dependencies forecasts:flow:a91ff11cffbbe839dcfe0e41
+    end
+    %% claim-1ad549cf2ec160969612: dependencies forecasts:flow:c276c8bbe48869c1c665424d
+    end
+    %% claim-4618929dd5263200c796: dependencies forecasts:flow:44c1216c3e37f45f4ff9ceca
+    else Otherwise
+    %% claim-2ae92366999079bdb501: dependencies forecasts:flow:44c1216c3e37f45f4ff9ceca
+    Note over caller: On an exception, the catch logs PUBLISH_RETRY and the exception class&#59; this source does not prove an automatic retry or completed broker delivery.
+    %% claim-1f0cc9df62c91d6300ae: dependencies forecasts:flow:44c1216c3e37f45f4ff9ceca
+    end

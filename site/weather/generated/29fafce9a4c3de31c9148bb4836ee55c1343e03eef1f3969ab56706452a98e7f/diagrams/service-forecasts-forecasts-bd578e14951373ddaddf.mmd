@@ -1,0 +1,14 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-forecasts as forecasts
+    participant controller as ForecastController
+    participant forecast-db as Forecasts database
+    %% claim-233c6fcc4be1f4fb6bc3: dependencies forecasts:source_annotations:77706d418ba7932d0d3f5280, forecasts:symbol:77706d418ba7932d0d3f5280
+    caller->>controller: GET /health enters the health handler.
+    %% claim-2da4faebc62c4156cc1a: dependencies forecasts:source_annotations:1571fff289ff6226f149c918, forecasts:source_annotations:77706d418ba7932d0d3f5280, forecasts:symbol:1571fff289ff6226f149c918, forecasts:symbol:77706d418ba7932d0d3f5280
+    controller->>forecast-db: Call ping, which executes SELECT 1.
+    %% claim-43541047e0882974158a: dependencies forecasts:flow:68da87fb7524f89fb0acd641, forecasts:source_annotations:77706d418ba7932d0d3f5280, forecasts:symbol:77706d418ba7932d0d3f5280
+    controller-->>caller: After ping completes, return database READY.

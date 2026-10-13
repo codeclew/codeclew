@@ -1,0 +1,22 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-dashboard as dashboard
+    participant client as HTTP client
+    participant openapi-file as Dashboard OpenAPI file
+    %% claim-5a6f82609fa4c79c25d2: dependencies dashboard:contract-operation:359dbcae66966113bf88b8f9, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    client->>service-dashboard: Request the OpenAPI document
+    %% claim-9da867a0657b69b9bd63: dependencies dashboard:flow:08046fd43308cb3155be6b51, dashboard:flow:ac8e82987faf46cbdbccb757, dashboard:flow:b4ce9e14327c00f246bfa18d, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    alt The fixed OpenAPI file is read and parses as JSON
+    %% claim-e67057f20dee4577ca23: dependencies dashboard:flow:ac8e82987faf46cbdbccb757, dashboard:flow:b4ce9e14327c00f246bfa18d, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    service-dashboard->>openapi-file: Read and parse contracts/dashboard.openapi.json
+    %% claim-bcd740421acd87bdcb2f: dependencies dashboard:contract-operation:359dbcae66966113bf88b8f9, dashboard:contract-operation:46eb1353d8493620edc8bfcb, dashboard:contract-operation:97d881f216d27f90570cf086, dashboard:contract-operation:a134218675bfd8d39281c02d, dashboard:contract-operation:c8f77692c3c0b8acd9232c7e, dashboard:contract-operation:f2a55cb383d259206638d57a, dashboard:contract:97420ee0a3ffefe0cddb405b, dashboard:flow:08046fd43308cb3155be6b51, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    service-dashboard-->>client: Return status 200 with the JSON object
+    %% claim-554386b8513b56c57937: dependencies dashboard:flow:08046fd43308cb3155be6b51, dashboard:flow:ac8e82987faf46cbdbccb757, dashboard:flow:b4ce9e14327c00f246bfa18d, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    else Otherwise
+    %% claim-81ed0d2178ad55b15d7a: dependencies dashboard:contract-operation:359dbcae66966113bf88b8f9, dashboard:contract-operation:46eb1353d8493620edc8bfcb, dashboard:contract-operation:97d881f216d27f90570cf086, dashboard:contract-operation:a134218675bfd8d39281c02d, dashboard:contract-operation:c8f77692c3c0b8acd9232c7e, dashboard:contract-operation:f2a55cb383d259206638d57a, dashboard:contract:97420ee0a3ffefe0cddb405b, dashboard:flow:ac8e82987faf46cbdbccb757, dashboard:flow:b4ce9e14327c00f246bfa18d, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    Note over caller: If file reading or JSON parsing fails, the exception propagates&#59; this handler has no local catch or response mapping. The OpenAPI separately declares a 500 JSON response.
+    %% claim-cff9a4b8a282a811340c: dependencies dashboard:flow:08046fd43308cb3155be6b51, dashboard:flow:ac8e82987faf46cbdbccb757, dashboard:flow:b4ce9e14327c00f246bfa18d, dashboard:symbol:812cb9b6c2878af12cf90ce4
+    end

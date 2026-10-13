@@ -270,6 +270,7 @@ def _mask_rust_string_literals(content: str) -> str:
 # Narratives, source metadata, arbitrary JSON fields, and ordinary site pages
 # remain English. These are the producer versions in the published example.
 GENERATED_DOCS_PREFIXES = (
+    "site/weather/",
     "site/examples/codeclew-source/docs/",
     "site/examples/current-workflow/docs/",
     "site/examples/clew-starter/docs/",

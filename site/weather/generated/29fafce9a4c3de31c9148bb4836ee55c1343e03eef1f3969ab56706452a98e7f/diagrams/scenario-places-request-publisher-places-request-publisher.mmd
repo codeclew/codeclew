@@ -1,0 +1,38 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-places as places
+    participant places-db as Places PostgreSQL
+    participant places-kafka as Kafka topic weather.place-requested
+    %% claim-5e4fb5b4a179d1c43e2b: dependencies places:flow:158b244bf277169193530f80, places:symbol:7fb8137cf82d592b243e54aa
+    loop Repeat while the cancellation token is not signalled&#59; each pass attempts one pending row, then waits one second.
+    %% claim-5d184223c32ec68b480c: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    service-places->>places-db: PublishPending opens a connection and transaction, then selects one eligible unpublished row in created_at order, limited to one and locked with SKIP LOCKED.
+    %% claim-d1bb4d8b8ebbde14e869: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    alt If the select returns no row, PublishPending returns for this pass&#59; otherwise it sends the selected payload and records the completed send.
+    %% claim-6e445dad38c309bfb434: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    Note over caller: No row is sent when the reader is empty&#59; the using scopes dispose the open transaction and connection on return.
+    %% claim-84d4e111ed85e5a6774f: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    else Otherwise
+    %% claim-02699e133726492dbc5b: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    service-places->>places-kafka: Extract place.id from the stored payload and await ProduceAsync to weather.place-requested with place.id as the message key and the original payload as the value.
+    %% claim-e18eff8054f84ba9972c: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    service-places->>places-db: After ProduceAsync completes, update that outbox row to published=true and commit the database transaction.
+    %% claim-f5798d4b4a45388d70ad: dependencies places:symbol:722b268c12cec9e1cb51cbe8, places:symbol:7fb8137cf82d592b243e54aa
+    Note over caller: A crash after the broker send but before the database commit can leave the row unpublished for a later send&#59; producer idempotence does not make Kafka and PostgreSQL one atomic transaction.
+    %% claim-dce06a22daeb4942f9b6: dependencies places:symbol:722b268c12cec9e1cb51cbe8
+    end
+    %% claim-a1da6f698c2bdfdf8068: dependencies places:flow:096b7f6a391d982235e434ce, places:symbol:7fb8137cf82d592b243e54aa
+    alt If PublishPending throws OperationCanceledException while the token is cancelled, the loop exits&#59; other errors are handled by the general catch.
+    %% claim-36f270f7d835dff9dcca: dependencies places:symbol:7fb8137cf82d592b243e54aa
+    Note over caller: An OperationCanceledException observed while the token is cancelled breaks the loop.
+    %% claim-ed716f0ae11456c59aac: dependencies places:flow:096b7f6a391d982235e434ce, places:symbol:7fb8137cf82d592b243e54aa
+    else Otherwise
+    %% claim-7f09695286f324c4f3f1: dependencies places:symbol:7fb8137cf82d592b243e54aa
+    Note over caller: Other exceptions are logged with PUBLISH_RETRY&#59; normal completion and logged failures continue to the one-second delay. The delay also receives the token, so cancellation reaching that await can propagate.
+    %% claim-c085ca238c84599cabe4: dependencies places:flow:096b7f6a391d982235e434ce, places:symbol:7fb8137cf82d592b243e54aa
+    end
+    %% claim-951105b75c05cb103403: dependencies places:flow:158b244bf277169193530f80, places:symbol:7fb8137cf82d592b243e54aa
+    end

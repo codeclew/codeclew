@@ -1,0 +1,22 @@
+%% Source freshness: STALE; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-forecasts as forecasts
+    participant controller as ForecastController
+    participant forecast-db as Forecasts database
+    %% claim-bb5594ae25c411624d10: dependencies forecasts:source_annotations:59f31d25c0ed89f258aed3fe, forecasts:symbol:59f31d25c0ed89f258aed3fe
+    caller->>controller: GET /forecasts/{id} enters the handler with the path id.
+    %% claim-9230daf7b6e94c74c5c2: dependencies forecasts:source_annotations:3b271aa33f7bd944bb5ab6a5, forecasts:symbol:3b271aa33f7bd944bb5ab6a5
+    controller->>forecast-db: Read payload::text from forecasts where place_id matches id.
+    %% claim-cfa78b45fd1622f81da5: dependencies forecasts:flow:a73ae3b4a6eb6513fdcd5812, forecasts:source_annotations:3b271aa33f7bd944bb5ab6a5, forecasts:source_annotations:59f31d25c0ed89f258aed3fe, forecasts:symbol:3b271aa33f7bd944bb5ab6a5, forecasts:symbol:59f31d25c0ed89f258aed3fe
+    alt The query returns no row, or returns a stored payload.
+    %% claim-aa935efa3025dd592c70: dependencies forecasts:flow:7ea5dfea1728e5e2e238127f
+    controller-->>caller: Return 404 Not Found when get returns null.
+    %% claim-48129ceda04fd31a2b01: dependencies forecasts:flow:a73ae3b4a6eb6513fdcd5812, forecasts:source_annotations:3b271aa33f7bd944bb5ab6a5, forecasts:source_annotations:59f31d25c0ed89f258aed3fe, forecasts:symbol:3b271aa33f7bd944bb5ab6a5, forecasts:symbol:59f31d25c0ed89f258aed3fe
+    else Otherwise
+    %% claim-03303a446147dec9ff07: dependencies forecasts:flow:ae29ebea4e122d8b81f7afd8, forecasts:source_annotations:59f31d25c0ed89f258aed3fe, forecasts:symbol:59f31d25c0ed89f258aed3fe
+    controller-->>caller: Return 200 with Content-Type application/json and the stored payload.
+    %% claim-cf90f4b1d9da8f8e209f: dependencies forecasts:flow:a73ae3b4a6eb6513fdcd5812, forecasts:source_annotations:3b271aa33f7bd944bb5ab6a5, forecasts:source_annotations:59f31d25c0ed89f258aed3fe, forecasts:symbol:3b271aa33f7bd944bb5ab6a5, forecasts:symbol:59f31d25c0ed89f258aed3fe
+    end

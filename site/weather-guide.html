@@ -1,0 +1,24 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Run the fixture and capture evidence</title><style>
+:root{color-scheme:light;--ink:#19312b;--paper:#faf8f0;--accent:#176646}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.65 system-ui,sans-serif}
+main,header,footer{max-width:850px;margin:auto;padding:24px}header{padding-top:40px}h1{font-size:clamp(38px,7vw,64px);line-height:1.1;margin:0}
+section{margin:0 0 30px}section:first-child{font-size:clamp(22px,3vw,28px);line-height:1.5}p{margin:12px 0}
+.brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit}.brand img{width:48px;height:48px}.hero-cat{display:block;width:min(180px,35vw);height:auto;float:right;margin:0 0 20px 20px}.thread-cat{display:block;width:96px;height:auto;margin:24px 0}.footer-cat{display:block;width:110px;height:auto;margin:12px 0}main::after{content:"";display:block;clear:both}
+pre{background:#173d30;color:#f8fff8;padding:20px;border-radius:12px;overflow-x:auto;font:15px/1.7 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+a{color:var(--accent);text-underline-offset:4px}a:focus-visible,pre:focus-visible{outline:3px solid #ad6513;outline-offset:4px}footer{border-top:1px solid #d3ddd3;font-size:14px}
+@media(max-width:500px){main,header,footer{padding:18px}section{margin-bottom:24px}pre{padding:16px;font-size:14px}}
+</style></head><body><main><h1>Run the fixture and capture evidence</h1><p>The weather demo source repository is https://github.com/codeclew/clew-weather-demo. Native threaded documentation requires an official installed Codeclew release 0.13.29 or newer; full scenario bodies require 0.13.31 or newer. The weather documentation reader URL is https://codeclew.github.io/codeclew/weather/index.html. Use a clean attached checkout, a fresh documentation root outside it with an existing parent, and fresh capture receipts. Restore services/places/Places.csproj with the .NET 10 SDK before capture; Kotlin and TypeScript declarations use source-syntax evidence. Capture does not author prose or import old cache.</p><p>For the local fixture, use Docker Compose v2 and free ports 8080 through 8082. Start:<br>
+FORECAST_MODE=fixture docker compose -p clew-weather-demo up --build -d<br>
+Open http://127.0.0.1:8080. Fixture cities are Oslo, Helsinki, and Lisbon; fixture mode does not use live-provider data. Stop:<br>
+docker compose -p clew-weather-demo down</p><p>Capture with the installed launcher:<br>
+python3 -I -S -B documentation/capture.py --root /absolute/new-docs-root --clew clew --include-observations --include-processes<br>
+Set CODECLEW_HOME to the state directory recorded beneath the fresh capture receipts, for example: export CODECLEW_HOME=/absolute/new-docs-root-capture-receipts/state. The local application is separate from the native documentation reader. Work preparation binds to the explicit saved snapshot and retained evidence; it never falls back to source acquisition.</p><p><a href="weather/index.html">weather documentation reader</a></p><details><summary>Provenance</summary><pre>{
+  &quot;bundle&quot;: &quot;70a98470da882e7634e50209a9626f7bc068189b6171f36a5d29ba023990bce3&quot;,
+  &quot;proposal&quot;: &quot;08157d58ecb759cf04248281f7a924e2b706f7b39ecd0f7b794951dc2d5c5767&quot;,
+  &quot;author&quot;: &quot;gpt-6-luna max&quot;,
+  &quot;authoringRuntime&quot;: &quot;OFFICIAL_INSTALLED_0.13.29&quot;,
+  &quot;meaningReview&quot;: &quot;UNASSESSED&quot;,
+  &quot;sourceCapture&quot;: &quot;RETAINED_SOURCE_NOT_REVERIFIED&quot;,
+  &quot;publicPublished&quot;: false,
+  &quot;egressCorrectionPending&quot;: true
+}</pre></details><p><a href="index.html">Codeclew</a></p></main></body></html>
