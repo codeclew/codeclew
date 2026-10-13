@@ -432,8 +432,6 @@ impl Thread {
     }
 }
 
-/// A bounded syntax check for method-only Kotlin or Java spans. It establishes
-/// source containment only, without interpreting conditions or resolving calls.
 // Remove only complete leading declaration annotations. Other executable
 // prefixes remain visible and are rejected, rather than included in source.
 fn without_annotations(mut prefix: &str) -> Option<String> {
@@ -476,6 +474,91 @@ fn without_annotations(mut prefix: &str) -> Option<String> {
     Some(result)
 }
 
+fn isolated_typescript_callable(text: &str, name: &str) -> bool {
+    fn callable(node: tree_sitter::Node<'_>, text: &str, name: &str) -> bool {
+        matches!(node.kind(), "function_declaration" | "method_definition")
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|n| &text[n.byte_range()] == name)
+            && node
+                .child_by_field_name("body")
+                .is_some_and(|n| n.kind() == "statement_block" && !n.has_error())
+    }
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+        .is_err()
+    {
+        return false;
+    }
+    if let Some(tree) = parser.parse(text, None) {
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let nodes: Vec<_> = root
+            .named_children(&mut cursor)
+            .filter(|n| n.kind() != "comment")
+            .collect();
+        if !root.has_error() && nodes.len() == 1 {
+            let node = nodes[0];
+            let declaration = if node.kind() == "export_statement" {
+                node.child_by_field_name("declaration")
+            } else {
+                Some(node)
+            };
+            if declaration.is_some_and(|n| callable(n, text, name)) {
+                return true;
+            }
+        }
+    }
+    // Captured class methods are complete method spans, without their class.
+    // Parse a bounded wrapper, then require exactly that one named method.
+    let wrapped = format!("class CodeclewThreadSpan {{\n{text}\n}}");
+    let Some(tree) = parser.parse(&wrapped, None) else {
+        return false;
+    };
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return false;
+    }
+    let Some(body) = root
+        .named_child(0)
+        .and_then(|n| n.child_by_field_name("body"))
+    else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let nodes: Vec<_> = body
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() != "comment")
+        .collect();
+    nodes.len() == 1 && callable(nodes[0], &wrapped, name)
+}
+
+fn after_csharp_attributes(mut prefix: &str) -> Option<&str> {
+    prefix = prefix.trim_start();
+    while prefix.starts_with('[') {
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, byte) in prefix.bytes().enumerate() {
+            match byte {
+                b'[' => depth += 1,
+                b']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => (),
+            }
+        }
+        prefix = prefix[end?..].trim_start();
+    }
+    Some(prefix)
+}
+
+/// Check complete retained callable containment, without resolving calls or
+/// upgrading source declarations to compiler or runtime authority.
 fn isolated_callable(source: &Source, entry: &Entrypoint) -> bool {
     let text = &source.text;
     if text.len() > 256 * 1024 {
@@ -495,6 +578,12 @@ fn isolated_callable(source: &Source, entry: &Entrypoint) -> bool {
             .map(|(_, value)| value.split('(').next().unwrap_or(""))
             .unwrap_or("")
     };
+    if [".ts", ".mts", ".cts"]
+        .iter()
+        .any(|ext| source.file.ends_with(ext))
+    {
+        return !name.is_empty() && isolated_typescript_callable(text, name);
+    }
     let (code, comments) = source_steps::lexical_masks(text);
     let mut live = text.as_bytes().to_vec();
     for (i, &active) in code.iter().enumerate() {
@@ -570,17 +659,25 @@ fn isolated_callable(source: &Source, entry: &Entrypoint) -> bool {
             return false;
         }
         start
-    } else if source.file.ends_with(".java") {
-        let Some(start) = live.find(name).filter(|_| !name.is_empty()) else {
+    } else if source.file.ends_with(".java") || source.file.ends_with(".cs") {
+        let declaration = if source.file.ends_with(".cs") {
+            let Some(declaration) = after_csharp_attributes(&live) else {
+                return false;
+            };
+            declaration
+        } else {
+            &live
+        };
+        let Some(offset) = declaration.find(name).filter(|_| !name.is_empty()) else {
             return false;
         };
-        let Some(prefix) = without_annotations(&live[..start]) else {
+        let Some(prefix) = without_annotations(&declaration[..offset]) else {
             return false;
         };
         if prefix.contains(['{', '}', '(', ')', ';', '=']) {
             return false;
         }
-        start
+        live.len() - declaration.len() + offset
     } else {
         return false;
     };
@@ -1188,6 +1285,58 @@ mod tests {
         bind(&method, &source, &entry, "rev").unwrap();
         let (method, source, entry) = sample("fun create() = Order(status = supplied ?: PENDING)");
         bind(&method, &source, &entry, "rev").unwrap();
+    }
+    #[test]
+    fn typescript_and_csharp_complete_spans_reject_clipping_and_extra_members() {
+        let cases = [
+            (
+                "Order.ts",
+                "source:Order.ts/package:/create/hash",
+                "async function create(request: { id: string }): Promise<void> {\n const url = `https://example.invalid/${request.id}`;\n if (/}/.test(url)) await send(url);\n}",
+            ),
+            (
+                "Order.mts",
+                "source:Order.mts/package:/create/hash",
+                "export function create(): { id: string } { return { id: 'x' }; }",
+            ),
+            (
+                "Order.cts",
+                "source:Order.cts/class:Order/create/hash",
+                "async create(): Promise<void> { await store.create(); }",
+            ),
+            (
+                "Order.cs",
+                "method:class:Order#create()LResult;",
+                "[HttpPost(\"/orders\")]\n[Authorize]\npublic async Task<IActionResult> create([FromBody] Request request) {\n var result = await store.create(request);\n return Ok(result);\n}",
+            ),
+        ];
+        for (file, symbol, text) in cases {
+            let (mut method, mut source, mut entry) = sample(text);
+            source.file = file.into();
+            entry.symbol = symbol.into();
+            bind(&method, &source, &entry, "rev").unwrap();
+            entry.symbol = symbol.replace("create", "other");
+            assert!(bind(&method, &source, &entry, "rev").is_err(), "{file}");
+            entry.symbol = symbol.into();
+            for invalid_text in [
+                text.trim_end().strip_suffix('}').unwrap().to_owned(),
+                format!(
+                    "{text}\n{}",
+                    if file.ends_with(".cs") {
+                        "public void other() {}"
+                    } else {
+                        "function other() {}"
+                    }
+                ),
+                format!("class Order {{\n{text}\n}}"),
+            ] {
+                source.text = invalid_text;
+                source.end_line = source.start_line + source.text.lines().count() as u64 - 1;
+                source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+                method.text_digest = source.text_digest.clone();
+                assert!(bind(&method, &source, &entry, "rev").is_err(), "{file}");
+            }
+        }
     }
     #[test]
     fn annotated_root_with_same_named_receiver_call_is_one_complete_declaration() {
