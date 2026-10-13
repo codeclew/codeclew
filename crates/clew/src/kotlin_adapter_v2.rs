@@ -2569,8 +2569,7 @@ mod tests {
             .unwrap();
         let error = attempt
             .analyze()
-            .err()
-            .expect("invalid Kotlin must fail compiler analysis");
+            .expect_err("invalid Kotlin must fail compiler analysis");
         assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
         let diagnostic = error
             .evidence
