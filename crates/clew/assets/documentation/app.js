@@ -313,6 +313,13 @@ const RU_MESSAGES={
  "Trigger:": "Событие запуска:",
  "Participants:": "Участники:",
  "Domain objects:": "Предметные объекты:",
+ "Compiler-selected calls and parameter bindings": "Выбранные компилятором вызовы и параметры",
+ "Argument expressions are not evaluated values.": "Выражения аргументов не являются вычисленными значениями.",
+ "Receiver object and runtime dispatch are unknown.": "Объект receiver и фактическая диспетчеризация неизвестны.",
+ "Return and exception transfer remain unproven.": "Передача возвращаемого значения и исключений не подтверждена.",
+ "Omitted default parameter indices": "Индексы пропущенных параметров с defaults",
+ "Compiler-selected target": "Выбранная компилятором цель",
+ "Parameter mapping is unavailable.": "Соответствие аргументов параметрам недоступно.",
  "Requested outcomes": "Ожидаемые результаты",
  "These are human-requested scope and outcomes; source support is assessed separately.": "Эту область и результаты задал человек; подтверждение кодом оценивается отдельно.",
  "No overview has been accepted.": "Обзор ещё не принят.",
@@ -581,12 +588,18 @@ function threadEvidenceLinks(sourceIds){
 }
 function threadAnchorHref(id){return '#'+(current?.kind==='SERVICE_FRAGMENT'?current.id+'~':'')+id;}
 function threadSourceHref(method,line){return threadAnchorHref('thread-source-'+method+'-L'+line);}
+function processCallBindingsCard(packet){
+ const bindings=(packet.methods||[]).flatMap(m=>Array.isArray(m.callBindings)?m.callBindings:[]);
+ if(!bindings.length)return '';
+ const methods=new Map((packet.methods||[]).map(m=>[m.id,m]));
+ return chromeHtml`<details class="process-call-bindings"><summary>${esc(t('Compiler-selected calls and parameter bindings'))} (${bindings.length})</summary><p>${esc(t('Argument expressions are not evaluated values.'))}</p>${bindings.map(b=>chromeHtml`<article><h4>${esc(methods.get(b.callerMethodId)?.symbol||b.callerMethodId)} → ${esc(b.targetIdentity)}</h4><p>${esc(t('Compiler-selected target'))}: ${esc(b.targetStatus)} ${threadEvidenceLinks(b.sourceIds||[])}</p>${b.argumentStatus==='COMPILER_PARAMETER_MAPPING'?chromeHtml`<ul>${(b.arguments||[]).map(a=>chromeHtml`<li><code>${esc(a.expression)}</code> → <code>${esc(a.parameter)}</code> [${esc(a.parameterIndex)}]</li>`).join('')}</ul>`:chromeHtml`<p>${esc(t('Parameter mapping is unavailable.'))}</p>`}${b.omittedDefaultParameterIndices?.length?chromeHtml`<p>${esc(t('Omitted default parameter indices'))}: ${b.omittedDefaultParameterIndices.map(esc).join(', ')} · ${esc(b.defaultValues)}</p>`:''}<p>${esc(t('Receiver object and runtime dispatch are unknown.'))}</p><p>${esc(t('Return and exception transfer remain unproven.'))}</p></article>`).join('')}</details>`;
+}
 function processExtractionCard(packet){
  if(!packet)return '';
  const events=packet.events||[],kinds=new Set(['IF','TRY','LOOP','RETURN','THROW','FINALLY']);
  const selected=new Set((packet.query?.outcomeEventIds)||[]);
  const rows=events.filter(e=>selected.has(e.id)||kinds.has(e.detail?.kind));
- return chromeHtml`<section class="process-extraction"><h3>${esc(t('Extracted evidence envelope'))}</h3><p>${esc(t('Potential static behavior; business intent and runtime effects are not established.'))}</p><p>${esc(packet.status)} · ${packet.methods?.length||0} ${esc(t('retained method envelopes'))} · ${events.length} ${esc(t('retained events'))}</p><ul>${rows.map(e=>chromeHtml`<li><strong>${esc(e.detail?.kind||'UNKNOWN')}</strong> ${esc(e.detail?.condition||e.detail?.target||e.id)} ${threadEvidenceLinks(e.sourceIds||[])}</li>`).join('')}</ul><details><summary>${esc(t('Extraction frontiers and provenance'))} (${packet.frontier?.length||0})</summary><pre>${pretty({snapshot:packet.snapshot,packetDigest:packet.packetDigest,policy:packet.policy,query:packet.query,outcomes:packet.outcomes,frontier:packet.frontier,interpretationPlan:packet.interpretationPlan})}</pre></details></section>`;
+ return chromeHtml`<section class="process-extraction"><h3>${esc(t('Extracted evidence envelope'))}</h3><p>${esc(t('Potential static behavior; business intent and runtime effects are not established.'))}</p><p>${esc(packet.status)} · ${packet.methods?.length||0} ${esc(t('retained method envelopes'))} · ${events.length} ${esc(t('retained events'))}</p><ul>${rows.map(e=>chromeHtml`<li><strong>${esc(e.detail?.kind||'UNKNOWN')}</strong> ${esc(e.detail?.condition||e.detail?.target||e.id)} ${threadEvidenceLinks(e.sourceIds||[])}</li>`).join('')}</ul>${processCallBindingsCard(packet)}<details><summary>${esc(t('Extraction frontiers and provenance'))} (${packet.frontier?.length||0})</summary><pre>${pretty({snapshot:packet.snapshot,packetDigest:packet.packetDigest,policy:packet.policy,query:packet.query,outcomes:packet.outcomes,frontier:packet.frontier,interpretationPlan:packet.interpretationPlan})}</pre></details></section>`;
 }
 function boundaryContractsCard(thread){
  const claims=rows=>'<ul>'+rows.map(claim=>chromeHtml`<li>${esc(claim.text)} ${claim.missingEvidence?chromeHtml`<strong class="thread-boundary-badge">${esc(t('Unresolved'))}: ${esc(claim.missingEvidence)}</strong>`:''} ${(claim.evidenceRefs||[]).map(id=>{const e=activeContract.evidence[id];return chromeHtml`<span class="thread-provenance">${esc(e.service)} · ${esc(e.source?.file||e.file||e.sourceId)}:${e.startLine}–${e.endLine} · ${esc(e.revision)} ${e.source?button([e.sourceId],t('Source'),true):(/^https?:\/\//.test(e.url||'')?chromeHtml`<a href="${esc(e.url)}">${esc(t('Source'))}</a>`:'')}</span>`;}).join(' ')}</li>`).join('')+'</ul>';

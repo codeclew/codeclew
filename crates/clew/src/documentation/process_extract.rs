@@ -122,7 +122,9 @@ fn packet(
     let mut frontier = rows("frontiers");
     let mut edges = edges;
     for edge in &mut edges {
-        edge["relationshipAuthority"] = json!("RETAINED_LOCAL_ASSOCIATION_NOT_RUNTIME_PROOF");
+        if edge.get("relationshipAuthority").is_none() {
+            edge["relationshipAuthority"] = json!("RETAINED_LOCAL_ASSOCIATION_NOT_RUNTIME_PROOF");
+        }
     }
     frontier.push(
         json!({"kind":"SEMANTIC","code":"DATA_EFFECT_ALIAS_AND_RUNTIME_CLOSURE_NOT_ESTABLISHED"}),
@@ -190,11 +192,11 @@ fn packet(
         });
     }
     frontier.sort_by_key(Value::to_string);
-    let method_rows: Vec<_> = methods.iter().map(|m| json!({"id":m["id"],"symbol":m["symbol"],"scope":m["scope"],"service":m["service"],"sourceIds":m["sourceIds"],"eventIds":m["eventIds"],"eventAssociation":m["eventAssociation"],"providerSlots":m["providerSlots"],"onStructuralOutcomePath":m["id"].as_str().is_some_and(|id| backward.contains(id)),"semanticClosure":"UNKNOWN"})).collect();
+    let method_rows: Vec<_> = methods.iter().map(|m| json!({"id":m["id"],"symbol":m["symbol"],"scope":m["scope"],"service":m["service"],"sourceIds":m["sourceIds"],"eventIds":m["eventIds"],"eventAssociation":m["eventAssociation"],"providerSlots":m["providerSlots"],"callBindings":m["callBindings"],"onStructuralOutcomePath":m["id"].as_str().is_some_and(|id| backward.contains(id)),"semanticClosure":"UNKNOWN"})).collect();
     let event_rows: Vec<_> = events.iter().map(|e| json!({"id":e["id"],"ownerSymbol":e["symbol"],"sourceIds":e["sourceIds"],"factDigest":e["digest"],"detail":e["normalized"]})).collect();
     let mut value = json!({
         "schema":"codeclew-process-extraction-packet/0.1","policy":POLICY,
-        "implementationDigest":crate::canonical::hash_bytes(concat!(include_str!("process_extract.rs"),include_str!("process_graph.rs")).as_bytes()),
+        "implementationDigest":crate::canonical::hash_bytes(concat!(include_str!("process_extract.rs"),include_str!("process_graph.rs"),include_str!("process_call_bindings.rs")).as_bytes()),
         "snapshot":snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "query":query,"rootFactDigest":root.digest,"serviceDigest":checked.services[&query.service].service_digest,
         "extractor":checked.services[&query.service].extractor,"runtimeMode":checked.services[&query.service].runtime_mode,
