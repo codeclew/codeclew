@@ -1,0 +1,35 @@
+%% Source freshness: UNVERIFIED; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-forecasts as forecasts
+    participant forecast-db as Forecasts database
+    %% claim-2ffd167d30d8308bb14c: dependencies forecasts:source_annotations:1ea53b95922ad5791d930533, forecasts:symbol:1ea53b95922ad5791d930533
+    Note over caller: The source declaration uses REFRESH_INTERVAL_MS with a 60000 millisecond fallback&#59; this Work does not prove scheduler registration or runtime invocation.
+    %% claim-8cf0569d4301d47cb509: dependencies forecasts:source_annotations:1ea53b95922ad5791d930533, forecasts:symbol:1ea53b95922ad5791d930533
+    service-forecasts->>forecast-db: Query places whose forecast has no expiry or an expiry earlier than now, ordered by place id&#59; source supplies the following row-mapper callback.
+    %% claim-684a21ff53eac57d9512: dependencies forecasts:flow:e9881531c62a3422e80b2b0f
+    opt The query includes a deferred row-mapper lambda&#59; this Work does not establish callback invocation or count.
+    %% claim-d3a39cfb8566b391a5df: dependencies forecasts:flow:e9881531c62a3422e80b2b0f
+    Note over caller: The lambda builds a place object from each row’s id, name, latitude, and longitude.
+    %% claim-5e2dc271a7f3a63c35ee: dependencies forecasts:flow:e9881531c62a3422e80b2b0f
+    end
+    %% claim-c66b1c2172c8b49b0cf6: dependencies forecasts:flow:84ab2c89d2ea612342339614
+    loop For each selected place, the source attempts the transaction callback and catches per-place exceptions.
+    %% claim-f238d2545dda7a207d56: dependencies forecasts:flow:ea6dd04c278f12f668b5cde7
+    alt The transaction call returns, or an exception is caught and logged as FORECAST_RETRY with its class name.
+    %% claim-61579b41cb4853ee2793: dependencies forecasts:flow:740f3405b57f36fc72f3f58e
+    opt The source passes refresh(place) to transaction.executeWithoutResult as a deferred callback&#59; runtime commit and rollback behavior are not established.
+    %% claim-55924566844ed887f9d5: dependencies forecasts:flow:740f3405b57f36fc72f3f58e
+    Note over caller: The callback body calls refresh(place).
+    %% claim-ebb5b879e26c248014bc: dependencies forecasts:flow:740f3405b57f36fc72f3f58e
+    end
+    %% claim-ffcb4e488d993163ab52: dependencies forecasts:flow:ea6dd04c278f12f668b5cde7
+    else Otherwise
+    %% claim-0d23d0e2926d49375b3e: dependencies forecasts:flow:ea6dd04c278f12f668b5cde7
+    Note over caller: The catch logs FORECAST_RETRY and the exception class&#59; the source does not establish whether the scheduler will invoke the method again.
+    %% claim-14107e309c53b8a138c0: dependencies forecasts:flow:ea6dd04c278f12f668b5cde7
+    end
+    %% claim-9f4e03ed17f69a0b5187: dependencies forecasts:flow:84ab2c89d2ea612342339614
+    end

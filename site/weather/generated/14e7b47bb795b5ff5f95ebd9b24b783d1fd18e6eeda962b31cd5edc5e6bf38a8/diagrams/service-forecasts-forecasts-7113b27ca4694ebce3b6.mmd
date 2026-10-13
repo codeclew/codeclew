@@ -1,0 +1,14 @@
+%% Source freshness: UNVERIFIED; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-forecasts as forecasts
+    participant controller as ForecastController
+    participant contract-file as Forecasts OpenAPI file
+    %% claim-a0eb1f28f9c7c97cb21a: dependencies forecasts:source_annotations:c0b9aa485ebf80a7fcc5609e, forecasts:symbol:c0b9aa485ebf80a7fcc5609e
+    caller->>controller: GET /openapi.json enters the file-serving handler.
+    %% claim-8d80877baa940206acf0: dependencies forecasts:source_annotations:c0b9aa485ebf80a7fcc5609e, forecasts:symbol:c0b9aa485ebf80a7fcc5609e
+    controller->>contract-file: Read /app/contracts/forecasts.openapi.json.
+    %% claim-7ece88e1938bcae171c7: dependencies forecasts:source_annotations:c0b9aa485ebf80a7fcc5609e, forecasts:symbol:c0b9aa485ebf80a7fcc5609e
+    controller-->>caller: Return the file text with Content-Type application/json.

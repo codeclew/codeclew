@@ -1,0 +1,50 @@
+%% Source freshness: UNVERIFIED; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-dashboard as dashboard
+    participant places as Places
+    participant places-db as Places PostgreSQL
+    %% claim-867c3a6ea923dd9ac3b0: dependencies dashboard:symbol:7970ac3e2a8cf3f45b4a6217, places:contract-operation:08d1b9df6781b2953a038bc2, places:contract-operation:0f29e92a853c76a6ea564769, places:contract-operation:6b165729e2d309a9b2687873, places:contract-operation:6e713b9442ae5dfc4b99b133, places:contract-operation:fa5644a96e01681d7c2b0445, places:contract:91b280ed0ed0eda3e8e3231d, places:symbol:6c7321d96988c6277e32e39e
+    caller->>service-dashboard: A caller enters savePlace with a JSON body. The declared Places request body requires only cityId, a string in the oslo, helsinki, or lisbon enum&#59; SavePlace exposes that value as CityId.
+    %% claim-ea66fc67117c852a5204: dependencies dashboard:symbol:7970ac3e2a8cf3f45b4a6217, interaction:dashboard-save-place-to-places, scenario:dashboard-save-city
+    service-dashboard->>places: Dashboard POSTs JSON.stringify(request.body) to /places with content-type application/json and AbortSignal.timeout(10000). The saved interaction is an agent-proposed target mapping, not proof of runtime routing.
+    %% claim-4fb435287aa6213d6050: dependencies dashboard:flow:8fbb54c4bae55833802a2fce, dashboard:symbol:7970ac3e2a8cf3f45b4a6217, scenario:dashboard-save-city
+    alt Dashboard fetch and response.json complete
+    %% claim-2ffb3392163a7f4d7efe: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, scenario:dashboard-save-city
+    alt PlacesRepository.City returns null for CityId
+    %% claim-9598ebe173333356a7d5: dependencies places:contract-operation:fa5644a96e01681d7c2b0445, places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50
+    places-->>service-dashboard: Places returns HTTP 400 with error UNSUPPORTED_CITY.
+    %% claim-fda7a7fc7f2484b9f443: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, scenario:dashboard-save-city
+    else Otherwise
+    %% claim-206662371b21832b8908: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    places->>places-db: For a supported city, repository.Save opens a connection, begins a transaction, and inserts the place with ON CONFLICT DO NOTHING RETURNING id.
+    %% claim-b80eef221dfda271fc4d: dependencies places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    alt The place INSERT returns a new id
+    %% claim-c3f082c7c33e8cbbb7cd: dependencies places:symbol:51d94b76d870001475fd2c51, places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    places->>places-db: Within the same transaction, InsertRequest creates a UUID and inserts a JSONB outbox payload with type place.requested, version 1, and the place.
+    %% claim-e52f5ff3c423edff90bc: dependencies places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    else Otherwise
+    %% claim-7dc7e55eff21ec3ff190: dependencies places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    Note over caller: If the INSERT returns null after a conflict, InsertRequest is skipped, so this call adds no outbox row.
+    %% claim-d573e35cc6c11b6abc5a: dependencies places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    end
+    %% claim-7ec326c9475caf47aec9: dependencies places:symbol:51d94b76d870001475fd2c51, places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    places->>places-db: repository.Save commits the transaction after the optional outbox insert&#59; the new place and its outbox row share that transaction.
+    %% claim-b2c2a256aeb68b422a06: dependencies places:contract-operation:fa5644a96e01681d7c2b0445, places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, scenario:dashboard-save-city
+    places-->>service-dashboard: After repository.Save returns, the controller returns HTTP 200 with the mapped city.
+    %% claim-1b063f26de1df2988c9f: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, scenario:dashboard-save-city
+    end
+    %% claim-9b18a215fbe88c5c129a: dependencies dashboard:symbol:7970ac3e2a8cf3f45b4a6217, places:contract-operation:fa5644a96e01681d7c2b0445, places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, scenario:dashboard-save-city
+    service-dashboard-->>caller: Dashboard forwards the upstream status and parsed JSON body. The shown Places branches return 400 for an unsupported city or 200 after a supported save.
+    %% claim-fb0dd41468e0b1f39096: dependencies dashboard:flow:8fbb54c4bae55833802a2fce, dashboard:symbol:7970ac3e2a8cf3f45b4a6217, scenario:dashboard-save-city
+    else Otherwise
+    %% claim-62ecc1e2e5ebf8b783cf: dependencies dashboard:symbol:7970ac3e2a8cf3f45b4a6217
+    service-dashboard-->>caller: A fetch or response.json exception, including an abort from the 10-second signal, is caught and mapped to HTTP 503 PLACES_UNAVAILABLE.
+    %% claim-097b234b1c456213cf3d: dependencies dashboard:symbol:7970ac3e2a8cf3f45b4a6217, places:symbol:51d94b76d870001475fd2c51, places:symbol:d3b23b700626394c74b7ef9e, scenario:dashboard-save-city
+    Note over caller: The exception may occur before or after Places commits, so this 503 is not a database outcome. The handler has no retry branch. A later call can follow the no-outbox conflict path whenever the place INSERT returns null, including for a preexisting city or another request&#59; the source does not identify which request caused that state.
+    %% claim-08aed576a52a09ce13e2: dependencies dashboard:flow:8fbb54c4bae55833802a2fce, dashboard:symbol:7970ac3e2a8cf3f45b4a6217, scenario:dashboard-save-city
+    end
+    %% claim-264815f9722d1cf4918d: dependencies interaction:forecasts-forecast-updated-to-dashboard, interaction:places-place-requested-to-dashboard, interaction:places-place-requested-to-forecasts, places:symbol:51d94b76d870001475fd2c51, process:dashboard-save-city, scenario:dashboard-save-city
+    Note over caller: The saved process links the Places publisher, Forecasts consumer/publisher, and Dashboard consumer views as separate subviews. This HTTP narrative does not establish their activation, routing, retry behavior, or message delivery, and the outbox insert is not a synchronous broker acknowledgement.

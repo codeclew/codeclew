@@ -1,0 +1,33 @@
+%% Source freshness: UNVERIFIED; meaning review: UNASSESSED
+sequenceDiagram
+    autonumber
+    %% Agent-interpreted static source; declared edges are not compiler calls.
+    participant caller as Caller
+    participant service-places as places
+    participant places-db as Places PostgreSQL
+    %% claim-95ded289d095338b5fd8: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:symbol:309961f88b197290c1b04e50, places:symbol:9b1977404f23eec4b384ba0d
+    caller->>service-places: POST /places supplies a SavePlace body&#59; the handler resolves its cityId before saving.
+    %% claim-1384810d5571386d554f: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:flow:fb7eaacd787375afbd44cfad, places:symbol:309961f88b197290c1b04e50, places:symbol:9b1977404f23eec4b384ba0d
+    alt If the city lookup returns null for an unsupported cityId, the handler returns an error response.
+    %% claim-126078d94912d5b8e32e: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:flow:4ae3f1a41f6b7e53d1d6254d, places:symbol:309961f88b197290c1b04e50
+    service-places-->>caller: Return 400 Bad Request with error UNSUPPORTED_CITY.
+    %% claim-3b91693bb2eacd60f74f: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:flow:fb7eaacd787375afbd44cfad, places:symbol:309961f88b197290c1b04e50, places:symbol:9b1977404f23eec4b384ba0d
+    else Otherwise
+    %% claim-be7729d4081cce6d2512: dependencies places:symbol:707eb762b8c1f4718a5b89e7, places:symbol:d3b23b700626394c74b7ef9e
+    service-places->>places-db: Open the database connection, begin a transaction, and attempt the place insert with conflict suppression.
+    %% claim-a262a0a9155992848168: dependencies places:flow:3e148dc4ec1c8e6777dab503, places:symbol:d3b23b700626394c74b7ef9e
+    alt If the insert returns an id, the row was newly inserted and the repository creates an outbox event&#59; a conflict returns no id.
+    %% claim-d4ec4175cbd5ea8578d9: dependencies places:symbol:51d94b76d870001475fd2c51, places:symbol:d3b23b700626394c74b7ef9e
+    service-places->>places-db: Generate a new event GUID, serialize the place.requested v1 payload, and insert it into request_outbox in the same transaction.
+    %% claim-8d8eb7157efc1d5d0064: dependencies places:flow:3e148dc4ec1c8e6777dab503, places:symbol:d3b23b700626394c74b7ef9e
+    else Otherwise
+    %% claim-c19d1a6965a7cae5cb1a: dependencies places:flow:3e148dc4ec1c8e6777dab503, places:symbol:d3b23b700626394c74b7ef9e
+    Note over caller: When the insert returns no id, InsertRequest is skipped, so the duplicate save adds no request_outbox row.
+    %% claim-66c737f724735730e2c6: dependencies places:flow:3e148dc4ec1c8e6777dab503, places:symbol:d3b23b700626394c74b7ef9e
+    end
+    %% claim-94f96c3f6acfdaf1dd68: dependencies places:symbol:d3b23b700626394c74b7ef9e
+    service-places->>places-db: Commit the transaction after the insert and any new-row outbox write.
+    %% claim-156e18add2a30e93a7e3: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:flow:6c58eb605998ee97db0f1bdd, places:symbol:309961f88b197290c1b04e50, places:symbol:d3b23b700626394c74b7ef9e
+    service-places-->>caller: On the supported-city path, return 200 with the city, including when the insert conflicted with an existing row.
+    %% claim-2a2e14444b75a2715cd6: dependencies places:entrypoint:17bfec4e1ad29c7ec0342f46, places:flow:fb7eaacd787375afbd44cfad, places:symbol:309961f88b197290c1b04e50, places:symbol:9b1977404f23eec4b384ba0d
+    end
