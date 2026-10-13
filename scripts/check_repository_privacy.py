@@ -17,6 +17,10 @@ from collections.abc import Iterable
 
 GENERIC_NAME = "Codeclew Maintainers"
 GENERIC_EMAIL = "maintainers@codeclew.invalid"
+GITHUB_SQUASH_WITH_CUSTOM_SUBJECT = {
+    # PR #22: gh --subject omitted GitHub's usual (#22) suffix.
+    "370a5f20b4676ad926a80cbdb3ad3be212898e37": "Recognize GitHub squash merge metadata in privacy checks",
+}
 FORBIDDEN_TOKEN_SHA256 = {
     "0b3e1b057983454547b3bcbf2fac99b7309dbb5737a2d387f9f4a9bddf895147",
     "f5a38e4245e1c0094edfe353a8d77577f61031999ec900c57de05640cb5459d9",
@@ -215,7 +219,10 @@ def check_history_metadata() -> list[tuple[str, str]]:
                 (len(parents.split()) == 2 and subject.startswith("Merge pull request #"))
                 or (
                     len(parents.split()) == 1
-                    and re.search(r" \(#[1-9][0-9]*\)$", subject) is not None
+                    and (
+                        re.search(r" \(#[1-9][0-9]*\)$", subject) is not None
+                        or GITHUB_SQUASH_WITH_CUSTOM_SUBJECT.get(commit) == subject
+                    )
                 )
             )
         )
