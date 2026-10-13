@@ -6,12 +6,15 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import re
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import urlsplit
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -320,6 +323,44 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(manifest["manifestDigest"], digest)
             self.assertNotIn("Cargo.toml", observed)
             self.assertFalse((source / ".git").exists())
+
+    def test_archived_installed_skill_contains_canonical_files_and_local_references(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        canonical_skill = root / "skills" / "codeclew"
+        with tempfile.TemporaryDirectory() as value:
+            temporary = Path(value)
+            package = temporary / "codeclew"
+            package.mkdir()
+            release.assemble_source(root, package, "a" * 40, "b" * 40)
+            asset, _ = release.write_archive(package, temporary, "arm64", "core")
+            extracted = release.extract_release_archive(asset, temporary / "extracted")
+            project = temporary / "project"
+            project.mkdir()
+            completed = subprocess.run(
+                [sys.executable, "-I", "-S",
+                 str(extracted / "source/scripts/install_agent_skill.py"),
+                 "install", "--agent", "codex", "--project", str(project)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            installed = project / ".agents/skills/codeclew"
+            expected = {path.relative_to(canonical_skill).as_posix(): path.read_bytes()
+                        for path in canonical_skill.rglob("*")
+                        if path.is_file() and path.name != ".DS_Store"}
+            actual = {path.relative_to(installed).as_posix(): path.read_bytes()
+                      for path in installed.rglob("*") if path.is_file()}
+            self.assertEqual(actual.keys(), expected.keys())
+            self.assertEqual(actual, expected)
+            for path in installed.rglob("*.md"):
+                for link in re.findall(r"\[[^\]]+\]\(([^)]+)\)", path.read_text()):
+                    target = urlsplit(link)
+                    if target.scheme or target.netloc or not target.path:
+                        continue
+                    destination = (path.parent / target.path).resolve()
+                    self.assertTrue(destination.is_relative_to(installed.resolve()), link)
+                    self.assertTrue(destination.is_file(), f"{path.name}: missing {link}")
 
     def test_core_profile_preserves_runtime_identity_and_drops_build_component_cache(self) -> None:
         with tempfile.TemporaryDirectory() as value:
