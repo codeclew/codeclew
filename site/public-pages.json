@@ -2,8 +2,6 @@
   "schema": "codeclew-public-pages/1.0",
   "pages": [
     "index.html",
-    "provenance.html",
-    "weather/index.html",
-    "weather-guide.html"
+    "provenance.html"
   ]
 }

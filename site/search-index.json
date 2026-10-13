@@ -10,23 +10,5 @@
     "url": "./provenance.html",
     "description": "Provenance",
     "group": "Reference"
-  },
-  {
-    "title": "WeatherCodeclew cat portrait",
-    "url": "./weather/index.html",
-    "description": "WeatherCodeclew cat portrait",
-    "group": "Reference"
-  },
-  {
-    "title": "Run the fixture and capture evidence",
-    "url": "./weather-guide.html",
-    "description": "Run the fixture and capture evidence",
-    "group": "Reference"
-  },
-  {
-    "title": "Recompose, publish, and render the guide",
-    "url": "./weather-guide.html#section-egress",
-    "description": "Run the fixture and capture evidence",
-    "group": "Reference"
   }
 ]

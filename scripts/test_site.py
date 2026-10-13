@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 SITE = Path(__file__).resolve().parents[1] / 'site'
 GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs',
-                        'examples/clew-starter/docs', 'codeclew/source', 'weather')
+                        'examples/clew-starter/docs', 'codeclew/source')
 ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html', 'codeclew.html'}
 TASKS = {'./nav-query.html', './documentation.html', './working-tree.html'}
 
