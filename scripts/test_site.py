@@ -14,9 +14,17 @@ import xml.etree.ElementTree as ET
 
 SITE = Path(__file__).resolve().parents[1] / 'site'
 GENERATED_DOCS_PATHS = ('examples/codeclew-source/docs', 'examples/current-workflow/docs',
-                        'examples/clew-starter/docs', 'codeclew/source')
+                        'examples/clew-starter/docs', 'codeclew/source', 'weather')
 ACTIVE = {'index.html', 'nav-query.html', 'documentation.html', 'working-tree.html', 'evidence.html', 'extend.html', 'codeclew.html'}
 TASKS = {'./nav-query.html', './documentation.html', './working-tree.html'}
+
+
+def navigation_module():
+    path = SITE.parent / 'scripts/build_site_navigation.py'
+    spec = importlib.util.spec_from_file_location('site_navigation', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class Page(HTMLParser):
@@ -148,6 +156,7 @@ class SiteTests(unittest.TestCase):
     def setUpClass(cls):
         cls.pages = {path.name: Page(path) for path in SITE.glob('*.html')}
         cls.destination_pages = {(SITE / name).resolve(): page for name, page in cls.pages.items()}
+        cls.current_index = navigation_module().current_page_index(SITE)
 
     def assert_destination(self, source, url):
         assert_local_destination(self, SITE, self.destination_pages, SITE / source, url)
@@ -159,7 +168,10 @@ class SiteTests(unittest.TestCase):
                     self.assert_destination(name, url)
 
     def test_primary_tasks_and_secondary_routes_are_distinct(self):
+        current = {entry['url'].removeprefix('./').split('#')[0] for entry in self.current_index or []}
         for name in ACTIVE | {'pilot.html'}:
+            if self.current_index is not None and name in current:
+                continue
             page = self.pages[name]
             primary = set(page.navigation['Primary navigation'])
             self.assertEqual(primary, TASKS | {'./evidence.html'}, name)
@@ -174,6 +186,11 @@ class SiteTests(unittest.TestCase):
 
     def test_search_reaches_every_page_and_real_sections(self):
         index = json.loads((SITE / 'search-index.json').read_text())
+        if self.current_index is not None:
+            self.assertEqual(index, self.current_index)
+            for entry in index:
+                self.assert_destination('index.html', entry['url'])
+            return
         reader_resources = {'examples/current-workflow/help.html', 'examples/current-workflow/runbooks.html'}
         self.assertEqual({'./' + name for name in ACTIVE | reader_resources},
                          {entry['url'] for entry in index if '#' not in entry['url']})
@@ -198,6 +215,22 @@ class SiteTests(unittest.TestCase):
                     assert_local_destination(self, SITE, self.destination_pages, path, url)
                 self.assertIn('/docs/' if name != 'saved-edits' else '/reproduce/saved-edits/',
                               str((path.parent / iframe[1]).resolve()))
+
+    def test_current_pages_do_not_link_to_archived_tasks(self):
+        if self.current_index is None:
+            self.skipTest('Minimal public pages have not been assembled')
+        current = {entry['url'].removeprefix('./').split('#')[0] for entry in self.current_index}
+        archived = (ACTIVE | {'pilot.html', 'architecture.html', 'working-tree-example.html'}) - current
+        for relative in current:
+            source = SITE / relative
+            for url in Page(source).links:
+                target = urlsplit(url)
+                if target.scheme or target.netloc:
+                    continue
+                path = (source.parent / unquote(target.path)).resolve() if target.path else source.resolve()
+                if path.is_dir():
+                    path = path / 'index.html'
+                self.assertNotIn(path, {SITE / name for name in archived}, f'{relative}: archived task {url}')
 
     def test_redirect_targets_have_real_fallback_links(self):
         for name in ('architecture.html', 'working-tree-example.html'):
@@ -258,6 +291,32 @@ class SiteTests(unittest.TestCase):
             self.assertIsNotNone(root.get('viewBox'))
             self.assertFalse(any(node.tag.endswith('image') for node in root.iter()), name)
             self.assertTrue(any(node.tag.endswith('path') for node in root.iter()), name)
+
+
+class CurrentPageIndexTests(unittest.TestCase):
+    def test_public_selection_indexes_current_content_and_preserves_archive_bytes(self):
+        module = navigation_module()
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            (site / 'index.html').write_text('<title>Clew &amp; Weather</title><main><h2 id="install">Install</h2></main>')
+            archive = site / 'old.html'
+            archive.write_text('<title>Old</title><!-- SITE_HEADER -->historical<!-- /SITE_HEADER -->')
+            old_bytes = archive.read_bytes()
+            (site / 'public-pages.json').write_text(json.dumps({'schema': 'codeclew-public-pages/1.0', 'pages': ['index.html']}))
+            index = module.current_page_index(site)
+            self.assertEqual({entry['url'] for entry in index}, {'./index.html', './index.html#install'})
+            self.assertEqual(index[0]['title'], 'Clew & Weather')
+            self.assertEqual(archive.read_bytes(), old_bytes)
+
+    def test_public_selection_fails_closed_for_duplicates_and_escaped_paths(self):
+        module = navigation_module()
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            (site / 'index.html').write_text('<title>Clew</title>')
+            for paths in (['index.html', 'index.html'], ['../outside.html']):
+                (site / 'public-pages.json').write_text(json.dumps({'schema': 'codeclew-public-pages/1.0', 'pages': paths}))
+                with self.assertRaises(AssertionError):
+                    module.current_page_index(site)
 
 
 class GeneratedDocumentationTests(unittest.TestCase):
