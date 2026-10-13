@@ -1082,6 +1082,48 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn external_destination_is_not_a_removed_captured_service() {
+        for external in [true, false] {
+            let mut checked = current();
+            let interaction = checked.dependencies.get_mut("interaction:reserve").unwrap();
+            interaction.normalized = json!({"external":external,
+                "from":{"service":"inventory"}, "to":{"service":"external-provider"}});
+            interaction.digest = digest(&interaction.normalized).unwrap();
+            let mut binding = old(&checked);
+            let fragment = binding.fragments.remove("transport-edge").unwrap();
+            binding.fragments.clear();
+            binding
+                .fragments
+                .insert("scenario:checkout/summary".into(), fragment);
+            binding.narratives.insert(
+                "scenario:checkout".into(),
+                Narrative {
+                    schema: "codeclew-documentation-narrative/1.0".into(),
+                    subject: "scenario:checkout".into(),
+                    context_digest: checked.context_digest.clone(),
+                    operations: vec![],
+                    gaps: BTreeMap::new(),
+                },
+            );
+            super::super::status::update_states(&mut binding, &checked);
+            let state = &binding.section_states["scenario:checkout"];
+            assert_eq!(
+                state.target_revisions.contains_key("external-provider"),
+                !external
+            );
+            assert_eq!(
+                state
+                    .reasons
+                    .iter()
+                    .any(|reason| reason["reason"] == "SERVICE_REMOVED"
+                        && reason["service"] == "external-provider"),
+                !external
+            );
+            assert!(state.target_revisions.contains_key("inventory"));
+        }
+    }
+
     fn old(checked: &Check) -> Bindings {
         let source = vec!["inventory-source".to_owned()];
         let fragments = BTreeMap::from([

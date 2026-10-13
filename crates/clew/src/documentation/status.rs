@@ -83,6 +83,9 @@ pub fn update_states(binding: &mut Bindings, checked: &Check) {
                         }
                         if observation.kind == "DECLARED_INTERACTION" {
                             for side in ["from", "to"] {
+                                if side == "to" && observation.normalized["external"] == true {
+                                    continue;
+                                }
                                 if let Some(service) =
                                     observation.normalized[side]["service"].as_str()
                                 {
@@ -102,6 +105,9 @@ pub fn update_states(binding: &mut Bindings, checked: &Check) {
                         }
                         if observation.kind == "DECLARED_INTERACTION" {
                             for side in ["from", "to"] {
+                                if side == "to" && observation.normalized["external"] == true {
+                                    continue;
+                                }
                                 if let Some(s) = observation.normalized[side]["service"].as_str() {
                                     services.insert(s.into());
                                 }
