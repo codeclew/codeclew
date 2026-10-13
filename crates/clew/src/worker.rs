@@ -732,6 +732,9 @@ fn attach_verified_index_failure(
         "descriptorBoundaryCount":descriptor_graph.and_then(|value| value.get("boundaries")).and_then(Value::as_array).map_or(0, Vec::len),
         "workerDiagnosticCount":facts.and_then(|value| value.get("diagnostics")).and_then(Value::as_array).map_or(0, Vec::len),
         "workerDiagnosticsOmitted":true,
+        "privateCompilerDiagnostics":if stage == "K2_VALIDATION" {
+            facts.map(worker_diagnostics::capture_compiler_failure).unwrap_or(Value::Null)
+        } else { Value::Null },
         "validationErrorCode":error.code,
         "validationMessageHash":crate::canonical::hash_bytes(error.message.as_bytes()),
         "descriptorFailure":if stage == "DESCRIPTOR_GRAPH" {
