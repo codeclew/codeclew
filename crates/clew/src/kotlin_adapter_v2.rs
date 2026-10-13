@@ -27,7 +27,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
 pub(crate) const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0";
-const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.4";
+const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.5";
 const RECEIPT_SCHEMA: &str = "codeclew-completeness-receipt/2.0";
 const WORKSPACE_SET_AUTHORIZATION_SCHEMA: &str = "codeclew-kotlin-workspace-set-authorization/1.0";
 
@@ -618,31 +618,11 @@ impl ProjectNativeKotlinAttempt {
             .worker
             .as_mut()
             .ok_or_else(|| invalid("project-native worker is unavailable"))?;
-        let index = match worker.index_files_verified_after_project(&self.request, &self.project) {
-            Ok(verified) => worker.inspect_verified_index(&verified)?.clone(),
-            Err(error) if error.code == ErrorCode::IncompleteSemanticAnalysis => {
-                let files = self
-                    .snapshot
-                    .index
-                    .iter()
-                    .filter(|entry| entry.stage == 0 && entry.path.ends_with(".kt"))
-                    .map(|entry| entry.path.clone())
-                    .collect::<Vec<_>>();
-                if files.is_empty() {
-                    return Err(error);
-                }
-                let syntax = worker.index_files_source_syntax_verified(&json!({
-                    "repo":self.repo,
-                    "compilation":self.request["compilation"],
-                    "syntaxOnly":true,
-                    "files":files,
-                }))?;
-                let mut syntax = worker.inspect_verified_source_syntax(&syntax)?.clone();
-                normalize_source_syntax_fallback(&mut syntax, &error)?;
-                syntax
-            }
-            Err(error) => return Err(error),
-        };
+        // This attempt serves the compiler-semantic adapter contract. A syntax
+        // response cannot satisfy it and would replace the original K2 failure
+        // with a misleading protocol mismatch in the adapter authority check.
+        let verified = worker.index_files_verified_after_project(&self.request, &self.project)?;
+        let index = worker.inspect_verified_index(&verified)?.clone();
         let profile = worker.last_profile.compiler_index.clone();
         let request_profile = worker.last_profile.clone();
         self.record_index_timing(&request_profile)?;
@@ -828,56 +808,6 @@ fn verify_materialized_inputs(
             ErrorCode::InputMutated,
             "project-native analysis modified sealed repository inputs",
         ));
-    }
-    Ok(())
-}
-
-fn normalize_source_syntax_fallback(
-    index: &mut Value,
-    semantic_error: &ClewError,
-) -> Result<(), ClewError> {
-    let object = index
-        .as_object_mut()
-        .ok_or_else(|| invalid("SOURCE_SYNTAX fallback is not an object"))?;
-    object.insert("analysisAuthority".into(), json!("SOURCE_SYNTAX"));
-    object.insert("analysisCertainty".into(), json!("UNSURE"));
-    object.insert("analysisCoverage".into(), json!("PARTIAL"));
-    object.insert(
-        "analysisFallback".into(),
-        json!({
-            "code":format!("{:?}", semantic_error.code),
-            "obligation":"restore successful compiler-semantic K2 analysis before publication",
-        }),
-    );
-    if object
-        .get("declarationDescriptors")
-        .and_then(|value| value.get("descriptors"))
-        .and_then(Value::as_array)
-        .is_none()
-    {
-        object.insert(
-            "declarationDescriptors".into(),
-            json!({
-                "coverage":"PARTIAL",
-                "descriptors":[],
-                "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
-            }),
-        );
-    }
-    if object
-        .get("declarationRelations")
-        .and_then(|value| value.get("relations"))
-        .and_then(Value::as_array)
-        .is_none()
-    {
-        object.insert(
-            "declarationRelations".into(),
-            json!({
-                "coverage":"PARTIAL",
-                "relations":[],
-                "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
-            }),
-        );
     }
     Ok(())
 }
@@ -1770,33 +1700,52 @@ mod tests {
     }
 
     #[test]
-    fn source_syntax_fallback_is_explicitly_unsure_and_publication_blocking() {
+    fn compiler_analysis_refusal_preserves_diagnostics_without_emitting_facts() {
+        struct RefusingDriver;
+        impl KotlinGenerationDriver for RefusingDriver {
+            fn analyze(&self, _request: &AnalyzeGenerationRequest) -> Result<Value, ClewError> {
+                let mut error = ClewError::new(
+                    ErrorCode::IncompleteSemanticAnalysis,
+                    "K2 compiler analysis failed",
+                );
+                error.retryable = true;
+                error.evidence.push(
+                    r#"{"schema":"verified-index-failure-diagnostic/0.1","stage":"K2_VALIDATION"}"#
+                        .into(),
+                );
+                Err(error)
+            }
+        }
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
         let store = CasStore::open(&state).unwrap();
-        let mut index = json!({
-            "compilation":":/main",
-            "compilerVersion":"2.4.10",
-            "files":[],
-            "declarationDescriptors":null,
-            "declarationRelations":null,
-        });
-        normalize_source_syntax_fallback(
-            &mut index,
-            &ClewError::new(
-                ErrorCode::IncompleteSemanticAnalysis,
-                "synthetic K2 refusal",
-            ),
+        let toolchain = store.put("test/toolchain/1", b"2.4.10").unwrap();
+        let adapter = KotlinAdapterV2::new(
+            KotlinSemanticEngine::Kotlin24,
+            format!("sha256:{}", "a".repeat(64)),
+            toolchain.digest.clone(),
+            store.clone(),
+            RefusingDriver,
         )
         .unwrap();
-        assert_eq!(index["analysisCertainty"], "UNSURE");
-        assert_eq!(index["declarationDescriptors"]["coverage"], "PARTIAL");
-        let receipt =
-            completeness_receipt(&store, &index, &format!("sha256:{}", "1".repeat(64))).unwrap();
-        let lease = store.read(&receipt, 4096).unwrap();
-        let value: Value = serde_json::from_slice(lease.bytes()).unwrap();
-        assert_eq!(value["domains"][0]["certainty"], "UNSURE");
-        assert_eq!(value["obligations"][0], "restore-k2-semantic-analysis");
+        let mut sink = ConformanceSink::default();
+        let error = adapter
+            .analyze_generation(
+                &request(&store, toolchain),
+                &mut sink,
+                &AtomicBool::new(false),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
+        assert_eq!(error.message, "K2 compiler analysis failed");
+        assert!(error.retryable);
+        assert_eq!(error.evidence.len(), 1);
+        let diagnostic: Value = serde_json::from_str(&error.evidence[0]).unwrap();
+        assert_eq!(diagnostic["stage"], "K2_VALIDATION");
+        assert!(
+            sink.finish().is_err(),
+            "a failed compiler attempt must not complete"
+        );
     }
 
     #[test]
@@ -2573,6 +2522,67 @@ mod tests {
             store.read(&receipt_object, 1024 * 1024).unwrap_err().code,
             ErrorCode::StateCorrupt
         );
+    }
+
+    #[test]
+    #[ignore = "launches a real Kotlin worker for an intentionally invalid Maven fixture"]
+    fn real_k2_failure_preserves_the_original_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = root.path().join("fixture");
+        fs::create_dir_all(fixture.join("src/main/kotlin")).unwrap();
+        fs::write(fixture.join("pom.xml"), r#"<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>compiler-refusal</artifactId><version>1.0</version><properties><kotlin.version>2.3.0</kotlin.version></properties><dependencies><dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId><version>${kotlin.version}</version></dependency></dependencies><build><sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory><plugins><plugin><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>${kotlin.version}</version><configuration><jvmTarget>17</jvmTarget><languageVersion>2.3</languageVersion><apiVersion>2.3</apiVersion></configuration><executions><execution><id>compile</id><goals><goal>compile</goal></goals></execution></executions></plugin></plugins></build></project>"#).unwrap();
+        fs::write(
+            fixture.join("src/main/kotlin/Probe.kt"),
+            "package example\nfun broken(): String = unresolvedCompilerProbe()\n",
+        )
+        .unwrap();
+        for arguments in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=codeclew@localhost",
+                "commit",
+                "-qm",
+                "Invalid Kotlin fixture",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(arguments)
+                    .current_dir(&fixture)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        let attempt = workspace
+            .open_compilation_from_set(&state, ":/main", &"a".repeat(64), None)
+            .unwrap();
+        let error = attempt
+            .analyze()
+            .expect_err("invalid Kotlin must fail compiler analysis");
+        assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
+        let diagnostic = error
+            .evidence
+            .iter()
+            .find_map(|encoded| {
+                serde_json::from_str::<Value>(encoded)
+                    .ok()
+                    .filter(|value| value["schema"] == "verified-index-failure-diagnostic/0.1")
+            })
+            .expect("original compiler diagnostic must survive");
+        assert_eq!(diagnostic["stage"], "K2_VALIDATION");
+        assert!(diagnostic["workerDiagnosticCount"].as_u64().unwrap() > 0);
+        workspace.finish().unwrap();
     }
 
     #[test]

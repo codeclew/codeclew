@@ -134,6 +134,8 @@ cargo test --locked -p clew --lib worker::tests::retired_kotlin23_engine_cannot_
 cargo test --locked -p clew --lib worker::tests::kotlin23_baseline_uses_core_and_preserves_option_boundaries -- --exact --test-threads=1
 ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1
+cargo test --locked -p clew --lib kotlin_adapter_v2::tests::compiler_analysis_refusal_preserves_diagnostics_without_emitting_facts -- --exact --test-threads=1
+cargo test --locked -p clew --lib kotlin_adapter_v2::tests::real_k2_failure_preserves_the_original_stage -- --exact --ignored --test-threads=1
 cargo test --locked -p clew --lib 'working_tree' -- --test-threads=1
 cargo test --locked -p clew --test managed_cli 'working_tree_' -- --test-threads=1
 cargo test --locked -p clew --test managed_cli \

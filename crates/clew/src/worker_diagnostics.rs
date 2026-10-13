@@ -200,6 +200,51 @@ fn persist_live_tail(directory: Option<&Path>, tail: &Tail) -> Value {
         "truncated":!stored || tail.total > tail.bytes.len() as u64})
 }
 
+/// Preserve compiler messages only in the caller's opt-in private bundle.
+/// The public evidence receives bounded counts and status, never message text.
+pub(crate) fn capture_compiler_failure(facts: &Value) -> Value {
+    let directory = crate::documentation::support_collect::live_private_directory();
+    capture_compiler_failure_in(facts, directory.as_deref())
+}
+
+fn capture_compiler_failure_in(facts: &Value, directory: Option<&Path>) -> Value {
+    let Some(directory) = directory else {
+        return json!({"status":"NOT_CAPTURED"});
+    };
+    let rows = facts.get("diagnostics").and_then(Value::as_array);
+    let mut retained = Vec::new();
+    let mut size = 0usize;
+    for row in rows.into_iter().flatten() {
+        let Ok(bytes) = serde_json::to_vec(row) else {
+            break;
+        };
+        if retained.len() == 128 || size.saturating_add(bytes.len()) > STDERR_LIMIT {
+            break;
+        }
+        size += bytes.len();
+        retained.push(row.clone());
+    }
+    let observed = rows.map_or(0, Vec::len);
+    let retained_count = retained.len();
+    let body = json!({
+        "schema":"codeclew-private-compiler-diagnostics/1.0",
+        "observedCount":observed,"retainedCount":retained_count,
+        "truncated":retained_count < observed,"diagnostics":retained,
+    });
+    let Ok(bytes) = serde_json::to_vec(&body) else {
+        return json!({"status":"UNAVAILABLE"});
+    };
+    let name = format!("compiler-{}.json", uuid::Uuid::new_v4().simple());
+    let saved = crate::documentation::support_collect::write_private_artifacts(
+        directory,
+        &[(&name, &bytes)],
+    )
+    .is_ok();
+    json!({"status":if saved {"CAPTURED_PRIVATE"} else {"UNAVAILABLE"},
+        "observedCount":observed,"retainedCount":if saved {retained_count} else {0},
+        "truncated":!saved || retained_count < observed})
+}
+
 pub(crate) fn annotate_failure(
     mut error: ClewError,
     child: Option<&mut Child>,
@@ -276,6 +321,47 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn compiler_messages_are_opt_in_private_bounded_and_never_inline() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("private");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let row = json!({"severity":"ERROR","message":"PRIVATE_COMPILER_SENTINEL","file":"/private/project/Probe.kt"});
+        let facts = json!({"diagnostics":vec![row; 200]});
+        assert_eq!(
+            capture_compiler_failure_in(&facts, None)["status"],
+            "NOT_CAPTURED"
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        let status = capture_compiler_failure_in(&facts, Some(&directory));
+        assert_eq!(status["status"], "CAPTURED_PRIVATE");
+        assert_eq!(status["observedCount"], 200);
+        assert_eq!(status["retainedCount"], 128);
+        assert_eq!(status["truncated"], true);
+        assert!(!status.to_string().contains("PRIVATE_COMPILER_SENTINEL"));
+        assert!(!status.to_string().contains("/private/"));
+        let artifact = std::fs::read_dir(&directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            std::fs::metadata(&artifact).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let private: Value = serde_json::from_slice(&std::fs::read(artifact).unwrap()).unwrap();
+        assert_eq!(
+            private["diagnostics"][0]["message"],
+            "PRIVATE_COMPILER_SENTINEL"
+        );
+        let oversized = json!({"diagnostics":[{"message":"x".repeat(STDERR_LIMIT + 1)}]});
+        let status = capture_compiler_failure_in(&oversized, Some(&directory));
+        assert_eq!(status["retainedCount"], 0);
+        assert_eq!(status["truncated"], true);
+    }
 
     #[test]
     fn live_private_worker_tail_is_opt_in_bounded_and_preserves_state_capture() {
