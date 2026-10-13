@@ -107,12 +107,63 @@ class Sections(HTMLParser):
             self.in_main = False
 
 
+class PageTitle(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_title = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'title':
+            self.in_title = True
+
+    def handle_data(self, value):
+        if self.in_title:
+            self.parts.append(value)
+
+    def handle_endtag(self, tag):
+        if tag == 'title':
+            self.in_title = False
+
+
+def current_page_index(site):
+    record = site / 'public-pages.json'
+    if not record.exists():
+        return None
+    selection = json.loads(record.read_text())
+    assert selection.get('schema') == 'codeclew-public-pages/1.0', 'invalid public page schema'
+    paths = selection.get('pages')
+    assert isinstance(paths, list) and 1 <= len(paths) <= 128, 'invalid public page count'
+    assert all(isinstance(path, str) for path in paths), 'invalid public page path'
+    assert len(paths) == len(set(paths)), 'duplicate public page'
+    index = []
+    for relative in paths:
+        path = site / relative
+        assert not Path(relative).is_absolute() and '..' not in Path(relative).parts, 'invalid public page path'
+        assert path.resolve().is_relative_to(site.resolve()), 'public page escapes site'
+        assert path.is_file() and path.suffix == '.html', 'missing public HTML page'
+        content = path.read_text()
+        title = PageTitle()
+        title.feed(content)
+        label = ' '.join(''.join(title.parts).split())
+        assert label, f'{relative}: missing page title'
+        index.append({'title': label, 'url': './' + relative, 'description': label, 'group': 'Reference'})
+        sections = Sections()
+        sections.feed(content)
+        index.extend({'title': heading, 'url': f'./{relative}#{anchor}', 'description': label, 'group': 'Reference'}
+                     for anchor, heading in sections.sections)
+    return index
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    stale, index = [], []
-    for file, label, group, description in PAGES + HISTORICAL_PAGES:
+    stale, index = [], current_page_index(SITE)
+    legacy = index is None
+    if legacy:
+        index = []
+    for file, label, group, description in (PAGES + HISTORICAL_PAGES if legacy else []):
         path = SITE / file
         original = path.read_text()
         content = original
@@ -143,7 +194,7 @@ def main():
             if file == 'extend.html' and anchor == 'csharp-preview':
                 description = 'Contribute to C# Roslyn read-only analysis with .NET 10+ SDK (dotnet), restored project inputs and explicit MVC attribute-route boundaries.'
             index.append({'title': title, 'url': f'./{file}#{anchor}', 'description': description, 'group': group})
-    for file, label, group, description in READER_RESOURCES:
+    for file, label, group, description in (READER_RESOURCES if legacy else []):
         assert (SITE / file).is_file(), f'{file}: missing reader resource wrapper'
         index.append({'title': label, 'url': './' + file, 'description': description, 'group': group})
     output = json.dumps(index, indent=2, ensure_ascii=False) + '\n'
@@ -154,7 +205,7 @@ def main():
             target.write_text(output)
     if args.check and stale:
         parser.exit(1, 'Stale navigation/search: ' + ', '.join(stale) + '\nRun scripts/build_site_navigation.py\n')
-    print(f'PASS: shared navigation for {len(PAGES)} pages; {len(index)} search entries')
+    print(f'PASS: {len(index)} search entries; navigation mode={"legacy" if legacy else "current-pages"}')
 
 
 if __name__ == '__main__':

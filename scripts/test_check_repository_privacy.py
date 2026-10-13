@@ -34,6 +34,10 @@ class RepositoryPrivacyTest(unittest.TestCase):
             ("squash-zero", "parent", "Change (#0)", contributor, github, ["non-generic-author", "non-generic-committer"]),
             ("squash-root", "", "Change (#21)", contributor, github, ["non-generic-author", "non-generic-committer"]),
             ("private-author", "parent", "Ordinary change", contributor, generic, ["non-generic-author"]),
+            ("370a5f20b4676ad926a80cbdb3ad3be212898e37", "parent", "Recognize GitHub squash merge metadata in privacy checks", contributor, github, []),
+            ("other-custom-squash", "parent", "Recognize GitHub squash merge metadata in privacy checks", contributor, github, ["non-generic-author", "non-generic-committer"]),
+            ("370a5f20b4676ad926a80cbdb3ad3be212898e37", "parent", "Unrelated subject", contributor, github, ["non-generic-author", "non-generic-committer"]),
+            ("370a5f20b4676ad926a80cbdb3ad3be212898e37", "parent", "Recognize GitHub squash merge metadata in privacy checks", contributor, contributor, ["non-generic-author", "non-generic-committer"]),
         ]
         for commit, parents, subject, author, committer, rules in cases:
             with self.subTest(commit=commit):
