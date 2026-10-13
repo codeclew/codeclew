@@ -201,12 +201,12 @@ fn missing_sequence_flow(dependency: &Observation) -> ClewError {
         .iter()
         .any(|kind| matches!(*kind, "alt" | "opt" | "loop"))
     {
-        " Close the group with end; include supported branch actions inside it."
+        " Proposal groups use children; alt may also use otherwise. Their end events are generated automatically. Close the group with end only in a normalized narrative."
     } else {
         ""
     };
     invalid(format!(
-        "sequence omits a mandatory source-backed FLOW: flowId={}, flowKind={}, sourceIds=[{}], sourceIdsOmitted={}, allowedEventKinds=[{}]. Add an event with one of these kinds and dependencyIds containing this FLOW; author its supported condition or outcome in text. Summary or explanation citations alone do not cover it.{}",
+        "sequence omits a mandatory source-backed FLOW: flowId={}, flowKind={}, sourceIds=[{}], sourceIdsOmitted={}, allowedEventKinds=[{}]. Add an event with one of these kinds. For proposal steps, cite this FLOW's Work reference in meaning.evidence; do not add dependencyIds. For normalized narrative events, put the FLOW ID in dependencyIds. Author the supported condition or outcome in text. Summary or explanation citations alone do not cover it.{}",
         sequence_diagnostic_id(&dependency.id),
         if expected.is_empty() {
             "UNKNOWN"
