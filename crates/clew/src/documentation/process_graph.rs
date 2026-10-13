@@ -651,7 +651,7 @@ pub(super) fn collect_bounded(
             edges.push(json!({"id":format!("edge:{}",relation.id),"kind":"CALL","fromMethodId":method.id,
                 "eventId":null,"relationId":relation.id,"target":binding["targetIdentity"],"targetMethodId":binding["targetMethodId"],
                 "resolution":binding["targetStatus"],"relationshipAuthority":binding["targetAuthority"],
-                "sourceIds":relation.source_ids,"dependencyIds":[relation.id],"callBinding":binding}));
+                "sourceIds":relation.source_ids,"dependencyIds":[relation.id],"callBindingId":relation.id}));
             call_binding_count += 1;
             call_bindings.push(binding);
         }

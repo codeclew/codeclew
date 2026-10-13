@@ -18,9 +18,11 @@ a callee even without a separate FLOW call. Relations and FLOW observations are
 retained separately: a matching target does not establish that they are the same
 callsite, so they are not deduplicated or given a fabricated execution order.
 
-`methods[].callBindings` and relation-backed `edges[].callBinding` preserve the
+`methods[].callBindings` preserves the
 relation ID/digest, selected target, exact call source, parameter mapping and
-explicit unknowns. Such edges carry `relationId` and `eventId: null`; no FLOW event
+explicit unknowns. Edges use `callBindingId` to reference that relation within the owning method,
+so source expressions are not duplicated in every edge. Such edges also carry
+`relationId` and `eventId: null`; no FLOW event
 is synthesized. `callBindingCount` is separate from FLOW event count. Extraction
 preserves the relation authority instead of replacing it with a generic local
 association label. Its implementation digest includes the call-binding module.

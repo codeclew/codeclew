@@ -318,6 +318,10 @@ const RU_MESSAGES={
  "Receiver object and runtime dispatch are unknown.": "Объект receiver и фактическая диспетчеризация неизвестны.",
  "Return and exception transfer remain unproven.": "Передача возвращаемого значения и исключений не подтверждена.",
  "Omitted default parameter indices": "Индексы пропущенных параметров с defaults",
+ "Receiving declaration": "Принимающий метод",
+ "Receiving declaration is outside the retained envelope.": "Принимающий метод находится за пределами сохранённой области.",
+ "Receiver type": "Тип receiver",
+ "Declared return type": "Объявленный тип результата",
  "Compiler-selected target": "Выбранная компилятором цель",
  "Parameter mapping is unavailable.": "Соответствие аргументов параметрам недоступно.",
  "Requested outcomes": "Ожидаемые результаты",
@@ -592,7 +596,8 @@ function processCallBindingsCard(packet){
  const bindings=(packet.methods||[]).flatMap(m=>Array.isArray(m.callBindings)?m.callBindings:[]);
  if(!bindings.length)return '';
  const methods=new Map((packet.methods||[]).map(m=>[m.id,m]));
- return chromeHtml`<details class="process-call-bindings"><summary>${esc(t('Compiler-selected calls and parameter bindings'))} (${bindings.length})</summary><p>${esc(t('Argument expressions are not evaluated values.'))}</p>${bindings.map(b=>chromeHtml`<article><h4>${esc(methods.get(b.callerMethodId)?.symbol||b.callerMethodId)} → ${esc(b.targetIdentity)}</h4><p>${esc(t('Compiler-selected target'))}: ${esc(b.targetStatus)} ${threadEvidenceLinks(b.sourceIds||[])}</p>${b.argumentStatus==='COMPILER_PARAMETER_MAPPING'?chromeHtml`<ul>${(b.arguments||[]).map(a=>chromeHtml`<li><code>${esc(a.expression)}</code> → <code>${esc(a.parameter)}</code> [${esc(a.parameterIndex)}]</li>`).join('')}</ul>`:chromeHtml`<p>${esc(t('Parameter mapping is unavailable.'))}</p>`}${b.omittedDefaultParameterIndices?.length?chromeHtml`<p>${esc(t('Omitted default parameter indices'))}: ${b.omittedDefaultParameterIndices.map(esc).join(', ')} · ${esc(b.defaultValues)}</p>`:''}<p>${esc(t('Receiver object and runtime dispatch are unknown.'))}</p><p>${esc(t('Return and exception transfer remain unproven.'))}</p></article>`).join('')}</details>`;
+ const receiver=b=>b.targetMethodId?(methods.has(b.targetMethodId)?chromeHtml`<p>${esc(t('Receiving declaration'))}: ${esc(methods.get(b.targetMethodId).symbol||b.targetMethodId)} ${threadEvidenceLinks(methods.get(b.targetMethodId).sourceIds||[])}</p>`:chromeHtml`<p>${esc(t('Receiving declaration is outside the retained envelope.'))}</p>`):'';
+ return chromeHtml`<details class="process-call-bindings"><summary>${esc(t('Compiler-selected calls and parameter bindings'))} (${bindings.length})</summary><p>${esc(t('Argument expressions are not evaluated values.'))}</p>${bindings.map(b=>chromeHtml`<article><h4>${esc(methods.get(b.callerMethodId)?.symbol||b.callerMethodId)} → ${esc(b.targetIdentity)}</h4><p>${esc(t('Compiler-selected target'))}: ${esc(b.targetStatus)} ${threadEvidenceLinks(b.sourceIds||[])}</p>${receiver(b)}${b.argumentStatus==='COMPILER_PARAMETER_MAPPING'?chromeHtml`<ul>${(b.arguments||[]).map(a=>chromeHtml`<li><code>${esc(a.expression)}</code> → <code>${esc(a.parameter)}</code> [${esc(a.parameterIndex)}]</li>`).join('')}</ul>`:chromeHtml`<p>${esc(t('Parameter mapping is unavailable.'))}</p>`}${b.omittedDefaultParameterIndices?.length?chromeHtml`<p>${esc(t('Omitted default parameter indices'))}: ${b.omittedDefaultParameterIndices.map(esc).join(', ')} · ${esc(b.defaultValues)}</p>`:''}${b.receiver?.type?chromeHtml`<p>${esc(t('Receiver type'))}: ${esc(b.receiver.type)}</p>`:''}<p>${esc(t('Receiver object and runtime dispatch are unknown.'))}</p>${b.returnTransfer?.declaredType?chromeHtml`<p>${esc(t('Declared return type'))}: ${esc(b.returnTransfer.declaredType)}</p>`:''}<p>${esc(t('Return and exception transfer remain unproven.'))}</p></article>`).join('')}</details>`;
 }
 function processExtractionCard(packet){
  if(!packet)return '';

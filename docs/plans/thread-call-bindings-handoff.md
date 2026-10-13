@@ -61,6 +61,14 @@ failures before integration. GitHub connector commits use a personal identity;
 maintainer integration must preserve the repository privacy policy rather than
 weakening it. A locally authored maintainer patch is supplied separately.
 
+Draft PR: https://github.com/codeclew/codeclew/pull/24. The first CI verification
+run stopped at history privacy before compilation: both base commit `370a5f2`
+and the connector-created feature commit have non-generic author/committer
+identities. This is not a Rust test result. The independent macOS job remains
+pending verification; no passed Rust or native replay result is asserted.
+The local patch commits use `Codeclew Maintainers`; the existing main history
+requires a separate maintainer decision, without disabling the privacy gate.
+
 ## Next causal slices
 
 Receiver object/dispatch identity needs qualified receiver and allocation/alias
