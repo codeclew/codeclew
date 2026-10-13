@@ -2801,7 +2801,10 @@ pub(super) fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, Cle
             source_inventory_rows(work)?
         } else {
             let matches = work.checked.dependencies.values().filter(|dependency| {
-                (query.kind == "*" || dependency.kind == query.kind)
+                (kind != "service"
+                    || dependency.service == id
+                    || matches!(dependency.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE"))
+                    && (query.kind == "*" || dependency.kind == query.kind)
                     && dependency.symbol.contains(&query.symbol_contains)
             });
             match query.projection {
@@ -3904,6 +3907,66 @@ mod section_context_tests {
         let mut mix_navigation_cursor = raw;
         mix_navigation_cursor.cursor = Some(navigation_cursor);
         assert!(read_loaded(&repo, &work, mix_navigation_cursor).is_err());
+    }
+
+    #[test]
+    fn service_dependency_queries_exclude_unreadable_foreign_notes_and_symbols() {
+        let mut work = fixture(1, false);
+        for (id, kind, service) in [
+            ("note:orders", "NOTE_ASSOCIATION", "orders"),
+            ("note:inventory", "NOTE_ASSOCIATION", "inventory"),
+            ("inventory:method", "SYMBOL", "inventory"),
+            ("entity:shared", "DOMAIN_ENTITY", "inventory"),
+            ("entity-scope:shared", "ENTITY_SCOPE", ""),
+        ] {
+            let normalized = json!({"name": id});
+            work.influence
+                .insert(id.into(), digest(&normalized).unwrap());
+            work.handles.insert(
+                format!("query-{id}"),
+                Handle {
+                    kind: "DEPENDENCY".into(),
+                    id: id.into(),
+                },
+            );
+            work.checked.dependencies.insert(
+                id.into(),
+                Observation {
+                    id: id.into(),
+                    kind: kind.into(),
+                    service: service.into(),
+                    symbol: id.into(),
+                    digest: digest(&normalized).unwrap(),
+                    normalized,
+                    source_ids: vec![],
+                },
+            );
+        }
+        let select = |kind: &str| Selection {
+            query: Some(Query {
+                kind: kind.into(),
+                symbol_contains: String::new(),
+                projection: QueryProjection::Raw,
+            }),
+            ..Selection::default()
+        };
+        let notes = rows(&work, &select("NOTE_ASSOCIATION")).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0]["id"], "note:orders");
+        let all = rows(&work, &select("*")).unwrap();
+        let ids: BTreeSet<_> = all.iter().map(|row| row["id"].as_str().unwrap()).collect();
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                "orders:symbol:00000",
+                "note:orders",
+                "entity:shared",
+                "entity-scope:shared",
+            ])
+        );
+        work.subject = "scenario:cross-service".into();
+        let all_services = rows(&work, &select("NOTE_ASSOCIATION")).unwrap();
+        assert_eq!(all_services.len(), 2);
     }
 
     #[test]
