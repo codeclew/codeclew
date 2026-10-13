@@ -1055,6 +1055,24 @@ test('service fragment selection and source reload preserve the owner without gu
  assert.equal(r.e('thread-source-receiver-L20').focused,true);
  assert.equal(r.run('inventoryEntries().some(e=>e.kind===\"SERVICE_FRAGMENT\")'),false);
 });
+test('receiving fragment opens its exact authored service operation without copying its body',()=>{
+ const data=contractThreadFixture(),thread=data.processThread;
+ data.subject='service:provider';data.process=null;delete data.processThread;
+ thread.methods.receiver.entrypoint='receiver-operation';
+ const operation={...data.operations[0],id:'receiver-operation',title:'Handle incoming request',summary:fragment('Retained repository and outbox behavior'),visuals:[]};
+ data.operations.push(operation);
+ data.catalogue.push({id:operation.id,symbol:operation.title,kind:'FUNCTION',trigger:{},sourceIds:[]});
+ data.serviceFragments=[{id:'service-fragment-checkout:accept',fragmentId:'accept',processId:'checkout',title:'Checkout',entryMethod:'receiver',thread,steps:thread.steps[0].children,returnHref:'../scenarios/checkout.html#thread-step-receive'}];
+ const r=load(data,true);r.run("showEntry('service-fragment-checkout:accept')");
+ let html=r.e('scenario-content').innerHTML;
+ assert.match(html,/href="#receiver-operation">Open full service operation: Handle incoming request/);
+ assert.doesNotMatch(html,/Retained repository and outbox behavior/);
+ r.run("location.hash='#receiver-operation';routeReaderHash()");
+ assert.match(r.e('scenario-content').innerHTML,/Retained repository and outbox behavior/);
+ data.operations=data.operations.filter(op=>op.id!==operation.id);
+ const absent=load(data,true);absent.run("showEntry('service-fragment-checkout:accept')");
+ assert.doesNotMatch(absent.e('scenario-content').innerHTML,/Open full service operation/);
+});
 test('contract source strings are inert and message frontier never invents a consumer',()=>{
  const data=contractThreadFixture(),c=data.processThread.boundaryContracts[0];c.receiverFragment=null;c.transport='KAFKA';c.operation.text='<script>execute()</script>';c.guarantees[0].missingEvidence='<img onerror="execute()">';
  const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;

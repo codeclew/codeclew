@@ -400,6 +400,7 @@ const RU_MESSAGES={
  "Receiver capture is missing; no consumer is inferred.": "Исходники получателя отсутствуют; consumer не выводится предположением.",
  "Receiving service fragment from the same captured process; runtime delivery is unverified.": "Фрагмент принимающего сервиса из того же снимка процесса; доставка не подтверждена.",
  "Return to process at this fragment": "Вернуться к этому фрагменту процесса",
+ "Open full service operation": "Открыть полное описание операции сервиса",
  "Unresolved": "Не установлено",
  "Saved processes": "Сохранённые процессы",
  "Open saved processes →": "Открыть сохранённые процессы →",
@@ -603,7 +604,10 @@ function serviceFragmentCard(fragment){
  function collect(rows){for(const row of rows||[]){used.add(row.method);if(row.target)used.add(row.target);for(const effect of row.effects||[])used.add(effect.citation.method);for(const arm of row.branchGroup?.arms||[]){if(arm.guard)used.add(arm.guard.method);collect(arm.steps);}collect(row.children);}}
  collect(fragment.steps);
  const thread={...original,rootMethod:fragment.entryMethod,steps:fragment.steps,methodOrder:original.methodOrder.filter(id=>used.has(id)),boundaryContracts:[],serviceFragments:[]};
- return chromeHtml`<section id="${esc(fragment.id)}" tabindex="-1"><h2>${esc(fragment.title)} · ${esc(fragment.fragmentId)}</h2><p>${esc(t('Receiving service fragment from the same captured process; runtime delivery is unverified.'))}</p><p><a href="${esc(fragment.returnHref)}">${esc(t('Return to process at this fragment'))}</a></p>${processThreadCard(thread).replace(/href="#(thread-[^"]+)"/g,(_,id)=>`href="${esc(threadAnchorHref(id))}"`)}</section>`;
+ const entrypoint=original.methods[fragment.entryMethod]?.entrypoint;
+ const operation=D.operations.find(op=>op.id===entrypoint);
+ const operationLink=operation?chromeHtml` · <a href="#${esc(operation.id)}">${esc(t('Open full service operation'))}: ${esc(operation.title)}</a>`:'';
+ return chromeHtml`<section id="${esc(fragment.id)}" tabindex="-1"><h2>${esc(fragment.title)} · ${esc(fragment.fragmentId)}</h2><p>${esc(t('Receiving service fragment from the same captured process; runtime delivery is unverified.'))}</p><p><a href="${esc(fragment.returnHref)}">${esc(t('Return to process at this fragment'))}</a>${operationLink}</p>${processThreadCard(thread).replace(/href="#(thread-[^"]+)"/g,(_,id)=>`href="${esc(threadAnchorHref(id))}"`)}</section>`;
 }
 function processThreadCard(thread){
  if(!thread||thread.status!=='SOURCE_BOUND_DECLARATION')return '';
