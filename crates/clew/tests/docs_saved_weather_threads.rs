@@ -25,6 +25,62 @@ fn copy_files(source: &Path, target: &Path) {
 }
 
 #[test]
+#[ignore = "requires an explicitly collected scenario Work and its reviewed proposal"]
+fn actual_saved_receiver_work_submits_without_source_acquisition() {
+    let cache = std::env::var("CLEW_WEATHER_COLLECTED_CACHE").unwrap();
+    let original = std::env::var("CLEW_WEATHER_DOCUMENTATION_ROOT").unwrap();
+    let work = std::env::var("CLEW_WEATHER_SCENARIO_WORK").unwrap();
+    let proposal = std::env::var("CLEW_WEATHER_SCENARIO_PROPOSAL").unwrap();
+    let f = Fixture::new();
+    copy_files(Path::new(&cache), &f.docs);
+    for relative in ["catalog", "scenarios", "notes"] {
+        copy_files(&Path::new(&original).join(relative), &f.docs.join(relative));
+    }
+    // Carry only the currently published baseline, not historical bundles.
+    let index = fs::read_to_string(Path::new(&original).join("docs/index.html")).unwrap();
+    let baseline = index
+        .strip_prefix("<!-- codeclew-bundle ")
+        .unwrap()
+        .split_once(" -->")
+        .unwrap()
+        .0;
+    assert!(baseline.len() == 64 && baseline.bytes().all(|b| b.is_ascii_hexdigit()));
+    let target = f.docs.join("docs/generated").join(baseline);
+    copy_files(
+        &Path::new(&original).join("docs/generated").join(baseline),
+        &target,
+    );
+    fs::write(f.docs.join("docs/index.html"), index).unwrap();
+    let marker = f.temp.path().join("scenario-work-git.marker");
+    fs::remove_file(f.tools_dir().join("git")).unwrap();
+    fs::write(
+        f.tools_dir().join("git"),
+        format!(
+            "#!/bin/sh\necho attempted >> {}\nexit 99\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(f.tools_dir().join("git"), fs::Permissions::from_mode(0o700)).unwrap();
+    let (code, submitted) = f.run(&[
+        "docs", "proposal", "submit", "--work", &work, "--input", &proposal,
+    ]);
+    if let Ok(output) = std::env::var("CLEW_WEATHER_REPLAY_OUTPUT") {
+        fs::write(output, serde_json::to_vec_pretty(&submitted).unwrap()).unwrap();
+    }
+    let diagnostics: Vec<_> = submitted["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "DIAGNOSTIC")
+        .collect();
+    assert_eq!(code, 0, "{diagnostics:?}");
+    assert_eq!(submitted["status"], "READY_WITH_LIMITATIONS", "{submitted}");
+    assert!(submitted["omitted"].as_array().unwrap().is_empty());
+    assert!(!marker.exists(), "proposal validation acquired source");
+}
+
+#[test]
 #[ignore = "requires explicit collected public-weather cache and declarative inputs"]
 fn actual_saved_weather_definitions_render_contracts_and_receiving_fragments() {
     let cache = std::env::var("CLEW_WEATHER_COLLECTED_CACHE").unwrap();
