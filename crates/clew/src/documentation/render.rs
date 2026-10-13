@@ -329,13 +329,13 @@ pub(super) fn validate_with_retained(
             )
         }
         "scenario" => {
-            let scenario = checked
+            checked
                 .scenarios
                 .get(id)
                 .ok_or_else(|| invalid("unknown scenario"))?;
             (
                 super::processes::expected(checked, id),
-                scenario.steps.iter().map(|s| s.service.clone()).collect(),
+                super::processes::selected_services(checked, id),
             )
         }
         _ => return Err(invalid("unsupported narrative subject")),
@@ -4397,6 +4397,116 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         super::reader::LIMITS,
         include_str!("../../assets/documentation/analysis.js"),
     ])
+}
+
+#[cfg(test)]
+mod scenario_scope_tests {
+    use super::*;
+
+    fn fixture() -> (Narrative, Check) {
+        let mut services = BTreeMap::new();
+        let mut dependencies = BTreeMap::new();
+        for service in ["caller", "receiver", "unrelated"] {
+            let source = format!("source-{service}");
+            let dependency = format!("dependency-{service}");
+            services.insert(service.to_owned(), serde_json::from_value(json!({
+                "schema":"evidence","service":service,"revision":"revision","serviceDigest":"digest",
+                "extractor":"source-syntax","runtimeMode":"source","coverage":"SYNTAX","boundaries":[],
+                "entrypoints":[{"id":"flow","service":service,"symbol":"handle","kind":"SOURCE_DECLARATION",
+                    "trigger":{},"sourceIds":[source],"dependencyIds":[dependency],"boundaries":[]}],
+                "observations":{},"contracts":{},"sources":{source.clone():{
+                    "id":source,"service":service,"revision":"revision","file":"handler.ts","startLine":1,
+                    "endLine":1,"text":"function handle() {}","textDigest":"digest","evidenceDigest":"digest","authority":"TEST"}}
+            })).unwrap());
+            dependencies.insert(
+                dependency.clone(),
+                Observation {
+                    id: dependency,
+                    kind: "SYMBOL".into(),
+                    service: service.into(),
+                    symbol: "handle".into(),
+                    normalized: json!({}),
+                    digest: "digest".into(),
+                    source_ids: vec![source],
+                },
+            );
+        }
+        dependencies.insert(
+            "process-scope:flow".into(),
+            Observation {
+                id: "process-scope:flow".into(),
+                kind: "PROCESS_SCOPE".into(),
+                service: String::new(),
+                symbol: "flow".into(),
+                normalized: json!({"participants":["caller","receiver"],"runtime":"UNKNOWN"}),
+                digest: "digest".into(),
+                source_ids: vec![],
+            },
+        );
+        let checked = Check {
+            schema: "test".into(), input_digest: "digest".into(), context_digest: "digest".into(),
+            services, dependencies, unresolved: BTreeMap::new(), interactions: BTreeMap::new(),
+            scenarios: BTreeMap::from([("flow".into(), serde_json::from_value(json!({
+                "id":"flow","steps":[{"id":"call","service":"caller","symbol":"handle","kind":"CALL",
+                    "dependencyIds":["dependency-caller"],"sourceIds":["source-caller"],"detail":{},"depth":0}],
+                "boundaries":[],"truncated":false,"dependencyIds":["process-scope:flow"]
+            })).unwrap())]), source_inputs: None, composition: None,
+        };
+        let narrative = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-narrative/1.3","subject":"scenario:flow","contextDigest":"digest",
+            "gaps":{},"operations":[{"id":"flow","title":"Selected receiver",
+                "summary":{"id":"summary","text":"Inspect the selected receiver source.",
+                    "dependencyIds":["dependency-receiver"],"sourceIds":["source-receiver"]},
+                "participants":[{"id":"caller","label":"Caller","service":"caller"},
+                    {"id":"receiver","label":"Receiver","service":"receiver"}],
+                "events":[{"id":"receiver-note","kind":"note","text":"Receiving fragment; runtime unknown.",
+                    "from":"receiver","dependencyIds":["dependency-receiver"],"sourceIds":["source-receiver"]}],
+                "explanation":[{"id":"receiver-explanation","text":"The selected receiving source can be inspected without proving delivery.",
+                    "eventIds":["receiver-note"],"dependencyIds":["dependency-receiver"],"sourceIds":["source-receiver"]}]
+            }]
+        })).unwrap();
+        (narrative, checked)
+    }
+
+    #[test]
+    fn saved_process_receiver_sources_are_allowed_without_lexical_reach() {
+        let (narrative, checked) = fixture();
+        validate(&narrative, &checked).unwrap();
+        let mut unselected = checked.clone();
+        unselected
+            .scenarios
+            .get_mut("flow")
+            .unwrap()
+            .dependency_ids
+            .clear();
+        assert!(
+            validate(&narrative, &unselected)
+                .unwrap_err()
+                .message
+                .contains("unselected service boundary")
+        );
+    }
+
+    #[test]
+    fn process_scope_does_not_grant_unrelated_or_service_narrative_access() {
+        let (mut narrative, checked) = fixture();
+        narrative.operations[0].summary.dependency_ids = vec!["dependency-unrelated".into()];
+        narrative.operations[0].summary.source_ids = vec!["source-unrelated".into()];
+        assert!(
+            validate(&narrative, &checked)
+                .unwrap_err()
+                .message
+                .contains("unselected service boundary")
+        );
+        let (mut narrative, checked) = fixture();
+        narrative.subject = "service:caller".into();
+        assert!(
+            validate(&narrative, &checked)
+                .unwrap_err()
+                .message
+                .contains("unselected service boundary")
+        );
+    }
 }
 
 #[cfg(test)]

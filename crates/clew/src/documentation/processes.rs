@@ -94,6 +94,30 @@ pub fn expected(checked: &Check, id: &str) -> BTreeSet<String> {
     }
     ids
 }
+/// Match the captured Work scope, including explicitly selected participants
+/// that lexical flow did not reach. This grants source citation, not call or
+/// runtime authority.
+pub(super) fn selected_services(checked: &Check, id: &str) -> BTreeSet<String> {
+    let Some(context) = checked.scenarios.get(id) else {
+        return BTreeSet::new();
+    };
+    let mut selected: BTreeSet<_> = context.steps.iter().map(|s| s.service.clone()).collect();
+    let scope_id = format!("process-scope:{id}");
+    if context.dependency_ids.contains(&scope_id)
+        && let Some(scope) = checked.dependencies.get(&scope_id)
+        && scope.kind == "PROCESS_SCOPE"
+        && let Some(participants) = scope.normalized["participants"].as_array()
+    {
+        selected.extend(
+            participants
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|service| checked.services.contains_key(*service))
+                .map(str::to_owned),
+        );
+    }
+    selected
+}
 pub fn overview(checked: &Check, subject: &str, root: &str) -> bool {
     root == OVERVIEW
         && subject
