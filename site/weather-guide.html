@@ -7,7 +7,7 @@ section{margin:0 0 30px}section:first-child{font-size:clamp(22px,3vw,28px);line-
 pre{background:#173d30;color:#f8fff8;padding:20px;border-radius:12px;overflow-x:auto;font:15px/1.7 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 a{color:var(--accent);text-underline-offset:4px}a:focus-visible,pre:focus-visible{outline:3px solid #ad6513;outline-offset:4px}footer{border-top:1px solid #d3ddd3;font-size:14px}
 @media(max-width:500px){main,header,footer{padding:18px}section{margin-bottom:24px}pre{padding:16px;font-size:14px}}
-</style></head><body><main><section id="section-ingress"><h1>Run the fixture and capture evidence</h1><p>The weather demo source repository is https://github.com/codeclew/clew-weather-demo. Native threaded documentation requires an official installed Codeclew release 0.13.29 or newer; full scenario bodies require 0.13.31 or newer. The weather documentation reader URL is https://codeclew.github.io/codeclew/weather/index.html. Use a clean attached checkout, a fresh documentation root outside it with an existing parent, and fresh capture receipts. Restore services/places/Places.csproj with the .NET 10 SDK before capture; Kotlin and TypeScript declarations use source-syntax evidence. Capture does not author prose or import old cache.</p><p>For the local fixture, use Docker Compose v2 and free ports 8080 through 8082. Start:<br>
+</style></head><body><main><section id="section-ingress"><h1>Run the fixture and capture evidence</h1><p>The weather demo source repository is https://github.com/codeclew/clew-weather-demo. Native threaded documentation requires an official installed Codeclew release 0.13.29 or newer; full scenario bodies require 0.13.32 or newer. The weather documentation reader URL is https://codeclew.github.io/codeclew/weather/index.html. Use a clean attached checkout, a fresh documentation root outside it with an existing parent, and fresh capture receipts. Restore services/places/Places.csproj with the .NET 10 SDK before capture; Kotlin and TypeScript declarations use source-syntax evidence. Capture does not author prose or import old cache.</p><p>For the local fixture, use Docker Compose v2 and free ports 8080 through 8082. Start:<br>
 FORECAST_MODE=fixture docker compose -p clew-weather-demo up --build -d<br>
 Open http://127.0.0.1:8080. Fixture cities are Oslo, Helsinki, and Lisbon; fixture mode does not use live-provider data. Stop:<br>
 docker compose -p clew-weather-demo down</p><p>Capture with the installed launcher:<br>
@@ -24,8 +24,8 @@ Use the returned POST_PUBLICATION_SNAPSHOT for rendering:<br>
 clew docs render --root /absolute/new-docs-root --snapshot POST_PUBLICATION_SNAPSHOT --language en<br>
 The render --publish flag records a local released snapshot/history; it does not upload the site or make it available online.</p><p>The C# capture is PARTIAL; Kotlin and TypeScript source-syntax records are not runtime proof. Imported runtime observations retain their own provenance and do not verify this capture; fresh-clone verification of new prose is separate. Use your configured model and provider; no Codeclew-hosted model or paid API is required.<br>
 </p></section><p><a href="weather/index.html">weather documentation reader</a></p><details><summary>Provenance</summary><pre>{
-  &quot;bundle&quot;: &quot;64298f3c8bc82a5bbe0d3c20f558fd9d20cef4f5b06e50c817a2fdab2224d7fc&quot;,
-  &quot;proposal&quot;: &quot;ad5373d5c51d4946ece9a5fed094c08ef212e3afefc214f051879256d245cac3&quot;,
+  &quot;bundle&quot;: &quot;6cf9fa5432fb65c8de2bc322c45e0cb9f76733e136c2f393dce9e2f84c226e27&quot;,
+  &quot;proposal&quot;: &quot;d987570d2b0df977435b4ce95ee3ac344a282289b2d274c54e91cc7f34d5c398&quot;,
   &quot;author&quot;: &quot;gpt-6-luna max&quot;,
   &quot;authoringRuntime&quot;: &quot;OFFICIAL_INSTALLED_0.13.29&quot;,
   &quot;meaningReview&quot;: &quot;UNASSESSED&quot;,
@@ -33,7 +33,7 @@ The render --publish flag records a local released snapshot/history; it does not
   &quot;publicPublished&quot;: false,
   &quot;egressCorrectionPending&quot;: false,
   &quot;summarySha256&quot;: {
-    &quot;section-ingress&quot;: &quot;8fda7e94f3f7b124237618187e94076424aed0831c3bcdf5b3ba6e4577055473&quot;,
+    &quot;section-ingress&quot;: &quot;bd51f8aba2458e52cc583b670fdd132afe16d685a5c7d546c296a42df1710c41&quot;,
     &quot;section-egress&quot;: &quot;8d813817780d3ccc8c7cde4f47aef03805687522f0dca013f55415035fa386ae&quot;
   }
 }</pre></details><p><a href="index.html">Codeclew</a></p></main></body></html>
