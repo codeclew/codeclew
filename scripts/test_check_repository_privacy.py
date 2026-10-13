@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().with_name("check_repository_privacy.py")
@@ -20,6 +21,26 @@ SPEC.loader.exec_module(privacy)
 
 
 class RepositoryPrivacyTest(unittest.TestCase):
+    def test_history_identity_checks_github_merge_forms(self) -> None:
+        generic = (privacy.GENERIC_NAME, privacy.GENERIC_EMAIL)
+        contributor = ("Example Contributor", "contributor@" + "example.invalid")
+        github = ("GitHub", "noreply@" + "github.com")
+        cases = [
+            ("ordinary", "parent", "Ordinary change", generic, generic, []),
+            ("merge", "parent-a parent-b", "Merge pull request #21 from example/topic", contributor, github, []),
+            ("squash", "parent", "Scope scenario evidence and ship all seven skill files (#21)", contributor, github, []),
+            ("ordinary-github", "parent", "Ordinary change", contributor, github, ["non-generic-author", "non-generic-committer"]),
+            ("squash-other", "parent", "Change (#21)", contributor, contributor, ["non-generic-author", "non-generic-committer"]),
+            ("squash-zero", "parent", "Change (#0)", contributor, github, ["non-generic-author", "non-generic-committer"]),
+            ("squash-root", "", "Change (#21)", contributor, github, ["non-generic-author", "non-generic-committer"]),
+            ("private-author", "parent", "Ordinary change", contributor, generic, ["non-generic-author"]),
+        ]
+        for commit, parents, subject, author, committer, rules in cases:
+            with self.subTest(commit=commit):
+                row = "\0".join((commit, parents, subject, *author, *committer)).encode()
+                with patch.object(privacy, "git", return_value=row):
+                    self.assertEqual(privacy.check_history_metadata(), [(commit, rule) for rule in rules])
+
     def test_large_inline_assets_do_not_require_an_email_to_make_progress(self) -> None:
         asset = b"A" * 65536
         first = next(privacy.EMAIL_RE.finditer(asset))

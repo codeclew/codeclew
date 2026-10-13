@@ -209,10 +209,15 @@ def check_history_metadata() -> list[tuple[str, str]]:
             row.decode("utf-8").split("\0")
         )
         github_pull_request_merge = (
-            len(parents.split()) == 2
-            and subject.startswith("Merge pull request #")
-            and (committer, committer_email)
+            (committer, committer_email)
             == ("GitHub", "noreply@" + "github" + ".com")
+            and (
+                (len(parents.split()) == 2 and subject.startswith("Merge pull request #"))
+                or (
+                    len(parents.split()) == 1
+                    and re.search(r" \(#[1-9][0-9]*\)$", subject) is not None
+                )
+            )
         )
         if github_pull_request_merge:
             continue
