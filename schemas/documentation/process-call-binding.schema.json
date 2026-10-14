@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Retained process call binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "relationId",
+    "factDigest",
+    "callerMethodId",
+    "targetIdentity",
+    "sourceAuthority",
+    "schema",
+    "policy",
+    "targetMethodId",
+    "targetStatus",
+    "candidateTargetMethodIds",
+    "targetAuthority",
+    "callSite",
+    "sourceIds",
+    "argumentStatus",
+    "arguments",
+    "omittedDefaultParameterIndices",
+    "defaultValues",
+    "receiver",
+    "returnTransfer",
+    "failureTransfer",
+    "callerContinuation"
+  ],
+  "properties": {
+    "relationId": {
+      "type": "string"
+    },
+    "factDigest": {
+      "type": "string"
+    },
+    "callerMethodId": {
+      "type": "string"
+    },
+    "targetIdentity": {
+      "type": "string"
+    },
+    "sourceAuthority": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "codeclew-process-call-binding/0.1"
+    },
+    "policy": {
+      "const": "retained-k2-process-call-bindings/0.1"
+    },
+    "targetMethodId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetStatus": {
+      "enum": [
+        "SAME_SCOPE_UNIQUE",
+        "TARGET_SCOPE_ASSOCIATION_AMBIGUOUS",
+        "TARGET_ONLY_IN_OTHER_SCOPE",
+        "TARGET_SCOPE_UNAVAILABLE",
+        "EXTERNAL_OR_UNRETAINED_TARGET",
+        "SAME_SCOPE_AMBIGUOUS"
+      ]
+    },
+    "candidateTargetMethodIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "targetAuthority": {
+      "const": "RETAINED_K2_COMPILER_SELECTED_SYMBOL_NOT_RUNTIME_DISPATCH"
+    },
+    "callSite": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "sourceDigest": {
+          "type": "string"
+        },
+        "evidenceDigest": {
+          "type": "string"
+        },
+        "fullCompilationSourceDigest": {
+          "type": "string"
+        },
+        "byteStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "byteEnd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sourceStatus": {
+          "const": "SOURCE_RETAINED"
+        }
+      },
+      "required": [
+        "file",
+        "sourceId",
+        "sourceDigest",
+        "evidenceDigest",
+        "byteStart",
+        "byteEnd",
+        "startLine",
+        "endLine",
+        "sourceStatus"
+      ]
+    },
+    "sourceIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "argumentStatus": {
+      "enum": [
+        "COMPILER_PARAMETER_MAPPING",
+        "UNKNOWN"
+      ]
+    },
+    "arguments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "argumentName": {
+            "type": "string"
+          },
+          "argumentType": {
+            "type": "string"
+          },
+          "parameter": {
+            "type": "string"
+          },
+          "parameterType": {
+            "type": "string"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "argumentStart": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "argumentEnd": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "parameterIndex": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "valueKnowledge": {
+            "const": "SOURCE_EXPRESSION_NOT_EVALUATED_VALUE"
+          }
+        },
+        "required": [
+          "argumentStart",
+          "argumentEnd",
+          "argumentType",
+          "parameter",
+          "parameterIndex",
+          "parameterType",
+          "expression",
+          "sourceId",
+          "valueKnowledge"
+        ]
+      }
+    },
+    "omittedDefaultParameterIndices": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "defaultValues": {
+      "const": "UNKNOWN"
+    },
+    "receiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection",
+        "type",
+        "objectIdentity"
+      ],
+      "properties": {
+        "selection": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "objectIdentity": {
+          "const": "UNKNOWN"
+        }
+      }
+    },
+    "returnTransfer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "declaredType",
+        "requiredEvidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "UNKNOWN"
+        },
+        "declaredType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requiredEvidence": {
+          "const": "QUALIFIED_VALUE_RETURN_EQUATIONS_AND_CALLER_RESULT_BINDING"
+        }
+      }
+    },
+    "failureTransfer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "requiredEvidence"
+      ],
+      "properties": {
+        "status": {
+          "const": "UNKNOWN"
+        },
+        "requiredEvidence": {
+          "const": "QUALIFIED_EXCEPTION_AND_EFFECT_TRANSFER"
+        }
+      }
+    },
+    "callerContinuation": {
+      "const": "NOT_ESTABLISHED_BY_CALL_BINDING"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "argumentStatus": {
+            "const": "UNKNOWN"
+          }
+        },
+        "required": [
+          "argumentStatus"
+        ]
+      },
+      "then": {
+        "properties": {
+          "arguments": {
+            "maxItems": 0
+          },
+          "omittedDefaultParameterIndices": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "targetStatus": {
+            "const": "SAME_SCOPE_UNIQUE"
+          }
+        },
+        "required": [
+          "targetStatus"
+        ]
+      },
+      "then": {
+        "properties": {
+          "targetMethodId": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "targetMethodId": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

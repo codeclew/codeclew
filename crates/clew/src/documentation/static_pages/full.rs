@@ -195,6 +195,19 @@ fn merge_sources(payload: &mut Value, selected: Value) -> Result<(), ClewError> 
     Ok(())
 }
 
+fn validate_output(output: &Path) -> Result<(), ClewError> {
+    if let Ok(metadata) = fs::symlink_metadata(output)
+        && (!metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || fs::read_dir(output).map_err(io_error)?.next().is_some())
+    {
+        return Err(invalid(
+            "full pages output must be a new or empty regular directory",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,17 +230,4 @@ mod tests {
         assert_eq!(payload["sources"]["new-id"], selected["new-id"]);
         assert_eq!(payload["selectedSources"], selected);
     }
-}
-
-fn validate_output(output: &Path) -> Result<(), ClewError> {
-    if let Ok(metadata) = fs::symlink_metadata(output)
-        && (!metadata.is_dir()
-            || metadata.file_type().is_symlink()
-            || fs::read_dir(output).map_err(io_error)?.next().is_some())
-    {
-        return Err(invalid(
-            "full pages output must be a new or empty regular directory",
-        ));
-    }
-    Ok(())
 }

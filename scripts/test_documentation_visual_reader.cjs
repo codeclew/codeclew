@@ -1210,3 +1210,21 @@ test('source helpers remain accessible in inventory but do not demand separate n
  assert.equal(r.run('inventoryEntries().length'),2);r.run("catalogue();showEntry('helper')");
  assert.equal(r.run('current.id'),'helper');assert.match(r.e('scenario-content').innerHTML,/No separate narrative is required/);
 });
+
+
+test('process call bindings preserve compiler parameters, unknown transfer and inert expressions',()=>{
+ const data=declaredThreadFixture();
+ data.processExtraction={status:'COLLECTED_WITH_BOUNDARIES',methods:[{id:'root',symbol:'Caller.start',callBindings:[{callerMethodId:'root',targetIdentity:'Api.pick(String)',targetMethodId:'callee',targetStatus:'SAME_SCOPE_UNIQUE',sourceIds:['client-source'],argumentStatus:'COMPILER_PARAMETER_MAPPING',arguments:[{expression:'text = "<script>unsafe</script>"',parameter:'text',parameterIndex:1},{expression:'count = 7',parameter:'count',parameterIndex:0}],omittedDefaultParameterIndices:[2],defaultValues:'UNKNOWN',receiver:{type:'Api'},returnTransfer:{declaredType:'String'}}]},{id:'callee',symbol:'Api.pick(String)',sourceIds:['receiver-source']}],events:[],query:{},outcomes:[],frontier:[]};
+ const r=load(data);r.run("showEntry('process-overview')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Compiler-selected calls and parameter bindings/);
+ assert.match(html,/Api.pick\(String\)/);
+ assert.match(html,/Receiving declaration/);
+ assert.match(html,/Receiver type/);
+ assert.match(html,/Declared return type/);
+ assert.match(html,/&lt;script&gt;unsafe&lt;\/script&gt;/);
+ assert.match(html,/Receiver object and runtime dispatch are unknown/);
+ assert.match(html,/Return and exception transfer remain unproven/);
+ assert.match(html,/Omitted default parameter indices/);
+ data.language='ru';const ru=load(data);ru.run("showEntry('process-overview')");
+ assert.match(ru.e('scenario-content').innerHTML,/Выбранные компилятором вызовы и параметры/);
+});

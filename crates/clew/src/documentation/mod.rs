@@ -47,6 +47,7 @@ mod operation_answer;
 mod operation_context;
 mod operation_packet;
 pub mod plantuml;
+mod process_call_bindings;
 pub mod process_candidates;
 mod process_context;
 pub mod process_extract;

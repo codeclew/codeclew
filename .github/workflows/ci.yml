@@ -49,6 +49,11 @@ jobs:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
+      - name: Test retained process call bindings and graph traversal
+        run: |
+          cargo test --locked -p clew --lib 'documentation::process_call_bindings::tests::' -- --test-threads=1
+          cargo test --locked -p clew --lib 'documentation::process_graph::tests::' -- --test-threads=1
+          cargo test --locked -p clew --lib 'documentation::kotlin::tests::exact_call_argument_binding_envelope_preserves_source_order_and_optional_names' -- --test-threads=1
       - name: Test grouped operation author on its supported isolated host
         run: "cargo test --locked -p clew --lib 'documentation::agent_jobs::operation_draft::context_mode::tests::' -- --test-threads=1"
       - name: Test grouped independent review and recovery on its supported isolated host

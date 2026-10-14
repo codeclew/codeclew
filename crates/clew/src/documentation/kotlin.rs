@@ -202,6 +202,12 @@ fn exact_call_fact(
             "omittedDefaultParameterIndices":omitted_default_parameter_indices
         });
     }
+    if relation.get("receiverSelection").is_some() {
+        fact["receiverEvidence"] = json!({"selection":relation["receiverSelection"],"type":relation["receiverType"],"objectIdentity":"UNKNOWN"});
+    }
+    if let Some(result_type) = relation.get("resultType") {
+        fact["declaredResultType"] = result_type.clone();
+    }
     Ok(fact)
 }
 
@@ -1293,6 +1299,9 @@ mod tests {
         let descriptor = "(Ljava/lang/String;ILjava/lang/String;)Ljava/lang/String;";
         let (mut call, binding) =
             call_relation(owner, "p/Api.pick", descriptor, file, 40, 90, scope);
+        call["receiverSelection"] = json!("EXPLICIT");
+        call["receiverType"] = json!("p/Api");
+        call["resultType"] = json!("kotlin/String");
         call["argumentToParameter"] = json!([
             {
                 "argumentStart":50,"argumentEnd":53,
@@ -1318,6 +1327,9 @@ mod tests {
             adapted["argumentBindings"]["schema"],
             "codeclew-call-argument-bindings/1.0"
         );
+        assert_eq!(adapted["receiverEvidence"]["selection"], "EXPLICIT");
+        assert_eq!(adapted["receiverEvidence"]["objectIdentity"], "UNKNOWN");
+        assert_eq!(adapted["declaredResultType"], "kotlin/String");
         assert_eq!(
             adapted["argumentBindings"]["argumentToParameter"][0]["parameterIndex"],
             2
@@ -1711,6 +1723,35 @@ mod tests {
                 .values()
                 .any(|o| o.kind == "FLOW" && o.normalized["kafka"]["topic"] == "stock-import")
         );
+        // Exercise the complete real compiler -> retained projection -> process
+        // binding path. This is independent of the hand-built unit fixtures.
+        let root = evidence.observations.values().find(|o| o.kind == "SYMBOL"
+            && o.symbol == "callable:example/ImportController.importStock#jvm:(Lexample/StockImport;)Ljava/lang/String;").unwrap();
+        let graph = super::super::process_graph::collect_bounded(
+            &evidence,
+            root,
+            "native-fixture",
+            "input",
+            None,
+        )
+        .unwrap();
+        let call = graph["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|m| m["callBindings"].as_array().into_iter().flatten())
+            .find(|b| {
+                b["targetIdentity"]
+                    == "callable:example/StockPublisher.publish#jvm:(Lexample/StockImport;)V"
+            })
+            .unwrap();
+        assert_eq!(call["argumentStatus"], "COMPILER_PARAMETER_MAPPING");
+        assert_eq!(call["arguments"][0]["expression"], "request");
+        assert_eq!(call["arguments"][0]["parameterIndex"], 0);
+        assert!(call["targetMethodId"].is_string());
+        assert_eq!(call["receiver"]["objectIdentity"], "UNKNOWN");
+        assert_eq!(call["returnTransfer"]["status"], "UNKNOWN");
+        assert_eq!(call["failureTransfer"]["status"], "UNKNOWN");
         assert!(
             evidence
                 .boundaries

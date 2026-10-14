@@ -59,6 +59,7 @@ pub(super) fn run(
         "eventCount": artifact["events"].as_array().map_or(0, Vec::len)
             + artifact["unboundEvents"].as_array().map_or(0, Vec::len),
         "unboundEventCount": artifact["unboundEvents"].as_array().map_or(0, Vec::len),
+        "callBindingCount": artifact["methods"].as_array().into_iter().flatten().map(|method| method["callBindings"].as_array().map_or(0, Vec::len)).sum::<usize>(),
         "edgeCount": artifact["edges"].as_array().map_or(0, Vec::len),
         "frontierCount": artifact["frontiers"].as_array().map_or(0, Vec::len),
         "artifactDigest": artifact_digest,
@@ -287,6 +288,7 @@ pub(super) fn collect_bounded(
     let mut unscoped_methods_by_symbol: BTreeMap<&str, Vec<&Observation>> = BTreeMap::new();
     let mut flows_by_scope_symbol: BTreeMap<(&str, &str), Vec<&Observation>> = BTreeMap::new();
     let mut unscoped_flows_by_symbol: BTreeMap<&str, Vec<&Observation>> = BTreeMap::new();
+    let mut calls_by_scope_symbol: BTreeMap<(&str, &str), Vec<&Observation>> = BTreeMap::new();
     let mut fields_by_scope_owner_name: BTreeMap<(&str, &str, &str), Vec<&Observation>> =
         BTreeMap::new();
     for observation in evidence.observations.values() {
@@ -307,6 +309,14 @@ pub(super) fn collect_bounded(
                 } else {
                     unscoped_methods_by_symbol
                         .entry(observation.symbol.as_str())
+                        .or_default()
+                        .push(observation);
+                }
+            }
+            "CALL_RELATION" => {
+                if let Some(scope) = exact_scope(observation) {
+                    calls_by_scope_symbol
+                        .entry((scope, observation.symbol.as_str()))
                         .or_default()
                         .push(observation);
                 }
@@ -347,6 +357,8 @@ pub(super) fn collect_bounded(
     let mut queued = BTreeSet::from([root.id.as_str()]);
     let mut visited = BTreeSet::new();
     let mut methods = Vec::new();
+    let mut call_binding_count = 0usize;
+    let mut unprojected_call_relation_count = 0usize;
     let mut events = Vec::new();
     let mut unbound_events = BTreeMap::<String, Value>::new();
     let mut sources_by_id = BTreeMap::<String, Source>::new();
@@ -371,6 +383,10 @@ pub(super) fn collect_bounded(
         let scope = exact_scope(method).ok_or_else(|| {
             invalid("reachable method has no exact retained scope; graph cannot merge unscoped declarations")
         })?;
+        let pending_calls = calls_by_scope_symbol
+            .get(&(scope, method.symbol.as_str()))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         if let Some(budget) = budget {
             let pending_flows = flows_by_scope_symbol
                 .get(&(scope, method.symbol.as_str()))
@@ -388,6 +404,11 @@ pub(super) fn collect_bounded(
                 .map(String::as_str)
                 .chain(method.source_ids.iter().map(String::as_str))
                 .chain(
+                    pending_calls
+                        .iter()
+                        .flat_map(|call| call.source_ids.iter().map(String::as_str)),
+                )
+                .chain(
                     pending_flows
                         .iter()
                         .flat_map(|flow| flow.source_ids.iter().map(String::as_str)),
@@ -400,7 +421,13 @@ pub(super) fn collect_bounded(
                 .sum();
             let code = if methods.len() >= budget.max_methods {
                 Some("METHOD_BUDGET")
-            } else if events.len() + unbound_events.len() + pending_flows.len() > budget.max_events
+            } else if events.len()
+                + call_binding_count
+                + unprojected_call_relation_count
+                + unbound_events.len()
+                + pending_flows.len()
+                + pending_calls.len()
+                > budget.max_events
             {
                 Some("EVENT_BUDGET")
             } else if source_bytes > budget.max_source_bytes {
@@ -582,6 +609,72 @@ pub(super) fn collect_bounded(
             method_frontiers.push(frontier);
         }
 
+        let mut call_bindings = Vec::new();
+        for relation in pending_calls {
+            if !super::process_call_bindings::claims_k2_contract(relation) {
+                // Other producers retain their existing FLOW traversal. Their
+                // relation does not establish K2 parameter or receiver mapping.
+                unprojected_call_relation_count += 1;
+                method_frontiers.push(json!({
+                    "kind":"CALL_BINDING_PROVIDER_UNSUPPORTED",
+                    "methodId":method.id,"relationId":relation.id,
+                    "relationKind":relation.normalized["relationKind"],
+                    "dependencyIds":[relation.id],"sourceIds":relation.source_ids,
+                    "parameterMapping":"UNKNOWN"
+                }));
+                for source_id in &relation.source_ids {
+                    if let Some(source) = evidence.sources.get(source_id) {
+                        sources_by_id.insert(source_id.clone(), source.clone());
+                    }
+                }
+                continue;
+            }
+            if association_ambiguous {
+                method_frontiers.push(json!({"kind":"CALLER_METHOD_ASSOCIATION_AMBIGUOUS","methodId":method.id,"relationId":relation.id}));
+                continue;
+            }
+            let target = relation.normalized["targetIdentity"].as_str().unwrap_or("");
+            let candidates = methods_by_scope_symbol
+                .get(&(scope, target))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let binding = super::process_call_bindings::project(
+                evidence,
+                method,
+                relation,
+                candidates,
+                unscoped_methods_by_symbol
+                    .get(target)
+                    .is_some_and(|v| !v.is_empty()),
+                scopes_by_symbol
+                    .get(target)
+                    .is_some_and(|scopes| !scopes.is_empty()),
+            )?;
+            if let Some(target_id) = binding["targetMethodId"].as_str() {
+                let target_method = evidence
+                    .observations
+                    .get(target_id)
+                    .ok_or_else(|| invalid("call binding target is missing"))?;
+                if queued.insert(target_method.id.as_str()) {
+                    queue.push_back(target_method.id.as_str());
+                }
+            } else {
+                method_frontiers.push(json!({"kind":binding["targetStatus"],"methodId":method.id,"relationId":relation.id,"target":binding["targetIdentity"]}));
+            }
+            for source_id in &relation.source_ids {
+                let source = evidence
+                    .sources
+                    .get(source_id)
+                    .ok_or_else(|| invalid("call binding source is missing"))?;
+                sources_by_id.insert(source_id.clone(), source.clone());
+            }
+            edges.push(json!({"id":format!("edge:{}",relation.id),"kind":"CALL","fromMethodId":method.id,
+                "eventId":null,"relationId":relation.id,"target":binding["targetIdentity"],"targetMethodId":binding["targetMethodId"],
+                "resolution":binding["targetStatus"],"relationshipAuthority":binding["targetAuthority"],
+                "sourceIds":relation.source_ids,"dependencyIds":[relation.id],"callBindingId":relation.id}));
+            call_binding_count += 1;
+            call_bindings.push(binding);
+        }
         let mut event_ids = Vec::new();
         for flow in flows {
             if association_ambiguous {
@@ -702,6 +795,7 @@ pub(super) fn collect_bounded(
             "eventAssociation": if association_ambiguous { "AMBIGUOUS_METHOD_SYMBOL" } else { "UNIQUE_METHOD_SYMBOL" },
             "candidateMethodIds": candidate_method_ids,
             "providerSlots": slots,
+            "callBindings": call_bindings,
             "frontiers": method_frontiers,
             "observation": method,
         }));
@@ -787,6 +881,8 @@ pub(super) fn collect_bounded(
     }
     Ok(json!({
         "schema": GRAPH_SCHEMA,
+        "callBindingPolicy": super::process_call_bindings::POLICY,
+        "unprojectedCallRelationCount": unprojected_call_relation_count,
         "snapshot": {
             "handle": snapshot,
             "inputDigest": input_digest,
@@ -1007,6 +1103,138 @@ mod tests {
             "contracts":{}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn non_k2_relations_keep_flow_traversal_and_report_unknown_mapping() {
+        for schema in [
+            "codeclew-java-compiler-fact/1.0",
+            "codeclew-csharp-compiler-fact/1.0",
+        ] {
+            for kind in ["CALLS", "CONSTRUCTS", "REFERENCES"] {
+                let mut evidence = empty_evidence();
+                add_method(
+                    &mut evidence,
+                    "root",
+                    "root()",
+                    vec![json!({"kind":"CALL","target":"callee()","resolution":"COMPILER_EXACT"})],
+                );
+                add_method(&mut evidence, "callee", "callee()", vec![]);
+                let fact = json!({"schema":schema,"kind":"RELATION","relationKind":kind,"sourceIdentity":"root()","targetIdentity":"callee()","scope":":main","resolution":"COMPILER_EXACT"});
+                evidence.observations.insert(
+                    "relation".into(),
+                    Observation {
+                        id: "relation".into(),
+                        kind: "CALL_RELATION".into(),
+                        service: "svc".into(),
+                        symbol: "root()".into(),
+                        digest: digest(&fact).unwrap(),
+                        normalized: fact,
+                        source_ids: vec![],
+                    },
+                );
+                let graph = collect(
+                    &evidence,
+                    &evidence.observations["root"],
+                    "snapshot",
+                    "input",
+                )
+                .unwrap();
+                assert_eq!(graph["methods"].as_array().unwrap().len(), 2);
+                assert_eq!(graph["edges"][0]["targetMethodId"], "callee");
+                assert_eq!(graph["unprojectedCallRelationCount"], 1);
+                assert!(
+                    graph["methods"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|m| m["callBindings"] == json!([]))
+                );
+                assert!(
+                    graph["frontiers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|f| f["kind"] == "CALL_BINDING_PROVIDER_UNSUPPORTED"
+                            && f["relationKind"] == kind)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn damaged_claimed_k2_contract_cannot_fall_back_to_an_unsupported_provider() {
+        for (field, value) in [
+            ("schema", "codeclew-java-compiler-fact/1.0"),
+            ("provider", "JAVAC"),
+        ] {
+            let (mut evidence, caller, _, mut relation) =
+                super::super::process_call_bindings::tests::fixture();
+            relation.normalized[field] = json!(value);
+            relation.digest = digest(&relation.normalized).unwrap();
+            evidence.observations.insert(relation.id.clone(), relation);
+            assert!(collect(&evidence, &caller, "snapshot", "input").is_err());
+        }
+    }
+
+    #[test]
+    fn exact_call_relations_discover_the_descriptor_target_without_inventing_flow_events() {
+        let (mut evidence, caller, target, relation) =
+            super::super::process_call_bindings::tests::fixture();
+        let mut overload = target.clone();
+        overload.id = "wrong-overload".into();
+        overload.symbol = "callable:example.Api.pick#jvm:(I)Ljava/lang/String;".into();
+        evidence.observations.insert(overload.id.clone(), overload);
+        let graph = collect(&evidence, &caller, "snapshot", "input").unwrap();
+        assert_eq!(graph["methods"].as_array().unwrap().len(), 2);
+        assert!(
+            graph["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|m| m["id"] != "wrong-overload")
+        );
+        assert_eq!(graph["events"], json!([]));
+        assert_eq!(graph["edges"][0]["relationId"], relation.id);
+        assert_eq!(graph["edges"][0]["eventId"], Value::Null);
+        assert_eq!(graph["edges"][0]["targetMethodId"], target.id);
+        assert_eq!(
+            graph["methods"][0]["callBindings"][0]["arguments"][0]["expression"],
+            "text = \"é\""
+        );
+        assert_eq!(
+            graph["sources"]["site"]["text"],
+            evidence.sources["site"].text
+        );
+    }
+
+    #[test]
+    fn exact_call_bindings_respect_relation_and_source_budgets_and_duplicate_targets() {
+        let (mut evidence, caller, target, _) =
+            super::super::process_call_bindings::tests::fixture();
+        let mut duplicate = target;
+        duplicate.id = "duplicate".into();
+        evidence
+            .observations
+            .insert(duplicate.id.clone(), duplicate);
+        let graph = collect(&evidence, &caller, "snapshot", "input").unwrap();
+        assert_eq!(graph["methods"].as_array().unwrap().len(), 1);
+        assert_eq!(graph["edges"][0]["resolution"], "SAME_SCOPE_AMBIGUOUS");
+        assert_eq!(graph["edges"][0]["targetMethodId"], Value::Null);
+        let budget = super::super::process_extract::Budgets {
+            max_source_bytes: 1,
+            ..Default::default()
+        };
+        let cut = collect_bounded(&evidence, &caller, "snapshot", "input", Some(&budget)).unwrap();
+        assert_eq!(cut["coverage"]["knownReachableCollection"], "TRUNCATED");
+        assert_eq!(cut["methods"], json!([]));
+        assert!(
+            cut["frontiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["code"] == "SOURCE_BYTE_BUDGET")
+        );
     }
 
     fn add_method_in_scope(
