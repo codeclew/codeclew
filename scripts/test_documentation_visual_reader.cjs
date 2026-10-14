@@ -231,12 +231,35 @@ test('surviving SVG else guard opens combined guard and else evidence without ch
  const behavior=r.run('behaviorPseudocode(D.operations[0])');assert.match(behavior,/Return the previous result/);assert.match(behavior,/The event was already processed/);
 });
 
+test('sequence participants follow only visible arrows in their original order, including self, return and declared messages',()=>{
+ const data=fixture(),op=data.operations[0],r=load(data);
+ const event=(id,kind,text,from,to)=>({id,kind,text,from,to,sourceIds:['same-source'],dependencyIds:['dep-'+id]});
+ op.participants=[{id:'caller',label:'Unused caller'},{id:'second',label:'Second'},{id:'notes',label:'Notes only'},{id:'first',label:'First'}];
+ op.events=[event('guard','alt','Original condition','caller','notes'),event('note','note','No visible action','notes','caller'),event('alternative','else','Otherwise','caller','notes'),event('self','message','Self message','second','second'),event('reply','return','Return result','second','first'),event('declared','declared','Declared transfer','first','second'),event('end','end','')];
+ const original=JSON.stringify(op),layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)}))`));
+ assert.deepEqual(layout.actors.map(a=>a.id),['second','first']);assert.deepEqual(Object.keys(layout.xs),['second','first']);assert.equal(layout.W,800);
+ const svg=r.run(`diagram(${JSON.stringify(op)})`);assert.doesNotMatch(svg,/Unused caller|Notes only|NaN|Infinity/);for(const id of ['self','reply','declared'])assert.ok(svg.includes(`data-event="${id}"`));
+ assert.equal((svg.match(/class="lifeline"/g)||[]).length,2);assert.equal(JSON.stringify(op),original);
+ const self={...op,events:[event('only','message','Self message','second','second')]};assert.deepEqual(JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(self)}))`)).actors.map(a=>a.id),['second']);assert.doesNotMatch(r.run(`diagram(${JSON.stringify(self)})`),/NaN|Infinity/);
+});
+
+test('notes-only sequence keeps readable behavior and original participants without an empty SVG scene',()=>{
+ const data=fixture(),op=data.operations[0],r=load(data);
+ op.overviewDiagram=null;op.participants=[{id:'caller',label:'Caller'}];
+ op.events=[{id:'guard',kind:'alt',text:'Original condition',sourceIds:['same-source']},{id:'note',kind:'note',text:'Keep the current value',from:'caller',to:'caller',sourceIds:['same-source']},{id:'end',kind:'end',text:'',sourceIds:[]}];
+ const original=JSON.stringify(op),layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)}))`));
+ assert.deepEqual(layout.actors,[]);assert.deepEqual(layout.xs,{});assert.deepEqual(layout.rows,[]);assert.ok(Number.isFinite(layout.W)&&Number.isFinite(layout.H));
+ assert.equal(r.run(`diagram(${JSON.stringify(op)})`),'');const html=r.run(`sequence({id:${JSON.stringify(op.id)}},${JSON.stringify(op)})`);
+ assert.doesNotMatch(html,/sequence-svg|overview-scroll|sequence-details|NaN|Infinity/);assert.match(html,/Keep the current value/);assert.match(html,/Original condition/);assert.match(html,/data-sources="same-source"/);
+ assert.equal(JSON.stringify(op),original);assert.equal(r.run(`diagram(${JSON.stringify({...op,participants:[],events:[]})})`),'');
+});
+
 test('sequence layout places arrows below complete Weather labels and bounds participant titles',()=>{
  const op={"id": "dashboard-forecast-updated-consumer", "title": "Dashboard consumes forecast-updated events", "participants": [{"id": "caller", "label": "Caller", "service": null}, {"id": "service-dashboard", "label": "dashboard", "service": "dashboard"}, {"id": "dashboard-kafka", "label": "Kafka topic weather.forecast-updated", "service": null}, {"id": "dashboard-db", "label": "Dashboard PostgreSQL", "service": null}], "events": [{"dependencyIds": ["dashboard:symbol:ac3aadb76be6fea3e790cb85"], "from": "service-dashboard", "id": "claim-ebeef3c264171b01cd39", "kind": "message", "sourceIds": ["dashboard-ac3aadb76be6fea3e790"], "text": "For a new forecast event, insert the card from event.place when no card exists, without checking for a prior place-requested event; for an existing card, update its place fields and forecast only when stored updated_at is null or the incoming timestamp is strictly newer.", "to": "dashboard-db"}, {"dependencyIds": ["dashboard:flow:59f03a0653cc7a3798b8ceaf", "dashboard:flow:a190efb9bca6603f1d2abc58", "dashboard:symbol:021fcd0ff7baa53bd3c51930"], "from": "service-dashboard", "id": "claim-0b1e97374ab832082b1d", "kind": "message", "sourceIds": ["dashboard-021fcd0ff7baa53bd3c5", "dashboard-59f03a0653cc7a3798b8", "dashboard-a190efb9bca6603f1d2a"], "text": "On JSON parse or validation failure, including an unrecognized topic that throws UNKNOWN_TOPIC, insert topic, partition, offset, and reason INVALID_EVENT into rejected_messages; ignore a duplicate rejection row.", "to": "dashboard-db"}, {"dependencyIds": ["dashboard:flow:049a97e649d7feb212e6c67f", "dashboard:flow:654eeebd7e0618b0c6dd58f9", "dashboard:flow:a190efb9bca6603f1d2abc58"], "from": "service-dashboard", "id": "claim-2bc228fbe1d00118816c", "kind": "message", "sourceIds": ["dashboard-049a97e649d7feb212e6", "dashboard-654eeebd7e0618b0c6dd", "dashboard-a190efb9bca6603f1d2a"], "text": "After the rejection row is written, commit this partition's offset plus one and return.", "to": "dashboard-kafka"}]};
  const data=fixture(),r=load(data),original=JSON.stringify(op);
  const layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)}))`));
  assert.equal(layout.rows.length,3);
- for(const row of layout.rows){assert.ok(row.lines.length>=4);assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);assert.ok(row.h>row.arrowOffset+20);}
+ for(const row of layout.rows){assert.ok(row.lines.length>1);assert.equal(row.lines.join('').replace(/ /g,''),row.e.text.replace(/ /g,''));assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);assert.ok(row.h>row.arrowOffset+20);}
  const kafka=layout.actors.find(p=>p.id==='dashboard-kafka');
  assert.ok(kafka.titleLines.length>1);assert.ok(kafka.titleLines.every(line=>Array.from(line).length<=20));
  assert.equal(kafka.titleLines.join('').replace(/ /g,''),kafka.label.replace(/ /g,''));

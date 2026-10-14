@@ -767,11 +767,13 @@ function sequenceEvents(o){
  return project(root);
 }
 function sequenceLayout(o){
- const W=Math.max(800,(o.participants.length-1)*215+240),xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,o.participants.length-1)]));
- const actors=o.participants.map(p=>({...p,titleLines:sequenceWrap(p.label,20),technicalLines:sequenceWrap(p.service||t('External participant'),28)}));
+ const events=sequenceEvents(o),referenced=new Set(events.filter(e=>['message','return','declared'].includes(e.kind)).flatMap(e=>[e.from,e.to]));
+ const participants=o.participants.filter(p=>referenced.has(p.id));
+ const W=Math.max(800,(participants.length-1)*215+240),xs=Object.fromEntries(participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,participants.length-1)]));
+ const actors=participants.map(p=>({...p,titleLines:sequenceWrap(p.label,20),technicalLines:sequenceWrap(p.service||t('External participant'),28)}));
  const headerHeight=Math.max(48,...actors.map(p=>18+p.titleLines.length*14+p.technicalLines.length*11)),headerBottom=9+headerHeight;
  let y=headerBottom+37,stack=[],frames=[],rows=[];
- for(const e of sequenceEvents(o)){
+ for(const e of events){
   const depth=stack.length,branch=['alt','else','loop','opt'].includes(e.kind),left=32+Math.max(0,depth-(e.kind==='else'?1:0))*12;
   const a=xs[e.from],b=xs[e.to],width=Math.max(100,Math.abs(a-b));
   const lines=e.kind==='end'?[]:sequenceWrap(branch?`${t(e.kind)} · ${e.text}`:e.text,branch?Math.max(20,Math.floor((W-left*2-16)/6)):Math.max(16,Math.floor(width/6)));
@@ -786,6 +788,7 @@ function sequenceLayout(o){
 }
 function diagram(o){
  const {W,H,xs,actors,headerHeight,headerBottom,frames,rows}=sequenceLayout(o);
+ if(!actors.length||!rows.some(({e})=>['message','return','declared'].includes(e.kind)))return '';
  let svg=chromeHtml`<svg class="sequence-svg" style="min-width:${W}px" viewBox="0 0 ${W} ${H}" role="group" aria-label="Sequence diagram: ${esc(o.title)}"><defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#608365"/></marker></defs>`;
  svg+=frames.map(f=>chromeHtml`<rect x="${20+f.depth*12}" y="${f.y-8}" width="${W-40-f.depth*24}" height="${f.end-f.y+8}" rx="4" fill="#fdfbf6" stroke="#e3d9c5"/>`).join('');
  svg+=actors.map(p=>chromeHtml`<line class="lifeline" x1="${xs[p.id]}" x2="${xs[p.id]}" y1="${headerBottom+4}" y2="${H-8}"/><rect x="${xs[p.id]-76}" y="9" width="152" height="${headerHeight}" rx="6" fill="#f1f6ed" stroke="#d6e1d0"/>${p.titleLines.map((line,i)=>chromeHtml`<text class="actor-label" text-anchor="middle" x="${xs[p.id]}" y="${29+i*14}">${esc(line)}</text>`).join('')}${p.technicalLines.map((line,i)=>chromeHtml`<text class="actor-technical" text-anchor="middle" x="${xs[p.id]}" y="${33+p.titleLines.length*14+i*11}">${esc(line)}</text>`).join('')}`).join('');
@@ -891,9 +894,10 @@ function sequence(e,o){if(!o)return chromeHtml`<p class="empty-note">${esc(D.gap
  const state=D.stateDiagram?chromeHtml`<div class="diagram-card"><div class="section-label"><b>${esc(t('State diagram'))}</b><span>${esc(t('Declared process-state schema'))} · ${esc(t('Static source bindings do not show runtime execution.'))}</span></div>${plantumlPreview(D.stateDiagram,D.stateDiagramSvg,'State diagram')}<div class="diagram-footer"><span>${esc(t('States and transitions come from the captured process-state schema.'))} scenarios/${esc(D.subject.split(':').pop())}-states.yaml</span><a download href="../diagrams/${esc(D.stateDiagram)}.puml">PlantUML ↓</a></div></div>`:'';
  const pseudocode=behaviorPseudocode(o);
  const displayedEvents=pseudocode?(o.events||[]).filter(event=>event.kind!=='end'&&typeof event.text==='string'&&event.text.length>0&&pseudocodeEvent(o,event).text.includes(event.text)):[];
- const sequenceFlow=chromeHtml`<div class="diagram-card"><div class="section-label"><b>Scenario overview</b><span>Select a node or connection to inspect its source</span></div><div class="overview-scroll">${overviewDiagram(o)}</div><div class="diagram-footer"><span>Source-based interpretation; declared links do not prove runtime delivery.</span><a download href="../diagrams/${esc(D.subject.replace(':','-'))}-${esc(o.id)}.mmd">Mermaid ↓</a></div></div>`;
+ const diagramMarkup=overviewDiagram(o);
+ const sequenceFlow=diagramMarkup?chromeHtml`<div class="diagram-card"><div class="section-label"><b>Scenario overview</b><span>Select a node or connection to inspect its source</span></div><div class="overview-scroll">${diagramMarkup}</div><div class="diagram-footer"><span>Source-based interpretation; declared links do not prove runtime delivery.</span><a download href="../diagrams/${esc(D.subject.replace(':','-'))}-${esc(o.id)}.mmd">Mermaid ↓</a></div></div>`:'';
  const accessible=o.overviewDiagram?chromeHtml`<details class="steps-accessible"><summary>Diagram as text</summary><ul>${o.overviewDiagram.nodes.map(n=>chromeHtml`<li><button data-overview-node="${esc(n.id)}">${esc(n.text)}</button></li>`).join('')}</ul><ul>${o.overviewDiagram.edges.map(e=>chromeHtml`<li>${esc(o.overviewDiagram.nodes.find(n=>n.id===e.from).text)} → ${esc(o.overviewDiagram.nodes.find(n=>n.id===e.to).text)}${e.text?' · '+esc(e.text):''}</li>`).join('')}</ul></details>`:'';
- const flow=pseudocode?chromeHtml`<details class="sequence-details"><summary>${esc(t(o.overviewDiagram?'Scenario overview':'Sequence diagram'))}</summary>${sequenceFlow}${accessible}</details>`:chromeHtml`${sequenceFlow}${accessible}`;
+ const flow=!sequenceFlow&&!accessible?'':pseudocode?chromeHtml`<details class="sequence-details"><summary>${esc(t(o.overviewDiagram?'Scenario overview':'Sequence diagram'))}</summary>${sequenceFlow}${accessible}</details>`:chromeHtml`${sequenceFlow}${accessible}`;
  const narrativeDetails=pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o,false,displayedEvents)}${explanation(o,true)}</details>`:explanation(o);
  const implementationDetails=!pseudocode?chromeHtml`<details class="implementation-detail"><summary>Implementation details and source commentary</summary>${explanation(o,true)}</details>`:'';
  return chromeHtml`${(o.visuals||[]).map(v=>visualCard(o,v)).join('')}${pseudocode}${state}${flow}${narrativeDetails}${o.boundaries.length?chromeHtml`<details class="technical-evidence"><summary>Scope and evidence boundaries</summary><ul>${o.boundaries.map(b=>chromeHtml`<li>${esc(b)}</li>`).join('')}</ul></details>`:''}${implementationDetails}<details class="technical-evidence"><summary>Declared service links</summary>${interactionOverview(o)||chromeHtml`<p>No cross-service connections selected.</p>`}</details>`;}
