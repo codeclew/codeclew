@@ -141,7 +141,7 @@ pub(super) fn attach(
                 &page.endpoint,
             ) {
                 return Err(invalid(
-                    "authored operation does not match the selected endpoint declaration and evidence scope",
+                    "authored operation does not match the selected endpoint compiler symbol, declaration identity and evidence scope",
                 ));
             }
             // No section/note root can pass the discovered endpoint association.
