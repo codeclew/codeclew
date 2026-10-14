@@ -254,6 +254,30 @@ test('notes-only sequence keeps readable behavior and original participants with
  assert.equal(JSON.stringify(op),original);assert.equal(r.run(`diagram(${JSON.stringify({...op,participants:[],events:[]})})`),'');
 });
 
+test('sequence layout wraps complete text inside supplied narrow and wide widths without shrinking typography',()=>{
+ const data=fixture(),r=load(data),op={...data.operations[0],participants:[{id:'caller',label:'Unused caller'},{id:'dashboard',label:'Dashboard service with a long name'},{id:'kafka',label:'Kafka topic weather.forecast-updated'},{id:'db',label:'Dashboard PostgreSQL'}],events:[]};
+ const event=(id,kind,text,from,to)=>({id,kind,text,from,to,sourceIds:['same-source'],dependencyIds:['dep']});
+ op.events=[event('guard','alt','The inbox insert reports an existing event id.'),event('empty','note','Return DUPLICATE'),event('else','else','Otherwise'),event('apply','message','For a new forecast event, insert the card from event.place when no card exists; update only when the incoming timestamp is strictly newer.','dashboard','db'),event('self','message','Self-message labels remain complete at the rightmost participant, including a-long-unbroken-identifier-with-unicode-π🙂.','db','db'),event('reply','return','Return the saved result after commit.','db','kafka'),event('declared','declared','Declared delivery remains unverified.','kafka','dashboard'),event('end','end','')];
+ const original=JSON.stringify(op);
+ for(const width of [224,280,320,375,560,610,1280]){
+  const layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)},${width}))`));assert.equal(layout.W,width);assert.deepEqual(layout.actors.map(a=>a.id),['dashboard','kafka','db']);
+  for(const actor of layout.actors){assert.ok(layout.xs[actor.id]-actor.width/2>=0);assert.ok(layout.xs[actor.id]+actor.width/2<=width);assert.equal(actor.titleLines.join('').replace(/ /g,''),actor.label.replace(/ /g,''));}
+  for(const row of layout.rows.filter(row=>['message','return','declared'].includes(row.e.kind))){assert.equal(row.lines.join('').replace(/ /g,''),row.e.text.replace(/ /g,''));assert.ok(row.mid-row.labelWidth/2>=0);assert.ok(row.mid+row.labelWidth/2<=width);assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);if(row.e.kind==='declared'){assert.equal(row.captionLines.join('').replace(/ /g,''),'Declared service interaction'.replace(/ /g,''));assert.ok(row.h>row.captionOffset+(row.captionLines.length-1)*14);}if(row.e.from===row.e.to){const end=layout.xs[row.e.from]+row.direction*row.loopWidth;assert.ok(end>=0&&end<=width);}}
+  const svg=r.run(`diagram(${JSON.stringify(op)},${width})`);assert.doesNotMatch(svg,/min-width|NaN|Infinity/);assert.ok(svg.includes(`viewBox="0 0 ${width} `));assert.equal((svg.match(/data-event=/g)||[]).length,5);
+ }
+ assert.equal(JSON.stringify(op),original);
+});
+
+test('sequence reflow skips hidden disclosure widths and updates on reveal and subsequent resize',()=>{
+ const data=behaviorFixture(),r=load(data),original=JSON.stringify(data.operations[0]);
+ const setup=`globalThis.reflowWidth=0;globalThis.reflowResult='';globalThis.reflowParent={get clientWidth(){return reflowWidth;}};globalThis.reflowSvg={parentElement:reflowParent,getAttribute(name){return name==='data-sequence-operation'?D.operations[0].id:'800';},set outerHTML(value){reflowResult=value;}};document.querySelectorAll=()=>[reflowSvg];window.getComputedStyle=()=>({paddingLeft:'8px',paddingRight:'8px',fontFamily:'sans-serif'});`;
+ r.run(setup);r.run('reflowSequences()');assert.equal(r.run('reflowResult'),'');
+ r.run('reflowWidth=610;reflowSequences()');assert.match(r.run('reflowResult'),/data-layout-width="594"/);
+ r.run('reflowWidth=320;scheduleSequenceReflow()');assert.match(r.run('reflowResult'),/data-layout-width="304"/);
+ r.run('reflowWidth=1280;scheduleSequenceReflow()');assert.match(r.run('reflowResult'),/data-layout-width="1264"/);
+ assert.equal(r.run('JSON.stringify(D.operations[0])'),original);
+});
+
 test('sequence layout places arrows below complete Weather labels and bounds participant titles',()=>{
  const op={"id": "dashboard-forecast-updated-consumer", "title": "Dashboard consumes forecast-updated events", "participants": [{"id": "caller", "label": "Caller", "service": null}, {"id": "service-dashboard", "label": "dashboard", "service": "dashboard"}, {"id": "dashboard-kafka", "label": "Kafka topic weather.forecast-updated", "service": null}, {"id": "dashboard-db", "label": "Dashboard PostgreSQL", "service": null}], "events": [{"dependencyIds": ["dashboard:symbol:ac3aadb76be6fea3e790cb85"], "from": "service-dashboard", "id": "claim-ebeef3c264171b01cd39", "kind": "message", "sourceIds": ["dashboard-ac3aadb76be6fea3e790"], "text": "For a new forecast event, insert the card from event.place when no card exists, without checking for a prior place-requested event; for an existing card, update its place fields and forecast only when stored updated_at is null or the incoming timestamp is strictly newer.", "to": "dashboard-db"}, {"dependencyIds": ["dashboard:flow:59f03a0653cc7a3798b8ceaf", "dashboard:flow:a190efb9bca6603f1d2abc58", "dashboard:symbol:021fcd0ff7baa53bd3c51930"], "from": "service-dashboard", "id": "claim-0b1e97374ab832082b1d", "kind": "message", "sourceIds": ["dashboard-021fcd0ff7baa53bd3c5", "dashboard-59f03a0653cc7a3798b8", "dashboard-a190efb9bca6603f1d2a"], "text": "On JSON parse or validation failure, including an unrecognized topic that throws UNKNOWN_TOPIC, insert topic, partition, offset, and reason INVALID_EVENT into rejected_messages; ignore a duplicate rejection row.", "to": "dashboard-db"}, {"dependencyIds": ["dashboard:flow:049a97e649d7feb212e6c67f", "dashboard:flow:654eeebd7e0618b0c6dd58f9", "dashboard:flow:a190efb9bca6603f1d2abc58"], "from": "service-dashboard", "id": "claim-2bc228fbe1d00118816c", "kind": "message", "sourceIds": ["dashboard-049a97e649d7feb212e6", "dashboard-654eeebd7e0618b0c6dd", "dashboard-a190efb9bca6603f1d2a"], "text": "After the rejection row is written, commit this partition's offset plus one and return.", "to": "dashboard-kafka"}]};
  const data=fixture(),r=load(data),original=JSON.stringify(op);
