@@ -131,14 +131,9 @@ pub(super) fn render(
     }
     // Reuse the publication's overview and all diagrams, contracts and source
     // payloads. Adapt navigation paths, never authored explanation content.
-    for (name, bytes) in files.iter_mut().filter(|(name, _)| {
-        name.ends_with(".html") && !name.starts_with("services/") && !name.starts_with("scenarios/")
-    }) {
+    for (name, bytes) in files.iter_mut().filter(|(name, _)| name.ends_with(".html")) {
         let text = String::from_utf8(bytes.clone()).map_err(io_error)?;
-        *bytes = text
-            .replace("../../history.html", "history.html")
-            .into_bytes();
-        let _ = name;
+        *bytes = adapt_history_navigation(name, &text).into_bytes();
     }
     files.insert(
         "index.html".into(),
@@ -204,6 +199,15 @@ pub(super) fn render(
     Ok(result)
 }
 
+fn adapt_history_navigation(name: &str, text: &str) -> String {
+    let (original, relocated) = if name.starts_with("services/") || name.starts_with("scenarios/") {
+        ("href=\"../../../history.html\"", "href=\"../history.html\"")
+    } else {
+        ("href=\"../../history.html\"", "href=\"history.html\"")
+    };
+    text.replace(original, relocated)
+}
+
 fn attach_operation_presentation(payload: &mut Value, subject: &str) -> Result<(), ClewError> {
     let operation_id = subject.split_once(':').map(|(_, id)| id).unwrap_or(subject);
     if !payload["operations"].as_array().is_some_and(|operations| {
@@ -252,6 +256,22 @@ fn validate_output(output: &Path) -> Result<(), ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_frozen_pages_relocate_history_links_without_rewriting_prose() {
+        let text = "<a href=\"../../../history.html\">History</a><p>../../../history.html</p>";
+        assert_eq!(
+            adapt_history_navigation("scenarios/neighbor.html", text),
+            "<a href=\"../history.html\">History</a><p>../../../history.html</p>"
+        );
+        assert_eq!(
+            adapt_history_navigation(
+                "overview.html",
+                "<a href=\"../../history.html\">History</a>"
+            ),
+            "<a href=\"history.html\">History</a>"
+        );
+    }
 
     #[test]
     fn operation_presentation_preserves_every_canonical_record_and_refuses_missing_operation() {
