@@ -55,6 +55,7 @@ mod process_extract_tests;
 pub mod process_flow;
 mod process_graph;
 mod process_linked_preview;
+mod process_reachability;
 pub mod process_states;
 pub mod process_thread;
 pub mod processes;

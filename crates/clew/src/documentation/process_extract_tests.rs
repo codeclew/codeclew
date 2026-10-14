@@ -160,6 +160,14 @@ fn ambiguous_targets_and_other_scopes_cannot_become_unique_by_aggregation() {
     let p = extract(&c, "snapshot", &query()).unwrap();
     assert!(has(&p, "SAME_SCOPE_AMBIGUOUS"));
     assert_eq!(p["outcomes"][0]["discovery"], "NOT_FOUND_UNKNOWN");
+    assert_eq!(p["outcomes"][0]["structuralMethodIds"], json!([]));
+    assert!(
+        p["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["structuralOutcomeEventIds"] == json!([]))
+    );
 }
 
 #[test]
@@ -200,4 +208,59 @@ fn damaged_source_binding_fails_closed_instead_of_upgrading_provenance() {
         .text
         .push_str(" changed");
     assert!(extract(&c, "snapshot", &query()).is_err());
+}
+
+#[test]
+fn multiple_outcomes_preserve_separate_call_corridors_and_unknowns() {
+    let mut c = fixture("JAVAC");
+    let service = c.services.get_mut("svc").unwrap();
+    // Remove the helper -> root cycle, then add an independent root -> sibling.
+    service.observations.get_mut("helper").unwrap().normalized["documentation"]["events"][0] =
+        json!({"kind":"RETURN"});
+    service
+        .observations
+        .get_mut("helper-event-0")
+        .unwrap()
+        .normalized = json!({"kind":"RETURN","scope":":main","ordinal":0});
+    let root = service.observations.get_mut("root").unwrap();
+    root.normalized["documentation"]["events"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":"CALL","target":"method:class:Example#unrelated()V"}));
+    let mut call = service.observations["root-event-5"].clone();
+    call.id = "root-event-6".into();
+    call.normalized = json!({"kind":"CALL","target":"method:class:Example#unrelated()V","scope":":main","ordinal":6});
+    service.observations.insert(call.id.clone(), call);
+    c.dependencies = service.observations.clone();
+    let mut q = query();
+    q.outcome_event_ids = vec![
+        "helper-event-1".into(),
+        "unrelated-event-0".into(),
+        "missing".into(),
+    ];
+    let p = extract(&c, "snapshot", &q).unwrap();
+    assert_eq!(
+        p["outcomes"][0]["structuralMethodIds"],
+        json!(["helper", "root"])
+    );
+    assert_eq!(
+        p["outcomes"][1]["structuralMethodIds"],
+        json!(["root", "unrelated"])
+    );
+    assert_eq!(p["outcomes"][2]["structuralMethodIds"], json!([]));
+    let helper = p["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "helper")
+        .unwrap();
+    assert_eq!(
+        helper["structuralOutcomeEventIds"],
+        json!(["helper-event-1"])
+    );
+    assert_eq!(p["programSemanticClosure"], false);
+    q.budgets.max_methods = 1;
+    let cut = extract(&c, "snapshot", &q).unwrap();
+    assert_eq!(cut["outcomes"][0]["discovery"], "NOT_FOUND_UNKNOWN");
+    assert_eq!(cut["outcomes"][0]["structuralMethodIds"], json!([]));
 }
