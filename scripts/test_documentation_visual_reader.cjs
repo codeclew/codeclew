@@ -174,7 +174,9 @@ test('mapped contract anchors open the existing handler contract without duplica
  data.sections=[{id:'section-overview',title:'Overview',gap:'No overview'}];
  current.sourceIds=[sourceId];current.normalized.sourceMapping='SOURCE_ROUTE_MATCH_ONLY';
  current.normalized.path='/api/places';current.normalized.operation={responses:{200:{description:'SELECTED CONTRACT'}}};
- data.sources[sourceId]=source('SELECTED CONTRACT SOURCE');
+ data.sources[sourceId]=source('ORIGINAL PUBLICATION CONTRACT SOURCE');
+ data.sources['cross-service-source']=source('ORIGINAL CROSS SERVICE SOURCE');
+ data.selectedSources={[sourceId]:source('SELECTED CONTRACT SOURCE')};
  data.operationSources[operation.id][sourceId]=source('RETAINED CONTRACT SOURCE');
  data.operationContracts[operation.id]=[{...current,normalized:{...current.normalized,entrypoint:null,sourceMapping:'NO_SOURCE_ROUTE_MATCH'}}];
  operation.interfaceContracts=[{id:'retained-description',kind:'http',title:'Retained authored description',rows:[{label:'Request',value:'RETAINED AUTHOR PROSE',sourceIds:['same-source']}],boundaries:[]}];
@@ -189,6 +191,11 @@ test('mapped contract anchors open the existing handler contract without duplica
  r.click({sources:sourceId,sourceOperation:operation.id},true);
  assert.match(r.e('source-code').innerHTML,/SELECTED CONTRACT SOURCE/);
  assert.doesNotMatch(r.e('source-code').innerHTML,/RETAINED CONTRACT SOURCE/);
+ r.click({sources:sourceId,sourceOperation:operation.id});
+ assert.match(r.e('source-code').innerHTML,/RETAINED CONTRACT SOURCE/);
+ r.e('scenario-content').hidden=true;
+ r.run("source(['cross-service-source'],'Retained cross-service evidence')");
+ assert.match(r.e('source-code').innerHTML,/ORIGINAL CROSS SERVICE SOURCE/);
  r.run(`showEntry(${JSON.stringify(operation.id)})`);assert.equal(r.run('tab'),'sequence');
  r.run("location.hash='#unknown-contract';routeReaderHash()");assert.equal(r.run('current.id'),'section-overview');
 });

@@ -86,7 +86,7 @@ pub(super) fn render(
                     .filter(|o| o.kind == "CONTRACT_OPERATION")
                     .collect::<Vec<_>>()
             );
-            payload["sources"] = json!(service.sources);
+            merge_sources(&mut payload, json!(service.sources))?;
             // Keep operationSources/operationContracts/operationStates and all
             // narrative/thread data byte-equivalent as parsed frozen records.
         }
@@ -177,6 +177,46 @@ pub(super) fn render(
     }
     fs::rename(temporary.path(), output).map_err(io_error)?;
     Ok(result)
+}
+
+fn merge_sources(payload: &mut Value, selected: Value) -> Result<(), ClewError> {
+    let retained = payload["sources"]
+        .as_object_mut()
+        .ok_or_else(|| invalid("full pages retained source records are missing"))?;
+    let selected_records = selected
+        .as_object()
+        .ok_or_else(|| invalid("full pages selected source records are missing"))?;
+    // Stable source IDs can recur at a different revision. Accepted citations
+    // keep their complete original record, including cross-service evidence.
+    for (id, source) in selected_records {
+        retained.entry(id.clone()).or_insert_with(|| source.clone());
+    }
+    payload["selectedSources"] = selected;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_citations_keep_original_revision_and_cross_service_records() {
+        let original = json!({
+            "same-id":{"revision":"original","url":"original-url","evidenceDigest":"original-evidence","occurrence":{"snapshot":"original"}},
+            "other-service-id":{"service":"other","revision":"other-original"}
+        });
+        let selected = json!({
+            "same-id":{"revision":"selected","url":"selected-url","evidenceDigest":"selected-evidence","occurrence":{"snapshot":"selected"}},
+            "new-id":{"revision":"selected"}
+        });
+        let mut payload = json!({"sources":original});
+        merge_sources(&mut payload, selected.clone()).unwrap();
+        for (id, source) in original.as_object().unwrap() {
+            assert_eq!(payload["sources"][id], *source);
+        }
+        assert_eq!(payload["sources"]["new-id"], selected["new-id"]);
+        assert_eq!(payload["selectedSources"], selected);
+    }
 }
 
 fn validate_output(output: &Path) -> Result<(), ClewError> {
