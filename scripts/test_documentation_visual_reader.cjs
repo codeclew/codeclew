@@ -1339,3 +1339,25 @@ test('process call bindings preserve compiler parameters, unknown transfer and i
  data.language='ru';const ru=load(data);ru.run("showEntry('process-overview')");
  assert.match(ru.e('scenario-content').innerHTML,/Выбранные компилятором вызовы и параметры/);
 });
+
+test('frozen operation reader preserves nested narrative and citation authority without answer approval',()=>{
+ const data=behaviorFixture(),op=data.operations[0];
+ op.findings=[{text:'Retained failure finding',sourceIds:['save-source']}];
+ data.operationExternalCalls={[op.id]:[{eventId:'save',to:'provider',title:'Retained outgoing contract',addresses:[],contractStatus:'REFERENCE_UNAVAILABLE',declaration:{origin:'human',rationale:'Retained declaration'},interactionId:'declared-provider',snapshotContextDigest:'old-context'}]};
+ data.subject='scenario:'+op.id;
+ data.readerPresentation={kind:'FROZEN_NARRATIVE_OPERATION',operationId:op.id,authority:'UNCHANGED_FROZEN_NARRATIVE',proseAuthored:false};
+ data.operations.push({...op,id:'process-overview',title:'Overview',summary:fragment('Retained overview only'),events:[],explanation:[]});
+ data.processOutline={status:'GAP',gap:'PROCESS_EVIDENCE_CHANGED_REVIEW_REQUIRED'};
+ data.sectionState={freshness:'STALE',verification:'UNASSESSED',reasons:[{reason:'PINNED_SNAPSHOT_NOT_REVERIFIED'}]};
+ const before=JSON.stringify(data),r=load(data),html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Retained failure finding/);assert.match(html,/Retained outgoing contract/);assert.match(html,/old-context/);
+ assert.match(html,/id="summary"/);assert.match(html,/id="ordered-behavior"/);
+ assert.match(html,/Retained overview only/);assert.match(html,/PROCESS_EVIDENCE_CHANGED_REVIEW_REQUIRED/);
+ assert.match(html,/id="reader-step-inner-else"/);assert.match(html,/Keep the existing value/);
+ assert.match(html,/&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+ assert.doesNotMatch(html,/MODEL_APPROVED|codeclew-operation-answer|id="glossary"/);
+ assert.equal(JSON.stringify(data),before);
+ r.click({sources:'save-source',sourceOperation:op.id});
+ assert.equal(r.e('source-panel').hidden,false);
+ assert.match(r.e('source-code').innerHTML,/Fixture source for save-source/);
+});

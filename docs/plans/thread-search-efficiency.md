@@ -154,5 +154,9 @@ retained endpoints and deterministic criterion ordering. Duplicate event or owne
 memberships fail closed as unknown. The existing bounded benchmark now also
 includes reverse-ordered chains; the earlier CSV remains historical, rather than
 being overwritten with new measurements. Synthetic timings are not native capture
-or end-to-end latency evidence. Final native saved-packet replay and relevant gates
-remain part of adoption qualification.
+or end-to-end latency evidence. Six supported source-launcher replays over saved
+native C#, Java and Kotlin graphs passed: 33 requested outcomes across 14 methods
+match an independent forward-traversal oracle. Original method, edge, frontier,
+source and K2 call-binding records remain intact. These replays perform no new
+capture and do not measure end-to-end performance. Final release gates remain
+separate from this completed native packet acceptance.

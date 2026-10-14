@@ -995,7 +995,32 @@ function mappedContractEntry(id){
  const retained=sourceCatalogue.filter(e=>e.id===target);
  return retained.length===1?retained[0]:null;
 }
-function showEntry(id,nextTab='sequence'){const mapped=mappedContractEntry(id);if(mapped){id=mapped.id;nextTab='contract';}freshness();current=entries.find(e=>e.id===id)||sourceCatalogue.find(e=>e.id===id)||entries.find(e=>e.kind==='SECTION')||entries.find(e=>operation(e))||entries[0];tab=nextTab==='sequence'&&current?.kind==='DECLARED_OPENAPI'?'contract':nextTab;closeSource(false);$('catalogue-view').hidden=true;$('coverage-view').hidden=true;$('scenario-content').hidden=false;
+// Presentation-only view: canonical frozen Narrative records retain their own authority.
+function frozenOperationReader(o){
+ const overview=D.operations.find(row=>row.id==='process-overview');
+ const rows=[],stack=[];let depth=0;
+ for(const event of o.events||[]){
+  if(event.kind==='end'){const frame=stack.pop();if(frame)depth=frame.depth;continue;}
+  if(event.kind==='else'){const frame=stack.at(-1);if(frame?.kind==='alt')depth=frame.depth;}
+  rows.push({event,depth,line:pseudocodeEvent(o,event)});
+  if(['alt','loop','opt'].includes(event.kind)){stack.push({kind:event.kind,depth});depth++;}
+  else if(event.kind==='else'&&stack.at(-1)?.kind==='alt')depth=stack.at(-1).depth+1;
+ }
+ const steps=rows.map(({event,depth,line},index)=>chromeHtml`<li id="reader-step-${esc(event.id)}" class="reader-step" style="--depth:${depth}"><article class="step-node"><span class="step-kind">${index+1} · ${esc(line.keyword)}</span><p class="step-text">${esc(event.text||'')}</p>${event.from&&event.to?chromeHtml`<p class="step-meta">${esc(o.participants.find(p=>p.id===event.from)?.label||event.from)} → ${esc(o.participants.find(p=>p.id===event.to)?.label||event.to)}</p>`:''}${stepEvidence(o,event)}${externalCallDetails(o,event)}</article></li>`).join('');
+ const sources=D.operationSources?.[o.id]||{};
+ const inventory=Object.values(sources).map(source=>chromeHtml`<li id="reader-source-${esc(source.id)}"><strong>${esc(source.service)} / ${esc(source.file)}:${source.startLine}–${source.endLine}</strong> ${button([source.id],t('Source'),false,o.id)}<p><code>${esc(source.revision)}</code> · ${esc(source.authority)}</p>${/^https?:\/\//.test(source.url||'')?chromeHtml`<a href="${esc(source.url)}">${esc(t('Original source'))} ↗</a>`:''}</li>`).join('');
+ return chromeHtml`<article class="frozen-operation-reader"><header><h1>${esc(o.title)}</h1><p class="reader-authority">Frozen narrative · source interpretation; runtime execution remains unverified.</p><nav class="document-nav" aria-label="Document navigation"><a href="#summary">${esc(t('Summary'))}</a>${overview?'<a href="#process-outline">Process outline</a>':''}<a href="#ordered-behavior">Ordered behavior</a><a href="#sequence-diagram">${esc(t('Sequence diagram'))}</a><a href="#cited-evidence">Cited evidence</a></nav></header><section id="summary"><h2>${esc(t('Summary'))}</h2><div class="claim"><p class="full-summary-text">${esc(o.summary.text)}</p>${button(o.summary.sourceIds,t('Source'),false,o.id)}</div></section>${overview?chromeHtml`<section id="process-outline"><h2>Process outline</h2><p class="muted">Retained narrative overview; separate from the source-derived outline.</p>${D.processOutline?.status==='GAP'?chromeHtml`<p class="reader-outline-gap">Source-derived outline unavailable: <code>${esc(D.processOutline.gap)}</code>.</p>`:''}<p>${esc(overview.summary.text)}</p>${button(overview.summary.sourceIds,t('Source'),false,overview.id)}</section>`:''}<section id="ordered-behavior"><h2>Ordered behavior</h2><p class="muted">Structure and branch order follow the retained narrative events.</p><ol class="ordered-steps">${steps}</ol></section><section id="sequence-diagram"><h2>${esc(t('Sequence diagram'))}</h2><div class="sequence-scroll">${diagram(o)}</div></section><details class="technical-details"><summary>Documentation and evidence details</summary>${o.findings?.length?findings(o):''}${explanation(o,false)}${explanation(o,true)}${overview?explanation(overview,false)+explanation(overview,true):''}<section id="cited-evidence"><h2>Cited evidence</h2><ul class="evidence-index">${inventory}</ul></section><details><summary>Frozen provenance and evidence boundaries</summary><pre>${pretty({subject:D.subject,publication:D.frozenPublication,sectionState:D.sectionState,sourceAuthorities:D.sourceAuthorities,revisions:D.revisions,boundaries:o.boundaries,interactions:D.interactions,processOutline:D.processOutline})}</pre></details></details></article>`;
+}
+function showEntry(id,nextTab='sequence'){if(D.readerPresentation?.kind==='FROZEN_NARRATIVE_OPERATION'){
+ const o=D.operations.find(row=>row.id===D.readerPresentation.operationId);
+ current=entries.find(row=>row.id===o?.id);if(!o||!current)return;
+ document.body.classList.add('operation-reader');closeSource(false);freshness();
+ $('catalogue-view').hidden=true;$('coverage-view').hidden=true;$('scenario-content').hidden=false;
+ $('scenario-content').innerHTML=frozenOperationReader(o);document.title=o.title;
+ const anchor=location.hash.slice(1),target=$(anchor);
+ if(target){for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;target.scrollIntoView?.({block:'start'});}
+ scheduleSequenceReflow();return;
+ }const mapped=mappedContractEntry(id);if(mapped){id=mapped.id;nextTab='contract';}freshness();current=entries.find(e=>e.id===id)||sourceCatalogue.find(e=>e.id===id)||entries.find(e=>e.kind==='SECTION')||entries.find(e=>operation(e))||entries[0];tab=nextTab==='sequence'&&current?.kind==='DECLARED_OPENAPI'?'contract':nextTab;closeSource(false);$('catalogue-view').hidden=true;$('coverage-view').hidden=true;$('scenario-content').hidden=false;
  if(!current){$('scenario-content').innerHTML=chromeHtml`<h2>No entrypoints available</h2><p class="empty-note">Inspect coverage and the service evidence gaps.</p>`;nav();return;}
  const e=current,o=operation(e);freshness(D.operationStates?.[e.visualOwner||e.id]||D.sectionState);
  if(translationGaps[e.id]&&e.id!=='section-overview'){ $('scenario-content').innerHTML=`<div class="breadcrumb">${esc(D.title)}</div><h2>${esc(sectionTitles[e.id]||e.trigger.paths?.join(' · ')||e.symbol||e.id)}</h2>${translationNotice(e.id)}`;nav();history.replaceState(null,'','#'+e.id);return; }

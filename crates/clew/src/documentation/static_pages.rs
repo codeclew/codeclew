@@ -14,7 +14,7 @@ use super::{
     store::{self, Repository},
 };
 use crate::error::{ClewError, ErrorCode};
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -30,6 +30,8 @@ fn full_pages_saved_publication_replay() {
         snapshot: std::env::var("CODECLEW_FULL_PAGES_SNAPSHOT").unwrap(),
         input: None,
         publication: Some(std::env::var("CODECLEW_FULL_PAGES_PUBLICATION").unwrap()),
+        reader: Default::default(),
+        subject: None,
         output: path("CODECLEW_FULL_PAGES_OUTPUT"),
     })
     .unwrap();
@@ -48,6 +50,8 @@ fn source_pages_saved_snapshot_replay() {
             .expect("explicit snapshot is required"),
         input: Some(path("CODECLEW_PAGES_REPLAY_INPUT")),
         publication: None,
+        reader: Default::default(),
+        subject: None,
         output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
     })
     .expect("saved SOURCE pages replay must render");
@@ -125,6 +129,13 @@ pub(super) fn source_data_graph_with_depth(
     Ok(graph)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum Reader {
+    #[default]
+    Service,
+    Operation,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Produce linked HTML and inert MDX 3 from native retained source declarations.
@@ -144,6 +155,12 @@ pub enum Command {
         /// Full saved service/process publication, presented against the selected snapshot.
         #[arg(long, conflicts_with = "input")]
         publication: Option<String>,
+        /// Presentation for a frozen publication; never changes its narrative authority.
+        #[arg(long, value_enum, default_value = "service")]
+        reader: Reader,
+        /// Exact frozen subject for the operation reader (for example scenario:checkout).
+        #[arg(long, requires = "publication")]
+        subject: Option<String>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -157,12 +174,27 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             snapshot,
             input,
             publication,
+            reader,
+            subject,
             output,
         } => {
             let repo = Repository::open(&root)?;
             let checked = Check::load_snapshot(&repo, &snapshot)?;
             if let Some(publication) = publication {
-                return full::render(&repo, &checked, &snapshot, &publication, &output);
+                return full::render(
+                    &repo,
+                    &checked,
+                    &snapshot,
+                    &publication,
+                    &output,
+                    reader,
+                    subject.as_deref(),
+                );
+            }
+            if reader != Reader::Service || subject.is_some() {
+                return Err(invalid(
+                    "reader and subject selection require --publication",
+                ));
             }
             let input =
                 input.ok_or_else(|| invalid("native pages require input or publication"))?;
