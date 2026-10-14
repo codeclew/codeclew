@@ -608,6 +608,17 @@ pub fn enrich(evidence: &mut ServiceEvidence) -> Result<(), ClewError> {
                     .entrypoints
                     .iter()
                     .filter(|e| {
+                        if e.trigger["sourceRoutes"].is_array() {
+                            return e.kind == "HTTP_ENDPOINT"
+                                && e.trigger["sourceRoutes"].as_array().unwrap().iter().any(
+                                    |route| {
+                                        route["path"] == *path
+                                            && route["method"]
+                                                .as_str()
+                                                .is_some_and(|m| m.eq_ignore_ascii_case(method))
+                                    },
+                                );
+                        }
                         e.kind == "HTTP_ENDPOINT"
                             && e.trigger["paths"]
                                 .as_array()

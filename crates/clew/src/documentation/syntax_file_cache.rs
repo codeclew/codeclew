@@ -56,6 +56,7 @@ pub(super) fn producer_identity() -> &'static str {
             include_str!("../../../../Cargo.toml"),
             include_str!("../../Cargo.toml"),
             include_str!("syntax.rs"),
+            include_str!("syntax_routes.rs"),
             include_str!("syntax_file_cache.rs"),
             include_str!("source_annotations.rs"),
             include_str!("source_inheritance.rs"),

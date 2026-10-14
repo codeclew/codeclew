@@ -16,6 +16,9 @@ use std::{
 };
 use tree_sitter::{Node, ParseOptions, Parser};
 
+#[path = "syntax_routes.rs"]
+mod routes;
+
 const MAX_FILE: usize = 2 * 1024 * 1024;
 const MAX_NODES: usize = 200_000;
 const MAX_FACTS: usize = 32_768;
@@ -870,6 +873,9 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
             });
         }
     }
+    if file.service.language == "typescript" {
+        routes::attach(file, root, e)?;
+    }
     Ok(())
 }
 fn event_kind(node: Node<'_>) -> Option<&'static str> {
@@ -1085,6 +1091,224 @@ mod tests {
         analysis::verify_evidence(&e).unwrap();
         e
     }
+    #[test]
+    #[ignore = "manual committed public repository replay; requires CODECLEW_ROUTES_REPLAY_* paths"]
+    fn fastify_source_routes_public_repository_replay() {
+        let repo = std::path::PathBuf::from(
+            std::env::var("CODECLEW_ROUTES_REPLAY_REPO").expect("explicit repository required"),
+        );
+        let output = std::path::PathBuf::from(
+            std::env::var("CODECLEW_ROUTES_REPLAY_OUTPUT").expect("explicit output required"),
+        );
+        assert!(!output.exists(), "replay output must be new");
+        let mut service = service("typescript");
+        service.id = "dashboard".into();
+        service.repository_id = "weather".into();
+        service.repository = "https://github.com/codeclew/clew-weather-demo".into();
+        service.source.as_mut().unwrap().roots = vec!["services/dashboard/src".into()];
+        service.source.as_mut().unwrap().dialect = "7.0.2".into();
+        service.contract_files = vec!["contracts/dashboard.openapi.json".into()];
+        let revision = git(&repo, &["rev-parse", "HEAD"]);
+        let state_directory = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(state_directory.path().join("state")).unwrap();
+        let cas = CasStore::open(&state).unwrap();
+        let mut evidence = capture_with_store(&service, &repo, &revision, &cas).unwrap();
+        let contract_file = &service.contract_files[0];
+        let contract_bytes = Command::new("git")
+            .args(["show", &format!("{revision}:{contract_file}")])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(contract_bytes.status.success());
+        let files = BTreeMap::from([(
+            contract_file.clone(),
+            String::from_utf8(contract_bytes.stdout).unwrap(),
+        )]);
+        super::super::contracts::import(&service, &mut evidence, &files).unwrap();
+        super::super::contracts::enrich(&mut evidence).unwrap();
+        analysis::verify_evidence(&evidence).unwrap();
+        let declaration = "dashboard:symbol:7970ac3e2a8cf3f45b4a6217";
+        let owner = &evidence.observations[declaration];
+        let entry = evidence
+            .entrypoints
+            .iter()
+            .find(|e| e.symbol == owner.symbol)
+            .unwrap();
+        let contract = evidence
+            .observations
+            .values()
+            .find(|o| {
+                o.kind == "CONTRACT_OPERATION"
+                    && o.normalized["method"] == "POST"
+                    && o.normalized["path"] == "/api/places"
+            })
+            .unwrap();
+        assert_eq!(
+            contract.normalized["sourceMapping"],
+            "SOURCE_ROUTE_MATCH_ONLY"
+        );
+        assert_eq!(contract.normalized["entrypoint"], entry.id);
+        assert_eq!(entry.kind, "HTTP_ENDPOINT");
+        fs::write(output, serde_json::to_vec_pretty(&json!({"status":"NATIVE_COMMITTED_SOURCE_ROUTE_BOUND","revision":revision,
+            "declaration":owner,"entrypoint":entry,"contract":contract,"runtimeMode":evidence.runtime_mode,"coverage":evidence.coverage})).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn fastify_source_routes_bind_exact_handler_contract_and_keep_route_pairs() {
+        let mut evidence = fixture(
+            "typescript",
+            r#"
+import Fastify from 'fastify'
+const app = Fastify({ logger: true })
+export async function savePlace(request: unknown) { return request; }
+export async function requestRefresh(request: unknown) { return request; }
+export async function start() {
+  app.post('/api/places', savePlace)
+  app.get('/alias', savePlace)
+  app.post<{ Params: { id: string } }>('/api/places/:id/refresh', requestRefresh)
+}
+"#,
+        );
+        for (name, method, path) in [
+            ("savePlace", "POST", "/api/places"),
+            ("requestRefresh", "POST", "/api/places/{id}/refresh"),
+        ] {
+            let entry = evidence
+                .entrypoints
+                .iter()
+                .find(|e| e.trigger["name"] == name)
+                .unwrap();
+            assert_eq!(entry.kind, "HTTP_ENDPOINT");
+            assert!(
+                entry.trigger["sourceRoutes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["method"] == method && r["path"] == path)
+            );
+            assert!(
+                entry
+                    .dependency_ids
+                    .iter()
+                    .any(|id| evidence.observations[id].normalized["schema"]
+                        == "codeclew-typescript-source-route/1.0")
+            );
+            assert!(
+                entry
+                    .boundaries
+                    .contains(&"RUNTIME_REGISTRATION_UNPROVEN".into())
+            );
+        }
+        let document = json!({"openapi":"3.0.3","info":{"title":"routes","version":"1"},"paths":{
+            "/api/places":{"post":{},"get":{}},"/alias":{"get":{},"post":{}},"/api/places/{id}/refresh":{"post":{}}
+        }});
+        let contract_source = "orders-contract-test";
+        let source_id = super::analysis::source_id("orders", "contract/openapi.json").unwrap();
+        evidence.sources.insert(
+            source_id.clone(),
+            Source {
+                id: source_id,
+                service: "orders".into(),
+                revision: evidence.revision.clone(),
+                file: "openapi.json".into(),
+                start_line: 1,
+                end_line: 1,
+                text: contract_source.into(),
+                text_digest: canonical::hash_bytes(contract_source.as_bytes()),
+                evidence_digest: "retained-contract".into(),
+                authority: "DECLARED_CONTRACT".into(),
+                occurrence: None,
+                url: None,
+            },
+        );
+        evidence.contracts.insert("openapi.json".into(), document);
+        super::super::contracts::enrich(&mut evidence).unwrap();
+        for operation in evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "CONTRACT_OPERATION")
+        {
+            let n = &operation.normalized;
+            let expected = matches!(
+                (n["method"].as_str().unwrap(), n["path"].as_str().unwrap()),
+                ("POST", "/api/places") | ("GET", "/alias") | ("POST", "/api/places/{id}/refresh")
+            );
+            assert_eq!(
+                n["sourceMapping"],
+                if expected {
+                    "SOURCE_ROUTE_MATCH_ONLY"
+                } else {
+                    "NO_SOURCE_ROUTE_MATCH"
+                }
+            );
+            if expected {
+                assert!(n["entrypoint"].is_string());
+            }
+        }
+    }
+
+    #[test]
+    fn fastify_source_routes_refuse_foreign_shadowed_mutated_and_dynamic_bindings() {
+        for (setup, registration) in [
+            (
+                "import Fastify from 'another-library'; const app = Fastify();",
+                "app.post('/api/places', savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "const app = other; app.post('/api/places', savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "app.post(route, savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "app.post('/api/places', wrapper(savePlace))",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "app.post = replacement; app.post('/api/places', savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "app['post'] = replacement; app.post('/api/places', savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "savePlace = replacement; app.post('/api/places', savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "function inner({app}: {app: unknown}) { app.post('/api/places', savePlace) }",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "try { fail() } catch(app) { app.post('/api/places', savePlace) }",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "const register = app => app.post('/api/places', savePlace)",
+            ),
+            (
+                "import Fastify from 'fastify'; const app = Fastify();",
+                "const register = function savePlace() { app.post('/api/places', savePlace) }",
+            ),
+        ] {
+            let text = format!(
+                "{setup}\nexport async function savePlace(request: unknown) {{ return request; }}\nexport function start() {{ {registration} }}"
+            );
+            let evidence = fixture("typescript", &text);
+            let entry = evidence
+                .entrypoints
+                .iter()
+                .find(|e| e.trigger["name"] == "savePlace")
+                .unwrap();
+            assert_eq!(entry.kind, "SOURCE_DECLARATION", "{text}");
+            assert!(entry.trigger["sourceRoutes"].is_null(), "{text}");
+        }
+    }
+
     #[test]
     fn source_pages_keep_all_typescript_branches_calls_and_deferred_events() {
         let evidence = fixture(

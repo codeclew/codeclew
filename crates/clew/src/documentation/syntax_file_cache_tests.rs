@@ -95,6 +95,31 @@ fn service(language: &str) -> Service {
 }
 
 #[test]
+fn fastify_registration_sources_and_exact_handler_identity_survive_warm_reuse() {
+    let fixture = Fixture::new();
+    let service = service("typescript");
+    fixture.write("routes.ts", "import create from 'fastify';\nconst\tapp = create();\nexport function savePlace(request: unknown) { return request; }\nexport function start() { app.post('/api/places', savePlace); }\n");
+    let revision = fixture.commit();
+    let fresh = fixture.uncached(&service, &revision);
+    let handler = fresh
+        .entrypoints
+        .iter()
+        .find(|entry| entry.trigger["name"] == "savePlace")
+        .unwrap();
+    assert_eq!(handler.kind, "HTTP_ENDPOINT");
+    assert_eq!(handler.trigger["sourceRoutes"][0]["path"], "/api/places");
+    assert_eq!(handler.source_ids.len(), 4);
+    syntax::take_file_cache_stats();
+    let cold = fixture.cached(&service, &revision);
+    assert_eq!(syntax::take_file_cache_stats().parses, 1);
+    assert_eq!(cold, fresh);
+    let warm = fixture.cached(&service, &revision);
+    let stats = syntax::take_file_cache_stats();
+    assert_eq!((stats.hits, stats.misses, stats.parses), (1, 0, 0));
+    assert_eq!(warm, fresh);
+}
+
+#[test]
 fn typescript_full_file_and_partial_enumeration_match_uncached_cold_and_warm() {
     let fixture = Fixture::new();
     let service = service("typescript");
