@@ -1519,6 +1519,22 @@ pub(crate) fn read_git_blob_metadata<'a>(
     Ok(metadata)
 }
 
+/// Read one operator-selected existing regular file without following any
+/// symlink component or blocking on special files. No recursive enumeration.
+pub(crate) fn read_documentation_generated_input(
+    repo: &Path,
+    path: &str,
+    limit: u64,
+) -> Result<Vec<u8>, ClewError> {
+    match FdRoot::open(repo)?.read_with_limit(path, limit)? {
+        RawWorktreeEntry::Regular { bytes, .. } => Ok(bytes),
+        RawWorktreeEntry::Missing => Err(invalid(&format!("GENERATED_INPUT_MISSING:{path}"))),
+        RawWorktreeEntry::Symlink { .. } => {
+            Err(invalid(&format!("GENERATED_INPUT_UNSAFE_PATH:{path}")))
+        }
+    }
+}
+
 struct FdRoot {
     descriptor: OwnedFd,
 }

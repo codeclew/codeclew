@@ -206,6 +206,7 @@ mod tests {
         part.evidence_digest = "another-file".into();
         assert_eq!(covered_text(&body, &part), None);
         body.occurrence = Some(super::super::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "generation-a".into(),
             blob: "blob-a".into(),
             start_byte: 0,
@@ -213,6 +214,7 @@ mod tests {
         });
         assert_eq!(covered_text(&body, &part), None);
         part.occurrence = Some(super::super::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "generation-a".into(),
             blob: "blob-a".into(),
             start_byte: 6,
@@ -230,6 +232,7 @@ mod tests {
     fn explicit_occurrence_offsets_select_the_matching_repeated_same_line_slice() {
         let mut body = source("body", "ab xx ab", 4, 4);
         body.occurrence = Some(super::super::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "generation-a".into(),
             blob: "blob-a".into(),
             start_byte: 100,
@@ -237,6 +240,7 @@ mod tests {
         });
         let mut part = source("part", "ab", 4, 4);
         part.occurrence = Some(super::super::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "generation-a".into(),
             blob: "blob-a".into(),
             start_byte: 106,
@@ -250,6 +254,7 @@ mod tests {
 
         let mut overlapping = source("overlapping", "aaaa", 7, 7);
         overlapping.occurrence = Some(super::super::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "generation-a".into(),
             blob: "blob-a".into(),
             start_byte: 200,
@@ -257,6 +262,7 @@ mod tests {
         });
         let mut middle = source("middle", "aa", 7, 7);
         middle.occurrence = Some(super::super::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "generation-a".into(),
             blob: "blob-a".into(),
             start_byte: 201,

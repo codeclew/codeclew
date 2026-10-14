@@ -118,13 +118,22 @@ fn capture_with_store_selected(
             max_tree_path_bytes: 4096,
         },
     )?;
+    let generated = super::generated_source::admit(repo, revision, &config.generated_inputs, cas)?;
+    let mut entries = snapshot.index.clone();
+    entries.extend(generated.iter().map(|(entry, _, _)| entry.clone()));
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
     let mut e = ServiceEvidence {
         schema: "codeclew-documentation-service-evidence/1.0".into(),
         service: service.id.clone(),
         revision: revision.into(),
         service_digest: digest(service)?,
         extractor: SOURCE_EXTRACTOR.into(),
-        runtime_mode: "COMMITTED_SOURCE_NO_BUILD".into(),
+        runtime_mode: if generated.is_empty() {
+            "COMMITTED_SOURCE_NO_BUILD"
+        } else {
+            "SOURCE_INPUTS_NO_BUILD"
+        }
+        .into(),
         coverage: "SYNTAX".into(),
         boundaries: vec![
             "CALL_TARGETS_UNRESOLVED".into(),
@@ -142,7 +151,7 @@ fn capture_with_store_selected(
     let mut cache_hits = 0usize;
     let mut cache_misses = 0usize;
     let mut parsed_files = 0usize;
-    for entry in &snapshot.index {
+    for entry in &entries {
         if !matches!(entry.mode, 0o100644 | 0o100755) {
             e.boundaries.push(format!("UNSAFE_FILE:{}", entry.path));
             inventory.insert(
@@ -173,8 +182,16 @@ fn capture_with_store_selected(
             service,
             path: &entry.path,
             text,
-            snapshot: &snapshot.snapshot_id,
+            snapshot: generated
+                .iter()
+                .find(|(e, _, _)| e.path == entry.path)
+                .map(|(_, receipt, _)| receipt.as_str())
+                .unwrap_or(&snapshot.snapshot_id),
             blob: &entry.git_oid,
+            generated_origin: generated
+                .iter()
+                .find(|(e, _, _)| e.path == entry.path)
+                .map(|(_, _, origin)| origin.as_str()),
             source_bytes: &source_bytes,
             recipes: None,
         };
@@ -192,6 +209,21 @@ fn capture_with_store_selected(
                     );
                     #[cfg(test)]
                     FILE_CACHE_STATS.with(|s| s.borrow_mut().hits += 1);
+                    if let Some(origin) = file.generated_origin {
+                        let full_source = file.source(
+                            &mut e,
+                            &format!("generated-file:{}", entry.path),
+                            0,
+                            text.len(),
+                        )?;
+                        observe(
+                            &mut e,
+                            "GENERATED_INPUT",
+                            &format!("generated:{}", entry.path),
+                            json!({"schema":"codeclew-generated-source-input/1.0","path":entry.path,"origin":origin,"contentDigest":canonical::hash_bytes(text.as_bytes()),"receipt":file.snapshot}),
+                            vec![full_source],
+                        )?;
+                    }
                     continue;
                 }
                 #[cfg(test)]
@@ -257,6 +289,21 @@ fn capture_with_store_selected(
             }
             e.boundaries.push(format!("FILE_ONLY:{}", entry.path));
         }
+        if let Some(origin) = file.generated_origin {
+            let full_source = file.source(
+                &mut e,
+                &format!("generated-file:{}", entry.path),
+                0,
+                text.len(),
+            )?;
+            observe(
+                &mut e,
+                "GENERATED_INPUT",
+                &format!("generated:{}", entry.path),
+                json!({"schema":"codeclew-generated-source-input/1.0","path":entry.path,"origin":origin,"contentDigest":canonical::hash_bytes(text.as_bytes()),"receipt":file.snapshot}),
+                vec![full_source],
+            )?;
+        }
         if e.observations.len() > MAX_FACTS || e.sources.len() > MAX_FACTS {
             return Err(budget());
         }
@@ -283,7 +330,11 @@ fn capture_with_store_selected(
         e.coverage = "PARTIAL".into();
     }
     super::source_inheritance::apply(&mut e)?;
-    let scope = json!({"roots":config.roots,"dialect":config.dialect,"language":service.language,"extractor":SOURCE_EXTRACTOR,"inventory":inventory,"boundaries":e.boundaries});
+    let mut scope = json!({"roots":config.roots,"dialect":config.dialect,"language":service.language,"extractor":SOURCE_EXTRACTOR,"inventory":inventory,"boundaries":e.boundaries});
+    if !config.generated_inputs.is_empty() {
+        scope["generatedInputs"] =
+            serde_json::to_value(&config.generated_inputs).map_err(super::io_error)?;
+    }
     observe(&mut e, "SOURCE_SCOPE", "source-scope", scope, vec![])?;
     e.boundaries.sort();
     e.boundaries.dedup();
@@ -388,6 +439,7 @@ struct File<'a> {
     blob: &'a str,
     source_bytes: &'a Cell<usize>,
     recipes: Option<&'a RefCell<Vec<syntax_file_cache::SourceRecipe>>>,
+    generated_origin: Option<&'a str>,
 }
 impl File<'_> {
     fn source(
@@ -436,20 +488,32 @@ impl File<'_> {
                 text: exact.into(),
                 text_digest: canonical::hash_bytes(exact.as_bytes()),
                 evidence_digest: digest(&(SOURCE_EXTRACTOR, self.snapshot, self.blob, start, end))?,
-                authority: "EXACT_SNAPSHOT_TEXT".into(),
+                authority: if self.generated_origin.is_some() {
+                    "EXPLICIT_GENERATED_SOURCE_TEXT"
+                } else {
+                    "EXACT_SNAPSHOT_TEXT"
+                }
+                .into(),
                 occurrence: Some(SourceOccurrence {
+                    generated_origin: self.generated_origin.map(str::to_owned),
                     snapshot: self.snapshot.into(),
                     blob: self.blob.into(),
                     start_byte: start,
                     end_byte: end,
                 }),
-                url: analysis::source_link(
-                    self.service,
-                    &e.revision,
-                    self.path,
-                    start_line,
-                    end_line,
-                ),
+                url: self
+                    .generated_origin
+                    .is_none()
+                    .then(|| {
+                        analysis::source_link(
+                            self.service,
+                            &e.revision,
+                            self.path,
+                            start_line,
+                            end_line,
+                        )
+                    })
+                    .flatten(),
             },
         );
         Ok(id)
@@ -576,6 +640,7 @@ pub(super) fn replay_file_for_test(
             service,
             path,
             text,
+            generated_origin: None,
             snapshot: "test-current-snapshot",
             blob: "test-current-blob",
             source_bytes,
@@ -934,6 +999,21 @@ pub(super) fn enrich(
         {
             analysis::verify_evidence(&semantic)?;
             let declaration_map = super::semantic_overlay::associations(source, &semantic);
+            if source.observations.values().any(|o| {
+                o.kind == "SYMBOL"
+                    && !declaration_map.contains_key(&o.id)
+                    && o.source_ids.iter().any(|id| {
+                        source.sources.get(id).is_some_and(|s| {
+                            s.occurrence
+                                .as_ref()
+                                .is_some_and(|p| p.generated_origin.is_some())
+                        })
+                    })
+            }) {
+                source
+                    .boundaries
+                    .push("GENERATED_COMPILER_MEMBERSHIP_UNPROVEN".into());
+            }
             for (declaration_id, native_id) in &declaration_map {
                 let fact = &semantic.observations[native_id];
                 let original = &source.observations[declaration_id];
@@ -1017,6 +1097,7 @@ pub(super) fn source_for_provider_test(
                 service,
                 path,
                 text,
+                generated_origin: None,
                 snapshot: "fixture-snapshot",
                 blob: &canonical::hash_bytes(text.as_bytes()),
                 source_bytes: &bytes,
@@ -1082,6 +1163,7 @@ mod tests {
                 text,
                 snapshot: "snapshot",
                 blob: "blob",
+                generated_origin: None,
                 source_bytes: &Cell::new(0),
                 recipes: None,
             },
@@ -1738,6 +1820,130 @@ class Reader {
             previous = next;
         }
     }
+    #[test]
+    fn explicit_generated_inputs_replay_exact_origins_across_generic_source_languages() {
+        for (language, path, text) in [
+            (
+                "java",
+                "Generated.java",
+                "class Generated { String value(){ return \"π🙂\"; } }",
+            ),
+            ("kotlin", "Generated.kt", "fun value() = \"π🙂\""),
+            ("python", "generated.py", "def value():\n    return 'π🙂'\n"),
+            (
+                "typescript",
+                "Generated.ts",
+                "export function value(){ return 'π🙂'; }",
+            ),
+        ] {
+            let repo = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let docs = tempfile::tempdir().unwrap();
+            git(repo.path(), &["init", "-q"]);
+            std::fs::write(repo.path().join(".gitignore"), format!("/{path}\n")).unwrap();
+            git(repo.path(), &["add", "."]);
+            git(repo.path(), &["commit", "-qm", "Fixture"]);
+            let revision = git(repo.path(), &["rev-parse", "HEAD"]);
+            let cas =
+                CasStore::open(&StateAuthority::open(state.path().join("state")).unwrap()).unwrap();
+            store::Repository::init(docs.path(), "Generated fixture").unwrap();
+            let output = store::Repository::open(docs.path()).unwrap();
+            let mut selected = service(language);
+            let config = selected.source.as_mut().unwrap();
+            config.roots = vec![".".into()];
+            config.generated_inputs = vec![GeneratedInput {
+                path: path.into(),
+                origin: "Explicit fixture generator".into(),
+            }];
+            std::fs::write(repo.path().join(path), text).unwrap();
+            take_file_cache_stats();
+            let first = capture_with_store_cached(&selected, repo.path(), &revision, &cas, &output)
+                .unwrap();
+            assert_eq!(first.runtime_mode, "SOURCE_INPUTS_NO_BUILD");
+            assert!(
+                first
+                    .sources
+                    .values()
+                    .filter(|s| s.file == path)
+                    .all(|s| s.url.is_none()
+                        && s.authority == "EXPLICIT_GENERATED_SOURCE_TEXT"
+                        && s.occurrence.as_ref().unwrap().generated_origin.as_deref()
+                            == Some("Explicit fixture generator"))
+            );
+            take_file_cache_stats();
+            selected.source.as_mut().unwrap().generated_inputs[0].origin =
+                "Relabeled generator".into();
+            let second =
+                capture_with_store_cached(&selected, repo.path(), &revision, &cas, &output)
+                    .unwrap();
+            let stats = take_file_cache_stats();
+            assert_eq!(stats.hits, 1);
+            assert_eq!(stats.parses, 0);
+            assert!(second.sources.values().filter(|s| s.file == path).all(|s| {
+                s.occurrence.as_ref().unwrap().generated_origin.as_deref()
+                    == Some("Relabeled generator")
+                    && s.url.is_none()
+            }));
+            assert_ne!(first.sources, second.sources);
+            for case in ["origin", "url", "authority"] {
+                let mut damaged = second.clone();
+                let src = damaged
+                    .sources
+                    .values_mut()
+                    .find(|s| s.file == path)
+                    .unwrap();
+                match case {
+                    "origin" => src.occurrence.as_mut().unwrap().generated_origin = None,
+                    "url" => src.url = Some("https://example.invalid/fabricated-git".into()),
+                    "authority" => src.authority = "EXACT_SNAPSHOT_TEXT".into(),
+                    _ => unreachable!(),
+                }
+                assert!(analysis::verify_evidence(&damaged).is_err(), "{case}");
+            }
+            // Parsing is shared, while reconstructed receipts switch back to Git.
+            git(repo.path(), &["add", "-f", path]);
+            git(repo.path(), &["commit", "-qm", "Committed transition"]);
+            let committed_revision = git(repo.path(), &["rev-parse", "HEAD"]);
+            selected.source.as_mut().unwrap().generated_inputs.clear();
+            take_file_cache_stats();
+            let committed = capture_with_store_cached(
+                &selected,
+                repo.path(),
+                &committed_revision,
+                &cas,
+                &output,
+            )
+            .unwrap();
+            assert_eq!(take_file_cache_stats().parses, 0);
+            assert!(
+                committed
+                    .sources
+                    .values()
+                    .filter(|s| s.file == path)
+                    .all(|s| s.authority == "EXACT_SNAPSHOT_TEXT"
+                        && s.occurrence.as_ref().unwrap().generated_origin.is_none())
+            );
+            selected.source.as_mut().unwrap().generated_inputs = vec![GeneratedInput {
+                path: path.into(),
+                origin: "Relabeled generator".into(),
+            }];
+            // Use the original Git revision where this path was not committed.
+            take_file_cache_stats();
+            let generated_again =
+                capture_with_store_cached(&selected, repo.path(), &revision, &cas, &output)
+                    .unwrap();
+            let stats = take_file_cache_stats();
+            assert_eq!(stats.parses, 0);
+            assert_eq!(stats.hits, 1);
+            assert_eq!(generated_again.sources, second.sources);
+            std::fs::remove_file(repo.path().join(path)).unwrap();
+            assert!(
+                capture_with_store_cached(&selected, repo.path(), &revision, &cas, &output)
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn incomplete_syntax_retains_explicit_partial_evidence() {
         let text = "def good():\n    return 1\n\ndef bad(\n";

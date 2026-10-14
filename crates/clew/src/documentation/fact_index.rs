@@ -755,6 +755,20 @@ pub(super) fn load_snapshot_context_dependencies(
                 out.insert(id.clone(), decode(entry)?);
             }
         }
+        // These sealed records carry native IDs that are absent from the
+        // ordinary dependency inventory. Load them only when this selected
+        // service actually has a compatibility closure, regardless of profile.
+        for (id, entry) in &inventory {
+            if entry.key.repository == service
+                && matches!(
+                    entry.kind.as_str(),
+                    "SEMANTIC_OVERLAY" | "DECLARATION_MIGRATION"
+                )
+                && !out.contains_key(id)
+            {
+                out.insert(id.clone(), decode(entry)?);
+            }
+        }
         let selected_symbols: std::collections::BTreeSet<_> = out
             .values()
             .filter(|observation| observation.kind == "SYMBOL")

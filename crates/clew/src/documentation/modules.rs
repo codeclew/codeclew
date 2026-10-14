@@ -103,7 +103,7 @@ pub(super) fn catalog() -> Result<Vec<Value>, ClewError> {
                   implementation: String| json!({"schema":"codeclew-documentation-module-capability/1.0","id":id,"languages":languages,"authority":authority,"inputSchemas":input,"outputSchemas":output,"implementationDigest":implementation,"selection":"OPERATOR_DOCUMENTATION_CATALOG_ONLY","execution":"EXISTING_PRODUCER_ADMISSION_AND_CLEANUP"});
     let mut source = common(
         "source-syntax",
-        json!(["java", "kotlin", "python"]),
+        json!(["java", "kotlin", "python", "typescript"]),
         "SYNTAX_ONLY",
         json!([crate::repository_snapshot::SNAPSHOT_SCHEMA]),
         json!([

@@ -3229,6 +3229,7 @@ mod tests {
         let blob = "blob-a";
         let mut parent_with_occurrence = parent.clone();
         parent_with_occurrence.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: snapshot.into(),
             blob: blob.into(),
             start_byte: 0,
@@ -3236,6 +3237,7 @@ mod tests {
         });
         let mut part_with_occurrence = part.clone();
         part_with_occurrence.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: snapshot.into(),
             blob: blob.into(),
             start_byte: start,
@@ -3268,6 +3270,7 @@ mod tests {
         let start = class_text.find(method_text).unwrap();
         let blob = canonical::hash_bytes(class_text.as_bytes());
         method.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "synthetic-packet-source".into(),
             blob: blob.clone(),
             start_byte: start,
@@ -3282,6 +3285,7 @@ mod tests {
             .get_mut("endpoint-source")
             .unwrap();
         source.occurrence = Some(crate::documentation::model::SourceOccurrence {
+            generated_origin: None,
             snapshot: "synthetic-packet-source".into(),
             blob,
             start_byte: 0,
@@ -3467,6 +3471,7 @@ mod tests {
             24,
             parent_text,
             Some(crate::documentation::model::SourceOccurrence {
+                generated_origin: None,
                 snapshot: snapshot.into(),
                 blob: blob.into(),
                 start_byte: 0,
@@ -3480,6 +3485,7 @@ mod tests {
             23,
             part_text,
             Some(crate::documentation::model::SourceOccurrence {
+                generated_origin: None,
                 snapshot: snapshot.into(),
                 blob: blob.into(),
                 start_byte: start,

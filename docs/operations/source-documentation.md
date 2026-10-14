@@ -4,7 +4,7 @@ Source-syntax release scope: Codeclew 0.8.0; unavailable in 0.7.1.
 Offline starter help and runbooks: Codeclew 0.8.1.
 
 The `source-syntax` profile uses the existing documentation catalogue, narrative,
-binding, and renderer models. Python, Java, and Kotlin sources can be documented
+binding, and renderer models. Python, Java, Kotlin, and TypeScript sources can be documented
 when imports, libraries, Maven/Gradle configuration, or K2 are unavailable.
 The installed application contains pinned Tree-sitter grammars. Baseline analysis
 executes Git plumbing, never project code or a compiler. Building Codeclew itself
@@ -79,6 +79,54 @@ are bounded. Unsupported textual files retain exact text with `FILE_ONLY`
 authority boundaries; binary inputs retain inventory digests. Symlinks, missing
 roots, empty scopes, and recovered parse errors remain explicit gaps. Exceeding
 a budget fails the capture rather than silently dropping the remaining files.
+
+## Include existing generated source explicitly
+
+The committed-only scope remains the default. To include a file already produced
+by a generator, add an exact path and a descriptive origin to `source.generatedInputs`:
+
+```json
+{
+  "source": {
+    "roots": ["src"],
+    "dialect": "17",
+    "generatedInputs": [
+      {
+        "path": "src/main/java/example/Generated.java",
+        "origin": "Existing OpenAPI generator output"
+      }
+    ]
+  }
+}
+```
+
+Update the complete service record with `docs service add --input` and the current
+`--expected-input-digest`, then run `docs check`. SOURCE reads only those named
+existing files from the bound checkout. It never runs the generator or build,
+scans an ignored directory, or includes other untracked files. This opt-in works
+for the same supported SOURCE languages as committed inputs. Register at most
+64 files, each at most 2 MiB, with at most 32 MiB of generated input.
+
+Paths must be relative regular files within the checkout. Missing files, symlinks,
+directories, unsafe paths, and collisions with a path in the selected Git tree
+fail explicitly. A file can be ignored by Git; a committed path cannot also be
+registered as generated. `origin` is a user declaration, not proof that the named
+generator produced the file.
+
+Generated source citations use `EXPLICIT_GENERATED_SOURCE_TEXT`, retain the exact
+bytes and origin, and have no Git URL. Their receipt binds the path, origin and
+full-file digest separately from the service's Git revision. Changed bytes or
+origin produce new evidence even at the same revision; unchanged inputs can reuse
+parsing while current provenance is rebuilt. The runtime mode is
+`SOURCE_INPUTS_NO_BUILD`; compiler and runtime behavior remain unproven.
+
+Saved Pages and `docs context --source` reads use retained bytes and remain
+available after the original checkout or generated file is removed. A new check
+still requires every registered file. Compiler promotion needs an exact, unique
+retained declaration match. Unmatched generated declarations keep SOURCE
+certainty with `GENERATED_COMPILER_MEMBERSHIP_UNPROVEN` for an optional overlay or
+`RETAINED_GENERATED_SOURCE_NOT_CURRENT_COMPILER_MATCH` for direct profile migration;
+their old bytes never acquire current compiler authority by name alone.
 
 ## Declare OpenAPI contracts independently
 
@@ -167,6 +215,14 @@ Validation metadata counts toward the existing stdout budget, so page boundaries
 may differ near that budget. Continue with the returned cursor; the selection's
 complete item sequence and snapshot/selector cursor binding are preserved.
 This behavior is included in release `0.13.15`; earlier releases use the full retained read.
+
+When the selected service actually has a retained semantic overlay or declaration
+migration, native identities require the complete saved check closure. Those
+explicit dependency drills report `RETAINED_SEMANTIC_OVERLAY_CLOSURE` and identify
+the full retained payload read. An ordinary native profile without such a record
+keeps the selected dependency read and its isolation from unrelated contract
+payloads; choosing a compiler profile alone does not widen the read.
+
 
 A qualified name must select exactly one declaration; overloads need an exact
 returned identity. Source entrypoints retain callable identities, including unannotated helpers.

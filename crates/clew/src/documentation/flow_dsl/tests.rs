@@ -351,6 +351,7 @@ fn compiler_call_relations_require_exact_occurrence_not_same_line_text() {
     method.text_digest = canonical::hash_bytes(method.text.as_bytes());
     method.end_line = method.start_line;
     method.occurrence = Some(SourceOccurrence {
+        generated_origin: None,
         snapshot: "capture".into(),
         blob: "blob".into(),
         start_byte: 100,

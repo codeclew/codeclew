@@ -38,6 +38,7 @@ fn source(e: &ServiceEvidence, id: &str, text: &str) -> Source {
         evidence_digest: "compiler-receipt".into(),
         authority: "EXACT_SNAPSHOT_TEXT".into(),
         occurrence: Some(SourceOccurrence {
+            generated_origin: None,
             snapshot: "snapshot".into(),
             blob: crate::canonical::hash_bytes(text.as_bytes()),
             start_byte: 0,

@@ -640,6 +640,7 @@ mod tests {
             .values_mut()
         {
             source.occurrence = Some(super::super::model::SourceOccurrence {
+                generated_origin: None,
                 snapshot: "old-immutable-source-snapshot".into(),
                 blob: source.text_digest.clone(),
                 start_byte: 0,

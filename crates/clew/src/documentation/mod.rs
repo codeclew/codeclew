@@ -32,6 +32,7 @@ mod explanation_authorship;
 mod external_calls;
 pub mod fact_index;
 pub mod flow_dsl;
+mod generated_source;
 pub mod history;
 mod job_context;
 mod kotlin;

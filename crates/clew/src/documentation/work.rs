@@ -4117,6 +4117,7 @@ mod section_context_tests {
         source.revision = evidence.revision.clone();
         source.authority = "EXACT_SNAPSHOT_TEXT".into();
         source.occurrence = Some(SourceOccurrence {
+            generated_origin: None,
             snapshot: "fixture-source-snapshot".into(),
             blob: "d".repeat(40),
             start_byte: 0,

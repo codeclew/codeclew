@@ -605,6 +605,21 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
                 "source roots and dialect must be bounded and nonempty",
             ));
         }
+        if config.generated_inputs.len() > 64 {
+            return Err(invalid("select at most 64 generated inputs"));
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        for input in &config.generated_inputs {
+            relative(&input.path)?;
+            if !paths.insert(&input.path)
+                || input.origin.trim().is_empty()
+                || input.origin.len() > 1024
+            {
+                return Err(invalid(
+                    "generated input paths must be unique and origins bounded and nonempty",
+                ));
+            }
+        }
         for root in &config.roots {
             if root != "." {
                 relative(root)?;
@@ -1113,6 +1128,7 @@ mod tests {
         selected.source = Some(SourceConfig {
             roots: vec!["src".into()],
             dialect: "17".into(),
+            generated_inputs: vec![],
         });
         selected.target_ref = "main".into();
         repo.service_add(selected, Some(&repo.input_digest().unwrap()))

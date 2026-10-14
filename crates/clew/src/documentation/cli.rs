@@ -832,22 +832,13 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
             // Compiler dependency IDs live inside the immutable overlay rather
             // than the SOURCE fact index. Admit its complete sealed closure
             // before resolving an explicit dependency into that native view.
-            if partial
-                .0
-                .source_inputs
-                .as_ref()
-                .and_then(|inputs| inputs.inputs.services.get(service))
-                .is_some_and(|s| {
-                    (s.profile == "source-syntax"
-                        && (super::modules::semantic(s).is_some()
-                            || args
-                                .dependency_ids
-                                .iter()
-                                .any(|id| !partial.0.dependencies.contains_key(id))))
-                        || matches!(s.language.as_str(), "java" | "kotlin" | "typescript")
-                            && s.profile != "source-syntax"
-                })
-            {
+            if partial.0.dependencies.values().any(|observation| {
+                observation.service == *service
+                    && matches!(
+                        observation.kind.as_str(),
+                        "SEMANTIC_OVERLAY" | "DECLARATION_MIGRATION"
+                    )
+            }) {
                 retained_semantic_closure = true;
                 check::Check::retained(&repo, Some(&partial.1), &selected)?
             } else {
@@ -873,8 +864,8 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
             json!({
                 "mode":"RETAINED_SEMANTIC_OVERLAY_CLOSURE",
                 "inventory":"COMPLETE_CHECK_DEPENDENCY_MEMBERSHIP_AND_RETAINED_NATIVE_OVERLAY",
-                "payloads":"SELECTED_SERVICE_AND_RETAINED_NATIVE_OVERLAY",
-                "unread":"UNSELECTED_SERVICES",
+                "payloads":"ALL_RETAINED_SERVICE_AND_DEPENDENCY_PAYLOADS",
+                "unread":"NONE_IN_CHECK_OBJECT_CLOSURE",
                 "exhaustiveIntegrityAudit":false
             })
         } else {

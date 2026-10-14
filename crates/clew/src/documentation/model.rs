@@ -60,6 +60,15 @@ impl Service {
 pub struct SourceConfig {
     pub roots: Vec<String>,
     pub dialect: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generated_inputs: Vec<GeneratedInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneratedInput {
+    pub path: String,
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -225,6 +234,8 @@ pub struct SourceOccurrence {
     pub blob: String,
     pub start_byte: usize,
     pub end_byte: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

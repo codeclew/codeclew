@@ -249,6 +249,23 @@ pub(super) fn attach(
         analysis::verify_evidence(e)?;
     }
     let declaration_map = associations(&source, &native);
+    if current.extractor == EXTRACTOR
+        && source.observations.values().any(|o| {
+            o.kind == "SYMBOL"
+                && !declaration_map.contains_key(&o.id)
+                && o.source_ids.iter().any(|id| {
+                    source.sources.get(id).is_some_and(|s| {
+                        s.occurrence
+                            .as_ref()
+                            .is_some_and(|p| p.generated_origin.is_some())
+                    })
+                })
+        })
+    {
+        current
+            .boundaries
+            .push("RETAINED_GENERATED_SOURCE_NOT_CURRENT_COMPILER_MATCH".into());
+    }
     let native_fact_digests = declaration_map
         .values()
         .map(|id| (id.clone(), native.observations[id].digest.clone()))
@@ -485,6 +502,67 @@ pub(super) mod tests {
                     "SYNTAX"
                 );
             }
+        }
+    }
+    #[test]
+    fn generated_receipts_promote_only_exact_bytes_and_keep_mismatches_as_source() {
+        let (mut source, native, original, compiler_id) = fixture();
+        let origin = "Explicit existing fixture generator";
+        let content_digest = crate::canonical::hash_bytes(
+            "\u{feff}export function render(): string {\r\n  return 'π🙂'\r\n}".as_bytes(),
+        );
+        for s in source.sources.values_mut() {
+            let o = s.occurrence.as_mut().unwrap();
+            o.generated_origin = Some(origin.into());
+            o.blob = format!("generated:{content_digest}");
+            o.snapshot =
+                super::super::generated_source::receipt(&s.file, origin, &content_digest).unwrap();
+            s.authority = "EXPLICIT_GENERATED_SOURCE_TEXT".into();
+            s.url = None;
+            s.evidence_digest = digest(&(
+                SOURCE_EXTRACTOR,
+                &o.snapshot,
+                &o.blob,
+                o.start_byte,
+                o.end_byte,
+            ))
+            .unwrap();
+        }
+        analysis::verify_evidence(&source).unwrap();
+        for mismatch in [false, true] {
+            let mut current = native.clone();
+            if mismatch {
+                let s = current.sources.get_mut("native-body").unwrap();
+                s.text = s.text.replace("π🙂", "different");
+                s.text_digest = crate::canonical::hash_bytes(s.text.as_bytes());
+                let o = current.observations.get_mut(&compiler_id).unwrap();
+                o.normalized["outlineOwnerSource"]["sourceDigest"] =
+                    serde_json::json!(s.text_digest);
+                o.normalized["outlineOwnerSource"]["byteEnd"] = serde_json::json!(3 + s.text.len());
+                o.digest = digest(&o.normalized).unwrap();
+            }
+            attach(&mut current, &source).unwrap();
+            let view = view(&current).unwrap().unwrap();
+            assert_eq!(view.revision, source.revision);
+            assert_eq!(
+                super::source(&current).unwrap().unwrap().sources,
+                source.sources
+            );
+            assert_eq!(
+                view.observations[&original].normalized["authority"] == "SYNTAX",
+                mismatch
+            );
+            assert_eq!(
+                current
+                    .boundaries
+                    .iter()
+                    .any(|b| b == "RETAINED_GENERATED_SOURCE_NOT_CURRENT_COMPILER_MATCH"),
+                mismatch
+            );
+            assert_eq!(
+                native_id(&current, &original).unwrap(),
+                (!mismatch).then_some(compiler_id.clone())
+            );
         }
     }
     #[test]

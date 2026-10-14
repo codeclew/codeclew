@@ -347,3 +347,93 @@ fn scoped_context_referenced_source_cannot_silently_disappear() {
             .contains("selected dependency references a missing source")
     );
 }
+
+#[test]
+fn scoped_context_loads_actual_migration_and_overlay_closures_for_native_ids() {
+    for mode in ["native-migration", "source-migration", "source-overlay"] {
+        let temp = tempfile::tempdir().unwrap();
+        Repository::init(temp.path(), "Retained compatibility closure").unwrap();
+        let repo = Repository::open(temp.path()).unwrap();
+        let (source, mut native, source_id, native_id) =
+            super::super::declaration_migration::tests::fixture();
+        let service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"svc", "title":"Fixture",
+            "repositoryId":"svc", "repository":"https://example.invalid/test",
+            "language":"typescript", "profile":"typescript-5-project-read-only",
+            "targetRef":"main", "compilations":["tsconfig:tsconfig.json"]
+        }))
+        .unwrap();
+        repo.service_add(service, Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let mut evidence = match mode {
+            "native-migration" => {
+                super::super::declaration_migration::attach(&mut native, &source).unwrap();
+                native
+            }
+            "source-migration" => {
+                let mut evidence = source.clone();
+                super::super::declaration_migration::attach(&mut evidence, &native).unwrap();
+                evidence
+            }
+            "source-overlay" => {
+                let mut evidence = source.clone();
+                let normalized = json!({
+                    "schema":"codeclew-documentation-semantic-overlay/1.0",
+                    "evidence":native,
+                    "declarationMap":super::super::semantic_overlay::associations(&source, &native)
+                });
+                let observation = Observation {
+                    id: "svc:overlay".into(),
+                    kind: "SEMANTIC_OVERLAY".into(),
+                    service: "svc".into(),
+                    symbol: "semantic-overlay".into(),
+                    digest: super::super::digest(&normalized).unwrap(),
+                    normalized,
+                    source_ids: vec![],
+                };
+                evidence
+                    .observations
+                    .insert(observation.id.clone(), observation);
+                evidence
+            }
+            _ => unreachable!(),
+        };
+        evidence.service_digest = super::super::digest(&repo.services().unwrap()["svc"]).unwrap();
+        let input_digest = repo.input_digest().unwrap();
+        let checked = check::Check {
+            schema: "codeclew-documentation-check/1.0".into(),
+            input_digest: input_digest.clone(),
+            context_digest: "retained-compatibility-context".into(),
+            dependencies: evidence.observations.clone(),
+            services: BTreeMap::from([("svc".into(), evidence)]),
+            unresolved: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
+            composition: None,
+            source_inputs: Some(SourceInputs {
+                schema: check::SOURCE_INPUTS_SCHEMA.into(),
+                input_digest,
+                inputs: repo.inputs().unwrap(),
+                selected_services: BTreeSet::from(["svc".into()]),
+                retained_services: BTreeSet::new(),
+            }),
+        };
+        let snapshot = checked.save_snapshot(&repo).unwrap();
+        for id in [&native_id, &source_id] {
+            let request = args(&repo.root, &snapshot, "svc", id, None);
+            let expected =
+                context_from(&checked, &request, None, "PINNED_SNAPSHOT_NOT_REVERIFIED").unwrap();
+            let mut actual = run(Command::Context(request)).unwrap();
+            let validation = actual
+                .as_object_mut()
+                .unwrap()
+                .remove("evidenceValidation")
+                .unwrap();
+            assert_eq!(
+                validation["mode"], "RETAINED_SEMANTIC_OVERLAY_CLOSURE",
+                "{mode}"
+            );
+            assert_eq!(actual, expected, "{mode}: {id}");
+        }
+    }
+}

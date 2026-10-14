@@ -25,7 +25,10 @@ pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCa
         .clone();
     if !candidate(&owner)
         || context.evidence.extractor != SOURCE_EXTRACTOR
-        || context.evidence.runtime_mode != "COMMITTED_SOURCE_NO_BUILD"
+        || !matches!(
+            context.evidence.runtime_mode.as_str(),
+            "COMMITTED_SOURCE_NO_BUILD" | "SOURCE_INPUTS_NO_BUILD"
+        )
         || owner.normalized.get("schema").is_some()
         || !(owner.normalized["scope"].is_null() || owner.normalized["scope"] == "")
         || owner.normalized["symbolIdentity"] != owner.symbol

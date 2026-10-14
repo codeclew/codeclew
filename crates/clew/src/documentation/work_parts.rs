@@ -805,6 +805,7 @@ mod tests {
             evidence_digest: "sha256:stored-evidence-digest".into(),
             authority: "CAPTURED_SOURCE".into(),
             occurrence: Some(SourceOccurrence {
+                generated_origin: None,
                 snapshot: "sha256:occurrence/1".into(),
                 blob: "sha256:blob".into(),
                 start_byte: 0,

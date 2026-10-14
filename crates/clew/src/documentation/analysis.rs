@@ -197,6 +197,10 @@ fn capture_local_with_diagnostics(
         let semantic = super::modules::semantic(service);
         let semantic_enabled = semantic.is_some();
         if !semantic_enabled
+            && service
+                .source
+                .as_ref()
+                .is_none_or(|s| s.generated_inputs.is_empty())
             && let Some(reused) =
                 super::cache::load_capture_if_valid(repository, &service.id, &cache_key)?
         {
@@ -218,6 +222,23 @@ fn capture_local_with_diagnostics(
         }
         super::contracts::capture(service, &repo, &mut source)?;
         super::modules::attach(service, &mut source)?;
+        if let Some(config) = &service.source
+            && !config.generated_inputs.is_empty()
+        {
+            let state = crate::state::StateAuthority::process_default()?;
+            let cas = crate::cas::CasStore::open(&state)?;
+            for (entry, receipt, _) in
+                super::generated_source::admit(&repo, &revision, &config.generated_inputs, &cas)?
+            {
+                if !source.observations.values().any(|o| {
+                    o.kind == "GENERATED_INPUT"
+                        && o.normalized["path"] == entry.path
+                        && o.normalized["receipt"] == receipt
+                }) {
+                    return Err(invalid("GENERATED_INPUT_CHANGED_DURING_CAPTURE"));
+                }
+            }
+        }
         let _lock = repository.lock()?;
         if semantic_enabled {
             let mut manifest = super::cache::store_capture(repository, &source)?;
@@ -2642,6 +2663,36 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
             || canonical::hash_bytes(s.text.as_bytes()) != s.text_digest
         {
             return Err(invalid("portable source binding is inconsistent"));
+        }
+        let generated_marker = s.authority == "EXPLICIT_GENERATED_SOURCE_TEXT"
+            || s.occurrence
+                .as_ref()
+                .is_some_and(|o| o.blob.starts_with("generated:") || o.generated_origin.is_some());
+        if generated_marker
+            && s.occurrence
+                .as_ref()
+                .is_none_or(|o| o.generated_origin.is_none() || !o.blob.starts_with("generated:"))
+        {
+            return Err(invalid(
+                "generated source requires complete origin provenance",
+            ));
+        }
+        if let Some(occurrence) = &s.occurrence
+            && let Some(origin) = &occurrence.generated_origin
+        {
+            let content_digest = occurrence
+                .blob
+                .strip_prefix("generated:")
+                .ok_or_else(|| invalid("generated input has no content provenance"))?;
+            if s.authority != "EXPLICIT_GENERATED_SOURCE_TEXT"
+                || s.url.is_some()
+                || occurrence.snapshot
+                    != super::generated_source::receipt(&s.file, origin, content_digest)?
+            {
+                return Err(invalid(
+                    "generated source provenance or URL is inconsistent",
+                ));
+            }
         }
         if let Some(occurrence) = &s.occurrence
             && (occurrence.end_byte.checked_sub(occurrence.start_byte) != Some(s.text.len())

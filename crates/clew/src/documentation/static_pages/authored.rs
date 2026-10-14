@@ -410,7 +410,11 @@ fn source_identity_matches(
     if old.symbol != new.symbol
         || old.id != new.id
         || [original, current].iter().any(|e| {
-            e.extractor != SOURCE_EXTRACTOR || e.runtime_mode != "COMMITTED_SOURCE_NO_BUILD"
+            e.extractor != SOURCE_EXTRACTOR
+                || !matches!(
+                    e.runtime_mode.as_str(),
+                    "COMMITTED_SOURCE_NO_BUILD" | "SOURCE_INPUTS_NO_BUILD"
+                )
         })
         || [old, new].iter().any(|o| {
             o.normalized["authority"] != "SYNTAX"
@@ -478,6 +482,7 @@ mod tests {
             evidence_digest: "retained".into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
             occurrence: Some(SourceOccurrence {
+                generated_origin: None,
                 snapshot: "snapshot".into(),
                 blob: "blob".into(),
                 start_byte: 0,

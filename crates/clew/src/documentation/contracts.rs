@@ -343,6 +343,7 @@ pub(super) fn capture_with_store(
                 source.text.len(),
             ))?;
             source.occurrence = Some(SourceOccurrence {
+                generated_origin: None,
                 snapshot: snapshot.snapshot_id.clone(),
                 blob: entry.git_oid.clone(),
                 start_byte: 0,
