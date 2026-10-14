@@ -168,6 +168,24 @@ test('ordinary message step displays a declared address and its exact outgoing s
  assert.doesNotMatch(r.e('scenario-content').innerHTML,/External reservation created/);
  const ru=load({...data,language:'ru'});assert.match(ru.e('scenario-content').innerHTML,/Внешний сервис/);assert.match(ru.e('scenario-content').innerHTML,/<summary>Контракт · POST/);
 });
+test('sequence SVG omits long Notes while readable behavior retains nested note-only outcomes and their sources',()=>{
+ const data=fixture(),op=data.operations[0];
+ const longNote='The common envelope requires an object, string id, version 1, a place with id oslo, helsinki, or lisbon, string name, and finite latitude and longitude. The forecast branch requires updatedAt and fetchedAt accepted by isTimestamp, mode fixture or live, and a periods array of length 1 through 6. Each period requires a valid time, finite temperatureC, precipitationMm null or finite and nonnegative, and a string symbol. isTimestamp accepts a UTC ISO-like value with seconds and optional fractional seconds, and also requires Date.parse to be finite.';
+ op.participants=[{id:'caller',label:'Caller'},{id:'dashboard',label:'dashboard'}];
+ const event=(id,kind,text)=>({id,kind,text,from:'caller',to:'dashboard',sourceIds:['same-source'],dependencyIds:['dep']});
+ op.events=[event('message','message','Consume forecast'),event('envelope','note',longNote),event('outer','alt','Valid envelope'),event('inner','opt','Existing card'),event('note-only','note','A newer stored timestamp leaves the card unchanged.'),event('inner-end','end',''),event('otherwise','else','Rejected envelope'),event('rejection-note','note','A rejection-write or rejection-path offset-commit failure propagates.'),event('outer-end','end',''),event('result','return','Return result')];
+ const original=JSON.stringify(op),r=load(data),svg=r.run('diagram(D.operations[0])');
+ assert.doesNotMatch(svg,/The common envelope requires|newer stored timestamp|rejection-write/);
+ assert.doesNotMatch(svg,/data-event="(?:envelope|note-only|rejection-note)"/);
+ for(const id of ['message','outer','inner','otherwise','result'])assert.ok(svg.includes(`data-event="${id}"`));
+ assert.equal((svg.match(/class="step-number"/g)||[]).length,2);
+ assert.match(svg,/>5<\/text>/);
+ const behavior=r.run('behaviorPseudocode(D.operations[0])');
+ assert.ok(behavior.includes(longNote));assert.match(behavior,/newer stored timestamp|rejection-write/);
+ assert.equal(r.run('JSON.stringify(D.operations[0])'),original);
+ r.click({sources:'same-source',sourceOperation:op.id});
+ assert.match(r.e('source-code').innerHTML,/ACCEPTED SOURCE/);
+});
 test('mapped contract anchors open the existing handler contract without duplicate rows or retained-source substitution',()=>{
  const data=externalCallFixture(),operation=data.operations[0],current=data.contracts[0],sourceId='same-contract-source';
  data.catalogue=[{id:operation.id,symbol:'savePlace',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/api/places']},sourceIds:['same-source']}];

@@ -719,7 +719,7 @@ function nav(){
 function wrap(text,max=28){const out=[''];for(const word of text.split(' ')){const i=out.length-1;if(out[i]&&out[i].length+word.length+1>max)out.push(word);else out[i]+=(out[i]?' ':'')+word;}return out;}
 function diagram(o){
  const W=Math.max(800,(o.participants.length-1)*215+240);const xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,o.participants.length-1)]));let y=94,stack=[],frames=[],rows=[];
- for(const e of o.events){const h=['alt','else','loop','opt'].includes(e.kind)?40:e.kind==='end'?18:e.kind==='note'?65:72;rows.push({e,y,h,depth:stack.length});if(e.kind==='alt'||e.kind==='loop'||e.kind==='opt')stack.push({y,depth:stack.length});if(e.kind==='end'){const f=stack.pop();frames.push({...f,end:y+h-5});}y+=h;}
+ for(const e of o.events.filter(e=>e.kind!=='note')){const h=['alt','else','loop','opt'].includes(e.kind)?40:e.kind==='end'?18:72;rows.push({e,y,h,depth:stack.length});if(e.kind==='alt'||e.kind==='loop'||e.kind==='opt')stack.push({y,depth:stack.length});if(e.kind==='end'){const f=stack.pop();frames.push({...f,end:y+h-5});}y+=h;}
  const H=y+25;
  let svg=chromeHtml`<svg class="sequence-svg" style="min-width:${W}px" viewBox="0 0 ${W} ${H}" role="group" aria-label="Sequence diagram: ${esc(o.title)}"><defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#608365"/></marker></defs>`;
  svg+=frames.map(f=>chromeHtml`<rect x="${20+f.depth*12}" y="${f.y-8}" width="${W-40-f.depth*24}" height="${f.end-f.y+8}" rx="4" fill="#fdfbf6" stroke="#e3d9c5"/>`).join('');
