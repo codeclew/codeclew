@@ -368,8 +368,6 @@ fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output
         snapshot,
         input: None,
         publication: Some("a".repeat(64)),
-        reader: Default::default(),
-        subject: None,
         output: output.clone(),
     })
     .unwrap_err();
@@ -396,8 +394,6 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
         snapshot: snapshot.clone(),
         input: None,
         publication: Some(publication.clone()),
-        reader: Default::default(),
-        subject: None,
         output: output.clone(),
     })
     .unwrap();
@@ -408,23 +404,6 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
         fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
         previous_index
     );
-    let missing_subject_output = temporary.path().join("missing-subject");
-    let missing = run(Command::Render {
-        root: repo.root.clone(),
-        snapshot: snapshot.clone(),
-        input: None,
-        publication: Some(publication.clone()),
-        reader: Reader::Operation,
-        subject: Some("scenario:not-in-publication".into()),
-        output: missing_subject_output.clone(),
-    })
-    .unwrap_err();
-    assert!(
-        missing
-            .message
-            .contains("absent from the frozen publication")
-    );
-    assert!(!missing_subject_output.exists());
     let sentinel = output.join("keep.txt");
     fs::write(&sentinel, "previous output").unwrap();
     assert!(
@@ -433,8 +412,6 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
             snapshot: snapshot.clone(),
             input: None,
             publication: Some(publication.clone()),
-            reader: Default::default(),
-            subject: None,
             output: output.clone()
         })
         .is_err()
@@ -454,8 +431,6 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
             snapshot,
             input: None,
             publication: Some(publication),
-            reader: Default::default(),
-            subject: None,
             output: refused.clone()
         })
         .is_err()
@@ -487,8 +462,6 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             snapshot: snapshot.clone(),
             input: Some(input.clone()),
             publication: None,
-            reader: Default::default(),
-            subject: None,
             output: output.clone(),
         })
         .unwrap();
@@ -513,8 +486,6 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
                 snapshot: snapshot.clone(),
                 input: Some(input.clone()),
                 publication: None,
-                reader: Default::default(),
-                subject: None,
                 output: output.clone(),
             })
             .is_err()
@@ -527,8 +498,6 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         snapshot: snapshot.clone(),
         input: Some(input.clone()),
         publication: None,
-        reader: Default::default(),
-        subject: None,
         output: output.clone(),
     })
     .unwrap();
@@ -548,8 +517,6 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             snapshot,
             input: Some(input),
             publication: None,
-            reader: Default::default(),
-            subject: None,
             output: rejected.clone()
         })
         .is_err()

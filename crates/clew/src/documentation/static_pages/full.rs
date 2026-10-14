@@ -18,15 +18,7 @@ pub(super) fn render(
     snapshot: &str,
     publication: &str,
     output: &Path,
-    reader_mode: super::Reader,
-    selected_subject: Option<&str>,
 ) -> Result<Value, ClewError> {
-    if reader_mode == super::Reader::Operation && selected_subject.is_none() {
-        return Err(invalid("operation reader requires one exact --subject"));
-    }
-    if reader_mode == super::Reader::Service && selected_subject.is_some() {
-        return Err(invalid("--subject requires --reader operation"));
-    }
     validate_output(output)?;
     let policy = crate::documentation::endpoint_publication::load(repo)?;
     let policy_digest = policy.digest()?;
@@ -68,9 +60,6 @@ pub(super) fn render(
             .as_str()
             .ok_or_else(|| invalid("full pages reader subject is missing"))?
             .to_owned();
-        if selected_subject.is_some_and(|selected| selected != subject) {
-            continue;
-        }
         let narrative = bindings
             .narratives
             .get(&subject)
@@ -102,14 +91,7 @@ pub(super) fn render(
             // narrative/thread data byte-equivalent as parsed frozen records.
         }
         let html_name = name.strip_suffix(".json").unwrap().to_owned() + ".html";
-        if reader_mode == super::Reader::Operation {
-            attach_operation_presentation(&mut payload, &subject)?;
-        }
-        let html = if reader_mode == super::Reader::Operation {
-            crate::documentation::frozen_operation_reader::html(&payload)?
-        } else {
-            render::html(&payload)?
-        };
+        let html = render::html(&payload)?;
         let prefix = "../";
         let navigation = reader::navigation_language(
             prefix,
@@ -120,11 +102,7 @@ pub(super) fn render(
         );
         files.insert(
             html_name.clone(),
-            if reader_mode == super::Reader::Operation {
-                html.into_bytes()
-            } else {
-                reader::decorate(&html, &navigation).into_bytes()
-            },
+            reader::decorate(&html, &navigation).into_bytes(),
         );
         files.insert(
             name.clone(),
@@ -132,16 +110,16 @@ pub(super) fn render(
         );
         pages.push(json!({"subject":subject,"html":html_name,"json":name}));
     }
-    if selected_subject.is_some() && pages.is_empty() {
-        return Err(invalid(
-            "selected reader subject is absent from the frozen publication",
-        ));
-    }
     // Reuse the publication's overview and all diagrams, contracts and source
     // payloads. Adapt navigation paths, never authored explanation content.
-    for (name, bytes) in files.iter_mut().filter(|(name, _)| name.ends_with(".html")) {
+    for (name, bytes) in files.iter_mut().filter(|(name, _)| {
+        name.ends_with(".html") && !name.starts_with("services/") && !name.starts_with("scenarios/")
+    }) {
         let text = String::from_utf8(bytes.clone()).map_err(io_error)?;
-        *bytes = adapt_history_navigation(name, &text).into_bytes();
+        *bytes = text
+            .replace("../../history.html", "history.html")
+            .into_bytes();
+        let _ = name;
     }
     files.insert(
         "index.html".into(),
@@ -156,17 +134,11 @@ pub(super) fn render(
             files.insert(format!("frozen-{name}"), bytes);
         }
     }
-    if selected_subject.is_some() {
-        let page = pages.first().expect("selected subject was validated");
-        let html_path = page["html"].as_str().expect("rendered HTML path");
-        files.insert("index.html".into(), reader::page("Frozen narrative reader", &format!(
-            "<h1>Frozen narrative reader</h1><p><a href=\"{}\">Open selected process</a></p>", render::escape(html_path))).into_bytes());
-    }
     files.insert("catalog.html".into(), reader::catalog(&files).into_bytes());
     files.insert("history.html".into(), reader::page("Selected publication", &format!("<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",render::escape(publication),render::escape(snapshot))).into_bytes());
     let result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
-        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"reader":if reader_mode == super::Reader::Operation {"operation"} else {"service"},"selectedSubject":selected_subject,
+        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
     files.insert(
         "pages-manifest.json".into(),
@@ -207,31 +179,6 @@ pub(super) fn render(
     Ok(result)
 }
 
-fn adapt_history_navigation(name: &str, text: &str) -> String {
-    let (original, relocated) = if name.starts_with("services/") || name.starts_with("scenarios/") {
-        ("href=\"../../../history.html\"", "href=\"../history.html\"")
-    } else {
-        ("href=\"../../history.html\"", "href=\"history.html\"")
-    };
-    text.replace(original, relocated)
-}
-
-fn attach_operation_presentation(payload: &mut Value, subject: &str) -> Result<(), ClewError> {
-    let operation_id = subject.split_once(':').map(|(_, id)| id).unwrap_or(subject);
-    if !payload["operations"].as_array().is_some_and(|operations| {
-        operations
-            .iter()
-            .any(|operation| operation["id"] == operation_id)
-    }) {
-        return Err(invalid(
-            "operation reader subject has no matching frozen operation",
-        ));
-    }
-    payload["readerPresentation"] = json!({"kind":"FROZEN_NARRATIVE_OPERATION","operationId":operation_id,
-        "authority":"UNCHANGED_FROZEN_NARRATIVE","proseAuthored":false});
-    Ok(())
-}
-
 fn merge_sources(payload: &mut Value, selected: Value) -> Result<(), ClewError> {
     let retained = payload["sources"]
         .as_object_mut()
@@ -264,42 +211,6 @@ fn validate_output(output: &Path) -> Result<(), ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn copied_frozen_pages_relocate_history_links_without_rewriting_prose() {
-        let text = "<a href=\"../../../history.html\">History</a><p>../../../history.html</p>";
-        assert_eq!(
-            adapt_history_navigation("scenarios/neighbor.html", text),
-            "<a href=\"../history.html\">History</a><p>../../../history.html</p>"
-        );
-        assert_eq!(
-            adapt_history_navigation(
-                "overview.html",
-                "<a href=\"../../history.html\">History</a>"
-            ),
-            "<a href=\"history.html\">History</a>"
-        );
-    }
-
-    #[test]
-    fn operation_presentation_preserves_every_canonical_record_and_refuses_missing_operation() {
-        let original = json!({"subject":"scenario:consume", "operations":[{"id":"consume","summary":{"text":"Retained"},"events":[{"kind":"note","text":"Original"}]}],
-            "sectionState":{"freshness":"STALE","verification":"UNASSESSED"}, "sources":{"source":{"revision":"old","text":"bytes"}},
-            "processOutline":{"status":"GAP","gap":"PROCESS_EVIDENCE_CHANGED_REVIEW_REQUIRED"}});
-        let mut selected = original.clone();
-        attach_operation_presentation(&mut selected, "scenario:consume").unwrap();
-        assert_eq!(
-            selected["readerPresentation"]["authority"],
-            "UNCHANGED_FROZEN_NARRATIVE"
-        );
-        selected
-            .as_object_mut()
-            .unwrap()
-            .remove("readerPresentation");
-        assert_eq!(selected, original);
-        assert!(attach_operation_presentation(&mut selected, "scenario:missing").is_err());
-        assert_eq!(selected, original);
-    }
 
     #[test]
     fn retained_citations_keep_original_revision_and_cross_service_records() {

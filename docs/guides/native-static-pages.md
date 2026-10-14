@@ -10,26 +10,6 @@ HTML/MDX publication. Their compiler and syntax capabilities remain distinct;
 see [native retained-source capabilities](native-retained-source.md). The Java
 recipe below remains an initial compiler-backed example.
 
-## Read one frozen narrative as an operation document
-
-A saved publication can use the operation reader without generating a new answer:
-
-```sh
-clew docs pages render --root /path/to/docs --snapshot sha256:IDENTITY/SIZE \
-  --publication EXACT_SAVED_PUBLICATION --reader operation \
-  --subject scenario:checkout --output /path/to/comparison
-```
-
-The exact subject must contain its matching frozen operation. The standalone reader uses
-the shared operation-document theme, citation disclosures and nested step components.
-Unavailable glossary, predicate and preparation definitions remain explicit gaps. It shows
-its retained summary, narrative overview, nested event order, sequence diagram
-and original source evidence. It preserves every canonical narrative record and
-freshness, review and source-authority status. A narrative overview remains
-separate from a missing source-derived outline. This presentation does not create
-an OperationAnswer, model approval or glossary. The default service reader is
-unchanged; the output is a separate bundle and the saved publication is not edited.
-
 ## First native HTML from saved Java evidence
 
 Register and bind the Java service, then capture its compiler evidence. For a

@@ -40,13 +40,7 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
     Ok(template
         .replace("/*__STYLE__*/", STYLE)
-        .replace(
-            "/*__SCRIPT__*/",
-            &format!(
-                "{}\n{SCRIPT}",
-                include_str!("../../assets/documentation/sequence.js")
-            ),
-        )
+        .replace("/*__SCRIPT__*/", SCRIPT)
         .replace(
             "/*__ANALYSIS_SCRIPT__*/",
             include_str!("../../assets/documentation/analysis.js"),
