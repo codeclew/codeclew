@@ -933,46 +933,39 @@ pub(super) fn enrich(
             if semantic.revision == source.revision && semantic.service == source.service =>
         {
             analysis::verify_evidence(&semantic)?;
-            for fact in semantic
-                .observations
-                .values()
-                .filter(|o| o.kind == "SYMBOL")
-            {
-                let candidates: Vec<_> = source
-                    .observations
-                    .values()
-                    .filter(|o| {
-                        o.kind == "SYMBOL"
-                            && o.normalized["name"] == fact.normalized["name"]
-                            && o.source_ids.iter().any(|id| {
-                                fact.source_ids.iter().any(|other| {
-                                    let a = &source.sources[id];
-                                    let Some(b) = semantic.sources.get(other) else {
-                                        return false;
-                                    };
-                                    a.file == b.file
-                                        && a.start_line == b.start_line
-                                        && a.end_line == b.end_line
-                                })
-                            })
-                    })
-                    .map(|o| (o.symbol.clone(), o.source_ids.clone()))
-                    .collect();
-                if candidates.len() != 1 {
-                    unresolved += 1;
-                    continue;
-                }
-                let (symbol, sources) = &candidates[0];
+            let declaration_map = super::semantic_overlay::associations(source, &semantic);
+            for (declaration_id, native_id) in &declaration_map {
+                let fact = &semantic.observations[native_id];
+                let original = &source.observations[declaration_id];
+                let symbol = original.symbol.clone();
+                let sources = original.source_ids.clone();
                 // Keep the provider's own identity, normalized facts, and boundaries.
                 let normalized = json!({"authority":"SEMANTIC","sourceSymbol":symbol,"semanticSymbol":fact.symbol,"producer":semantic.extractor,"runtimeMode":semantic.runtime_mode,"coverage":semantic.coverage,"boundaries":semantic.boundaries,"serviceDigest":semantic.service_digest,"fact":fact.normalized,"mapping":"UNIQUE_EQUAL_REVISION_FILE_AND_LINE_RANGE"});
                 attached.push(observe(
                     source,
                     "SEMANTIC_SYMBOL",
-                    symbol,
+                    &symbol,
                     normalized,
                     sources.clone(),
                 )?);
             }
+            // Retain the native producer's full evidence without substituting
+            // syntax identities into compiler facts. Consumers select this view
+            // only through the exact declaration association above.
+            unresolved = semantic
+                .observations
+                .values()
+                .filter(|o| o.kind == "SYMBOL")
+                .count()
+                .saturating_sub(declaration_map.len());
+            let overlay = json!({"schema":"codeclew-documentation-semantic-overlay/1.0", "evidence":semantic, "declarationMap":declaration_map});
+            attached.push(observe(
+                source,
+                "SEMANTIC_OVERLAY",
+                "semantic-overlay",
+                overlay,
+                vec![],
+            )?);
             json!({"status":"AVAILABLE","producer":semantic.extractor,"runtimeMode":semantic.runtime_mode,"coverage":semantic.coverage,"boundaries":semantic.boundaries,"attached":attached,"unmapped":unresolved})
         }
         Ok(_) => json!({"status":"UNAVAILABLE","reason":"SEMANTIC_REVISION_MISMATCH"}),
@@ -1771,6 +1764,11 @@ class Reader {
             fact.normalized["authority"] = json!("JAVAC");
             fact.digest = digest(&fact.normalized).unwrap();
         }
+        let mut native_source = provider.sources.values().next().unwrap().clone();
+        native_source.id = "native-source-only".into();
+        provider
+            .sources
+            .insert(native_source.id.clone(), native_source.clone());
         enrich(&mut source, Ok(provider.clone())).unwrap();
         assert_eq!(source.entrypoints, before.entrypoints);
         assert_eq!(source.sources, before.sources);
@@ -1788,6 +1786,61 @@ class Reader {
             &BTreeMap::new(),
         )
         .unwrap();
+        let consumer = super::super::semantic_overlay::checked_view(&checked).unwrap();
+        for (id, original) in before
+            .observations
+            .iter()
+            .filter(|(_, o)| o.kind == "SYMBOL")
+        {
+            assert_eq!(
+                consumer.services["orders"].observations[id].source_ids,
+                original.source_ids
+            );
+            assert_eq!(consumer.dependencies[id].normalized["authority"], "JAVAC");
+        }
+        for (id, original) in &before.sources {
+            assert_eq!(&consumer.services["orders"].sources[id], original);
+        }
+        let mut args = super::super::cli::ContextArgs {
+            root: std::path::PathBuf::new(),
+            service: Some("orders".into()),
+            scenario: None,
+            entrypoint: None,
+            symbols: vec![],
+            source_ids: vec![native_source.id.clone()],
+            dependency_ids: vec![],
+            format: super::super::cli::ContextFormat::Raw,
+            refresh: false,
+            snapshot: None,
+            cursor: None,
+            limit: 20,
+        };
+        let rows = super::super::cli::context_items(&checked, &args, None).unwrap();
+        assert!(rows.iter().any(|row| row["kind"] == "SOURCE"
+            && row["record"] == serde_json::to_value(&native_source).unwrap()));
+        args.source_ids.clear();
+        args.dependency_ids = vec![
+            before
+                .observations
+                .values()
+                .find(|o| o.kind == "SYMBOL")
+                .unwrap()
+                .id
+                .clone(),
+        ];
+        let rows = super::super::cli::context_items(&checked, &args, None).unwrap();
+        assert!(rows.iter().any(|row| row["kind"] == "DEPENDENCY"
+            && row["record"]["normalized"]["authority"] == "JAVAC"));
+        let mut unbound = checked.clone();
+        let overlay_id = source
+            .observations
+            .values()
+            .find(|o| o.kind == "SEMANTIC_OVERLAY")
+            .unwrap()
+            .id
+            .clone();
+        unbound.dependencies.remove(&overlay_id);
+        assert!(super::super::semantic_overlay::checked_view(&unbound).is_err());
         let overlay = source
             .observations
             .values()
@@ -1820,6 +1873,84 @@ class Reader {
                 .values()
                 .any(|o| o.kind == "SEMANTIC_SYMBOL")
         );
+    }
+
+    #[test]
+    fn semantic_overlay_rejects_ambiguous_mapping_changed_bytes_and_nested_facts() {
+        let mut source = fixture("java", JAVA);
+        observe(
+            &mut source,
+            "SOURCE_SCOPE",
+            "source-scope",
+            json!({"inventory":{}}),
+            vec![],
+        )
+        .unwrap();
+        let mut native = source.clone();
+        native.extractor = EXTRACTOR.into();
+        native.observations.retain(|_, o| o.kind == "SYMBOL");
+        for fact in native.observations.values_mut() {
+            fact.normalized["authority"] = json!("JAVAC");
+            fact.digest = digest(&fact.normalized).unwrap();
+        }
+        let map = super::super::semantic_overlay::associations(&source, &native);
+        assert!(!map.is_empty());
+        let (original_id, native_id) = map.first_key_value().unwrap();
+        let mut ambiguous = native.clone();
+        let mut duplicate = ambiguous.observations[native_id].clone();
+        duplicate.id = "duplicate-native".into();
+        ambiguous
+            .observations
+            .insert(duplicate.id.clone(), duplicate);
+        assert!(
+            !super::super::semantic_overlay::associations(&source, &ambiguous)
+                .contains_key(original_id)
+        );
+        let mut ambiguous_source = source.clone();
+        let mut duplicate = ambiguous_source.observations[original_id].clone();
+        duplicate.id = "duplicate-source".into();
+        ambiguous_source
+            .observations
+            .insert(duplicate.id.clone(), duplicate);
+        assert!(
+            !super::super::semantic_overlay::associations(&ambiguous_source, &native)
+                .contains_key(original_id)
+        );
+        let mut changed = native.clone();
+        for record in changed.sources.values_mut() {
+            record.text.push('!');
+            record.text_digest = canonical::hash_bytes(record.text.as_bytes());
+        }
+        assert!(super::super::semantic_overlay::associations(&source, &changed).is_empty());
+        enrich(&mut source, Ok(native)).unwrap();
+        for mutation in ["mapping", "nested-digest", "revision"] {
+            let mut forged = source.clone();
+            let overlay = forged
+                .observations
+                .values_mut()
+                .find(|o| o.kind == "SEMANTIC_OVERLAY")
+                .unwrap();
+            match mutation {
+                "mapping" => {
+                    overlay.normalized["declarationMap"] = json!({});
+                }
+                "nested-digest" => {
+                    let facts = overlay.normalized["evidence"]["observations"]
+                        .as_object_mut()
+                        .unwrap();
+                    facts.values_mut().next().unwrap()["digest"] = json!("forged");
+                }
+                "revision" => {
+                    overlay.normalized["evidence"]["revision"] = json!("2".repeat(40));
+                }
+                _ => unreachable!(),
+            }
+            overlay.digest = digest(&overlay.normalized).unwrap();
+            assert!(
+                super::super::semantic_overlay::view(&forged).is_err(),
+                "{mutation}"
+            );
+        }
     }
 
     #[test]

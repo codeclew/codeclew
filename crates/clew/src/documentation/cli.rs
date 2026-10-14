@@ -812,6 +812,7 @@ pub fn page(
 fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
     let repo = Repository::open(&args.root)?;
     let selected = args.service.iter().cloned().collect::<BTreeSet<_>>();
+    let mut retained_semantic_closure = false;
     let (checked, snapshot, authority) = if args.refresh {
         let (checked, snapshot) = check::run_and_save_selected(&repo, &selected, None)?;
         (checked, snapshot, "CURRENT_SOURCE_CHECK")
@@ -822,12 +823,29 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
             if args.dependency_ids.len() > 8 {
                 return Err(invalid("select at most eight dependencies"));
             }
-            check::Check::retained_dependency_context(
+            let partial = check::Check::retained_dependency_context(
                 &repo,
                 args.snapshot.as_deref(),
                 service,
                 &args.dependency_ids.iter().cloned().collect(),
-            )?
+            )?;
+            // Compiler dependency IDs live inside the immutable overlay rather
+            // than the SOURCE fact index. Admit its complete sealed closure
+            // before resolving an explicit dependency into that native view.
+            if partial
+                .0
+                .source_inputs
+                .as_ref()
+                .and_then(|inputs| inputs.inputs.services.get(service))
+                .is_some_and(|s| {
+                    s.profile == "source-syntax" && super::modules::semantic(s).is_some()
+                })
+            {
+                retained_semantic_closure = true;
+                check::Check::retained(&repo, Some(&partial.1), &selected)?
+            } else {
+                partial
+            }
         } else {
             check::Check::retained(&repo, args.snapshot.as_deref(), &selected)?
         };
@@ -844,13 +862,23 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
         .and_then(|(_, b)| b.narratives.get(&subject));
     args.snapshot = Some(snapshot.clone());
     let validation = if !args.refresh && !args.dependency_ids.is_empty() {
-        Some(json!({
-            "mode":"SELECTED_DEPENDENCY_CLOSURE",
-            "inventory":"COMPLETE_CHECK_DEPENDENCY_MEMBERSHIP",
-            "payloads":"REQUESTED_DEPENDENCIES_FLOW_CANDIDATES_ALL_CAPTURE_SOURCES_AND_SOURCE_INPUTS",
-            "unread":"CAPTURE_OBSERVATION_INDEXES_CONTRACTS_AND_NONCANDIDATE_DEPENDENCY_PAYLOADS",
-            "exhaustiveIntegrityAudit":false
-        }))
+        Some(if retained_semantic_closure {
+            json!({
+                "mode":"RETAINED_SEMANTIC_OVERLAY_CLOSURE",
+                "inventory":"COMPLETE_CHECK_DEPENDENCY_MEMBERSHIP_AND_RETAINED_NATIVE_OVERLAY",
+                "payloads":"SELECTED_SERVICE_AND_RETAINED_NATIVE_OVERLAY",
+                "unread":"UNSELECTED_SERVICES",
+                "exhaustiveIntegrityAudit":false
+            })
+        } else {
+            json!({
+                "mode":"SELECTED_DEPENDENCY_CLOSURE",
+                "inventory":"COMPLETE_CHECK_DEPENDENCY_MEMBERSHIP",
+                "payloads":"REQUESTED_DEPENDENCIES_FLOW_CANDIDATES_ALL_CAPTURE_SOURCES_AND_SOURCE_INPUTS",
+                "unread":"CAPTURE_OBSERVATION_INDEXES_CONTRACTS_AND_NONCANDIDATE_DEPENDENCY_PAYLOADS",
+                "exhaustiveIntegrityAudit":false
+            })
+        })
     } else {
         None
     };
@@ -911,6 +939,19 @@ pub(super) fn context_items(
     args: &ContextArgs,
     retained: Option<&Narrative>,
 ) -> Result<Vec<Value>, ClewError> {
+    // Extraction packets can point into the retained compiler overlay. Explicit
+    // drill-down resolves those records through the same admitted consumer view;
+    // ordinary SOURCE catalogue and entrypoint reads keep their original scope.
+    if (!args.source_ids.is_empty() || !args.dependency_ids.is_empty())
+        && checked.services.values().any(|e| {
+            e.observations
+                .values()
+                .any(|o| o.kind == "SEMANTIC_OVERLAY")
+        })
+    {
+        let consumer = super::semantic_overlay::checked_view(checked)?;
+        return context_items(&consumer, args, retained);
+    }
     let subject = if let Some(id) = &args.service {
         format!("service:{id}")
     } else {

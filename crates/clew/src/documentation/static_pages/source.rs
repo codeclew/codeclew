@@ -40,6 +40,7 @@ pub(super) struct ProjectedCallable {
 
 pub(super) struct Context<'a> {
     pub(super) evidence: &'a ServiceEvidence,
+    pub(super) source_fallback: Option<&'a ServiceEvidence>,
     pub(super) citations: BTreeMap<String, Citation>,
     pub(super) observations: BTreeMap<String, Observation>,
     pub(super) sources: BTreeMap<String, Source>,
@@ -49,6 +50,7 @@ impl<'a> Context<'a> {
     pub(super) fn new(evidence: &'a ServiceEvidence) -> Self {
         Self {
             evidence,
+            source_fallback: None,
             citations: BTreeMap::new(),
             observations: BTreeMap::new(),
             sources: BTreeMap::new(),
@@ -170,6 +172,14 @@ pub(super) fn project_callable(
         return project_java(context, declaration);
     }
     if syntax::candidate(observation) {
+        if let Some(original) = context.source_fallback {
+            let mut fallback = Context::new(original);
+            let projected = syntax::project(&mut fallback, declaration)?;
+            context.citations.extend(fallback.citations);
+            context.observations.extend(fallback.observations);
+            context.sources.extend(fallback.sources);
+            return Ok(projected);
+        }
         return syntax::project(context, declaration);
     }
     if kotlin::candidate(observation) {

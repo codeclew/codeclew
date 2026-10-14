@@ -71,6 +71,8 @@ impl Query {
 /// The caller admits a retained Check; no producer label authenticates arbitrary JSON.
 pub fn extract(checked: &Check, snapshot: &str, query: &Query) -> Result<Value, ClewError> {
     query.validate()?;
+    let consumer = super::semantic_overlay::checked_view(checked)?;
+    let checked = &consumer;
     let service = checked
         .services
         .get(&query.service)

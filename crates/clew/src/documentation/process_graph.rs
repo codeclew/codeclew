@@ -25,6 +25,7 @@ pub(super) fn run(
 ) -> Result<Value, ClewError> {
     let (checked, handle) =
         super::check::Check::retained(repo, Some(snapshot), &BTreeSet::from([service.to_owned()]))?;
+    let checked = super::semantic_overlay::checked_view(&checked)?;
     let evidence = checked
         .services
         .get(service)
@@ -105,6 +106,7 @@ pub(super) fn resolve_work_root<'a>(
     request: &Request,
     checked: &'a super::check::Check,
 ) -> Result<ResolvedRoot<'a>, ClewError> {
+    let consumer = super::semantic_overlay::checked_view(checked)?;
     if let Some(service) = subject
         .strip_prefix("service:")
         .filter(|service| !service.trim().is_empty())
@@ -119,14 +121,13 @@ pub(super) fn resolve_work_root<'a>(
         let evidence = checked.services.get(service).ok_or_else(|| {
             invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
         })?;
+        let capable = &consumer.services[service];
         let declaration = evidence
             .observations
             .get(declaration_id)
             .filter(|observation| {
                 observation.service == service
-                    && callable_observation(observation)
-                    && exact_scope(observation).is_some()
-                    && owner_identity(observation).is_some()
+                    && capable.observations.get(&observation.id).is_some_and(|o| callable_observation(o) && exact_scope(o).is_some() && owner_identity(o).is_some())
                     && checked.dependencies.get(&observation.id).is_some_and(|dependency| {
                         dependency.kind == "SYMBOL" && dependency.digest == observation.digest
                     })
@@ -195,10 +196,14 @@ pub(super) fn resolve_work_root<'a>(
         )));
     }
     let declaration = matches[0];
+    let capable = consumer.services[&service]
+        .observations
+        .get(&declaration.id)
+        .unwrap_or(declaration);
     if declaration.service != service
-        || !callable_observation(declaration)
-        || exact_scope(declaration).is_none()
-        || owner_identity(declaration).is_none()
+        || !callable_observation(capable)
+        || exact_scope(capable).is_none()
+        || owner_identity(capable).is_none()
         || !checked
             .dependencies
             .get(&declaration.id)
@@ -247,20 +252,16 @@ pub(super) fn collect_from_work(work: &Work) -> Result<Value, ClewError> {
         .snapshot
         .as_deref()
         .ok_or_else(|| invalid("PROCESS_GRAPH_SNAPSHOT_REQUIRED: saved snapshot is unavailable"))?;
+    let consumer = super::semantic_overlay::checked_view(&work.checked)?;
     let selection = resolve_work_root(&work.subject, &work.request, &work.checked)?;
-    let evidence = work
-        .checked
-        .services
-        .get(&selection.service)
-        .ok_or_else(|| {
-            invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
-        })?;
-    let mut artifact = collect(
-        evidence,
-        selection.declaration,
-        snapshot,
-        &work.checked.input_digest,
-    )?;
+    let evidence = consumer.services.get(&selection.service).ok_or_else(|| {
+        invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
+    })?;
+    let declaration = evidence
+        .observations
+        .get(&selection.declaration.id)
+        .ok_or_else(|| invalid("compiler overlay Work root is missing"))?;
+    let mut artifact = collect(evidence, declaration, snapshot, &work.checked.input_digest)?;
     let artifact_digest = digest(&artifact)?;
     artifact["artifactDigest"] = json!(artifact_digest);
     Ok(artifact)

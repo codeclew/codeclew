@@ -88,8 +88,9 @@ pub(super) fn project_with_policy(
 }
 
 fn attach(checked: &Check, projection: &mut BundleProjection) -> Result<(), ClewError> {
-    super::linked::attach(checked, projection)?;
-    super::data_state::attach(checked, projection)?;
+    let semantic_checked = crate::documentation::semantic_overlay::checked_view(checked)?;
+    super::linked::attach(&semantic_checked, projection)?;
+    super::data_state::attach(&semantic_checked, projection)?;
     if uses_source_invocations(projection) {
         projection.schema = SOURCE_INVOCATION_SCHEMA.into();
     }
@@ -118,6 +119,11 @@ fn project_declarations(
         }
         let human_instructions = human_instructions(note_inputs, selection)?;
         let selected_evidence = checked.services.get(&selection.service);
+        let semantic = selected_evidence
+            .map(crate::documentation::semantic_overlay::view)
+            .transpose()?
+            .flatten();
+        let effective = semantic.as_ref().or(selected_evidence);
         let selected_exact_calls = [
             Some(selection.endpoint_declaration.as_str()),
             Some(selection.worker_declaration.as_str()),
@@ -126,16 +132,21 @@ fn project_declarations(
         .into_iter()
         .flatten()
         .any(|id| {
-            selected_evidence
-                .and_then(|evidence| evidence.observations.get(id))
+            effective
+                .and_then(|e| e.observations.get(id))
                 .is_some_and(source::has_exact_call_capability)
         });
         if selection.expand_data_state && !selection.expand_source_calls && !selected_exact_calls {
             return Err(invalid("expandDataState requires expandSourceCalls"));
         }
-        let evidence = selected_evidence
+        let source_evidence = selected_evidence
             .ok_or_else(|| invalid("native page selected service is not retained in Check"))?;
+        let evidence = effective.unwrap();
         let mut ctx = Context::new(evidence);
+        if semantic.is_some() {
+            ctx.source_fallback = Some(source_evidence);
+            ctx.sources.extend(source_evidence.sources.clone());
+        }
         let endpoint = source::project_callable(&mut ctx, &selection.endpoint_declaration)?;
         let worker = source::project_callable(&mut ctx, &selection.worker_declaration)?;
         let wiring = selection

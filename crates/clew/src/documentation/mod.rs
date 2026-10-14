@@ -68,6 +68,7 @@ pub mod review;
 pub mod reviewed_answers;
 mod section_author;
 pub mod sections;
+mod semantic_overlay;
 pub mod snapshot_pins;
 mod source_data_context;
 mod source_inputs;
