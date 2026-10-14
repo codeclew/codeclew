@@ -71,6 +71,12 @@ impl Query {
 /// The caller admits a retained Check; no producer label authenticates arbitrary JSON.
 pub fn extract(checked: &Check, snapshot: &str, query: &Query) -> Result<Value, ClewError> {
     query.validate()?;
+    let root_id = checked
+        .services
+        .get(&query.service)
+        .map(|e| super::declaration_migration::canonical(e, &query.root_declaration))
+        .transpose()?
+        .unwrap_or_else(|| query.root_declaration.clone());
     let consumer = super::semantic_overlay::checked_view(checked)?;
     let checked = &consumer;
     let service = checked
@@ -82,7 +88,7 @@ pub fn extract(checked: &Check, snapshot: &str, query: &Query) -> Result<Value, 
     }
     let root = service
         .observations
-        .get(&query.root_declaration)
+        .get(&root_id)
         .filter(|o| {
             o.service == query.service
                 && process_graph::callable_observation(o)

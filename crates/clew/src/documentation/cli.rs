@@ -279,7 +279,7 @@ pub enum ContextFormat {
     Compact,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct ContextArgs {
     #[arg(long)]
     pub root: PathBuf,
@@ -838,7 +838,14 @@ fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
                 .as_ref()
                 .and_then(|inputs| inputs.inputs.services.get(service))
                 .is_some_and(|s| {
-                    s.profile == "source-syntax" && super::modules::semantic(s).is_some()
+                    (s.profile == "source-syntax"
+                        && (super::modules::semantic(s).is_some()
+                            || args
+                                .dependency_ids
+                                .iter()
+                                .any(|id| !partial.0.dependencies.contains_key(id))))
+                        || matches!(s.language.as_str(), "java" | "kotlin" | "typescript")
+                            && s.profile != "source-syntax"
                 })
             {
                 retained_semantic_closure = true;
@@ -944,13 +951,27 @@ pub(super) fn context_items(
     // ordinary SOURCE catalogue and entrypoint reads keep their original scope.
     if (!args.source_ids.is_empty() || !args.dependency_ids.is_empty())
         && checked.services.values().any(|e| {
-            e.observations
-                .values()
-                .any(|o| o.kind == "SEMANTIC_OVERLAY")
+            crate::documentation::declaration_migration::present(e) || {
+                e.observations
+                    .values()
+                    .any(|o| o.kind == "SEMANTIC_OVERLAY")
+            }
         })
     {
+        let mut resolved = args.clone();
+        if let Some(evidence) = args
+            .service
+            .as_ref()
+            .and_then(|id| checked.services.get(id))
+        {
+            resolved.dependency_ids = args
+                .dependency_ids
+                .iter()
+                .map(|id| super::declaration_migration::canonical(evidence, id))
+                .collect::<Result<_, _>>()?;
+        }
         let consumer = super::semantic_overlay::checked_view(checked)?;
-        return context_items(&consumer, args, retained);
+        return context_items(&consumer, &resolved, retained);
     }
     let subject = if let Some(id) = &args.service {
         format!("service:{id}")

@@ -127,7 +127,7 @@ pub(super) fn view(source: &ServiceEvidence) -> Result<Option<ServiceEvidence>, 
         .filter(|o| o.kind == "SEMANTIC_OVERLAY")
         .collect();
     let overlay = match overlays.as_slice() {
-        [] => return Ok(None),
+        [] => return super::declaration_migration::view(source),
         [overlay] => *overlay,
         _ => return Err(invalid("ambiguous retained compiler overlay")),
     };

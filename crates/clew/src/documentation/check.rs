@@ -269,7 +269,11 @@ fn capture_selected_with(
     super::composition::validate_retained(repository, &inputs)?;
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
-    let previous = if selected.is_empty() {
+    let previous = if selected.is_empty()
+        && !services
+            .values()
+            .any(|s| matches!(s.language.as_str(), "java" | "kotlin" | "typescript"))
+    {
         None
     } else {
         let path = repository.path(".codeclew/cache/latest-check.json")?;
@@ -303,7 +307,24 @@ fn capture_selected_with(
         match super::progress::run("ACQUIRE_SERVICE_EVIDENCE", || {
             capture(service, inputs.evidence_expectations.get(id), targets)
         }) {
-            Ok(value) => {
+            Ok(mut value) => {
+                if matches!(service.language.as_str(), "java" | "kotlin" | "typescript")
+                    && let Some(prior) = previous
+                        .as_ref()
+                        .filter(|p| {
+                            p.source_inputs
+                                .as_ref()
+                                .and_then(|s| s.inputs.services.get(id))
+                                .is_some_and(|old| {
+                                    old.repository_id == service.repository_id
+                                        && old.repository == service.repository
+                                        && old.language == service.language
+                                })
+                        })
+                        .and_then(|p| p.services.get(id))
+                {
+                    super::declaration_migration::attach(&mut value, prior)?;
+                }
                 evidence.insert(id.clone(), value);
             }
             Err(error) => {

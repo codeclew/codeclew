@@ -25,6 +25,14 @@ pub(super) fn run(
 ) -> Result<Value, ClewError> {
     let (checked, handle) =
         super::check::Check::retained(repo, Some(snapshot), &BTreeSet::from([service.to_owned()]))?;
+    let declaration = super::declaration_migration::canonical(
+        checked
+            .services
+            .get(service)
+            .ok_or_else(|| invalid("selected service is unavailable"))?,
+        declaration,
+    )?;
+    let declaration = declaration.as_str();
     let checked = super::semantic_overlay::checked_view(&checked)?;
     let evidence = checked
         .services
@@ -121,10 +129,11 @@ pub(super) fn resolve_work_root<'a>(
         let evidence = checked.services.get(service).ok_or_else(|| {
             invalid("PROCESS_GRAPH_SERVICE_UNAVAILABLE: Work has no selected service evidence")
         })?;
+        let declaration_id = super::declaration_migration::canonical(evidence, declaration_id)?;
         let capable = &consumer.services[service];
         let declaration = evidence
             .observations
-            .get(declaration_id)
+            .get(&declaration_id)
             .filter(|observation| {
                 observation.service == service
                     && capable.observations.get(&observation.id).is_some_and(|o| callable_observation(o) && exact_scope(o).is_some() && owner_identity(o).is_some())

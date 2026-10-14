@@ -111,8 +111,26 @@ fn project_declarations(
     };
     let mut ids = BTreeSet::new();
     let mut pages = Vec::new();
-    for selection in selections {
-        if selection.id.is_empty() || !ids.insert(&selection.id) {
+    for requested in selections {
+        let mut canonical = requested.clone();
+        if let Some(evidence) = checked.services.get(&requested.service) {
+            canonical.endpoint_declaration =
+                crate::documentation::declaration_migration::canonical(
+                    evidence,
+                    &requested.endpoint_declaration,
+                )?;
+            canonical.worker_declaration = crate::documentation::declaration_migration::canonical(
+                evidence,
+                &requested.worker_declaration,
+            )?;
+            canonical.wiring_declaration = requested
+                .wiring_declaration
+                .as_ref()
+                .map(|id| crate::documentation::declaration_migration::canonical(evidence, id))
+                .transpose()?;
+        }
+        let selection = &canonical;
+        if selection.id.is_empty() || !ids.insert(selection.id.clone()) {
             return Err(invalid(
                 "native page selection IDs must be nonempty and unique",
             ));
@@ -142,8 +160,47 @@ fn project_declarations(
         let source_evidence = selected_evidence
             .ok_or_else(|| invalid("native page selected service is not retained in Check"))?;
         let evidence = effective.unwrap();
+        let legacy = crate::documentation::declaration_migration::source(source_evidence)?;
+        let previous_compiler =
+            crate::documentation::declaration_migration::compiler(source_evidence)?;
         let mut ctx = Context::new(evidence);
-        if semantic.is_some() {
+        if let Some(legacy) = &legacy {
+            ctx.source_fallback = Some(legacy);
+            ctx.sources.extend(legacy.sources.clone());
+            let mut original = Context::new(legacy);
+            for id in [
+                &selection.endpoint_declaration,
+                &selection.worker_declaration,
+            ]
+            .into_iter()
+            .chain(selection.wiring_declaration.as_ref())
+            {
+                if legacy.observations.contains_key(id) {
+                    source::project_callable(&mut original, id)?;
+                }
+            }
+            ctx.citations.extend(original.citations);
+            if source_evidence.extractor == crate::documentation::model::SOURCE_EXTRACTOR
+                && let Some(compiler) = &previous_compiler
+            {
+                let mut original = Context::new(compiler);
+                for id in [
+                    &selection.endpoint_declaration,
+                    &selection.worker_declaration,
+                ]
+                .into_iter()
+                .chain(selection.wiring_declaration.as_ref())
+                {
+                    if let Some(native_id) =
+                        crate::documentation::declaration_migration::native_id(source_evidence, id)?
+                    {
+                        source::project_callable(&mut original, &native_id)?;
+                    }
+                }
+                ctx.citations.extend(original.citations);
+                ctx.sources.extend(original.sources);
+            }
+        } else if semantic.is_some() {
             ctx.source_fallback = Some(source_evidence);
             ctx.sources.extend(source_evidence.sources.clone());
         }
@@ -299,9 +356,14 @@ fn project_declarations(
         schema: schema.into(),
         input_digest: checked.input_digest.clone(),
         context_digest: checked.context_digest.clone(),
-        selection_digest: digest(&selections)?,
+        selection_digest: digest(&pages.iter().map(|p| &p.selection).collect::<Vec<_>>())?,
         endpoint_publication_policy_digest: None,
-        requested_selection_digest: None,
+        requested_selection_digest: selections
+            .iter()
+            .zip(&pages)
+            .any(|(a, b)| a != &b.selection)
+            .then(|| digest(&selections))
+            .transpose()?,
         pages,
         source_call_graph: None,
     })
