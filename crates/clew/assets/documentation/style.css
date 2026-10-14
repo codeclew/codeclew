@@ -56,3 +56,5 @@ a{color:#087dc1}.logo{background:#087dc1;color:white}.topbar{background:#fffdf8;
 .thread-code-line::before{content:attr(data-line);display:inline-block;min-width:4.5em;padding-right:1em;text-align:right;color:var(--muted);user-select:none}
 
 .thread-branch-arms{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px}.thread-branch-arms>section{border:1px solid var(--line);border-radius:8px;padding:12px;min-width:0}.thread-branch-arms h5{font-size:14px;overflow-wrap:anywhere;margin:0 0 8px}.thread-branch-mode{font-weight:600}.thread-effects{border-left:3px solid var(--line);padding-left:12px}.thread-effects li{margin-bottom:8px}.process-extraction{margin-top:20px;padding:16px;border:1px solid var(--line);border-radius:8px}.process-extraction pre{white-space:pre-wrap;overflow-wrap:anywhere}
+
+.evidence-contexts p code{white-space:normal;overflow-wrap:anywhere}
