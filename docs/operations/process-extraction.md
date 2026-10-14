@@ -41,6 +41,23 @@ bodies. Byte counts sum distinct source object payloads; overlapping source span
 are not deduplicated as physical code bytes.
 
 Outcome queries compute a backward fixed point over retained call membership.
+Policy `retained-process-envelope/0.2` uses a reverse adjacency worklist with
+one bit per requested outcome (at most 32). A single-outcome query tries at most
+two full scans before indexing; an exhausted or fully covered envelope returns
+early. The warm-up still uses linear method-membership checks and can cost
+O(VE); the retained envelope is bounded to 64 methods. Indexed propagation
+avoids repeated global scans after the warm-up. Event ownership and event
+presence are indexed once.
+
+Each outcome carries sorted `structuralMethodIds`; each method carries
+`structuralOutcomeEventIds` in query order. The existing
+`onStructuralOutcomePath` remains the union for older consumers. These additive
+fields separate requested outcomes; they do not add a dependence model. Missing,
+unbound or budget-cut outcomes have no structural members. Edges with missing
+retained endpoints never create new members. The implementation digest now also
+binds `process_reachability.rs`; old packets remain historical under their old
+policy, and regenerated packets receive new digests.
+
 This annotation is a structural outcome path, not a data/control/effect chop or
 path-feasibility result. Methods outside that path are retained conservatively.
 Missing outcomes are `NOT_FOUND_UNKNOWN`, including outcomes outside a budget

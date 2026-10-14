@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const POLICY: &str = "retained-process-envelope/0.1";
+pub const POLICY: &str = "retained-process-envelope/0.2";
 pub const MAX_PACKET_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -141,41 +141,63 @@ fn packet(
     if query.configuration_scope == "UNSPECIFIED" {
         frontier.push(json!({"kind":"SEMANTIC","code":"CONFIGURATION_SCOPE_UNSPECIFIED"}));
     }
-    let mut outcome_results = Vec::new();
-    let mut backward = BTreeSet::new();
-    for id in &query.outcome_event_ids {
-        let matches: Vec<_> = methods
+    let seeds: Vec<_> = if query.outcome_event_ids.is_empty() {
+        Vec::new()
+    } else {
+        // Index event ownership once. A criterion must bind exactly one retained event
+        // and one retained method; possible/ambiguous associations are not seeds.
+        let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for method in &methods {
+            if let Some(method_id) = method["id"].as_str() {
+                for event in method["eventIds"].as_array().into_iter().flatten() {
+                    if let Some(event_id) = event.as_str() {
+                        owners.entry(event_id).or_default().push(method_id);
+                    }
+                }
+            }
+        }
+        let mut event_counts = BTreeMap::<&str, usize>::new();
+        for event in &events {
+            if let Some(id) = event["id"].as_str() {
+                *event_counts.entry(id).or_default() += 1;
+            }
+        }
+        query
+            .outcome_event_ids
             .iter()
-            .filter(|m| {
-                m["eventIds"]
-                    .as_array()
-                    .is_some_and(|ids| ids.iter().any(|v| v == id))
+            .map(|id| match owners.get(id.as_str()).map(Vec::as_slice) {
+                Some([owner]) if event_counts.get(id.as_str()) == Some(&1) => Some(*owner),
+                _ => None,
+            })
+            .collect()
+    };
+    let backward = if seeds.iter().all(Option::is_none) {
+        BTreeMap::new()
+    } else {
+        let method_ids: Vec<_> = methods.iter().filter_map(|m| m["id"].as_str()).collect();
+        let retained_edges: Vec<_> = edges
+            .iter()
+            .filter_map(|edge| {
+                Some((
+                    edge["fromMethodId"].as_str()?,
+                    edge["targetMethodId"].as_str()?,
+                ))
             })
             .collect();
-        let found = matches.len() == 1 && events.iter().any(|e| e["id"] == *id);
-        if found {
-            backward.insert(matches[0]["id"].as_str().unwrap_or("").to_owned());
-        } else {
+        super::process_reachability::outcome_masks(&method_ids, &retained_edges, &seeds)
+    };
+    let mut outcome_results = Vec::new();
+    for (bit, id) in query.outcome_event_ids.iter().enumerate() {
+        let found = seeds[bit].is_some();
+        if !found {
             frontier
                 .push(json!({"kind":"DISCOVERY","code":"OUTCOME_NOT_FOUND_UNKNOWN","eventId":id}));
         }
-        outcome_results.push(json!({"eventId":id,"discovery":if found { "FOUND_IN_RETAINED_ENVELOPE" } else { "NOT_FOUND_UNKNOWN" },"semanticClosure":"UNKNOWN"}));
-    }
-    // Fixed point over call membership only; no path feasibility or data-dependence claim.
-    loop {
-        let before = backward.len();
-        for edge in &edges {
-            if edge["targetMethodId"]
-                .as_str()
-                .is_some_and(|id| backward.contains(id))
-                && let Some(id) = edge["fromMethodId"].as_str()
-            {
-                backward.insert(id.to_owned());
-            }
-        }
-        if backward.len() == before {
-            break;
-        }
+        let structural_methods: Vec<_> = backward
+            .iter()
+            .filter_map(|(method, mask)| (mask & (1_u32 << bit) != 0).then_some(*method))
+            .collect();
+        outcome_results.push(json!({"eventId":id,"discovery":if found { "FOUND_IN_RETAINED_ENVELOPE" } else { "NOT_FOUND_UNKNOWN" },"structuralMethodIds":structural_methods,"semanticClosure":"UNKNOWN"}));
     }
     for (_, raw) in graph["sources"].as_object().into_iter().flatten() {
         let source: super::model::Source = serde_json::from_value(raw.clone())
@@ -200,11 +222,16 @@ fn packet(
         });
     }
     frontier.sort_by_key(Value::to_string);
-    let method_rows: Vec<_> = methods.iter().map(|m| json!({"id":m["id"],"symbol":m["symbol"],"scope":m["scope"],"service":m["service"],"sourceIds":m["sourceIds"],"eventIds":m["eventIds"],"eventAssociation":m["eventAssociation"],"providerSlots":m["providerSlots"],"callBindings":m["callBindings"],"onStructuralOutcomePath":m["id"].as_str().is_some_and(|id| backward.contains(id)),"semanticClosure":"UNKNOWN"})).collect();
+    let method_rows: Vec<_> = methods.iter().map(|m| {
+        let mask = m["id"].as_str().and_then(|id| backward.get(id)).copied().unwrap_or(0);
+        let outcome_ids: Vec<_> = query.outcome_event_ids.iter().enumerate()
+            .filter_map(|(bit, event)| (mask & (1_u32 << bit) != 0).then_some(event)).collect();
+        json!({"id":m["id"],"symbol":m["symbol"],"scope":m["scope"],"service":m["service"],"sourceIds":m["sourceIds"],"eventIds":m["eventIds"],"eventAssociation":m["eventAssociation"],"providerSlots":m["providerSlots"],"callBindings":m["callBindings"],"onStructuralOutcomePath":mask != 0,"structuralOutcomeEventIds":outcome_ids,"semanticClosure":"UNKNOWN"})
+    }).collect();
     let event_rows: Vec<_> = events.iter().map(|e| json!({"id":e["id"],"ownerSymbol":e["symbol"],"sourceIds":e["sourceIds"],"factDigest":e["digest"],"detail":e["normalized"]})).collect();
     let mut value = json!({
         "schema":"codeclew-process-extraction-packet/0.1","policy":POLICY,
-        "implementationDigest":crate::canonical::hash_bytes(concat!(include_str!("process_extract.rs"),include_str!("process_graph.rs"),include_str!("process_call_bindings.rs")).as_bytes()),
+        "implementationDigest":crate::canonical::hash_bytes(concat!(include_str!("process_extract.rs"),include_str!("process_graph.rs"),include_str!("process_call_bindings.rs"),include_str!("process_reachability.rs")).as_bytes()),
         "snapshot":snapshot,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "query":query,"rootFactDigest":root.digest,"serviceDigest":checked.services[&query.service].service_digest,
         "extractor":checked.services[&query.service].extractor,"runtimeMode":checked.services[&query.service].runtime_mode,
@@ -257,4 +284,62 @@ pub(super) fn project(
         ));
     }
     extract(checked, snapshot, &query).map(Some)
+}
+
+#[cfg(test)]
+mod criterion_membership_tests {
+    use super::*;
+    #[test]
+    fn ambiguous_owner_or_event_membership_never_becomes_an_outcome_seed() {
+        let checked: Check = serde_json::from_value(json!({
+            "schema":"synthetic-test", "inputDigest":"input", "contextDigest":"context",
+            "services":{"svc":{"schema":"codeclew-documentation-service-evidence/1.0", "service":"svc", "revision":"rev", "serviceDigest":"service", "extractor":"SYNTHETIC_TEST", "runtimeMode":"SYNTHETIC_TEST", "coverage":"PARTIAL", "boundaries":[],"entrypoints":[],"observations":{},"sources":{},"contracts":{}}},
+            "dependencies":{},"interactions":{},"scenarios":{},"unresolved":{}
+        })).unwrap();
+        let root: Observation = serde_json::from_value(json!({"id":"a", "kind":"SYMBOL", "service":"svc", "symbol":"a", "normalized":{}, "digest":"root", "sourceIds":[]})).unwrap();
+        let query = Query {
+            purpose: crate::thread_question::Purpose::Process,
+            service: "svc".into(),
+            root_declaration: "a".into(),
+            configuration_scope: "UNSPECIFIED".into(),
+            outcome_event_ids: vec!["criterion".into()],
+            budgets: Budgets::default(),
+        };
+        for case in [
+            "unique",
+            "two-owners",
+            "repeated-owner-slot",
+            "duplicate-events",
+            "event-missing",
+        ] {
+            let mut graph = json!({"methods":[{"id":"a","eventIds":["criterion"]},{"id":"b","eventIds":[]}],"events":[{"id":"criterion"}],"edges":[],"sources":{},"frontiers":[],"coverage":{"knownReachableCollection":"COMPLETE"}});
+            match case {
+                "two-owners" => graph["methods"][1]["eventIds"] = json!(["criterion"]),
+                "repeated-owner-slot" => {
+                    graph["methods"][0]["eventIds"] = json!(["criterion", "criterion"])
+                }
+                "duplicate-events" => {
+                    graph["events"] = json!([{"id":"criterion"},{"id":"criterion"}])
+                }
+                "event-missing" => graph["events"] = json!([]),
+                _ => {}
+            }
+            let result = packet(&checked, "snapshot", &query, &graph, &root).unwrap();
+            assert_eq!(
+                result["outcomes"][0]["discovery"] == "FOUND_IN_RETAINED_ENVELOPE",
+                case == "unique",
+                "{case}"
+            );
+            assert_eq!(
+                result["outcomes"][0]["structuralMethodIds"],
+                if case == "unique" {
+                    json!(["a"])
+                } else {
+                    json!([])
+                },
+                "{case}"
+            );
+            assert_eq!(result["programSemanticClosure"], false);
+        }
+    }
 }
