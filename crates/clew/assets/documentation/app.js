@@ -739,12 +739,39 @@ function sequenceWrap(text,max){
  const chunks=String(text??'').split(' ').flatMap(word=>{const points=Array.from(word),parts=[];for(let i=0;i<points.length;i+=max)parts.push(points.slice(i,i+max).join(''));return parts.length?parts:[''];});
  return wrap(chunks.join(' '),max);
 }
+// Project only visible sequence actions. The accepted event stream remains
+// intact for readable behavior, source inspection and diagram exports.
+function sequenceEvents(o){
+ const root=[],stack=[{nodes:root}];
+ for(const e of o.events){
+  const current=stack[stack.length-1];
+  if(['alt','loop','opt'].includes(e.kind)){
+   const arm={marker:e,nodes:[]},frame={arms:[arm],end:null};
+   current.nodes.push(frame);stack.push({frame,nodes:arm.nodes});
+  }else if(e.kind==='else'&&current.frame?.arms[0].marker.kind==='alt'){
+   const arm={marker:e,nodes:[]};current.frame.arms.push(arm);current.nodes=arm.nodes;
+  }else if(e.kind==='end'&&stack.length>1){current.frame.end=e;stack.pop();}
+  else if(e.kind!=='note'){current.nodes.push({event:e});}
+ }
+ const project=nodes=>nodes.flatMap(node=>{
+  if(node.event)return [node.event];
+  const arms=node.arms.map((arm,index)=>({...arm,index,events:project(arm.nodes)})).filter(arm=>arm.events.length);
+  if(!arms.length)return [];
+  const first=arms[0];
+  // A surviving alternative stays conditional on the original guards. Keep
+  // their complete text rather than making an else action unconditional or
+  // inventing a logical negation of authored prose.
+  const marker=first.index===0?first.marker:{...first.marker,kind:'alt',text:[t('Otherwise'),...node.arms.slice(0,first.index).map(arm=>arm.marker.text),first.marker.text.toLowerCase()==='otherwise'?'':first.marker.text].filter(Boolean).join(' · ')};
+  return [marker,...first.events,...arms.slice(1).flatMap(arm=>[arm.marker,...arm.events]),...(node.end?[node.end]:[])];
+ });
+ return project(root);
+}
 function sequenceLayout(o){
  const W=Math.max(800,(o.participants.length-1)*215+240),xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,o.participants.length-1)]));
  const actors=o.participants.map(p=>({...p,titleLines:sequenceWrap(p.label,20),technicalLines:sequenceWrap(p.service||t('External participant'),28)}));
  const headerHeight=Math.max(48,...actors.map(p=>18+p.titleLines.length*14+p.technicalLines.length*11)),headerBottom=9+headerHeight;
  let y=headerBottom+37,stack=[],frames=[],rows=[];
- for(const e of o.events.filter(e=>e.kind!=='note')){
+ for(const e of sequenceEvents(o)){
   const depth=stack.length,branch=['alt','else','loop','opt'].includes(e.kind),left=32+Math.max(0,depth-(e.kind==='else'?1:0))*12;
   const a=xs[e.from],b=xs[e.to],width=Math.max(100,Math.abs(a-b));
   const lines=e.kind==='end'?[]:sequenceWrap(branch?`${t(e.kind)} · ${e.text}`:e.text,branch?Math.max(20,Math.floor((W-left*2-16)/6)):Math.max(16,Math.floor(width/6)));

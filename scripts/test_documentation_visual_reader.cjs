@@ -177,14 +177,34 @@ test('sequence SVG omits long Notes while readable behavior retains nested note-
  const original=JSON.stringify(op),r=load(data),svg=r.run('diagram(D.operations[0])');
  assert.doesNotMatch(svg,/The common envelope requires|newer stored timestamp|rejection-write/);
  assert.doesNotMatch(svg,/data-event="(?:envelope|note-only|rejection-note)"/);
- for(const id of ['message','outer','inner','otherwise','result'])assert.ok(svg.includes(`data-event="${id}"`));
+ for(const id of ['message','result'])assert.ok(svg.includes(`data-event="${id}"`));
+ assert.doesNotMatch(svg,/data-event="(?:outer|inner|otherwise)"/);
  assert.equal((svg.match(/class="step-number"/g)||[]).length,2);
- assert.match(svg,/>5<\/text>/);
+ assert.match(svg,/>2<\/text>/);
  const behavior=r.run('behaviorPseudocode(D.operations[0])');
  assert.ok(behavior.includes(longNote));assert.match(behavior,/newer stored timestamp|rejection-write/);
  assert.equal(r.run('JSON.stringify(D.operations[0])'),original);
  r.click({sources:'same-source',sourceOperation:op.id});
  assert.match(r.e('source-code').innerHTML,/ACCEPTED SOURCE/);
+});
+
+test('sequence projection prunes empty nested arms and retains surviving else guards without changing accepted evidence',()=>{
+ const data=fixture(),op=data.operations[0];
+ const event=(id,kind,text)=>({id,kind,text,from:'caller',to:'dashboard',sourceIds:['same-source'],dependencyIds:['dep-'+id]});
+ op.participants=[{id:'caller',label:'Caller'},{id:'dashboard',label:'Dashboard'}];
+ op.events=[event('guard','alt','A duplicate was already processed'),event('empty-loop','loop','For every duplicate'),event('empty-inner','opt','A stored timestamp is newer'),event('note','note','Keep the current value'),event('inner-end','end',''),event('loop-end','end',''),event('surviving-else','else','For a new event'),event('write','message','Apply the forecast'),event('outer-end','end','')];
+ const before=JSON.stringify(data),r=load(data),projected=JSON.parse(r.run('JSON.stringify(sequenceEvents(D.operations[0]))'));
+ assert.deepEqual(projected.map(e=>e.id),['surviving-else','write','outer-end']);
+ assert.equal(projected[0].kind,'alt');assert.match(projected[0].text,/Otherwise/);assert.ok(projected[0].text.includes('A duplicate was already processed'));assert.ok(projected[0].text.includes('For a new event'));
+ assert.deepEqual(projected[1],op.events.find(e=>e.id==='write'));
+ const svg=r.run('diagram(D.operations[0])');assert.doesNotMatch(svg,/data-event="(?:guard|empty-loop|empty-inner|note)"/);assert.match(svg,/data-event="surviving-else"/);
+ const behavior=r.run('behaviorPseudocode(D.operations[0])');for(const text of ['A duplicate was already processed','A stored timestamp is newer','Keep the current value','For a new event','Apply the forecast'])assert.ok(behavior.includes(text));
+ assert.equal(JSON.stringify(data),before);assert.equal(r.run('JSON.stringify(D.operations[0])'),JSON.stringify(op));
+ r.click({sources:'same-source',sourceOperation:op.id});assert.match(r.e('source-code').innerHTML,/ACCEPTED SOURCE/);
+ const both={...op,events:[event('both','alt','First condition'),event('left','return','First result'),event('else','else','Other condition'),event('right','declared','Second result'),event('end','end','')]};
+ assert.deepEqual(JSON.parse(r.run(`JSON.stringify(sequenceEvents(${JSON.stringify(both)}))`)),both.events);
+ const emptyElse={...op,events:[event('first','alt','First condition'),event('left','message','First result'),event('empty-else','else','Other condition'),event('empty-note','note','No action'),event('end','end','')]};
+ assert.deepEqual(JSON.parse(r.run(`JSON.stringify(sequenceEvents(${JSON.stringify(emptyElse)}))`)).map(e=>e.id),['first','left','end']);
 });
 
 test('sequence layout places arrows below complete Weather labels and bounds participant titles',()=>{
