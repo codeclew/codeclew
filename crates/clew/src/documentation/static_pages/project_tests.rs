@@ -3209,11 +3209,7 @@ fn kotlin_function_admission_rejects_ambiguous_and_unsupported_descriptors() {
     );
     let checked = kotlin_check(syntax);
     let error = project(&checked, &[kotlin_selection("syntax-only", "syntax-only")]).unwrap_err();
-    assert!(
-        error
-            .message
-            .contains("syntax-only declarations are unsupported")
-    );
+    assert!(error.message.contains("no supported compiler projection"));
 }
 
 #[test]

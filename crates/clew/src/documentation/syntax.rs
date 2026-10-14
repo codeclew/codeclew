@@ -1086,6 +1086,134 @@ mod tests {
         e
     }
     #[test]
+    fn source_pages_keep_all_typescript_branches_calls_and_deferred_events() {
+        let evidence = fixture(
+            "typescript",
+            r#"
+export async function savePlace(cityId: string): Promise<unknown> {
+    if (!cityId) throw new Error("missing city");
+    const retry = async () => { await send(cityId); };
+    try { return await retry(); } finally { await close(); }
+}
+"#,
+        );
+        let owner = evidence
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "savePlace")
+            .unwrap();
+        let id = owner.id.clone();
+        let expected_events = owner.normalized["documentation"]["events"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let checked = super::super::check::assemble(
+            "source-input".into(),
+            BTreeMap::from([(evidence.service.clone(), evidence)]),
+            BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let selection = serde_json::from_value(json!({"id":"save-place","service":"orders","endpointDeclaration":id,"workerDeclaration":id})).unwrap();
+        let projection = super::super::static_pages::project(&checked, &[selection]).unwrap();
+        let page = &projection.pages[0];
+        assert_eq!(page.endpoint.authority, "SYNTAX_DECLARATION");
+        assert!(page.endpoint.control_flow.is_none());
+        assert!(page.endpoint.retained_call_sites.is_none());
+        let outline = page.endpoint.source_outline.as_ref().unwrap();
+        assert_eq!(outline.authority, "SYNTAX_SOURCE_STRUCTURE");
+        assert_eq!(
+            outline
+                .events
+                .iter()
+                .map(|e| e.event.clone())
+                .collect::<Vec<_>>(),
+            expected_events
+        );
+        for kind in [
+            "IF", "THROW", "DEFERRED", "CALL", "TRY", "RETURN", "FINALLY",
+        ] {
+            assert!(outline.events.iter().any(|e| e.kind == kind), "{kind}");
+        }
+        assert!(
+            outline
+                .events
+                .iter()
+                .all(|event| page.citations.contains_key(&event.citation_id))
+        );
+    }
+
+    #[test]
+    fn source_pages_reject_corrupt_event_set_source_and_order_without_kotlin_inference() {
+        let original = fixture(
+            "typescript",
+            "export function savePlace(id: string) { if (id) return send(id); }",
+        );
+        let owner = original
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.normalized["name"] == "savePlace")
+            .unwrap();
+        let id = owner.id.clone();
+        for case in [
+            "missing-flow",
+            "wrong-bytes",
+            "future-parent",
+            "wrong-producer",
+        ] {
+            let mut evidence = original.clone();
+            let flow_id = evidence
+                .observations
+                .values()
+                .find(|o| {
+                    o.kind == "FLOW" && o.symbol == owner.symbol && o.normalized["ordinal"] == 0
+                })
+                .unwrap()
+                .id
+                .clone();
+            match case {
+                "missing-flow" => {
+                    evidence.observations.remove(&flow_id);
+                }
+                "wrong-bytes" => {
+                    let source_id = evidence.observations[&flow_id].source_ids[0].clone();
+                    let source = evidence.sources.get_mut(&source_id).unwrap();
+                    source.text = "not the original expression".into();
+                    source.text_digest = canonical::hash_bytes(source.text.as_bytes());
+                }
+                "future-parent" => {
+                    let flow = evidence.observations.get_mut(&flow_id).unwrap();
+                    flow.normalized["parentOrdinal"] = json!(99);
+                    flow.digest = digest(&flow.normalized).unwrap();
+                    let event = flow.normalized.clone();
+                    let declaration = evidence.observations.get_mut(&id).unwrap();
+                    declaration.normalized["documentation"]["events"][0] = event;
+                    declaration.digest = digest(&declaration.normalized).unwrap();
+                }
+                "wrong-producer" => evidence.extractor = "foreign-producer".into(),
+                _ => unreachable!(),
+            }
+            let checked = super::super::check::assemble(
+                "source-input".into(),
+                BTreeMap::from([(evidence.service.clone(), evidence)]),
+                BTreeMap::new(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            let selection = serde_json::from_value(json!({"id":"save-place","service":"orders","endpointDeclaration":id,"workerDeclaration":id})).unwrap();
+            let error = super::super::static_pages::project(&checked, &[selection]).unwrap_err();
+            assert!(
+                error.message.contains("SOURCE syntax"),
+                "{case}: {}",
+                error.message
+            );
+            assert!(!error.message.contains("Kotlin"));
+        }
+    }
+
+    #[test]
     fn typescript_module_constants_aliases_and_arrow_roots_remain_readable() {
         let text = r#"
 const TOPIC = 'weather.forecast-updated';

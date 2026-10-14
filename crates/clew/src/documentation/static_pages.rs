@@ -19,6 +19,23 @@ use std::path::{Path, PathBuf};
 
 pub use project::project;
 
+#[cfg(test)]
+#[test]
+#[ignore = "manual replay of a caller-provided retained snapshot; requires CODECLEW_PAGES_REPLAY_* paths"]
+fn source_pages_saved_snapshot_replay() {
+    let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path is required"));
+    let rendered = run(Command::Render {
+        root: path("CODECLEW_PAGES_REPLAY_ROOT"),
+        snapshot: std::env::var("CODECLEW_PAGES_REPLAY_SNAPSHOT")
+            .expect("explicit snapshot is required"),
+        input: path("CODECLEW_PAGES_REPLAY_INPUT"),
+        output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
+    })
+    .expect("saved SOURCE pages replay must render");
+    assert_eq!(rendered["status"], "RENDERED");
+    println!("{}", serde_json::to_string(&rendered).unwrap());
+}
+
 fn write_if_policy_current(
     repo: &Repository,
     policy_digest: &str,

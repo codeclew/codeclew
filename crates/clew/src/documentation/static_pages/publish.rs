@@ -392,6 +392,7 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
         "KOTLIN_PSI_WITH_K2_CALL_TARGETS" => "Kotlin",
         "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE" => "TypeScript",
         "RUST_SYN_SOURCE_STRUCTURE" => "Rust",
+        "SYNTAX_SOURCE_STRUCTURE" => "syntax",
         _ => "C#",
     };
     let event_label = if kotlin { "PSI" } else { "Source" };
@@ -399,6 +400,8 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
         "This tree preserves retained Kotlin PSI structure and exact K2 call-target metadata. It is not an execution trace: PSI conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
     } else if outline.authority == "TYPESCRIPT_COMPILER_SOURCE_STRUCTURE" {
         "This tree preserves retained TypeScript compiler source structure and admitted selected-declaration targets. Source conditions do not establish predicate truth; event ordinals do not represent runtime invocation counts, and receiver dispatch remains unresolved."
+    } else if outline.authority == "SYNTAX_SOURCE_STRUCTURE" {
+        "This tree preserves exact retained source syntax in lexical order. Calls remain unresolved; branches and deferred bodies do not establish execution, compiler type resolution, predicate truth, receiver identity, reachability or state effects."
     } else if outline.authority == "RUST_SYN_SOURCE_STRUCTURE" {
         "This tree preserves exact retained Rust syntax. Calls remain unresolved source text; parsing does not establish compiler type resolution, predicate truth, receiver identity, reachability or state effects."
     } else {

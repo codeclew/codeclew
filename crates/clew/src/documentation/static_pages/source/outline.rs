@@ -664,6 +664,16 @@ pub(in crate::documentation::static_pages) fn validate_source_outline(
     let Some(outline) = &callable.source_outline else {
         return Ok(());
     };
+    if outline.authority == "SYNTAX_SOURCE_STRUCTURE" {
+        return super::syntax::validate(
+            service,
+            revision,
+            observations,
+            sources,
+            citations,
+            callable,
+        );
+    }
     let owner = observations
         .get(&callable.declaration_id)
         .ok_or_else(|| invalid("Source-outline owner is not retained"))?;

@@ -13,6 +13,7 @@ pub(super) mod java;
 pub(super) mod kotlin;
 mod kotlin_handoff;
 pub(super) mod outline;
+mod syntax;
 pub(super) use java::{Parsed, all_steps, compiler, handoff as java_handoff};
 
 pub(super) fn gap(code: &str, detail: impl Into<String>, citation_id: Option<String>) -> Gap {
@@ -167,6 +168,9 @@ pub(super) fn project_callable(
         capabilities.call_navigation == compiler::CallNavigation::JavaBehavioral
     }) {
         return project_java(context, declaration);
+    }
+    if syntax::candidate(observation) {
+        return syntax::project(context, declaration);
     }
     if kotlin::candidate(observation) {
         return kotlin::project(context, declaration);

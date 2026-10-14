@@ -13,15 +13,6 @@ pub(super) fn candidate(observation: &Observation) -> bool {
             .is_some_and(|schema| schema.starts_with("declaration-descriptor/"))
         || observation.normalized["compilerCallableId"].is_string()
         || observation.symbol.starts_with("callable:")
-        || matches!(
-            observation.normalized["syntaxKind"].as_str(),
-            Some(
-                "function_declaration"
-                    | "property_declaration"
-                    | "class_declaration"
-                    | "secondary_constructor"
-            )
-        )
 }
 
 pub(super) fn project(context: &mut Context<'_>, id: &str) -> Result<ProjectedCallable, ClewError> {
