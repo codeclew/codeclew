@@ -20,7 +20,9 @@ clew docs pages render --root /path/to/docs --snapshot sha256:IDENTITY/SIZE \
   --subject scenario:checkout --output /path/to/comparison
 ```
 
-The exact subject must contain its matching frozen operation. The reader shows
+The exact subject must contain its matching frozen operation. The standalone reader uses
+the shared operation-document theme, citation disclosures and nested step components.
+Unavailable glossary, predicate and preparation definitions remain explicit gaps. It shows
 its retained summary, narrative overview, nested event order, sequence diagram
 and original source evidence. It preserves every canonical narrative record and
 freshness, review and source-authority status. A narrative overview remains

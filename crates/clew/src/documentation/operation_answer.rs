@@ -4009,24 +4009,7 @@ fn render_markdown(
     markdown
 }
 
-pub(super) const OFFLINE_STYLE: &str = r#"
-:root{color-scheme:light dark;font:16px/1.55 system-ui,sans-serif;--line:#8792a2;--panel:#171b22;--accent:#73b7ff}
-*{box-sizing:border-box}html,body{width:100%;min-width:0}body{margin:0;background:#101319;color:#e8edf5}main{width:100%;max-width:1120px;min-width:0;margin:auto;padding:2rem;overflow-wrap:anywhere}
-main>*,main section,main details,.document-nav,.claim{max-width:100%;min-width:0}.document-nav{display:flex;flex-wrap:wrap;align-items:baseline;gap:.25rem .65rem}.document-nav a{min-width:0;overflow-wrap:anywhere;word-break:break-word}
-h1,h2,h3{line-height:1.2}h2{margin-top:2.2rem;border-bottom:1px solid #394252;padding-bottom:.45rem}
-a{color:var(--accent);overflow-wrap:anywhere;word-break:break-word}code{overflow-wrap:anywhere;word-break:break-word}.review-status{padding:.85rem 1rem;border-left:4px solid #d99e45;background:#29231a;overflow-wrap:anywhere}
-.packet-digest{color:#bac4d3}.claim,.step-node{border:1px solid #394252;border-radius:.55rem;padding:.8rem 1rem;margin:.55rem 0;background:var(--panel)}
-.claim-text,.step-text{white-space:pre-wrap;overflow-wrap:anywhere}.full-summary-text{width:100%;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.claim-uncertainty{color:#ffd08a}.citations{display:inline-flex;gap:.45rem;flex-wrap:wrap;margin-left:.45rem;font-size:.9em;min-width:0;max-width:100%}
-.citation{border:1px solid #52627a;border-radius:1rem;padding:.05rem .5rem;text-decoration:none}.step-kind{font-size:.75em;text-transform:uppercase;letter-spacing:.06em;color:#9ed0ff;margin-right:.55rem}
-.step-meta{color:#b7c1d0;font-size:.9em}.ordered-steps,.nested-steps{padding-left:1.5rem}.path-group{margin:.5rem 0 .75rem 1rem;padding-left:.8rem;border-left:2px solid #52627a}.path-label{font-weight:650;color:#bdc9dc}
-.pseudocode{list-style:none;margin:0;padding:0;min-width:0;max-width:100%}.pseudocode-row{margin:.2rem 0;min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}.pseudocode-depth-0{padding-left:0}.pseudocode-depth-1{padding-left:.8rem}.pseudocode-depth-2{padding-left:1.6rem}.pseudocode-link{display:inline;white-space:normal;overflow-wrap:anywhere;word-break:break-word;min-width:0;max-width:100%}.pseudocode-structure,.pseudocode-scope{color:#bdc9dc;font-size:.9em}.pseudocode-uncertainty{font-size:.8em;white-space:normal;overflow-wrap:anywhere}
-table{border-collapse:collapse;width:100%;margin:1rem 0 1.5rem}caption{text-align:left;font-weight:700;margin:.5rem 0}th,td{border:1px solid #596273;padding:.5rem .65rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#242b36}
-.table-scroll{width:100%;min-width:0;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.table-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.table-scroll table{min-width:34rem}.table-scroll-hint{margin:.2rem 0 .45rem;font-size:.85em;color:#bac4d3}.decision-outcome>summary{cursor:pointer;font-weight:600}
-pre{width:100%;min-width:0;max-width:100%;overflow:auto;white-space:pre}.source-locations pre{white-space:pre}.technical-details,.packet-facts-reference,.evidence-reference{width:100%;min-width:0;max-width:100%}.technical-details{contain:layout}.source-locations,.source-locations li,.source-locations li>* ,.source-locations strong,.evidence-index,.evidence-index li{max-width:100%;min-width:0;overflow-wrap:anywhere;word-break:break-word}
-.evidence-index,.limitations,.uncertainties{padding-left:1.4rem}.muted{color:#bac4d3}figure{margin:0}figcaption{font-weight:650}
-@media(max-width:720px){main{padding:1rem}}
-@media(prefers-color-scheme:light){body{background:#fff;color:#18202b}a{color:#005ea8}.claim,.step-node{background:#f6f8fb;border-color:#ccd3df}.review-status{background:#fff7e8}.step-meta,.muted,.table-scroll-hint,.pseudocode-structure,.pseudocode-scope{color:#49586d}.claim-uncertainty{color:#704400}th{background:#edf1f7}}
-"#;
+pub(super) const OFFLINE_STYLE: &str = super::reader_presentation::STYLE;
 
 fn render_claim_html(
     claim: &Claim,
@@ -4097,10 +4080,7 @@ fn render_evidence_html(
         })
         .collect::<Vec<_>>()
         .join(" ");
-    format!(
-        "<details class=\"citations\"><summary>{}</summary><span class=\"citation-list\">{links}</span></details>",
-        html_escape(&labels.evidence_count(evidence.len()))
-    )
+    super::reader_presentation::citations(&labels.evidence_count(evidence.len()), &links)
 }
 
 /// Shared native step container for operation bodies and linked service steps.

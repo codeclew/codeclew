@@ -105,7 +105,11 @@ pub(super) fn render(
         if reader_mode == super::Reader::Operation {
             attach_operation_presentation(&mut payload, &subject)?;
         }
-        let html = render::html(&payload)?;
+        let html = if reader_mode == super::Reader::Operation {
+            crate::documentation::frozen_operation_reader::html(&payload)?
+        } else {
+            render::html(&payload)?
+        };
         let prefix = "../";
         let navigation = reader::navigation_language(
             prefix,
@@ -116,7 +120,11 @@ pub(super) fn render(
         );
         files.insert(
             html_name.clone(),
-            reader::decorate(&html, &navigation).into_bytes(),
+            if reader_mode == super::Reader::Operation {
+                html.into_bytes()
+            } else {
+                reader::decorate(&html, &navigation).into_bytes()
+            },
         );
         files.insert(
             name.clone(),
