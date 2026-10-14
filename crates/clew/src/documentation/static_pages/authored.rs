@@ -129,11 +129,14 @@ pub(super) fn attach(
                 .services
                 .get(&page.selection.service)
                 .ok_or_else(|| invalid("authored paragraph original service is unavailable"))?;
-            if service.service_digest != page.service_digest {
+            if service.service_digest != page.service_digest
+                && !capture_modes_only(original, checked, &page.selection.service)?
+            {
                 return Err(invalid(
                     "authored paragraph service declaration differs from the selected native service",
                 ));
             }
+            let current_service = &checked.services[&page.selection.service];
             if !endpoint_matches(
                 service,
                 &checked.services[&page.selection.service],
@@ -141,7 +144,7 @@ pub(super) fn attach(
                 &page.endpoint,
             ) {
                 return Err(invalid(
-                    "authored operation does not match the selected endpoint declaration and evidence scope",
+                    "authored operation does not match the selected endpoint compiler symbol, declaration identity and evidence scope",
                 ));
             }
             // No section/note root can pass the discovered endpoint association.
@@ -156,13 +159,14 @@ pub(super) fn attach(
                 operation_digest: digest(operation)?,
                 paragraph_digest: digest(paragraph)?,
                 paragraph: paragraph.clone(),
-                context_freshness:
-                    if explanation_authorship::validate(paragraph, checked).is_ok() {
-                        "CURRENT"
-                    } else {
-                        "STALE"
-                    }
-                    .into(),
+                context_freshness: if explanation_authorship::validate(paragraph, checked).is_ok()
+                    && context_unchanged(service, current_service, &page.endpoint)?
+                {
+                    "CURRENT"
+                } else {
+                    "STALE"
+                }
+                .into(),
                 source_records: evidence.sources.clone(),
             };
             result_bytes = result_bytes
@@ -183,7 +187,179 @@ pub(super) fn attach(
     Ok(())
 }
 
+/// Compare frozen service declarations without their acquisition mode knobs.
+/// Repository, language, contracts, processors, target and publication settings
+/// remain exact; declaration membership is independently proved below.
+fn capture_modes_only(old: &Check, new: &Check, service: &str) -> Result<bool, ClewError> {
+    let a = old
+        .source_inputs
+        .as_ref()
+        .and_then(|inputs| inputs.inputs.services.get(service));
+    let b = new
+        .source_inputs
+        .as_ref()
+        .and_then(|inputs| inputs.inputs.services.get(service));
+    let (Some(a), Some(b)) = (a, b) else {
+        return Ok(false);
+    };
+    service_configuration_matches(a, b)
+}
+fn service_configuration_matches(
+    a: &crate::documentation::model::Service,
+    b: &crate::documentation::model::Service,
+) -> Result<bool, ClewError> {
+    let strip = |service: &crate::documentation::model::Service| {
+        let mut value = serde_json::to_value(service).map_err(crate::documentation::io_error)?;
+        let fields = value.as_object_mut().unwrap();
+        for field in ["profile", "source", "compilations", "modules"] {
+            fields.remove(field);
+        }
+        Ok::<_, ClewError>(value)
+    };
+    Ok(strip(a)? == strip(b)?)
+}
+
+fn source_context(service: &ServiceEvidence) -> Result<Option<ServiceEvidence>, ClewError> {
+    if service.extractor == crate::documentation::model::SOURCE_EXTRACTOR {
+        Ok(Some(service.clone()))
+    } else {
+        crate::documentation::declaration_migration::source(service)
+    }
+}
+
 fn endpoint_matches(
+    original: &ServiceEvidence,
+    current: &ServiceEvidence,
+    operation: &str,
+    endpoint: &CallableProjection,
+) -> bool {
+    if exact_endpoint_matches(original, current, operation, endpoint) {
+        return true;
+    }
+    proven_mode_endpoint(original, current, operation, endpoint).unwrap_or(false)
+}
+fn proven_mode_endpoint(
+    original: &ServiceEvidence,
+    current: &ServiceEvidence,
+    operation: &str,
+    endpoint: &CallableProjection,
+) -> Result<bool, ClewError> {
+    let id =
+        crate::documentation::declaration_migration::canonical(current, &endpoint.declaration_id)?;
+    let entries: Vec<_> = original
+        .entrypoints
+        .iter()
+        .filter(|e| e.id == operation)
+        .collect();
+    if entries.len() != 1
+        || entries[0].service != current.service
+        || original.service != current.service
+        || !entries[0].dependency_ids.iter().any(|dep| {
+            crate::documentation::declaration_migration::canonical(original, dep)
+                .is_ok_and(|dep| dep == id)
+                || crate::documentation::declaration_migration::canonical(current, dep)
+                    .is_ok_and(|dep| dep == id)
+        })
+    {
+        return Ok(false);
+    }
+    let old_view = crate::documentation::semantic_overlay::view(original)?;
+    let new_view = crate::documentation::semantic_overlay::view(current)?;
+    let old_active = old_view.as_ref().unwrap_or(original);
+    let new_active = new_view.as_ref().unwrap_or(current);
+    let Some(selected) = new_active.observations.get(&id) else {
+        return Ok(false);
+    };
+    if selected.kind != "SYMBOL"
+        || selected.symbol != endpoint.symbol
+        || selected.service != current.service
+    {
+        return Ok(false);
+    }
+    // The SOURCE identity remains exact across module availability and direct
+    // profile migration. Compiler evidence must come from the admitted view.
+    let new_source = source_context(current)?;
+    let mut old_source = source_context(original)?;
+    if old_source.is_none()
+        && let Some(witness) = crate::documentation::declaration_migration::compiler(current)?
+        && let Some(native_id) =
+            crate::documentation::declaration_migration::native_id(current, &id)?
+    {
+        let old = original.observations.get(&native_id);
+        if original.service == witness.service
+            && original.revision == witness.revision
+            && original.service_digest == witness.service_digest
+            && old.is_some()
+            && old == witness.observations.get(&native_id)
+            && old
+                .unwrap()
+                .source_ids
+                .iter()
+                .all(|source| original.sources.get(source) == witness.sources.get(source))
+        {
+            old_source = new_source.clone();
+        }
+    }
+    let (Some(old_source), Some(new_source)) = (old_source, new_source) else {
+        return Ok(false);
+    };
+    let (Some(old), Some(new)) = (
+        old_source.observations.get(&id),
+        new_source.observations.get(&id),
+    ) else {
+        return Ok(false);
+    };
+    let old_entry_id = entries[0].dependency_ids.iter().find(|dep| {
+        original
+            .observations
+            .get(*dep)
+            .is_some_and(|o| o.kind == "SYMBOL")
+    });
+    if old_entry_id
+        .and_then(|id| original.observations.get(id))
+        .is_none_or(|o| o.symbol != entries[0].symbol)
+    {
+        return Ok(false);
+    }
+    if !source_identity_matches(&old_source, &new_source, old, new) {
+        return Ok(false);
+    }
+    // Two compiler views cannot borrow the same body from another compilation.
+    let old_compiler = old_active
+        .observations
+        .get(&id)
+        .filter(|o| o.normalized["authority"] != "SYNTAX");
+    let new_compiler = (selected.normalized["authority"] != "SYNTAX").then_some(selected);
+    if let (Some(a), Some(b)) = (old_compiler, new_compiler) {
+        return Ok(a.symbol == b.symbol
+            && !a.normalized["scope"].is_null()
+            && a.normalized["scope"] == b.normalized["scope"]);
+    }
+    // A mapped compiler declaration or an exact SOURCE-only association is required.
+    Ok(selected.normalized["authority"] == "SYNTAX" || new_view.is_some())
+}
+
+fn context_unchanged(
+    original: &ServiceEvidence,
+    current: &ServiceEvidence,
+    endpoint: &CallableProjection,
+) -> Result<bool, ClewError> {
+    if original.service_digest != current.service_digest
+        || original.extractor != current.extractor
+        || original.coverage != current.coverage
+        || original.runtime_mode != current.runtime_mode
+    {
+        return Ok(false);
+    }
+    let old = crate::documentation::semantic_overlay::view(original)?;
+    let new = crate::documentation::semantic_overlay::view(current)?;
+    let id =
+        crate::documentation::declaration_migration::canonical(current, &endpoint.declaration_id)?;
+    Ok(old.as_ref().unwrap_or(original).observations.get(&id)
+        == new.as_ref().unwrap_or(current).observations.get(&id))
+}
+
+fn exact_endpoint_matches(
     original: &ServiceEvidence,
     current: &ServiceEvidence,
     operation: &str,
@@ -257,6 +433,10 @@ fn source_identity_matches(
         return false;
     };
     old_id == new_id
+        && old_source.text == new_source.text
+        && old_source.text_digest == new_source.text_digest
+        && old_source.start_line == new_source.start_line
+        && old_source.end_line == new_source.end_line
         && old_source.file == new_source.file
         && old
             .symbol
@@ -322,7 +502,15 @@ mod tests {
         assert!(source_identity_matches(
             &original, &original, &owner, &owner
         ));
-        for case in ["file", "producer", "bytes", "scope", "digest", "symbol"] {
+        for case in [
+            "file",
+            "producer",
+            "bytes",
+            "valid-different-bytes",
+            "scope",
+            "digest",
+            "symbol",
+        ] {
             let mut current = original.clone();
             let mut changed = owner.clone();
             match case {
@@ -330,6 +518,11 @@ mod tests {
                 "producer" => current.extractor = "compiler".into(),
                 "bytes" => {
                     current.sources.get_mut("source").unwrap().text = "different bytes".into()
+                }
+                "valid-different-bytes" => {
+                    let source = current.sources.get_mut("source").unwrap();
+                    source.text = text.replace("1", "2");
+                    source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
                 }
                 "scope" => {
                     changed.normalized["scope"] = json!(":/main");
@@ -348,6 +541,107 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn mode_knobs_do_not_relax_repository_contract_processor_or_publication_identity() {
+        let base: crate::documentation::model::Service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"svc","title":"Fixture","repositoryId":"repo","repository":"https://example.invalid/repo","language":"java","profile":"source-syntax","targetRef":"main","source":{"roots":["src"],"dialect":"21"}})).unwrap();
+        let mut compiled = base.clone();
+        compiled.profile = "java-17plus-maven-read-only".into();
+        compiled.source = None;
+        compiled.compilations = vec![":/main".into()];
+        assert!(service_configuration_matches(&base, &compiled).unwrap());
+        for case in [
+            "service",
+            "repository",
+            "repository-id",
+            "language",
+            "contracts",
+            "processors",
+            "links",
+            "ref",
+        ] {
+            let mut changed = compiled.clone();
+            match case {
+                "service" => changed.id = "other".into(),
+                "repository" => changed.repository = "https://example.invalid/other".into(),
+                "repository-id" => changed.repository_id = "other".into(),
+                "language" => changed.language = "kotlin".into(),
+                "contracts" => changed.contract_files = vec!["other.yaml".into()],
+                "processors" => changed.annotation_processor_paths = vec!["g:a:v".into()],
+                "links" => {
+                    changed.source_link_template =
+                        Some("https://example.invalid/other/{file}".into())
+                }
+                "ref" => changed.target_ref = "other".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !service_configuration_matches(&base, &changed).unwrap(),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_native_origin_can_use_the_current_reverse_bridge_without_rebinding() {
+        let (source, mut native, source_id, native_id) =
+            crate::documentation::declaration_migration::tests::fixture();
+        native.entrypoints.push(Entrypoint {
+            id: "operation".into(),
+            service: native.service.clone(),
+            symbol: native.observations[&native_id].symbol.clone(),
+            kind: "METHOD".into(),
+            trigger: json!({}),
+            source_ids: native.observations[&native_id].source_ids.clone(),
+            dependency_ids: vec![native_id.clone()],
+            boundaries: vec![],
+        });
+        let original_native = native.clone();
+        crate::documentation::declaration_migration::attach(&mut native, &source).unwrap();
+        let mut restored = source.clone();
+        crate::documentation::declaration_migration::attach(&mut restored, &native).unwrap();
+        let endpoint = CallableProjection {
+            declaration_id: source_id.clone(),
+            symbol: source.observations[&source_id].symbol.clone(),
+            authority: "SYNTAX_DECLARATION".into(),
+            citation_id: None,
+            control_flow: None,
+            source_outline: None,
+            retained_call_sites: None,
+            steps: vec![],
+            state: vec![],
+            gaps: vec![],
+        };
+        assert!(endpoint_matches(
+            &original_native,
+            &restored,
+            "operation",
+            &endpoint
+        ));
+        assert!(!context_unchanged(&original_native, &restored, &endpoint).unwrap());
+        let mut unrelated = original_native.clone();
+        unrelated
+            .observations
+            .get_mut(&native_id)
+            .unwrap()
+            .normalized["name"] = json!("unrelated");
+        let o = unrelated.observations.get_mut(&native_id).unwrap();
+        o.digest = digest(&o.normalized).unwrap();
+        assert!(!endpoint_matches(
+            &unrelated,
+            &restored,
+            "operation",
+            &endpoint
+        ));
+        let mut another_operation = endpoint.clone();
+        another_operation.declaration_id = "other".into();
+        assert!(!endpoint_matches(
+            &original_native,
+            &restored,
+            "operation",
+            &another_operation
+        ));
     }
 
     #[test]

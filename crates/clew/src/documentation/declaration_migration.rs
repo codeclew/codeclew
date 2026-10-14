@@ -362,10 +362,10 @@ pub(super) fn native_id(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use serde_json::json;
-    fn fixture() -> (ServiceEvidence, ServiceEvidence, String, String) {
+    pub(crate) fn fixture() -> (ServiceEvidence, ServiceEvidence, String, String) {
         let text = "\u{feff}export function render(): string {\r\n  return 'π🙂'\r\n}";
         let service: super::super::model::Service = serde_json::from_value(json!({"schema":"codeclew-documentation-service/1.0","id":"svc","title":"Owned migration fixture","repositoryId":"svc","repository":"https://example.invalid/test","language":"typescript","profile":"typescript-5-project-read-only","targetRef":"main","compilations":["tsconfig:tsconfig.json"]})).unwrap();
         let mut native: ServiceEvidence = serde_json::from_value(json!({"schema":"codeclew-documentation-service-evidence/1.0","service":"svc","revision":"1".repeat(40),"serviceDigest":"service","extractor":EXTRACTOR,"runtimeMode":"RELEASE","coverage":"COMPILER","boundaries":[],"entrypoints":[],"observations":{},"sources":{},"contracts":{}})).unwrap();
