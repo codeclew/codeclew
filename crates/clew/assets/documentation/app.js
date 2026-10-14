@@ -735,22 +735,43 @@ function nav(){
  $('scenario-nav').innerHTML=matches.filter(e=>!pending(e)).map(row).join('')+(unexplained.length?chromeHtml`<details class="pending-navigation" ${q||unexplained.some(e=>e.id===current?.id)?'open':''}><summary>Awaiting explanation · ${unexplained.length}</summary>${unexplained.map(row).join('')}</details>`:'')||chromeHtml`<p class="no-results">No matching operations</p>`;
 }
 function wrap(text,max=28){const out=[''];for(const word of text.split(' ')){const i=out.length-1;if(out[i]&&out[i].length+word.length+1>max)out.push(word);else out[i]+=(out[i]?' ':'')+word;}return out;}
+function sequenceWrap(text,max){
+ const chunks=String(text??'').split(' ').flatMap(word=>{const points=Array.from(word),parts=[];for(let i=0;i<points.length;i+=max)parts.push(points.slice(i,i+max).join(''));return parts.length?parts:[''];});
+ return wrap(chunks.join(' '),max);
+}
+function sequenceLayout(o){
+ const W=Math.max(800,(o.participants.length-1)*215+240),xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,o.participants.length-1)]));
+ const actors=o.participants.map(p=>({...p,titleLines:sequenceWrap(p.label,20),technicalLines:sequenceWrap(p.service||t('External participant'),28)}));
+ const headerHeight=Math.max(48,...actors.map(p=>18+p.titleLines.length*14+p.technicalLines.length*11)),headerBottom=9+headerHeight;
+ let y=headerBottom+37,stack=[],frames=[],rows=[];
+ for(const e of o.events.filter(e=>e.kind!=='note')){
+  const depth=stack.length,branch=['alt','else','loop','opt'].includes(e.kind),left=32+Math.max(0,depth-(e.kind==='else'?1:0))*12;
+  const a=xs[e.from],b=xs[e.to],width=Math.max(100,Math.abs(a-b));
+  const lines=e.kind==='end'?[]:sequenceWrap(branch?`${t(e.kind)} · ${e.text}`:e.text,branch?Math.max(20,Math.floor((W-left*2-16)/6)):Math.max(16,Math.floor(width/6)));
+  const arrowOffset=Math.max(39,(lines.length-1)*14+20),arrowBottom=arrowOffset+(a===b?17:0),captionOffset=arrowBottom+18;
+  const h=e.kind==='end'?18:branch?Math.max(40,lines.length*14+14):Math.max(72,(e.kind==='declared'?captionOffset:arrowBottom)+28);
+  rows.push({e,y,h,depth,left,lines,arrowOffset,captionOffset});
+  if(['alt','loop','opt'].includes(e.kind))stack.push({y,depth});
+  if(e.kind==='end'){const frame=stack.pop();if(frame)frames.push({...frame,end:y+h-5});}
+  y+=h;
+ }
+ return {W,H:y+25,xs,actors,headerHeight,headerBottom,frames:frames.sort((a,b)=>a.depth-b.depth),rows};
+}
 function diagram(o){
- const W=Math.max(800,(o.participants.length-1)*215+240);const xs=Object.fromEntries(o.participants.map((p,i)=>[p.id,85+i*(W-325)/Math.max(1,o.participants.length-1)]));let y=94,stack=[],frames=[],rows=[];
- for(const e of o.events.filter(e=>e.kind!=='note')){const h=['alt','else','loop','opt'].includes(e.kind)?40:e.kind==='end'?18:72;rows.push({e,y,h,depth:stack.length});if(e.kind==='alt'||e.kind==='loop'||e.kind==='opt')stack.push({y,depth:stack.length});if(e.kind==='end'){const f=stack.pop();frames.push({...f,end:y+h-5});}y+=h;}
- const H=y+25;
+ const {W,H,xs,actors,headerHeight,headerBottom,frames,rows}=sequenceLayout(o);
  let svg=chromeHtml`<svg class="sequence-svg" style="min-width:${W}px" viewBox="0 0 ${W} ${H}" role="group" aria-label="Sequence diagram: ${esc(o.title)}"><defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#608365"/></marker></defs>`;
  svg+=frames.map(f=>chromeHtml`<rect x="${20+f.depth*12}" y="${f.y-8}" width="${W-40-f.depth*24}" height="${f.end-f.y+8}" rx="4" fill="#fdfbf6" stroke="#e3d9c5"/>`).join('');
- svg+=o.participants.map(p=>chromeHtml`<line class="lifeline" x1="${xs[p.id]}" x2="${xs[p.id]}" y1="61" y2="${H-8}"/><rect x="${xs[p.id]-76}" y="9" width="152" height="48" rx="6" fill="#f1f6ed" stroke="#d6e1d0"/><text class="actor-label" text-anchor="middle" x="${xs[p.id]}" y="29">${esc(p.label)}</text><text class="actor-technical" text-anchor="middle" x="${xs[p.id]}" y="44">${esc(p.service||t('External participant'))}</text>`).join('');
+ svg+=actors.map(p=>chromeHtml`<line class="lifeline" x1="${xs[p.id]}" x2="${xs[p.id]}" y1="${headerBottom+4}" y2="${H-8}"/><rect x="${xs[p.id]-76}" y="9" width="152" height="${headerHeight}" rx="6" fill="#f1f6ed" stroke="#d6e1d0"/>${p.titleLines.map((line,i)=>chromeHtml`<text class="actor-label" text-anchor="middle" x="${xs[p.id]}" y="${29+i*14}">${esc(line)}</text>`).join('')}${p.technicalLines.map((line,i)=>chromeHtml`<text class="actor-technical" text-anchor="middle" x="${xs[p.id]}" y="${33+p.titleLines.length*14+i*11}">${esc(line)}</text>`).join('')}`).join('');
  let number=0;
- for(const {e,y,h,depth} of rows){if(e.kind==='end')continue;number++;let inside='';
- if(['alt','else','loop','opt'].includes(e.kind)){const left=32+Math.max(0,depth-(e.kind==='else'?1:0))*12;inside=chromeHtml`${e.kind==='else'?chromeHtml`<line x1="${left-12}" y1="${y-8}" x2="${W-left+12}" y2="${y-8}" stroke="#ddd2bd" stroke-dasharray="4 3"/>`:''}<rect class="hit-area" x="${left-5}" y="${y-5}" width="${W-left*2+10}" height="31" rx="3" fill="transparent"/><text class="branch-title" x="${left}" y="${y+13}">${esc(t(e.kind))} · ${esc(e.text)}</text>`;}
- else if(e.kind==='note'){const x=xs[e.from]??W/2;inside=chromeHtml`<rect class="hit-area" x="${x-120}" y="${y-8}" width="240" height="55" rx="4" fill="#f5f2e5"/>`+wrap(e.text,33).map((line,i)=>chromeHtml`<text x="${x-110}" y="${y+9+i*14}">${esc(line)}</text>`).join('');}
- else{const a=xs[e.from],b=xs[e.to],left=Math.min(a,b),width=Math.max(100,Math.abs(a-b)),mid=a===b?a+50:(a+b)/2;
- inside=chromeHtml`<rect class="hit-area" x="${left-17}" y="${y-14}" width="${width+34}" height="${h-5}" rx="4" fill="transparent"/><text class="step-number" x="${left-12}" y="${y+39}">${number}</text>`+wrap(e.text,Math.max(23,Math.floor(width/6))).map((line,i)=>chromeHtml`<text text-anchor="middle" x="${mid}" y="${y+i*14}">${esc(line)}</text>`).join('');
- const dash=['return','declared'].includes(e.kind)?'event-return':'';
- inside+=a===b?chromeHtml`<path class="event-arrow ${dash}" d="M${a} ${y+28} h85 v17 h-85" marker-end="url(#arrow)"/>`:chromeHtml`<line class="event-arrow ${dash}" x1="${a}" y1="${y+39}" x2="${b}" y2="${y+39}" marker-end="url(#arrow)"/>`;
- if(e.kind==='declared')inside+=chromeHtml`<text class="branch-title" text-anchor="middle" x="${mid}" y="${y+57}">Declared service interaction</text>`;
+ for(const {e,y,h,left,lines,arrowOffset,captionOffset} of rows){if(e.kind==='end')continue;number++;let inside='';
+ if(['alt','else','loop','opt'].includes(e.kind)){
+  inside=chromeHtml`${e.kind==='else'?chromeHtml`<line x1="${left-12}" y1="${y-8}" x2="${W-left+12}" y2="${y-8}" stroke="#ddd2bd" stroke-dasharray="4 3"/>`:''}<rect class="hit-area" x="${left-5}" y="${y-5}" width="${W-left*2+10}" height="${h-9}" rx="3" fill="transparent"/>`+lines.map((line,i)=>chromeHtml`<text class="branch-title" x="${left}" y="${y+13+i*14}">${esc(line)}</text>`).join('');
+ }else{
+  const a=xs[e.from],b=xs[e.to],start=Math.min(a,b),width=Math.max(100,Math.abs(a-b)),mid=a===b?a+50:(a+b)/2,arrowY=y+arrowOffset;
+  inside=chromeHtml`<rect class="hit-area" x="${start-17}" y="${y-14}" width="${width+34}" height="${h+5}" rx="4" fill="transparent"/><text class="step-number" x="${start-12}" y="${arrowY}">${number}</text>`+lines.map((line,i)=>chromeHtml`<text text-anchor="middle" x="${mid}" y="${y+i*14}">${esc(line)}</text>`).join('');
+  const dash=['return','declared'].includes(e.kind)?'event-return':'';
+  inside+=a===b?chromeHtml`<path class="event-arrow ${dash}" d="M${a} ${arrowY} h85 v17 h-85" marker-end="url(#arrow)"/>`:chromeHtml`<line class="event-arrow ${dash}" x1="${a}" y1="${arrowY}" x2="${b}" y2="${arrowY}" marker-end="url(#arrow)"/>`;
+  if(e.kind==='declared')inside+=chromeHtml`<text class="branch-title" text-anchor="middle" x="${mid}" y="${y+captionOffset}">Declared service interaction</text>`;
  }
  svg+=chromeHtml`<a href="#${esc(o.id)}" data-event="${esc(e.id)}" aria-label="${esc(e.text)}: inspect source"><title>${esc(e.text)}</title>${inside}</a>`;
  }return svg+chromeHtml`</svg>`;
