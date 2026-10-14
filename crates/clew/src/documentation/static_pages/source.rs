@@ -63,7 +63,7 @@ impl<'a> Context<'a> {
             }
         }
     }
-    fn valid_source(&self, source: &Source) -> bool {
+    pub(in crate::documentation::static_pages) fn valid_source(&self, source: &Source) -> bool {
         source.service == self.evidence.service
             && source.revision == self.evidence.revision
             && !source.authority.is_empty()

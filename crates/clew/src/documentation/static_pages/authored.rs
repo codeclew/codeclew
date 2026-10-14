@@ -141,7 +141,7 @@ pub(super) fn attach(
                 &page.endpoint,
             ) {
                 return Err(invalid(
-                    "authored operation does not match the selected endpoint compiler symbol and scoped declaration",
+                    "authored operation does not match the selected endpoint declaration and evidence scope",
                 ));
             }
             // No section/note root can pass the discovered endpoint association.
@@ -212,10 +212,59 @@ fn endpoint_matches(
                             new.kind == "SYMBOL"
                                 && new.service == old.service
                                 && new.symbol == old.symbol
-                                && !old.normalized["scope"].is_null()
-                                && old.normalized["scope"] == new.normalized["scope"]
+                                && if old.normalized["authority"] == "SYNTAX"
+                                    || new.normalized["authority"] == "SYNTAX"
+                                {
+                                    source_identity_matches(original, current, old, new)
+                                } else {
+                                    !old.normalized["scope"].is_null()
+                                        && old.normalized["scope"] == new.normalized["scope"]
+                                }
                         })
             })
+}
+
+fn source_identity_matches(
+    original: &ServiceEvidence,
+    current: &ServiceEvidence,
+    old: &crate::documentation::model::Observation,
+    new: &crate::documentation::model::Observation,
+) -> bool {
+    use crate::documentation::model::SOURCE_EXTRACTOR;
+    if old.symbol != new.symbol
+        || old.id != new.id
+        || [original, current].iter().any(|e| {
+            e.extractor != SOURCE_EXTRACTOR || e.runtime_mode != "COMMITTED_SOURCE_NO_BUILD"
+        })
+        || [old, new].iter().any(|o| {
+            o.normalized["authority"] != "SYNTAX"
+                || o.normalized["kind"] != "DECLARATION"
+                || !o.normalized["scope"].is_null()
+                || o.normalized.get("schema").is_some()
+                || o.normalized["symbolIdentity"] != o.symbol
+                || !o.symbol.starts_with("source:")
+                || digest(&o.normalized).ok().as_deref() != Some(o.digest.as_str())
+        })
+    {
+        return false;
+    }
+    let ([old_id], [new_id]) = (old.source_ids.as_slice(), new.source_ids.as_slice()) else {
+        return false;
+    };
+    let (Some(old_source), Some(new_source)) =
+        (original.sources.get(old_id), current.sources.get(new_id))
+    else {
+        return false;
+    };
+    old_id == new_id
+        && old_source.file == new_source.file
+        && old
+            .symbol
+            .starts_with(&format!("source:{}/", old_source.file))
+        && old_source.occurrence.is_some()
+        && new_source.occurrence.is_some()
+        && super::source::Context::new(original).valid_source(old_source)
+        && super::source::Context::new(current).valid_source(new_source)
 }
 
 #[cfg(test)]
@@ -223,6 +272,84 @@ mod tests {
     use super::*;
     use crate::documentation::model::{Entrypoint, Observation};
     use serde_json::json;
+    #[test]
+    fn source_association_requires_exact_syntax_identity_without_inventing_compiler_scope() {
+        use crate::documentation::model::{SOURCE_EXTRACTOR, Source, SourceOccurrence};
+        let text = "function savePlace() { return 1; }";
+        let normalized = json!({"kind":"DECLARATION","authority":"SYNTAX","symbolIdentity":"source:routes.ts/package:/savePlace/header","syntaxKind":"function_declaration"});
+        let owner = Observation {
+            id: "declaration".into(),
+            kind: "SYMBOL".into(),
+            service: "dashboard".into(),
+            symbol: normalized["symbolIdentity"].as_str().unwrap().into(),
+            digest: digest(&normalized).unwrap(),
+            normalized,
+            source_ids: vec!["source".into()],
+        };
+        let source = Source {
+            id: "source".into(),
+            service: "dashboard".into(),
+            revision: "a".repeat(40),
+            file: "routes.ts".into(),
+            start_line: 1,
+            end_line: 1,
+            text: text.into(),
+            text_digest: crate::canonical::hash_bytes(text.as_bytes()),
+            evidence_digest: "retained".into(),
+            authority: "EXACT_SNAPSHOT_TEXT".into(),
+            occurrence: Some(SourceOccurrence {
+                snapshot: "snapshot".into(),
+                blob: "blob".into(),
+                start_byte: 0,
+                end_byte: text.len(),
+            }),
+            url: None,
+        };
+        let original = ServiceEvidence {
+            schema: "codeclew-documentation-service-evidence/1.0".into(),
+            service: "dashboard".into(),
+            revision: "a".repeat(40),
+            service_digest: "configuration".into(),
+            extractor: SOURCE_EXTRACTOR.into(),
+            runtime_mode: "COMMITTED_SOURCE_NO_BUILD".into(),
+            coverage: "SYNTAX".into(),
+            boundaries: vec![],
+            entrypoints: vec![],
+            observations: BTreeMap::from([(owner.id.clone(), owner.clone())]),
+            sources: BTreeMap::from([(source.id.clone(), source)]),
+            contracts: BTreeMap::new(),
+        };
+        assert!(source_identity_matches(
+            &original, &original, &owner, &owner
+        ));
+        for case in ["file", "producer", "bytes", "scope", "digest", "symbol"] {
+            let mut current = original.clone();
+            let mut changed = owner.clone();
+            match case {
+                "file" => current.sources.get_mut("source").unwrap().file = "other.ts".into(),
+                "producer" => current.extractor = "compiler".into(),
+                "bytes" => {
+                    current.sources.get_mut("source").unwrap().text = "different bytes".into()
+                }
+                "scope" => {
+                    changed.normalized["scope"] = json!(":/main");
+                    changed.digest = digest(&changed.normalized).unwrap();
+                }
+                "digest" => changed.digest = "wrong".into(),
+                "symbol" => {
+                    changed.symbol = "source:other.ts/package:/savePlace/header".into();
+                    changed.normalized["symbolIdentity"] = json!(changed.symbol);
+                    changed.digest = digest(&changed.normalized).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !source_identity_matches(&original, &current, &owner, &changed),
+                "{case}"
+            );
+        }
+    }
+
     #[test]
     fn same_symbol_in_another_compilation_cannot_borrow_authored_endpoint() {
         let symbol = "method:class:Fixture#submit()V";

@@ -168,6 +168,39 @@ test('ordinary message step displays a declared address and its exact outgoing s
  assert.doesNotMatch(r.e('scenario-content').innerHTML,/External reservation created/);
  const ru=load({...data,language:'ru'});assert.match(ru.e('scenario-content').innerHTML,/Внешний сервис/);assert.match(ru.e('scenario-content').innerHTML,/<summary>Контракт · POST/);
 });
+test('mapped contract anchors open the existing handler contract without duplicate rows or retained-source substitution',()=>{
+ const data=externalCallFixture(),operation=data.operations[0],current=data.contracts[0],sourceId='same-contract-source';
+ data.catalogue=[{id:operation.id,symbol:'savePlace',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/api/places']},sourceIds:['same-source']}];
+ data.sections=[{id:'section-overview',title:'Overview',gap:'No overview'}];
+ current.sourceIds=[sourceId];current.normalized.sourceMapping='SOURCE_ROUTE_MATCH_ONLY';
+ current.normalized.path='/api/places';current.normalized.operation={responses:{200:{description:'SELECTED CONTRACT'}}};
+ data.sources[sourceId]=source('SELECTED CONTRACT SOURCE');
+ data.operationSources[operation.id][sourceId]=source('RETAINED CONTRACT SOURCE');
+ data.operationContracts[operation.id]=[{...current,normalized:{...current.normalized,entrypoint:null,sourceMapping:'NO_SOURCE_ROUTE_MATCH'}}];
+ operation.interfaceContracts=[{id:'retained-description',kind:'http',title:'Retained authored description',rows:[{label:'Request',value:'RETAINED AUTHOR PROSE',sourceIds:['same-source']}],boundaries:[]}];
+ const r=load(data);
+ assert.equal(r.run(`entries.some(e=>e.id===${JSON.stringify(current.id)})`),false);
+ r.run(`location.hash='#'+${JSON.stringify(current.id)};routeReaderHash()`);
+ assert.equal(r.run('current.id'),operation.id);assert.equal(r.run('tab'),'contract');
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Complete operation contract/);assert.match(html,/SOURCE_ROUTE_MATCH_ONLY/);
+ assert.match(html,/RETAINED AUTHOR PROSE/);assert.match(html,/SELECTED CONTRACT/);
+ assert.match(html,/data-current-sources/);
+ r.click({sources:sourceId,sourceOperation:operation.id},true);
+ assert.match(r.e('source-code').innerHTML,/SELECTED CONTRACT SOURCE/);
+ assert.doesNotMatch(r.e('source-code').innerHTML,/RETAINED CONTRACT SOURCE/);
+ r.run(`showEntry(${JSON.stringify(operation.id)})`);assert.equal(r.run('tab'),'sequence');
+ r.run("location.hash='#unknown-contract';routeReaderHash()");assert.equal(r.run('current.id'),'section-overview');
+});
+test('mapped contract navigation refuses ambiguous captured contract identities',()=>{
+ const data=externalCallFixture(),contract=data.contracts[0],operation=data.operations[0];
+ data.catalogue=[{id:operation.id,symbol:'handler',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/api/places']},sourceIds:[]}];
+ data.sections=[{id:'section-overview',title:'Overview',gap:'No overview'}];
+ contract.normalized.sourceMapping='SOURCE_ROUTE_MATCH_ONLY';
+ data.contracts.push({...contract,normalized:{...contract.normalized,entrypoint:'unknown-handler'}});
+ const r=load(data);r.run(`location.hash='#'+${JSON.stringify(contract.id)};routeReaderHash()`);
+ assert.equal(r.run('current.id'),'section-overview');
+});
 test('external call missing and multiple declarations remain explicit; old pages do not infer bindings',()=>{
  const data=externalCallFixture(),operation=data.operations[0],row=data.operationExternalCalls[operation.id][0];
  delete row.addresses[0].environment;assert.match(load(data).e('scenario-content').innerHTML,/Environment: unspecified/);
