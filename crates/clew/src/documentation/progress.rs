@@ -31,6 +31,35 @@ struct Event {
     event: &'static str,
     elapsed_ms: u128,
     timestamp_unix_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    syntax_file_cache: Option<SyntaxFileCache>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyntaxFileCache {
+    hits: usize,
+    misses: usize,
+    parsed_files: usize,
+}
+
+/// Counts only, outside evidence digests: reuse must not change source identity.
+pub(super) fn syntax_file_cache(hits: usize, misses: usize, parsed_files: usize) {
+    if let Some(sink) = configured_sink() {
+        let mut value = event(
+            "SYNTAX_FILE_CACHE",
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            CURRENT_SPAN.get(),
+            Instant::now(),
+            "COMPLETED",
+        );
+        value.syntax_file_cache = Some(SyntaxFileCache {
+            hits,
+            misses,
+            parsed_files,
+        });
+        sink(&value);
+    }
 }
 
 /// Use fixed, public phase names, never source text, paths, or user identifiers.
@@ -148,6 +177,7 @@ fn event(
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis(),
+        syntax_file_cache: None,
     }
 }
 
@@ -216,6 +246,29 @@ pub fn run<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_cache_diagnostics_contain_only_counts_and_preserve_parent_span() {
+        let (sender, receiver) = mpsc::channel();
+        with_test_sink(
+            move |value| sender.send(value.clone()).unwrap(),
+            || {
+                let phase = Phase::start("ACQUIRE_SYNTAX_EVIDENCE");
+                syntax_file_cache(2, 0, 0);
+                phase.complete();
+            },
+        );
+        let values: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[1]["parentSpanId"], values[0]["spanId"]);
+        assert_eq!(values[1]["phase"], "SYNTAX_FILE_CACHE");
+        assert_eq!(
+            values[1]["syntaxFileCache"],
+            serde_json::json!({"hits":2,"misses":0,"parsedFiles":0})
+        );
+        assert!(values[1].get("service").is_none());
+        assert!(values[1].get("path").is_none());
+    }
 
     fn collecting_phase(interval: Duration) -> (Phase, mpsc::Receiver<serde_json::Value>) {
         let (sender, receiver) = mpsc::channel();

@@ -139,6 +139,9 @@ fn capture_with_store_selected(
     };
     let mut inventory = BTreeMap::new();
     let source_bytes = Cell::new(0usize);
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
+    let mut parsed_files = 0usize;
     for entry in &snapshot.index {
         if !matches!(entry.mode, 0o100644 | 0o100755) {
             e.boundaries.push(format!("UNSAFE_FILE:{}", entry.path));
@@ -182,6 +185,7 @@ fn capture_with_store_selected(
                     syntax_file_cache::load(output, &key, &service.id, &entry.path)?
                 {
                     replay_file(&file, &payload, &mut e)?;
+                    cache_hits += 1;
                     inventory.insert(
                         entry.path.clone(),
                         json!({"digest":payload.fingerprint,"coverage":"SYNTAX"}),
@@ -192,6 +196,8 @@ fn capture_with_store_selected(
                 }
                 #[cfg(test)]
                 FILE_CACHE_STATS.with(|s| s.borrow_mut().misses += 1);
+                cache_misses += 1;
+                parsed_files += 1;
                 let tree = parse(&service.language, text)?;
                 let root_fingerprint = fingerprint(tree.root_node(), text)?;
                 inventory.insert(entry.path.clone(), json!({"digest":root_fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
@@ -235,6 +241,7 @@ fn capture_with_store_selected(
                     syntax_file_cache::save(output, &payload)?;
                 }
             } else {
+                parsed_files += 1;
                 let tree = parse(&service.language, text)?;
                 let fingerprint = fingerprint(tree.root_node(), text)?;
                 inventory.insert(entry.path.clone(), json!({"digest":fingerprint,"coverage":if tree.root_node().has_error(){"PARTIAL"}else{"SYNTAX"}}));
@@ -281,6 +288,7 @@ fn capture_with_store_selected(
     e.boundaries.sort();
     e.boundaries.dedup();
     analysis::verify_evidence(&e)?;
+    super::progress::syntax_file_cache(cache_hits, cache_misses, parsed_files);
     Ok(e)
 }
 

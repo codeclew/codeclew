@@ -95,6 +95,36 @@ fn service(language: &str) -> Service {
 }
 
 #[test]
+fn semantic_module_switch_reuses_source_files_and_preserves_citation_records() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Service.java",
+        "class Service { String value() { return \"ready\"; } }\n",
+    );
+    let revision = fixture.commit();
+    let mut service = service("java");
+    let source = fixture.cached(&service, &revision);
+    let cold = syntax::take_file_cache_stats();
+    assert_eq!(cold.parses, 1);
+    for enabled in [true, false, true] {
+        service.modules = Some(serde_json::from_value(json!({
+            "schema":"codeclew-documentation-modules/1.0",
+            "semantic":if enabled {
+                json!({"module":"javac","enabled":true,"profile":"java-17plus-maven-read-only","compilation":":/main"})
+            } else {
+                json!({"module":"javac","enabled":false})
+            }
+        })).unwrap());
+        let replay = fixture.cached(&service, &revision);
+        let stats = syntax::take_file_cache_stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.parses, 0);
+        assert_eq!(replay.entrypoints, source.entrypoints);
+        assert_eq!(replay.sources, source.sources);
+    }
+}
+
+#[test]
 fn fastify_registration_sources_and_exact_handler_identity_survive_warm_reuse() {
     let fixture = Fixture::new();
     let service = service("typescript");
