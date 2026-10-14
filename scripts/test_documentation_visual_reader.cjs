@@ -186,6 +186,26 @@ test('sequence SVG omits long Notes while readable behavior retains nested note-
  r.click({sources:'same-source',sourceOperation:op.id});
  assert.match(r.e('source-code').innerHTML,/ACCEPTED SOURCE/);
 });
+
+test('sequence layout places arrows below complete Weather labels and bounds participant titles',()=>{
+ const op={"id": "dashboard-forecast-updated-consumer", "title": "Dashboard consumes forecast-updated events", "participants": [{"id": "caller", "label": "Caller", "service": null}, {"id": "service-dashboard", "label": "dashboard", "service": "dashboard"}, {"id": "dashboard-kafka", "label": "Kafka topic weather.forecast-updated", "service": null}, {"id": "dashboard-db", "label": "Dashboard PostgreSQL", "service": null}], "events": [{"dependencyIds": ["dashboard:symbol:ac3aadb76be6fea3e790cb85"], "from": "service-dashboard", "id": "claim-ebeef3c264171b01cd39", "kind": "message", "sourceIds": ["dashboard-ac3aadb76be6fea3e790"], "text": "For a new forecast event, insert the card from event.place when no card exists, without checking for a prior place-requested event; for an existing card, update its place fields and forecast only when stored updated_at is null or the incoming timestamp is strictly newer.", "to": "dashboard-db"}, {"dependencyIds": ["dashboard:flow:59f03a0653cc7a3798b8ceaf", "dashboard:flow:a190efb9bca6603f1d2abc58", "dashboard:symbol:021fcd0ff7baa53bd3c51930"], "from": "service-dashboard", "id": "claim-0b1e97374ab832082b1d", "kind": "message", "sourceIds": ["dashboard-021fcd0ff7baa53bd3c5", "dashboard-59f03a0653cc7a3798b8", "dashboard-a190efb9bca6603f1d2a"], "text": "On JSON parse or validation failure, including an unrecognized topic that throws UNKNOWN_TOPIC, insert topic, partition, offset, and reason INVALID_EVENT into rejected_messages; ignore a duplicate rejection row.", "to": "dashboard-db"}, {"dependencyIds": ["dashboard:flow:049a97e649d7feb212e6c67f", "dashboard:flow:654eeebd7e0618b0c6dd58f9", "dashboard:flow:a190efb9bca6603f1d2abc58"], "from": "service-dashboard", "id": "claim-2bc228fbe1d00118816c", "kind": "message", "sourceIds": ["dashboard-049a97e649d7feb212e6", "dashboard-654eeebd7e0618b0c6dd", "dashboard-a190efb9bca6603f1d2a"], "text": "After the rejection row is written, commit this partition's offset plus one and return.", "to": "dashboard-kafka"}]};
+ const data=fixture(),r=load(data),original=JSON.stringify(op);
+ const layout=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(op)}))`));
+ assert.equal(layout.rows.length,3);
+ for(const row of layout.rows){assert.ok(row.lines.length>=4);assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);assert.ok(row.h>row.arrowOffset+20);}
+ const kafka=layout.actors.find(p=>p.id==='dashboard-kafka');
+ assert.ok(kafka.titleLines.length>1);assert.ok(kafka.titleLines.every(line=>Array.from(line).length<=20));
+ assert.equal(kafka.titleLines.join('').replace(/ /g,''),kafka.label.replace(/ /g,''));
+ assert.ok(layout.rows[0].y>layout.headerBottom);
+ assert.equal(JSON.stringify(op),original);
+ const event=(id,kind,text)=>({id,kind,text,from:'caller',to:'caller',sourceIds:[],dependencyIds:[]});
+ const nested={...op,events:[event('outer','alt','outer '.repeat(70)),event('inner','opt','inner '.repeat(70)),event('self','message','self '.repeat(70)),event('inner-end','end',''),event('else','else','otherwise '.repeat(70)),event('declared','declared','declared '.repeat(70)),event('outer-end','end','')]};
+ const n=JSON.parse(r.run(`JSON.stringify(sequenceLayout(${JSON.stringify(nested)}))`));
+ assert.deepEqual(n.frames.map(f=>f.depth),[0,1]);
+ for(const row of n.rows){if(row.lines.length)assert.ok(row.h>row.lines.length*14);if(['message','declared'].includes(row.e.kind)){assert.ok(row.h>row.arrowOffset+17);assert.ok(row.arrowOffset>(row.lines.length-1)*14+10);}}
+ const declared=n.rows.find(row=>row.e.kind==='declared');assert.ok(declared.captionOffset>declared.arrowOffset+17);assert.ok(declared.h>declared.captionOffset);
+ const svg=r.run(`diagram(${JSON.stringify(nested)})`);for(const id of ['outer','inner','self','else','declared'])assert.ok(svg.includes(`data-event="${id}"`));
+});
 test('mapped contract anchors open the existing handler contract without duplicate rows or retained-source substitution',()=>{
  const data=externalCallFixture(),operation=data.operations[0],current=data.contracts[0],sourceId='same-contract-source';
  data.catalogue=[{id:operation.id,symbol:'savePlace',kind:'HTTP_ENDPOINT',trigger:{methods:['POST'],paths:['/api/places']},sourceIds:['same-source']}];
