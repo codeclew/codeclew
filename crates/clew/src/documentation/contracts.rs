@@ -284,11 +284,23 @@ pub fn capture(
     }
     let state = StateAuthority::process_default()?;
     let cas = CasStore::open(&state)?;
+    capture_with_store(service, repo, evidence, &cas)
+}
+
+pub(super) fn capture_with_store(
+    service: &Service,
+    repo: &Path,
+    evidence: &mut ServiceEvidence,
+    cas: &CasStore,
+) -> Result<(), ClewError> {
+    if service.contract_files.is_empty() {
+        return Ok(());
+    }
     let (snapshot, _) = capture_documentation_scope(
         repo,
         &evidence.revision,
         &service.contract_files,
-        &cas,
+        cas,
         TrackedScopeLimits {
             max_files: 128,
             max_file_bytes: MAX_FILE,

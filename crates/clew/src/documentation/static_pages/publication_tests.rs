@@ -359,6 +359,90 @@ fn edit(repo: &Repository, snapshot: &str, exclude: bool) {
 }
 
 #[test]
+fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output() {
+    let (temporary, repo, snapshot) = repository_snapshot();
+    edit(&repo, &snapshot, true);
+    let output = temporary.path().join("full-excluded");
+    let error = run(Command::Render {
+        root: repo.root.clone(),
+        snapshot,
+        input: None,
+        publication: Some("a".repeat(64)),
+        output: output.clone(),
+    })
+    .unwrap_err();
+    assert!(error.message.contains("endpoint exclusions"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_input() {
+    let (temporary, repo, snapshot) = repository_snapshot();
+    let published = crate::documentation::render::publish_from_snapshot(
+        &repo,
+        vec![],
+        false,
+        BTreeMap::new(),
+        &snapshot,
+    )
+    .unwrap();
+    let publication = published["bundle"].as_str().unwrap().to_owned();
+    let previous_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
+    let output = temporary.path().join("full-valid");
+    let rendered = run(Command::Render {
+        root: repo.root.clone(),
+        snapshot: snapshot.clone(),
+        input: None,
+        publication: Some(publication.clone()),
+        output: output.clone(),
+    })
+    .unwrap();
+    assert_eq!(rendered["status"], "RENDERED");
+    assert!(output.join("index.html").is_file());
+    assert!(!output.join("root-overview.html").exists());
+    assert_eq!(
+        fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+        previous_index
+    );
+    let sentinel = output.join("keep.txt");
+    fs::write(&sentinel, "previous output").unwrap();
+    assert!(
+        run(Command::Render {
+            root: repo.root.clone(),
+            snapshot: snapshot.clone(),
+            input: None,
+            publication: Some(publication.clone()),
+            output: output.clone()
+        })
+        .is_err()
+    );
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "previous output");
+    fs::write(
+        repo.path(&format!("docs/generated/{publication}/catalog.html"))
+            .unwrap(),
+        "damaged frozen input",
+    )
+    .unwrap();
+    let refused = temporary.path().join("full-refused");
+    fs::create_dir(&refused).unwrap();
+    assert!(
+        run(Command::Render {
+            root: repo.root.clone(),
+            snapshot,
+            input: None,
+            publication: Some(publication),
+            output: refused.clone()
+        })
+        .is_err()
+    );
+    assert_eq!(fs::read_dir(refused).unwrap().count(), 0);
+    assert_eq!(
+        fs::read(repo.path("docs/index.html").unwrap()).unwrap(),
+        previous_index
+    );
+}
+
+#[test]
 fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_without_checkout() {
     let (temporary, repo, snapshot) = repository_snapshot();
     let inputs_before = repo.input_digest().unwrap();
@@ -376,7 +460,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         let response = run(Command::Render {
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
-            input: input.clone(),
+            input: Some(input.clone()),
+            publication: None,
             output: output.clone(),
         })
         .unwrap();
@@ -399,7 +484,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             run(Command::Render {
                 root: repo.root.clone(),
                 snapshot: snapshot.clone(),
-                input: input.clone(),
+                input: Some(input.clone()),
+                publication: None,
                 output: output.clone(),
             })
             .is_err()
@@ -410,7 +496,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     let restored = run(Command::Render {
         root: repo.root.clone(),
         snapshot: snapshot.clone(),
-        input: input.clone(),
+        input: Some(input.clone()),
+        publication: None,
         output: output.clone(),
     })
     .unwrap();
@@ -428,7 +515,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         run(Command::Render {
             root: repo.root.clone(),
             snapshot,
-            input,
+            input: Some(input),
+            publication: None,
             output: rejected.clone()
         })
         .is_err()

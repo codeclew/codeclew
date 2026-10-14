@@ -1092,6 +1092,71 @@ mod tests {
         e
     }
     #[test]
+    #[ignore = "manual explicit updated SOURCE Check; requires CODECLEW_UPDATED_PAGES_* inputs"]
+    fn full_pages_explicit_updated_source_snapshot_replay() {
+        let path = |name| {
+            std::path::PathBuf::from(std::env::var(name).expect("explicit replay path required"))
+        };
+        let doc_repo = store::Repository::open(&path("CODECLEW_UPDATED_PAGES_ROOT")).unwrap();
+        let old_snapshot = std::env::var("CODECLEW_UPDATED_PAGES_OLD_SNAPSHOT").unwrap();
+        let previous = super::super::check::Check::load_snapshot(&doc_repo, &old_snapshot).unwrap();
+        let mut source_inputs = previous.source_inputs.clone().unwrap();
+        let service = &source_inputs.inputs.services["dashboard"];
+        let source_repo = path("CODECLEW_UPDATED_PAGES_SOURCE");
+        let revision = git(&source_repo, &["rev-parse", "HEAD"]);
+        let temporary = tempfile::tempdir().unwrap();
+        let cas =
+            CasStore::open(&StateAuthority::open(temporary.path().join("state")).unwrap()).unwrap();
+        let mut dashboard = capture_with_store(service, &source_repo, &revision, &cas).unwrap();
+        super::super::contracts::capture_with_store(service, &source_repo, &mut dashboard, &cas)
+            .unwrap();
+        let mut services = previous.services.clone();
+        services.insert("dashboard".into(), dashboard);
+        let mut updated = super::super::check::assemble(
+            source_inputs.input_digest.clone(),
+            services,
+            previous.unresolved.clone(),
+            &source_inputs.inputs.interactions,
+            &source_inputs.inputs.scenarios,
+        )
+        .unwrap();
+        super::super::check::attach_catalogue_from_inputs(&source_inputs.inputs, &mut updated)
+            .unwrap();
+        source_inputs.selected_services = std::collections::BTreeSet::from(["dashboard".into()]);
+        source_inputs.retained_services = updated
+            .services
+            .keys()
+            .filter(|id| id.as_str() != "dashboard")
+            .cloned()
+            .collect();
+        updated.source_inputs = Some(source_inputs);
+        let snapshot = updated.save_snapshot(&doc_repo).unwrap();
+        let contract = updated.services["dashboard"]
+            .observations
+            .values()
+            .find(|o| {
+                o.kind == "CONTRACT_OPERATION"
+                    && o.normalized["method"] == "POST"
+                    && o.normalized["path"] == "/api/places"
+            })
+            .unwrap();
+        assert_eq!(
+            contract.normalized["sourceMapping"],
+            "SOURCE_ROUTE_MATCH_ONLY"
+        );
+        assert_ne!(snapshot, old_snapshot);
+        let result = super::super::static_pages::run(super::super::static_pages::Command::Render {
+            root: doc_repo.root.clone(),
+            snapshot: snapshot.clone(),
+            input: None,
+            publication: Some(std::env::var("CODECLEW_UPDATED_PAGES_PUBLICATION").unwrap()),
+            output: path("CODECLEW_UPDATED_PAGES_OUTPUT"),
+        })
+        .unwrap();
+        fs::write(path("CODECLEW_UPDATED_PAGES_RECEIPT"),serde_json::to_vec_pretty(&json!({"status":"EXPLICIT_NEW_SOURCE_CHECK_AND_FULL_PAGES_RENDERED","oldSnapshot":old_snapshot,"newSnapshot":snapshot,"sourceRevision":revision,"oldSnapshotUnchanged":digest(&previous).unwrap()==digest(&super::super::check::Check::load_snapshot(&doc_repo,&old_snapshot).unwrap()).unwrap(),"buildInvoked":false,"modelInvoked":false,"contract":contract,"pages":result})).unwrap()).unwrap();
+    }
+
+    #[test]
     #[ignore = "manual committed public repository replay; requires CODECLEW_ROUTES_REPLAY_* paths"]
     fn fastify_source_routes_public_repository_replay() {
         let repo = std::path::PathBuf::from(

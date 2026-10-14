@@ -1,6 +1,7 @@
 //! Offline native-source pages over explicit immutable documentation snapshots.
 mod authored;
 mod data_state;
+mod full;
 mod linked;
 pub mod model;
 mod project;
@@ -21,6 +22,23 @@ pub use project::project;
 
 #[cfg(test)]
 #[test]
+#[ignore = "manual full frozen publication replay; requires CODECLEW_FULL_PAGES_* inputs"]
+fn full_pages_saved_publication_replay() {
+    let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path required"));
+    let result = run(Command::Render {
+        root: path("CODECLEW_FULL_PAGES_ROOT"),
+        snapshot: std::env::var("CODECLEW_FULL_PAGES_SNAPSHOT").unwrap(),
+        input: None,
+        publication: Some(std::env::var("CODECLEW_FULL_PAGES_PUBLICATION").unwrap()),
+        output: path("CODECLEW_FULL_PAGES_OUTPUT"),
+    })
+    .unwrap();
+    assert_eq!(result["status"], "RENDERED");
+    println!("{}", serde_json::to_string(&result).unwrap());
+}
+
+#[cfg(test)]
+#[test]
 #[ignore = "manual replay of a caller-provided retained snapshot; requires CODECLEW_PAGES_REPLAY_* paths"]
 fn source_pages_saved_snapshot_replay() {
     let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path is required"));
@@ -28,7 +46,8 @@ fn source_pages_saved_snapshot_replay() {
         root: path("CODECLEW_PAGES_REPLAY_ROOT"),
         snapshot: std::env::var("CODECLEW_PAGES_REPLAY_SNAPSHOT")
             .expect("explicit snapshot is required"),
-        input: path("CODECLEW_PAGES_REPLAY_INPUT"),
+        input: Some(path("CODECLEW_PAGES_REPLAY_INPUT")),
+        publication: None,
         output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
     })
     .expect("saved SOURCE pages replay must render");
@@ -116,8 +135,15 @@ pub enum Command {
         #[arg(long)]
         snapshot: String,
         /// JSON array of exact declaration selectors and optional captured note IDs.
-        #[arg(long)]
-        input: PathBuf,
+        #[arg(
+            long,
+            required_unless_present = "publication",
+            conflicts_with = "publication"
+        )]
+        input: Option<PathBuf>,
+        /// Full saved service/process publication, presented against the selected snapshot.
+        #[arg(long, conflicts_with = "input")]
+        publication: Option<String>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -130,10 +156,16 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             root,
             snapshot,
             input,
+            publication,
             output,
         } => {
             let repo = Repository::open(&root)?;
             let checked = Check::load_snapshot(&repo, &snapshot)?;
+            if let Some(publication) = publication {
+                return full::render(&repo, &checked, &snapshot, &publication, &output);
+            }
+            let input =
+                input.ok_or_else(|| invalid("native pages require input or publication"))?;
             let selections: Vec<model::Selection> = store::read(&input, 1024 * 1024)?;
             if selections.is_empty() || selections.len() > 128 {
                 return Err(invalid(

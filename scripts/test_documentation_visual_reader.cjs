@@ -201,6 +201,23 @@ test('mapped contract navigation refuses ambiguous captured contract identities'
  const r=load(data);r.run(`location.hash='#'+${JSON.stringify(contract.id)};routeReaderHash()`);
  assert.equal(r.run('current.id'),'section-overview');
 });
+test('full Pages keeps selected revisions separate from retained explanation coverage',()=>{
+ const data=fixture();data.selectedSnapshot='selected-source-snapshot';data.frozenPublication='frozen-publication';
+ data.revisions={sample:'retained-revision'};data.coverage={sample:'OLD_PARTIAL'};
+ data.selectedEvidence={authority:'SELECTED_SNAPSHOT_NOT_RUNTIME_PROOF',revisions:{sample:'selected-revision'},services:{sample:{coverage:'SYNTAX',boundaries:['SELECTED_BOUNDARY']}}};
+ const r=load(data);
+ assert.match(r.e('revision-links').innerHTML,/selected-rev/);assert.doesNotMatch(r.e('revision-links').innerHTML,/retained-rev/);
+ assert.match(r.e('freshness-status').innerHTML,/Selected source snapshot/);
+ assert.match(r.e('freshness-status').innerHTML,/retained-revision/);
+ r.run('coverage()');const html=r.e('coverage-view').innerHTML;
+ assert.match(html,/selected-revision/);assert.match(html,/retained-revision/);
+ assert.match(html,/SYNTAX/);assert.match(html,/OLD_PARTIAL/);assert.match(html,/SELECTED_BOUNDARY/);
+ assert.equal(data.revisions.sample,'retained-revision');
+ r.run('D.sectionState=null;freshness(null)');
+ assert.match(r.e('freshness-status').innerHTML,/Selected source snapshot/);
+ assert.match(r.e('freshness-status').innerHTML,/retained-revision/);
+ assert.match(r.e('freshness-status').innerHTML,/Legacy publication/);
+});
 test('external call missing and multiple declarations remain explicit; old pages do not infer bindings',()=>{
  const data=externalCallFixture(),operation=data.operations[0],row=data.operationExternalCalls[operation.id][0];
  delete row.addresses[0].environment;assert.match(load(data).e('scenario-content').innerHTML,/Environment: unspecified/);
