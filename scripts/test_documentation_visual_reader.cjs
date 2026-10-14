@@ -97,7 +97,7 @@ function load(data=fixture(),mobile=false){
  testDocument={getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){}}},activeElement:null};
  const context=vm.createContext({document:testDocument,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
- return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
+ return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
 test('default service overview exposes the first native graph and all visual navigation',()=>{
  const r=load(),html=r.e('scenario-content').innerHTML;
@@ -205,6 +205,30 @@ test('sequence projection prunes empty nested arms and retains surviving else gu
  assert.deepEqual(JSON.parse(r.run(`JSON.stringify(sequenceEvents(${JSON.stringify(both)}))`)),both.events);
  const emptyElse={...op,events:[event('first','alt','First condition'),event('left','message','First result'),event('empty-else','else','Other condition'),event('empty-note','note','No action'),event('end','end','')]};
  assert.deepEqual(JSON.parse(r.run(`JSON.stringify(sequenceEvents(${JSON.stringify(emptyElse)}))`)).map(e=>e.id),['first','left','end']);
+});
+
+test('surviving SVG else guard opens combined guard and else evidence without changing the accepted stream',()=>{
+ const data=fixture(),op=data.operations[0];
+ op.participants=[{id:'caller',label:'Caller'},{id:'store',label:'Store'}];
+ op.events=[
+  {id:'guard',kind:'alt',text:'The event was already processed',sourceIds:['guard-source'],dependencyIds:['guard-dependency']},
+  {id:'note',kind:'note',text:'Return the previous result',sourceIds:['note-source'],dependencyIds:[]},
+  {id:'else',kind:'else',text:'Otherwise',sourceIds:['else-source'],dependencyIds:['else-dependency']},
+  {id:'write',kind:'message',text:'Apply the event',from:'caller',to:'store',sourceIds:['write-source'],dependencyIds:[]},
+  {id:'end',kind:'end',text:'',sourceIds:[],dependencyIds:[]}
+ ];
+ data.operationSources[op.id]={...data.operationSources[op.id],'guard-source':source('GUARD_SOURCE'),'else-source':source('ELSE_SOURCE'),'note-source':source('NOTE_SOURCE'),'write-source':source('WRITE_SOURCE')};
+ const before=JSON.stringify(data),r=load(data),projected=JSON.parse(r.run('JSON.stringify(sequenceEvents(D.operations[0]))'));
+ r.run('showEntry(D.operations[0].id)');
+ assert.deepEqual(projected[0].sourceIds,['guard-source','else-source']);assert.deepEqual(projected[0].dependencyIds,['guard-dependency','else-dependency']);
+ assert.match(r.run('diagram(D.operations[0])'),/data-event="else" data-sequence-event="true"/);
+ r.click({event:'else',sequenceEvent:'true'});
+ assert.match(r.e('source-code').innerHTML,/GUARD_SOURCE/);
+ assert.match(r.e('source-select').innerHTML,/value="guard-source"/);assert.match(r.e('source-select').innerHTML,/value="else-source"/);assert.doesNotMatch(r.e('source-select').innerHTML,/note-source/);
+ r.e('source-select').onchange({target:{value:'else-source'}});assert.match(r.e('source-code').innerHTML,/ELSE_SOURCE/);
+ assert.ok(r.e('source-title').textContent.includes('The event was already processed'));
+ assert.equal(JSON.stringify(data),before);assert.equal(r.run('JSON.stringify(D.operations[0])'),JSON.stringify(op));
+ const behavior=r.run('behaviorPseudocode(D.operations[0])');assert.match(behavior,/Return the previous result/);assert.match(behavior,/The event was already processed/);
 });
 
 test('sequence layout places arrows below complete Weather labels and bounds participant titles',()=>{
