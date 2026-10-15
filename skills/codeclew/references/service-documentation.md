@@ -50,8 +50,27 @@ its involved service scope, including helpers, configuration, membership changes
 and empty catalogues. Reads outside registered scopes require an expanded scope
 or an explicit incomplete-read limitation. Citations alone do not track them.
 
-Optional `modules.semantic: {"module":"kotlin-k2","enabled":true,"profile":"kotlin-jvm-maven-analysis","compilation":":/main"}`
-requests the existing compiler provider. Provider failure keeps source evidence
+For optional Kotlin compiler enrichment, add this complete `modules` object to
+the existing full SOURCE service record (this example selects Maven):
+
+```json
+{
+  "schema": "codeclew-documentation-modules/1.0",
+  "semantic": {
+    "module": "kotlin-k2",
+    "enabled": true,
+    "profile": "kotlin-jvm-maven-analysis",
+    "compilation": ":/main"
+  }
+}
+```
+
+Keep the existing source roots and dialect. For Gradle, select its admitted
+analysis profile instead. Read the current `inputDigest` with `docs service list`,
+then submit the complete updated service JSON with `docs service add --input
+<service.json> --expected-input-digest <inputDigest>`; both commands require
+`--root <docs>`. The parent modules schema is required. No top-level compiler
+array is needed for a SOURCE service. Provider failure keeps source evidence
 readable and invalidates retained semantic dependencies. Enrichment attaches
 only uniquely mapped equal-revision file/range facts; it does not convert syntax
 calls to resolved edges. Kotlin language/analyzer differences remain visible.
