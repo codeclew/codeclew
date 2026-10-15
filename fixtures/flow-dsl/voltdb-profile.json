@@ -1,0 +1,12 @@
+{
+  "schema": "codeclew-flow-dsl-profile/1.0",
+  "id": "voltdb-order-stages",
+  "title": "VoltDB OrderProc declared stages",
+  "framework": "VoltDB compound procedure",
+  "engineVersion": null,
+  "family": "builder-chain",
+  "construction": {"file":"compound-proc/src/OrderProc.java","owner":"OrderProc","method":"run"},
+  "operationType": "VoltCompoundProcedure",
+  "taskType": "OrderProc",
+  "builder": {"receiver":"","method":"newStageList"}
+}

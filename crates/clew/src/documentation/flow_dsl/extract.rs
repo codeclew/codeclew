@@ -264,10 +264,22 @@ impl Extractor<'_> {
             .collect()
     }
     fn call_match(&self, n: Node<'_>, sel: &Selected<'_>, b: &CallBinding) -> bool {
+        self.call_match_with_receiver(n, sel, b, false)
+    }
+    fn call_match_with_receiver(
+        &self,
+        n: Node<'_>,
+        sel: &Selected<'_>,
+        b: &CallBinding,
+        allow_unqualified: bool,
+    ) -> bool {
         let s = &sel.source.text;
         if n.kind() != "method_invocation"
             || name(n, s) != b.method
-            || field(n, "object").map(|x| text(x, s)) != Some(&b.receiver)
+            || field(n, "object")
+                .map(|x| text(x, s))
+                .or_else(|| allow_unqualified.then_some(""))
+                != Some(b.receiver.as_str())
         {
             return false;
         }
@@ -294,6 +306,9 @@ impl Extractor<'_> {
         let method = method_node(tree.root_node(), s, &self.p.construction.method)?;
         let all = nodes(method)?;
         if self.p.family == Family::BuilderChain {
+            if self.p.root_variable.is_none() {
+                return self.inline_construction(&sel, method, &all);
+            }
             let root = self.p.root_variable.as_deref().unwrap();
             let b = self.p.builder.as_ref().unwrap();
             let mut init = 0;
@@ -425,6 +440,91 @@ impl Extractor<'_> {
                 }
             }
             self.add("initial-queue",self.ui("Declared initial operation queue"),text(n,s).into(),members,&[],&sel,n,vec!["Constructor argument order only; dequeue and delivery semantics require engine evidence".into()])?;
+        }
+        Ok(())
+    }
+    fn inline_construction(
+        &mut self,
+        sel: &Selected<'_>,
+        method: Node<'_>,
+        all: &[Node<'_>],
+    ) -> Result<(), ClewError> {
+        let s = &sel.source.text;
+        let binding = self.p.builder.as_ref().unwrap();
+        let builders: Vec<_> = all
+            .iter()
+            .copied()
+            .filter(|n| self.call_match_with_receiver(*n, sel, binding, true))
+            .collect();
+        if builders.len() != 1 {
+            return self.gap(
+                sel,
+                method,
+                "Inline builder initialization is missing or ambiguous",
+            );
+        }
+        let init = builders[0];
+        if guarded(init, method, s) {
+            return self.gap(
+                sel,
+                init,
+                "Conditional or nested construction is unsupported",
+            );
+        }
+        let mut chain = vec![init];
+        let mut current = init;
+        loop {
+            let Some(parent) = current.parent().filter(|p| {
+                p.kind() == "method_invocation" && field(*p, "object") == Some(current)
+            }) else {
+                return self.gap(
+                    sel,
+                    init,
+                    "Inline builder requires a standalone chain ending in build()",
+                );
+            };
+            match name(parent, s).as_str() {
+                "then" => {
+                    chain.push(parent);
+                    current = parent;
+                }
+                "build" if args(parent).is_empty() => {
+                    let standalone = parent.parent().is_some_and(|statement| {
+                        statement.kind() == "expression_statement"
+                            && statement.parent() == field(method, "body")
+                    });
+                    if !standalone {
+                        return self.gap(
+                            sel,
+                            parent,
+                            "Conditional or nested inline builder expression is unsupported",
+                        );
+                    }
+                    break;
+                }
+                _ => return self.gap(sel, parent, "Unsupported inline builder chain call"),
+            }
+        }
+        // Validate the whole expression before promoting any callback stages.
+        let Some(groups): Option<Vec<_>> = chain.iter().map(|n| callbacks(&args(*n), s)).collect()
+        else {
+            return self.gap(sel, init, "Unsupported inline builder callback expression");
+        };
+        for (call, members) in chain.into_iter().zip(groups) {
+            let label = self.label(members[0].rsplit("::").next().unwrap());
+            self.add(
+                "callback-group",
+                label,
+                text(call, s).into(),
+                members,
+                &[],
+                sel,
+                call,
+                vec![
+                    "Declared chain group; scheduler, exceptions and parallelism remain unresolved"
+                        .into(),
+                ],
+            )?;
         }
         Ok(())
     }

@@ -36,10 +36,17 @@ otherwise the adapter requires retained syntax declarations and labels that
 fallback. Compiler declaration binding does not upgrade DSL interpretation to
 runtime or compiler-proven behavior.
 
-Builder profiles bind an exact builder receiver/method and root variable.
-Supported construction uses a direct method-reference group assigned to that
-root, followed by `.then(...)` groups rooted at the same variable. A group of
-callbacks does not prove parallel execution. Queue profiles bind a constructor
+Builder profiles bind an exact builder receiver/method. Set `rootVariable` for
+a direct method-reference group assigned to that root, followed by `.then(...)`
+groups rooted at the same variable. Omit `rootVariable` for a single standalone
+`builder(...).then(...).build()` expression directly in the construction method
+body. An empty builder `receiver` selects an unqualified call, such as
+`newStageList(this::getData)` in the public VoltDB examples. Inline extraction
+requires exactly one matching builder, only method-reference callback groups,
+and a final zero-argument `build()` call. Conditional, nested, assigned, returned,
+ambiguous, or unsupported inline expressions produce gaps without promoting any
+of their callback stages. A group of callbacks does not prove parallel execution.
+Queue profiles bind a constructor
 type, initial argument offset, and registry receiver; `.put(Operation.KEY,
 Context::method)` establishes an unordered lookup binding. Constructor arguments
 establish declared initial queue order, not dequeue/delivery policy. A selected

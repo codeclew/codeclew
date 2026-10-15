@@ -4,6 +4,9 @@ use crate::canonical;
 use tree_sitter::{Node, Parser};
 
 fn evidence(text: &str) -> ServiceEvidence {
+    evidence_at(text, "Example.java", "example.")
+}
+fn evidence_at(text: &str, file: &str, package_prefix: &str) -> ServiceEvidence {
     let mut e = ServiceEvidence {
         schema: "codeclew-documentation-service-evidence/1.0".into(),
         service: "example".into(),
@@ -23,11 +26,18 @@ fn evidence(text: &str) -> ServiceEvidence {
         .set_language(&tree_sitter_java::LANGUAGE.into())
         .unwrap();
     let tree = parser.parse(text, None).unwrap();
-    fn visit(n: Node<'_>, text: &str, owner: &str, e: &mut ServiceEvidence) {
+    fn visit(
+        n: Node<'_>,
+        text: &str,
+        owner: &str,
+        file: &str,
+        package_prefix: &str,
+        e: &mut ServiceEvidence,
+    ) {
         let mut next = owner.to_owned();
         if n.kind() == "class_declaration" {
             next = format!(
-                "example.{}",
+                "{package_prefix}{}",
                 &text[n.child_by_field_name("name").unwrap().byte_range()]
             );
         }
@@ -41,7 +51,7 @@ fn evidence(text: &str) -> ServiceEvidence {
                     id: id.clone(),
                     service: e.service.clone(),
                     revision: e.revision.clone(),
-                    file: "Example.java".into(),
+                    file: file.into(),
                     start_line: n.start_position().row as u64 + 1,
                     end_line: n.end_position().row as u64 + 1,
                     text: exact.into(),
@@ -56,10 +66,10 @@ fn evidence(text: &str) -> ServiceEvidence {
         }
         let mut cursor = n.walk();
         for c in n.named_children(&mut cursor) {
-            visit(c, text, &next, e);
+            visit(c, text, &next, file, package_prefix, e);
         }
     }
-    visit(tree.root_node(), text, "", &mut e);
+    visit(tree.root_node(), text, "", file, package_prefix, &mut e);
     e
 }
 fn fixture() -> ServiceEvidence {
@@ -74,6 +84,108 @@ fn profile(queue: bool) -> Profile {
         include_str!("../../../../../fixtures/flow-dsl/builder-profile.json")
     })
     .unwrap()
+}
+
+fn inline_profile() -> Profile {
+    serde_json::from_str(include_str!(
+        "../../../../../fixtures/flow-dsl/voltdb-profile.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn upstream_voltdb_inline_chain_retains_callback_order_and_exact_source_ranges() {
+    let source = include_str!("../../../../../fixtures/flow-dsl/voltdb/OrderProc.java");
+    let p = inline_profile();
+    let e = evidence_at(source, &p.construction.file, "");
+    let projection = extract::project(&e, "original-voltdb-snapshot", &p).unwrap();
+    assert_eq!(projection.items.len(), 3);
+    for (item, (member, end_line)) in projection.items.iter().zip([
+        ("this::getData", 57),
+        ("this::processData", 58),
+        ("this::confirmOrder", 59),
+    ]) {
+        assert_eq!(item.kind, "callback-group");
+        assert_eq!(item.members, vec![member]);
+        assert_eq!(
+            item.reference.binding_authority,
+            "DECLARED_OWNER_AST_SYNTAX"
+        );
+        assert_eq!(
+            item.reference.call_target_authority,
+            "DECLARED_RECEIVER_AST_SYNTAX"
+        );
+        assert_eq!(item.reference.start_line, 57);
+        assert_eq!(item.reference.end_line, end_line);
+        let retained = &e.sources[&item.reference.source_id];
+        assert_eq!(retained.file, p.construction.file);
+        assert!(retained.text.contains(&item.expression));
+        assert_eq!(
+            retained.text_digest,
+            canonical::hash_bytes(retained.text.as_bytes())
+        );
+        assert!(item.limitations.iter().any(|l| l.contains("unresolved")));
+    }
+    assert_eq!(projection.items[0].label, "Get data");
+    assert!(!projection.items[2].expression.contains(".build()"));
+}
+
+#[test]
+fn inline_chains_reject_ambiguous_conditional_nested_and_unsupported_expressions() {
+    let p = inline_profile();
+    let chain = "newStageList(this::first).then(this::second).build()";
+    let bodies = [
+        format!("if (ready) {{ {chain}; }}"),
+        format!("while (ready) {{ {chain}; }}"),
+        format!("try {{ {chain}; }} catch (Exception e) {{}}"),
+        format!("Runnable r = () -> {{ {chain}; }};"),
+        format!("class Nested {{ void nested() {{ {chain}; }} }}"),
+        format!("Object v = ready ? {chain} : fallback();"),
+        format!("boolean v = ready && {chain};"),
+        format!("consume({chain});"),
+        format!("return {chain};"),
+        format!("Object stages = {chain};"),
+        format!("{{ {chain}; }}"),
+        format!("{chain}; {chain};"),
+        format!("{chain}; if (ready) {{ {chain}; }}"),
+        format!("other.{chain};"),
+        format!("{chain}.then(this::third);"),
+        "newStageList(this::first).then(this::second);".into(),
+        "newStageList(this::first).then(this::second).build(value);".into(),
+        "newStageList(this::first).unknown(this::second).build();".into(),
+        "newStageList(this::first).then(() -> second()).build();".into(),
+        "newStageList(() -> first()).then(this::second).build();".into(),
+        "newStageList(this::first).then(factory()::second).build();".into(),
+        "newStageList(this::first).then().build();".into(),
+    ];
+    for body in bodies {
+        let source = format!("class OrderProc {{ void run() {{ {body} }} }}");
+        let e = evidence_at(&source, &p.construction.file, "");
+        let projection = extract::project(&e, "snapshot", &p).unwrap();
+        assert!(projection.items.iter().all(|i| i.kind == "gap"), "{body}");
+        assert!(!projection.items.is_empty(), "{body}");
+    }
+}
+
+#[test]
+fn inline_chain_ignores_comments_strings_and_other_receivers() {
+    let p = inline_profile();
+    let source = r#"class OrderProc { void run() {
+        // newStageList(this::fake).then(this::fake).build();
+        String example = "newStageList(this::fake).then(this::fake).build()";
+        other.newStageList(this::unrelated).then(this::unrelated).build();
+        newStageList(this::first).then(this::second, this::third).build();
+    } }"#;
+    let e = evidence_at(source, &p.construction.file, "");
+    let projection = extract::project(&e, "snapshot", &p).unwrap();
+    assert_eq!(projection.items.len(), 2);
+    assert_eq!(projection.items[1].members, ["this::second", "this::third"]);
+    assert!(projection.items.iter().all(|i| i.kind == "callback-group"));
+    // Selecting a root variable retains the original admission rules.
+    let mut rooted = p;
+    rooted.root_variable = Some("root".into());
+    let projection = extract::project(&e, "snapshot", &rooted).unwrap();
+    assert!(projection.items.iter().all(|i| i.kind == "gap"));
 }
 
 #[test]

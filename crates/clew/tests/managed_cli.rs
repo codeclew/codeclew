@@ -5573,6 +5573,12 @@ fn flow_dsl_static_render_uses_original_supported_snapshot() {
     fs::create_dir(&repo).unwrap();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/flow-dsl");
     fs::copy(fixtures.join("Example.java"), repo.join("Example.java")).unwrap();
+    fs::create_dir_all(repo.join("compound-proc/src")).unwrap();
+    fs::copy(
+        fixtures.join("voltdb/OrderProc.java"),
+        repo.join("compound-proc/src/OrderProc.java"),
+    )
+    .unwrap();
     run_git(&repo, &["init", "-q"]);
     run_git(
         &repo,
@@ -5624,7 +5630,7 @@ fn flow_dsl_static_render_uses_original_supported_snapshot() {
     let snapshot = capture["snapshot"].as_str().unwrap();
     // Rendering succeeds after source checkout disappears; no recapture or compilation is possible.
     fs::remove_dir_all(&repo).unwrap();
-    for family in ["builder", "queue"] {
+    for family in ["builder", "queue", "voltdb"] {
         let output = temporary.path().join(format!("output-{family}"));
         let profile = fixtures.join(format!("{family}-profile.json"));
         let result = run(&[
@@ -5644,11 +5650,17 @@ fn flow_dsl_static_render_uses_original_supported_snapshot() {
         ]);
         let items = result["projection"]["items"].as_array().unwrap();
         assert!(items.iter().any(|i| i["kind"]
-            == if family == "builder" {
-                "callback-group"
-            } else {
+            == if family == "queue" {
                 "initial-queue"
+            } else {
+                "callback-group"
             }));
+        if family == "voltdb" {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0]["members"], json!(["this::getData"]));
+            assert_eq!(items[1]["members"], json!(["this::processData"]));
+            assert_eq!(items[2]["members"], json!(["this::confirmOrder"]));
+        }
         assert!(output.join("page.mdx").is_file() && output.join("page.html").is_file());
         if let Some(review) = std::env::var_os("CODECLEW_FLOW_DSL_TEST_OUTPUT") {
             let review = std::path::PathBuf::from(review).join(family);

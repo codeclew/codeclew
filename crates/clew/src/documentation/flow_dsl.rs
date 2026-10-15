@@ -65,7 +65,8 @@ pub struct ContextBinding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallBinding {
-    /// Exact source receiver spelling; qualified target is checked if compiler facts exist.
+    /// Exact source receiver spelling; empty selects an unqualified inline builder.
+    /// Qualified target is checked if compiler facts exist.
     pub receiver: String,
     pub method: String,
     #[serde(default)]
@@ -111,6 +112,7 @@ pub struct Profile {
     pub task_type: String,
     #[serde(default)]
     pub builder: Option<CallBinding>,
+    /// Omit for a single standalone builder(...).then(...).build() expression.
     #[serde(default)]
     pub root_variable: Option<String>,
     #[serde(default)]
@@ -156,10 +158,8 @@ impl Profile {
             store::relative(&c.file)?;
         }
         match self.family {
-            Family::BuilderChain if self.builder.is_none() || self.root_variable.is_none() => {
-                return Err(invalid(
-                    "builder profile requires API and root variable bindings",
-                ));
+            Family::BuilderChain if self.builder.is_none() => {
+                return Err(invalid("builder profile requires an API binding"));
             }
             Family::OperationQueue
                 if self.queue_type.is_none()
