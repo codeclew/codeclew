@@ -22,6 +22,10 @@ jobs:
       - run: python3 scripts/check_repository_privacy.py --self-test
       - run: python3 scripts/check_repository_privacy.py --history
       - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '25' }
+      - name: Retain JDK 25 for project-toolchain qualification
+        run: echo "CODECLEW_TEST_JDK25_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21' }
       - uses: actions/setup-node@v4
         with: { node-version: '22' }

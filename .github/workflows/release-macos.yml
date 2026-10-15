@@ -30,10 +30,18 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
+          java-version: '25'
+      - name: Retain JDK 25 for project-toolchain qualification
+        run: echo "CODECLEW_TEST_JDK25_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
           java-version: '21'
           cache: gradle
       - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
+      - name: Qualify Kotlin JVM 25 project semantics on the packaged analyzer
+        run: ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.KotlinJvm25QualificationTest
       - name: Qualify Rust and Python conditional mutation
         run: python3 -I -S scripts/language_mutation_pilot.py
 

@@ -31,6 +31,27 @@ class KotlinEngineCompatibilityTest {
     }
 
     @Test
+    fun requiredCopyAndPreviewOptionsAreQualifiedWithoutChangingTargetOrArguments() {
+        val copy = "-Xconsistent-data-class-copy-visibility"
+        val preview = "-Xjvm-enable-preview"
+        for ((version, language) in listOf("2.0.20" to "2.0", "2.0.21" to "2.0", "2.1.21" to "2.1", "2.3.21" to "2.3", "2.4.0" to "2.4")) {
+            val project = KotlinProjectSemantics(version, "TEST", language, language, "25", emptyList(), emptyList())
+            for (options in listOf(listOf(copy), listOf(preview), listOf(copy, preview))) {
+                val configured = project.copy(unstableCompilerOptions = options)
+                assertEquals("QUALIFIED", kotlinEngineCompatibilityDecision(configured).status)
+                assertEquals(options, kotlinAnalysisCompilerArguments(version, options))
+                assertEquals("25", configured.jvmTarget)
+            }
+            for (unknown in listOf("$copy=false", "$preview=true", "-Xunknown")) {
+                assertEquals("REJECTED", kotlinEngineCompatibilityDecision(project.copy(unstableCompilerOptions = listOf(copy, preview, unknown))).status)
+            }
+        }
+        for ((version, language) in listOf("1.9.25" to "1.9", "2.0.19" to "2.0")) {
+            assertEquals("REJECTED", kotlinEngineCompatibilityDecision(KotlinProjectSemantics(version, "TEST", language, language, "17", emptyList(), listOf(copy))).status)
+        }
+    }
+
+    @Test
     fun kotlin19AnnotationTargetNormalizationPreservesNativeAndUnknownArguments() {
         val original = listOf("-Xannotation-default-target=param-property", "-Xunknown=keep", "-java-parameters")
         assertEquals(listOf("-Xunknown=keep", "-java-parameters"), kotlinAnalysisCompilerArguments("1.9.25", original))

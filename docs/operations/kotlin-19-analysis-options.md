@@ -10,8 +10,11 @@ does not introduce another project-version or JVM-target whitelist.
 | --- | --- | --- |
 | `-Xjsr305` | `strict`, `warn`, `ignore` | A Java `@ParametersAreNonnullByDefault` API called with `null` produces an error, a warning, or no warning respectively. |
 | `-Xjvm-default` | `disable`, `all`, `all-compatibility` | Inherited interface dispatch returns the same value; interface default methods and callable `DefaultImpls` bridges match each mode. |
+| `-Xconsistent-data-class-copy-visibility` | Presence, for project Kotlin 2.0.20 or newer | Generated `copy` has the private constructor's visibility; external copy calls fail under both native and analyzer compilers. |
+| `-Xjvm-enable-preview` | Presence | JVM 25 output retains major 69 and minor 65535; JDK 25 accepts it with `--enable-preview` and refuses it without that runtime flag. |
 
-Use the single-token `-Xname=value` spelling, with one distinct value per option.
+Use the single-token `-Xname=value` spelling for valued options and the exact
+bare spelling for presence options, with one distinct value per option.
 The arguments are forwarded unchanged. Special JSR-305 annotation rules,
 `under-migration` settings, conflicting values and old JVM-default spellings
 remain unqualified. Existing exact
@@ -37,11 +40,26 @@ and JVM targets, argument preservation, conflicting/unknown option rejection,
 and continued refusal of unsupported project language/compiler modes. These
 checks are included in `scripts/ci-verify.sh`.
 
+`KotlinJvm25QualificationTest` compares the native 2.3.21 compiler and packaged
+2.4.10 analyzer with each required presence option separately and both together
+at JVM target 25. The compiler plugin must retain exact FIR receipts and JDK API
+references; compiler success alone does not establish accepted facts. A real
+Gradle project uses toolchain 25 while the Gradle daemon and analyzer stay on JDK
+21. Its options and target are preserved. The model selects the effective Kotlin
+task toolchain before the Java launcher fallback. Toolchain resolution errors do
+not silently substitute the build JVM; legacy JDK layouts remain supported.
+
+Full verification and the release qualification job require an installed JDK 25
+at `CODECLEW_TEST_JDK25_HOME`, in addition to build/analyzer JDK 21. The CI and
+release workflows provision both. This JDK is a test dependency, not a change to
+the packaged analyzer JVM or the application's settings.
+
 ```sh
 cargo test --locked -p clew --lib kotlin_engine::tests:: -- --test-threads=1
 ./gradlew --no-daemon :workers:kotlin:test \
   --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest \
-  --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest
+  --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest \
+  --tests dev.semanticthread.worker.KotlinJvm25QualificationTest
 ```
 
 The reported private projects were unavailable during this qualification.

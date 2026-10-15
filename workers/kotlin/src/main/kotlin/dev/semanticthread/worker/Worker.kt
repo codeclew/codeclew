@@ -141,7 +141,11 @@ internal fun qualifiedKotlinAnalysisOption(project: KotlinProjectSemantics, engi
     if (option == "-Xannotation-default-target=param-property") return true
     if (engine.analyzerCompilerVersion != "2.4.10") return false
     val supported = option in setOf("-Xjsr305=strict", "-Xjsr305=warn", "-Xjsr305=ignore",
-        "-Xjvm-default=disable", "-Xjvm-default=all", "-Xjvm-default=all-compatibility")
+        "-Xjvm-default=disable", "-Xjvm-default=all", "-Xjvm-default=all-compatibility", "-Xjvm-enable-preview") ||
+        (option == "-Xconsistent-data-class-copy-visibility" && project.projectCompilerVersion.startsWith("2.") &&
+            project.projectCompilerVersion.split('.').map(String::toIntOrNull).let {
+                it.size == 3 && ((it[1] ?: -1) > 0 || it[1] == 0 && (it[2] ?: -1) >= 20)
+            })
     return supported && project.unstableCompilerOptions.none { it != option && it.substringBefore('=') == option.substringBefore('=') }
 }
 

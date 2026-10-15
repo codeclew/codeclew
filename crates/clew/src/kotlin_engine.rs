@@ -350,7 +350,18 @@ fn qualified_analysis_option(
             | "-Xjvm-default=disable"
             | "-Xjvm-default=all"
             | "-Xjvm-default=all-compatibility"
+            | "-Xjvm-enable-preview"
     );
+    let supported = supported
+        || (option == "-Xconsistent-data-class-copy-visibility"
+            && project
+                .project_compiler_version
+                .strip_prefix("2.")
+                .and_then(|v| v.split_once('.'))
+                .is_some_and(|(minor, patch)| {
+                    minor.parse::<u32>().is_ok_and(|v| v > 0)
+                        || (minor == "0" && patch.parse::<u32>().is_ok_and(|v| v >= 20))
+                }));
     let name = option.split('=').next().unwrap_or_default();
     supported
         && !project
@@ -423,7 +434,7 @@ fn select_from_rows(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(unsupported(&format!(
-                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. Qualified analysis options: -Xannotation-default-target=param-property; with the Kotlin 2.4.10 analyzer, -Xjsr305=strict|warn|ignore and -Xjvm-default=disable|all|all-compatibility (one value per option, independent of project patch version). Project language/API and JVM target support are checked separately; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and report these option names and compiler versions for Codeclew qualification.",
+                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. Qualified analysis options: -Xannotation-default-target=param-property; with the Kotlin 2.4.10 analyzer, -Xjsr305=strict|warn|ignore, -Xjvm-default=disable|all|all-compatibility, -Xjvm-enable-preview, and -Xconsistent-data-class-copy-visibility for project Kotlin 2.0.20 or newer (one value per option). Project language/API and JVM target support are checked separately; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and report these option names and compiler versions for Codeclew qualification.",
                 project.project_compiler_version,
                 row.engine.analyzer_compiler_version(),
                 unqualified.len(),
@@ -644,6 +655,49 @@ mod tests {
             assert!(KotlinEngineRegistry.select(&configured).is_err());
             configured.unstable_compiler_options = vec!["-Xjsr305=strict".into()];
             configured.project_compiler_version = "3.0.0".into();
+            assert!(KotlinEngineRegistry.select(&configured).is_err());
+        }
+    }
+
+    #[test]
+    fn required_copy_and_preview_options_preserve_jvm25_and_unknown_option_refusals() {
+        let copy = "-Xconsistent-data-class-copy-visibility";
+        let preview = "-Xjvm-enable-preview";
+        for (version, language) in [
+            ("2.0.20", "2.0"),
+            ("2.0.21", "2.0"),
+            ("2.1.21", "2.1"),
+            ("2.3.21", "2.3"),
+            ("2.4.0", "2.4"),
+        ] {
+            let mut configured = project(version, language, &[]);
+            configured.jvm_target = Some("25".into());
+            for options in [
+                vec![copy.into()],
+                vec![preview.into()],
+                vec![copy.into(), preview.into()],
+            ] {
+                configured.unstable_compiler_options = options.clone();
+                assert_eq!(
+                    KotlinEngineRegistry.select(&configured).unwrap(),
+                    KotlinSemanticEngine::Kotlin24
+                );
+                assert_eq!(configured.unstable_compiler_options, options);
+                assert_eq!(configured.jvm_target.as_deref(), Some("25"));
+            }
+            for option in [
+                "-Xconsistent-data-class-copy-visibility=false",
+                "-Xjvm-enable-preview=true",
+                "-Xunknown",
+            ] {
+                configured.unstable_compiler_options =
+                    vec![copy.into(), preview.into(), option.into()];
+                assert!(KotlinEngineRegistry.select(&configured).is_err());
+            }
+        }
+        for (version, language) in [("1.9.25", "1.9"), ("2.0.19", "2.0")] {
+            let mut configured = project(version, language, &[]);
+            configured.unstable_compiler_options = vec![copy.into()];
             assert!(KotlinEngineRegistry.select(&configured).is_err());
         }
     }

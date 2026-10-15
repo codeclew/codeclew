@@ -66,6 +66,11 @@ if [ "${1-}" = --csharp-only ]; then
   exit 0
 fi
 
+if [ -z "${CODECLEW_TEST_JDK25_HOME-}" ] || [ ! -x "$CODECLEW_TEST_JDK25_HOME/bin/java" ]; then
+  printf '%s\n' 'Full verification requires CODECLEW_TEST_JDK25_HOME pointing to JDK 25; keep the build/analyzer JDK at 21' >&2
+  exit 1
+fi
+
 python3 -I -S scripts/test_pilot_case_record.py
 python3 -I -S bootstrap/test_clew_bootstrap.py
 python3 -I -S scripts/test_pilot_release_gate.py
@@ -132,7 +137,7 @@ cargo test --locked -p clew --lib 'kotlin_engine::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib worker::tests::kotlin_23_project_uses_core_once_and_preserves_original_compiler_identity -- --exact --test-threads=1
 cargo test --locked -p clew --lib worker::tests::retired_kotlin23_engine_cannot_prepare_or_execute_a_worker -- --exact --test-threads=1
 cargo test --locked -p clew --lib worker::tests::kotlin23_baseline_uses_core_and_preserves_option_boundaries -- --exact --test-threads=1
-./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest
+./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest --tests dev.semanticthread.worker.KotlinJvm25QualificationTest
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::compiler_analysis_refusal_preserves_diagnostics_without_emitting_facts -- --exact --test-threads=1
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::real_k2_failure_preserves_the_original_stage -- --exact --ignored --test-threads=1

@@ -167,13 +167,38 @@ gradle.beforeProject { project ->
             }.collect { new File(it).parentFile.absolutePath }.unique().sort()
             def jdkHome = System.getProperty("java.home")
             def jdkHomeAvailable = false
-            try {
+            def jdkHomeAuthority = "BOUNDARY_BUILD_JVM_FALLBACK"
+            // KotlinCompile uses UsesKotlinJavaToolchain, not JavaCompile's
+            // javaLauncher. Read its effective executable, including task-local
+            // overrides, without replacing the analyzer JVM or project target.
+            def toolchain = compile.hasProperty("kotlinJavaToolchainProvider") ?
+                compile.property("kotlinJavaToolchainProvider").get() : null
+            def executableGetters = toolchain == null ? [] : toolchain.class.methods.findAll {
+                it.parameterCount == 0 &&
+                    (it.name == "getJavaExecutable" || it.name.startsWith('getJavaExecutable$'))
+            }
+            if (!executableGetters.isEmpty()) {
+                if (executableGetters.size() != 1) throw new GradleException("Kotlin compile toolchain executable is ambiguous")
+                // Resolution failure must not silently substitute the build JVM.
+                def executable = executableGetters[0].invoke(toolchain).get().asFile.canonicalFile
+                def home = executable.parentFile.parentFile
+                if (home.name == "jre" && new File(home.parentFile, "release").isFile()) home = home.parentFile
+                def hasImage = ["lib/modules", "jre/lib/rt.jar", "lib/rt.jar"].any { new File(home, it).isFile() }
+                if (!new File(home, "release").isFile() || !hasImage) {
+                    throw new GradleException("Kotlin compile toolchain has no complete JDK image")
+                }
+                jdkHome = home.absolutePath
+                jdkHomeAvailable = true
+                jdkHomeAuthority = "AVAILABLE_KOTLIN_COMPILE_TOOLCHAIN"
+            }
+            if (!jdkHomeAvailable) try {
                 def launcherProvider = compile.hasProperty("javaLauncher") ? compile.property("javaLauncher") : null
                 def launcher = launcherProvider?.metaClass?.respondsTo(launcherProvider, "getOrNull") ? launcherProvider.getOrNull() : launcherProvider
                 def installation = launcher?.metadata?.installationPath?.asFile
                 if (installation != null) {
                     jdkHome = installation.absolutePath
                     jdkHomeAvailable = true
+                    jdkHomeAuthority = "AVAILABLE_COMPILE_TOOLCHAIN"
                 }
             } catch (Throwable ignored) {}
             def buildModelBoundaries = []
@@ -233,7 +258,7 @@ gradle.beforeProject { project ->
                     apiVersion: apiVersion.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
                     jvmTarget: jvmTarget.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
                     compilerVersion: compilerVersionAvailable ? "AVAILABLE_${compilerVersionSource}" : "UNAVAILABLE",
-                    jdkHome: jdkHomeAvailable ? "AVAILABLE_COMPILE_TOOLCHAIN" : "BOUNDARY_BUILD_JVM_FALLBACK"
+                    jdkHome: jdkHomeAuthority
                 ],
                 tasks: tasks,
                 gradleVersion: gradle.gradleVersion,
