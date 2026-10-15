@@ -29,7 +29,7 @@ Selected mutation and pilot subset:
 
 This table lists the mutation and pilot contours covered by this runbook; it is
 not the full set of available read-only profiles. Check the installed
-capabilities and [README code-navigation guide](../../README.md#practical-code-navigation)
+capabilities and [Codeclew skill navigation guide](../../skills/codeclew/SKILL.md#navigate-to-relevant-code)
 for current language and profile entry points.
 
 | Profile | Read | Change and publish |
@@ -211,8 +211,14 @@ Installation is atomic and idempotent. A different existing `codeclew` skill is
 preserved unless `--force` is explicit. The skill prefers `clew` on `PATH`, uses
 `doctor repository` to discover exact contours when necessary, requires atomic
 task admission before research, checks freshness, and prevents publication
-without explicit user approval. Run the installer again after upgrading
-Codeclew so the skill remains version-matched.
+without explicit user approval. Product upgrades do not automatically replace
+personal or project skill copies. Run the installer again after upgrading
+Codeclew so the skill remains version-matched. If a different copy is reported,
+review and back up local customizations, then explicitly replace that selected
+copy, for example `clew skill install --agent codex --force`. Repeat with
+`--agent claude` or `--project` only for the corresponding intended destination.
+An agent holding older instructions must reload the updated skill; upgrading the
+binary alone does not change its existing context.
 
 To test discovery, explicitly ask the agent to apply `codeclew` to a safe,
 read-only task. A correctly configured agent reports admission results
@@ -700,3 +706,14 @@ and coverage. Legacy `spring-entrypoints/0.1` remains a compatibility input for
 retained generations. Missing annotation evidence remains an extraction boundary.
 Some Kotlin compiler metadata represents annotation defaults as unavailable
 stubs; these remain explicit partial coverage, not invented values.
+
+
+## Maintainer version updates
+
+When changing the workspace package version in `Cargo.toml`, update the canonical
+`skills/codeclew/SKILL.md` metadata version and keep its `.agents` and `.claude`
+discovery copies identical. The released skill and embedded agent contract must
+identify the same package version. Run `python3 -I -S scripts/test_agent_skill.py`
+after synchronizing the package; it checks version matching, all package files,
+and supported installer delivery. Publish the same canonical package to the
+public skill repository rather than maintaining separate instruction variants.

@@ -1,6 +1,38 @@
 # Portable evidence and support reports
 
-Start a support exchange with a source-free report:
+For an already failed `docs check`, first collect its saved metadata without
+rerunning the producer:
+
+```sh
+clew support collect --root <docs> --snapshot <saved-check> --output <new-directory>
+```
+
+Omit `--snapshot` only to select the current latest Check. Use `--service <id>`
+to restrict report and private failure selection. When the requested diagnosis
+needs compiler messages or context, select `--include-private-logs` and keep the
+result private locally. Transfer it only to an authorized recipient within the
+authorized scope; existing task authorization is sufficient without a new
+approval layer. Starting with 0.13.34, `PRIVATE_COMPILER_DIAGNOSTICS.json` can include the exact K2 failure's
+compiler messages, original and analysis arguments, compiler versions, JVM target,
+and selected project/analyzer JDK context without prior live `--diagnostics`.
+Collection on the same machine/state root validates the saved record ID and digest;
+it never substitutes another failure. Retention is at most 32 records, 96 KiB each;
+collection includes at most eight selected failures and marks truncation or
+unavailable records. Metadata-only and `--include-cache` alone do not export them.
+On 0.13.33 and earlier, saved generic K2 errors do not contain these missing rows;
+upgrading or collecting an old archive cannot reconstruct them.
+
+`--include-cache` copies docs-local cached application fragments and retained
+work into `PRIVATE_CACHE` when they are needed for the requested diagnosis. It
+excludes source bindings, Git history and general global state. Neither private flag authorizes a full Git
+snapshot. Review bundle sharing labels and mode-0600 artifacts before transfer.
+
+When a fresh reproduction is requested, an invocation wrapper can retain live
+worker/Maven output: `clew --diagnostics <new-directory> --include-private-logs
+docs check --root <docs> --service <id>`. It runs that command once. Post-hoc
+collection does not recover old worker/Maven log files or perform another capture.
+
+For a separately requested producer report, use the source-free report path:
 
 ```sh
 clew docs evidence report --root <docs> --service <id> --output <new-report-directory>

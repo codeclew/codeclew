@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 
@@ -55,7 +56,8 @@ class AgentSkillTest(unittest.TestCase):
 
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("version: \"0.8.0\"", skill)
+        version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+        self.assertIn(f'version: "{version}"', skill)
         self.assertIn("codeclew-agent-contract/1.0", skill)
         self.assertIn("clew context open", skill)
         self.assertIn("clew nav query", skill)

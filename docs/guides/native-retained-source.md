@@ -8,11 +8,12 @@ Capture an explicit service scope once, then select exact declaration IDs from
 offline HTML and MDX from that saved evidence. Rendering needs neither the source
 checkout nor a model call. Each render writes a new or empty output directory.
 
-Java, Kotlin, C#, TypeScript and Rust use the same page and source-navigation
-pipeline. Their evidence capabilities remain distinct:
+Python, Java, Kotlin, C#, TypeScript and Rust use the same page and
+source-navigation pipeline. Their evidence capabilities remain distinct:
 
 | Language evidence | Available native views | Explicit limits |
 | --- | --- | --- |
+| SOURCE syntax facts (Python, Java, Kotlin, TypeScript) | Retained declarations, exact source and bounded lexical structure | No compiler-resolved call targets, typed data state or runtime order; Kotlin syntax pages are supported in v0.13.33 and later |
 | Java compiler facts | Source structure, calls, guarded data state, bounded constructor/queue wiring | External implementations and runtime effects remain unknown |
 | Kotlin compiler facts | Function sources, compiler control flow when retained, exact calls/constructions, source structure | Typed data and constructor storage require the retained facts supplied by the 2.4.10 analyzer; older Checks do not acquire them automatically |
 | C# Roslyn facts | Method sources and bounded structure, exact call/construction evidence when retained | Read-only preview; shared data-state and queue-wiring expansion are unavailable |

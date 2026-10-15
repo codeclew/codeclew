@@ -642,9 +642,9 @@ reconstructed from retained trusted evidence. History records observed tag commi
 and reports missing files/packages explicitly; moving a tag cannot rewrite an old
 snapshot. See the [revision event and history examples](../../skills/codeclew/references/documentation-evidence.md#revision-events-and-retained-history).
 
-The [portable CI operations guide](documentation-ci.md) describes executable local
-jobs, the GitLab recipe, sandbox/credential separation, durable budget ledgers and
-configured live qualification. Keep `execution/accounts` with the durable records
+The [isolated authoring and review reference](../../skills/codeclew/references/service-documentation.md#run-isolated-authoring-and-review)
+describes executable local jobs, sandbox/credential separation and durable budget
+ledgers. No separate portable CI guide is shipped. Keep `execution/accounts` with the durable records
 when reconstructing disposable work caches.
 
 ## Publish a local proposal

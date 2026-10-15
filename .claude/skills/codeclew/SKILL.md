@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.8.0"
+  version: "0.13.34"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -25,10 +25,25 @@ result must not block unrelated authorized work on Codeclew's implementation.
 Do not use this distinction to bypass consumer-session or publication guards.
 
 For durable service documentation, a service catalogue, freshness maintenance,
-or a separate architecture repository, read
-[service documentation](references/service-documentation.md) and use its
-`clew docs` workflow. It performs admission internally; the generic navigation
-and mutation loop below is not an additional step for that workflow.
+or a separate architecture repository, choose the requested action below. Read
+only the linked section needed for that action; the `clew docs` workflow performs
+admission internally. The generic navigation/mutation admission loop below is
+not an extra step for documentation work.
+
+| Requested result | First command | Scope |
+| --- | --- | --- |
+| [Read saved service evidence](references/service-documentation.md#start-or-recover) | `clew docs context --root <docs> --snapshot <check> --service <id>` | Retained evidence; no source capture |
+| [Render selected native pages](references/service-documentation.md#render-exact-retained-declarations) | `clew docs pages render --root <docs> --snapshot <check> --input <selection.json> --output <new-directory>` | Exact retained declaration IDs; no model or compiler run |
+| [Capture requested source changes](references/service-documentation.md#start-or-recover) | `clew docs check --root <docs> --service <id>` | Registered source scope; only selected compiler profiles need their build environment |
+| [Inspect optional compiler enrichment](references/service-documentation.md#build-independent-source-profile) | `clew docs modules list --root <docs> --service <id>` | Enable only an explicitly selected compatible semantic module; SOURCE does not require it |
+| [Diagnose a saved failed Check](references/documentation-evidence.md) | `clew support collect --root <docs> --snapshot <check> --output <new-directory>` | Offline metadata first; select private logs/cache when needed for the requested diagnosis, and keep the bundle private |
+
+Use [service documentation](references/service-documentation.md) for registration,
+recorded authoring and publication, and the
+[support reference](references/documentation-evidence.md) for private collection.
+A discovery inventory is not a requirement to publish every helper. Saved
+processes, internal candidates and explicitly selected native pages have distinct
+scopes.
 
 ## Resolve and admit
 
@@ -597,6 +612,22 @@ Closing them must not close or alter member sessions.
 
 ## Recover and report safely
 
+For a failed documentation check, collect its saved snapshot before requesting
+another capture: `clew support collect --root <docs> --snapshot <saved-check>
+--output <new-directory>`.
+This is metadata-only. When the requested diagnosis needs compiler messages or
+compilation context, add `--include-private-logs`; add `--include-cache` when it
+needs cached application fragments. These flags collect locally into a private
+directory. Local collection and transfer are separate actions: share only with
+the authorized recipient and within the authorized scope. Existing explicit or
+implied task authorization is sufficient; do not add another approval step. Starting with 0.13.34, private collection can
+include the bounded compiler messages and selected compilation context retained
+by an ordinary K2 failure, even without prior `--diagnostics`. It reads only the
+exact records referenced by the selected Check. On 0.13.33 and earlier, absent
+compiler details cannot be reconstructed. Follow the
+[support reference](references/documentation-evidence.md) for collection limits,
+version boundaries and a separately requested reproduction.
+
 Retry a worker crash once only when the typed error says it is retryable. For
 `WORKTREE_RECOVERY_REQUIRED`, use `change recover` with the bound session and
 run. For stale targets or compare-and-swap failures, open a new session rather
@@ -611,10 +642,14 @@ runtime identity and captured diagnostics. Never paste that raw stderr into a
 shareable report. `support summarize` accepts documentation checks and their
 pages; counts for a page are explicitly partial.
 
-Do not paste raw Codeclew output, source, diffs, symbols, repository paths,
-arguments, or `CODECLEW_HOME` contents into external issues or chats. Save the
+By default, do not paste raw Codeclew output, source, diffs, symbols, repository
+paths, arguments, or `CODECLEW_HOME` contents into external issues or chats.
+Explicitly authorized private support bundles are a separate sharing path: use
+the supported collection flags, review their manifest and transfer only the
+authorized bundle. A private cache bundle can contain source fragments; it is
+not a full Git snapshot and does not authorize sending one. For a public, source-free report, save the
 single JSON result in a caller-owned mode-0600 file and run
 `clew support summarize --input <absolute-private-result.json>`. Share only a
 returned `SAFE_TO_SHARE` summary plus separately generated capabilities and
-doctor JSON. If summarization rejects the artifact, keep it private and
-escalate without transmitting it.
+doctor JSON. If summarization rejects the artifact, do not transmit the raw output as a
+public report. The authorized private support-bundle path remains available.

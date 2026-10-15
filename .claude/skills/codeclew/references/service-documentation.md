@@ -1,30 +1,43 @@
 # Durable service documentation
 
 Use this workflow for a separate documentation repository with per-service pages,
-a root overview and named interaction slices. Codeclew 0.6.1 supports Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
-interactions and source-bound domain explanations. Java 17+ remains supported.
-Select exact Maven/Gradle compilation scopes: use singular `compilation` or a
-plural `compilations` array, never both. Up to 128 explicit scopes are admitted;
+a root overview and named interaction slices. Scenario traversal admits up to
+eight selected services and declared HTTP/Kafka interactions. Compiler profiles
+support admitted Kotlin/JVM baseline projects and Java 17+; source-bound domain
+explanations retain their exact evidence and compiler/analyzer boundaries.
+For compiler-profile services, select exact Maven/Gradle scopes with a
+`compilations` array, even for one scope. A top-level singular `compilation` is
+not accepted. A `source-syntax` service instead uses `source.roots` and
+`source.dialect` and does not require that compiler array. Its optional
+`modules.semantic.compilation` selects a separate semantic enrichment module. Up to 128 explicit scopes are admitted;
 this does not promise arbitrary file volume or memory capacity. Keep test scopes
 explicit rather than silently dropping them to pass a budget. The overview can
 list more services than one scenario.
-For Kotlin choose `kotlin-jvm-maven-analysis` or `kotlin-jvm-gradle-analysis`.
+For compiler-backed Kotlin services, choose `kotlin-jvm-maven-analysis` or
+`kotlin-jvm-gradle-analysis`.
 Project/compiler differences remain explicit: Kotlin 1.9 language/API inputs are
 analyzed with language/API 2.0 by the current engine; this is conditional analysis,
 not execution by the project's original compiler. Older installed releases need
 the corresponding product update before using these extensions.
 
-## Build-independent source profile (0.8.0)
+## Build-independent source profile
 
-Codeclew 0.8.0 supports an explicit `source-syntax` profile for Python,
-Java, and Kotlin with a declared dialect. Inspect the selected launcher's help/version before using
-new flags on an installed release. This profile selects syntax authority
+The current explicit `source-syntax` profile supports Python, Java, Kotlin and
+TypeScript with a declared dialect. Inspect the selected launcher's help/version
+before using new flags on an installed release. This profile selects syntax authority
 explicitly; it does not substitute syntax evidence after compiler admission fails.
-Set `source.roots` and `source.dialect`; `compilation` is unnecessary. Include
+Set `source.roots` and `source.dialect`; omit compiler `compilations`. Include
 configuration and helper files in the roots, or record those omitted inputs as
-limitations. Only the selected committed revision is read. Dirty files are not
-included. The installed binary and its pinned grammars are prerequisites, but
-project dependencies, imports, build scripts, and K2 are not invoked.
+limitations. Committed files come only from the selected revision; ordinary
+dirty and untracked files are not included. To include existing generated source,
+register each exact path and descriptive `origin` in `source.generatedInputs`.
+The collector reads those named existing files without running a generator or
+scanning ignored directories. Generated inputs retain their bytes and digests
+separately from the Git revision; they may include ignored or untracked files,
+but cannot collide with committed paths. Limits are 64 files, 2 MiB per file and
+32 MiB in total. Keep `EXPLICIT_GENERATED_SOURCE_TEXT` and the declared origin
+visible; the origin is not proof of generator execution. The installed binary and
+its pinned grammars are prerequisites, but project dependencies, imports, build scripts, and K2 are not invoked.
 
 ```json
 {"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":"kotlin","profile":"source-syntax","targetRef":"main","source":{"roots":["src","pom.xml"],"dialect":"1.9"}}
@@ -53,6 +66,31 @@ check and returns old claims, invalidation reasons, before/after sources, and
 supporting context references. `--fragment ID` narrows this review package.
 It never publishes or silently marks a claim reviewed.
 
+## Render exact retained declarations
+
+Native pages do not require prose authoring, proposal submission or a new source
+capture. Use `docs context --root <docs> --snapshot <check> --service <id>` to
+read the saved declarations and select their exact returned IDs. For one
+function, both required slots can refer to that same declaration:
+
+```json
+[
+  {
+    "id": "selected-operation",
+    "service": "orders",
+    "endpointDeclaration": "RETURNED_DECLARATION_ID",
+    "workerDeclaration": "RETURNED_DECLARATION_ID"
+  }
+]
+```
+
+Save the selection and run `clew docs pages render --root <docs> --snapshot <check>
+--input <selection.json> --output <new-directory>`. Slot names alone do not prove
+an endpoint or worker role. SOURCE pages retain syntax authority; compiler-backed
+pages retain their corresponding compiler facts and explicit limits. Use the
+same snapshot and selection when checking publication exclusions. Do not create
+extra pages or gaps for unselected internal helpers.
+
 ## Start or recover
 
 Resolve the installed `clew` launcher once. `clew docs` owns source admission,
@@ -73,7 +111,10 @@ clew docs context --root /work/architecture --service orders --limit 100
 `init` writes editable examples under `examples/`; adapt their repository,
 selector, profile and compilation before registering them. Set the repository
 identity to its credential-free Git remote, and bind an existing checkout with
-the selected target ref at HEAD. Keep the documentation root separate from every
+the selected ref available locally. SOURCE reads that explicit committed ref
+without requiring the checkout HEAD to match it. Compiler admission may require
+the selected checkout at its target HEAD; follow the chosen profile rather than
+applying that requirement to SOURCE. Keep the documentation root separate from every
 source checkout. Commands do not change application source.
 
 For recovery, open the existing documentation root and first try its retained
@@ -185,8 +226,12 @@ services, not individual clients or database actors; a diagram allows up to 24
 participants so eight services can still show external actors.
 
 Write the explanation from returned source, then submit a closed JSON Narrative
-using [the authoring example](authoring-example.md). Every discovered entrypoint
-needs an operation with its contract or an explicit actionable gap. For full-service
+using [the authoring example](authoring-example.md). Every discovered public entrypoint
+needs an operation with its contract or an explicit actionable gap. Source helper
+declarations are optional internal candidates; discovering them does not require
+an operation or gap for each helper. Explicit selections can include the helpers
+needed to explain the requested operation without turning the whole inventory
+into a publication checklist. For full-service
 requests, do not silently stop after one representative endpoint. Include the
 supported guards, alternate outcomes, loops, failures and state changes. Branch
 markers must balance; every selected source condition and return needs a bound
@@ -461,8 +506,14 @@ never infer production behavior from a same-named test-scope method.
 
 For source-syntax evidence, call-site counts and lexical branches do not prove
 callee resolution or runtime ordering. Preserve that distinction in explanations.
-The service reader shows internal candidates and saved processes with pending or
-missing-evidence states before a narrative exists. Define the process, recompose
+Discovery and publication have separate scopes. The service reader hides internal discovery
+candidates by default (`showInternalProcesses: false` in `catalog/reader.json`).
+Saved processes remain visible at that default. Setting it to `true` adds
+internal discovery candidates with pending or missing-evidence states before a
+narrative exists; it does not make every discovered helper mandatory publication
+coverage. For native
+pages, use `docs pages render --input <selection.json>` to select exact retained
+declarations; use the same selection and snapshot when checking exclusions. Define the process, recompose
 its source snapshot after the catalogue mutation, then prepare Work from the
 returned snapshot. For a process overview, set `entrypoint: "process-overview"`
 and `contextProfile: "process-v1"` in the Work request. This shares source text
