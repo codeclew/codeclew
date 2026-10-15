@@ -150,9 +150,11 @@ class KotlinJvm25QualificationTest {
                     freeCompilerArgs.addAll("$copyFlag", "$previewFlag")
                 } }
             """.trimIndent())
+            fun toolchainProperties(path: Path) = Files.writeString(root.resolve("gradle.properties"),
+                "org.gradle.java.installations.paths=$path\norg.gradle.java.installations.auto-detect=false\norg.gradle.java.installations.auto-download=false\n")
+            toolchainProperties(jdk25())
             val input = source(Files.createDirectories(root.resolve("src/main/kotlin")))
             val command = listOf(repository.resolve("gradlew").toString(), "--no-daemon", "-p", root.toString(),
-                "-Dorg.gradle.java.installations.paths=${jdk25()}", "-Dorg.gradle.java.installations.auto-download=false",
                 "-I", repository.resolve("workers/kotlin/src/main/resources/semantic-thread-model.init.gradle").toString(),
                 "semanticThreadModel", "compileKotlin")
             val native = run(root, command)
@@ -171,6 +173,10 @@ class KotlinJvm25QualificationTest {
             validateDirectK2ReceiptClosure(root, listOf(input), listOf(input), records)
             assertTrue(records.any { it["recordType"]?.jsonPrimitive?.content == "DOCUMENTATION_CALL" &&
                 it["target"]?.jsonPrimitive?.content == "callable:java/lang/classfile/ClassFile.of#jvm:()Ljava/lang/classfile/ClassFile;" })
+            toolchainProperties(root.resolve("missing-jdk"))
+            val unavailable = run(root, command.dropLast(1))
+            assertNotEquals(0, unavailable.first, unavailable.second)
+            assertFalse(unavailable.second.contains("__SEMANTIC_THREAD_MODEL__"), unavailable.second)
         } finally { root.toFile().deleteRecursively() }
     }
 }
