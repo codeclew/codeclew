@@ -2582,6 +2582,24 @@ internal class Worker(
                             put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
                         }
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
+            if (!syntaxOnly && !analysis.valid && project != null && model != null) {
+                putJsonObject("privateCompilationContext") {
+                    put("compilation", selected)
+                    listOf("projectModelHash", "semanticInputManifestHash", "projectCompilerVersion", "analyzerCompilerVersion",
+                        "languageVersion", "apiVersion", "jvmTarget", "freeCompilerArguments", "analysisFreeCompilerArguments",
+                        "ignoredAnalysisCompilerArguments", "compilerPlugins", "compilerPluginOptions", "optIns", "jdkHomeFingerprint",
+                        "analysisJvmFingerprint", "kotlinSemanticEngine", "projectCompilerAuthority", "compileTask").forEach { field ->
+                        project[field]?.let { put(field, it) }
+                    }
+                    put("projectJdkHome", model["jdkHome"] ?: JsonPrimitive(System.getProperty("java.home")))
+                    val selectedJdk = Path.of(model["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home"))
+                    put("projectJdkRelease", runCatching {
+                        Files.newInputStream(selectedJdk.resolve("release")).use { it.readNBytes(4096).toString(Charsets.UTF_8) }
+                    }.getOrNull()?.let(::JsonPrimitive) ?: JsonNull)
+                    put("analyzerJdkHome", System.getProperty("java.home"))
+                    put("analyzerJavaVersion", System.getProperty("java.version"))
+                }
+            }
         }
     }
 

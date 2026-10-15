@@ -104,6 +104,25 @@ errors: post-hoc `support collect --include-private-logs` can export saved error
 text, but cannot recover original worker/Maven log files. Reproduce once with the
 wrapper to retain live logs. Existing private worker state capture is preserved.
 
+Starting with v0.13.34, an ordinary K2 validation failure also retains a private
+compiler record locally, without requiring the diagnostic wrapper. The saved
+Check contains an opaque record ID and digest. On the same machine and state
+root, `support collect --include-private-logs` exports only the records referenced
+by the selected Check and service in `PRIVATE_COMPILER_DIAGNOSTICS.json`.
+`--include-cache` alone does not export these records. Messages, source paths and
+compiler arguments require private review before sharing.
+
+Records include up to 128 compiler diagnostics (64 KiB) and 24 KiB of selected
+compilation context: original and analysis arguments, compiler versions, language
+and API versions, JVM target, project and analyzer JDK homes and fingerprints,
+and model/input identities. Oversized or unavailable context is marked explicitly.
+Each record is at most 96 KiB; local retention keeps at most 32 records, evicting
+the oldest. Collection exports at most eight selected failures, with explicit
+truncation and unavailable/invalid statuses. It never substitutes an older record
+when a referenced record was evicted, removed, changed, or is inaccessible.
+Earlier releases did not retain these records: collection cannot reconstruct
+compiler details missing from an old archive. No full Git snapshot is included.
+
 Each artifact is bounded by 1 MiB. Standalone bundles have a 4 MiB total budget;
 invocation bundles have an 8 MiB total budget. Artifacts use relative names and
 content digests; `manifest.json` is atomically finalized last. A directory without
@@ -123,7 +142,7 @@ clew support collect --root /path/to/docs-root --include-cache --work 'PASTE_64_
 
 Replace the quoted placeholder with the saved Work's 64-character hexadecimal ID. `--include-cache` is required; default collection copies no cache. `--work` selects its immutable snapshot and conflicts with `--snapshot`; otherwise select `--snapshot` or latest. `--cache-max-bytes` defaults to 268435456 bytes (256 MiB), maximum 2 GiB. `--service` filters report metadata only.
 
-Cache mode copies docs-local `.codeclew/cache` (SQLite, stable raw WAL/journal, manifests/pins), docs manifest/catalog, selected Work receipts, and latest saved job/checkpoints. It includes frozen invocation `job-inputs`, `job-results`, `job-model-inputs`, and `job-model-wire-results` JSON, fixed-role `model-ID-map` JSON, known Work/run draft JSON directories, and selected proposal JSON. Inline review stays in the saved job. `PRIVATE_CACHE` is a relocated docs root. Paths derive from validated IDs; persisted `outputDirectory` is never followed. `PRIVATE_SOURCE_CACHE` may include unsanitized cached fragments/private records, including application data, not a fresh repository snapshot. Source bindings, Git history, and global `CODECLEW_HOME` are excluded. Collection does not inspect live environment, start compiler/doctor/model/network actions, or upload.
+Cache mode copies docs-local `.codeclew/cache` (SQLite, stable raw WAL/journal, manifests/pins), docs manifest/catalog, selected Work receipts, and latest saved job/checkpoints. It includes frozen invocation `job-inputs`, `job-results`, `job-model-inputs`, and `job-model-wire-results` JSON, fixed-role `model-ID-map` JSON, known Work/run draft JSON directories, and selected proposal JSON. Inline review stays in the saved job. `PRIVATE_CACHE` is a relocated docs root. Paths derive from validated IDs; persisted `outputDirectory` is never followed. `PRIVATE_SOURCE_CACHE` may include unsanitized cached fragments/private records, including application data, not a fresh repository snapshot. Source bindings, Git history, and general global `CODECLEW_HOME` contents are excluded. Adding `--include-private-logs` may separately export only the exact retained compiler failure records referenced by the selected Check. Collection does not inspect live environment, start compiler/doctor/model/network actions, or upload.
 
 Read a saved Work offline from the bundle:
 

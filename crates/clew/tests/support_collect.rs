@@ -529,3 +529,108 @@ fn invocation_hook_uses_new_failed_check_and_retained_reader_error_snapshot() {
     assert_eq!(report["snapshotSource"], "ERROR_CONTEXT_NOT_RECOLLECTED");
     assert_eq!(report["recordedFailure"]["reason"], "INVALID_INPUT");
 }
+
+#[test]
+fn compiler_records_require_private_opt_in_and_follow_selected_snapshot_and_service() {
+    let f = Fixture::new();
+    f.service("orders");
+    f.service("other");
+    let checked = f.checked();
+    let mut failed = checked.clone();
+    failed.services.remove("orders");
+    let id = "d".repeat(32);
+    let body = json!({"schema":"codeclew-private-compiler-failure/1.0","id":id,
+        "stage":"K2_VALIDATION","payloadHash":"exact-failure",
+        "diagnostics":[{"message":"PRIVATE_COMPILER_RECORD_SENTINEL"}],
+        "compilationContext":{"jvmTarget":"JVM_25","projectJdkHome":"/private/jdk25"}});
+    let bytes = canonical::bytes(&body).unwrap();
+    let records = f.temp.path().join("state/v2/attempts/compiler-failures");
+    fs::create_dir_all(&records).unwrap();
+    fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
+    let file = records.join(format!("{id}.json"));
+    fs::write(&file, &bytes).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    failed.unresolved.insert("orders".into(), json!({"status":"UNRESOLVED","reason":"INCOMPLETE_SEMANTIC_ANALYSIS",
+        "compilerFailure":{"status":"CAPTURED_PRIVATE","id":id,"digest":canonical::hash_bytes(&bytes),"bytes":bytes.len(),"payloadHash":"exact-failure"}}));
+    let repo = Repository::open(&f.docs).unwrap();
+    let failed_snapshot = failed.save_snapshot(&repo).unwrap();
+    checked.save_snapshot(&repo).unwrap(); // A later success must not resurrect the old failure.
+    drop(repo);
+    for (name, extra, snapshot, included) in [
+        ("metadata", vec![], Some(failed_snapshot.as_str()), false),
+        (
+            "cache",
+            vec!["--include-cache"],
+            Some(failed_snapshot.as_str()),
+            false,
+        ),
+        (
+            "private",
+            vec!["--include-private-logs"],
+            Some(failed_snapshot.as_str()),
+            true,
+        ),
+        (
+            "other",
+            vec!["--include-private-logs", "--service", "other"],
+            Some(failed_snapshot.as_str()),
+            false,
+        ),
+        (
+            "latest-success",
+            vec!["--include-private-logs"],
+            None,
+            false,
+        ),
+    ] {
+        let out = f.temp.path().join(format!("bundle-{name}"));
+        let mut args = vec!["support", "collect", "--output", out.to_str().unwrap()];
+        if let Some(snapshot) = snapshot {
+            args.extend(["--snapshot", snapshot]);
+        }
+        args.extend(extra);
+        f.ok(&args);
+        assert_eq!(
+            out.join("PRIVATE_COMPILER_DIAGNOSTICS.json").exists(),
+            included,
+            "{name}"
+        );
+        assert!(
+            !fs::read_to_string(out.join("report.json"))
+                .unwrap()
+                .contains("PRIVATE_COMPILER_RECORD_SENTINEL")
+        );
+        if included {
+            let value: Value = serde_json::from_slice(
+                &fs::read(out.join("PRIVATE_COMPILER_DIAGNOSTICS.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(value["failures"][0]["status"], "INCLUDED");
+            assert_eq!(
+                value["failures"][0]["record"]["compilationContext"]["jvmTarget"],
+                "JVM_25"
+            );
+        }
+        if name == "cache" {
+            assert!(
+                !out.join("PRIVATE_CACHE/.codeclew/attempts/compiler-failures")
+                    .exists()
+            );
+        }
+    }
+    fs::write(&file, b"tampered private record").unwrap();
+    let out = f.temp.path().join("tampered");
+    f.ok(&[
+        "support",
+        "collect",
+        "--snapshot",
+        &failed_snapshot,
+        "--include-private-logs",
+        "--output",
+        out.to_str().unwrap(),
+    ]);
+    let value: Value =
+        serde_json::from_slice(&fs::read(out.join("PRIVATE_COMPILER_DIAGNOSTICS.json")).unwrap())
+            .unwrap();
+    assert_eq!(value["failures"][0]["status"], "UNAVAILABLE_OR_INVALID");
+}

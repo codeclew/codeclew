@@ -4,6 +4,7 @@ pub mod aspnetcore_entrypoints;
 pub mod canonical;
 pub mod cas;
 pub mod cold_start;
+pub(crate) mod compiler_failure;
 pub mod context_v2;
 pub mod csharp_adapter_v2;
 pub mod csharp_project_model;

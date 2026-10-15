@@ -93,6 +93,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 qualify_csharp
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
+cargo test --locked -p clew --lib 'compiler_failure::tests::' -- --test-threads=1
 cargo test --locked -p clew --test support_collect -- --test-threads=1
 cargo test --locked -p clew --test documentation_visuals --test documentation_language --test documentation_publication_conflict --test docs_work_source_parts --test docs_work_retained_parts --test documentation_account_recovery -- --test-threads=1
 cargo test --locked -p clew --test documentation_external_calls -- --test-threads=1

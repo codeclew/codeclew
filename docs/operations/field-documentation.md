@@ -499,12 +499,13 @@ IDs, and render against the saved snapshot:
 ```
 
 Rendering uses retained evidence and does not capture again or invoke a model.
-Kotlin pages require compiler-bound `FUNCTION` declarations with matching
-identity, scope, provenance and retained source. Constructors and properties are not selected as function pages. Supported
+Compiler-semantic Kotlin pages require compiler-bound `FUNCTION` declarations
+with matching identity, scope, provenance and retained source. Constructors and properties are not selected as function pages. Supported
 constructor storage proofs and ordinary backing-property declarations can still
 be retained as dependencies of Kotlin data-state and shared queue wiring.
-Syntax-only Kotlin declarations are not admitted by this adapter. The pages
-show declarations, citations, the question and explicit limitations. Distinct
+Source-syntax Kotlin pages also admit retained syntax declarations with source
+citations, without claiming compiler-resolved identities or relationships.
+The pages show declarations, citations, the question and explicit limitations. Distinct
 selected declarations, including optional wiring, do not imply a relationship.
 Absent source occurrence bounds remain absent; retained line spans are not
 promoted to exact function-body ranges.

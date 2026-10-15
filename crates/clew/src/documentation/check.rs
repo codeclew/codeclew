@@ -333,6 +333,14 @@ fn capture_selected_with(
                 if let Some(target) = targets.targets.get(id) {
                     failure["targetRevision"] = json!(target.revision);
                 }
+                if let Some(diagnostic) = error.evidence.iter().find_map(|entry| {
+                    let value: Value = serde_json::from_str(entry).ok()?;
+                    (value["schema"] == "verified-index-failure-diagnostic/0.1"
+                        && value["stage"] == "K2_VALIDATION")
+                        .then_some(value)
+                }) {
+                    failure["compilerFailure"] = diagnostic["retainedCompilerFailure"].clone();
+                }
                 if let Some(diagnostic) = crate::worker_diagnostics::from_evidence(&error.evidence)
                 {
                     failure["workerFailure"] = diagnostic;
@@ -1589,6 +1597,32 @@ mod tests {
         let link = temporary.path().join("symlink");
         std::os::unix::fs::symlink(&output, &link).unwrap();
         assert!(super::super::support_collect::collect(&docs, None, None, &link, false).is_err());
+    }
+
+    #[test]
+    fn compiler_failure_reference_survives_check_save_without_entering_public_summary() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Compiler failure").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        add_kotlin_service(&repo, "failed");
+        let reference = json!({"status":"CAPTURED_PRIVATE","id":"a".repeat(32),"digest":"digest","payloadHash":"failure","bytes":200});
+        let checked = capture_selected_with(&repo, &BTreeSet::new(), repo.inputs().unwrap(), |_, _, _| {
+            let mut error = ClewError::new(crate::error::ErrorCode::IncompleteSemanticAnalysis,"K2 validation failed");
+            error.evidence.push(json!({"schema":"verified-index-failure-diagnostic/0.1","stage":"K2_VALIDATION","retainedCompilerFailure":reference}).to_string());
+            Err(error)
+        }).unwrap();
+        assert_eq!(checked.unresolved["failed"]["compilerFailure"], reference);
+        assert!(
+            unresolved_summary(&checked.unresolved["failed"])
+                .get("compilerFailure")
+                .is_none()
+        );
+        checked.save_snapshot(&repo).unwrap();
+        let saved: Value = serde_json::from_slice(
+            &fs::read(repo.path(".codeclew/cache/latest-check.json").unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["unresolved"]["failed"]["compilerFailure"], reference);
     }
 
     #[test]

@@ -161,6 +161,17 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(args[-2:], ["--debug-output", str(output.resolve() / "private")])
         self.assertEqual(stat.S_IMODE((output / "private").stat().st_mode), 0o700)
 
+    def test_private_compiler_artifact_is_listed_in_invocation_manifest(self) -> None:
+        self.command("import os\nfrom pathlib import Path\n"
+                     "root=Path(os.environ['CLEW_DIAGNOSTIC_REPORT_DIR'])\n"
+                     "p=root/'PRIVATE_COMPILER_DIAGNOSTICS.json'\n"
+                     "p.write_text('{\"privateCompilerFailure\":true}')\np.chmod(0o600)\n")
+        output = self.root / "compiler-record"
+        result = self.invoke(output, private=True)
+        self.assertEqual(result.returncode, 0)
+        manifest = self.manifest(output)
+        self.assertIn("PRIVATE_COMPILER_DIAGNOSTICS.json", [a["path"] for a in manifest["artifacts"]])
+
     def test_interrupt_terminates_child_group_and_finalizes_partial_bundle(self) -> None:
         pid_file = self.root / "pid"
         self.command("import os,signal,time\n" + f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"

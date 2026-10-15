@@ -244,7 +244,7 @@ def finish(root: Path, code: int, streams: dict[str, Stream], private: bool, int
     # Inspect only this wrapper-owned private directory, never paths in evidence.
     allowed = ["core-report.json"]
     if private:
-        allowed.append("PRIVATE_SAVED_DETAILS.json")
+        allowed.extend(["PRIVATE_SAVED_DETAILS.json", "PRIVATE_COMPILER_DIAGNOSTICS.json"])
     if private and (root / "private").is_dir():
         allowed += [str(path.relative_to(root)) for path in sorted((root / "private").iterdir())]
     total = sum(int(artifact["bytes"]) for artifact in artifacts)

@@ -35,9 +35,9 @@ Paste the saved Work's 64-hex ID. `--include-cache` is required; default remains
 clew docs work read --root BUNDLE/PRIVATE_CACHE --work 'PASTE_64_HEX_WORK_ID' --input selection.json
 ```
 
-`PRIVATE_SOURCE_CACHE` may hold unsanitized cached fragments/private records, not a fresh repository snapshot. Excludes source bindings, Git history and global `CODECLEW_HOME`. No live-environment inspection, compiler/doctor/model/network actions, or upload. `COPIED_NOT_HYDRATED` leaves semantic/cache-object closure unverified; corruption is preserved and reports may be `PARTIAL`.
+`PRIVATE_SOURCE_CACHE` may hold unsanitized cached fragments/private records, not a fresh repository snapshot. Excludes source bindings, Git history and general global `CODECLEW_HOME` contents. With `--include-private-logs`, only exact retained compiler failure records referenced by the selected Check may also be exported in `PRIVATE_COMPILER_DIAGNOSTICS.json`. No live-environment inspection, compiler/doctor/model/network actions, or upload. `COPIED_NOT_HYDRATED` leaves semantic/cache-object closure unverified; corruption is preserved and reports may be `PARTIAL`.
 "###;
-const README: &str = "# Codeclew diagnostic bundle\n\nreport.json contains allowlisted metadata only. Snapshot/content digests and hashed\nservice identities can correlate a repository; review before sharing. No source,\nenvironment values, arguments, arbitrary error text or URLs are included there.\n\nPRIVATE_SAVED_DETAILS.json, when present, contains original private error text.\nDo not share it without review. All files are mode 0600 in a mode 0700 directory.\n\nInspection is MANIFEST_METADATA only. Sources, compiler facts, dependencies and\nthe full object closure are NOT_VERIFIED. Current declarations are not checked;\na historical snapshot remains diagnostic evidence after declarations change.\nA nonempty SQLite WAL/journal yields PARTIAL: finish the active writer and retry.\nNo store files are copied or changed, and no compiler, doctor, model or network\noperation is started by collection. A cold source launcher may build its runtime.\nNo upload is performed. manifest.json is finalized last.\n";
+const README: &str = "# Codeclew diagnostic bundle\n\nreport.json contains allowlisted metadata only. Snapshot/content digests and hashed\nservice identities can correlate a repository; review before sharing. No source,\nenvironment values, arguments, arbitrary error text or URLs are included there.\n\nPRIVATE_SAVED_DETAILS.json, when present, contains original private error text.\nDo not share it without review. PRIVATE_COMPILER_DIAGNOSTICS.json, when present,\ncontains exact retained compiler failure messages and compilation context,\nexported only with --include-private-logs. Missing old records cannot be recovered.\nAll files are mode 0600 in a mode 0700 directory.\n\nInspection is MANIFEST_METADATA only. Sources, compiler facts, dependencies and\nthe full object closure are NOT_VERIFIED. Current declarations are not checked;\na historical snapshot remains diagnostic evidence after declarations change.\nA nonempty SQLite WAL/journal yields PARTIAL: finish the active writer and retry.\nNo documentation store files are copied or changed. Explicit private collection\nmay copy exact retained compiler failure records from owned state. No compiler,\ndoctor, model or network\noperation is started by collection. A cold source launcher may build its runtime.\nNo upload is performed. manifest.json is finalized last.\n";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -523,6 +523,45 @@ pub fn write_private_details(output: &Path, details: &Value) -> Result<Value, Cl
     )
 }
 
+/// Export only records referenced by failures in the selected immutable Check.
+/// No paths in saved errors, repository files, or other state objects are read.
+fn write_compiler_failures(output: &Path, details: &Value) -> Result<Option<Value>, ClewError> {
+    let state = crate::state::StateAuthority::process_default().ok();
+    write_compiler_failures_in(output, details, state.as_ref())
+}
+
+fn write_compiler_failures_in(
+    output: &Path,
+    details: &Value,
+    state: Option<&crate::state::StateAuthority>,
+) -> Result<Option<Value>, ClewError> {
+    let Some(failures) = details["unresolved"].as_object() else {
+        return Ok(None);
+    };
+    let references: Vec<_> = failures
+        .iter()
+        .filter(|(_, failure)| failure.get("compilerFailure").is_some())
+        .collect();
+    if references.is_empty() {
+        return Ok(None);
+    }
+    let mut records = Vec::new();
+    for (service, failure) in references.iter().take(8) {
+        let record = state.and_then(|state| {
+            crate::compiler_failure::read(state, &failure["compilerFailure"]).ok()
+        });
+        records.push(json!({"service":service,"status":if record.is_some() {"INCLUDED"} else {"UNAVAILABLE_OR_INVALID"},"record":record}));
+    }
+    let payload = json!({"schema":"codeclew-private-compiler-failures/1.0",
+        "observedFailures":references.len(),"retainedFailures":records.len(),
+        "truncated":records.len() < references.len(),"failures":records});
+    Ok(Some(write_file(
+        output,
+        "PRIVATE_COMPILER_DIAGNOSTICS.json",
+        &super::bytes(&payload)?,
+    )?))
+}
+
 /// A hook for the one normal invocation. Only a Check handle returned by that
 /// invocation is inspected; failures before save never follow an older latest.
 pub fn invocation_report(
@@ -589,6 +628,8 @@ pub fn invocation_report(
         issue(&mut report, "NO_CHECK_SAVED_BY_THIS_INVOCATION");
     }
     if let Some(details) = details {
+        report["privateCompilerDiagnostics"] =
+            json!(write_compiler_failures(&directory, &details)?);
         report["privateTruncation"] = write_private_details(&directory, &details)?;
     }
     write_file(&directory, "core-report.json", &super::bytes(&report)?)?;
@@ -697,6 +738,9 @@ pub fn collect_with_cache(
     artifacts.extend(cache_artifacts);
     let mut truncation = Value::Null;
     if let Some(details) = private_details {
+        if let Some(artifact) = write_compiler_failures(output, &details)? {
+            artifacts.push(artifact);
+        }
         truncation = write_private_details(output, &details)?;
         artifacts.push(truncation["artifact"].clone());
     }
@@ -714,4 +758,58 @@ pub fn collect_with_cache(
     Ok(
         json!({"schema":"codeclew-support-collect/1.0","status":report["status"],"snapshot":report["snapshot"],"manifestBytes":report["manifestBytes"],"sharing":manifest["sharing"]}),
     )
+}
+
+#[cfg(test)]
+mod compiler_tests {
+    use super::*;
+    use crate::{compiler_failure, state::StateAuthority};
+
+    #[test]
+    fn posthoc_export_reads_only_selected_exact_failure_and_reports_missing_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temp.path().join("state")).unwrap();
+        let facts = json!({"compilation":":/main","diagnostics":[{"message":"PRIVATE_COMPILER_ERROR"}],
+            "privateCompilationContext":{"jvmTarget":"JVM_25","projectJdkHome":"/private/jdk25",
+            "projectCompilerVersion":"2.3.21","freeCompilerArguments":["-Xjvm-enable-preview"]}});
+        let reference = compiler_failure::capture_in(&state, &facts).unwrap();
+        let unrelated = compiler_failure::capture_in(
+            &state,
+            &json!({"diagnostics":[{"message":"UNRELATED_FAILURE"}]}),
+        )
+        .unwrap();
+        let details = json!({"unresolved":{"service-a":{"compilerFailure":reference,"arbitraryPath":"/etc/passwd"}}});
+        let out = temp.path().join("bundle");
+        fresh_directory(&out).unwrap();
+        let artifact = write_compiler_failures_in(&out, &details, Some(&state))
+            .unwrap()
+            .unwrap();
+        let raw = fs::read(out.join(artifact["path"].as_str().unwrap())).unwrap();
+        let payload: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(payload["failures"][0]["status"], "INCLUDED");
+        assert_eq!(
+            payload["failures"][0]["record"]["compilationContext"]["jvmTarget"],
+            "JVM_25"
+        );
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("PRIVATE_COMPILER_ERROR"));
+        assert!(!text.contains("UNRELATED_FAILURE"));
+        assert!(!text.contains(unrelated["id"].as_str().unwrap()));
+        let out = temp.path().join("empty");
+        fresh_directory(&out).unwrap();
+        assert!(
+            write_compiler_failures_in(&out, &json!({"unresolved":{}}), Some(&state))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+        let out = temp.path().join("missing");
+        fresh_directory(&out).unwrap();
+        write_compiler_failures_in(&out, &details, None).unwrap();
+        let payload: Value = serde_json::from_slice(
+            &fs::read(out.join("PRIVATE_COMPILER_DIAGNOSTICS.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["failures"][0]["status"], "UNAVAILABLE_OR_INVALID");
+    }
 }
