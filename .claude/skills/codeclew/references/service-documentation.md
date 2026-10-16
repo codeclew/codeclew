@@ -22,81 +22,10 @@ the corresponding product update before using these extensions.
 
 ## Prepared SOURCE answers and maintenance
 
-Use this short route when the caller supplies a documentation root, service ID,
-exact declaration selector and saved snapshot or answer/evidence packet. Read the
-supplied packet first. A current snapshot prepared by the operator requires no
-installation, registration, bind, doctor, check or refresh; the generic managed
-session admission loop does not apply. Fetch only missing evidence, once:
-
-```sh
-clew docs context --root DOCS --snapshot SNAPSHOT --service SERVICE --symbol EXACT_ID --format compact --limit 40
-```
-
-Keep returned authority, coverage, source revisions/digests, unresolved boundaries,
-`omitted` and `nextCursor`. Preserve the full packet locally; print only the
-selected source and necessary status/handles, not a whole catalogue or repeated
-source aliases. Follow a cursor or an exact `--source` / `--dependency` drill only
-when needed for the question; missing coverage remains an explicit limitation.
-Do not guess a qualified name when an exact ID is supplied. For example, Weather's
-top-level TypeScript function is
-`source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666`,
-not `Dashboard.savePlace`.
-
-Choose the maintenance case before making another tool call:
-
-| Case | Action and answer |
-| --- | --- |
-| Same snapshot/revision, with relevant inputs verified unchanged | Reuse the saved answer, evidence and citations. No catalogue inspection, context fetch, capture or prose regeneration is needed. Add only a short checked/unchanged annotation naming the verified scope; retain existing unknowns and evidence authority. |
-| New relevant source or input changes | Use the explicitly requested ref and one focused `docs context --refresh` call below. If the operator already supplied its current compatible snapshot, use that snapshot instead of refreshing. Update the affected answer clauses, not the whole maintenance history. |
-| An unrelated change | Separate repository/provenance change from behavior. Reuse the interpretation only when the declared relevant-input checks justify it. Update provenance only from actual returned bindings; otherwise retain the older revision explicitly. Do not relabel old citations or claim current behavior from equal handler text. |
-
-Relevant-input verification includes the registered SOURCE scope, called helpers
-and receiver evidence used by the answer, configuration, explicitly registered
-generated inputs, contracts, membership and declared external/reference inputs.
-Handler text equality alone proves none of those unchanged. A changed callee,
-configuration or generated file is a negative control even when the handler's
-bytes match: refresh the affected selected evidence or report the missing input.
-Out-of-scope or unobserved dependencies remain unknown. Reuse a receiver's evidence
-only when its own observed inputs are unchanged; refreshing a caller does not
-reverify retained siblings. An operator's verification annotation must not upgrade
-`PINNED_SNAPSHOT_NOT_REVERIFIED`, coverage or meaning-review status.
-
-For an authorized update of selected evidence, use the existing atomic route:
-
-```sh
-clew docs context --root DOCS --service SERVICE --refresh --symbol EXACT_ID --format compact --limit 40
-```
-
-`--refresh` and `--snapshot` are alternatives. Refresh uses the registered service
-ref; it does not choose a new target for you. If that ref must change, batch the
-dependent JSON/handle operations into **one bounded deterministic script/tool
-invocation**, rather than intervening model turns:
-
-1. Read the exact service with `docs service show --root DOCS --id SERVICE`.
-   Keep its complete `record` and current `inputDigest`; do not print the list.
-2. Change only `record.targetRef` to the explicitly requested ref when necessary.
-   Write the full record to a caller-owned temporary JSON file and submit it with
-   `docs service add --root DOCS --input FILE --expected-input-digest DIGEST`.
-   Preserve compare-and-swap; stop on conflict and reconcile rather than blindly
-   retrying or editing managed files.
-3. Run the focused refresh command once, retain the returned immutable snapshot
-   and packet, and verify the actual revision and authority before using them.
-   Bound output/pagination; surface typed errors, unresolved and omitted evidence.
-
-Skip steps 1-2 when the registered ref already matches. Do not precede refresh
-with a separate check/read/context sequence. If the supplied exact selector no
-longer resolves, retain the failure and use bounded declaration discovery only
-as needed to select the intended root; never silently switch roots. No new helper
-or publication workflow is required for this JSON plumbing.
-
-For source reading, `CHECKED` capture evidence and publication freshness are
-separate outcomes. `UNRESOLVED` / `MISSING_BASELINE` on a first Check means no
-published documentation baseline exists; it does not undo successful source
-capture or require a fictional publication. Genuine missing source, incompatible
-catalogue inputs and typed capture failures still block unsupported claims.
-Report a changed answer as a delta; report unchanged scope as a status annotation.
-Do not repeat the full saved answer, catalogue or earlier error diary unless the
-user asks for them.
+Start directly at the [short prepared SOURCE entry](../README.md). It contains
+all three maintenance cases and the local bounded-packet helper. Do not load this
+full reference for a ready snapshot or a saved answer. Use the sections below only
+when registration, source capture or durable documentation work is requested.
 
 ## Build-independent source profile
 

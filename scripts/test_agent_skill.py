@@ -56,6 +56,7 @@ class AgentSkillTest(unittest.TestCase):
 
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
+        skill += (CANONICAL_SKILL / "references/managed-code.md").read_text(encoding="utf-8")
         version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
         self.assertIn(f'version: "{version}"', skill)
         self.assertIn("codeclew-agent-contract/1.0", skill)
@@ -107,6 +108,11 @@ class AgentSkillTest(unittest.TestCase):
                 (installed / "SKILL.md").read_bytes(),
                 (CANONICAL_SKILL / "SKILL.md").read_bytes(),
             )
+            for relative in ["README.md", "scripts/prepared_source.py", "references/managed-code.md"]:
+                self.assertEqual(
+                    (installed / relative).read_bytes(),
+                    (CANONICAL_SKILL / relative).read_bytes(),
+                )
 
             current = run_skill("--destination", str(destination))
             self.assertEqual(current.returncode, 0, current.stderr)
