@@ -1371,3 +1371,13 @@ test('question navigation ignores unknown destinations and preserves exact sourc
  const html=r.run("questionSource({service:'dashboard',file:'compose.yaml',startLine:3,endLine:5,text:'before\\nPLACES_URL: http://places:8080\\nafter',revision:'revision-1234567',id:'config',textDigest:'digest'},4,4)");
  assert.match(html,/compose.yaml:4–4/);assert.match(html,/PLACES_URL: http:\/\/places:8080/);assert.doesNotMatch(html,/>before|after<\/pre>/);
 });
+
+test('active question uses every section after long evidence expansion and scroll',()=>{
+ const r=load(questionFixture());r.run("showEntry('process-overview')");
+ r.e('question-story').getBoundingClientRect=()=>({top:-902,bottom:-642,height:260});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:-602,bottom:520,height:1122});
+ r.run("questionUpdateLocation()");assert.equal(r.e('question-select').value,'question-confidence');
+ r.e('question-story').getBoundingClientRect=()=>({top:88,bottom:500,height:412});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:540,bottom:900,height:360});
+ r.run("questionUpdateLocation()");assert.equal(r.e('question-select').value,'question-story');
+});

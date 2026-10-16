@@ -54,13 +54,35 @@ function questionActive(id){
  document.querySelectorAll('.question-link').forEach(link=>{if(link.getAttribute('href')==='#'+id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current');});
  const select=$('question-select');if(select)select.value=id;
 }
-var questionObserver;
+var questionObserver,questionLocationPending;
+function questionUpdateLocation(){
+ if(!D.questionReader||current?.id!=='process-overview'||$('scenario-content').hidden)return;
+ const header=document.querySelector('.reader-nav')?.getBoundingClientRect?.();
+ const menu=document.querySelector('.question-mobile-nav')?.getBoundingClientRect?.();
+ const readingLine=Math.max(0,header?.bottom||0,menu?.bottom||0)+24;
+ const sections=D.questionReader.sections.map(section=>$(questionAnchor(section.id))).filter(element=>element?.getBoundingClientRect).map(element=>({element,rect:element.getBoundingClientRect()})).filter(row=>row.rect.height>0);
+ // Recompute every section: an observer callback contains changed entries only.
+ // Expanding evidence can move a long section's heading far above the viewport.
+ const selected=sections.find(row=>row.rect.top<=readingLine&&row.rect.bottom>readingLine)||sections.find(row=>row.rect.top>readingLine)||sections.at(-1);
+ if(selected)questionActive(selected.element.id);
+}
+function questionScheduleLocation(){
+ if(questionLocationPending)return;
+ questionLocationPending=true;
+ const update=()=>{questionLocationPending=false;questionUpdateLocation();};
+ if(typeof requestAnimationFrame==='function')requestAnimationFrame(update);else update();
+}
 function questionObserve(){
  questionObserver?.disconnect();
- if(typeof IntersectionObserver==='undefined')return;
- questionObserver=new IntersectionObserver(rows=>{const row=rows.filter(r=>r.isIntersecting).sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top)[0];if(row)questionActive(row.target.id);},{rootMargin:'-100px 0px -55% 0px'});
- document.querySelectorAll('.question-section').forEach(section=>questionObserver.observe(section));
+ if(typeof IntersectionObserver!=='undefined'){
+  questionObserver=new IntersectionObserver(questionScheduleLocation,{rootMargin:'-100px 0px -55% 0px'});
+  document.querySelectorAll('.question-section').forEach(section=>questionObserver.observe(section));
+ }
+ questionScheduleLocation();
 }
+window.addEventListener('scroll',questionScheduleLocation,{passive:true});
+window.addEventListener('resize',questionScheduleLocation);
+document.addEventListener('toggle',questionScheduleLocation,true);
 function questionServiceReturn(){
  if(typeof URLSearchParams==='undefined')return;
  const params=new URLSearchParams(location.search||''),process=params.get('fromProcess'),question=params.get('fromQuestion');
