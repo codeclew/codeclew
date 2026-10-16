@@ -49,6 +49,7 @@ mod operation_answer;
 mod operation_context;
 mod operation_packet;
 pub mod plantuml;
+mod prepared_evidence;
 mod process_call_bindings;
 pub mod process_candidates;
 mod process_context;

@@ -24,6 +24,34 @@ const MAX_RECORDS: usize = 131_072;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Retain an engine-owned SOURCE evidence set for Q&A without publishing docs.
+    RetainSource {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        symbol: String,
+        #[arg(long, required_unless_present = "refresh", conflicts_with = "refresh")]
+        snapshot: Option<String>,
+        #[arg(long)]
+        refresh: bool,
+        /// JSON scopes of explicit native files and membership prefixes; byte authority only.
+        #[arg(long)]
+        native_inputs: Option<PathBuf>,
+    },
+    /// Compare a retained SOURCE packet with a prepared immutable target snapshot.
+    CompareSource {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        snapshot: String,
+        /// Include target source even for unchanged registered inputs.
+        #[arg(long)]
+        include_context: bool,
+    },
     /// Collect a source-free support report; --include-index explicitly includes source and facts.
     Report {
         #[arg(long)]
@@ -882,6 +910,32 @@ pub(super) fn selected_with_expectation(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::RetainSource {
+            root,
+            service,
+            symbol,
+            snapshot,
+            refresh,
+            native_inputs,
+        } => super::prepared_evidence::retain(
+            &Repository::open(&root)?,
+            snapshot.as_deref(),
+            refresh,
+            &service,
+            &symbol,
+            native_inputs.as_deref(),
+        ),
+        Command::CompareSource {
+            root,
+            input,
+            snapshot,
+            include_context,
+        } => super::prepared_evidence::compare(
+            &Repository::open(&root)?,
+            &input,
+            &snapshot,
+            include_context,
+        ),
         Command::Report {
             root,
             service,

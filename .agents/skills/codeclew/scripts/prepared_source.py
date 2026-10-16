@@ -58,7 +58,7 @@ def limits(value):
 def record_limits(items):
     groups = {}
     for index, item in enumerate(items):
-        if item.get('kind') in ('SOURCE', 'COVERAGE') or not (retained := limits(item)):
+        if item.get('kind') in ('SOURCE', 'SOURCE_NATIVE', 'COVERAGE') or not (retained := limits(item)):
             continue
         key = json.dumps(retained, sort_keys=True)
         groups.setdefault(key, {'items': [], 'limits': retained})['items'].append(f'/items/{index}')
@@ -69,7 +69,7 @@ def project(packet, path, packet_digest, source_ids=(), max_bytes=12000,
             text_chars=6000, text_offset=0, max_sources=3, max_handles=4):
     """Do not summarize evidence limits or infer freshness from the local view."""
     items = packet['items']
-    sources = [i for i in items if i.get('kind') == 'SOURCE']
+    sources = [i for i in items if i.get('kind') in ('SOURCE', 'SOURCE_NATIVE')]
     if source_ids:
         wanted = set(source_ids)
         sources = [i for i in sources if i.get('id') in wanted]
@@ -82,7 +82,7 @@ def project(packet, path, packet_digest, source_ids=(), max_bytes=12000,
     handles = []
     # Full normalized observations and repeated SOURCE_ALIAS bodies stay local.
     for index, item in enumerate(items):
-        if item.get('kind') in ('SOURCE', 'COVERAGE', 'SOURCE_ALIAS'):
+        if item.get('kind') in ('SOURCE', 'SOURCE_NATIVE', 'COVERAGE', 'SOURCE_ALIAS'):
             continue
         record = item.get('record', {})
         handles.append({
@@ -90,6 +90,9 @@ def project(packet, path, packet_digest, source_ids=(), max_bytes=12000,
             'localPointer': f'/items/{index}',
             **{k: v for k, v in item.items() if k in ('fullRecord', 'drill', 'projection')},
             **{k: v for k, v in record.items() if k in ('fullRecordDigest',)},
+            **({'change': {k: v for k, v in record.items() if k in ('reason', 'file', 'source', 'input', 'kind', 'sourceReferences', 'changedWindow')}}
+               if item.get('kind') == 'EVIDENCE_CHANGE' else {}),
+            **({'binding': record} if item.get('kind') == 'SOURCE_BINDING_UPDATE' else {}),
         })
     rows = []
     for item in selected:
@@ -99,7 +102,7 @@ def project(packet, path, packet_digest, source_ids=(), max_bytes=12000,
         text = record['text']
         if text_offset > len(text):
             raise ViewError('TEXT_OFFSET_OUTSIDE_SOURCE')
-        rows.append({'id': item.get('id'),
+        rows.append({'id': item.get('id'), 'kind': item.get('kind'),
                      'record': {k: v for k, v in record.items() if k != 'text'},
                      'text': text[text_offset:text_offset + text_chars],
                      'textDelivery': {'offset': text_offset, 'totalCharacters': len(text)}})
@@ -112,7 +115,7 @@ def project(packet, path, packet_digest, source_ids=(), max_bytes=12000,
         'recordLimits': record_limits(items),
         'projection': {
             'authority': 'LOCAL_PROJECTION_NOT_ADDITIONAL_VERIFICATION',
-            'sourcesNotShown': len([i for i in items if i.get('kind') == 'SOURCE']) - len(rows),
+            'sourcesNotShown': len([i for i in items if i.get('kind') in ('SOURCE', 'SOURCE_NATIVE')]) - len(rows),
             'aliasesNotShown': len([i for i in items if i.get('kind') == 'SOURCE_ALIAS']),
             'handlesNotShown': len(handles) - min(max_handles, len(handles)),
             'otherRecords': 'Handles only; complete records remain at packet path/localPointer.',
@@ -141,12 +144,9 @@ def private_file(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb')
 
 
-def fetch(args, path):
+def invoke(args, path, command):
     if not Path(args.root).is_absolute() or not Path(args.clew).is_absolute():
         raise ViewError('FETCH_REQUIRES_ABSOLUTE_ROOT_AND_INSTALLED_LAUNCHER')
-    command = [args.clew, 'docs', 'context', '--root', args.root, '--service', args.service,
-               '--symbol', args.symbol, '--format', 'compact', '--limit', '40']
-    command += ['--snapshot', args.snapshot] if args.snapshot else ['--refresh']
     stderr_path = path.with_name(path.name + '.stderr')
     with private_file(path) as output, private_file(stderr_path) as errors:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output,
@@ -155,21 +155,48 @@ def fetch(args, path):
         raise ViewError(f'CONTEXT_FAILED exit={result.returncode}; stdout and .stderr retained locally')
 
 
+def fetch(args, path):
+    command = [args.clew, 'docs', 'evidence', 'retain-source', '--root', args.root,
+               '--service', args.service, '--symbol', args.symbol]
+    command += ['--snapshot', args.snapshot] if args.snapshot else ['--refresh']
+    if args.native_inputs:
+        if not args.native_inputs.is_absolute():
+            raise ViewError('NATIVE_INPUTS_REQUIRES_ABSOLUTE_PATH')
+        command += ['--native-inputs', str(args.native_inputs)]
+    invoke(args, path, command)
+
+
+def compare(args, path):
+    command = [args.clew, 'docs', 'evidence', 'compare-source', '--root', args.root,
+               '--input', str(args.input.resolve()), '--snapshot', args.snapshot]
+    if args.include_context:
+        command += ['--include-context']
+    invoke(args, path, command)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest='mode', required=True)
-    for mode in ('read', 'fetch'):
+    for mode in ('read', 'fetch', 'compare'):
         sub = modes.add_parser(mode)
-        sub.add_argument('--input' if mode == 'read' else '--output', required=True, type=Path)
+        if mode in ('read', 'compare'):
+            sub.add_argument('--input', required=True, type=Path)
+        if mode != 'read':
+            sub.add_argument('--output', required=True, type=Path)
         sub.add_argument('--source', action='append', default=[], help='Exact returned SOURCE ID; repeat only as needed')
         sub.add_argument('--max-bytes', type=int, default=12000, help='Strict stdout UTF-8 byte budget, 1024..65536')
         sub.add_argument('--text-chars', type=int, default=6000, help='At most this many characters per selected source')
         sub.add_argument('--text-offset', type=int, default=0, help='Continue one exact source locally without fetching')
         sub.add_argument('--max-sources', type=int, default=3)
         sub.add_argument('--max-handles', type=int, default=4)
-        if mode == 'fetch':
+        if mode != 'read':
             sub.add_argument('--clew', required=True, help='Already resolved installed release launcher')
             sub.add_argument('--root', required=True)
+        if mode == 'compare':
+            sub.add_argument('--snapshot', required=True)
+            sub.add_argument('--include-context', action='store_true')
+        if mode == 'fetch':
+            sub.add_argument('--native-inputs', type=Path, help='Explicit engine-registered native file/membership scopes')
             sub.add_argument('--service', required=True)
             sub.add_argument('--symbol', required=True, help='Exact supplied declaration selector')
             selection = sub.add_mutually_exclusive_group(required=True)
@@ -184,7 +211,13 @@ def main():
     try:
         if args.mode == 'fetch':
             fetch(args, path)
+        elif args.mode == 'compare':
+            compare(args, path)
         packet, digest = load_packet(path)
+        if args.mode == 'fetch' and (not isinstance(packet.get('evidenceSet'), dict) or packet['evidenceSet'].get('schema') != 'codeclew-prepared-source-evidence/1.0'):
+            raise ViewError('ENGINE_RETAIN_RESULT_MISSING; no admitted evidence view delivered')
+        if args.mode == 'compare' and (not isinstance(packet.get('comparison'), dict) or packet['comparison'].get('status') not in ('UNCHANGED', 'CHANGED', 'UNKNOWN')):
+            raise ViewError('ENGINE_COMPARE_RESULT_MISSING; no comparison view delivered')
         sys.stdout.write(project(packet, path, digest, args.source, args.max_bytes,
                                  args.text_chars, args.text_offset, args.max_sources, args.max_handles))
         return 0

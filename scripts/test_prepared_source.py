@@ -91,6 +91,17 @@ class PreparedSourceTest(unittest.TestCase):
         with self.assertRaises(helper.ViewError):
             helper.project(original, Path('/local/packet.json'), 'digest', source_ids=['alias-1'])
 
+    def test_native_bytes_are_bounded_without_becoming_captured_semantic_source(self):
+        original = packet()
+        original['items'].append({'kind': 'SOURCE_NATIVE', 'id': 'native-file', 'record': {
+            'text': 'public record Request(string Id);', 'textDigest': 'engine-native-digest',
+            'authority': 'REGISTERED_NATIVE_BYTES_ONLY_NO_SEMANTIC_ANALYSIS', 'bindingService': 'worker'}})
+        view = json.loads(helper.project(original, Path('/local/packet.json'), 'digest', source_ids=['native-file']))
+        self.assertEqual(view['sources'][0]['kind'], 'SOURCE_NATIVE')
+        self.assertEqual(view['sources'][0]['record']['authority'], 'REGISTERED_NATIVE_BYTES_ONLY_NO_SEMANTIC_ANALYSIS')
+        self.assertEqual(view['evidence']['unresolved'], original['unresolved'])
+        self.assertEqual(view['sources'][0]['text'], original['items'][-1]['record']['text'])
+
     def test_excessive_limits_fail_closed_instead_of_truncating_them(self):
         original = packet()
         original['unresolved'] = {'large': ['MISSING_INPUT'] * 2000}
@@ -101,7 +112,9 @@ class PreparedSourceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixture = root / 'fixture.json'
-            raw = (json.dumps(packet(), indent=2) + '\n').encode()
+            supplied = packet()
+            supplied['evidenceSet'] = {'schema': 'codeclew-prepared-source-evidence/1.0', 'reference': {'digest': 'engine-owned'}}
+            raw = (json.dumps(supplied, indent=2) + '\n').encode()
             fixture.write_bytes(raw)
             calls = root / 'calls.jsonl'
             launcher = root / 'installed-clew'
@@ -124,8 +137,8 @@ class PreparedSourceTest(unittest.TestCase):
             self.assertEqual(output.with_name('context.json.stderr').read_text(), 'PRIVATE_PROGRESS')
             self.assertNotIn(b'PRIVATE_PROGRESS', run.stdout + run.stderr)
             invocations = [json.loads(line) for line in calls.read_text().splitlines()]
-            self.assertEqual(invocations, [['docs', 'context', '--root', str(root / 'docs'),
-                '--service', 'worker', '--symbol', 'exact:dispatch', '--format', 'compact', '--limit', '40',
+            self.assertEqual(invocations, [['docs', 'evidence', 'retain-source', '--root', str(root / 'docs'),
+                '--service', 'worker', '--symbol', 'exact:dispatch',
                 '--snapshot', 'snapshot-1']])
             self.assertEqual(subprocess.run(command, capture_output=True).returncode, 2)
             self.assertEqual(output.read_bytes(), raw)
@@ -146,6 +159,42 @@ class PreparedSourceTest(unittest.TestCase):
             self.assertEqual((root / 'failed.json').read_bytes(), raw)
             self.assertNotIn(b'PRIVATE_PROGRESS', failed.stdout + failed.stderr)
             self.assertEqual(len(calls.read_text().splitlines()), 2)
+
+    def test_compare_is_one_engine_call_preserves_typed_unknown_and_never_uses_git(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = packet()
+            original['comparison'] = {'status': 'UNKNOWN', 'reasonExamples': [{'reason': 'DEPENDENCY_UNAVAILABLE'}],
+                                      'scope': 'REGISTERED_INPUTS_ONLY_NOT_RUNTIME_BEHAVIOR'}
+            original['items'] = []
+            fixture = root / 'response.json'
+            fixture.write_text(json.dumps(original))
+            calls = root / 'calls.jsonl'
+            launcher = root / 'candidate-clew'
+            launcher.write_text('#!' + sys.executable + '\nimport json,sys\nfrom pathlib import Path\n' +
+                f'with Path({str(calls)!r}).open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n' +
+                f'sys.stdout.buffer.write(Path({str(fixture)!r}).read_bytes())\n')
+            launcher.chmod(0o700)
+            previous = root / 'previous.json'
+            previous.write_text('{"evidenceSet":"opaque"}')
+            output = root / 'current.json'
+            command = [sys.executable, '-I', '-S', str(HELPER), 'compare', '--clew', str(launcher),
+                       '--root', str(root / 'docs'), '--input', str(previous), '--snapshot', 'target', '--output', str(output)]
+            result = subprocess.run(command, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            view = json.loads(result.stdout)
+            self.assertEqual(view['evidence']['comparison'], original['comparison'])
+            self.assertEqual(json.loads(calls.read_text()), ['docs', 'evidence', 'compare-source', '--root', str(root / 'docs'),
+                             '--input', str(previous.resolve()), '--snapshot', 'target'])
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            self.assertEqual(previous.read_text(), '{"evidenceSet":"opaque"}')
+            # A superficially valid context without an engine verdict is not a comparison.
+            fixture.write_text(json.dumps(packet()))
+            command[-1] = str(root / 'wrong.json')
+            wrong = subprocess.run(command, capture_output=True)
+            self.assertEqual(wrong.returncode, 2)
+            self.assertIn('ENGINE_COMPARE_RESULT_MISSING', json.loads(wrong.stdout)['reason'])
+            self.assertFalse(json.loads(wrong.stdout)['evidenceDelivered'])
 
     def test_malformed_or_overbudget_packet_never_prints_source(self):
         with tempfile.TemporaryDirectory() as temporary:

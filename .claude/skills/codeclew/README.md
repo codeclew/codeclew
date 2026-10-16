@@ -1,74 +1,105 @@
 # Prepared SOURCE answers
 
-Read this file only for a supplied docs root, service, exact selector and saved
-snapshot or answer/evidence. Do not load the full managed-code or service guide.
-Use absolute task paths or an explicit working directory; a docs workspace need
-not be the source Git checkout. Resolve the installed `clew` once when needed.
+Use this entry for a supplied docs root, service, exact selector and snapshot or
+saved answer packet. Do not load the full managed-code or service guide. Use
+absolute task paths and resolve the supported installed/candidate `clew` once.
 
-Choose before acquiring context:
+The engine admits immutable snapshot objects and their source/configuration
+bindings. `PINNED_SNAPSHOT_NOT_REVERIFIED` means no live checkout recheck; it does
+not invalidate an admitted immutable revision. Integrity, target freshness and
+syntax/compiler authority remain separate. No documentation publication is needed.
 
-- **Verified unchanged:** reuse the saved answer, evidence and citations. Add a
-  short checked/unchanged annotation naming the verified scope. No context fetch,
-  refresh, packet dump or full answer rewrite. Read the saved answer or small
-  saved projection only if needed; do not print old JSON packets again.
-- **Current snapshot supplied:** reuse its local packet, or fetch missing context
-  once against that exact snapshot. No installation, registration, bind, doctor,
-  check or refresh. The docs command performs its own admission.
-- **Relevant changes:** use the supplied current snapshot if ready; otherwise
-  refresh the selected registered service once at the explicitly requested ref.
-  Update affected answer clauses. Refreshing a caller does not reverify receivers.
-- **Unrelated changes:** separate repository/provenance change from behavior.
-  Reuse interpretation only when relevant-input checks justify it. Keep the older
-  cited revision unless actual returned bindings establish newer provenance.
+## First answer
 
-Relevant inputs include the registered SOURCE scope and membership, called
-helpers, receivers, configuration, registered generated inputs, contracts, and
-external/reference inputs used by the answer. Equal handler text is insufficient.
-A changed callee/config/generated input requires affected evidence refresh or an
-explicit missing-input limit. Unobserved dependencies remain unknown. Operator
-checks do not upgrade `PINNED_SNAPSHOT_NOT_REVERIFIED`, coverage or meaning review.
+Read an already supplied engine-retained packet locally. Otherwise fetch once
+against the supplied exact snapshot. The helper invokes
+`docs evidence retain-source`, keeps the full packet private and emits a bounded
+view. Its `evidenceSet` is an opaque engine-owned reference; carry the saved packet
+forward. Do not rewrite its SHA, digests or history in prose or hand-edit it.
+
+```sh
+python3 -I -S SKILL/scripts/prepared_source.py fetch --clew CLEW --root DOCS --snapshot SNAPSHOT --service SERVICE --symbol EXACT_ID --output ANSWER_PACKET.json
+```
+
+If the answer uses code outside the captured language/scope, first discover the
+necessary files once and explicitly register them with `--native-inputs ABS_JSON`.
+The JSON is an array such as:
+
+```json
+[{"service":"dashboard","files":["services/places/PlacesController.cs","services/places/PlacesRepository.cs","services/places/Program.cs"],"membership":["services/places"]}]
+```
+
+Here `service` names the captured repository/revision binding, not an inferred
+semantic owner. Native files are read at that immutable revision. Registration
+tracks exact bytes for listed files and names within membership prefixes. It
+provides no C# semantic analysis, deployment proof or implicit dependency closure.
+Register every native file used by the answer; unregistered references remain
+`UNKNOWN_OUT_OF_SCOPE`. Initial native discovery/read outside coverage is allowed.
+
+## Maintenance
+
+Use the same managed docs root containing the prepared baseline and target
+snapshots. Preparation may register and capture multiple exact revisions there;
+carry only the arm's own answer/packet artifacts between stages. Do not copy or
+edit private cache state to transfer evidence. A missing retained object is an
+explicit error, never an unchanged verdict.
+
+```sh
+python3 -I -S SKILL/scripts/prepared_source.py compare --clew CLEW --root DOCS --input PREVIOUS_PACKET.json --snapshot TARGET_SNAPSHOT --output CURRENT_PACKET.json
+```
+
+The engine compares the registered dependency closure, source/configuration,
+membership, generated inputs and explicit native references. It preserves
+unresolved analysis limits. Read the typed result:
+
+- `UNCHANGED`: reuse the answer within its previous scope and limits. Add only a
+  short checked/unchanged annotation; use returned binding updates for citations.
+- `CHANGED`: inspect the engine's concrete reasons, changed-file window and target
+  SOURCE. Update affected clauses. A conservative watched-file change is not a
+  claim of changed runtime behavior; an unrelated page-title change can leave the
+  selected function unchanged. Check the title delta in the returned evidence.
+- `UNKNOWN`: name the missing input/scope. Do not claim the old answer is verified
+  unchanged or suppress unresolved evidence. Acquire only the missing evidence.
+
+After successful engine admission/compare, **do not duplicate covered-evidence
+checks with `git show`, `git diff`, `git rev-parse`, manual source hashes or
+catalogue comparison**. Git/native reads remain allowed for initial acquisition
+outside registered coverage or diagnosis of a concrete contradiction. Engine
+internal Git access implements the admitted contract; agents do not repeat it.
+Equal handler text and unresolved call targets do not prove full dependencies or
+unchanged behavior. Preserve the original semantic and runtime boundaries.
+
+For authorized recapture, `fetch --refresh` replaces `--snapshot`; these are
+alternatives. It refreshes only the selected registered service at its declared
+ref. If the ref must change, preserve the existing service-record compare-and-swap
+workflow. Prepared target snapshots need no installation, registration, check or
+refresh during answering. Refreshing a caller does not reverify receivers unless
+its registered native inputs are also acquired at the correct repository revision.
 
 ## Bounded evidence, full packet local
 
-Use the bundled helper without reading its implementation. Replace placeholders
-with supplied paths/handles. It never decides freshness or edits service records.
+Read saved packets locally without another CLI call:
 
 ```sh
-# Existing packet: local read only, no clew invocation.
 python3 -I -S SKILL/scripts/prepared_source.py read --input PACKET.json
-
-# Missing packet, ready snapshot: one CLI call; OUTPUT must be a new private file.
-python3 -I -S SKILL/scripts/prepared_source.py fetch --clew CLEW --root DOCS --snapshot SNAPSHOT --service SERVICE --symbol EXACT_ID --output OUTPUT.json
 ```
 
-The view preserves packet authority, coverage, revisions/digests, source bindings,
-unresolved/omitted evidence and `nextCursor`. Full stdout and private `.stderr`
-are saved locally on fetch, including failures; existing files are never replaced.
-Do not `cat`, pretty-print or truncate raw packets as a substitute for the view.
-Default stdout is at most **12,000 UTF-8 bytes**, with up to three SOURCE records
-and four related handles. SOURCE_ALIAS bodies and normalized catalogues stay
-local. Nested record limits remain visible. Local projection omissions are
-separate from the original packet's `omitted` evidence.
+Default stdout is at most 12,000 UTF-8 bytes: up to three SOURCE records and four
+handles. Authority, coverage, engine comparison/bindings, omitted evidence and
+cursors remain visible. Full packets and private stderr logs are never replaced.
+Do not dump, pretty-print or truncate raw packets as a substitute for this view.
+The local packet fingerprint is not an additional freshness verdict.
 
-`textDelivery.complete=false` means a source excerpt is partial; use its exact
-`--source ID --text-offset N` with `read` to continue locally. `--text-chars`,
-`--max-sources`, `--max-handles` and `--max-bytes` (1,024..65,536) bound the view.
-`--text-chars 0 --max-handles 0` gives metadata without repeating source text.
-Only drill `--source` / `--dependency` through `clew docs context`, or follow the
-original cursor, when required evidence is missing. Keep each result local and
-project it. A helper error delivers no evidence; inspect its local packet/log,
-request fewer sources or a larger bounded view rather than suppressing limits.
+`textDelivery.complete=false` identifies an excerpt. Continue one exact SOURCE
+locally with `--source ID --text-offset N`; `--text-chars`, `--max-sources`,
+`--max-handles` and `--max-bytes` bound the view. `--text-chars 0 --max-handles 0`
+shows metadata only. SOURCE_ALIAS bodies and normalized catalogues stay local.
+Changed windows are explicitly projections; complete SOURCE retains its own
+bindings. Follow an exact source/dependency drill or original cursor only when
+needed evidence is missing. `compare --include-context` delivers current SOURCE
+also for unchanged inputs. A helper budget error delivers no evidence; inspect
+its retained log or request a bounded larger view instead of suppressing limits.
 
-For authorized refresh, replace `--snapshot SNAPSHOT` with `--refresh`. These are
-alternatives. Refresh uses the registered ref; it does not select a new one. If
-that ref must change, batch `docs service show --id SERVICE`, changing only the
-full record's `targetRef`, `docs service add --expected-input-digest DIGEST`, and
-the focused refresh in one deterministic invocation. Preserve compare-and-swap;
-stop on conflict. Do not precede refresh with a separate check/read sequence.
-
-Keep syntax, declared, unresolved and external-call limits explicit. A successful
-`CHECKED` capture and `MISSING_BASELINE` publication freshness are separate facts;
-missing publication is not capture failure and needs no invented publication.
-Report an answer delta or a short unchanged annotation, not a replay of earlier
-answers, packets or error history. Full evidence remains private unless transfer
-to a specific recipient is authorized; the projection is not a public-safe report.
+Report an answer delta or short unchanged annotation, not a replay of prior
+answers and error history. Evidence is private unless transfer to a specific
+recipient is authorized; the bounded projection is not a public-safe report.
