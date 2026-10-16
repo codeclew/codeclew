@@ -30,9 +30,17 @@ only the linked section needed for that action; the `clew docs` workflow perform
 admission internally. The generic navigation/mutation admission loop below is
 not an extra step for documentation work.
 
+For a prepared SOURCE question, use the supplied root, service, exact selector,
+snapshot and saved answer/evidence directly. If the operator already prepared the
+requested current snapshot, do not register, check or refresh again. Follow the
+[three maintenance cases](references/service-documentation.md#prepared-source-answers-and-maintenance)
+before choosing any acquisition command; unchanged verified inputs need no
+repeated context read or full answer rewrite.
+
 | Requested result | First command | Scope |
 | --- | --- | --- |
-| [Read saved service evidence](references/service-documentation.md#start-or-recover) | `clew docs context --root <docs> --snapshot <check> --service <id>` | Retained evidence; no source capture |
+| [Read or maintain a prepared SOURCE answer](references/service-documentation.md#prepared-source-answers-and-maintenance) | Reuse supplied answer/evidence; fetch missing context once with `clew docs context --root <docs> --snapshot <check> --service <id> --symbol <exact-id> --format compact` | Ready snapshot: no setup or capture; unchanged verified inputs: status annotation only |
+| [Read saved service evidence](references/service-documentation.md#start-or-recover) | `clew docs context --root <docs> --snapshot <check> --service <id>` | Retained evidence for other documentation reads; no source capture |
 | [Render selected native pages](references/service-documentation.md#render-exact-retained-declarations) | `clew docs pages render --root <docs> --snapshot <check> --input <selection.json> --output <new-directory>` | Exact retained declaration IDs; no model or compiler run |
 | [Capture requested source changes](references/service-documentation.md#start-or-recover) | `clew docs check --root <docs> --service <id>` | Registered source scope; only selected compiler profiles need their build environment |
 | [Inspect optional compiler enrichment](references/service-documentation.md#build-independent-source-profile) | `clew docs modules list --root <docs> --service <id>` | Enable only an explicitly selected compatible semantic module; SOURCE does not require it |
