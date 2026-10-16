@@ -87,3 +87,6 @@ a{color:#087dc1}.logo{background:#087dc1;color:white}.topbar{background:#fffdf8;
 .ingress-links button{min-height:36px}
 .ingress-links p{font-size:13px;margin:4px 0;color:var(--muted)}
 @media(max-width:760px){.ingress-route{grid-template-columns:minmax(0,1fr);gap:10px}.ingress-links{gap:12px}.ingress-warning{display:block;line-height:1.6}}
+
+/* Retained HTTP observations stay beside their bound ingress route. */
+.ingress-http{grid-column:1/-1;min-width:0;font-size:14px;line-height:1.55}.ingress-http-coverage{margin:5px 0}.ingress-http-finding{padding:10px 14px;margin:8px 0;border-left:3px solid #c18a28;background:#fff9ec;border-radius:0 4px 4px 0}.ingress-http h5{font-size:15px;margin:0 0 4px}.ingress-http-finding p{margin:3px 0}.ingress-http-details>summary,.ingress-http-provenance summary{cursor:pointer;padding:7px 0;overflow-wrap:anywhere}.ingress-http-details{margin-top:7px}.ingress-http pre,.ingress-http-provenance pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;padding:12px;background:#f4f6fa;max-height:480px;overflow:auto}.ingress-http code,.ingress-http-provenance code{overflow-wrap:anywhere}.ingress-http th,.ingress-http td{font-size:13px;white-space:normal;overflow-wrap:anywhere;min-width:100px}.ingress-http-provenance{margin:14px 0;font-size:14px;line-height:1.6;min-width:0}.ingress-http-provenance li{margin:5px 0}

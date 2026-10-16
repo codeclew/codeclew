@@ -4396,6 +4396,7 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         QUESTION_DATABASE,
         QUESTION_ICON_LICENSE,
         include_str!("static_pages/question_reading.rs"),
+        include_str!("static_pages/contract_comparison.rs"),
         include_str!("history.rs"),
         include_str!("process_candidates.rs"),
         include_str!("process_thread.rs"),

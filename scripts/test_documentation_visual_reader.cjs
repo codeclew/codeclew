@@ -1482,3 +1482,37 @@ test('ingress distinguishes ambiguous matches, conflicting source binding and un
  assert.match(html,/Not compared · no OpenAPI operations available/);assert.doesNotMatch(html,/ingress-warning/);
  assert.match(html,/Other public boundaries · 1/);assert.match(html,/nightly refresh/);
 });
+function retainedHttpFixture(){
+ const {data}=ingressFixture();data.selectedSnapshot='snapshot';data.selectedEvidence={revisions:{sample:'abc'}};
+ data.contracts[0].digest='health-digest';data.contracts[1].digest='post-digest';
+ data.contractComparison={schema:'codeclew-http-comparison-view/1.0',service:'sample',revision:'abc',snapshot:'snapshot',bindingStatus:'MATCHES_PINNED_SELECTED_SNAPSHOT',authority:'EXTERNAL_RECORDED_LOCAL_PROBE',scope:'Local harness; storage substituted.',validator:'external Draft 2020-12 validator',limitations:['No deployed runtime or database proof.'],sources:{'same-source':source('BOUND SOURCE')},artifacts:{probe:{digest:'sha256:probe',text:'</pre><script>unsafe()</script>'}},packetDigest:'sha256:packet',entries:[
+  {entrypoint:'get-health',contractId:'health-contract',contractDigest:'health-digest',method:'GET',path:'/health',coverage:'HTTP not exercised; source inspected only.',cases:[],findings:[]},
+  {entrypoint:'post-item',contractId:'post-contract',contractDigest:'post-digest',method:'POST',path:'/items/{itemId}',coverage:'Two observed cases; database failures not exercised.',cases:[
+   {id:'extra',request:{body:'{"extra":true}'},response:{status:200,contentType:'application/json'},statusDeclared:true,mediaAssessment:'declared',bodyAssessment:'matches-selected-schema',requestAssessment:'outside-schema',comparedSchemaMedia:'application/json'},
+   {id:'invalid',request:{body:'{}'},response:{status:400,contentType:'application/problem+json'},declaredMedia:['application/json'],statusDeclared:true,mediaAssessment:'undeclared-media',bodyAssessment:'matches-selected-schema',requestAssessment:'outside-schema',comparedSchemaMedia:'application/json'}],findings:[{kind:'BROADER_REQUEST_ACCEPTANCE',caseIds:['extra']},{kind:'UNDECLARED_RESPONSE_MEDIA',caseIds:['invalid']}]}
+ ]};return data;
+}
+test('retained HTTP comparison displays bounded route findings, separate status/media/schema and complete provenance',()=>{
+ const data=retainedHttpFixture(),r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="ingress-http-finding"/g)||[]).length,2);
+ assert.equal((html.match(/Broader request acceptance/g)||[]).length,1);
+ assert.match(html,/HTTP path not exercised/);assert.match(html,/Two observed cases; database failures not exercised/);
+ assert.match(html,/Undeclared response media type/);assert.match(html,/Observed: <code>400 application\/problem\+json/);assert.match(html,/Declared for this status: <code>application\/json/);assert.match(html,/Recorded request/);assert.match(html,/400 · declared/);assert.match(html,/Matches selected schema/);
+ assert.match(html,/does not show failure for a contract-valid request/);assert.match(html,/does not rerun that validator/);
+ assert.match(html,/Raw recorded requests and responses/);assert.match(html,/http-contract-comparison.json/);
+ assert.match(html,/No deployed runtime or database proof/);assert.match(html,/Exact selected source bindings/);
+ assert.match(html,/&lt;script&gt;unsafe/);assert.doesNotMatch(html,/<script>unsafe/);
+ assert.match(html,/Full accepted route description remains available/);
+});
+test('retained HTTP comparison refuses stale snapshot, revision and integrity status without rendering findings',()=>{
+ for(const [key,value] of [['snapshot','other'],['revision','other'],['bindingStatus','UNKNOWN']]){
+  const data=retainedHttpFixture();data.contractComparison[key]=value;const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+  assert.match(html,/findings are not applied/);assert.doesNotMatch(html,/class="ingress-http-finding"/);assert.doesNotMatch(html,/Broader request acceptance/);
+ }
+});
+test('retained HTTP comparison never attaches findings to a mismatched or ambiguous ingress binding',()=>{
+ for(const change of [d=>d.contracts[1].digest='new',d=>d.contractComparison.entries[1].entrypoint='other',d=>d.boundaryInventory.publicBoundaries.push({...d.boundaryInventory.publicBoundaries[1],id:'another-handler'})]){
+  const data=retainedHttpFixture();change(data);const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+  assert.match(html,/No applicable recorded HTTP checks/);assert.doesNotMatch(html,/class="ingress-http-finding"/);
+ }
+});

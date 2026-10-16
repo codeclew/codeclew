@@ -1,5 +1,6 @@
 //! Offline native-source pages over explicit immutable documentation snapshots.
 mod authored;
+mod contract_comparison;
 mod data_state;
 mod full;
 mod linked;
@@ -32,6 +33,7 @@ fn full_pages_saved_publication_replay() {
         input: None,
         publication: Some(std::env::var("CODECLEW_FULL_PAGES_PUBLICATION").unwrap()),
         reading_plan: None,
+        contract_comparison: None,
         output: path("CODECLEW_FULL_PAGES_OUTPUT"),
     })
     .unwrap();
@@ -51,6 +53,7 @@ fn source_pages_saved_snapshot_replay() {
         input: Some(path("CODECLEW_PAGES_REPLAY_INPUT")),
         publication: None,
         reading_plan: None,
+        contract_comparison: None,
         output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
     })
     .expect("saved SOURCE pages replay must render");
@@ -150,6 +153,9 @@ pub enum Command {
         /// Optional source-bound editorial question-reading profile.
         #[arg(long, requires = "publication")]
         reading_plan: Option<PathBuf>,
+        /// Retained external HTTP comparison bound to this exact snapshot.
+        #[arg(long, requires = "publication")]
+        contract_comparison: Option<PathBuf>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -164,6 +170,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             input,
             publication,
             reading_plan,
+            contract_comparison,
             output,
         } => {
             let repo = Repository::open(&root)?;
@@ -175,6 +182,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     &snapshot,
                     &publication,
                     reading_plan.as_deref(),
+                    contract_comparison.as_deref(),
                     &output,
                 );
             }

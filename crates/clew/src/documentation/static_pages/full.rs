@@ -18,6 +18,7 @@ pub(super) fn render(
     snapshot: &str,
     publication: &str,
     reading_plan: Option<&Path>,
+    contract_comparison: Option<&Path>,
     output: &Path,
 ) -> Result<Value, ClewError> {
     validate_output(output)?;
@@ -54,6 +55,8 @@ pub(super) fn render(
         files.insert(name.clone(), bytes);
     }
     let questions = super::question_reading::load(reading_plan, publication, &files, checked)?;
+    let comparisons =
+        super::contract_comparison::load(contract_comparison, publication, snapshot, checked)?;
     let process_theme = questions
         .values()
         .any(|guide| guide["presentation"] == "SEQUENTIAL");
@@ -95,6 +98,12 @@ pub(super) fn render(
                     .collect::<Vec<_>>()
             );
             merge_sources(&mut payload, json!(service.sources))?;
+            if let Some(comparison) = comparisons
+                .as_ref()
+                .filter(|c| c["service"] == service.service)
+            {
+                payload["contractComparison"] = comparison.clone();
+            }
             // Keep operationSources/operationContracts/operationStates and all
             // narrative/thread data byte-equivalent as parsed frozen records.
         }
@@ -141,6 +150,12 @@ pub(super) fn render(
         if let Some(bytes) = files.remove(name) {
             files.insert(format!("frozen-{name}"), bytes);
         }
+    }
+    if let Some(comparison) = &comparisons {
+        files.insert(
+            "http-contract-comparison.json".into(),
+            serde_json::to_vec_pretty(comparison).map_err(io_error)?,
+        );
     }
     let navigation = reader::navigation("", "overview.html", Some("history.html"), &[]);
     let catalog = reader::decorate(&reader::catalog(&files), &navigation);
