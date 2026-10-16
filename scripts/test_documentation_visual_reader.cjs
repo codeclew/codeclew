@@ -1395,6 +1395,7 @@ test('sequential profile keeps exceptions beside their steps and original descri
  assert.match(html,/POST \/api\/places → POST \/places/);assert.equal((html.match(/class="sequential-icon"/g)||[]).length,2);assert.ok(html.includes(iconAssets['arrow-right']));assert.ok(html.includes(iconAssets.database));
  assert.match(html,/fromQuestion=save#section-entities/);
  assert.match(html,/Full retained descriptions, notes and original views/);assert.equal(JSON.stringify(d.operations),original);
+ assert.match(html,/Editorial reading guide over retained source evidence/);assert.doesNotMatch(html,/Russian translation/);
  assert.match(r.e('scenario-nav').innerHTML,/Exchange failure · 503/);
  r.run("revealQuestion('question-exchange-error')");assert.equal(r.document.activeElement.id,'question-exchange-error');
 });
@@ -1428,4 +1429,56 @@ test('sequential inline code remains inert while retaining readable technical id
  const r=load(questionFixture());
  const html=r.run("sequentialText('Use `cityId` and `<img src=x onerror=alert(1)>` safely')");
  assert.match(html,/<code>cityId<\/code>/);assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);assert.doesNotMatch(html,/<img /);
+});
+
+function ingressFixture(){
+ const data=fixture();data.sections.push({id:'section-ingress',title:'Entry points'});
+ data.operations.push({...data.operations[0],id:'section-ingress',summary:fragment('Full accepted route description remains available.'),visuals:[]});
+ const source=(id,method,path)=>({id,kind:'HTTP_ENDPOINT',symbol:id,trigger:{methods:[method],paths:[path],pathResolution:'DERIVED'},sourceIds:['same-source']});
+ const declared=(id,method,path,entrypoint)=>({id,sourceIds:['same-source'],normalized:{method,path,entrypoint,sourceMapping:'SOURCE_ROUTE_MATCH_ONLY',declaredSource:'openapi.json',parameters:[],boundaries:[],operation:{responses:{'200':{description:'OK'},'500':{description:'Framework error'}}}}});
+ data.boundaryInventory.publicBoundaries=[source('get-health','GET','/health'),source('post-item','POST','/items/{id}')];
+ data.catalogue=data.boundaryInventory.publicBoundaries;
+ data.contracts=[declared('health-contract','GET','/health','get-health'),declared('post-contract','POST','/items/{itemId}','post-item')];
+ return {data,source,declared};
+}
+test('ingress joins routes once with separate behavior and declaration access, retaining original prose',()=>{
+ const {data}=ingressFixture(),r=load(data);r.run("showEntry('section-ingress')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="ingress-route"/g)||[]).length,2);
+ assert.equal((html.match(/Route agrees/g)||[]).length,2);
+ assert.match(html,/data-entry="post-item">Behavior/);assert.match(html,/data-entry="post-contract" data-tab="contract">Contract/);
+ assert.match(html,/Full accepted entry-point description/);assert.match(html,/Full accepted route description remains available/);
+ assert.match(html,/Status codes, body\/schema compatibility and runtime enforcement have not been verified/);
+ assert.doesNotMatch(html,/ingress-warning|Discovered public boundaries|Declared OpenAPI operations/);
+ r.click({entry:'post-contract',tab:'contract'});assert.match(r.e('scenario-content').innerHTML,/Framework error/);
+ r.click({sources:'same-source'},true);assert.match(r.e('source-code').innerHTML,/CURRENT SOURCE/);
+});
+test('ingress warns about route differences without claiming an implementation is absent',()=>{
+ const {data,source}=ingressFixture();data.boundaryInventory.publicBoundaries.push(source('new','DELETE','/items/{id}'));
+ data.contracts[0].normalized.path='/Health';
+ const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/role="status"/);assert.match(html,/No matching OpenAPI declaration/);
+ assert.match(html,/No source match in selected evidence/);assert.match(html,/does not prove that an implementation is absent/);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.filter(r=>r.status==='SOURCE_ONLY').length"),2);
+});
+test('ingress keeps HTTP methods, case, trailing slash and complex route semantics distinct',()=>{
+ const {data,source,declared}=ingressFixture();
+ data.boundaryInventory.publicBoundaries=[source('get','GET','/items/{id}'),source('post','POST','/items/{id}'),source('slash','GET','/items/'),source('constraint','GET','/items/{id:int}'),source('optional','GET','/items/{id?}'),source('catch-all','GET','/items/{*path}'),source('version','GET','/v1/items')];
+ data.boundaryInventory.publicBoundaries.at(-1).trigger.apiVersions=['1'];
+ data.contracts=[declared('plain','GET','/items/{other}','get'),declared('no-slash','GET','/items',null)];
+ const r=load(data);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.filter(r=>r.status==='ROUTE_AGREES').length"),1);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.filter(r=>r.status==='UNCERTAIN').length"),4);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.find(r=>r.method==='POST').status"),'SOURCE_ONLY');
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.find(r=>r.path==='/items/').status"),'SOURCE_ONLY');
+});
+test('ingress distinguishes ambiguous matches, conflicting source binding and unavailable OpenAPI',()=>{
+ const {data,source}=ingressFixture();data.boundaryInventory.publicBoundaries.push(source('second-health','GET','/health'));
+ data.contracts[1].normalized.entrypoint='other-target';let r=load(data);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows[0].status"),'AMBIGUOUS');
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows[1].status"),'BINDING_CONFLICT');
+ data.contracts=[];data.boundaryInventory.publicBoundaries.push({id:'job',kind:'SCHEDULED_JOB',symbol:'nightly refresh',trigger:{methods:['CRON'],paths:[]},sourceIds:[]});
+ r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Not compared · no OpenAPI operations available/);assert.doesNotMatch(html,/ingress-warning/);
+ assert.match(html,/Other public boundaries · 1/);assert.match(html,/nightly refresh/);
 });

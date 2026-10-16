@@ -9,6 +9,18 @@ use std::{
 };
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum PlanInput {
+    Single(Plan),
+    Collection(PlanCollection),
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanCollection {
+    schema: String,
+    plans: Vec<Plan>,
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Plan {
     schema: String,
@@ -244,7 +256,39 @@ pub(super) fn load(
     let Some(path) = path else {
         return Ok(BTreeMap::new());
     };
-    let plan: Plan = store::read(path, 128 * 1024)?;
+    let input: PlanInput = store::read(path, 128 * 1024)?;
+    let plans = match input {
+        PlanInput::Single(plan) => vec![plan],
+        PlanInput::Collection(collection)
+            if collection.schema == "codeclew-question-reading-plans/1.0"
+                && (1..=16).contains(&collection.plans.len()) =>
+        {
+            collection.plans
+        }
+        PlanInput::Collection(_) => {
+            return Err(invalid(
+                "reading-plan collection schema or bounds are invalid",
+            ));
+        }
+    };
+    let mut guides = BTreeMap::new();
+    let mut bytes = 0;
+    for plan in plans {
+        let (subject, guide) = project_plan(plan, publication, files, checked, &mut bytes)?;
+        if guides.insert(subject, guide).is_some() {
+            return Err(invalid("reading-plan collection repeats a subject"));
+        }
+    }
+    Ok(guides)
+}
+
+fn project_plan(
+    plan: Plan,
+    publication: &str,
+    files: &BTreeMap<String, Vec<u8>>,
+    checked: &Check,
+    bytes: &mut usize,
+) -> Result<(String, Value), ClewError> {
     if plan.schema != "codeclew-question-reading-plan/1.0"
         || plan.publication != publication
         || !plan.subject.starts_with("scenario:")
@@ -281,7 +325,6 @@ pub(super) fn load(
     }
     let mut sections = Vec::new();
     let mut ids = BTreeSet::new();
-    let mut bytes = 0;
     let mut next_step = 1;
     for section in plan.sections {
         if !store::valid_id(&section.id)
@@ -321,15 +364,15 @@ pub(super) fn load(
         let blocks = section
             .blocks
             .into_iter()
-            .map(|b| project_block(b, files, checked, &mut bytes))
+            .map(|b| project_block(b, files, checked, bytes))
             .collect::<Result<Vec<_>, _>>()?;
         sections.push(json!({"id":section.id,"title":section.title,"navTitle":section.nav_title,"number":section.number,"icon":section.icon,"route":section.route,"blocks":blocks}));
     }
-    let conclusion = project_block(plan.conclusion, files, checked, &mut bytes)?;
-    Ok(BTreeMap::from([(
+    let conclusion = project_block(plan.conclusion, files, checked, bytes)?;
+    Ok((
         plan.subject.clone(),
         json!({"schema":plan.schema,"presentation":plan.presentation,"language":plan.language.unwrap_or_else(|| "en".into()),"subject":plan.subject,"title":plan.title,"purpose":plan.purpose,"sections":sections,"conclusion":conclusion,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE","publication":publication}),
-    )]))
+    ))
 }
 
 #[cfg(test)]
@@ -363,6 +406,49 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(plan).unwrap()).unwrap();
         load(Some(&path), "frozen-publication", files, &check())
     }
+    #[test]
+    fn collection_preserves_individual_guides_and_rejects_duplicate_subjects() {
+        let (plan, mut files) = fixture();
+        let single = load_plan(&plan, &files).unwrap();
+        let mut other = plan.clone();
+        other["subject"] = json!("scenario:other");
+        let mut page: Value = serde_json::from_slice(&files["scenarios/example.json"]).unwrap();
+        page["subject"] = json!("scenario:other");
+        files.insert(
+            "scenarios/other.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        );
+        let collection = json!({"schema":"codeclew-question-reading-plans/1.0","plans":[plan.clone(),other.clone()]});
+        let projected = load_plan(&collection, &files).unwrap();
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected["scenario:example"], single["scenario:example"]);
+        assert_eq!(
+            projected["scenario:other"],
+            load_plan(&other, &files).unwrap()["scenario:other"]
+        );
+        for plans in [
+            json!([]),
+            json!([plan.clone(), plan.clone()]),
+            json!(vec![plan.clone(); 17]),
+        ] {
+            assert!(
+                load_plan(
+                    &json!({"schema":"codeclew-question-reading-plans/1.0","plans":plans}),
+                    &files
+                )
+                .is_err()
+            );
+        }
+        other["publication"] = json!("another-publication");
+        assert!(
+            load_plan(
+                &json!({"schema":"codeclew-question-reading-plans/1.0","plans":[plan,other]}),
+                &files
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn projects_exact_retained_claims_without_mutating_publication() {
         let (plan, files) = fixture();
