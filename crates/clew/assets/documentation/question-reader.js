@@ -1,8 +1,10 @@
 // Opt-in editorial reading profile. All original publication records stay in D.
 function questionAnchor(id){return 'question-'+id;}
-function questionSection(id){return D.questionReader?.sections.find(section=>questionAnchor(section.id)===id);}
+function questionText(en,ru){return D.questionReader?.language==='ru'?ru:en;}
+function questionDestinations(){return (D.questionReader?.sections||[]).flatMap(section=>[{...section,title:section.navTitle||section.title},...section.blocks.filter(block=>block.id).map(block=>({...block,title:block.navTitle||block.title,exception:true}))]);}
+function questionSection(id){return questionDestinations().find(section=>questionAnchor(section.id)===id);}
 function questionNav(){
- const guide=D.questionReader;if(!guide)return false;
+ const guide=D.questionReader;if(!guide)return false;if(guide.presentation==='SEQUENTIAL')return sequentialNav();
  document.body.classList.add('question-profile');
  $('project-title').textContent=guide.title;$('project-subtitle').textContent='A bounded source-based account';
  $('revision-links').hidden=true;$('catalogue-button').hidden=true;
@@ -17,15 +19,15 @@ function questionStatus(state){
 function questionSource(source,start=source.startLine,end=source.endLine){
  const lines=(source.text||'').split('\n');
  const text=lines.slice(Math.max(0,start-source.startLine),end-source.startLine+1).join('\n');
- return chromeHtml`<details class="question-code"><summary>${esc(source.service)} · ${esc(source.file)}:${esc(start)}–${esc(end)} · ${esc((source.revision||'').slice(0,12))}</summary><pre tabindex="0" aria-label="Exact retained source fragment">${esc(text)}</pre><details><summary>Exact source binding</summary><pre>${pretty({sourceId:source.id,revision:source.revision,textDigest:source.textDigest,evidenceDigest:source.evidenceDigest,authority:source.authority,range:{startLine:start,endLine:end},occurrence:source.occurrence})}</pre></details></details>`;
+ return chromeHtml`<details class="question-code"><summary>${esc(source.service)} · ${esc(source.file)}:${esc(start)}–${esc(end)} · ${esc((source.revision||'').slice(0,12))}</summary><pre tabindex="0" aria-label="Exact retained source fragment">${esc(text)}</pre><details><summary>${esc(questionText('Exact source binding','Точная привязка к исходнику'))}</summary><pre>${pretty({sourceId:source.id,revision:source.revision,textDigest:source.textDigest,evidenceDigest:source.evidenceDigest,authority:source.authority,range:{startLine:start,endLine:end},occurrence:source.occurrence})}</pre></details></details>`;
 }
 function questionEvidence(block){
- return chromeHtml`<details class="question-evidence"><summary>Evidence and scope</summary><p class="question-editorial">This short reading text is editorial guidance. Original wording, source and review state follow.</p>${block.evidence.map(e=>e.kind==='RETAINED_CLAIM'?chromeHtml`<article><p><b>${esc(e.title)}</b> · ${esc(statusLabel(e.state?.freshness||'UNVERIFIED'))} · ${esc(meaningReviewLabel(e.state?.verification))}</p><blockquote>${esc(e.fragment.text)}</blockquote>${Object.values(e.sources||{}).map(s=>questionSource(s)).join('')}<details><summary>Retained claim and context</summary><pre>${pretty({subject:e.subject,operation:e.operation,fragment:e.fragment,state:e.state,sourceContext:e.sourceContext})}</pre></details></article>`:chromeHtml`<article><p>Selected saved source configuration · not runtime proof</p>${questionSource(e.source,e.startLine,e.endLine)}</article>`).join('')}</details>`;
+ return chromeHtml`<details class="question-evidence"><summary>${esc(questionText('Evidence and scope','Исходники и границы'))}</summary><p class="question-editorial">${esc(questionText('This short reading text is editorial guidance. Original wording, source and review state follow.','Это редакционное изложение. Ниже сохранены исходный текст, его источники и статус проверки.'))}</p>${block.evidence.map(e=>e.kind==='RETAINED_CLAIM'?chromeHtml`<article><p><b>${esc(e.title)}</b> · ${esc(statusLabel(e.state?.freshness||'UNVERIFIED'))} · ${esc(meaningReviewLabel(e.state?.verification))}</p><blockquote>${esc(e.fragment.text)}</blockquote>${Object.values(e.sources||{}).map(s=>questionSource(s)).join('')}<details><summary>${esc(questionText('Retained claim and context','Сохранённое утверждение и его контекст'))}</summary><pre>${pretty({subject:e.subject,operation:e.operation,fragment:e.fragment,state:e.state,sourceContext:e.sourceContext})}</pre></details></article>`:chromeHtml`<article><p>${esc(questionText('Selected saved source configuration · not runtime proof','Конфигурация из выбранного снимка · не подтверждает runtime'))}</p>${questionSource(e.source,e.startLine,e.endLine)}</article>`).join('')}</details>`;
 }
 function questionLink(link,section){
  let href=link.href;
  if(link.subject.startsWith('service:')&&link.operation==='section-entities'){
-  const [path,hash]=href.split('#');href=path+'?fromProcess='+encodeURIComponent(D.subject.slice(9))+'&fromQuestion='+encodeURIComponent(section)+'#'+hash;
+  const [path,hash]=href.split('#');href=path+'?fromProcess='+encodeURIComponent(D.subject.slice(9))+'&fromQuestion='+encodeURIComponent(section)+(D.questionReader?.language==='ru'?'&readerLanguage=ru':'')+'#'+hash;
  }
  return chromeHtml`<a href="${esc(href)}">${esc(link.label)}</a>`;
 }
@@ -33,7 +35,7 @@ function questionBlock(block,section,index,story=false){
  return chromeHtml`<article class="question-block ${story?'question-story-row':''}">${story?chromeHtml`<span class="question-step-number" aria-hidden="true">${index+1}</span>`:''}<div><h3>${esc(block.title)}</h3><p>${esc(block.text)}</p>${block.links?.length?chromeHtml`<p class="question-context-links">${block.links.map(link=>questionLink(link,section)).join(' · ')}</p>`:''}${questionEvidence(block)}</div></article>`;
 }
 function showQuestionReader(){
- const guide=D.questionReader;questionStatus(D.operationStates?.['process-overview']||D.sectionState);
+ const guide=D.questionReader;if(guide.presentation==='SEQUENTIAL'){showSequentialReader();return;}questionStatus(D.operationStates?.['process-overview']||D.sectionState);
  const selector=chromeHtml`<label class="question-mobile-nav">Read a question<select id="question-select" aria-label="Read a question">${guide.sections.map(s=>chromeHtml`<option value="${esc(questionAnchor(s.id))}">${esc(s.title)}</option>`).join('')}</select></label>`;
  const sections=guide.sections.map((s,index)=>chromeHtml`<section id="${esc(questionAnchor(s.id))}" tabindex="-1" class="question-section"><h2>${esc(s.title)}</h2>${s.blocks.map((b,n)=>questionBlock(b,s.id,n,index===0)).join('')}${index===0?chromeHtml`<aside class="question-local-result"><h3>${esc(guide.conclusion.title)}</h3><p>${esc(guide.conclusion.text)}</p>${questionEvidence(guide.conclusion)}</aside>`:''}${s.id==='confidence'?questionOriginals():''}</section>`).join('');
  $('scenario-content').innerHTML=chromeHtml`<div class="question-reader"><header class="question-heading"><h1>${esc(guide.title)}</h1><p>${esc(guide.purpose)}</p></header>${selector}${sections}<p class="question-end">End of this bounded account. Separate continuation views keep their own evidence and unknowns.</p></div>`;
@@ -41,12 +43,14 @@ function showQuestionReader(){
  nav();questionObserve();document.title=guide.title+' · Codeclew';
 }
 function questionOriginals(){
- return chromeHtml`<details class="question-originals"><summary>Full retained descriptions, notes and original views</summary><p>These original accounts retain their independent source scopes and statuses. They have not been rewritten or reaccepted by this reading guide.</p>${D.operations.filter(op=>op.id!=='process-overview').map(op=>chromeHtml`<p><a href="#${esc(op.id)}">${esc(op.title)}</a></p>`).join('')}<details><summary>Original overview and its evidence</summary>${D.operations.filter(op=>op.id==='process-overview').map(op=>chromeHtml`<p>${esc(op.summary.text)}</p><pre>${pretty(op)}</pre>`).join('')}</details>${D.processThread?chromeHtml`<details><summary>Selected controller methods and declared wrapper steps</summary>${processThreadCard(D.processThread)}</details>`:''}${(D.notes||[]).map(note=>chromeHtml`<details><summary>Retained note</summary><pre>${pretty(note)}</pre></details>`).join('')}<details><summary>Full publication/source context and freshness</summary><pre>${pretty({publication:D.frozenPublication,selectedSnapshot:D.selectedSnapshot,selectedEvidence:D.selectedEvidence,revisions:D.revisions,sourceAuthorities:D.sourceAuthorities,operationStates:D.operationStates,sectionState:D.sectionState,process:D.process,boundaries:D.boundaries,questionReaderAuthority:D.questionReader.authority})}</pre></details></details>`;
+ return chromeHtml`<details class="question-originals"><summary>${esc(questionText('Full retained descriptions, notes and original views','Полные исходные описания, Notes и представления'))}</summary><p>${esc(questionText('These original accounts retain their independent source scopes and statuses. They have not been rewritten or reaccepted by this reading guide.','Исходные описания сохраняют собственную область источников и статусы. Это изложение не переписывает их и не означает повторного одобрения.'))}</p>${D.operations.filter(op=>op.id!=='process-overview').map(op=>chromeHtml`<p><a href="#${esc(op.id)}">${esc(op.title)}</a></p>`).join('')}<details><summary>${esc(questionText('Original overview and its evidence','Исходный обзор и его доказательства'))}</summary>${D.operations.filter(op=>op.id==='process-overview').map(op=>chromeHtml`<p>${esc(op.summary.text)}</p><pre>${pretty(op)}</pre>`).join('')}</details>${D.processThread?chromeHtml`<details><summary>${esc(questionText('Selected controller methods and declared wrapper steps','Выбранные методы контроллеров и объявленные шаги'))}</summary>${processThreadCard(D.processThread)}</details>`:''}${(D.notes||[]).map(note=>chromeHtml`<details><summary>${esc(questionText('Retained note','Сохранённая заметка'))}</summary><pre>${pretty(note)}</pre></details>`).join('')}<details><summary>${esc(questionText('Full publication/source context and freshness','Полный контекст публикации, исходников и актуальности'))}</summary><pre>${pretty({publication:D.frozenPublication,selectedSnapshot:D.selectedSnapshot,selectedEvidence:D.selectedEvidence,revisions:D.revisions,sourceAuthorities:D.sourceAuthorities,operationStates:D.operationStates,sectionState:D.sectionState,process:D.process,boundaries:D.boundaries,questionReaderAuthority:D.questionReader.authority})}</pre></details></details>`;
 }
 function revealQuestion(id){
  const section=questionSection(id);if(!section)return false;
  if(!$('scenario-content').querySelector?.('.question-reader')||$('scenario-content').hidden||!$('coverage-view').hidden||!$('catalogue-view').hidden)showEntry('process-overview');
  const target=$(id);if(!target)return false;
+ let ancestor=target.parentElement;while(ancestor){if(ancestor.tagName==='DETAILS')ancestor.open=true;ancestor=ancestor.parentElement;}
+ if(D.questionReader?.presentation==='SEQUENTIAL'&&id==='question-confidence'){const detail=target.querySelector?.('.sequential-provenance');if(detail)detail.open=true;}
  if('scrollRestoration' in history)history.scrollRestoration='manual';
  target.scrollIntoView({block:'start',behavior:'instant'});target.focus({preventScroll:true});questionActive(id);return true;
 }
@@ -60,10 +64,10 @@ function questionUpdateLocation(){
  const header=document.querySelector('.reader-nav')?.getBoundingClientRect?.();
  const menu=document.querySelector('.question-mobile-nav')?.getBoundingClientRect?.();
  const readingLine=Math.max(0,header?.bottom||0,menu?.bottom||0)+24;
- const sections=D.questionReader.sections.map(section=>$(questionAnchor(section.id))).filter(element=>element?.getBoundingClientRect).map(element=>({element,rect:element.getBoundingClientRect()})).filter(row=>row.rect.height>0);
+ const sections=questionDestinations().map(section=>$(questionAnchor(section.id))).filter(element=>element?.getBoundingClientRect).map(element=>({element,rect:element.getBoundingClientRect()})).filter(row=>row.rect.height>0);
  // Recompute every section: an observer callback contains changed entries only.
  // Expanding evidence can move a long section's heading far above the viewport.
- const selected=sections.find(row=>row.rect.top<=readingLine&&row.rect.bottom>readingLine)||sections.find(row=>row.rect.top>readingLine)||sections.at(-1);
+ const selected=[...sections].reverse().find(row=>row.rect.top<=readingLine&&row.rect.bottom>readingLine)||sections.find(row=>row.rect.top>readingLine)||sections.at(-1);
  if(selected)questionActive(selected.element.id);
 }
 function questionScheduleLocation(){
@@ -76,7 +80,7 @@ function questionObserve(){
  questionObserver?.disconnect();
  if(typeof IntersectionObserver!=='undefined'){
   questionObserver=new IntersectionObserver(questionScheduleLocation,{rootMargin:'-100px 0px -55% 0px'});
-  document.querySelectorAll('.question-section').forEach(section=>questionObserver.observe(section));
+  document.querySelectorAll('.question-section,.sequential-callout').forEach(section=>questionObserver.observe(section));
  }
  questionScheduleLocation();
 }
@@ -87,7 +91,7 @@ function questionServiceReturn(){
  if(typeof URLSearchParams==='undefined')return;
  const params=new URLSearchParams(location.search||''),process=params.get('fromProcess'),question=params.get('fromQuestion');
  if(!/^[a-zA-Z0-9_-]{1,160}$/.test(process||'')||!/^[a-zA-Z0-9_-]{1,80}$/.test(question||''))return;
- if(!$('scenario-content').querySelector?.('.question-return'))$('scenario-content').insertAdjacentHTML('afterbegin',chromeHtml`<p class="question-return"><a href="../scenarios/${esc(process)}.html#question-${esc(question)}">Return to the originating question</a></p>`);
+ if(!$('scenario-content').querySelector?.('.question-return'))$('scenario-content').insertAdjacentHTML('afterbegin',chromeHtml`<p class="question-return"><a href="../scenarios/${esc(process)}.html#question-${esc(question)}">${params.get('readerLanguage')==='ru'?'Вернуться к шагу процесса':'Return to the originating question'}</a></p>`);
 }
 function questionHistoryAlign(){
  const id=location.hash.slice(1);
@@ -95,3 +99,44 @@ function questionHistoryAlign(){
  if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>revealQuestion(id));else revealQuestion(id);
 }
 window.addEventListener('pageshow',questionHistoryAlign);window.addEventListener('popstate',questionHistoryAlign);
+
+// Sequential editorial presentation of the same retained evidence contract.
+function sequentialIcon(name){return name&&QUESTION_ICONS[name]?chromeHtml`<span class="sequential-icon" aria-hidden="true">${QUESTION_ICONS[name]}</span>`:'';}
+function sequentialNavigationRows(){return questionDestinations().map(destination=>({id:destination.id,title:destination.title,exception:destination.exception,reference:!destination.number&&!destination.exception}));}
+function sequentialNav(){
+ const guide=D.questionReader,reading=current?.id==='process-overview';
+ document.body.classList.add('question-profile','sequential-profile');document.body.classList.toggle('sequential-reading',reading);
+ document.documentElement.lang=reading?guide.language:(D.language||'en');
+ $('freshness-status').hidden=reading;
+ $('project-title').textContent=questionText('On this page','На этой странице');$('project-subtitle').hidden=true;$('project-kind').hidden=true;$('revision-links').hidden=true;$('catalogue-button').hidden=true;
+ const header=document.querySelector('.reader-nav');
+ if(header&&!header.dataset.sequential){
+  const brand=header.querySelector('.reader-brand')?.outerHTML||'<a class="reader-brand" href="../overview.html">Codeclew</a>';
+  header.innerHTML=brand+chromeHtml`<div class="reader-links"><a href="../overview.html">${esc(questionText('Overview','Обзор'))}</a><a href="../catalog.html">${esc(questionText('Processes and services','Процессы и сервисы'))}</a><a href="../history.html">${esc(questionText('History','История'))}</a></div>`;
+  header.dataset.sequential='true';
+ }
+ const rows=sequentialNavigationRows(),steps=rows.filter(row=>!row.exception&&!row.reference),exceptions=rows.filter(row=>row.exception),reference=rows.filter(row=>row.reference);
+ const item=row=>chromeHtml`<a class="question-link" href="#${esc(questionAnchor(row.id))}">${esc(row.title)}</a>`;
+ const entitySection=guide.sections.find(section=>section.blocks.some(block=>block.links?.some(link=>link.operation==='section-entities')));
+ const entity=entitySection?.blocks.flatMap(block=>block.links||[]).find(link=>link.operation==='section-entities');
+ $('scenario-nav').innerHTML=steps.map(item).join('')+(exceptions.length?chromeHtml`<div class="sequential-nav-group"><p>${esc(questionText('Exceptions','Исключения'))}</p>${exceptions.map(item).join('')}</div>`:'')+(entity?chromeHtml`<div class="sequential-nav-group sequential-entity">${questionLink(entity,entitySection.id)}<small>${esc(questionText('Fields and service context','Поля и контекст сервиса'))}</small></div>`:'')+chromeHtml`<div class="sequential-nav-group">${reference.map(item).join('')}<small>${esc(questionText('Saved source · review required','Сохранённые исходники · требуется проверка'))}<small>${esc(statusLabel(D.operationStates?.['process-overview']?.freshness||'UNVERIFIED'))} · ${esc(D.operationStates?.['process-overview']?.verification||'UNASSESSED')}</small></div>`;
+ if(!reading&&!$('scenario-content').querySelector?.('.question-return'))$('scenario-content').insertAdjacentHTML('afterbegin',chromeHtml`<p class="question-return"><a href="#question-confidence">${esc(questionText('Return to the process and sources','Вернуться к процессу и источникам'))}</a></p>`);
+ return true;
+}
+function sequentialBlock(block,section){
+ const links=block.links?.length?chromeHtml` <span class="sequential-inline-links">${block.links.map(link=>questionLink(link,section)).join(' · ')}</span>`:'';
+ const content=chromeHtml`<p>${esc(block.text)}${links}</p>`;
+ if(block.disclosure)return chromeHtml`<details class="sequential-contract"><summary>${esc(block.disclosure)}${block.preview?chromeHtml`<span>${esc(block.preview)}</span>`:''}</summary>${content}${questionEvidence(block)}</details>`;
+ if(block.tone&&block.tone!=='NORMAL')return chromeHtml`<aside${block.id?chromeHtml` id="${esc(questionAnchor(block.id))}" tabindex="-1"`:''} class="sequential-callout sequential-${esc(block.tone.toLowerCase())}"><h3>${esc(block.title)}</h3>${content}</aside>`;
+ return content;
+}
+function showSequentialReader(){
+ const guide=D.questionReader,steps=guide.sections.filter(section=>section.number),reference=guide.sections.find(section=>!section.number),state=D.operationStates?.['process-overview']||D.sectionState;
+ const rows=sequentialNavigationRows();
+ const selector=chromeHtml`<label class="question-mobile-nav">${esc(questionText('On this page','На этой странице'))}<select id="question-select" aria-label="${esc(questionText('On this page','На этой странице'))}">${rows.map(row=>chromeHtml`<option value="${esc(questionAnchor(row.id))}">${esc(row.title)}</option>`).join('')}</select></label>`;
+ const content=steps.map(section=>chromeHtml`<section id="${esc(questionAnchor(section.id))}" tabindex="-1" class="question-section sequential-step"><span class="sequential-number" aria-hidden="true">${esc(section.number)}.</span><div><h2>${esc(section.title)}${sequentialIcon(section.icon)}</h2>${section.blocks.map((block,index)=>sequentialBlock(block,section.id)+(index===0&&section.route?chromeHtml`<p class="sequential-route"><code>${esc(section.route)}</code></p>`:'')).join('')}</div></section>`).join('');
+ const sources=chromeHtml`<section id="${esc(questionAnchor(reference.id))}" tabindex="-1" class="question-section sequential-source-section"><details class="sequential-provenance"><summary>${esc(reference.title)}</summary><p>${esc(questionText('Editorial reading guide and Russian translation over retained English evidence. Original wording remains unchanged.','Редакционное изложение и русский перевод по сохранённым английским описаниям. Исходный текст не изменён.'))}</p><p>${esc(statusLabel(state?.freshness||'UNVERIFIED'))} · ${esc(meaningReviewLabel(state?.verification))}. ${esc(questionText('This is source interpretation, not an observed distributed run.','Это интерпретация исходников, а не наблюдение распределённого выполнения.'))}</p>${reference.blocks.map(block=>sequentialBlock(block,reference.id)).join('')}${steps.map(section=>chromeHtml`<details class="sequential-step-evidence"><summary>${esc(section.number)}. ${esc(section.title)}</summary>${section.blocks.map(block=>questionEvidence(block)).join('')}</details>`).join('')}${questionOriginals()}<details><summary>${esc(questionText('Icon licenses','Лицензии значков'))}</summary><pre>${esc(QUESTION_ICONS.license)}</pre></details></details></section>`;
+ $('scenario-content').innerHTML=chromeHtml`<div class="question-reader sequential-reader"><p class="sequential-breadcrumb"><a href="../catalog.html">${esc(questionText('Processes','Процессы'))}</a><span> / Weather / </span>${esc(guide.title)}</p><header class="question-heading"><h1>${esc(guide.title)}</h1><p>${esc(guide.purpose)}</p></header>${selector}${content}${sources}</div>`;
+ $('scenario-content').querySelector?.('#question-select')?.addEventListener('change',event=>{history.pushState(null,'','#'+event.target.value);revealQuestion(event.target.value);});
+ nav();questionObserve();document.title=guide.title+' · Codeclew';
+}

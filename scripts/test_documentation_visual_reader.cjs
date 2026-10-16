@@ -6,7 +6,8 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
+const iconAssets=Object.fromEntries(['arrow-right','database','license'].map(name=>[name,fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/tabler/',name==='license'?'LICENSE':name+'.svg'),'utf8')]));
+const script='var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 const source=text=>({service:'sample',file:'Worker.kt',startLine:1,endLine:1,text,revision:'abc',authority:'RETAINED_SOURCE_NOT_REVERIFIED'});
 function fixture(){
@@ -92,9 +93,9 @@ function load(data=fixture(),mobile=false){
  const elements=new Map(),listeners={},navigationHistory=[],browserLocation={hash:''};
  let testDocument;
  const media={matches:mobile,addEventListener(){}};
- function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
+ function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){},toggle(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
- testDocument={getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){}}},activeElement:null};
+ testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
  const context=vm.createContext({document:testDocument,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
  return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
@@ -1380,4 +1381,29 @@ test('active question uses every section after long evidence expansion and scrol
  r.e('question-story').getBoundingClientRect=()=>({top:88,bottom:500,height:412});
  r.e('question-confidence').getBoundingClientRect=()=>({top:540,bottom:900,height:360});
  r.run("questionUpdateLocation()");assert.equal(r.e('question-select').value,'question-story');
+});
+
+test('sequential profile keeps exceptions beside their steps and original descriptions on demand',()=>{
+ const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
+ d.questionReader={...d.questionReader,presentation:'SEQUENTIAL',language:'en',sections:[{id:'request',title:'Forward request',navTitle:'Request',number:1,icon:'arrow-right',route:'POST /api/places → POST /places',blocks:[{...block,links:[]},{...block,id:'exchange-error',navTitle:'Exchange failure · 503',tone:'ERROR',title:'Exchange failure',text:'503 leaves commit unknown'}]},{id:'save',title:'Save place',navTitle:'Save',number:2,icon:'database',blocks:[block]},{id:'confidence',title:'Original descriptions and source',blocks:[block]}]};
+ const original=JSON.stringify(d.operations),r=load(d);r.run("showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/sequential-reader/);assert.equal((html.match(/class="question-section sequential-step"/g)||[]).length,2);
+ assert.ok(html.indexOf('id="question-exchange-error"')>html.indexOf('id="question-request"'));
+ assert.ok(html.indexOf('id="question-exchange-error"')<html.indexOf('id="question-save"'));
+ assert.equal((html.match(/id="question-exchange-error"/g)||[]).length,1);
+ assert.match(html,/POST \/api\/places → POST \/places/);assert.match(html,/icon-tabler-arrow-right/);assert.match(html,/icon-tabler-database/);
+ assert.match(html,/fromQuestion=save#section-entities/);
+ assert.match(html,/Full retained descriptions, notes and original views/);assert.equal(JSON.stringify(d.operations),original);
+ assert.match(r.e('scenario-nav').innerHTML,/Exchange failure · 503/);
+ r.run("revealQuestion('question-exchange-error')");assert.equal(r.document.activeElement.id,'question-exchange-error');
+});
+test('active exception follows the nested viewport region rather than its parent step',()=>{
+ const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
+ d.questionReader.sections[0].blocks.push({...block,id:'exchange-error',tone:'ERROR'});
+ const r=load(d);r.run("showEntry('process-overview')");
+ r.e('question-story').getBoundingClientRect=()=>({top:-600,bottom:520,height:1120});
+ r.e('question-exchange-error').getBoundingClientRect=()=>({top:-20,bottom:400,height:420});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:600,bottom:900,height:300});
+ r.run('questionUpdateLocation()');assert.equal(r.e('question-select').value,'question-exchange-error');
 });

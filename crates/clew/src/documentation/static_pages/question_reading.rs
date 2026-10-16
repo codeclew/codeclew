@@ -16,6 +16,10 @@ struct Plan {
     subject: String,
     title: String,
     purpose: String,
+    #[serde(default)]
+    presentation: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
     sections: Vec<Section>,
     conclusion: Block,
 }
@@ -24,12 +28,30 @@ struct Plan {
 struct Section {
     id: String,
     title: String,
+    #[serde(default)]
+    nav_title: Option<String>,
+    #[serde(default)]
+    number: Option<u8>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    route: Option<String>,
     blocks: Vec<Block>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Block {
     title: String,
+    #[serde(default)]
+    nav_title: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    tone: Option<String>,
+    #[serde(default)]
+    disclosure: Option<String>,
+    #[serde(default)]
+    preview: Option<String>,
     text: String,
     evidence: Vec<Reference>,
     #[serde(default)]
@@ -111,6 +133,17 @@ fn project_block(
         || block.evidence.is_empty()
         || block.evidence.len() > 8
         || block.links.len() > 8
+        || block.nav_title.as_deref().is_some_and(|s| !bounded(s, 256))
+        || block.id.as_deref().is_some_and(|s| !store::valid_id(s))
+        || block
+            .tone
+            .as_deref()
+            .is_some_and(|s| !matches!(s, "NORMAL" | "ERROR" | "WARNING" | "INFO"))
+        || block
+            .disclosure
+            .as_deref()
+            .is_some_and(|s| !bounded(s, 256))
+        || block.preview.as_deref().is_some_and(|s| !bounded(s, 512))
     {
         return Err(invalid("reading-plan block bounds or evidence are invalid"));
     }
@@ -199,7 +232,7 @@ fn project_block(
         links.push(json!({"href":format!("../{directory}/{id}.html#{}",link.operation),"label":link.label,"subject":link.subject,"operation":link.operation}));
     }
     Ok(
-        json!({"title":block.title,"text":block.text,"evidence":evidence,"links":links,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE"}),
+        json!({"id":block.id,"navTitle":block.nav_title,"tone":block.tone,"disclosure":block.disclosure,"preview":block.preview,"title":block.title,"text":block.text,"evidence":evidence,"links":links,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE"}),
     )
 }
 pub(super) fn load(
@@ -218,10 +251,29 @@ pub(super) fn load(
         || !bounded(&plan.title, 256)
         || !bounded(&plan.purpose, 512)
         || !(2..=12).contains(&plan.sections.len())
+        || plan
+            .presentation
+            .as_deref()
+            .is_some_and(|s| !matches!(s, "QUESTIONS" | "SEQUENTIAL"))
+        || plan
+            .language
+            .as_deref()
+            .is_some_and(|s| !matches!(s, "en" | "ru"))
     {
         return Err(invalid(
             "reading-plan must bind a publication and bounded process reading path",
         ));
+    }
+    if plan.presentation.as_deref() == Some("SEQUENTIAL") {
+        let (last, steps) = plan.sections.split_last().unwrap();
+        if last.id != "confidence"
+            || last.number.is_some()
+            || steps.iter().any(|step| step.number.is_none())
+        {
+            return Err(invalid(
+                "sequential reading-plan requires numbered steps followed by confidence",
+            ));
+        }
     }
     let owner = page(files, &plan.subject)?;
     if owner["process"].is_null() {
@@ -230,28 +282,53 @@ pub(super) fn load(
     let mut sections = Vec::new();
     let mut ids = BTreeSet::new();
     let mut bytes = 0;
+    let mut next_step = 1;
     for section in plan.sections {
         if !store::valid_id(&section.id)
             || !ids.insert(section.id.clone())
             || !bounded(&section.title, 256)
             || section.blocks.is_empty()
             || section.blocks.len() > 16
+            || section
+                .nav_title
+                .as_deref()
+                .is_some_and(|s| !bounded(s, 256))
+            || section.route.as_deref().is_some_and(|s| !bounded(s, 256))
+            || section
+                .icon
+                .as_deref()
+                .is_some_and(|s| !matches!(s, "arrow-right" | "database"))
         {
             return Err(invalid(
                 "reading-plan section bounds or identity are invalid",
             ));
+        }
+        if let Some(number) = section.number {
+            if number != next_step {
+                return Err(invalid(
+                    "reading-plan step numbers must follow reading order",
+                ));
+            }
+            next_step += 1;
+        }
+        for block in &section.blocks {
+            if let Some(id) = &block.id {
+                if !ids.insert(id.clone()) {
+                    return Err(invalid("reading-plan anchor identity must be unique"));
+                }
+            }
         }
         let blocks = section
             .blocks
             .into_iter()
             .map(|b| project_block(b, files, checked, &mut bytes))
             .collect::<Result<Vec<_>, _>>()?;
-        sections.push(json!({"id":section.id,"title":section.title,"blocks":blocks}));
+        sections.push(json!({"id":section.id,"title":section.title,"navTitle":section.nav_title,"number":section.number,"icon":section.icon,"route":section.route,"blocks":blocks}));
     }
     let conclusion = project_block(plan.conclusion, files, checked, &mut bytes)?;
     Ok(BTreeMap::from([(
         plan.subject.clone(),
-        json!({"schema":plan.schema,"subject":plan.subject,"title":plan.title,"purpose":plan.purpose,"sections":sections,"conclusion":conclusion,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE","publication":publication}),
+        json!({"schema":plan.schema,"presentation":plan.presentation,"language":plan.language.unwrap_or_else(|| "en".into()),"subject":plan.subject,"title":plan.title,"purpose":plan.purpose,"sections":sections,"conclusion":conclusion,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE","publication":publication}),
     )]))
 }
 
@@ -358,5 +435,34 @@ mod tests {
             serde_json::to_vec(&page).unwrap(),
         );
         assert!(load_plan(&plan, &changed_source).is_err());
+    }
+    #[test]
+    fn sequential_plan_retains_editorial_locale_and_rejects_broken_structure() {
+        let (mut plan, files) = fixture();
+        plan["presentation"] = json!("SEQUENTIAL");
+        plan["language"] = json!("ru");
+        plan["sections"][0]["number"] = json!(1);
+        plan["sections"][0]["icon"] = json!("database");
+        plan["sections"][0]["blocks"][0]["id"] = json!("exchange-error");
+        plan["sections"][0]["blocks"][0]["tone"] = json!("ERROR");
+        let projected = load_plan(&plan, &files).unwrap();
+        assert_eq!(projected["scenario:example"]["language"], "ru");
+        assert_eq!(
+            projected["scenario:example"]["sections"][0]["blocks"][0]["id"],
+            "exchange-error"
+        );
+        for (pointer, replacement) in [
+            ("/presentation", json!("CUSTOM_HTML")),
+            ("/language", json!("unsupported")),
+            ("/sections/0/number", json!(2)),
+            ("/sections/0/icon", json!("<svg/>")),
+            ("/sections/0/blocks/0/id", json!("confidence")),
+            ("/sections/0/blocks/0/tone", json!("<script>")),
+            ("/sections/1/id", json!("no-source-destination")),
+        ] {
+            let mut changed = plan.clone();
+            *changed.pointer_mut(pointer).unwrap() = replacement;
+            assert!(load_plan(&changed, &files).is_err(), "{pointer}");
+        }
     }
 }

@@ -20,6 +20,7 @@ CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 RUSSIAN_LOCALIZATION_FILES = {
     "crates/clew/assets/documentation/analysis.js",
     "crates/clew/assets/documentation/app.js",
+    "crates/clew/assets/documentation/question-reader.js",
     "crates/clew/assets/documentation/limits.js",
     "crates/clew/assets/documentation/reader.js",
     "crates/clew/src/documentation/history.rs",

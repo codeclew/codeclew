@@ -22,6 +22,9 @@ pub(super) const SUMMARY_TEXT_MAX_BYTES: usize = 2048;
 const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
 pub(super) const STYLE: &str = include_str!("../../assets/documentation/style.css");
 const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
+const QUESTION_ARROW: &str = include_str!("../../assets/documentation/tabler/arrow-right.svg");
+const QUESTION_DATABASE: &str = include_str!("../../assets/documentation/tabler/database.svg");
+const QUESTION_ICON_LICENSE: &str = include_str!("../../assets/documentation/tabler/LICENSE");
 const QUESTION_SCRIPT: &str = include_str!("../../assets/documentation/question-reader.js");
 
 pub(super) fn escape(value: &str) -> String {
@@ -39,9 +42,13 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
+    let question_icons = serde_json::to_string(&json!({"arrow-right":QUESTION_ARROW,"database":QUESTION_DATABASE,"license":QUESTION_ICON_LICENSE})).map_err(io_error)?.replace('<', "\\u003c");
     Ok(template
         .replace("/*__STYLE__*/", STYLE)
-        .replace("/*__SCRIPT__*/", &format!("{SCRIPT}\n{QUESTION_SCRIPT}"))
+        .replace(
+            "/*__SCRIPT__*/",
+            &format!("var QUESTION_ICONS={question_icons};\n{SCRIPT}\n{QUESTION_SCRIPT}"),
+        )
         .replace(
             "/*__ANALYSIS_SCRIPT__*/",
             include_str!("../../assets/documentation/analysis.js"),
@@ -4385,6 +4392,9 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         STYLE,
         SCRIPT,
         QUESTION_SCRIPT,
+        QUESTION_ARROW,
+        QUESTION_DATABASE,
+        QUESTION_ICON_LICENSE,
         include_str!("static_pages/question_reading.rs"),
         include_str!("history.rs"),
         include_str!("process_candidates.rs"),
