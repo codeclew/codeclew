@@ -6,7 +6,8 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8');
+const iconAssets=Object.fromEntries(['arrow-right','database','license'].map(name=>[name,fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/tabler/',name==='license'?'LICENSE':name+'.svg'),'utf8')]));
+const script='var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 const source=text=>({service:'sample',file:'Worker.kt',startLine:1,endLine:1,text,revision:'abc',authority:'RETAINED_SOURCE_NOT_REVERIFIED'});
 function fixture(){
@@ -92,9 +93,9 @@ function load(data=fixture(),mobile=false){
  const elements=new Map(),listeners={},navigationHistory=[],browserLocation={hash:''};
  let testDocument;
  const media={matches:mobile,addEventListener(){}};
- function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
+ function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){},toggle(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
- testDocument={getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){}}},activeElement:null};
+ testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
  const context=vm.createContext({document:testDocument,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
  return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
@@ -1338,4 +1339,180 @@ test('process call bindings preserve compiler parameters, unknown transfer and i
  assert.match(html,/Omitted default parameter indices/);
  data.language='ru';const ru=load(data);ru.run("showEntry('process-overview')");
  assert.match(ru.e('scenario-content').innerHTML,/Выбранные компилятором вызовы и параметры/);
+});
+
+function questionFixture(){
+ const d=behaviorFixture();
+ d.operations.push({...d.operations[0],id:'process-overview',title:'Saved wrapper'});
+ d.catalogue.unshift({id:'process-overview',kind:'PROCESS',trigger:{methods:[]},symbol:'saved wrapper'});
+ const block={title:'Supply a city',text:'Editorial <script>unsafe()</script>',evidence:[{kind:'RETAINED_CLAIM',title:'Original account',fragment:{text:'Original <img onerror=unsafe()>',id:'saved-claim'},sources:{old:source('ACCEPTED SOURCE')},state:{freshness:'STALE',verification:'UNASSESSED'}}],links:[{subject:'service:places',operation:'section-entities',href:'../services/places.html#section-entities',label:'Object context'}]};
+ d.questionReader={title:'Save a city',purpose:'Follow the bounded save',authority:'EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE',sections:[{id:'story',title:'What happens?',blocks:[block]},{id:'confidence',title:'Source and confidence',blocks:[block]}],conclusion:{...block,title:'Local result'}};
+ return d;
+}
+test('optional question profile has one main account, exact evidence and safe object return route',()=>{
+ const d=questionFixture(),before=JSON.stringify(d.operations),r=load(d);
+ r.run("showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/question-reader/);assert.match(html,/What happens\?/);assert.match(html,/Local result/);
+ assert.match(html,/Editorial &lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
+ assert.match(html,/Original &lt;img onerror=unsafe\(\)&gt;/);
+ assert.match(html,/ACCEPTED SOURCE/);assert.match(html,/Full retained descriptions, notes and original views/);
+ assert.match(html,/places.html\?fromProcess=renderer-fixture&amp;fromQuestion=story#section-entities/);
+ assert.equal(JSON.stringify(d.operations),before);
+ assert.equal(r.e('catalogue-button').hidden,true);
+ assert.match(r.e('scenario-nav').innerHTML,/href="#question-story"/);
+ r.run("revealQuestion('question-confidence')");
+ assert.equal(r.document.activeElement.id,'question-confidence');assert.equal(r.e('question-confidence').scrolled,true);
+ r.run("showEntry('reserve-fixture')");
+ assert.match(r.e('scenario-content').innerHTML,/Back to the questions/);
+});
+test('question navigation ignores unknown destinations and preserves exact source line disclosure',()=>{
+ const r=load(questionFixture());
+ assert.equal(r.run("revealQuestion('question-missing')"),false);
+ const html=r.run("questionSource({service:'dashboard',file:'compose.yaml',startLine:3,endLine:5,text:'before\\nPLACES_URL: http://places:8080\\nafter',revision:'revision-1234567',id:'config',textDigest:'digest'},4,4)");
+ assert.match(html,/compose.yaml:4–4/);assert.match(html,/PLACES_URL: http:\/\/places:8080/);assert.doesNotMatch(html,/>before|after<\/pre>/);
+});
+
+test('active question uses every section after long evidence expansion and scroll',()=>{
+ const r=load(questionFixture());r.run("showEntry('process-overview')");
+ r.e('question-story').getBoundingClientRect=()=>({top:-902,bottom:-642,height:260});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:-602,bottom:520,height:1122});
+ r.run("questionUpdateLocation()");assert.equal(r.e('question-select').value,'question-confidence');
+ r.e('question-story').getBoundingClientRect=()=>({top:88,bottom:500,height:412});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:540,bottom:900,height:360});
+ r.run("questionUpdateLocation()");assert.equal(r.e('question-select').value,'question-story');
+});
+
+test('sequential profile keeps exceptions beside their steps and original descriptions on demand',()=>{
+ const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
+ d.questionReader={...d.questionReader,presentation:'SEQUENTIAL',language:'en',sections:[{id:'request',title:'Forward request',navTitle:'Request',number:1,icon:'arrow-right',route:'POST /api/places → POST /places',blocks:[{...block,links:[]},{...block,id:'exchange-error',navTitle:'Exchange failure · 503',tone:'ERROR',title:'Exchange failure',text:'503 leaves commit unknown'}]},{id:'save',title:'Save place',navTitle:'Save',number:2,icon:'database',blocks:[block]},{id:'confidence',title:'Original descriptions and source',blocks:[block]}]};
+ const original=JSON.stringify(d.operations),r=load(d);r.run("showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/sequential-reader/);assert.equal((html.match(/class="question-section sequential-step"/g)||[]).length,2);
+ assert.ok(html.indexOf('id="question-exchange-error"')>html.indexOf('id="question-request"'));
+ assert.ok(html.indexOf('id="question-exchange-error"')<html.indexOf('id="question-save"'));
+ assert.equal((html.match(/id="question-exchange-error"/g)||[]).length,1);
+ assert.match(html,/POST \/api\/places → POST \/places/);assert.equal((html.match(/class="sequential-icon"/g)||[]).length,2);assert.ok(html.includes(iconAssets['arrow-right']));assert.ok(html.includes(iconAssets.database));
+ assert.match(html,/fromQuestion=save#section-entities/);
+ assert.match(html,/Full retained descriptions, notes and original views/);assert.equal(JSON.stringify(d.operations),original);
+ assert.match(html,/Editorial reading guide over retained source evidence/);assert.doesNotMatch(html,/Russian translation/);
+ assert.match(r.e('scenario-nav').innerHTML,/Exchange failure · 503/);
+ r.run("revealQuestion('question-exchange-error')");assert.equal(r.document.activeElement.id,'question-exchange-error');
+});
+test('active exception follows the nested viewport region rather than its parent step',()=>{
+ const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
+ d.questionReader.sections[0].blocks.push({...block,id:'exchange-error',tone:'ERROR'});
+ const r=load(d);r.run("showEntry('process-overview')");
+ r.e('question-story').getBoundingClientRect=()=>({top:-600,bottom:520,height:1120});
+ r.e('question-exchange-error').getBoundingClientRect=()=>({top:-20,bottom:400,height:420});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:600,bottom:900,height:300});
+ r.run('questionUpdateLocation()');assert.equal(r.e('question-select').value,'question-exchange-error');
+});
+
+test('explicit question selection survives scroll clamping until intentional user scrolling',()=>{
+ const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
+ d.questionReader.sections[0].blocks.push({...block,id:'unsupported-city',tone:'WARNING'});
+ const r=load(d);r.run("showEntry('process-overview')");
+ r.e('question-story').getBoundingClientRect=()=>({top:-100,bottom:500,height:600});
+ r.e('question-unsupported-city').getBoundingClientRect=()=>({top:315,bottom:400,height:85});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:600,bottom:900,height:300});
+ r.run("revealQuestion('question-unsupported-city');questionUpdateLocation()");
+ assert.equal(r.e('question-select').value,'question-unsupported-city');
+ assert.equal(r.document.activeElement.id,'question-unsupported-city');
+ r.run('questionReleaseLocation();questionUpdateLocation()');
+ assert.equal(r.e('question-select').value,'question-story');
+ r.e('question-story').getBoundingClientRect=()=>({top:-700,bottom:500,height:1200});
+ r.e('question-unsupported-city').getBoundingClientRect=()=>({top:-200,bottom:400,height:600});
+ r.run('questionUpdateLocation()');assert.equal(r.e('question-select').value,'question-unsupported-city');
+});
+test('sequential inline code remains inert while retaining readable technical identifiers',()=>{
+ const r=load(questionFixture());
+ const html=r.run("sequentialText('Use `cityId` and `<img src=x onerror=alert(1)>` safely')");
+ assert.match(html,/<code>cityId<\/code>/);assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);assert.doesNotMatch(html,/<img /);
+});
+
+function ingressFixture(){
+ const data=fixture();data.sections.push({id:'section-ingress',title:'Entry points'});
+ data.operations.push({...data.operations[0],id:'section-ingress',summary:fragment('Full accepted route description remains available.'),visuals:[]});
+ const source=(id,method,path)=>({id,kind:'HTTP_ENDPOINT',symbol:id,trigger:{methods:[method],paths:[path],pathResolution:'DERIVED'},sourceIds:['same-source']});
+ const declared=(id,method,path,entrypoint)=>({id,sourceIds:['same-source'],normalized:{method,path,entrypoint,sourceMapping:'SOURCE_ROUTE_MATCH_ONLY',declaredSource:'openapi.json',parameters:[],boundaries:[],operation:{responses:{'200':{description:'OK'},'500':{description:'Framework error'}}}}});
+ data.boundaryInventory.publicBoundaries=[source('get-health','GET','/health'),source('post-item','POST','/items/{id}')];
+ data.catalogue=data.boundaryInventory.publicBoundaries;
+ data.contracts=[declared('health-contract','GET','/health','get-health'),declared('post-contract','POST','/items/{itemId}','post-item')];
+ return {data,source,declared};
+}
+test('ingress joins routes once with separate behavior and declaration access, retaining original prose',()=>{
+ const {data}=ingressFixture(),r=load(data);r.run("showEntry('section-ingress')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="ingress-route"/g)||[]).length,2);
+ assert.equal((html.match(/Route agrees/g)||[]).length,2);
+ assert.match(html,/data-entry="post-item">Behavior/);assert.match(html,/data-entry="post-contract" data-tab="contract">Contract/);
+ assert.match(html,/Full accepted entry-point description/);assert.match(html,/Full accepted route description remains available/);
+ assert.match(html,/Status codes, body\/schema compatibility and runtime enforcement have not been verified/);
+ assert.doesNotMatch(html,/ingress-warning|Discovered public boundaries|Declared OpenAPI operations/);
+ r.click({entry:'post-contract',tab:'contract'});assert.match(r.e('scenario-content').innerHTML,/Framework error/);
+ r.click({sources:'same-source'},true);assert.match(r.e('source-code').innerHTML,/CURRENT SOURCE/);
+});
+test('ingress warns about route differences without claiming an implementation is absent',()=>{
+ const {data,source}=ingressFixture();data.boundaryInventory.publicBoundaries.push(source('new','DELETE','/items/{id}'));
+ data.contracts[0].normalized.path='/Health';
+ const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/role="status"/);assert.match(html,/No matching OpenAPI declaration/);
+ assert.match(html,/No source match in selected evidence/);assert.match(html,/does not prove that an implementation is absent/);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.filter(r=>r.status==='SOURCE_ONLY').length"),2);
+});
+test('ingress keeps HTTP methods, case, trailing slash and complex route semantics distinct',()=>{
+ const {data,source,declared}=ingressFixture();
+ data.boundaryInventory.publicBoundaries=[source('get','GET','/items/{id}'),source('post','POST','/items/{id}'),source('slash','GET','/items/'),source('constraint','GET','/items/{id:int}'),source('optional','GET','/items/{id?}'),source('catch-all','GET','/items/{*path}'),source('version','GET','/v1/items')];
+ data.boundaryInventory.publicBoundaries.at(-1).trigger.apiVersions=['1'];
+ data.contracts=[declared('plain','GET','/items/{other}','get'),declared('no-slash','GET','/items',null)];
+ const r=load(data);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.filter(r=>r.status==='ROUTE_AGREES').length"),1);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.filter(r=>r.status==='UNCERTAIN').length"),4);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.find(r=>r.method==='POST').status"),'SOURCE_ONLY');
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows.find(r=>r.path==='/items/').status"),'SOURCE_ONLY');
+});
+test('ingress distinguishes ambiguous matches, conflicting source binding and unavailable OpenAPI',()=>{
+ const {data,source}=ingressFixture();data.boundaryInventory.publicBoundaries.push(source('second-health','GET','/health'));
+ data.contracts[1].normalized.entrypoint='other-target';let r=load(data);
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows[0].status"),'AMBIGUOUS');
+ assert.equal(r.run("ingressRows(D.boundaryInventory,D.contracts).rows[1].status"),'BINDING_CONFLICT');
+ data.contracts=[];data.boundaryInventory.publicBoundaries.push({id:'job',kind:'SCHEDULED_JOB',symbol:'nightly refresh',trigger:{methods:['CRON'],paths:[]},sourceIds:[]});
+ r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Not compared · no OpenAPI operations available/);assert.doesNotMatch(html,/ingress-warning/);
+ assert.match(html,/Other public boundaries · 1/);assert.match(html,/nightly refresh/);
+});
+function retainedHttpFixture(){
+ const {data}=ingressFixture();data.selectedSnapshot='snapshot';data.selectedEvidence={revisions:{sample:'abc'}};
+ data.contracts[0].digest='health-digest';data.contracts[1].digest='post-digest';
+ data.contractComparison={schema:'codeclew-http-comparison-view/1.0',service:'sample',revision:'abc',snapshot:'snapshot',bindingStatus:'MATCHES_PINNED_SELECTED_SNAPSHOT',authority:'EXTERNAL_RECORDED_LOCAL_PROBE',scope:'Local harness; storage substituted.',validator:'external Draft 2020-12 validator',limitations:['No deployed runtime or database proof.'],sources:{'same-source':source('BOUND SOURCE')},artifacts:{probe:{digest:'sha256:probe',text:'</pre><script>unsafe()</script>'}},packetDigest:'sha256:packet',entries:[
+  {entrypoint:'get-health',contractId:'health-contract',contractDigest:'health-digest',method:'GET',path:'/health',coverage:'HTTP not exercised; source inspected only.',cases:[],findings:[]},
+  {entrypoint:'post-item',contractId:'post-contract',contractDigest:'post-digest',method:'POST',path:'/items/{itemId}',coverage:'Two observed cases; database failures not exercised.',cases:[
+   {id:'extra',request:{body:'{"extra":true}'},response:{status:200,contentType:'application/json'},statusDeclared:true,mediaAssessment:'declared',bodyAssessment:'matches-selected-schema',requestAssessment:'outside-schema',comparedSchemaMedia:'application/json'},
+   {id:'invalid',request:{body:'{}'},response:{status:400,contentType:'application/problem+json'},declaredMedia:['application/json'],statusDeclared:true,mediaAssessment:'undeclared-media',bodyAssessment:'matches-selected-schema',requestAssessment:'outside-schema',comparedSchemaMedia:'application/json'}],findings:[{kind:'BROADER_REQUEST_ACCEPTANCE',caseIds:['extra']},{kind:'UNDECLARED_RESPONSE_MEDIA',caseIds:['invalid']}]}
+ ]};return data;
+}
+test('retained HTTP comparison displays bounded route findings, separate status/media/schema and complete provenance',()=>{
+ const data=retainedHttpFixture(),r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.equal((html.match(/class="ingress-http-finding"/g)||[]).length,2);
+ assert.equal((html.match(/Broader request acceptance/g)||[]).length,1);
+ assert.match(html,/HTTP path not exercised/);assert.match(html,/Two observed cases; database failures not exercised/);
+ assert.match(html,/Undeclared response media type/);assert.match(html,/Observed: <code>400 application\/problem\+json/);assert.match(html,/Declared for this status: <code>application\/json/);assert.match(html,/Recorded request/);assert.match(html,/400 · declared/);assert.match(html,/Matches selected schema/);
+ assert.match(html,/does not show failure for a contract-valid request/);assert.match(html,/does not rerun that validator/);
+ assert.match(html,/Raw recorded requests and responses/);assert.match(html,/http-contract-comparison.json/);
+ assert.match(html,/No deployed runtime or database proof/);assert.match(html,/Exact selected source bindings/);
+ assert.match(html,/&lt;script&gt;unsafe/);assert.doesNotMatch(html,/<script>unsafe/);
+ assert.match(html,/Full accepted route description remains available/);
+});
+test('retained HTTP comparison refuses stale snapshot, revision and integrity status without rendering findings',()=>{
+ for(const [key,value] of [['snapshot','other'],['revision','other'],['bindingStatus','UNKNOWN']]){
+  const data=retainedHttpFixture();data.contractComparison[key]=value;const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+  assert.match(html,/findings are not applied/);assert.doesNotMatch(html,/class="ingress-http-finding"/);assert.doesNotMatch(html,/Broader request acceptance/);
+ }
+});
+test('retained HTTP comparison never attaches findings to a mismatched or ambiguous ingress binding',()=>{
+ for(const change of [d=>d.contracts[1].digest='new',d=>d.contractComparison.entries[1].entrypoint='other',d=>d.boundaryInventory.publicBoundaries.push({...d.boundaryInventory.publicBoundaries[1],id:'another-handler'})]){
+  const data=retainedHttpFixture();change(data);const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+  assert.match(html,/No applicable recorded HTTP checks/);assert.doesNotMatch(html,/class="ingress-http-finding"/);
+ }
 });

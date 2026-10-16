@@ -4,6 +4,7 @@ use crate::documentation::{
     check::{SOURCE_INPUTS_SCHEMA, SourceInputs},
     endpoint_publication::{self, Policy},
     model::{Observation, Service, ServiceEvidence, Source},
+    reader,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -368,6 +369,8 @@ fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output
         snapshot,
         input: None,
         publication: Some("a".repeat(64)),
+        reading_plan: None,
+        contract_comparison: None,
         output: output.clone(),
     })
     .unwrap_err();
@@ -394,10 +397,18 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
         snapshot: snapshot.clone(),
         input: None,
         publication: Some(publication.clone()),
+        reading_plan: None,
+        contract_comparison: None,
         output: output.clone(),
     })
     .unwrap();
     assert_eq!(rendered["status"], "RENDERED");
+    for page in ["catalog.html", "history.html"] {
+        let html = fs::read_to_string(output.join(page)).unwrap();
+        assert!(html.contains("class=\"reader-nav\""));
+        assert!(html.contains(reader::SCRIPT));
+        assert!(html.contains(reader::STYLE));
+    }
     assert!(output.join("index.html").is_file());
     assert!(!output.join("root-overview.html").exists());
     assert_eq!(
@@ -412,6 +423,8 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
             snapshot: snapshot.clone(),
             input: None,
             publication: Some(publication.clone()),
+            reading_plan: None,
+            contract_comparison: None,
             output: output.clone()
         })
         .is_err()
@@ -431,6 +444,8 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
             snapshot,
             input: None,
             publication: Some(publication),
+            reading_plan: None,
+            contract_comparison: None,
             output: refused.clone()
         })
         .is_err()
@@ -462,6 +477,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             snapshot: snapshot.clone(),
             input: Some(input.clone()),
             publication: None,
+            reading_plan: None,
+            contract_comparison: None,
             output: output.clone(),
         })
         .unwrap();
@@ -486,6 +503,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
                 snapshot: snapshot.clone(),
                 input: Some(input.clone()),
                 publication: None,
+                reading_plan: None,
+                contract_comparison: None,
                 output: output.clone(),
             })
             .is_err()
@@ -498,6 +517,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         snapshot: snapshot.clone(),
         input: Some(input.clone()),
         publication: None,
+        reading_plan: None,
+        contract_comparison: None,
         output: output.clone(),
     })
     .unwrap();
@@ -517,6 +538,8 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             snapshot,
             input: Some(input),
             publication: None,
+            reading_plan: None,
+            contract_comparison: None,
             output: rejected.clone()
         })
         .is_err()

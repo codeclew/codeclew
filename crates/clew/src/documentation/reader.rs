@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub(super) const HELP: &str = include_str!("../../assets/documentation/help.html");
 pub(super) const RUNBOOKS: &str = include_str!("../../assets/documentation/runbooks.html");
 pub(super) const STYLE: &str = include_str!("../../assets/documentation/reader.css");
+pub(super) const PROCESS_THEME: &str = include_str!("../../assets/documentation/process-theme.css");
 pub(super) const SCRIPT: &str = include_str!("../../assets/documentation/reader.js");
 pub(super) const LIMITS: &str = include_str!("../../assets/documentation/limits.js");
 pub(super) const ICON: &str = include_str!("../../assets/documentation/favicon.svg");
@@ -107,6 +108,20 @@ pub(super) fn decorate(html: &str, navigation: &str) -> String {
         &format!("<script>{SCRIPT}\n{LIMITS}</script></body>"),
         1,
     )
+}
+
+/// Apply the selected process vocabulary to every linked publication page.
+/// Keep document payloads and existing body classes untouched.
+pub(super) fn process_theme(html: &str) -> String {
+    if html.contains("<style data-clew-theme=\"process\">") {
+        return html.to_owned();
+    }
+    html.replacen(
+        "</head>",
+        &format!("<style data-clew-theme=\"process\">{PROCESS_THEME}</style></head>"),
+        1,
+    )
+    .replacen("<body", "<body data-clew-theme=\"process\"", 1)
 }
 
 pub(super) fn catalog(files: &BTreeMap<String, Vec<u8>>) -> String {
@@ -900,6 +915,17 @@ pub(super) fn decorate_bundle_language(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_theme_preserves_payload_and_existing_body_classes() {
+        let html = "<html><head></head><body class=\"reader\"><script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script></body></html>";
+        let themed = process_theme(html);
+        assert!(themed.contains("<body data-clew-theme=\"process\" class=\"reader\">"));
+        assert!(
+            themed.contains("<script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script>")
+        );
+        assert_eq!(process_theme(&themed), themed);
+    }
+
     #[test]
     fn source_declaration_catalog_uses_readable_labels_and_retains_exact_identities() {
         let symbol =
