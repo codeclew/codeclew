@@ -1,0 +1,1199 @@
+{
+  "schema": "codeclew-native-page-projection/1.1",
+  "inputDigest": "sha256:583fcf329cbe103699912cacbbe258ab61d6a60018d0b81e4b9e3bb9399f196a",
+  "contextDigest": "sha256:14734fa0726540b77f3d8a2bc6cdd510569bae0872d472fcfe76e3f8d819510b",
+  "selectionDigest": "sha256:280d2d26cb9ead0d45a023e56e85b8e706227308a11be017b7eca3eb491070d4",
+  "pages": [
+    {
+      "id": "weather-save-timeout",
+      "title": "Selected functions: source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+      "projectionKind": "DECLARATION_ONLY",
+      "selection": {
+        "id": "weather-save-timeout",
+        "service": "dashboard",
+        "endpointDeclaration": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217",
+        "workerDeclaration": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217",
+        "wiringDeclaration": null,
+        "question": null
+      },
+      "serviceRevision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+      "serviceDigest": "sha256:f41ae06004595cb8f36ef77f9ea3afc02ee6cd2eadbd7f7c08ec86b9145c53a9",
+      "endpoint": {
+        "declarationId": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217",
+        "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+        "authority": "SYNTAX_DECLARATION",
+        "citationId": "citation-ccc1cdb49323385fe88d1c85",
+        "sourceOutline": {
+          "authority": "SYNTAX_SOURCE_STRUCTURE",
+          "ownerKey": {
+            "service": "dashboard",
+            "scope": "",
+            "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666"
+          },
+          "events": [
+            {
+              "observationId": "dashboard:flow:8fbb54c4bae55833802a2fce",
+              "ordinal": 0,
+              "kind": "TRY",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 68,
+              "endLine": 73,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:305f74c73029b209527101d26b3873a36a1de4191bf1d873458d35085c57baa5",
+                "kind": "TRY",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 0,
+                "parentOrdinal": null,
+                "syntaxKind": "try_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }"
+              },
+              "citationId": "citation-4c0e3cf51b1fb268f825275c"
+            },
+            {
+              "observationId": "dashboard:flow:0a52ae14321115b046495f87",
+              "ordinal": 1,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 69,
+              "endLine": 69,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:04b68ce87742fb6cea7d0aa982da86e5bb8fc4d1f8a0635a042b166442253436",
+                "kind": "CALL",
+                "nestingDepth": 6,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 1,
+                "parentOrdinal": 0,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })"
+              },
+              "citationId": "citation-a6c1b9a6179735fe1d2a4234"
+            },
+            {
+              "observationId": "dashboard:flow:9299cffc0d43954c41b76f12",
+              "ordinal": 2,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 69,
+              "endLine": 69,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:f488779725fd04d36056ae3256c7569c52f2e9fa0290d7722609098cfc231fe0",
+                "kind": "CALL",
+                "nestingDepth": 10,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 2,
+                "parentOrdinal": 1,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "JSON.stringify(request.body)"
+              },
+              "citationId": "citation-c81658d244c263339d583fa1"
+            },
+            {
+              "observationId": "dashboard:flow:009b1d2771ff281097578e10",
+              "ordinal": 3,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 69,
+              "endLine": 69,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:59c6aa5df6162c9de2968000485ba9d35a182f6064a2e292d8907888d6567b26",
+                "kind": "CALL",
+                "nestingDepth": 10,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 3,
+                "parentOrdinal": 1,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "AbortSignal.timeout(10000)"
+              },
+              "citationId": "citation-d1845f7c48379eda242e474d"
+            },
+            {
+              "observationId": "dashboard:flow:dbdad91eaadc03955829bed5",
+              "ordinal": 4,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 70,
+              "endLine": 70,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:a09bd13ccaaafb48e98164e4230f8e932c2d1fa3e88bcfa8c0efc30eb95c7236",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 4,
+                "parentOrdinal": 0,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(response.status).send(await response.json())"
+              },
+              "citationId": "citation-8a767e11e43f20c6ed4d21c1"
+            },
+            {
+              "observationId": "dashboard:flow:b77af1a39fc570804b8156a9",
+              "ordinal": 5,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 70,
+              "endLine": 70,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:3ac7db03010639c26b5b8f678acf53968a85c9287ae80712857fa7662156ea92",
+                "kind": "CALL",
+                "nestingDepth": 6,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 5,
+                "parentOrdinal": 4,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(response.status)"
+              },
+              "citationId": "citation-d18cf9bd067a83882c829d70"
+            },
+            {
+              "observationId": "dashboard:flow:7cb7305f79a1861d9dc7a8ed",
+              "ordinal": 6,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 70,
+              "endLine": 70,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:160e331fb2b3843ddfdbc1f1cb6088a07e51937410e5309024dd924aeefc8ead",
+                "kind": "CALL",
+                "nestingDepth": 7,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 6,
+                "parentOrdinal": 4,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "response.json()"
+              },
+              "citationId": "citation-76690100218372f074a0b6b1"
+            },
+            {
+              "observationId": "dashboard:flow:d8679d974cbdca55fe16a9ad",
+              "ordinal": 7,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 72,
+              "endLine": 72,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:24733702d7e7ff3dbd970a064996d133407d274808c02064af231ae87b77abe6",
+                "kind": "CALL",
+                "nestingDepth": 5,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 7,
+                "parentOrdinal": 0,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })"
+              },
+              "citationId": "citation-ef0aafaf80d713b1975403c2"
+            },
+            {
+              "observationId": "dashboard:flow:789fa3dab2524e3b2fe2c036",
+              "ordinal": 8,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 72,
+              "endLine": 72,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:50ab16add520bebd0c08205782be543225d63101b6e98496acd970cf79a63cab",
+                "kind": "CALL",
+                "nestingDepth": 7,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 8,
+                "parentOrdinal": 7,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(503)"
+              },
+              "citationId": "citation-f3fced288899b74787cca02f"
+            }
+          ],
+          "tree": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666 [lexical syntax; not execution order]\n  TRY try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }\n    CALL fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n      CALL JSON.stringify(request.body)\n      CALL AbortSignal.timeout(10000)\n    CALL reply.code(response.status).send(await response.json())\n      CALL reply.code(response.status)\n      CALL response.json()\n    CALL reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n      CALL reply.code(503)\n",
+          "gaps": [
+            {
+              "code": "SOURCE_SYNTAX_NOT_COMPILER_OR_RUNTIME_PROOF",
+              "detail": "Lexical events retain branches, calls and deferred bodies. Call targets, execution order, reachability, receiver identity and runtime effects remain unresolved.",
+              "citationId": "citation-ccc1cdb49323385fe88d1c85"
+            }
+          ]
+        },
+        "steps": [],
+        "state": [],
+        "gaps": [
+          {
+            "code": "SOURCE_SYNTAX_NOT_COMPILER_OR_RUNTIME_PROOF",
+            "detail": "Lexical events retain branches, calls and deferred bodies. Call targets, execution order, reachability, receiver identity and runtime effects remain unresolved.",
+            "citationId": "citation-ccc1cdb49323385fe88d1c85"
+          }
+        ]
+      },
+      "worker": {
+        "declarationId": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217",
+        "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+        "authority": "SYNTAX_DECLARATION",
+        "citationId": "citation-ccc1cdb49323385fe88d1c85",
+        "sourceOutline": {
+          "authority": "SYNTAX_SOURCE_STRUCTURE",
+          "ownerKey": {
+            "service": "dashboard",
+            "scope": "",
+            "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666"
+          },
+          "events": [
+            {
+              "observationId": "dashboard:flow:8fbb54c4bae55833802a2fce",
+              "ordinal": 0,
+              "kind": "TRY",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 68,
+              "endLine": 73,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:305f74c73029b209527101d26b3873a36a1de4191bf1d873458d35085c57baa5",
+                "kind": "TRY",
+                "nestingDepth": 1,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 0,
+                "parentOrdinal": null,
+                "syntaxKind": "try_statement",
+                "targetStatus": "UNRESOLVED",
+                "text": "try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }"
+              },
+              "citationId": "citation-4c0e3cf51b1fb268f825275c"
+            },
+            {
+              "observationId": "dashboard:flow:0a52ae14321115b046495f87",
+              "ordinal": 1,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 69,
+              "endLine": 69,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:04b68ce87742fb6cea7d0aa982da86e5bb8fc4d1f8a0635a042b166442253436",
+                "kind": "CALL",
+                "nestingDepth": 6,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 1,
+                "parentOrdinal": 0,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })"
+              },
+              "citationId": "citation-a6c1b9a6179735fe1d2a4234"
+            },
+            {
+              "observationId": "dashboard:flow:9299cffc0d43954c41b76f12",
+              "ordinal": 2,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 69,
+              "endLine": 69,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:f488779725fd04d36056ae3256c7569c52f2e9fa0290d7722609098cfc231fe0",
+                "kind": "CALL",
+                "nestingDepth": 10,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 2,
+                "parentOrdinal": 1,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "JSON.stringify(request.body)"
+              },
+              "citationId": "citation-c81658d244c263339d583fa1"
+            },
+            {
+              "observationId": "dashboard:flow:009b1d2771ff281097578e10",
+              "ordinal": 3,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 69,
+              "endLine": 69,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:59c6aa5df6162c9de2968000485ba9d35a182f6064a2e292d8907888d6567b26",
+                "kind": "CALL",
+                "nestingDepth": 10,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 3,
+                "parentOrdinal": 1,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "AbortSignal.timeout(10000)"
+              },
+              "citationId": "citation-d1845f7c48379eda242e474d"
+            },
+            {
+              "observationId": "dashboard:flow:dbdad91eaadc03955829bed5",
+              "ordinal": 4,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 70,
+              "endLine": 70,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:a09bd13ccaaafb48e98164e4230f8e932c2d1fa3e88bcfa8c0efc30eb95c7236",
+                "kind": "CALL",
+                "nestingDepth": 4,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 4,
+                "parentOrdinal": 0,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(response.status).send(await response.json())"
+              },
+              "citationId": "citation-8a767e11e43f20c6ed4d21c1"
+            },
+            {
+              "observationId": "dashboard:flow:b77af1a39fc570804b8156a9",
+              "ordinal": 5,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 70,
+              "endLine": 70,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:3ac7db03010639c26b5b8f678acf53968a85c9287ae80712857fa7662156ea92",
+                "kind": "CALL",
+                "nestingDepth": 6,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 5,
+                "parentOrdinal": 4,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(response.status)"
+              },
+              "citationId": "citation-d18cf9bd067a83882c829d70"
+            },
+            {
+              "observationId": "dashboard:flow:7cb7305f79a1861d9dc7a8ed",
+              "ordinal": 6,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 70,
+              "endLine": 70,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:160e331fb2b3843ddfdbc1f1cb6088a07e51937410e5309024dd924aeefc8ead",
+                "kind": "CALL",
+                "nestingDepth": 7,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 6,
+                "parentOrdinal": 4,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "response.json()"
+              },
+              "citationId": "citation-76690100218372f074a0b6b1"
+            },
+            {
+              "observationId": "dashboard:flow:d8679d974cbdca55fe16a9ad",
+              "ordinal": 7,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 72,
+              "endLine": 72,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:24733702d7e7ff3dbd970a064996d133407d274808c02064af231ae87b77abe6",
+                "kind": "CALL",
+                "nestingDepth": 5,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 7,
+                "parentOrdinal": 0,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })"
+              },
+              "citationId": "citation-ef0aafaf80d713b1975403c2"
+            },
+            {
+              "observationId": "dashboard:flow:789fa3dab2524e3b2fe2c036",
+              "ordinal": 8,
+              "kind": "CALL",
+              "file": "services/dashboard/src/main.ts",
+              "startLine": 72,
+              "endLine": 72,
+              "event": {
+                "authority": "SYNTAX",
+                "fingerprint": "sha256:50ab16add520bebd0c08205782be543225d63101b6e98496acd970cf79a63cab",
+                "kind": "CALL",
+                "nestingDepth": 7,
+                "ordering": "LEXICAL_ONLY",
+                "ordinal": 8,
+                "parentOrdinal": 7,
+                "syntaxKind": "call_expression",
+                "targetStatus": "UNRESOLVED",
+                "text": "reply.code(503)"
+              },
+              "citationId": "citation-f3fced288899b74787cca02f"
+            }
+          ],
+          "tree": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666 [lexical syntax; not execution order]\n  TRY try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }\n    CALL fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n      CALL JSON.stringify(request.body)\n      CALL AbortSignal.timeout(10000)\n    CALL reply.code(response.status).send(await response.json())\n      CALL reply.code(response.status)\n      CALL response.json()\n    CALL reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n      CALL reply.code(503)\n",
+          "gaps": [
+            {
+              "code": "SOURCE_SYNTAX_NOT_COMPILER_OR_RUNTIME_PROOF",
+              "detail": "Lexical events retain branches, calls and deferred bodies. Call targets, execution order, reachability, receiver identity and runtime effects remain unresolved.",
+              "citationId": "citation-ccc1cdb49323385fe88d1c85"
+            }
+          ]
+        },
+        "steps": [],
+        "state": [],
+        "gaps": [
+          {
+            "code": "SOURCE_SYNTAX_NOT_COMPILER_OR_RUNTIME_PROOF",
+            "detail": "Lexical events retain branches, calls and deferred bodies. Call targets, execution order, reachability, receiver identity and runtime effects remain unresolved.",
+            "citationId": "citation-ccc1cdb49323385fe88d1c85"
+          }
+        ]
+      },
+      "wiring": null,
+      "handoff": {
+        "status": "DECLARATION_ONLY",
+        "queueAllocation": null,
+        "endpointField": null,
+        "workerField": null,
+        "citationIds": [],
+        "gaps": [
+          {
+            "code": "DECLARATION_ONLY_NO_RELATIONSHIP",
+            "detail": "Selected declarations do not establish a call, wiring, or runtime relationship.",
+            "citationId": null
+          }
+        ],
+        "limitation": "Declaration-only pages retain compiler declarations without proving source behavior, shared-object wiring, activation, delivery, or completion."
+      },
+      "diagnostics": [],
+      "citations": {
+        "citation-4c0e3cf51b1fb268f825275c": {
+          "id": "citation-4c0e3cf51b1fb268f825275c",
+          "sourceId": "dashboard-8fbb54c4bae55833802a",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 68,
+          "endLine": 73,
+          "startByte": 0,
+          "endByte": 336,
+          "textDigest": "sha256:af398395e2c9613ff0e97420b1334dc3ec4dacfce26e25d4f431b6fd3b73c566",
+          "evidenceDigest": "sha256:f9a1d571ff0691e76d85f22d7e3240baa9065f4e7b84219084f0e519bae3ecf4",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L68-L73"
+        },
+        "citation-76690100218372f074a0b6b1": {
+          "id": "citation-76690100218372f074a0b6b1",
+          "sourceId": "dashboard-7cb7305f79a1861d9dc7",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 70,
+          "endLine": 70,
+          "startByte": 0,
+          "endByte": 15,
+          "textDigest": "sha256:3a251cbbe596d2190ad80e1e2fb94b68986dcdd91b048c1d11efbb9e4978d359",
+          "evidenceDigest": "sha256:db3cdc4103db0ee0bc8589ebd5bbfbd8f3f5c8d3236bb9208ffb9de88718a9f6",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L70-L70"
+        },
+        "citation-8a767e11e43f20c6ed4d21c1": {
+          "id": "citation-8a767e11e43f20c6ed4d21c1",
+          "sourceId": "dashboard-dbdad91eaadc03955829",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 70,
+          "endLine": 70,
+          "startByte": 0,
+          "endByte": 55,
+          "textDigest": "sha256:91770a7d34ed43c3b13b8c743347e99b78c09ac353e80f197890d80561232f19",
+          "evidenceDigest": "sha256:a4aab08fe4df4faca5d9c33e84c6d8a47a7f2d08661f2245b06d283dc321ab4c",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L70-L70"
+        },
+        "citation-a6c1b9a6179735fe1d2a4234": {
+          "id": "citation-a6c1b9a6179735fe1d2a4234",
+          "sourceId": "dashboard-0a52ae14321115b04649",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 69,
+          "endLine": 69,
+          "startByte": 0,
+          "endByte": 169,
+          "textDigest": "sha256:54b4153ec41a4d9137226bafc9203b376edd1683cf24243c168c12680c103020",
+          "evidenceDigest": "sha256:6351cc7e910d63496b508f199a25dde0ffcff69de6bab71dea55ef31a2d1281f",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L69-L69"
+        },
+        "citation-c81658d244c263339d583fa1": {
+          "id": "citation-c81658d244c263339d583fa1",
+          "sourceId": "dashboard-9299cffc0d43954c41b7",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 69,
+          "endLine": 69,
+          "startByte": 0,
+          "endByte": 28,
+          "textDigest": "sha256:f0cc55c5ae3beec43803876c502273f486ed8f43ee75f5cf74b621455dfabbec",
+          "evidenceDigest": "sha256:9c96fd3cade27a4426efc26e9d78bc64e8cac47966f8db68a74db70c22078a69",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L69-L69"
+        },
+        "citation-ccc1cdb49323385fe88d1c85": {
+          "id": "citation-ccc1cdb49323385fe88d1c85",
+          "sourceId": "dashboard-7970ac3e2a8cf3f45b4a",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 67,
+          "endLine": 74,
+          "startByte": 0,
+          "endByte": 428,
+          "textDigest": "sha256:d36fd526184e291acfb7df17b6ebb41df8afb1f284fcdb448f552c1b457260a8",
+          "evidenceDigest": "sha256:8d31c7278797da7764c61c2f027e52e8b9090e0eee4ee48dc44ad5f51b27fc17",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L67-L74"
+        },
+        "citation-d1845f7c48379eda242e474d": {
+          "id": "citation-d1845f7c48379eda242e474d",
+          "sourceId": "dashboard-009b1d2771ff28109757",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 69,
+          "endLine": 69,
+          "startByte": 0,
+          "endByte": 26,
+          "textDigest": "sha256:5fc18eaf2dda5409da1d884b60178f8ad967fcabc8ac5dbb633bf26fca6209f6",
+          "evidenceDigest": "sha256:9d8024e34dfb274deda605fcfbf982297e56f7486906ea2806371fc0d55d14e1",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L69-L69"
+        },
+        "citation-d18cf9bd067a83882c829d70": {
+          "id": "citation-d18cf9bd067a83882c829d70",
+          "sourceId": "dashboard-b77af1a39fc570804b81",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 70,
+          "endLine": 70,
+          "startByte": 0,
+          "endByte": 27,
+          "textDigest": "sha256:513d002cb447bf008b4e1a097278ec31960da95445d866a793b5dbb673577278",
+          "evidenceDigest": "sha256:1e7616fea7e0277013637fc2f01b15ed136141c178a08668e912adf59fa74d59",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L70-L70"
+        },
+        "citation-ef0aafaf80d713b1975403c2": {
+          "id": "citation-ef0aafaf80d713b1975403c2",
+          "sourceId": "dashboard-d8679d974cbdca55fe16",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 72,
+          "endLine": 72,
+          "startByte": 0,
+          "endByte": 53,
+          "textDigest": "sha256:b482c51641c1fa2f1e74f813bd7ada8b99bf187d67aba4f9f73fac3cc56c9f3d",
+          "evidenceDigest": "sha256:64d4e9a74a9984543f39fe53868cbe489183abb2ddd00e44cfb5696bad7f6630",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L72-L72"
+        },
+        "citation-f3fced288899b74787cca02f": {
+          "id": "citation-f3fced288899b74787cca02f",
+          "sourceId": "dashboard-789fa3dab2524e3b2fe2",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 72,
+          "endLine": 72,
+          "startByte": 0,
+          "endByte": 15,
+          "textDigest": "sha256:74fb16db0e51e0a78abb464afeb24f0996a47fd91da6d2c1defe53b8ed6bc764",
+          "evidenceDigest": "sha256:5c8128fee2f4b14b611e5a1548a195972ce815850888fcaf5f5c246da5e922c4",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L72-L72"
+        }
+      },
+      "observations": {
+        "dashboard:flow:009b1d2771ff281097578e10": {
+          "id": "dashboard:flow:009b1d2771ff281097578e10",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:59c6aa5df6162c9de2968000485ba9d35a182f6064a2e292d8907888d6567b26",
+            "kind": "CALL",
+            "nestingDepth": 10,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 3,
+            "parentOrdinal": 1,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "AbortSignal.timeout(10000)"
+          },
+          "digest": "sha256:1ef5f0231b670288c54459bece3cbdb2a1f4ba81c637fa2886571f0caf81cfdd",
+          "sourceIds": [
+            "dashboard-009b1d2771ff28109757"
+          ]
+        },
+        "dashboard:flow:0a52ae14321115b046495f87": {
+          "id": "dashboard:flow:0a52ae14321115b046495f87",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:04b68ce87742fb6cea7d0aa982da86e5bb8fc4d1f8a0635a042b166442253436",
+            "kind": "CALL",
+            "nestingDepth": 6,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 1,
+            "parentOrdinal": 0,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })"
+          },
+          "digest": "sha256:32c9fe91ea7acfeaf8aaf55f070cd4a7ce02016168441519040b3e428d0421b3",
+          "sourceIds": [
+            "dashboard-0a52ae14321115b04649"
+          ]
+        },
+        "dashboard:flow:789fa3dab2524e3b2fe2c036": {
+          "id": "dashboard:flow:789fa3dab2524e3b2fe2c036",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:50ab16add520bebd0c08205782be543225d63101b6e98496acd970cf79a63cab",
+            "kind": "CALL",
+            "nestingDepth": 7,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 8,
+            "parentOrdinal": 7,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "reply.code(503)"
+          },
+          "digest": "sha256:a71ec2c25e1e5947935b0a4ba7de9b8d373f8b68b424a56d34c192a82cb49db1",
+          "sourceIds": [
+            "dashboard-789fa3dab2524e3b2fe2"
+          ]
+        },
+        "dashboard:flow:7cb7305f79a1861d9dc7a8ed": {
+          "id": "dashboard:flow:7cb7305f79a1861d9dc7a8ed",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:160e331fb2b3843ddfdbc1f1cb6088a07e51937410e5309024dd924aeefc8ead",
+            "kind": "CALL",
+            "nestingDepth": 7,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 6,
+            "parentOrdinal": 4,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "response.json()"
+          },
+          "digest": "sha256:a14b696229ab1d67d11b2b21ec4bb8653d7014026c5d3f0c5bf55cf12834e695",
+          "sourceIds": [
+            "dashboard-7cb7305f79a1861d9dc7"
+          ]
+        },
+        "dashboard:flow:8fbb54c4bae55833802a2fce": {
+          "id": "dashboard:flow:8fbb54c4bae55833802a2fce",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:305f74c73029b209527101d26b3873a36a1de4191bf1d873458d35085c57baa5",
+            "kind": "TRY",
+            "nestingDepth": 1,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 0,
+            "parentOrdinal": null,
+            "syntaxKind": "try_statement",
+            "targetStatus": "UNRESOLVED",
+            "text": "try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }"
+          },
+          "digest": "sha256:ee5b55c3c95f71777924aa8870df80215ab7c3e06a12ccfda05a608fe77350d3",
+          "sourceIds": [
+            "dashboard-8fbb54c4bae55833802a"
+          ]
+        },
+        "dashboard:flow:9299cffc0d43954c41b76f12": {
+          "id": "dashboard:flow:9299cffc0d43954c41b76f12",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:f488779725fd04d36056ae3256c7569c52f2e9fa0290d7722609098cfc231fe0",
+            "kind": "CALL",
+            "nestingDepth": 10,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 2,
+            "parentOrdinal": 1,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "JSON.stringify(request.body)"
+          },
+          "digest": "sha256:a80d8396892241bfed36116fa7c8648e9b58dfbca9ad294680ae254ac5f14ca7",
+          "sourceIds": [
+            "dashboard-9299cffc0d43954c41b7"
+          ]
+        },
+        "dashboard:flow:b77af1a39fc570804b8156a9": {
+          "id": "dashboard:flow:b77af1a39fc570804b8156a9",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:3ac7db03010639c26b5b8f678acf53968a85c9287ae80712857fa7662156ea92",
+            "kind": "CALL",
+            "nestingDepth": 6,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 5,
+            "parentOrdinal": 4,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "reply.code(response.status)"
+          },
+          "digest": "sha256:096bc3eca42faa0cb6dce75a15f6b8768117d03247dd33f22c07ccd2c660e5cb",
+          "sourceIds": [
+            "dashboard-b77af1a39fc570804b81"
+          ]
+        },
+        "dashboard:flow:d8679d974cbdca55fe16a9ad": {
+          "id": "dashboard:flow:d8679d974cbdca55fe16a9ad",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:24733702d7e7ff3dbd970a064996d133407d274808c02064af231ae87b77abe6",
+            "kind": "CALL",
+            "nestingDepth": 5,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 7,
+            "parentOrdinal": 0,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })"
+          },
+          "digest": "sha256:19c63b3de510f6182dc73b1e545dcd7a554109bb0f08d11d4f658722e5ebeb1a",
+          "sourceIds": [
+            "dashboard-d8679d974cbdca55fe16"
+          ]
+        },
+        "dashboard:flow:dbdad91eaadc03955829bed5": {
+          "id": "dashboard:flow:dbdad91eaadc03955829bed5",
+          "kind": "FLOW",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "fingerprint": "sha256:a09bd13ccaaafb48e98164e4230f8e932c2d1fa3e88bcfa8c0efc30eb95c7236",
+            "kind": "CALL",
+            "nestingDepth": 4,
+            "ordering": "LEXICAL_ONLY",
+            "ordinal": 4,
+            "parentOrdinal": 0,
+            "syntaxKind": "call_expression",
+            "targetStatus": "UNRESOLVED",
+            "text": "reply.code(response.status).send(await response.json())"
+          },
+          "digest": "sha256:9b17e91c1f2c09f76bc59b82051a600baad51252266035d76c772149e21ad0f3",
+          "sourceIds": [
+            "dashboard-dbdad91eaadc03955829"
+          ]
+        },
+        "dashboard:symbol:7970ac3e2a8cf3f45b4a6217": {
+          "id": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217",
+          "kind": "SYMBOL",
+          "service": "dashboard",
+          "symbol": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+          "normalized": {
+            "authority": "SYNTAX",
+            "documentation": {
+              "boundaries": [
+                "CALL_TARGETS_UNRESOLVED",
+                "ORDER_LEXICAL_ONLY"
+              ],
+              "events": [
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:305f74c73029b209527101d26b3873a36a1de4191bf1d873458d35085c57baa5",
+                  "kind": "TRY",
+                  "nestingDepth": 1,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 0,
+                  "parentOrdinal": null,
+                  "syntaxKind": "try_statement",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:04b68ce87742fb6cea7d0aa982da86e5bb8fc4d1f8a0635a042b166442253436",
+                  "kind": "CALL",
+                  "nestingDepth": 6,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 1,
+                  "parentOrdinal": 0,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:f488779725fd04d36056ae3256c7569c52f2e9fa0290d7722609098cfc231fe0",
+                  "kind": "CALL",
+                  "nestingDepth": 10,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 2,
+                  "parentOrdinal": 1,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "JSON.stringify(request.body)"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:59c6aa5df6162c9de2968000485ba9d35a182f6064a2e292d8907888d6567b26",
+                  "kind": "CALL",
+                  "nestingDepth": 10,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 3,
+                  "parentOrdinal": 1,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "AbortSignal.timeout(10000)"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:a09bd13ccaaafb48e98164e4230f8e932c2d1fa3e88bcfa8c0efc30eb95c7236",
+                  "kind": "CALL",
+                  "nestingDepth": 4,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 4,
+                  "parentOrdinal": 0,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "reply.code(response.status).send(await response.json())"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:3ac7db03010639c26b5b8f678acf53968a85c9287ae80712857fa7662156ea92",
+                  "kind": "CALL",
+                  "nestingDepth": 6,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 5,
+                  "parentOrdinal": 4,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "reply.code(response.status)"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:160e331fb2b3843ddfdbc1f1cb6088a07e51937410e5309024dd924aeefc8ead",
+                  "kind": "CALL",
+                  "nestingDepth": 7,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 6,
+                  "parentOrdinal": 4,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "response.json()"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:24733702d7e7ff3dbd970a064996d133407d274808c02064af231ae87b77abe6",
+                  "kind": "CALL",
+                  "nestingDepth": 5,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 7,
+                  "parentOrdinal": 0,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })"
+                },
+                {
+                  "authority": "SYNTAX",
+                  "fingerprint": "sha256:50ab16add520bebd0c08205782be543225d63101b6e98496acd970cf79a63cab",
+                  "kind": "CALL",
+                  "nestingDepth": 7,
+                  "ordering": "LEXICAL_ONLY",
+                  "ordinal": 8,
+                  "parentOrdinal": 7,
+                  "syntaxKind": "call_expression",
+                  "targetStatus": "UNRESOLVED",
+                  "text": "reply.code(503)"
+                }
+              ],
+              "parameterTypes": [
+                ": FastifyRequest",
+                ": FastifyReply"
+              ]
+            },
+            "fingerprint": "sha256:a4b343e35fe7999f387c9b33fa32d016475871f999eb7a2255abe292bdd4a151",
+            "kind": "DECLARATION",
+            "name": "savePlace",
+            "ownerIdentity": "package:",
+            "symbolIdentity": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+            "syntaxKind": "function_declaration"
+          },
+          "digest": "sha256:decedbfdcc7f4ab1a1aca6ebaea0cdb56aa1065f2c5c13adf5cb7aa946eeaadc",
+          "sourceIds": [
+            "dashboard-7970ac3e2a8cf3f45b4a"
+          ]
+        }
+      },
+      "sources": {
+        "dashboard-009b1d2771ff28109757": {
+          "id": "dashboard-009b1d2771ff28109757",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 69,
+          "endLine": 69,
+          "text": "AbortSignal.timeout(10000)",
+          "textDigest": "sha256:5fc18eaf2dda5409da1d884b60178f8ad967fcabc8ac5dbb633bf26fca6209f6",
+          "evidenceDigest": "sha256:9d8024e34dfb274deda605fcfbf982297e56f7486906ea2806371fc0d55d14e1",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3392,
+            "endByte": 3418
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L69-L69"
+        },
+        "dashboard-0a52ae14321115b04649": {
+          "id": "dashboard-0a52ae14321115b04649",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 69,
+          "endLine": 69,
+          "text": "fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })",
+          "textDigest": "sha256:54b4153ec41a4d9137226bafc9203b376edd1683cf24243c168c12680c103020",
+          "evidenceDigest": "sha256:6351cc7e910d63496b508f199a25dde0ffcff69de6bab71dea55ef31a2d1281f",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3252,
+            "endByte": 3421
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L69-L69"
+        },
+        "dashboard-789fa3dab2524e3b2fe2": {
+          "id": "dashboard-789fa3dab2524e3b2fe2",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 72,
+          "endLine": 72,
+          "text": "reply.code(503)",
+          "textDigest": "sha256:74fb16db0e51e0a78abb464afeb24f0996a47fd91da6d2c1defe53b8ed6bc764",
+          "evidenceDigest": "sha256:5c8128fee2f4b14b611e5a1548a195972ce815850888fcaf5f5c246da5e922c4",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3498,
+            "endByte": 3513
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L72-L72"
+        },
+        "dashboard-7970ac3e2a8cf3f45b4a": {
+          "id": "dashboard-7970ac3e2a8cf3f45b4a",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 67,
+          "endLine": 74,
+          "text": "async function savePlace(request: FastifyRequest, reply: FastifyReply): Promise<void> {\n  try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }\n}",
+          "textDigest": "sha256:d36fd526184e291acfb7df17b6ebb41df8afb1f284fcdb448f552c1b457260a8",
+          "evidenceDigest": "sha256:8d31c7278797da7764c61c2f027e52e8b9090e0eee4ee48dc44ad5f51b27fc17",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3129,
+            "endByte": 3557
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L67-L74"
+        },
+        "dashboard-7cb7305f79a1861d9dc7": {
+          "id": "dashboard-7cb7305f79a1861d9dc7",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 70,
+          "endLine": 70,
+          "text": "response.json()",
+          "textDigest": "sha256:3a251cbbe596d2190ad80e1e2fb94b68986dcdd91b048c1d11efbb9e4978d359",
+          "evidenceDigest": "sha256:db3cdc4103db0ee0bc8589ebd5bbfbd8f3f5c8d3236bb9208ffb9de88718a9f6",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3465,
+            "endByte": 3480
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L70-L70"
+        },
+        "dashboard-8fbb54c4bae55833802a": {
+          "id": "dashboard-8fbb54c4bae55833802a",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 68,
+          "endLine": 73,
+          "text": "try {\n    const response = await fetch(`${placesUrl}/places`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request.body), signal: AbortSignal.timeout(10000) })\n    reply.code(response.status).send(await response.json())\n  } catch {\n    reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })\n  }",
+          "textDigest": "sha256:af398395e2c9613ff0e97420b1334dc3ec4dacfce26e25d4f431b6fd3b73c566",
+          "evidenceDigest": "sha256:f9a1d571ff0691e76d85f22d7e3240baa9065f4e7b84219084f0e519bae3ecf4",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3219,
+            "endByte": 3555
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L68-L73"
+        },
+        "dashboard-9299cffc0d43954c41b7": {
+          "id": "dashboard-9299cffc0d43954c41b7",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 69,
+          "endLine": 69,
+          "text": "JSON.stringify(request.body)",
+          "textDigest": "sha256:f0cc55c5ae3beec43803876c502273f486ed8f43ee75f5cf74b621455dfabbec",
+          "evidenceDigest": "sha256:9c96fd3cade27a4426efc26e9d78bc64e8cac47966f8db68a74db70c22078a69",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3354,
+            "endByte": 3382
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L69-L69"
+        },
+        "dashboard-b77af1a39fc570804b81": {
+          "id": "dashboard-b77af1a39fc570804b81",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 70,
+          "endLine": 70,
+          "text": "reply.code(response.status)",
+          "textDigest": "sha256:513d002cb447bf008b4e1a097278ec31960da95445d866a793b5dbb673577278",
+          "evidenceDigest": "sha256:1e7616fea7e0277013637fc2f01b15ed136141c178a08668e912adf59fa74d59",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3426,
+            "endByte": 3453
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L70-L70"
+        },
+        "dashboard-d8679d974cbdca55fe16": {
+          "id": "dashboard-d8679d974cbdca55fe16",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 72,
+          "endLine": 72,
+          "text": "reply.code(503).send({ error: 'PLACES_UNAVAILABLE' })",
+          "textDigest": "sha256:b482c51641c1fa2f1e74f813bd7ada8b99bf187d67aba4f9f73fac3cc56c9f3d",
+          "evidenceDigest": "sha256:64d4e9a74a9984543f39fe53868cbe489183abb2ddd00e44cfb5696bad7f6630",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3498,
+            "endByte": 3551
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L72-L72"
+        },
+        "dashboard-dbdad91eaadc03955829": {
+          "id": "dashboard-dbdad91eaadc03955829",
+          "service": "dashboard",
+          "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+          "file": "services/dashboard/src/main.ts",
+          "startLine": 70,
+          "endLine": 70,
+          "text": "reply.code(response.status).send(await response.json())",
+          "textDigest": "sha256:91770a7d34ed43c3b13b8c743347e99b78c09ac353e80f197890d80561232f19",
+          "evidenceDigest": "sha256:a4aab08fe4df4faca5d9c33e84c6d8a47a7f2d08661f2245b06d283dc321ab4c",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "occurrence": {
+            "snapshot": "sha256:c0a2f378d2d0ef5d8cb9d4388cffe05b8df4a37040db4300502d3f487bb5995d",
+            "blob": "c923fc2bb1630bbc208fef832886773dd7d8ae03",
+            "startByte": 3426,
+            "endByte": 3481
+          },
+          "url": "https://github.com/codeclew/clew-weather-demo/blob/f0e5c376a2333ec6b86b114039fe10921b6f3c4a/services/dashboard/src/main.ts#L70-L70"
+        }
+      },
+      "limitations": [
+        {
+          "code": "RUNTIME_NOT_OBSERVED",
+          "detail": "Source declarations do not establish deployed activation, delivery, external success, or durable completion.",
+          "citationId": null
+        },
+        {
+          "code": "RETAINED_SERVICE_BOUNDARY",
+          "detail": "CALL_TARGETS_UNRESOLVED",
+          "citationId": null
+        },
+        {
+          "code": "RETAINED_SERVICE_BOUNDARY",
+          "detail": "DIALECT_DECLARED_NOT_COMPILER_VALIDATED",
+          "citationId": null
+        },
+        {
+          "code": "RETAINED_SERVICE_BOUNDARY",
+          "detail": "ORDER_LEXICAL_ONLY",
+          "citationId": null
+        },
+        {
+          "code": "RETAINED_SERVICE_BOUNDARY",
+          "detail": "SCOPE_WATCH_CONSERVATIVE",
+          "citationId": null
+        },
+        {
+          "code": "DECLARATION_ONLY_NO_RELATIONSHIP",
+          "detail": "Selected declarations are retained without inferring behavior or a relationship between them.",
+          "citationId": null
+        }
+      ]
+    }
+  ]
+}

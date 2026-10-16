@@ -1,0 +1,6 @@
+Question: What does Dashboard return if saving a city times out? Does 503 tell us whether Places saved it, and does this handler retry?
+Repository: ./clew-first-answer/weather
+Revision: f0e5c376a2333ec6b86b114039fe10921b6f3c4a
+Starting declaration: source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666
+Workflow: explicit docs source-syntax; scope services/dashboard/src/main.ts only.
+Use the saved context.json and source.json produced by the example commands. Keep SYNTAX, unresolved call targets and runtime activation limits visible. Return the timeout/error branch with its exact source reference. Separate the handler's response from the unknown receiver transaction outcome. Do not invent a retry policy or claim runtime execution.

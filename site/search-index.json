@@ -6,7 +6,7 @@
     "group": "Reference"
   },
   {
-    "title": "Understand the product before the commands",
+    "title": "See a result or ask one question",
     "url": "./index.html#engineering-guide",
     "description": "Codeclew",
     "group": "Reference"
@@ -30,8 +30,26 @@
     "group": "Reference"
   },
   {
-    "title": "A code investigation tool for engineers and agents",
+    "title": "A local CLI for code questions",
     "url": "./engineering.html#product",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Does a failed save mean the city was not saved?",
+    "url": "./engineering.html#result",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Try this question",
+    "url": "./engineering.html#start",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Ask about your own repository",
+    "url": "./engineering.html#own-repo",
     "description": "What Codeclew gives you · Codeclew engineering guide",
     "group": "Reference"
   },
@@ -62,12 +80,6 @@
   {
     "title": "Session, profile, compilation and Check",
     "url": "./engineering.html#glossary",
-    "description": "What Codeclew gives you · Codeclew engineering guide",
-    "group": "Reference"
-  },
-  {
-    "title": "Start with one question",
-    "url": "./engineering.html#start",
     "description": "What Codeclew gives you · Codeclew engineering guide",
     "group": "Reference"
   },

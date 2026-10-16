@@ -1,0 +1,8 @@
+[
+  {
+    "id": "weather-save-timeout",
+    "service": "dashboard",
+    "endpointDeclaration": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217",
+    "workerDeclaration": "dashboard:symbol:7970ac3e2a8cf3f45b4a6217"
+  }
+]

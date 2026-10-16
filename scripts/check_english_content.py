@@ -433,10 +433,11 @@ def _mask_generated_publication(relative_path: str, content: str) -> str:
     return SCRIPT.sub(script, content)
 
 
-# Immutable v0.13.24 self-documentation exports preserve the released Rust
-# localization strings and native reader asset. Only these exact verified bytes
+# Immutable native documentation exports preserve released product
+# localization strings and reader assets. Only these exact verified bytes
 # are exempt; changed exports, authored prose and other files remain checked.
 FROZEN_SELF_DOCUMENTATION_DIGESTS = {
+    "site/examples/weather-first-answer/native/native-reader.js": "ce9995c761f68342e490f9d6c96d481c6a93c8c706f3bd336513fedda3108425",
     "site/codeclew/source/native-reader.js": "ce9995c761f68342e490f9d6c96d481c6a93c8c706f3bd336513fedda3108425",
     "site/codeclew/source/projection.json": "d9703cf0ba7f77dec6cdbd978f2177d356bbb783d7ab24cfffa66ac37efdd353",
     "site/codeclew/source/sources.html": "71261ad2b01deb17c751566fbeff6b8bb95aa4a7a9f11342fc8f2bb42f4a400d",

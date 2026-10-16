@@ -1,0 +1,127 @@
+{
+  "contextDigest": "sha256:14734fa0726540b77f3d8a2bc6cdd510569bae0872d472fcfe76e3f8d819510b",
+  "files": [
+    {
+      "digest": "sha256:3783f92ba92c598bc2f6a75ef413cd951d2d15c0fe8552e08c637498e35427e1",
+      "path": "catalogue.json"
+    },
+    {
+      "digest": "sha256:a74f05ed6f1775c47be4d809195d12444823939af648b15a0b6f66ba237edced",
+      "path": "index.html"
+    },
+    {
+      "digest": "sha256:1d038921e26ac1a0c0b32d8b201307b4e2ca2cb6e6223073bca9fde68fcc6d08",
+      "path": "index.mdx"
+    },
+    {
+      "digest": "sha256:ce9995c761f68342e490f9d6c96d481c6a93c8c706f3bd336513fedda3108425",
+      "path": "native-reader.js"
+    },
+    {
+      "digest": "sha256:272e3cbf52edbce1dd348783131648eaa2d05ecf8f64464010b133d945a7b77b",
+      "path": "projection.json"
+    },
+    {
+      "digest": "sha256:6d3f0da2419b41cc72dc9917df593445eb2133da841f31ce6bb0f3554eef9054",
+      "path": "sources.html"
+    },
+    {
+      "digest": "sha256:e7aaa1cabb8463d26f01e90d23a5836c47ba5bcc4d90a7b0f9d32040cc6a7f4d",
+      "path": "sources.mdx"
+    },
+    {
+      "digest": "sha256:30f2a7247d667d5fc0ae6992a7aff6761faeef34b00a391252bb295c15ee4109",
+      "path": "style.css"
+    },
+    {
+      "digest": "sha256:9b3cb2d6af58bb06bd3fd801ade2780744a95bf72307b09b8272a196ece47b81",
+      "path": "weather-save-timeout-diagnostic.html"
+    },
+    {
+      "digest": "sha256:0a1e357025833349614928680d7af4bf54c6a469423a578cb5079a2e77054a8e",
+      "path": "weather-save-timeout-diagnostic.mdx"
+    },
+    {
+      "digest": "sha256:f38c31c0d3c0450efe33f889ba85efd7d158ab83619bca85fd3cc443aaef6876",
+      "path": "weather-save-timeout-endpoint.html"
+    },
+    {
+      "digest": "sha256:23602207491055ffb03bb4240b288bff0d9f3979b8d3dce3a433dce38392ab4d",
+      "path": "weather-save-timeout-endpoint.mdx"
+    },
+    {
+      "digest": "sha256:dae5f4a5485e8fc5c5c1a183e0d818c1c6dc58c3c6572f72537692e6cfa12c5c",
+      "path": "weather-save-timeout-fields-state.html"
+    },
+    {
+      "digest": "sha256:48ab37e5e8c956870f636aa69ee68d461144fd7caace963aa52bc673969d5f18",
+      "path": "weather-save-timeout-fields-state.mdx"
+    },
+    {
+      "digest": "sha256:0aca9ef8f86bdce0c2d1b0472b7e8fe234a33675256036b3682892550f16d8ac",
+      "path": "weather-save-timeout-overview.html"
+    },
+    {
+      "digest": "sha256:f862936c73debfb0838517397f92f4293a006da41597edee97b85293d0862a5d",
+      "path": "weather-save-timeout-overview.mdx"
+    },
+    {
+      "digest": "sha256:3249321d88b1fb32e84846eb98245bd3aff10ef25d95a597bd97d8d3ee3bd7b9",
+      "path": "weather-save-timeout-worker.html"
+    },
+    {
+      "digest": "sha256:b1dc5ef8f55e5490d511243785343caa6910502b74ae0a0e670a2f0c5df822f5",
+      "path": "weather-save-timeout-worker.mdx"
+    }
+  ],
+  "inputDigest": "sha256:583fcf329cbe103699912cacbbe258ab61d6a60018d0b81e4b9e3bb9399f196a",
+  "mdxProfile": "MDX 3; inert native JSX; no imports, executable expressions, scripts or network dependencies",
+  "pages": [
+    {
+      "contentDigest": "sha256:51e8655249f37e8447c1b96a2b419050c1a50b49c51da4dfdd269206090c0a29",
+      "html": "index.html",
+      "id": "index",
+      "mdx": "index.mdx"
+    },
+    {
+      "contentDigest": "sha256:b4653d33eb913200436167a7b93adc609bc5cdb8969a656115143cf0cecfaf58",
+      "html": "sources.html",
+      "id": "sources",
+      "mdx": "sources.mdx"
+    },
+    {
+      "contentDigest": "sha256:90d963107bec348458aa51c8d0e616343622c98fba391abb11538d11fd7f177a",
+      "html": "weather-save-timeout-diagnostic.html",
+      "id": "weather-save-timeout-diagnostic",
+      "mdx": "weather-save-timeout-diagnostic.mdx"
+    },
+    {
+      "contentDigest": "sha256:83b2704c7a8b168f1646bfd45364a6e27739d14491e7c2c6fee16e1b82997317",
+      "html": "weather-save-timeout-endpoint.html",
+      "id": "weather-save-timeout-endpoint",
+      "mdx": "weather-save-timeout-endpoint.mdx"
+    },
+    {
+      "contentDigest": "sha256:3351ac17170d31f1516ba41aa3f38f89d2de8810bce7e8140a7afcc7e0b5341b",
+      "html": "weather-save-timeout-fields-state.html",
+      "id": "weather-save-timeout-fields-state",
+      "mdx": "weather-save-timeout-fields-state.mdx"
+    },
+    {
+      "contentDigest": "sha256:287ba217ca2cb52ccb7d238e2128b26495c1e3c93eb6cd3539d19bf10a0d8e29",
+      "html": "weather-save-timeout-overview.html",
+      "id": "weather-save-timeout-overview",
+      "mdx": "weather-save-timeout-overview.mdx"
+    },
+    {
+      "contentDigest": "sha256:8f0172112adc5f6ce83d7838a22b0be4993c813a3cb45924be483a261b5d6acf",
+      "html": "weather-save-timeout-worker.html",
+      "id": "weather-save-timeout-worker",
+      "mdx": "weather-save-timeout-worker.mdx"
+    }
+  ],
+  "projectionDigest": "sha256:c43960c45f35eb4ecb46339c30dc0c8835e010b2eb09cb991e9707b149bb2cf6",
+  "schema": "codeclew-native-pages-static-manifest/1.0",
+  "selectionDigest": "sha256:280d2d26cb9ead0d45a023e56e85b8e706227308a11be017b7eca3eb491070d4",
+  "snapshot": "sha256:f1e2a854c4c18bd3c697b456625e649898681f3255370d460e4ce0c1911a1f4a/8956"
+}
