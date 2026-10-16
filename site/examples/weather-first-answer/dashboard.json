@@ -1,0 +1,16 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "dashboard",
+  "title": "Dashboard save timeout",
+  "repositoryId": "clew-weather-demo",
+  "repository": "https://github.com/codeclew/clew-weather-demo",
+  "language": "typescript",
+  "profile": "source-syntax",
+  "targetRef": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+  "source": {
+    "roots": [
+      "services/dashboard/src/main.ts"
+    ],
+    "dialect": "7.0.2"
+  }
+}

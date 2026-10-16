@@ -1,0 +1,18 @@
+{
+  "schema": "codeclew-documented-first-answer/1.0",
+  "date": "2026-10-16",
+  "launcher": "clew 0.13.34",
+  "runtimeMode": "RELEASE",
+  "workflow": "docs/source-syntax",
+  "repository": "https://github.com/codeclew/clew-weather-demo",
+  "revision": "f0e5c376a2333ec6b86b114039fe10921b6f3c4a",
+  "root": "source:services/dashboard/src/main.ts/package:/savePlace/7a5f9ccc269b81055666",
+  "snapshot": "sha256:f1e2a854c4c18bd3c697b456625e649898681f3255370d460e4ce0c1911a1f4a/8956",
+  "sourceId": "dashboard-7970ac3e2a8cf3f45b4a",
+  "sourceTextDigest": "sha256:d36fd526184e291acfb7df17b6ebb41df8afb1f284fcdb448f552c1b457260a8",
+  "captureStatus": "CHECKED",
+  "initialCheckExit": 3,
+  "initialFreshnessReason": "MISSING_BASELINE",
+  "meaningAuthority": "Agent interpretation of exact captured source; not model acceptance or runtime observation",
+  "limit": "Places receiver, transaction and runtime routing are outside the selected single-file scope."
+}
