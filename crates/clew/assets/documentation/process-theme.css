@@ -8,6 +8,9 @@ body[data-clew-theme="process"] {
 }
 body[data-clew-theme="process"] :focus-visible {outline:3px solid #0876ed;outline-offset:4px}
 body[data-clew-theme="process"] a {text-underline-offset:3px}
+body[data-clew-theme="process"]:not(.sequential-reading) a {color:#0876ed}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav a {color:var(--ink)}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav [aria-current="page"] {color:#0876ed}
 body[data-clew-theme="process"]:not(.sequential-reading) {font-size:17px;line-height:1.6}
 body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav {
   background:#fff;min-height:64px;padding:10px 40px 10px 88px;gap:32px;flex-wrap:wrap;
@@ -39,7 +42,7 @@ body[data-clew-theme="process"]:not(.sequential-reading) .topbar {height:auto;mi
 body[data-clew-theme="process"]:not(.sequential-reading) .top-actions {gap:16px;flex-wrap:wrap}
 body[data-clew-theme="process"]:not(.sequential-reading) .top-actions a,
 body[data-clew-theme="process"]:not(.sequential-reading) .top-actions button {font-size:14px;color:var(--ink);min-height:36px}
-body[data-clew-theme="process"]:not(.sequential-reading) .reader-guide h1 {font-size:42px;line-height:1.15;letter-spacing:-1px;color:var(--ink)}
+body[data-clew-theme="process"]:not(.sequential-reading) main h1 {font-size:42px;line-height:1.15;letter-spacing:-1px;color:var(--ink)}
 body[data-clew-theme="process"]:not(.sequential-reading) .scenario-heading h2,
 body[data-clew-theme="process"]:not(.sequential-reading) .catalogue-heading h2,
 body[data-clew-theme="process"]:not(.sequential-reading) .coverage-heading h2 {font-size:36px;line-height:1.2;color:var(--ink)}
@@ -69,6 +72,9 @@ body[data-clew-theme="process"] .mini-card,
 body[data-clew-theme="process"] .metric,
 body[data-clew-theme="process"] .reader-guide .card,
 body[data-clew-theme="process"] .gap-card {background:#fff;border-color:var(--line)}
+body[data-clew-theme="process"] .gap-card h2 {font-size:24px;line-height:1.4}
+body[data-clew-theme="process"] .gap-card p {font-size:14px;color:var(--muted)}
+body[data-clew-theme="process"] .gap-card .eyebrow {font-size:11px;color:var(--muted)}
 body[data-clew-theme="process"] .contract-intro {background:#f2f6fc;border-color:var(--line)}
 body[data-clew-theme="process"] .contract-intro h3,
 body[data-clew-theme="process"] .contract-section h3 {font-size:20px;color:var(--ink)}
@@ -134,7 +140,7 @@ body[data-clew-theme="process"] #copy-status {color:#b9dcff;font-size:12px}
   body[data-clew-theme="process"]:not(.sequential-reading) .sidebar {position:relative;top:0;height:auto;padding:20px 16px}
   body[data-clew-theme="process"]:not(.sequential-reading) main,
   body[data-clew-theme="process"]:not(.sequential-reading) main.reader-guide {padding:24px 16px 48px}
-  body[data-clew-theme="process"]:not(.sequential-reading) .reader-guide h1 {font-size:32px}
+  body[data-clew-theme="process"]:not(.sequential-reading) main h1 {font-size:32px}
   body[data-clew-theme="process"]:not(.sequential-reading) .scenario-heading h2 {font-size:28px;overflow-wrap:anywhere}
   body[data-clew-theme="process"] .reader-guide h2 {font-size:24px}
   body[data-clew-theme="process"] .scenario-heading {flex-wrap:wrap}
