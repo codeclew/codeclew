@@ -22,6 +22,7 @@ pub(super) const SUMMARY_TEXT_MAX_BYTES: usize = 2048;
 const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
 pub(super) const STYLE: &str = include_str!("../../assets/documentation/style.css");
 const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
+const QUESTION_SCRIPT: &str = include_str!("../../assets/documentation/question-reader.js");
 
 pub(super) fn escape(value: &str) -> String {
     value
@@ -40,7 +41,7 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
     Ok(template
         .replace("/*__STYLE__*/", STYLE)
-        .replace("/*__SCRIPT__*/", SCRIPT)
+        .replace("/*__SCRIPT__*/", &format!("{SCRIPT}\n{QUESTION_SCRIPT}"))
         .replace(
             "/*__ANALYSIS_SCRIPT__*/",
             include_str!("../../assets/documentation/analysis.js"),
@@ -4383,6 +4384,8 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         include_str!("language.rs"),
         STYLE,
         SCRIPT,
+        QUESTION_SCRIPT,
+        include_str!("static_pages/question_reading.rs"),
         include_str!("history.rs"),
         include_str!("process_candidates.rs"),
         include_str!("process_thread.rs"),

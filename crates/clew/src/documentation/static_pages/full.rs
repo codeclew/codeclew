@@ -17,6 +17,7 @@ pub(super) fn render(
     checked: &Check,
     snapshot: &str,
     publication: &str,
+    reading_plan: Option<&Path>,
     output: &Path,
 ) -> Result<Value, ClewError> {
     validate_output(output)?;
@@ -52,6 +53,7 @@ pub(super) fn render(
         remaining -= bytes.len() as u64;
         files.insert(name.clone(), bytes);
     }
+    let questions = super::question_reading::load(reading_plan, publication, &files, checked)?;
     for name in manifest.files.keys().filter(|name| {
         (name.starts_with("services/") || name.starts_with("scenarios/")) && name.ends_with(".json")
     }) {
@@ -68,6 +70,9 @@ pub(super) fn render(
             return Err(invalid(
                 "full pages operation bodies differ from frozen narrative",
             ));
+        }
+        if let Some(guide) = questions.get(&subject) {
+            payload["questionReader"] = guide.clone();
         }
         payload["selectedSnapshot"] = json!(snapshot);
         payload["frozenPublication"] = json!(publication);
@@ -138,7 +143,7 @@ pub(super) fn render(
     files.insert("history.html".into(), reader::page("Selected publication", &format!("<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",render::escape(publication),render::escape(snapshot))).into_bytes());
     let result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
-        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,
+        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
     files.insert(
         "pages-manifest.json".into(),

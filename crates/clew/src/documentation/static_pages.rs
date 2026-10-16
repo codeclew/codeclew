@@ -6,6 +6,7 @@ mod linked;
 pub mod model;
 mod project;
 mod publish;
+mod question_reading;
 mod source;
 
 use super::{
@@ -30,6 +31,7 @@ fn full_pages_saved_publication_replay() {
         snapshot: std::env::var("CODECLEW_FULL_PAGES_SNAPSHOT").unwrap(),
         input: None,
         publication: Some(std::env::var("CODECLEW_FULL_PAGES_PUBLICATION").unwrap()),
+        reading_plan: None,
         output: path("CODECLEW_FULL_PAGES_OUTPUT"),
     })
     .unwrap();
@@ -48,6 +50,7 @@ fn source_pages_saved_snapshot_replay() {
             .expect("explicit snapshot is required"),
         input: Some(path("CODECLEW_PAGES_REPLAY_INPUT")),
         publication: None,
+        reading_plan: None,
         output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
     })
     .expect("saved SOURCE pages replay must render");
@@ -144,6 +147,9 @@ pub enum Command {
         /// Full saved service/process publication, presented against the selected snapshot.
         #[arg(long, conflicts_with = "input")]
         publication: Option<String>,
+        /// Optional source-bound editorial question-reading profile.
+        #[arg(long, requires = "publication")]
+        reading_plan: Option<PathBuf>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -157,12 +163,20 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             snapshot,
             input,
             publication,
+            reading_plan,
             output,
         } => {
             let repo = Repository::open(&root)?;
             let checked = Check::load_snapshot(&repo, &snapshot)?;
             if let Some(publication) = publication {
-                return full::render(&repo, &checked, &snapshot, &publication, &output);
+                return full::render(
+                    &repo,
+                    &checked,
+                    &snapshot,
+                    &publication,
+                    reading_plan.as_deref(),
+                    &output,
+                );
             }
             let input =
                 input.ok_or_else(|| invalid("native pages require input or publication"))?;

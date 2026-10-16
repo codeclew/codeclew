@@ -1233,6 +1233,7 @@ mod tests {
             snapshot: snapshot.clone(),
             input: None,
             publication: Some(std::env::var("CODECLEW_UPDATED_PAGES_PUBLICATION").unwrap()),
+            reading_plan: None,
             output: path("CODECLEW_UPDATED_PAGES_OUTPUT"),
         })
         .unwrap();

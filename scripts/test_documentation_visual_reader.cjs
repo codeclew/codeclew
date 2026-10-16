@@ -6,7 +6,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8');
+const script=fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
 const source=text=>({service:'sample',file:'Worker.kt',startLine:1,endLine:1,text,revision:'abc',authority:'RETAINED_SOURCE_NOT_REVERIFIED'});
 function fixture(){
@@ -1338,4 +1338,36 @@ test('process call bindings preserve compiler parameters, unknown transfer and i
  assert.match(html,/Omitted default parameter indices/);
  data.language='ru';const ru=load(data);ru.run("showEntry('process-overview')");
  assert.match(ru.e('scenario-content').innerHTML,/Выбранные компилятором вызовы и параметры/);
+});
+
+function questionFixture(){
+ const d=behaviorFixture();
+ d.operations.push({...d.operations[0],id:'process-overview',title:'Saved wrapper'});
+ d.catalogue.unshift({id:'process-overview',kind:'PROCESS',trigger:{methods:[]},symbol:'saved wrapper'});
+ const block={title:'Supply a city',text:'Editorial <script>unsafe()</script>',evidence:[{kind:'RETAINED_CLAIM',title:'Original account',fragment:{text:'Original <img onerror=unsafe()>',id:'saved-claim'},sources:{old:source('ACCEPTED SOURCE')},state:{freshness:'STALE',verification:'UNASSESSED'}}],links:[{subject:'service:places',operation:'section-entities',href:'../services/places.html#section-entities',label:'Object context'}]};
+ d.questionReader={title:'Save a city',purpose:'Follow the bounded save',authority:'EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE',sections:[{id:'story',title:'What happens?',blocks:[block]},{id:'confidence',title:'Source and confidence',blocks:[block]}],conclusion:{...block,title:'Local result'}};
+ return d;
+}
+test('optional question profile has one main account, exact evidence and safe object return route',()=>{
+ const d=questionFixture(),before=JSON.stringify(d.operations),r=load(d);
+ r.run("showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/question-reader/);assert.match(html,/What happens\?/);assert.match(html,/Local result/);
+ assert.match(html,/Editorial &lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
+ assert.match(html,/Original &lt;img onerror=unsafe\(\)&gt;/);
+ assert.match(html,/ACCEPTED SOURCE/);assert.match(html,/Full retained descriptions, notes and original views/);
+ assert.match(html,/places.html\?fromProcess=renderer-fixture&amp;fromQuestion=story#section-entities/);
+ assert.equal(JSON.stringify(d.operations),before);
+ assert.equal(r.e('catalogue-button').hidden,true);
+ assert.match(r.e('scenario-nav').innerHTML,/href="#question-story"/);
+ r.run("revealQuestion('question-confidence')");
+ assert.equal(r.document.activeElement.id,'question-confidence');assert.equal(r.e('question-confidence').scrolled,true);
+ r.run("showEntry('reserve-fixture')");
+ assert.match(r.e('scenario-content').innerHTML,/Back to the questions/);
+});
+test('question navigation ignores unknown destinations and preserves exact source line disclosure',()=>{
+ const r=load(questionFixture());
+ assert.equal(r.run("revealQuestion('question-missing')"),false);
+ const html=r.run("questionSource({service:'dashboard',file:'compose.yaml',startLine:3,endLine:5,text:'before\\nPLACES_URL: http://places:8080\\nafter',revision:'revision-1234567',id:'config',textDigest:'digest'},4,4)");
+ assert.match(html,/compose.yaml:4–4/);assert.match(html,/PLACES_URL: http:\/\/places:8080/);assert.doesNotMatch(html,/>before|after<\/pre>/);
 });
