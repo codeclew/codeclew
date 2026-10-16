@@ -48,7 +48,7 @@ function questionOriginals(){
 function revealQuestion(id){
  const section=questionSection(id);if(!section)return false;
  if(!$('scenario-content').querySelector?.('.question-reader')||$('scenario-content').hidden||!$('coverage-view').hidden||!$('catalogue-view').hidden)showEntry('process-overview');
- const target=$(id);if(!target)return false;
+ const target=$(id);if(!target)return false;questionSelectedAnchor=id;
  let ancestor=target.parentElement;while(ancestor){if(ancestor.tagName==='DETAILS')ancestor.open=true;ancestor=ancestor.parentElement;}
  if(D.questionReader?.presentation==='SEQUENTIAL'&&id==='question-confidence'){const detail=target.querySelector?.('.sequential-provenance');if(detail)detail.open=true;}
  if('scrollRestoration' in history)history.scrollRestoration='manual';
@@ -58,9 +58,10 @@ function questionActive(id){
  document.querySelectorAll('.question-link').forEach(link=>{if(link.getAttribute('href')==='#'+id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current');});
  const select=$('question-select');if(select)select.value=id;
 }
-var questionObserver,questionLocationPending;
+var questionObserver,questionLocationPending,questionSelectedAnchor;
 function questionUpdateLocation(){
  if(!D.questionReader||current?.id!=='process-overview'||$('scenario-content').hidden)return;
+ if(questionSelectedAnchor&&questionSection(questionSelectedAnchor)){questionActive(questionSelectedAnchor);return;}
  const header=document.querySelector('.reader-nav')?.getBoundingClientRect?.();
  const menu=document.querySelector('.question-mobile-nav')?.getBoundingClientRect?.();
  const readingLine=Math.max(0,header?.bottom||0,menu?.bottom||0)+24;
@@ -84,6 +85,11 @@ function questionObserve(){
  }
  questionScheduleLocation();
 }
+function questionReleaseLocation(){questionSelectedAnchor=null;questionScheduleLocation();}
+window.addEventListener('wheel',questionReleaseLocation,{passive:true});
+window.addEventListener('touchmove',questionReleaseLocation,{passive:true});
+window.addEventListener('keydown',event=>{if(['ArrowDown','ArrowUp','PageDown','PageUp','Home','End',' '].includes(event.key)&&!event.target?.matches?.('input,textarea,select,button'))questionReleaseLocation();});
+window.addEventListener('pointerdown',event=>{if(event.clientX>=document.documentElement.clientWidth-16)questionReleaseLocation();},{passive:true});
 window.addEventListener('scroll',questionScheduleLocation,{passive:true});
 window.addEventListener('resize',questionScheduleLocation);
 document.addEventListener('toggle',questionScheduleLocation,true);
@@ -123,9 +129,10 @@ function sequentialNav(){
  if(!reading&&!$('scenario-content').querySelector?.('.question-return'))$('scenario-content').insertAdjacentHTML('afterbegin',chromeHtml`<p class="question-return"><a href="#question-confidence">${esc(questionText('Return to the process and sources','Вернуться к процессу и источникам'))}</a></p>`);
  return true;
 }
+function sequentialText(text){return String(text).split(/(`[^`\n]+`)/g).map(part=>part.startsWith('`')&&part.endsWith('`')?chromeHtml`<code>${esc(part.slice(1,-1))}</code>`:esc(part)).join('');}
 function sequentialBlock(block,section){
  const links=block.links?.length?chromeHtml` <span class="sequential-inline-links">${block.links.map(link=>questionLink(link,section)).join(' · ')}</span>`:'';
- const content=chromeHtml`<p>${esc(block.text)}${links}</p>`;
+ const content=chromeHtml`<p>${sequentialText(block.text)}${links}</p>`;
  if(block.disclosure)return chromeHtml`<details class="sequential-contract"><summary>${esc(block.disclosure)}${block.preview?chromeHtml`<span>${esc(block.preview)}</span>`:''}</summary>${content}${questionEvidence(block)}</details>`;
  if(block.tone&&block.tone!=='NORMAL')return chromeHtml`<aside${block.id?chromeHtml` id="${esc(questionAnchor(block.id))}" tabindex="-1"`:''} class="sequential-callout sequential-${esc(block.tone.toLowerCase())}"><h3>${esc(block.title)}</h3>${content}</aside>`;
  return content;

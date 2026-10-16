@@ -1392,7 +1392,7 @@ test('sequential profile keeps exceptions beside their steps and original descri
  assert.ok(html.indexOf('id="question-exchange-error"')>html.indexOf('id="question-request"'));
  assert.ok(html.indexOf('id="question-exchange-error"')<html.indexOf('id="question-save"'));
  assert.equal((html.match(/id="question-exchange-error"/g)||[]).length,1);
- assert.match(html,/POST \/api\/places → POST \/places/);assert.match(html,/icon-tabler-arrow-right/);assert.match(html,/icon-tabler-database/);
+ assert.match(html,/POST \/api\/places → POST \/places/);assert.equal((html.match(/class="sequential-icon"/g)||[]).length,2);assert.ok(html.includes(iconAssets['arrow-right']));assert.ok(html.includes(iconAssets.database));
  assert.match(html,/fromQuestion=save#section-entities/);
  assert.match(html,/Full retained descriptions, notes and original views/);assert.equal(JSON.stringify(d.operations),original);
  assert.match(r.e('scenario-nav').innerHTML,/Exchange failure · 503/);
@@ -1406,4 +1406,26 @@ test('active exception follows the nested viewport region rather than its parent
  r.e('question-exchange-error').getBoundingClientRect=()=>({top:-20,bottom:400,height:420});
  r.e('question-confidence').getBoundingClientRect=()=>({top:600,bottom:900,height:300});
  r.run('questionUpdateLocation()');assert.equal(r.e('question-select').value,'question-exchange-error');
+});
+
+test('explicit question selection survives scroll clamping until intentional user scrolling',()=>{
+ const d=questionFixture(),block=d.questionReader.sections[0].blocks[0];
+ d.questionReader.sections[0].blocks.push({...block,id:'unsupported-city',tone:'WARNING'});
+ const r=load(d);r.run("showEntry('process-overview')");
+ r.e('question-story').getBoundingClientRect=()=>({top:-100,bottom:500,height:600});
+ r.e('question-unsupported-city').getBoundingClientRect=()=>({top:315,bottom:400,height:85});
+ r.e('question-confidence').getBoundingClientRect=()=>({top:600,bottom:900,height:300});
+ r.run("revealQuestion('question-unsupported-city');questionUpdateLocation()");
+ assert.equal(r.e('question-select').value,'question-unsupported-city');
+ assert.equal(r.document.activeElement.id,'question-unsupported-city');
+ r.run('questionReleaseLocation();questionUpdateLocation()');
+ assert.equal(r.e('question-select').value,'question-story');
+ r.e('question-story').getBoundingClientRect=()=>({top:-700,bottom:500,height:1200});
+ r.e('question-unsupported-city').getBoundingClientRect=()=>({top:-200,bottom:400,height:600});
+ r.run('questionUpdateLocation()');assert.equal(r.e('question-select').value,'question-unsupported-city');
+});
+test('sequential inline code remains inert while retaining readable technical identifiers',()=>{
+ const r=load(questionFixture());
+ const html=r.run("sequentialText('Use `cityId` and `<img src=x onerror=alert(1)>` safely')");
+ assert.match(html,/<code>cityId<\/code>/);assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);assert.doesNotMatch(html,/<img /);
 });
