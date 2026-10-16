@@ -31,8 +31,10 @@ runtime verification.
   has `cases`; the assessment has `validator` and `results`.
 - `sources`: selected source bindings with `sourceId`, `revision`, `textDigest`
   and `artifact`. The artifact contains the original file. Pages compares the
-  selected span's exact line content, allowing a single final newline to be
-  absent from a captured span. Both original byte strings remain retained.
+  selected span's exact captured bytes within the declared lines. Leading
+  indentation before the first token and a final newline may lie outside the
+  compiler span. Exact artifact byte offsets and both original strings remain
+  retained; no captured source whitespace is normalized.
 - `entries`: records with `entrypoint`, `contractId`, `contractDigest`, `method`,
   `path` and `coverage`. Include an entry with no cases to disclose an inspected
   but unexercised HTTP path.

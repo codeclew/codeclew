@@ -149,6 +149,7 @@ fn project(
         }
     }
     let mut sources = BTreeMap::new();
+    let mut artifact_bindings = Vec::new();
     for binding in &packet.sources {
         let source = service
             .sources
@@ -158,26 +159,46 @@ fn project(
             .artifacts
             .get(&binding.artifact)
             .ok_or_else(|| invalid("HTTP comparison source artifact is absent"))?;
-        // Captured spans can omit their final newline. Preserve both original byte
-        // strings and compare their exact line content; do not trim whitespace.
-        let span = artifact
-            .text
-            .split_inclusive('\n')
-            .skip(source.start_line.saturating_sub(1) as usize)
+        // Compiler spans can begin at the first token rather than column zero.
+        // Locate the exact captured bytes inside their declared line window;
+        // only leading indentation and one final newline may be outside it.
+        if source.start_line == 0 || source.end_line < source.start_line || source.text.is_empty() {
+            return Err(invalid("HTTP comparison source line bounds are invalid"));
+        }
+        let lines: Vec<_> = artifact.text.split_inclusive('\n').collect();
+        if source.end_line > lines.len() as u64 {
+            return Err(invalid(
+                "HTTP comparison declared lines exceed the source artifact",
+            ));
+        }
+        let window_start = lines
+            .iter()
+            .take(source.start_line as usize - 1)
+            .map(|v| v.len())
+            .sum::<usize>();
+        let span = lines
+            .iter()
+            .skip(source.start_line as usize - 1)
             .take((source.end_line - source.start_line + 1) as usize)
+            .copied()
             .collect::<String>();
+        let offset = span.find(&source.text).filter(|offset| {
+            span[..*offset].bytes().all(|b| matches!(b, b' ' | b'\t'))
+                && matches!(&span[*offset + source.text.len()..], "" | "\n")
+        });
         if binding.revision != source.revision
             || binding.revision != packet.revision
             || binding.text_digest != source.text_digest
             || crate::canonical::hash_bytes(source.text.as_bytes()) != source.text_digest
-            || span.strip_suffix('\n').unwrap_or(&span)
-                != source.text.strip_suffix('\n').unwrap_or(&source.text)
+            || offset.is_none()
             || sources.insert(binding.source_id.clone(), source).is_some()
         {
-            return Err(invalid(
-                "HTTP comparison source bytes, span or revision differ",
-            ));
+            return Err(invalid(format!(
+                "HTTP comparison source bytes, span or revision differ: {}",
+                binding.source_id
+            )));
         }
+        artifact_bindings.push(json!({"sourceId":binding.source_id,"artifact":binding.artifact,"artifactDigest":artifact.digest,"startByte":window_start+offset.unwrap(),"endByte":window_start+offset.unwrap()+source.text.len(),"match":"EXACT_CAPTURED_BYTES_WITHIN_DECLARED_LINES"}));
     }
     let probe = artifact_json(&packet, &packet.probe_artifact)?;
     let assessment = artifact_json(&packet, &packet.assessment_artifact)?;
@@ -366,7 +387,7 @@ fn project(
         return Err(invalid("HTTP comparison contains unbound case assessments"));
     }
     Ok(
-        json!({"schema":"codeclew-http-comparison-view/1.0","service":packet.service,"revision":packet.revision,"snapshot":packet.snapshot,"publication":packet.publication,"bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","authority":"EXTERNAL_RECORDED_LOCAL_PROBE","schemaValidation":"RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED","validator":assessment["validator"],"scope":packet.scope,"limitations":packet.limitations,"entries":entries,"sources":sources,"artifacts":packet.artifacts,"packetDigest":super::super::digest(&packet)?}),
+        json!({"schema":"codeclew-http-comparison-view/1.0","service":packet.service,"revision":packet.revision,"snapshot":packet.snapshot,"publication":packet.publication,"bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","authority":"EXTERNAL_RECORDED_LOCAL_PROBE","schemaValidation":"RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED","validator":assessment["validator"],"scope":packet.scope,"limitations":packet.limitations,"entries":entries,"sources":sources,"artifactBindings":artifact_bindings,"artifacts":packet.artifacts,"packetDigest":super::super::digest(&packet)?}),
     )
 }
 
@@ -428,6 +449,32 @@ mod tests {
             result["schemaValidation"],
             "RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED"
         );
+    }
+    #[test]
+    fn locates_exact_compiler_bytes_after_first_line_indent_without_normalizing_them() {
+        let (mut packet, check) = fixture();
+        let text = "    handler\n";
+        packet["artifacts"]["source"] =
+            json!({"text":text,"digest":crate::canonical::hash_bytes(text.as_bytes())});
+        let result = run(packet.clone(), &check).unwrap();
+        assert_eq!(result["artifactBindings"][0]["startByte"], 4);
+        assert_eq!(result["artifactBindings"][0]["endByte"], 11);
+        assert_eq!(result["sources"]["source"]["text"], "handler");
+        let mut wrong_lines = check.clone();
+        wrong_lines
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .get_mut("source")
+            .unwrap()
+            .end_line = 2;
+        assert!(run(packet.clone(), &wrong_lines).is_err());
+        for text in ["prefix handler\n", "    hand ler\n", "    handler suffix\n"] {
+            packet["artifacts"]["source"] =
+                json!({"text":text,"digest":crate::canonical::hash_bytes(text.as_bytes())});
+            assert!(run(packet.clone(), &check).is_err());
+        }
     }
     #[test]
     fn rejects_stale_revision_route_contract_snapshot_source_and_corrupt_artifact() {
