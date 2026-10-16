@@ -33,9 +33,11 @@ In your repository, discover available scopes:
 clew doctor repository --repo "$PWD"
 ```
 
-Give your agent the question and ask it to choose a ready scope from that
-report, use the reported revision/profile/compilation, and return relevant
-source with unresolved boundaries. Readiness is discovery, not the answer.
+Give your agent the question and starting function or behavior, and ask it to
+choose a relevant ready scope from that report, use the reported
+revision/profile/compilation, and return source with unresolved boundaries.
+Use the [editable question/root template](https://codeclew.github.io/codeclew/index.html#ask-agent)
+when starting a new investigation. Readiness is discovery, not the answer.
 Compiler-backed work needs the project's toolchain and restored dependencies.
 For documentation from existing saved evidence, use the saved Check and process
 or declaration selection instead of starting a new capture by default.

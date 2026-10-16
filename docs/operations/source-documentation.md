@@ -229,8 +229,10 @@ returned identity. Source entrypoints retain callable identities, including unan
 Java/Kotlin annotations with fully qualified names or explicit imports also
 supply Spring declaration triggers through shared Rust rules. These are source
 declarations with runtime-registration gaps. Compiler profiles retain their
-existing endpoint discovery. Use explicit gaps for
-callables whose behavior is not yet authored. Follow `nextCursor` and inspect
+existing endpoint discovery. Use explicit gaps for discovered public boundaries
+within the requested publication scope whose behavior is not yet authored.
+Internal helpers are optional supporting context, not individually required
+pages or gaps. Follow `nextCursor` and inspect
 `omitted`; compact output is a projection of the same selected evidence, not a
 new context planner. `SOURCE_ALIAS` names a covering source fragment and provides
 an exact drill-down reference. Source ranges and flow records remain available.

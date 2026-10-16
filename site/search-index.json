@@ -18,6 +18,12 @@
     "group": "Reference"
   },
   {
+    "title": "Ask a focused question",
+    "url": "./index.html#ask-agent",
+    "description": "Codeclew",
+    "group": "Reference"
+  },
+  {
     "title": "What Codeclew gives you · Codeclew engineering guide",
     "url": "./engineering.html",
     "description": "What Codeclew gives you · Codeclew engineering guide",
@@ -50,6 +56,12 @@
   {
     "title": "Who decides what?",
     "url": "./engineering.html#responsibilities",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Session, profile, compilation and Check",
+    "url": "./engineering.html#glossary",
     "description": "What Codeclew gives you · Codeclew engineering guide",
     "group": "Reference"
   },
@@ -122,6 +134,12 @@
   {
     "title": "What an annotation tells Codeclew",
     "url": "./languages-annotations.html#annotations",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "SOURCE annotations: useful declarations without compiler resolution",
+    "url": "./languages-annotations.html#source-annotations",
     "description": "Languages, annotations and evidence · Codeclew engineering guide",
     "group": "Reference"
   },
