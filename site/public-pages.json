@@ -2,6 +2,10 @@
   "schema": "codeclew-public-pages/1.0",
   "pages": [
     "index.html",
+    "engineering.html",
+    "thread-boundaries.html",
+    "languages-annotations.html",
+    "cross-service.html",
     "provenance.html"
   ]
 }
