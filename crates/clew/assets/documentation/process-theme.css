@@ -1,0 +1,145 @@
+/* Shared publication theme selected by the sequential process reading plan.
+   Story geometry and semantic warning/error colors remain owned by their views. */
+body[data-clew-theme="process"] {
+  --ink:#0c2056;--muted:#526d9c;--line:#dce4ef;--canvas:#fff;--paper:#fff;
+  --green:#0876ed;--green-soft:#edf4fd;--accent:#0876ed;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+  background:var(--canvas);color:var(--ink);font-family:var(--sans);
+}
+body[data-clew-theme="process"] :focus-visible {outline:3px solid #0876ed;outline-offset:4px}
+body[data-clew-theme="process"] a {text-underline-offset:3px}
+body[data-clew-theme="process"]:not(.sequential-reading) {font-size:17px;line-height:1.6}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav {
+  background:#fff;min-height:64px;padding:10px 40px 10px 88px;gap:32px;flex-wrap:wrap;
+}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-brand {font-size:26px;letter-spacing:-.8px;gap:10px}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-brand svg {width:34px;height:34px}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-links {gap:24px;flex-wrap:wrap}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-links a {font-size:15px;min-height:40px;display:flex;align-items:center}
+body[data-clew-theme="process"] .reader-search input {font-size:14px;min-height:40px}
+body[data-clew-theme="process"]:not(.sequential-reading) .layout {max-width:none;grid-template-columns:312px minmax(0,1fr)}
+body[data-clew-theme="process"]:not(.sequential-reading) .sidebar {background:#fff;padding:24px 20px 32px 40px;top:var(--reader-header-height,64px);height:calc(100vh - var(--reader-header-height,64px))}
+body[data-clew-theme="process"]:not(.sequential-reading) main {padding:28px 40px 64px 48px;max-width:1320px}
+body[data-clew-theme="process"] .reader-guide {width:100%;max-width:1160px;overflow-wrap:anywhere}
+body[data-clew-theme="process"]:not(.sequential-reading) main.reader-guide {padding:40px 48px 80px}
+body[data-clew-theme="process"] .guide-layout {max-width:none;grid-template-columns:312px minmax(0,1fr)}
+body[data-clew-theme="process"] .guide-layout .reader-guide {margin:0;max-width:1200px}
+body[data-clew-theme="process"] .guide-toc {background:#fff;padding:28px 24px 32px 40px;font-size:15px}
+body[data-clew-theme="process"] .guide-toc h2 {font-size:12px;color:var(--muted)}
+body[data-clew-theme="process"] .guide-toc a {color:#0876ed;padding:8px 12px}
+body[data-clew-theme="process"]:not(.sequential-reading) .project h1 {font-size:20px;line-height:1.3;color:var(--ink)}
+body[data-clew-theme="process"]:not(.sequential-reading) .project p,
+body[data-clew-theme="process"]:not(.sequential-reading) .project a {font-size:13px;color:var(--muted)}
+body[data-clew-theme="process"]:not(.sequential-reading) .scenario-link {font-size:15px;line-height:1.5;color:var(--ink);min-height:40px;overflow-wrap:anywhere}
+body[data-clew-theme="process"]:not(.sequential-reading) .nav-group-title {font-size:12px;color:var(--muted)}
+body[data-clew-theme="process"]:not(.sequential-reading) .search input {font-size:14px;min-height:28px}
+body[data-clew-theme="process"]:not(.sequential-reading) .sidebar-note {font-size:12px;color:var(--muted)}
+body[data-clew-theme="process"]:not(.sequential-reading) .sidebar-note b {color:var(--muted)}
+body[data-clew-theme="process"]:not(.sequential-reading) .topbar {height:auto;min-height:44px;background:#fff;padding:4px 32px;gap:12px;flex-wrap:wrap}
+body[data-clew-theme="process"]:not(.sequential-reading) .top-actions {gap:16px;flex-wrap:wrap}
+body[data-clew-theme="process"]:not(.sequential-reading) .top-actions a,
+body[data-clew-theme="process"]:not(.sequential-reading) .top-actions button {font-size:14px;color:var(--ink);min-height:36px}
+body[data-clew-theme="process"]:not(.sequential-reading) .reader-guide h1 {font-size:42px;line-height:1.15;letter-spacing:-1px;color:var(--ink)}
+body[data-clew-theme="process"]:not(.sequential-reading) .scenario-heading h2,
+body[data-clew-theme="process"]:not(.sequential-reading) .catalogue-heading h2,
+body[data-clew-theme="process"]:not(.sequential-reading) .coverage-heading h2 {font-size:36px;line-height:1.2;color:var(--ink)}
+body[data-clew-theme="process"] .reader-guide h2 {font-size:28px;color:var(--ink)}
+body[data-clew-theme="process"] .reader-guide h3 {font-size:20px;color:var(--ink)}
+body[data-clew-theme="process"]:not(.sequential-reading) .summary,
+body[data-clew-theme="process"]:not(.sequential-reading) .process-view>p,
+body[data-clew-theme="process"]:not(.sequential-reading) .mini-card p,
+body[data-clew-theme="process"]:not(.sequential-reading) .catalogue-heading p,
+body[data-clew-theme="process"]:not(.sequential-reading) .coverage-heading p {font-size:16px;line-height:1.65;color:var(--muted)}
+body[data-clew-theme="process"] .breadcrumb,
+body[data-clew-theme="process"] .flow-note,
+body[data-clew-theme="process"] .small-label,
+body[data-clew-theme="process"] .schema-description,
+body[data-clew-theme="process"] .example-caption {font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+body[data-clew-theme="process"] .breadcrumb {flex-wrap:wrap}
+body[data-clew-theme="process"] .scope-summary b {color:var(--ink)}
+body[data-clew-theme="process"] .reader-guide .meta,
+body[data-clew-theme="process"] .catalog-status,
+body[data-clew-theme="process"] .catalog-results small {font-size:14px;color:var(--muted)}
+body[data-clew-theme="process"] .catalog-results li {padding:18px 4px}
+body[data-clew-theme="process"] .catalog-controls>* {max-width:100%;font-size:15px;min-height:44px}
+body[data-clew-theme="process"] .catalog-pager {flex-wrap:wrap;font-size:14px;gap:16px}
+body[data-clew-theme="process"] .catalog-pager button {min-height:44px}
+body[data-clew-theme="process"] .diagram-card,
+body[data-clew-theme="process"] .mini-card,
+body[data-clew-theme="process"] .metric,
+body[data-clew-theme="process"] .reader-guide .card,
+body[data-clew-theme="process"] .gap-card {background:#fff;border-color:var(--line)}
+body[data-clew-theme="process"] .contract-intro {background:#f2f6fc;border-color:var(--line)}
+body[data-clew-theme="process"] .contract-intro h3,
+body[data-clew-theme="process"] .contract-section h3 {font-size:20px;color:var(--ink)}
+body[data-clew-theme="process"] .contract-intro p {font-size:15px;color:var(--muted)}
+body[data-clew-theme="process"] .tabs {gap:24px;overflow:auto}
+body[data-clew-theme="process"] .tabs button {font-size:15px;min-height:44px;color:var(--muted);white-space:nowrap}
+body[data-clew-theme="process"] .tabs button[aria-selected=true] {color:#0876ed}
+body[data-clew-theme="process"] .pill-button,
+body[data-clew-theme="process"] .schema-tools select {font-size:14px;min-height:40px;color:var(--ink);white-space:normal}
+body[data-clew-theme="process"] .source-link,
+body[data-clew-theme="process"] .schema-link {font-size:13px;color:#0876ed;text-decoration-color:#b6ccef}
+body[data-clew-theme="process"] .table-wrap {max-width:100%}
+body[data-clew-theme="process"] table {font-size:14px}
+body[data-clew-theme="process"] th {font-size:12px;background:#f2f6fc;color:var(--muted)}
+body[data-clew-theme="process"] td {color:var(--ink);border-color:var(--line)}
+body[data-clew-theme="process"] td code {font-size:13px;color:#173c78;overflow-wrap:anywhere}
+body[data-clew-theme="process"] .reader-guide pre,
+body[data-clew-theme="process"] .contract-raw pre {font-size:13px;background:#f3f6fa;color:var(--ink);border-color:var(--line)}
+body[data-clew-theme="process"] .example-block {font-size:13px;background:#142344;color:#e0e9fc}
+body[data-clew-theme="process"] #source-panel {background:#142344;color:#e0e9fc;border-color:#34476a}
+body[data-clew-theme="process"] .source-top h2 {color:#f1f5ff;font-size:20px}
+body[data-clew-theme="process"] .source-top .eyebrow,
+body[data-clew-theme="process"] #source-meta,
+body[data-clew-theme="process"] #source-foot {color:#b0c3e5;font-size:12px}
+body[data-clew-theme="process"] #source-meta a,
+body[data-clew-theme="process"] #source-foot summary {color:#bedaff;font-size:12px}
+body[data-clew-theme="process"] .source-top button {background:#293e64;color:#edf4ff;min-width:40px;min-height:40px}
+body[data-clew-theme="process"] .source-toolbar {font-size:13px;color:#b0c3e5;border-color:#34476a;flex-wrap:wrap}
+body[data-clew-theme="process"] .source-toolbar select {font-size:13px;min-height:40px;background:#1e3154;color:#e0e9fc;border-color:#50678e;max-width:100%}
+body[data-clew-theme="process"] .source-toolbar button {font-size:13px;min-height:40px;color:#bedaff}
+body[data-clew-theme="process"] #source-code {background:#0c1933;color:#e0e9fc;font-size:13px;border-color:#34476a;scrollbar-color:#50678e transparent}
+body[data-clew-theme="process"] .line-number {background:#0c1933;color:#8fa9d4;border-color:#34476a}
+body[data-clew-theme="process"] .code-line.highlight,
+body[data-clew-theme="process"] .code-line.highlight .line-number {background:#243f70}
+body[data-clew-theme="process"] .code-line.highlight .line-number {color:#d2e6ff;border-color:#80afff}
+body[data-clew-theme="process"] .syntax-keyword {color:#d2c5ff}
+body[data-clew-theme="process"] .syntax-string {color:#a5dcff}
+body[data-clew-theme="process"] .syntax-comment {color:#a4b6d4}
+body[data-clew-theme="process"] #copy-status {color:#b9dcff;font-size:12px}
+@media(min-width:1450px) {
+  body[data-clew-theme="process"].source-open:not(.sequential-reading) .layout {grid-template-columns:260px minmax(0,1fr)}
+  body[data-clew-theme="process"].source-open:not(.sequential-reading) main {padding:28px 24px 64px}
+}
+@media(max-width:1300px) and (min-width:761px) {
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav {padding-left:48px;gap:20px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .layout,
+  body[data-clew-theme="process"] .guide-layout {grid-template-columns:260px minmax(0,1fr)}
+  body[data-clew-theme="process"]:not(.sequential-reading) .sidebar,
+  body[data-clew-theme="process"] .guide-toc {padding-left:24px}
+  body[data-clew-theme="process"]:not(.sequential-reading) main {padding-left:32px;padding-right:28px}
+}
+@media(max-width:950px) {
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav {padding:10px 20px;gap:8px 24px}
+  body[data-clew-theme="process"] .guide-layout {display:block}
+  body[data-clew-theme="process"] .guide-toc {padding:20px;border-bottom:1px solid var(--line)}
+}
+@media(max-width:760px) {
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-nav {padding:10px 16px;gap:4px 20px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-brand {font-size:23px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-links {gap:12px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-links a {font-size:13px;min-height:36px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .layout {display:block}
+  body[data-clew-theme="process"]:not(.sequential-reading) .sidebar {position:relative;top:0;height:auto;padding:20px 16px}
+  body[data-clew-theme="process"]:not(.sequential-reading) main,
+  body[data-clew-theme="process"]:not(.sequential-reading) main.reader-guide {padding:24px 16px 48px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .reader-guide h1 {font-size:32px}
+  body[data-clew-theme="process"]:not(.sequential-reading) .scenario-heading h2 {font-size:28px;overflow-wrap:anywhere}
+  body[data-clew-theme="process"] .reader-guide h2 {font-size:24px}
+  body[data-clew-theme="process"] .scenario-heading {flex-wrap:wrap}
+  body[data-clew-theme="process"] .catalog-controls {flex-direction:column}
+  body[data-clew-theme="process"] .catalog-controls input {min-width:0}
+  body[data-clew-theme="process"] .catalog-pager {gap:10px}
+  body[data-clew-theme="process"] .outcome-grid {grid-template-columns:1fr}
+}

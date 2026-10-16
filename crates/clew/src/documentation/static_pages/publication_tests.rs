@@ -4,6 +4,7 @@ use crate::documentation::{
     check::{SOURCE_INPUTS_SCHEMA, SourceInputs},
     endpoint_publication::{self, Policy},
     model::{Observation, Service, ServiceEvidence, Source},
+    reader,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -400,6 +401,12 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     })
     .unwrap();
     assert_eq!(rendered["status"], "RENDERED");
+    for page in ["catalog.html", "history.html"] {
+        let html = fs::read_to_string(output.join(page)).unwrap();
+        assert!(html.contains("class=\"reader-nav\""));
+        assert!(html.contains(reader::SCRIPT));
+        assert!(html.contains(reader::STYLE));
+    }
     assert!(output.join("index.html").is_file());
     assert!(!output.join("root-overview.html").exists());
     assert_eq!(

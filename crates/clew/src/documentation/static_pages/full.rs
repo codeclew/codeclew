@@ -54,6 +54,9 @@ pub(super) fn render(
         files.insert(name.clone(), bytes);
     }
     let questions = super::question_reading::load(reading_plan, publication, &files, checked)?;
+    let process_theme = questions
+        .values()
+        .any(|guide| guide["presentation"] == "SEQUENTIAL");
     for name in manifest.files.keys().filter(|name| {
         (name.starts_with("services/") || name.starts_with("scenarios/")) && name.ends_with(".json")
     }) {
@@ -139,8 +142,29 @@ pub(super) fn render(
             files.insert(format!("frozen-{name}"), bytes);
         }
     }
-    files.insert("catalog.html".into(), reader::catalog(&files).into_bytes());
-    files.insert("history.html".into(), reader::page("Selected publication", &format!("<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",render::escape(publication),render::escape(snapshot))).into_bytes());
+    let navigation = reader::navigation("", "overview.html", Some("history.html"), &[]);
+    let catalog = reader::decorate(&reader::catalog(&files), &navigation);
+    files.insert("catalog.html".into(), catalog.into_bytes());
+    let history = reader::page(
+        "Selected publication",
+        &format!(
+            "<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",
+            render::escape(publication),
+            render::escape(snapshot)
+        ),
+    );
+    files.insert(
+        "history.html".into(),
+        reader::decorate(&history, &navigation).into_bytes(),
+    );
+    if process_theme {
+        for (name, bytes) in &mut files {
+            if name.ends_with(".html") {
+                let html = std::str::from_utf8(bytes).map_err(io_error)?;
+                *bytes = reader::process_theme(html).into_bytes();
+            }
+        }
+    }
     let result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),
