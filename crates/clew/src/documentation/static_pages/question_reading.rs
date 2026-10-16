@@ -11,7 +11,7 @@ use std::{
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum PlanInput {
-    Single(Plan),
+    Single(Box<Plan>),
     Collection(PlanCollection),
 }
 #[derive(Deserialize)]
@@ -258,7 +258,7 @@ pub(super) fn load(
     };
     let input: PlanInput = store::read(path, 128 * 1024)?;
     let plans = match input {
-        PlanInput::Single(plan) => vec![plan],
+        PlanInput::Single(plan) => vec![*plan],
         PlanInput::Collection(collection)
             if collection.schema == "codeclew-question-reading-plans/1.0"
                 && (1..=16).contains(&collection.plans.len()) =>
@@ -355,10 +355,10 @@ fn project_plan(
             next_step += 1;
         }
         for block in &section.blocks {
-            if let Some(id) = &block.id {
-                if !ids.insert(id.clone()) {
-                    return Err(invalid("reading-plan anchor identity must be unique"));
-                }
+            if let Some(id) = &block.id
+                && !ids.insert(id.clone())
+            {
+                return Err(invalid("reading-plan anchor identity must be unique"));
             }
         }
         let blocks = section

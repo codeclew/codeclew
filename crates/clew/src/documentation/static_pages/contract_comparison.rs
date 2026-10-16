@@ -73,7 +73,7 @@ fn route_matches(template: &str, path: &str) -> bool {
             .zip(b)
             .all(|(a, b)| *a == b || (a.starts_with('{') && a.ends_with('}') && !b.is_empty()))
 }
-fn response_declaration<'a>(operation: &'a Value, status: u64) -> &'a Value {
+fn response_declaration(operation: &Value, status: u64) -> &Value {
     let responses = &operation["responses"];
     responses
         .get(status.to_string())
