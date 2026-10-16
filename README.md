@@ -1,27 +1,48 @@
 # Codeclew
 
-Codeclew gives a coding agent a bounded view of a question through captured source. A computation thread starts at a chosen root and direction, follows connected steps and branches, records effects and declared service handoffs, and stops at the evidence frontier where captured context ends. Session generation uses the session profile to select generation behavior; thread-flow loading retrieves and verifies a flow from local state. These source-backed paths are not runtime traces.
+Codeclew is a local CLI that gives engineers and coding agents bounded,
+inspectable code evidence for an engineering question. Use it to find exact
+source, explain selected behavior, review changes, prepare linked documentation,
+and carry out changes admitted by a supported profile.
+
+A **computation thread** is the question's path through selected functions,
+branches, effects and service handoffs, ending where the evidence ends. It can
+fit inside one method. It is distinct from the multi-session CLI `thread`
+container and from an authored documentation process; none is a runtime trace.
+
+Start with the [engineering guide](https://codeclew.github.io/codeclew/engineering.html):
+
+1. [Questions, inputs and outputs](https://codeclew.github.io/codeclew/engineering.html#tasks),
+   including one clearly illustrative checkout investigation.
+2. [How thread boundaries are chosen](https://codeclew.github.io/codeclew/thread-boundaries.html).
+3. [Languages, annotations and workflow limits](https://codeclew.github.io/codeclew/languages-annotations.html).
+4. [Cross-service threads](https://codeclew.github.io/codeclew/cross-service.html):
+   contracts, explicit relationships, receiver evidence and incomplete outcomes.
 
 Install Codeclew and its Codex instructions:
 
 ```sh
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
-```
-
-```sh
 export PATH="$HOME/.local/bin:$PATH"
-```
-
-```sh
 clew skill install --agent codex
 ```
 
-In your repository, run:
+In your repository, discover available scopes:
 
 ```sh
 clew doctor repository --repo "$PWD"
 ```
 
-Then ask your agent: “Choose the best READY_FOR_TASK_DOCTOR contour in the report without asking me to choose. Derive its target ref, profile, and compilation from the report; run the read-only analysis and return a compact source-backed path through functions, branches, effects, service handoffs, and the evidence frontier. Distinguish source findings from runtime claims.” The agent uses your configured model and provider; Codeclew requires no paid API or hosted model.
+Give your agent the question and ask it to choose a ready scope from that
+report, use the reported revision/profile/compilation, and return relevant
+source with unresolved boundaries. Readiness is discovery, not the answer.
+Compiler-backed work needs the project's toolchain and restored dependencies.
+For documentation from existing saved evidence, use the saved Check and process
+or declaration selection instead of starting a new capture by default.
 
-Explore the weather demo: https://github.com/codeclew/clew-weather-demo
+The agent uses its configured model/provider. Codeclew does not require a paid
+API or hosted model service; optional model-assisted authoring is separate.
+For execution details, use the [agent workflow](skills/codeclew/SKILL.md) and
+[native source documentation guide](docs/guides/native-retained-source.md).
+The [Weather reader](https://codeclew.github.io/clew-weather-demo/index.html) has
+its own retained evidence and limits; it is separate from the fictional example.

@@ -6,8 +6,200 @@
     "group": "Reference"
   },
   {
+    "title": "Understand the product before the commands",
+    "url": "./index.html#engineering-guide",
+    "description": "Codeclew",
+    "group": "Reference"
+  },
+  {
+    "title": "Install and ask one question",
+    "url": "./index.html#quick-start",
+    "description": "Codeclew",
+    "group": "Reference"
+  },
+  {
+    "title": "What Codeclew gives you · Codeclew engineering guide",
+    "url": "./engineering.html",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "A code investigation tool for engineers and agents",
+    "url": "./engineering.html#product",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Choose the result you need",
+    "url": "./engineering.html#tasks",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "One question, from inputs to an answer",
+    "url": "./engineering.html#walkthrough",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Computation thread, CLI thread and documentation process",
+    "url": "./engineering.html#terms",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Who decides what?",
+    "url": "./engineering.html#responsibilities",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Start with one question",
+    "url": "./engineering.html#start",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Implementation and detailed recipes",
+    "url": "./engineering.html#sources",
+    "description": "What Codeclew gives you · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "How a thread gets its boundaries · Codeclew engineering guide",
+    "url": "./thread-boundaries.html",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Root and source scope: where does the investigation start?",
+    "url": "./thread-boundaries.html#inputs",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Follow a path, not every possible program behavior",
+    "url": "./thread-boundaries.html#direction",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Frontiers: why does the path stop?",
+    "url": "./thread-boundaries.html#stops",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "The same checkout question, two useful boundaries",
+    "url": "./thread-boundaries.html#example",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Exact source, reviewed meaning and current source are separate",
+    "url": "./thread-boundaries.html#freshness",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Implementation and detailed recipes",
+    "url": "./thread-boundaries.html#sources",
+    "description": "How a thread gets its boundaries · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Languages, annotations and evidence · Codeclew engineering guide",
+    "url": "./languages-annotations.html",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Which kind of work is supported?",
+    "url": "./languages-annotations.html#matrix",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "What an annotation tells Codeclew",
+    "url": "./languages-annotations.html#annotations",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Four layers to keep distinct",
+    "url": "./languages-annotations.html#authority",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "What “managed change support” means",
+    "url": "./languages-annotations.html#changes",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Implementation and detailed recipes",
+    "url": "./languages-annotations.html#sources",
+    "description": "Languages, annotations and evidence · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Build a cross-service thread · Codeclew engineering guide",
+    "url": "./cross-service.html",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Start with a question and the participating source",
+    "url": "./cross-service.html#inputs",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Make the handoff a first-class question",
+    "url": "./cross-service.html#handoff",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Checkout → reservation → event",
+    "url": "./cross-service.html#example",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Explain failure at the right boundary",
+    "url": "./cross-service.html#failure",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "When evidence or a linked explanation changes",
+    "url": "./cross-service.html#changes",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Choose an execution recipe",
+    "url": "./cross-service.html#next",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
+    "title": "Implementation and detailed recipes",
+    "url": "./cross-service.html#sources",
+    "description": "Build a cross-service thread · Codeclew engineering guide",
+    "group": "Reference"
+  },
+  {
     "title": "Provenance",
     "url": "./provenance.html",
+    "description": "Provenance",
+    "group": "Reference"
+  },
+  {
+    "title": "Engineering guide scope",
+    "url": "./provenance.html#engineering-guide",
     "description": "Provenance",
     "group": "Reference"
   }
