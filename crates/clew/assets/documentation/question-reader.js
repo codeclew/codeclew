@@ -28,6 +28,12 @@ function questionLink(link,section){
  let href=link.href;
  if(link.subject.startsWith('service:')&&link.operation==='section-entities'){
   const [path,hash]=href.split('#');href=path+'?fromProcess='+encodeURIComponent(D.subject.slice(9))+'&fromQuestion='+encodeURIComponent(section)+(D.questionReader?.language==='ru'?'&readerLanguage=ru':'')+'#'+hash;
+  const models=D.canonicalEntityLinks?.[questionAnchor(section)]?.[link.subject.slice(8)];
+  if(models?.length){
+   const field=new URLSearchParams(location.search||'').get('field');
+   const query='?fromProcess='+encodeURIComponent(D.subject.slice(9))+'&fromAnchor='+encodeURIComponent(questionAnchor(section))+(field?'&fromField='+encodeURIComponent(field):'');
+   return chromeHtml`<span class="question-model-links">${models.map(model=>chromeHtml`<a href="${esc(model.href+query)}">${esc(model.title)} · ${esc(questionText('data model','модель данных'))}</a>`).join(' · ')} <a class="question-technical-link" href="${esc(href)}" title="${esc(link.label)}">${esc(questionText('Technical context','Технический контекст'))}</a></span>`;
+  }
  }
  return chromeHtml`<a href="${esc(href)}">${esc(link.label)}</a>`;
 }
@@ -125,7 +131,8 @@ function sequentialNav(){
  const item=row=>chromeHtml`<a class="question-link" href="#${esc(questionAnchor(row.id))}">${esc(row.title)}</a>`;
  const entitySection=guide.sections.find(section=>section.blocks.some(block=>block.links?.some(link=>link.operation==='section-entities')));
  const entity=entitySection?.blocks.flatMap(block=>block.links||[]).find(link=>link.operation==='section-entities');
- $('scenario-nav').innerHTML=steps.map(item).join('')+(exceptions.length?chromeHtml`<div class="sequential-nav-group"><p>${esc(questionText('Exceptions','Исключения'))}</p>${exceptions.map(item).join('')}</div>`:'')+(entity?chromeHtml`<div class="sequential-nav-group sequential-entity">${questionLink(entity,entitySection.id)}<small>${esc(questionText('Fields and service context','Поля и контекст сервиса'))}</small></div>`:'')+chromeHtml`<div class="sequential-nav-group">${reference.map(item).join('')}<small>${esc(questionText('Saved source · review required','Сохранённые исходники · требуется проверка'))}<small>${esc(statusLabel(D.operationStates?.['process-overview']?.freshness||'UNVERIFIED'))} · ${esc(D.operationStates?.['process-overview']?.verification||'UNASSESSED')}</small></div>`;
+ const canonicalEntity=entity&&D.canonicalEntityLinks?.[questionAnchor(entitySection.id)]?.[entity.subject.slice(8)]?.length;
+ $('scenario-nav').innerHTML=steps.map(item).join('')+(exceptions.length?chromeHtml`<div class="sequential-nav-group"><p>${esc(questionText('Exceptions','Исключения'))}</p>${exceptions.map(item).join('')}</div>`:'')+(entity?chromeHtml`<div class="sequential-nav-group sequential-entity">${questionLink(entity,entitySection.id)}<small>${esc(canonicalEntity?questionText('Data model and technical context','Модель данных и технический контекст'):questionText('Fields and service context','Поля и контекст сервиса'))}</small></div>`:'')+chromeHtml`<div class="sequential-nav-group">${reference.map(item).join('')}<small>${esc(questionText('Saved source · review required','Сохранённые исходники · требуется проверка'))}<small>${esc(statusLabel(D.operationStates?.['process-overview']?.freshness||'UNVERIFIED'))} · ${esc(D.operationStates?.['process-overview']?.verification||'UNASSESSED')}</small></div>`;
  if(!reading&&!$('scenario-content').querySelector?.('.question-return'))$('scenario-content').insertAdjacentHTML('afterbegin',chromeHtml`<p class="question-return"><a href="#question-confidence">${esc(questionText('Return to the process and sources','Вернуться к процессу и источникам'))}</a></p>`);
  return true;
 }

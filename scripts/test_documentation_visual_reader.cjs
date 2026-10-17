@@ -96,7 +96,7 @@ function load(data=fixture(),mobile=false){
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){},toggle(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
  testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
- const context=vm.createContext({document:testDocument,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
+ const context=vm.createContext({document:testDocument,URLSearchParams,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
  return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
@@ -1349,6 +1349,22 @@ function questionFixture(){
  d.questionReader={title:'Save a city',purpose:'Follow the bounded save',authority:'EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE',sections:[{id:'story',title:'What happens?',blocks:[block]},{id:'confidence',title:'Source and confidence',blocks:[block]}],conclusion:{...block,title:'Local result'}};
  return d;
 }
+test('canonical model is primary without Data Flow and retains exact process return and legacy context',()=>{
+ const d=questionFixture(),original=JSON.stringify({operations:d.operations,guide:d.questionReader});
+ d.canonicalEntityLinks={'question-story':{places:[{id:'place',title:'Place',href:'../data-model/place.html'}]}};
+ const r=load(d);r.run("location.search='?field=place.id';showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/place.html\?fromProcess=renderer-fixture&amp;fromAnchor=question-story&amp;fromField=place.id/);
+ assert.match(html,/Place · data model/);
+ assert.match(html,/class="question-technical-link"[^>]+places.html\?fromProcess=renderer-fixture&amp;fromQuestion=story#section-entities/);
+ assert.match(html,/Technical context/);
+ assert.match(html,/title="Object context"/);
+ assert.equal(JSON.stringify({operations:d.operations,guide:d.questionReader}),original);
+ assert.equal(d.processDataFlow,undefined);
+ const other=r.run("questionLink(D.questionReader.sections[1].blocks[0].links[0],'confidence')");
+ assert.doesNotMatch(other,/data-model/);
+ assert.match(other,/fromQuestion=confidence/);
+});
 test('optional question profile has one main account, exact evidence and safe object return route',()=>{
  const d=questionFixture(),before=JSON.stringify(d.operations),r=load(d);
  r.run("showEntry('process-overview')");

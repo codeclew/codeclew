@@ -43,6 +43,14 @@ Process/Data Flow tabs retain the process anchor and selected field. Canonical
 entity links carry a return location for the same process step. Unconfigured
 processes retain their previous payload and presentation.
 
+A model's `processLinks` can optionally specify `replacesServiceEntities` with
+the legacy service ID. The process and question anchor must identify an existing
+reading-plan link to that service's `section-entities`. This explicit mapping makes
+the canonical model the primary destination and retains the original service page
+as Technical context, without changing retained prose or claims. It works even
+when Data Flow is disabled. Links preserve the originating question and selected
+field for return navigation; unrelated questions keep their existing links.
+
 The standalone field reader offers a matrix and one focused field flow. Selecting
 a cell opens its statement and bounded source evidence; contract/condition and
 technical details stay in disclosures. New interpretations still require review.

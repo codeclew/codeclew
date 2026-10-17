@@ -122,6 +122,12 @@ struct ProcessLink {
     subject: String,
     anchor: String,
     label: String,
+    #[serde(
+        rename = "replacesServiceEntities",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    replaces_service_entities: Option<String>,
 }
 const KINDS: &[&str] = &[
     "validate",
@@ -402,6 +408,35 @@ pub(super) fn load(
                 return Err(invalid("data-model process anchor is invalid"));
             }
             text(&link.label)?;
+            if let Some(service) = &link.replaces_service_entities {
+                let _ = page_for(files, &format!("service:{service}"))?;
+                let matched = link.subject.starts_with("scenario:")
+                    && guides.get(&link.subject).is_some_and(|guide| {
+                        guide["sections"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|section| {
+                                format!("question-{}", strv(&section["id"])) == link.anchor
+                                    && section["blocks"]
+                                        .as_array()
+                                        .into_iter()
+                                        .flatten()
+                                        .flat_map(|block| {
+                                            block["links"].as_array().into_iter().flatten()
+                                        })
+                                        .any(|old| {
+                                            old["subject"] == format!("service:{service}")
+                                                && old["operation"] == "section-entities"
+                                        })
+                            })
+                    });
+                if !matched {
+                    return Err(invalid(
+                        "canonical entity navigation must replace an explicit service entities link in the same process question",
+                    ));
+                }
+            }
         }
     }
     for m in &plan.models {
@@ -600,6 +635,35 @@ pub(super) fn attach_process(
     let Some(model) = model else {
         return Ok(());
     };
+    // Canonical navigation is independent of the optional field-flow reader.
+    // The author must bind the exact legacy service link and question explicitly.
+    let mut navigation = serde_json::Map::new();
+    for m in model["models"].as_array().into_iter().flatten() {
+        for link in m["processLinks"].as_array().into_iter().flatten() {
+            let Some(service) = link["replacesServiceEntities"].as_str() else {
+                continue;
+            };
+            if link["subject"] != subject {
+                continue;
+            }
+            let section = navigation
+                .entry(strv(&link["anchor"]).to_owned())
+                .or_insert_with(|| json!({}));
+            let links = section
+                .as_object_mut()
+                .unwrap()
+                .entry(service.to_owned())
+                .or_insert_with(|| json!([]));
+            links
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id":m["id"],"title":m["title"],
+                "href":format!("../data-model/{}.html",strv(&m["id"]))}));
+        }
+    }
+    if !navigation.is_empty() {
+        payload["canonicalEntityLinks"] = Value::Object(navigation);
+    }
     let Some(view) = model["processViews"]
         .as_array()
         .into_iter()
@@ -1007,6 +1071,32 @@ mod tests {
         assert_eq!(off, original);
         assert_eq!(model["authority"], "AGENT_PROPOSAL");
         assert_eq!(model["review"], "UNASSESSED");
+    }
+    #[test]
+    fn canonical_entity_navigation_is_explicit_and_independent_of_field_flow() {
+        let (mut plan, mut files, mut guides, check) = fixture();
+        plan["processViews"][0]["enabled"] = json!(false);
+        plan["models"][0]["processLinks"][0]["replacesServiceEntities"] = json!("sample");
+        files.insert("services/sample.json".into(), b"{}".to_vec());
+        guides.get_mut("scenario:example").unwrap()["sections"][0]["blocks"] =
+            json!([{"links":[{"subject":"service:sample","operation":"section-entities"}]}]);
+        let model = read(&plan, &files, &guides, &check).unwrap();
+        let original = json!({"operations":[{"id":"saved","text":"unchanged"}]});
+        let mut payload = original.clone();
+        attach_process(Some(&model), "scenario:example", &mut payload).unwrap();
+        assert_eq!(payload["operations"], original["operations"]);
+        assert!(payload.get("processDataFlow").is_none());
+        assert_eq!(
+            payload["canonicalEntityLinks"]["question-apply"]["sample"],
+            json!([{"id":"record","title":"Record","href":"../data-model/record.html"}])
+        );
+        let mut other = original.clone();
+        attach_process(Some(&model), "scenario:other", &mut other).unwrap();
+        assert_eq!(other, original);
+        guides.get_mut("scenario:example").unwrap()["sections"][0]["blocks"] = json!([]);
+        assert!(read(&plan, &files, &guides, &check).is_err());
+        files.remove("services/sample.json");
+        assert!(read(&plan, &files, &guides, &check).is_err());
     }
     #[test]
     fn changed_evidence_missing_field_and_unrelated_stage_fail_closed() {
