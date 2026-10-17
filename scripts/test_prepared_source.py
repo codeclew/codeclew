@@ -253,6 +253,84 @@ class PreparedSourceTest(unittest.TestCase):
                 self.assertFalse(json.loads(rejected.stdout)['evidenceDelivered'])
                 self.assertEqual(rejected.stderr, b'')
 
+    def test_maintenance_shows_only_changed_source_and_retains_values_limits_and_citations(self):
+        original = packet('new λ🙂 body')
+        original['comparison'] = {'status': 'CHANGED', 'selectedSourceBytes': 'CHANGED',
+            'baselineBinding': {'snapshot': 'old', 'revision': 'old-rev'},
+            'targetBinding': {'snapshot': 'new', 'revision': 'new-rev'},
+            'reasonExamples': [{'reason': 'duplicate header'}]}
+        before = {'id': 'body-1', 'revision': 'old-rev', 'file': 'src/worker.py', 'startLine': 3, 'endLine': 4}
+        after = {**before, 'revision': 'new-rev'}
+        window = {'before': 'old value', 'after': 'new value', 'beforeCitation': before, 'afterCitation': after}
+        original['items'] += [{'kind': 'EVIDENCE_CHANGE', 'id': 'change-0', 'record': {
+            'reason': 'SELECTED_SOURCE_BYTES_CHANGED', 'source': 'body-1', 'changedWindow': window}},
+            {'kind': 'SOURCE_BINDING_UPDATE', 'id': 'binding-0', 'record': {
+                'source': 'body-1', 'before': before, 'after': after}},
+            {'kind': 'SOURCE_NATIVE', 'id': 'unchanged-native', 'record': {
+                'text': 'UNCHANGED_BODY_MUST_NOT_REPLAY', 'authority': 'NATIVE_BYTES_ONLY',
+                'membershipCoverage': 'REGISTERED_ONLY'}}]
+        result = helper.maintenance(original, Path('/packet.json'), 'digest')
+        view = json.loads(result)
+        self.assertEqual(view['status'], 'CHANGED')
+        self.assertNotIn('reasonExamples', view['evidence']['comparison'])
+        self.assertEqual(view['changes'][0]['record']['changedWindow'], window)
+        self.assertEqual(view['citationUpdates'][0]['binding']['after'], after)
+        pointer = view['citationUpdates'][0]['binding']['completeBeforeAfter']['pointer']
+        binding = json.loads(helper.local_record(original, Path('/packet.json'), 'digest', pointer, 12000))
+        self.assertEqual(binding['item']['record']['before'], before)
+        with self.assertRaisesRegex(helper.ViewError, 'INVALID_LOCAL_PACKET_POINTER'):
+            helper.local_record(original, Path('/packet.json'), 'digest', '/items/01', 12000)
+        self.assertEqual(view['sources'][0]['text'], 'new λ🙂 body')
+        self.assertNotIn('UNCHANGED_BODY_MUST_NOT_REPLAY', result)
+        self.assertIn('NATIVE_BYTES_ONLY', result)
+        self.assertEqual(view['evidence']['unresolved'], original['unresolved'])
+        metadata = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest', max_sources=0))
+        self.assertEqual(metadata['sources'], [])
+        self.assertEqual(metadata['changes'], view['changes'])
+        self.assertEqual(metadata['projection']['sourceBodies'], 'METADATA_ONLY')
+        self.assertLessEqual(len(result.encode()), 12000)
+
+    def test_maintenance_unchanged_unknown_and_local_record_pages_are_explicit(self):
+        original = packet('unchanged body')
+        original['comparison'] = {'status': 'UNCHANGED', 'selectedSourceBytes': 'UNCHANGED'}
+        unchanged = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest'))
+        self.assertEqual(unchanged['sources'], [])
+        original['comparison']['status'] = 'UNKNOWN'
+        original['targetNativeInputLimits'] = [{'reason': 'NATIVE_INPUT_UNAVAILABLE', 'input': 'receiver.cs'}]
+        unknown = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest'))
+        self.assertEqual(unknown['status'], 'UNKNOWN')
+        self.assertEqual(unknown['evidence']['targetNativeInputLimits'], original['targetNativeInputLimits'])
+        original['items'] = [{'kind': 'EVIDENCE_CHANGE', 'id': f'change-{i}', 'record': {
+            'reason': 'CALLEE_CHANGED', 'beforeValues': 'before ' * 90, 'afterValues': 'after ' * 90}}
+            for i in range(8)]
+        seen, offset = [], 0
+        while True:
+            view = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest', max_bytes=3000, record_offset=offset))
+            self.assertLessEqual(len(helper.encode(view).encode()), 3000)
+            seen.extend(c['id'] for c in view['changes'])
+            if view['continuation'] is None: break
+            self.assertEqual(view['continuation']['kind'], 'LOCAL_MAINTENANCE_RECORDS')
+            self.assertGreater(view['continuation']['recordOffset'], offset)
+            offset = view['continuation']['recordOffset']
+        self.assertEqual(seen, [f'change-{i}' for i in range(8)])
+        with self.assertRaisesRegex(helper.ViewError, 'EXCEEDS_OUTPUT_BUDGET'):
+            helper.maintenance(original, Path('/packet.json'), 'digest', max_bytes=1024)
+
+    def test_zero_sources_is_a_supported_metadata_only_cli_view(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'packet.json'
+            supplied = packet()
+            supplied['items'].append({'kind': 'SOURCE_NATIVE', 'id': 'native', 'record': {'text': 'DO_NOT_SHOW', 'authority': 'NATIVE_ONLY'}})
+            path.write_text(json.dumps(supplied))
+            for option in [('--max-sources', '0'), ('--metadata-only',)]:
+                run = subprocess.run([sys.executable, '-I', '-S', str(HELPER), 'read', '--input', str(path), *option], capture_output=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                view = json.loads(run.stdout)
+                self.assertEqual(view['sources'], [])
+                self.assertEqual(view['evidence']['unresolved'], packet()['unresolved'])
+                self.assertIn('NATIVE_ONLY', run.stdout.decode())
+                self.assertNotIn('DO_NOT_SHOW', run.stdout.decode())
+
     def test_malformed_or_overbudget_packet_never_prints_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'bad.json'

@@ -117,3 +117,25 @@ Ordinary context without an exact SOURCE selector still checks the current
 catalogue and may require recapture or recomposition. Output budgets, omitted
 items and cursors are unchanged. A successful historical read establishes no
 current freshness, semantic completeness or runtime equivalence.
+
+## One-compare maintenance view
+
+Pass the previous full packet directly to the helper's `compare` command. It makes
+one supported `compare-source` call; packet reads, hashes and immutable admission
+are internal. Neither a preliminary agent metadata read nor transcription of an
+opaque evidence reference is part of the prepared path.
+
+The `codeclew-prepared-maintenance-view/1.0` projection keeps baseline/target
+snapshot, revision and configuration bindings, actual dependency values, changed
+source windows, citation updates, coverage, unresolved inputs and all limits.
+Unchanged SOURCE bodies are omitted. The full packet is retained privately for
+subsequent comparisons and exact local continuation. The previous old-SOURCE
+snapshot drill remains available and does not compare against today's catalogue.
+
+`--metadata-only` and `--max-sources 0` omit SOURCE bodies without omitting changed
+values, citations or limits. Large change collections have a typed local
+`LOCAL_MAINTENANCE_RECORDS` continuation (`read --record-offset N`); SOURCE text
+uses the existing Unicode character offsets. A view that cannot fit mandatory
+metadata and one change fails explicitly; it must not hide limits or imply that
+partial evidence is unchanged. No model-cost improvement is established by this
+projection alone.
