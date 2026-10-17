@@ -600,7 +600,10 @@ pub fn verify_outputs(repo: &Repository, id: &str, binding: &Bindings) -> Result
     Ok(())
 }
 
-fn dependency_changes(dependencies: &BTreeMap<String, String>, checked: &Check) -> Vec<Value> {
+pub(super) fn dependency_changes(
+    dependencies: &BTreeMap<String, String>,
+    checked: &Check,
+) -> Vec<Value> {
     dependencies.iter().filter_map(|(dependency, previous)| {
         match checked.dependencies.get(dependency) {
             None => Some(json!({"reason":"DEPENDENCY_UNAVAILABLE","dependency":dependency,"before":previous,"after":Value::Null})),

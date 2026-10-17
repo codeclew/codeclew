@@ -20,6 +20,13 @@ analyzed with language/API 2.0 by the current engine; this is conditional analys
 not execution by the project's original compiler. Older installed releases need
 the corresponding product update before using these extensions.
 
+## Prepared SOURCE answers and maintenance
+
+Start directly at the [short prepared SOURCE entry](../README.md). It contains
+all three maintenance cases and the local bounded-packet helper. Do not load this
+full reference for a ready snapshot or a saved answer. Use the sections below only
+when registration, source capture or durable documentation work is requested.
+
 ## Build-independent source profile
 
 The current explicit `source-syntax` profile supports Python, Java, Kotlin and
@@ -111,6 +118,11 @@ same snapshot and selection when checking publication exclusions. Do not create
 extra pages or gaps for unselected internal helpers.
 
 ## Start or recover
+
+For an already prepared SOURCE answer, use the
+[short maintenance route](#prepared-source-answers-and-maintenance) above. The
+setup sequence below is for missing registration/bindings or explicitly requested
+acquisition.
 
 Resolve the installed `clew` launcher once. `clew docs` owns source admission,
 compiler capture and cleanup; do not open a second navigation/session workflow.
