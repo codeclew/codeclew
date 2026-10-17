@@ -1229,12 +1229,14 @@ mod tests {
         );
         assert_ne!(snapshot, old_snapshot);
         let result = super::super::static_pages::run(super::super::static_pages::Command::Render {
+            format: super::super::static_pages::PageFormat::Standalone,
             root: doc_repo.root.clone(),
             snapshot: snapshot.clone(),
             input: None,
             publication: Some(std::env::var("CODECLEW_UPDATED_PAGES_PUBLICATION").unwrap()),
             reading_plan: None,
             contract_comparison: None,
+            data_model: None,
             output: path("CODECLEW_UPDATED_PAGES_OUTPUT"),
         })
         .unwrap();

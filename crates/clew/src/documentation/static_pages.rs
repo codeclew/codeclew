@@ -1,7 +1,9 @@
 //! Offline native-source pages over explicit immutable documentation snapshots.
 mod authored;
 mod contract_comparison;
+mod data_model;
 mod data_state;
+mod docusaurus;
 mod full;
 mod linked;
 pub mod model;
@@ -28,12 +30,14 @@ pub use project::project;
 fn full_pages_saved_publication_replay() {
     let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path required"));
     let result = run(Command::Render {
+        format: PageFormat::Standalone,
         root: path("CODECLEW_FULL_PAGES_ROOT"),
         snapshot: std::env::var("CODECLEW_FULL_PAGES_SNAPSHOT").unwrap(),
         input: None,
         publication: Some(std::env::var("CODECLEW_FULL_PAGES_PUBLICATION").unwrap()),
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: path("CODECLEW_FULL_PAGES_OUTPUT"),
     })
     .unwrap();
@@ -47,6 +51,7 @@ fn full_pages_saved_publication_replay() {
 fn source_pages_saved_snapshot_replay() {
     let path = |name| PathBuf::from(std::env::var(name).expect("explicit replay path is required"));
     let rendered = run(Command::Render {
+        format: PageFormat::Standalone,
         root: path("CODECLEW_PAGES_REPLAY_ROOT"),
         snapshot: std::env::var("CODECLEW_PAGES_REPLAY_SNAPSHOT")
             .expect("explicit snapshot is required"),
@@ -54,6 +59,7 @@ fn source_pages_saved_snapshot_replay() {
         publication: None,
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
     })
     .expect("saved SOURCE pages replay must render");
@@ -131,6 +137,12 @@ pub(super) fn source_data_graph_with_depth(
     Ok(graph)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PageFormat {
+    Standalone,
+    Docusaurus,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Produce linked HTML and inert MDX 3 from native retained source declarations.
@@ -156,6 +168,12 @@ pub enum Command {
         /// Retained external HTTP comparison bound to this exact snapshot.
         #[arg(long, requires = "publication")]
         contract_comparison: Option<PathBuf>,
+        /// Optional evidence-bound domain model and explicit process Data Flow requests.
+        #[arg(long, requires = "publication")]
+        data_model: Option<PathBuf>,
+        /// Standalone HTML by default; a portable native MDX site for full publications.
+        #[arg(long, value_enum, default_value_t = PageFormat::Standalone)]
+        format: PageFormat,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -171,6 +189,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             publication,
             reading_plan,
             contract_comparison,
+            data_model,
+            format,
             output,
         } => {
             let repo = Repository::open(&root)?;
@@ -181,10 +201,19 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     &checked,
                     &snapshot,
                     &publication,
-                    reading_plan.as_deref(),
-                    contract_comparison.as_deref(),
+                    full::ReadingInputs {
+                        reading_plan: reading_plan.as_deref(),
+                        contract_comparison: contract_comparison.as_deref(),
+                        data_model: data_model.as_deref(),
+                        format,
+                    },
                     &output,
                 );
+            }
+            if format != PageFormat::Standalone {
+                return Err(invalid(
+                    "the Docusaurus format requires a full saved publication",
+                ));
             }
             let input =
                 input.ok_or_else(|| invalid("native pages require input or publication"))?;

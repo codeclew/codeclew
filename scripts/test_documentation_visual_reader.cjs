@@ -96,7 +96,7 @@ function load(data=fixture(),mobile=false){
  function element(id){if(!elements.has(id))elements.set(id,{id,value:'',hidden:id==='source-panel',innerHTML:'',textContent:'',isConnected:true,tabIndex:0,attributes:{},children:[],classList:{add(){},remove(){},toggle(){}},focus(){this.focused=true;testDocument.activeElement=this;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},contains(node){return node===this||this.children.includes(node);},querySelectorAll(){return this.children;},closest(){return null;},matches(){return false;},getClientRects(){return this.hidden?[]:[{}];},scrollIntoView(){this.scrolled=true;},insertAdjacentHTML(_,html){this.innerHTML=html+this.innerHTML;},addEventListener(){}});return elements.get(id);}
  element('document-data').textContent=JSON.stringify(data);
  testDocument={documentElement:{lang:"en"},getElementById:element,addEventListener:(name,fn)=>listeners[name]=fn,querySelectorAll:()=>[],querySelector:()=>null,body:{children:[],classList:{add(){},remove(){},toggle(){}}},activeElement:null};
- const context=vm.createContext({document:testDocument,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
+ const context=vm.createContext({document:testDocument,URLSearchParams,location:browserLocation,history:{replaceState(_,__,hash){browserLocation.hash=hash;},pushState(_,__,hash){browserLocation.hash=hash;navigationHistory.push(hash);}},window:{addEventListener(){},scrollTo(){},matchMedia:()=>media,getComputedStyle:element=>({visibility:element.visibility||'visible'})},navigator:{clipboard:{writeText:async()=>{}}}});
  vm.runInContext(script,context);
  return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
@@ -196,7 +196,7 @@ test('sequence projection prunes empty nested arms and retains surviving else gu
  op.events=[event('guard','alt','A duplicate was already processed'),event('empty-loop','loop','For every duplicate'),event('empty-inner','opt','A stored timestamp is newer'),event('note','note','Keep the current value'),event('inner-end','end',''),event('loop-end','end',''),event('surviving-else','else','For a new event'),event('write','message','Apply the forecast'),event('outer-end','end','')];
  const before=JSON.stringify(data),r=load(data),projected=JSON.parse(r.run('JSON.stringify(sequenceEvents(D.operations[0]))'));
  assert.deepEqual(projected.map(e=>e.id),['surviving-else','write','outer-end']);
- assert.equal(projected[0].kind,'alt');assert.match(projected[0].text,/Otherwise/);assert.ok(projected[0].text.includes('A duplicate was already processed'));assert.ok(projected[0].text.includes('For a new event'));
+ assert.equal(projected[0].kind,'alt');assert.equal(projected[0].text,'Condition not met: A duplicate was already processed · Selected branch: For a new event');
  assert.deepEqual(projected[1],op.events.find(e=>e.id==='write'));
  const svg=r.run('diagram(D.operations[0])');assert.doesNotMatch(svg,/data-event="(?:guard|empty-loop|empty-inner|note)"/);assert.match(svg,/data-event="surviving-else"/);
  const behavior=r.run('behaviorPseudocode(D.operations[0])');for(const text of ['A duplicate was already processed','A stored timestamp is newer','Keep the current value','For a new event','Apply the forecast'])assert.ok(behavior.includes(text));
@@ -624,7 +624,7 @@ test('entity section shows only its accepted local visuals while the process gal
  const data=entitySectionFixture();data.savedProcesses=[{id:'saved',title:'Saved workflow',href:'../scenarios/saved.html',status:'AUTHORED'}];
  const r=load(data);r.run("showEntry('section-entities')");
  const html=r.e('scenario-content').innerHTML;
- assert.match(html,/Current entity declarations/);assert.match(html,/Synthetic Order/);
+ assert.match(html,/Recorded domain ownership/);assert.match(html,/Synthetic Order/);
  assert.match(html,/<h3>Entity views<\/h3>/);assert.match(html,/Order identity map/);assert.match(html,/Ownership criteria/);
  assert.doesNotMatch(html,/Dispatch work|Select handler/);
  assert.equal((html.match(/class="visual-artifact"/g)||[]).length,2);
@@ -1349,6 +1349,22 @@ function questionFixture(){
  d.questionReader={title:'Save a city',purpose:'Follow the bounded save',authority:'EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE',sections:[{id:'story',title:'What happens?',blocks:[block]},{id:'confidence',title:'Source and confidence',blocks:[block]}],conclusion:{...block,title:'Local result'}};
  return d;
 }
+test('canonical model is primary without Data Flow and retains exact process return and legacy context',()=>{
+ const d=questionFixture(),original=JSON.stringify({operations:d.operations,guide:d.questionReader});
+ d.canonicalEntityLinks={'question-story':{places:[{id:'place',title:'Place',href:'../data-model/place.html'}]}};
+ const r=load(d);r.run("location.search='?field=place.id';showEntry('process-overview')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/place.html\?fromProcess=renderer-fixture&amp;fromAnchor=question-story&amp;fromField=place.id/);
+ assert.match(html,/Place · data model/);
+ assert.match(html,/class="question-technical-link"[^>]+places.html\?fromProcess=renderer-fixture&amp;fromQuestion=story#section-entities/);
+ assert.match(html,/Technical context/);
+ assert.match(html,/title="Object context"/);
+ assert.equal(JSON.stringify({operations:d.operations,guide:d.questionReader}),original);
+ assert.equal(d.processDataFlow,undefined);
+ const other=r.run("questionLink(D.questionReader.sections[1].blocks[0].links[0],'confidence')");
+ assert.doesNotMatch(other,/data-model/);
+ assert.match(other,/fromQuestion=confidence/);
+});
 test('optional question profile has one main account, exact evidence and safe object return route',()=>{
  const d=questionFixture(),before=JSON.stringify(d.operations),r=load(d);
  r.run("showEntry('process-overview')");
@@ -1515,4 +1531,67 @@ test('retained HTTP comparison never attaches findings to a mismatched or ambigu
   const data=retainedHttpFixture();change(data);const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
   assert.match(html,/No applicable recorded HTTP checks/);assert.doesNotMatch(html,/class="ingress-http-finding"/);
  }
+});
+
+test('selected route inventory supersedes an empty frozen inventory without rewriting retained evidence',()=>{
+ const {data}=ingressFixture();
+ data.selectedBoundaryInventory=structuredClone(data.boundaryInventory);
+ data.selectedPublicBoundaryIds=data.catalogue.map(entry=>entry.id);
+ data.boundaryInventory={publicBoundaries:[],gaps:[]};data.publicBoundaryIds=[];
+ const r=load(data);r.run("showEntry('section-ingress')");
+ assert.equal((r.e('scenario-content').innerHTML.match(/Route agrees/g)||[]).length,2);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/No source match in selected evidence/);
+ assert.equal(r.run('D.boundaryInventory.publicBoundaries.length'),0);
+ assert.equal(r.run('publicBoundaryIds.has("post-item")'),true);
+});
+test('an explicitly empty selected inventory never falls back to historical routes',()=>{
+ const {data}=ingressFixture();data.selectedBoundaryInventory={publicBoundaries:[],gaps:[]};data.selectedPublicBoundaryIds=[];
+ const r=load(data);r.run("showEntry('section-ingress')");
+ assert.equal((r.e('scenario-content').innerHTML.match(/No source match in selected evidence/g)||[]).length,2);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/Route agrees/);
+ assert.equal(r.run('publicBoundaryIds.size'),0);
+});
+test('operation links expose retained processes and existing data descriptions without inventing ownership',()=>{
+ const {data}=ingressFixture();
+ data.entryProcesses={'post-item':[{title:'Saved item journey',href:'../scenarios/item.html#process-overview',state:{freshness:'STALE',verification:'UNASSESSED'}}]};
+ data.sections.push({id:'section-entities',title:'Domain entities'});
+ data.operations.push({...data.operations[0],id:'post-item',summary:fragment('Original operation description'),visuals:[]},
+  {...data.operations[0],id:'section-entities',summary:fragment('The item row stores an identifier and a value.'),visuals:[]});
+ const original=JSON.stringify(data.operations),r=load(data);
+ r.run("showEntry('section-ingress')");assert.match(r.e('scenario-content').innerHTML,/Saved process: Saved item journey/);
+ r.click({entry:'post-item'});let html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Saved process: Saved item journey/);assert.match(html,/Service data and domain context/);assert.match(html,/Retained explanation/);
+ r.click({entry:'section-entities'});html=r.e('scenario-content').innerHTML;
+ assert.match(html,/The item row stores an identifier and a value/);
+ assert.match(html,/Recorded domain ownership/);assert.match(html,/No domain ownership declarations have been recorded/);
+ assert.doesNotMatch(html,/No domain entity identities have been declared/);
+ assert.equal(r.run('JSON.stringify(D.operations)'),original);
+});
+
+test('OpenAPI literal and enum constraints never invent an object type',()=>{
+ const ui=load();
+ const html=ui.run(`fields({type:'object',required:['status'],properties:{status:{const:'QUEUED'},mode:{enum:['fast','safe']},empty:{},disabled:{const:false},nil:{const:null}}})`);
+ assert.match(html,/const: &quot;QUEUED&quot;/);assert.match(html,/enum: \[&quot;fast&quot;,&quot;safe&quot;\]/);
+ assert.match(html,/const: false/);assert.match(html,/const: null/);
+ assert.match(html,/<code>status<\/code><\/td><td>Not declared<\/td><td class="required">required/);
+ assert.equal(ui.run('type({})'),'Not declared');assert.equal(ui.run('type({$ref:"#/missing"})'),'#/missing');
+ assert.match(ui.run('fields(false)'),/No value allowed/);
+});
+test('response JSON location respects operation path, escaped keys and unsupported input',()=>{
+ const ui=load(),text=JSON.stringify({paths:{'/other':{post:{responses:{202:{description:'wrong'}}}},'/work/{id}':{post:{responses:{202:{description:'right',content:{'application/json':{schema:{properties:{status:{const:'QUEUED'}}}}}}}}}}},null,2);
+ const location=ui.run(`jsonSourceLocation(${JSON.stringify(text)},['paths','/work/{id}','post','responses','202'])`);
+ assert.equal(JSON.parse(text.slice(location.start,location.end)).description,'right');assert.ok(location.start>text.indexOf('wrong'));
+ assert.equal(ui.run(`jsonSourceLocation('paths: yaml',['paths'])`),null);
+ assert.equal(ui.run(`jsonSourceLocation('{"a":{},"a":{}}',['a'])`),null);
+ assert.equal(ui.run(`jsonSourceLocation('{"a":{}}',['missing'])`),null);
+});
+test('response source opens its exact line span while preserving the complete retained bytes',()=>{
+ const data=fixture(),text=JSON.stringify({openapi:'3.1.0',paths:{'/work':{post:{responses:{202:{description:'Queued',content:{'application/json':{schema:{properties:{status:{const:'QUEUED'}}}}}}}}}}},null,2);
+ const record={...source(text),file:'contract.json',startLine:10,endLine:10+text.split('\n').length-1,url:'https://example.test/blob/abc/contract.json#L10-L99',textDigest:'retained-digest',evidenceDigest:'retained-evidence'};
+ data.selectedSources={'contract-source':record};const before=JSON.stringify(data.selectedSources),ui=load(data);
+ ui.run(`source(['contract-source'],'Response contract',true,'', '',['paths','/work','post','responses','202'])`);
+ const location=ui.run(`jsonSourceLocation(${JSON.stringify(text)},['paths','/work','post','responses','202'])`),line=10+text.slice(0,location.start).split('\n').length-1;
+ assert.match(ui.e('source-meta').innerHTML,new RegExp('#L'+line+'-L'));assert.match(ui.e('source-meta').innerHTML,/Selected response/);
+ assert.match(ui.e('source-code').innerHTML,/openapi/);assert.match(ui.e('source-code').innerHTML,/QUEUED/);
+ assert.equal(JSON.stringify(data.selectedSources),before);assert.match(ui.e('source-foot').innerHTML,/retained-digest/);
 });

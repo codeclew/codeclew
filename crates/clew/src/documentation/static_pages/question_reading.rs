@@ -247,6 +247,21 @@ fn project_block(
         json!({"id":block.id,"navTitle":block.nav_title,"tone":block.tone,"disclosure":block.disclosure,"preview":block.preview,"title":block.title,"text":block.text,"evidence":evidence,"links":links,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE"}),
     )
 }
+/// Share exact retained/selected evidence admission with optional editorial models.
+pub(super) fn bind_block(
+    value: Value,
+    files: &BTreeMap<String, Vec<u8>>,
+    checked: &Check,
+    bytes: &mut usize,
+) -> Result<Value, ClewError> {
+    project_block(
+        serde_json::from_value(value).map_err(io_error)?,
+        files,
+        checked,
+        bytes,
+    )
+}
+
 pub(super) fn load(
     path: Option<&Path>,
     publication: &str,
@@ -289,9 +304,15 @@ fn project_plan(
     checked: &Check,
     bytes: &mut usize,
 ) -> Result<(String, Value), ClewError> {
-    if plan.schema != "codeclew-question-reading-plan/1.0"
+    let system = plan.subject == "system:overview";
+    let expected_schema = if system {
+        "codeclew-system-reading-plan/1.0"
+    } else {
+        "codeclew-question-reading-plan/1.0"
+    };
+    if plan.schema != expected_schema
         || plan.publication != publication
-        || !plan.subject.starts_with("scenario:")
+        || !(system || plan.subject.starts_with("scenario:"))
         || !bounded(&plan.title, 256)
         || !bounded(&plan.purpose, 512)
         || !(2..=12).contains(&plan.sections.len())
@@ -319,8 +340,7 @@ fn project_plan(
             ));
         }
     }
-    let owner = page(files, &plan.subject)?;
-    if owner["process"].is_null() {
+    if !system && page(files, &plan.subject)?["process"].is_null() {
         return Err(invalid("reading-plan requires a saved process"));
     }
     let mut sections = Vec::new();
@@ -375,6 +395,112 @@ fn project_plan(
     ))
 }
 
+/// An additive, evidence-bound reading view. Frozen inventory and descriptions
+/// stay reachable; the renderer contains no application-specific business text.
+pub(super) fn overview_html(original: &str, guide: &Value) -> Result<String, ClewError> {
+    use super::super::render::escape;
+    fn block(block: &Value) -> String {
+        use super::super::render::escape;
+        let mut out = format!(
+            "<article class=\"system-guide-card\"><h3>{}</h3><p>{}</p>",
+            escape(block["title"].as_str().unwrap_or("")),
+            escape(block["text"].as_str().unwrap_or(""))
+        );
+        for link in block["links"].as_array().into_iter().flatten() {
+            let href = link["href"]
+                .as_str()
+                .unwrap_or("")
+                .trim_start_matches("../");
+            out.push_str(&format!(
+                "<p><a href=\"{}\">{} →</a></p>",
+                escape(href),
+                escape(link["label"].as_str().unwrap_or(""))
+            ));
+        }
+        out.push_str(&format!("<details><summary>Evidence: {}</summary><p>Editorial interpretation; original wording and independent evidence states follow.</p>",escape(block["title"].as_str().unwrap_or(""))));
+        for evidence in block["evidence"].as_array().into_iter().flatten() {
+            if evidence["kind"] == "RETAINED_CLAIM" {
+                let state = &evidence["state"];
+                out.push_str(&format!(
+                    "<p>Freshness: {} · Meaning review: {}</p><blockquote>{}</blockquote>",
+                    escape(state["freshness"].as_str().unwrap_or("UNVERIFIED")),
+                    escape(state["verification"].as_str().unwrap_or("UNASSESSED")),
+                    escape(evidence["fragment"]["text"].as_str().unwrap_or(""))
+                ));
+                if let Some((kind, id)) =
+                    evidence["subject"].as_str().and_then(|v| v.split_once(':'))
+                {
+                    let directory = if kind == "service" {
+                        "services"
+                    } else {
+                        "scenarios"
+                    };
+                    out.push_str(&format!(
+                        "<p><a href=\"{directory}/{}.html#{}\">Read original description</a></p>",
+                        escape(id),
+                        escape(evidence["operation"].as_str().unwrap_or(""))
+                    ));
+                }
+                for source in evidence["sources"]
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|m| m.values())
+                {
+                    out.push_str(&source_link(source));
+                }
+            } else {
+                out.push_str(&source_link(&evidence["source"]));
+            }
+        }
+        out.push_str("</details></article>");
+        out
+    }
+    fn source_link(source: &Value) -> String {
+        use super::super::render::escape;
+        let label = format!(
+            "{}:{}–{} · {} · {}",
+            source["file"].as_str().unwrap_or("Source"),
+            source["startLine"],
+            source["endLine"],
+            source["revision"].as_str().unwrap_or(""),
+            source["authority"].as_str().unwrap_or("")
+        );
+        match source["url"].as_str() {
+            Some(url) => format!("<p><a href=\"{}\">{}</a></p>", escape(url), escape(&label)),
+            None => format!("<p>{}</p>", escape(&label)),
+        }
+    }
+    let insert = original
+        .find("</h1>")
+        .filter(|_| original.contains("<main"))
+        .ok_or_else(|| invalid("system reading guide requires a retained overview heading"))?
+        + 5;
+    let mut html = format!(
+        "<style>.system-guide{{margin:24px 0 32px}}.system-guide-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}}.system-guide-card{{padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--paper)}}.system-guide-card p{{margin-bottom:10px}}.system-guide-card details{{font-size:12px;color:var(--muted)}}.system-guide-card blockquote{{margin:12px 0;padding-left:12px;border-left:2px solid var(--line)}}.system-guide-limit{{margin-top:18px;background:var(--amber-bg);padding:16px;border-radius:12px}}</style><section class=\"system-guide\" aria-label=\"System reading guide\"><p class=\"eyebrow\">Editorial system guide · retained explanations</p><h2>{}</h2><p>{}</p>",
+        escape(guide["title"].as_str().unwrap_or("")),
+        escape(guide["purpose"].as_str().unwrap_or(""))
+    );
+    for section in guide["sections"].as_array().into_iter().flatten() {
+        html.push_str(&format!(
+            "<section><h2>{}</h2><div class=\"system-guide-grid\">",
+            escape(section["title"].as_str().unwrap_or(""))
+        ));
+        for value in section["blocks"].as_array().into_iter().flatten() {
+            html.push_str(&block(value));
+        }
+        html.push_str("</div></section>");
+    }
+    html.push_str("<aside class=\"system-guide-limit\">");
+    html.push_str(&block(&guide["conclusion"]));
+    html.push_str("</aside><p><a href=\"retained-overview.html\">Original publication inventory and context</a> · <a href=\"system-reading-guide.json\">Guide evidence (JSON)</a></p></section><h2>Process and service inventory</h2>");
+    Ok(format!(
+        "{}{}{}",
+        &original[..insert],
+        html,
+        &original[insert..]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +532,35 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(plan).unwrap()).unwrap();
         load(Some(&path), "frozen-publication", files, &check())
     }
+    #[test]
+    fn system_guide_binds_retained_claims_preserves_inventory_and_escapes_editorial_text() {
+        let (mut plan, files) = fixture();
+        plan["schema"] = json!("codeclew-system-reading-plan/1.0");
+        plan["subject"] = json!("system:overview");
+        plan["title"] = json!("Understand <system>");
+        let original_files = files.clone();
+        let guides = load_plan(&plan, &files).unwrap();
+        let guide = &guides["system:overview"];
+        assert_eq!(
+            guide["sections"][0]["blocks"][0]["evidence"][0]["state"]["freshness"],
+            "STALE"
+        );
+        let original = "<main><h1>Original</h1><p>Unmodified inventory</p></main>";
+        let html = overview_html(original, guide).unwrap();
+        assert!(html.contains("Understand &lt;system&gt;"));
+        assert!(!html.contains("Understand <system>"));
+        assert!(
+            html.find("System reading guide").unwrap() < html.find("Unmodified inventory").unwrap()
+        );
+        assert!(html.contains("href=\"scenarios/example.html#saved-operation\""));
+        assert!(html.contains("Editorial interpretation"));
+        assert!(html.contains("Meaning review: UNASSESSED"));
+        assert!(html.ends_with("<p>Unmodified inventory</p></main>"));
+        assert_eq!(files, original_files);
+        plan["sections"][0]["blocks"][0]["evidence"][0]["textDigest"] = json!("changed");
+        assert!(load_plan(&plan, &files).is_err());
+    }
+
     #[test]
     fn collection_preserves_individual_guides_and_rejects_duplicate_subjects() {
         let (plan, mut files) = fixture();

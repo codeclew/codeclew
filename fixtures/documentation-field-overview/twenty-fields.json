@@ -1,0 +1,655 @@
+{
+  "scope": "Synthetic 20-field scaling fixture, not a claim about Weather. All retained states are test inputs.",
+  "request": {
+    "fields": [
+      {
+        "model": "fixture",
+        "field": "field-01"
+      },
+      {
+        "model": "fixture",
+        "field": "field-02"
+      },
+      {
+        "model": "fixture",
+        "field": "field-03"
+      },
+      {
+        "model": "fixture",
+        "field": "field-04"
+      },
+      {
+        "model": "fixture",
+        "field": "field-05"
+      },
+      {
+        "model": "fixture",
+        "field": "field-06"
+      },
+      {
+        "model": "fixture",
+        "field": "field-07"
+      },
+      {
+        "model": "fixture",
+        "field": "field-08"
+      },
+      {
+        "model": "fixture",
+        "field": "field-09"
+      },
+      {
+        "model": "fixture",
+        "field": "field-10"
+      },
+      {
+        "model": "fixture",
+        "field": "field-11"
+      },
+      {
+        "model": "fixture",
+        "field": "field-12"
+      },
+      {
+        "model": "fixture",
+        "field": "field-13"
+      },
+      {
+        "model": "fixture",
+        "field": "field-14"
+      },
+      {
+        "model": "fixture",
+        "field": "field-15"
+      },
+      {
+        "model": "fixture",
+        "field": "field-16"
+      },
+      {
+        "model": "fixture",
+        "field": "field-17"
+      },
+      {
+        "model": "fixture",
+        "field": "field-18"
+      }
+    ],
+    "stages": [
+      "Receive",
+      "Validate",
+      "Store"
+    ]
+  },
+  "models": [
+    {
+      "id": "fixture",
+      "title": "Fixture",
+      "fields": [
+        {
+          "id": "field-01",
+          "path": "field01",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field01"
+            }
+          ],
+          "usage": [
+            {
+              "stage": "Receive",
+              "contract": "fixture",
+              "assessment": "observed-static-use",
+              "kinds": [
+                "display"
+              ],
+              "representation": "input.field01",
+              "claim": {
+                "text": "Synthetic assessment for UI verification only.",
+                "evidence": []
+              }
+            }
+          ]
+        },
+        {
+          "id": "field-02",
+          "path": "field02",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field02"
+            }
+          ],
+          "usage": [
+            {
+              "stage": "Receive",
+              "contract": "fixture",
+              "assessment": "observed-static-use",
+              "kinds": [
+                "whole-object-serialization-or-comparison"
+              ],
+              "representation": "input.field02",
+              "claim": {
+                "text": "Synthetic assessment for UI verification only.",
+                "evidence": []
+              }
+            }
+          ]
+        },
+        {
+          "id": "field-03",
+          "path": "field03",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field03"
+            }
+          ],
+          "usage": [
+            {
+              "stage": "Receive",
+              "contract": "fixture",
+              "assessment": "no-use-found-in-bounded-complete-scope",
+              "kinds": [],
+              "representation": "input.field03",
+              "claim": {
+                "text": "Synthetic assessment for UI verification only.",
+                "evidence": []
+              },
+              "coveredScope": "Synthetic Receive handler only"
+            }
+          ]
+        },
+        {
+          "id": "field-04",
+          "path": "field04",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field04"
+            }
+          ],
+          "usage": [
+            {
+              "stage": "Receive",
+              "contract": "fixture",
+              "assessment": "not-investigated",
+              "kinds": [],
+              "representation": "input.field04",
+              "claim": {
+                "text": "Synthetic assessment for UI verification only.",
+                "evidence": []
+              }
+            }
+          ]
+        },
+        {
+          "id": "field-05",
+          "path": "field05",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field05"
+            }
+          ],
+          "usage": [
+            {
+              "stage": "Receive",
+              "contract": "fixture",
+              "assessment": "unresolved-dynamic-use",
+              "kinds": [],
+              "representation": "input.field05",
+              "claim": {
+                "text": "Synthetic assessment for UI verification only.",
+                "evidence": []
+              }
+            }
+          ]
+        },
+        {
+          "id": "field-06",
+          "path": "field06",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field06"
+            }
+          ],
+          "usage": [
+            {
+              "stage": "Receive",
+              "contract": "fixture",
+              "assessment": "stale-evidence",
+              "kinds": [],
+              "representation": "input.field06",
+              "claim": {
+                "text": "Synthetic assessment for UI verification only.",
+                "evidence": []
+              }
+            }
+          ]
+        },
+        {
+          "id": "field-07",
+          "path": "field07",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field07"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-08",
+          "path": "field08",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field08"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-09",
+          "path": "field09",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field09"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-10",
+          "path": "field10",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field10"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-11",
+          "path": "field11",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field11"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-12",
+          "path": "field12",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field12"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-13",
+          "path": "field13",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field13"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-14",
+          "path": "field14",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field14"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-15",
+          "path": "field15",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field15"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-16",
+          "path": "field16",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field16"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-17",
+          "path": "field17",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field17"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-18",
+          "path": "field18",
+          "selectedProcessField": true,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field18"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-19",
+          "path": "field19",
+          "selectedProcessField": false,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field19"
+            }
+          ],
+          "usage": []
+        },
+        {
+          "id": "field-20",
+          "path": "field20",
+          "selectedProcessField": false,
+          "meaning": {
+            "text": "Synthetic scaling fixture; not Weather evidence."
+          },
+          "representations": [
+            {
+              "contract": "fixture",
+              "field": "field20"
+            }
+          ],
+          "usage": []
+        }
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "id": "fixture",
+      "title": "Fixture contract",
+      "leaves": [
+        {
+          "field": "field01",
+          "pointer": "/properties/field01",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field02",
+          "pointer": "/properties/field02",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field03",
+          "pointer": "/properties/field03",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field04",
+          "pointer": "/properties/field04",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field05",
+          "pointer": "/properties/field05",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field06",
+          "pointer": "/properties/field06",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field07",
+          "pointer": "/properties/field07",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field08",
+          "pointer": "/properties/field08",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field09",
+          "pointer": "/properties/field09",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field10",
+          "pointer": "/properties/field10",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field11",
+          "pointer": "/properties/field11",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field12",
+          "pointer": "/properties/field12",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field13",
+          "pointer": "/properties/field13",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field14",
+          "pointer": "/properties/field14",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field15",
+          "pointer": "/properties/field15",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field16",
+          "pointer": "/properties/field16",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field17",
+          "pointer": "/properties/field17",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field18",
+          "pointer": "/properties/field18",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field19",
+          "pointer": "/properties/field19",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "field20",
+          "pointer": "/properties/field20",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": true
+        },
+        {
+          "field": "unmappedEnvelope",
+          "pointer": "/properties/unmappedEnvelope",
+          "schema": {
+            "type": "string"
+          },
+          "requiredWhenBranchMatches": false
+        }
+      ],
+      "source": {
+        "id": "synthetic-source",
+        "file": "fixture.json",
+        "revision": "synthetic-revision",
+        "textDigest": "synthetic-digest",
+        "authority": "TEST_FIXTURE",
+        "startLine": 1,
+        "endLine": 1,
+        "text": "Synthetic UI fixture only."
+      }
+    }
+  ]
+}

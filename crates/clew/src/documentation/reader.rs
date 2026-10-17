@@ -5,7 +5,11 @@ use std::collections::BTreeMap;
 
 pub(super) const HELP: &str = include_str!("../../assets/documentation/help.html");
 pub(super) const RUNBOOKS: &str = include_str!("../../assets/documentation/runbooks.html");
-pub(super) const STYLE: &str = include_str!("../../assets/documentation/reader.css");
+pub(super) const STYLE: &str = concat!(
+    include_str!("../../assets/documentation/reader.css"),
+    "\n",
+    include_str!("../../assets/documentation/typography.css")
+);
 pub(super) const PROCESS_THEME: &str = include_str!("../../assets/documentation/process-theme.css");
 pub(super) const SCRIPT: &str = include_str!("../../assets/documentation/reader.js");
 pub(super) const LIMITS: &str = include_str!("../../assets/documentation/limits.js");

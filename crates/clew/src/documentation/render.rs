@@ -20,7 +20,11 @@ use std::{
 pub(super) const SUMMARY_TEXT_MAX_BYTES: usize = 2048;
 
 const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
-pub(super) const STYLE: &str = include_str!("../../assets/documentation/style.css");
+pub(super) const STYLE: &str = concat!(
+    include_str!("../../assets/documentation/style.css"),
+    "\n",
+    include_str!("../../assets/documentation/typography.css")
+);
 const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
 const QUESTION_ARROW: &str = include_str!("../../assets/documentation/tabler/arrow-right.svg");
 const QUESTION_DATABASE: &str = include_str!("../../assets/documentation/tabler/database.svg");
@@ -43,11 +47,28 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
         .replace('\u{2029}', "\\u2029");
     let template = super::language::template(TEMPLATE, data["language"].as_str().unwrap_or("en"));
     let question_icons = serde_json::to_string(&json!({"arrow-right":QUESTION_ARROW,"database":QUESTION_DATABASE,"license":QUESTION_ICON_LICENSE})).map_err(io_error)?.replace('<', "\\u003c");
+    let extra = data.get("processDataFlow").is_some();
+    let styles = if extra {
+        format!(
+            "{STYLE}\n{}",
+            include_str!("../../assets/documentation/data-model.css")
+        )
+    } else {
+        STYLE.to_owned()
+    };
+    let scripts = if extra {
+        format!(
+            "{SCRIPT}\n{QUESTION_SCRIPT}\n{}",
+            include_str!("../../assets/documentation/data-model.js")
+        )
+    } else {
+        format!("{SCRIPT}\n{QUESTION_SCRIPT}")
+    };
     Ok(template
-        .replace("/*__STYLE__*/", STYLE)
+        .replace("/*__STYLE__*/", &styles)
         .replace(
             "/*__SCRIPT__*/",
-            &format!("var QUESTION_ICONS={question_icons};\n{SCRIPT}\n{QUESTION_SCRIPT}"),
+            &format!("var QUESTION_ICONS={question_icons};\n{scripts}"),
         )
         .replace(
             "/*__ANALYSIS_SCRIPT__*/",
@@ -4397,6 +4418,9 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         QUESTION_ICON_LICENSE,
         include_str!("static_pages/question_reading.rs"),
         include_str!("static_pages/contract_comparison.rs"),
+        include_str!("static_pages/data_model.rs"),
+        include_str!("../../assets/documentation/data-model.css"),
+        include_str!("../../assets/documentation/data-model.js"),
         include_str!("history.rs"),
         include_str!("process_candidates.rs"),
         include_str!("process_thread.rs"),
