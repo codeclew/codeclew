@@ -42,7 +42,13 @@ The serialized verdict is an enum:
 cannot hide a changed callee, configuration, generated input or watched membership.
 An unrelated HTML title may change a conservative file scope while the selected
 function stays identical. The packet supplies a labeled changed-character window
-and exact source handles for a bounded drill; a window is not a new exact source.
+with `beforeCitation` and `afterCitation`: the retained source ID, revision, file,
+line span, authority and configured URL for each side. These spans describe the
+retained sources containing the window, not only its changed characters. They are
+available even if those SOURCE rows are outside the selected context packet; no
+additional baseline context lookup is required for citation. A window is not a
+new exact source. If no retained file excerpt exists, no window or citation is
+invented; the file change remains reported.
 
 `SOURCE_BINDING_UPDATE` rows supply current engine-generated citation metadata,
 including native-file links. They do not imply changed runtime behavior. Full

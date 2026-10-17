@@ -102,6 +102,25 @@ class PreparedSourceTest(unittest.TestCase):
         self.assertEqual(view['evidence']['unresolved'], original['unresolved'])
         self.assertEqual(view['sources'][0]['text'], original['items'][-1]['record']['text'])
 
+    def test_changed_window_citations_survive_without_selected_source_rows(self):
+        original = packet()
+        window = {'representation': 'CHARACTER_WINDOW_PROJECTION_NOT_EXACT_FULL_SOURCE',
+                  'before': '<title>Weather</title>', 'after': '<title>Weather demo</title>',
+                  'beforeCitation': {'id': 'title-old', 'revision': 'old', 'file': 'index.html',
+                                     'startLine': 2, 'endLine': 8, 'url': 'https://example.test/old#L2-L8'},
+                  'afterCitation': {'id': 'title-new', 'revision': 'new', 'file': 'index.html',
+                                    'startLine': 3, 'endLine': 9, 'url': 'https://example.test/new#L3-L9'}}
+        reason = {'reason': 'REGISTERED_SOURCE_SCOPE_FILE_CHANGED', 'file': 'index.html',
+                  'changedWindow': window}
+        original['comparison'] = {'status': 'CHANGED', 'reasonExamples': [reason]}
+        original['items'] = [{'kind': 'EVIDENCE_CHANGE', 'id': 'change', 'record': reason}]
+        view = json.loads(helper.project(original, Path('/local/packet.json'), 'digest'))
+        self.assertEqual(view['sources'], [])
+        self.assertEqual(view['handles'][0]['change']['changedWindow'], window)
+        # Mandatory comparison reasons remain available even with no optional handles.
+        minimal = json.loads(helper.project(original, Path('/local/packet.json'), 'digest', max_handles=0))
+        self.assertEqual(minimal['evidence']['comparison']['reasonExamples'][0]['changedWindow'], window)
+
     def test_excessive_limits_fail_closed_instead_of_truncating_them(self):
         original = packet()
         original['unresolved'] = {'large': ['MISSING_INPUT'] * 2000}

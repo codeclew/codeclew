@@ -3,6 +3,8 @@
 Use this entry for a supplied docs root, service, exact selector and snapshot or
 saved answer packet. Do not load the full managed-code or service guide. Use
 absolute task paths and resolve the supported installed/candidate `clew` once.
+For supplied prepared snapshots, start with the packet or engine command below;
+no preliminary Git identity, status or hash checks are needed.
 
 The engine admits immutable snapshot objects and their source/configuration
 bindings. `PINNED_SNAPSHOT_NOT_REVERIFIED` means no live checkout recheck; it does
@@ -58,6 +60,12 @@ unresolved analysis limits. Read the typed result:
   SOURCE. Update affected clauses. A conservative watched-file change is not a
   claim of changed runtime behavior; an unrelated page-title change can leave the
   selected function unchanged. Check the title delta in the returned evidence.
+  `changedWindow.beforeCitation` and `afterCitation` already bind each retained
+  source span to its revision, file, lines, authority and URL (when configured).
+  Use those citations for the window; they identify the retained source containing
+  it, not a claim that the projection is a complete source. No second baseline
+  context lookup is needed. Stop acquiring evidence once the answer and citations
+  are supported within the reported scope.
 - `UNKNOWN`: name the missing input/scope. Do not claim the old answer is verified
   unchanged or suppress unresolved evidence. Acquire only the missing evidence.
 
@@ -94,7 +102,10 @@ The local packet fingerprint is not an additional freshness verdict.
 locally with `--source ID --text-offset N`; `--text-chars`, `--max-sources`,
 `--max-handles` and `--max-bytes` bound the view. `--text-chars 0 --max-handles 0`
 shows metadata only. SOURCE_ALIAS bodies and normalized catalogues stay local.
-Changed windows are explicitly projections; complete SOURCE retains its own
+Changed windows carry their own before/after citation metadata even when their
+source IDs are absent from the selected SOURCE rows. Do not use `read --source`
+for such absent rows just to recover a citation. Changed windows are explicitly
+projections; complete SOURCE retains its own
 bindings. Follow an exact source/dependency drill or original cursor only when
 needed evidence is missing. `compare --include-context` delivers current SOURCE
 also for unchanged inputs. A helper budget error delivers no evidence; inspect

@@ -427,23 +427,24 @@ fn source_identity(source: &Source) -> Value {
     value.as_object_mut().unwrap().remove("text");
     value
 }
-fn file_excerpt(checked: &Check, service: &str, file: &str) -> Option<String> {
+fn file_excerpt<'a>(checked: &'a Check, service: &str, file: &str) -> Option<&'a Source> {
     checked
         .services
         .values()
         .flat_map(|s| s.sources.values())
         .filter(|s| s.service == service && s.file == file)
         .max_by_key(|s| s.text.len())
-        .map(|s| s.text.clone())
 }
-fn changed_window(before: &str, after: &str) -> Value {
+fn changed_window(before_source: &Source, after_source: &Source) -> Value {
+    let before = before_source.text.as_str();
+    let after = after_source.text.as_str();
     let prefix = before
         .chars()
         .zip(after.chars())
         .take_while(|(a, b)| a == b)
         .count();
     let offset = prefix.saturating_sub(80);
-    json!({"representation":"CHARACTER_WINDOW_PROJECTION_NOT_EXACT_FULL_SOURCE","offsetCharacters":offset,"before":before.chars().skip(offset).take(320).collect::<String>(),"after":after.chars().skip(offset).take(320).collect::<String>()})
+    json!({"representation":"CHARACTER_WINDOW_PROJECTION_NOT_EXACT_FULL_SOURCE","offsetCharacters":offset,"beforeCitation":source_identity(before_source),"afterCitation":source_identity(after_source),"before":before.chars().skip(offset).take(320).collect::<String>(),"after":after.chars().skip(offset).take(320).collect::<String>()})
 }
 fn scope_changes(id: &str, baseline: &Check, target: &Check) -> Vec<Value> {
     let (Some(a), Some(b)) = (baseline.dependencies.get(id), target.dependencies.get(id)) else {
@@ -462,7 +463,7 @@ fn scope_changes(id: &str, baseline: &Check, target: &Check) -> Vec<Value> {
     let paths = a.keys().chain(b.keys()).collect::<BTreeSet<_>>();
     paths.into_iter().filter(|p|a.get(*p)!=b.get(*p)).map(|path|{
         let mut change=json!({"reason":"REGISTERED_SOURCE_SCOPE_FILE_CHANGED","dependency":id,"file":path,"before":a.get(path),"after":b.get(path),"meaningImpact":"NOT_INFERRED"});
-        if let (Some(before),Some(after))=(file_excerpt(baseline,&a_service,path),file_excerpt(target,&a_service,path)){change["changedWindow"]=changed_window(&before,&after);}
+        if let (Some(before),Some(after))=(file_excerpt(baseline,&a_service,path),file_excerpt(target,&a_service,path)){change["changedWindow"]=changed_window(before,after);}
         change["sourceReferences"]=json!({"before":baseline.services.get(&a_service).map(|s|s.sources.values().filter(|v|v.file==*path).map(|v|&v.id).take(8).collect::<Vec<_>>()),"after":target.services.get(&a_service).map(|s|s.sources.values().filter(|v|v.file==*path).map(|v|&v.id).take(8).collect::<Vec<_>>())});
         change
     }).collect()
@@ -871,7 +872,32 @@ mod tests {
             .get_mut("source")
             .unwrap()
             .text = "<title>Old</title>".into();
+        {
+            let source = check
+                .services
+                .get_mut("sample")
+                .unwrap()
+                .sources
+                .get_mut("source")
+                .unwrap();
+            source.start_line = 42;
+            source.end_line = 42;
+            source.url = Some("https://example.test/blob/old/index.html#L42-L42".into());
+        }
         let mut target = check.clone();
+        {
+            let source = target
+                .services
+                .get_mut("sample")
+                .unwrap()
+                .sources
+                .get_mut("source")
+                .unwrap();
+            source.revision = "new".into();
+            source.start_line = 43;
+            source.end_line = 43;
+            source.url = Some("https://example.test/blob/new/index.html#L43-L43".into());
+        }
         target.dependencies.get_mut("scope").unwrap().normalized["inventory"]["index.html"]["digest"] =
             json!("new");
         target.dependencies.get_mut("scope").unwrap().digest = "changed".into();
@@ -892,6 +918,23 @@ mod tests {
         assert_eq!(delta["file"], "index.html");
         assert_eq!(delta["meaningImpact"], "NOT_INFERRED");
         assert_eq!(delta["changedWindow"]["after"], "<title>New</title>");
+        for (side, source) in [
+            (
+                "beforeCitation",
+                &check.services["sample"].sources["source"],
+            ),
+            (
+                "afterCitation",
+                &target.services["sample"].sources["source"],
+            ),
+        ] {
+            assert_eq!(delta["changedWindow"][side], source_identity(source));
+            assert!(delta["changedWindow"][side].get("text").is_none());
+        }
+        assert_eq!(delta["changedWindow"]["beforeCitation"]["startLine"], 42);
+        assert_eq!(delta["changedWindow"]["afterCitation"]["revision"], "new");
+        // No source was returned for a missing file: never invent citation bindings.
+        assert!(file_excerpt(&check, "sample", "missing.html").is_none());
         assert!(
             delta["changedWindow"]["representation"]
                 .as_str()
