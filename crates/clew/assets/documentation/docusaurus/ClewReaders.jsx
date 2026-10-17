@@ -33,12 +33,32 @@ export function ClewDownload({path, children}) {
   return <a href={useBaseUrl(path)} download>{children}</a>;
 }
 export function ClewModelLink({model, process, anchor, children}) {
+  const ref = useRef(null);
   const path = useBaseUrl(`/data-model/${model}`);
   const query = new URLSearchParams({fromProcess: process, fromAnchor: anchor});
-  return <a data-dm-context data-dm-return-anchor={anchor} href={`${path}?${query}`}>{children}</a>;
+  useEffect(() => {
+    const field = new URLSearchParams(location.search).get('field');
+    if (field && ref.current) { const url = new URL(ref.current.href); url.searchParams.set('fromField', field); ref.current.setAttribute('href', url.pathname + url.search); }
+  }, [path, process, anchor]);
+  return <a ref={ref} data-dm-context data-dm-return-anchor={anchor} href={`${path}?${query}`}>{children}</a>;
+}
+export function ClewRelatedModelLink({model, children}) {
+  const ref = useRef(null);
+  const path = useBaseUrl(`/data-model/${model}`);
+  useEffect(() => {
+    const url = new URL(ref.current.href), q = new URLSearchParams(location.search);
+    for (const name of ['fromProcess', 'fromAnchor', 'fromField']) if (q.has(name)) url.searchParams.set(name, q.get(name));
+    ref.current.setAttribute('href', url.pathname + url.search);
+  }, [path]);
+  return <a ref={ref} data-dm-context href={path}>{children}</a>;
 }
 export function ClewFieldTrace({field}) {
-  return <a data-dm-context data-dm-field={field} href={`?field=${encodeURIComponent(field)}#field-usage`}>Trace this field</a>;
+  const ref = useRef(null);
+  useEffect(() => {
+    const url = new URL(location.href); url.searchParams.set('field', field); url.hash = 'field-usage';
+    ref.current.setAttribute('href', url.pathname + url.search + url.hash);
+  }, [field]);
+  return <a ref={ref} data-dm-context data-dm-field={field} href={`?field=${encodeURIComponent(field)}#field-usage`}>Trace this field</a>;
 }
 
 function Widget({dataPath, anchor}) {
@@ -82,9 +102,9 @@ function Widget({dataPath, anchor}) {
 export function ClewDataModel({dataPath}) {
   return <section id="field-usage"><h2>Field usage and focused flow</h2><Widget dataPath={dataPath} /></section>;
 }
-export function ClewProcess({dataPath, children}) {
+export function ClewProcess({dataPath, defaultAnchor, children}) {
   const [flow, setFlow] = useState(false);
-  const [anchor, setAnchor] = useState('');
+  const [anchor, setAnchor] = useState(defaultAnchor || '');
   useEffect(() => {
     setFlow(new URLSearchParams(location.search).get('view') === 'data-flow');
     if (/^#question-[a-zA-Z0-9_-]+$/.test(location.hash)) setAnchor(location.hash.slice(1));

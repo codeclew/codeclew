@@ -233,7 +233,7 @@ fn evidence(block: &Value) -> Result<String, ClewError> {
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewFieldTrace} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -325,7 +325,8 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
     let flow = page["processDataFlow"].is_object();
     if flow {
         out.push_str(&format!(
-            "<ClewProcess dataPath=\"/clew-data/widgets/scenario-{id}.json\">\n\n"
+            "<ClewProcess dataPath=\"/clew-data/widgets/scenario-{id}.json\" defaultAnchor={}>\n\n",
+            json!(text(&page["processDataFlow"]["request"]["anchor"]))
         ));
     }
     let mut graph = String::from("flowchart TD\n");
@@ -448,7 +449,11 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
     ));
     out.push_str(&evidence(&model["identity"])?);
     for related in rows(&model["relatedModels"]).filter_map(Value::as_str) {
-        out.push_str(&format!("- [{}]({related}.mdx)\n", md(related)));
+        out.push_str(&format!(
+            "<ClewRelatedModelLink model={}>{}</ClewRelatedModelLink>\n\n",
+            json!(related),
+            md(related)
+        ));
     }
     out.push('\n');
     out.push_str("## Fields and representations\n\n");
