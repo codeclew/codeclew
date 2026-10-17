@@ -19,7 +19,7 @@ test('field changes synchronize existing canonical links while preserving each p
  const history={replaceState(_,__,next){const u=new URL(next,location.href);location.href=u.href;location.search=u.search;location.hash=u.hash;}};
  const context={window:{},document,location,history,URL,URLSearchParams};vm.runInNewContext(script,context);
  const nodes={};
- for(const selector of ['.dm-field-select','.dm-contract-select','.dm-stage-select','.dm-matrix','.dm-focused','.dm-counts']){
+ for(const selector of ['.dm-field-select','.dm-contract-select','.dm-stage-select','.dm-matrix','.dm-focused','.dm-counts','.dm-overview-summary','.dm-return-overview','.dm-drilldown','.dm-overview']){
   nodes[selector]={value:'',innerHTML:'',events:{},addEventListener(name,fn){this.events[name]=fn;},querySelectorAll:()=>[],querySelector:()=>null};
  }
  const container={innerHTML:'',querySelector:selector=>nodes[selector],querySelectorAll:()=>[]};
@@ -34,4 +34,41 @@ test('field changes synchronize existing canonical links while preserving each p
  assert.equal(url.searchParams.get('fromField'),'entity/b');
  assert.equal(url.searchParams.get('fromAnchor'),'question-save');
  assert.equal(new URL(location.href).searchParams.get('field'),'entity/b');
+});
+
+const scaling=JSON.parse(fs.readFileSync('fixtures/documentation-field-overview/twenty-fields.json','utf8'));
+test('bounded inventory preserves twenty fields, omitted fields, unmapped leaves and every evidence state',()=>{
+ const a=api(),before=JSON.stringify(scaling),rows=a.overviewRows(scaling),html=a.matrixHtml(rows,scaling.request.stages,'fixture');
+ assert.equal(rows.length,21);assert.match(html,/aria-label="Fixture.field01 · Receive · Displayed"/);assert.equal((html.match(/<td /g)||[]).length,63);
+ for(const label of ['Displayed','Whole-object use','No direct use found in this scope','Not investigated','Dynamic use unresolved','Stale evidence — use unknown','Outside investigated process scope · use unknown','Unmapped contract leaf · not investigated'])assert.ok(html.includes(label),label);
+ assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/20 known model fields \/ container paths.*18 selected process fields/);
+ assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/21 contract leaves/);
+ assert.equal(JSON.stringify(scaling),before,'inventory must not mutate evidence');
+ const selected=a.overviewRows(scaling,'fixture');assert.equal(selected.length,21);
+ assert.doesNotMatch(html,/role="grid"/);assert.equal((html.match(/<button type="button"/g)||[]).length,84,'native keyboard buttons for field and cell details');
+});
+
+function mounted(data){
+ const location={href:'http://localhost/process.html?view=data-flow',search:'?view=data-flow',hash:''},history={replaceState(_,__,next){const u=new URL(next,location.href);location.href=u.href;location.search=u.search;}};
+ const nodes={};let focusCount=0;
+ for(const selector of ['.dm-field-select','.dm-contract-select','.dm-stage-select','.dm-matrix','.dm-focused','.dm-counts','.dm-overview-summary','.dm-return-overview','.dm-drilldown','.dm-overview'])nodes[selector]={value:'',innerHTML:'',events:{},addEventListener(n,fn){this.events[n]=fn;},focus(){focusCount++;},scrollIntoView(){},querySelector(){return {focus(){focusCount++;}};},querySelectorAll(){return [];}};
+ let cachedHtml,cachedButtons;
+ nodes['.dm-matrix'].querySelectorAll=()=>{if(cachedHtml===nodes['.dm-matrix'].innerHTML)return cachedButtons;cachedHtml=nodes['.dm-matrix'].innerHTML;return cachedButtons=Array.from(nodes['.dm-matrix'].innerHTML.matchAll(/<button type="button" data-dm-cell data-field="([^"]*)" data-stage="([^"]*)"/g),m=>({dataset:{field:m[1],stage:m[2]},events:{},addEventListener(n,fn){this.events[n]=fn;}}));};
+ const container={innerHTML:'',querySelector:s=>nodes[s],querySelectorAll:()=>[]};
+ const context={window:{},document:{getElementById:()=>null,querySelectorAll:()=>[]},location,history,URL,URLSearchParams};vm.runInNewContext(script,context);context.window.CodeclewDataModel.mount(container,data);
+ return {nodes,container,location,focusCount:()=>focusCount};
+}
+test('default overview precedes optional trail and cell drilldown retains overview columns and filters',()=>{
+ const {nodes,container,location,focusCount}=mounted(scaling);
+ assert.ok(container.innerHTML.indexOf('dm-overview')<container.innerHTML.indexOf('dm-focused'));
+ assert.match(container.innerHTML,/<details class="dm-drilldown">/);
+ const original=nodes['.dm-matrix'].innerHTML;
+ const cell=nodes['.dm-matrix'].querySelectorAll().find(b=>b.dataset.stage==='Store');cell.events.click();
+ assert.equal(nodes['.dm-matrix'].innerHTML,original);assert.equal(nodes['.dm-stage-select'].value,'');
+ assert.equal(new URL(location.href).searchParams.get('cellStage'),'Store');assert.equal(new URL(location.href).searchParams.get('stage'),null);
+ assert.equal(nodes['.dm-drilldown'].open,true);assert.ok(focusCount()>0,'detail heading receives keyboard-visible focus');
+ nodes['.dm-return-overview'].events.click();assert.ok(focusCount()>1,'return control focuses overview');
+ nodes['.dm-stage-select'].value='Validate';nodes['.dm-stage-select'].events.change();
+ assert.equal((nodes['.dm-matrix'].innerHTML.match(/<td /g)||[]).length,21);assert.equal(new URL(location.href).searchParams.get('stage'),'Validate');
+ assert.equal(new URL(location.href).searchParams.get('cellStage'),null);
 });

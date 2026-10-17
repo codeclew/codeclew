@@ -678,27 +678,33 @@ pub(super) fn attach_process(
         .as_array()
         .unwrap()
         .iter()
+        .filter(|m| {
+            requested.iter().any(|r| r["model"] == m["id"])
+                || view["relatedModels"]
+                    .as_array()
+                    .is_some_and(|ids| ids.contains(&m["id"]))
+        })
         .filter_map(|m| {
             let mut scoped = m.clone();
             let fields = m["fields"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|f| {
-                    requested
-                        .iter()
-                        .any(|r| r["model"] == m["id"] && r["field"] == f["id"])
-                })
                 .map(|f| {
                     let mut f = f.clone();
+                    let selected = requested
+                        .iter()
+                        .any(|r| r["model"] == m["id"] && r["field"] == f["id"]);
+                    f["selectedProcessField"] = json!(selected);
                     f["usage"] = json!(
                         f["usage"]
                             .as_array()
                             .unwrap()
                             .iter()
-                            .filter(|u| u["processes"]
-                                .as_array()
-                                .is_some_and(|ps| ps.iter().any(|p| p == subject))
+                            .filter(|u| selected
+                                && u["processes"]
+                                    .as_array()
+                                    .is_some_and(|ps| ps.iter().any(|p| p == subject))
                                 && stages.contains(&u["stage"]))
                             .collect::<Vec<_>>()
                     );
@@ -753,7 +759,7 @@ pub(super) fn attach_process(
         })
         .map(|m| json!({"id":m["id"],"title":m["title"]}))
         .collect::<Vec<_>>();
-    payload["processDataFlow"] = json!({"relatedModels":related_models,"request":view,"models":models,"contracts":contracts,"authority":model["authority"],"review":model["review"],"scope":"Only explicitly requested fields and consumer stages; static interpretation, not observed runtime transfer."});
+    payload["processDataFlow"] = json!({"relatedModels":related_models,"request":view,"models":models,"contracts":contracts,"authority":model["authority"],"review":model["review"],"scope":"Fields of directly referenced models and contract leaves. Only explicitly selected process fields and consumer stages are investigated here; omitted fields remain outside investigated scope. Static interpretation, not observed runtime transfer."});
     Ok(())
 }
 pub(super) fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'a Value> {
@@ -1113,6 +1119,34 @@ mod tests {
         assert_eq!(off, original);
         assert_eq!(model["authority"], "AGENT_PROPOSAL");
         assert_eq!(model["review"], "UNASSESSED");
+    }
+    #[test]
+    fn process_inventory_includes_direct_model_fields_but_not_unrelated_models_or_usage() {
+        let (plan, files, guides, check) = fixture();
+        let mut model = read(&plan, &files, &guides, &check).unwrap();
+        let mut omitted = model["models"][0]["fields"][0].clone();
+        omitted["id"] = json!("container");
+        omitted["path"] = json!("container");
+        model["models"][0]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(omitted);
+        let mut unrelated = model["models"][0].clone();
+        unrelated["id"] = json!("unrelated");
+        model["models"].as_array_mut().unwrap().push(unrelated);
+        let mut payload = json!({});
+        attach_process(Some(&model), "scenario:example", &mut payload).unwrap();
+        let models = payload["processDataFlow"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        let fields = models[0]["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0]["selectedProcessField"], true);
+        assert_eq!(fields[1]["selectedProcessField"], false);
+        assert_eq!(fields[1]["usage"], json!([]));
+        assert_eq!(
+            fields[1]["meaning"],
+            model["models"][0]["fields"][1]["meaning"]
+        );
     }
     #[test]
     fn unrelated_contract_changes_do_not_rewrite_a_canonical_model_page() {

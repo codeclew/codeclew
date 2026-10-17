@@ -65,3 +65,19 @@ authority values. Their claims bind the same immutable evidence. Missing links
 remain reading order with an unestablished transfer; the reader does not invent
 a handoff from adjacent nodes. Consumer-stage selection keeps narrow views
 readable.
+
+Data Flow opens with the field-by-stage overview. Its bounded inventory includes
+all fields and container paths in directly referenced models, plus unmapped leaves
+of the documented contracts. Selected process fields, model paths and contract
+leaves have separate counts; they are not a utilization percentage. Fields outside
+the selected process investigation and unmapped leaves remain unknown, rather than
+unused. An explicit contract filter selects that contract's mapped fields and
+unmapped leaves. Required-leaf statistics retain their separate branch scope.
+
+Selecting a cell opens secondary field details without changing overview filters.
+The explicit consumer-stage selector narrows columns. Return to the overview keeps
+those filters; canonical-model navigation preserves field, contract and stage
+context. The comparison stays a contained scrollable table on small screens.
+Native buttons support keyboard activation; detail and return controls move focus
+to their destination. HTML and MDX share the same typography roles: 16px reading,
+24px section headings and 14px technical text, with 32px reserved for page titles.

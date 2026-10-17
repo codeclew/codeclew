@@ -50,8 +50,10 @@ export function ClewModelLink({model, process, anchor, children}) {
   const path = useBaseUrl(`/data-model/${model}`);
   const query = new URLSearchParams({fromProcess: process, fromAnchor: anchor});
   useEffect(() => {
-    const field = new URLSearchParams(location.search).get('field');
-    if (field && ref.current) { const url = new URL(ref.current.href); url.searchParams.set('fromField', field); ref.current.setAttribute('href', url.pathname + url.search); }
+    if (!ref.current) return;
+    const q = new URLSearchParams(location.search), url = new URL(ref.current.href);
+    for (const name of ['field', 'stage', 'contract', 'cellStage']) if (q.has(name)) url.searchParams.set('from' + name[0].toUpperCase() + name.slice(1), q.get(name));
+    ref.current.setAttribute('href', url.pathname + url.search);
   }, [path, process, anchor]);
   return <a ref={ref} data-dm-context data-dm-return-anchor={anchor} href={`${path}?${query}`}>{children}</a>;
 }
@@ -60,7 +62,7 @@ export function ClewRelatedModelLink({model, children}) {
   const path = useBaseUrl(`/data-model/${model}`);
   useEffect(() => {
     const url = new URL(ref.current.href), q = new URLSearchParams(location.search);
-    for (const name of ['fromProcess', 'fromAnchor', 'fromField']) if (q.has(name)) url.searchParams.set(name, q.get(name));
+    for (const name of ['fromProcess', 'fromAnchor', 'fromField', 'fromStage', 'fromContract', 'fromCellStage']) if (q.has(name)) url.searchParams.set(name, q.get(name));
     ref.current.setAttribute('href', url.pathname + url.search);
   }, [path]);
   return <a ref={ref} data-dm-context href={path}>{children}</a>;
@@ -161,7 +163,7 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
     </div>
     <div id="clew-process" role="tabpanel" aria-labelledby="clew-process-tab" hidden={flow}>{children}</div>
     <div id="clew-flow" role="tabpanel" aria-labelledby="clew-flow-tab" hidden={!flow}>
-      <p>Agent proposal · Not reviewed. This view covers only the saved process fields and consumer stages.</p>
+      <p>Agent proposal · Not reviewed. Overview includes directly referenced model fields and contract leaves; investigation is limited to selected process fields and stages.</p>
       <p><a href={`#${anchor}`} onClick={() => select(false)}>Return to the same process step</a></p>
       {flow && <Widget dataPath={dataPath} anchor={anchor} />}
     </div>

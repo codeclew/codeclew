@@ -20,7 +20,11 @@ use std::{
 pub(super) const SUMMARY_TEXT_MAX_BYTES: usize = 2048;
 
 const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
-pub(super) const STYLE: &str = include_str!("../../assets/documentation/style.css");
+pub(super) const STYLE: &str = concat!(
+    include_str!("../../assets/documentation/style.css"),
+    "\n",
+    include_str!("../../assets/documentation/typography.css")
+);
 const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
 const QUESTION_ARROW: &str = include_str!("../../assets/documentation/tabler/arrow-right.svg");
 const QUESTION_DATABASE: &str = include_str!("../../assets/documentation/tabler/database.svg");

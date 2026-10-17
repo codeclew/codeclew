@@ -1404,6 +1404,10 @@ pub(super) fn project(
             include_bytes!("../../../assets/documentation/docusaurus/clew.css").as_slice(),
         ),
         (
+            "src/css/typography.css",
+            include_bytes!("../../../assets/documentation/typography.css").as_slice(),
+        ),
+        (
             "src/css/data-model.css",
             include_bytes!("../../../assets/documentation/data-model.css").as_slice(),
         ),
