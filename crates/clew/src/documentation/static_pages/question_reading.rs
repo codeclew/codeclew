@@ -477,7 +477,7 @@ pub(super) fn overview_html(original: &str, guide: &Value) -> Result<String, Cle
     }
     html.push_str("<aside class=\"system-guide-limit\">");
     html.push_str(&block(&guide["conclusion"]));
-    html.push_str("</aside><p><a href=\"retained-overview.html\">Original publication inventory and context</a> · <a href=\"system-reading-guide.json\">Guide evidence and scope</a></p></section><h2>Process and service inventory</h2>");
+    html.push_str("</aside><p><a href=\"retained-overview.html\">Original publication inventory and context</a> · <a href=\"system-reading-guide.json\">Guide evidence (JSON)</a></p></section><h2>Process and service inventory</h2>");
     Ok(format!(
         "{}{}{}",
         &original[..insert],
