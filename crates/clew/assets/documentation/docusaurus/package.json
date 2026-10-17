@@ -5,7 +5,9 @@
   "scripts": {
     "build": "docusaurus build",
     "serve": "docusaurus serve --host 127.0.0.1",
-    "start": "docusaurus start --host 127.0.0.1"
+    "start": "docusaurus start --host 127.0.0.1",
+    "prebuild": "node scripts/pack-evidence.mjs",
+    "prestart": "node scripts/pack-evidence.mjs"
   },
   "dependencies": {
     "@docusaurus/core": "3.10.2",

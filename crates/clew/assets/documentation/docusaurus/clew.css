@@ -12,4 +12,5 @@
 .clew-widget .dm-scope,.clew-widget .dm-counts{color:var(--ifm-font-color-base)}
 .clew-widget pre,.clew-widget code{white-space:pre-wrap;overflow-wrap:anywhere}
 .clew-evidence{font-size:.9rem}
+.theme-doc-markdown details.alert{--ifm-alert-background-color:transparent;--ifm-alert-foreground-color:var(--ifm-font-color-base);--ifm-alert-border-color:var(--ifm-color-emphasis-300);border:1px solid var(--ifm-color-emphasis-300);box-shadow:none;padding:8px 12px;color:inherit}
 @media(max-width:600px){.clew-tabs{top:var(--ifm-navbar-height)}.clew-tabs button{padding:8px 12px}.clew-exception{padding:10px 12px}}

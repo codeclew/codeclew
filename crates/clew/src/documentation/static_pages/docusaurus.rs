@@ -193,12 +193,15 @@ fn header(title: &str, slug: &str) -> String {
 }
 
 fn source_link(source: &Value) -> Result<String, ClewError> {
+    source_link_in(source, "../")
+}
+fn source_link_in(source: &Value, prefix: &str) -> Result<String, ClewError> {
     if !is_source(source) {
         return Ok("Source binding unavailable in this projection.".into());
     }
     let id = digest(source)?;
     Ok(format!(
-        "[{}:{}–{} · revision {}](../sources/{}.mdx)",
+        "[{}:{}–{} · revision {}]({prefix}sources/{}.mdx)",
         md(text(&source["file"])),
         source["startLine"],
         source["endLine"],
@@ -208,6 +211,9 @@ fn source_link(source: &Value) -> Result<String, ClewError> {
 }
 
 fn evidence(block: &Value) -> Result<String, ClewError> {
+    evidence_in(block, "../")
+}
+fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
     let mut out = String::from("<details>\n<summary>Evidence and scope</summary>\n\n");
     for e in block["evidence"].as_array().into_iter().flatten() {
         if e["kind"] == "RETAINED_CLAIM" {
@@ -223,10 +229,10 @@ fn evidence(block: &Value) -> Result<String, ClewError> {
                 .into_iter()
                 .flat_map(|v| v.values())
             {
-                out.push_str(&format!("- {}\n", source_link(source)?));
+                out.push_str(&format!("- {}\n", source_link_in(source, prefix)?));
             }
         } else {
-            out.push_str(&format!("- {}\n", source_link(&e["source"])?));
+            out.push_str(&format!("- {}\n", source_link_in(&e["source"], prefix)?));
         }
     }
     out.push_str("\n</details>\n\n");
@@ -253,6 +259,9 @@ fn archive_link(name: &str) -> String {
 }
 
 fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError> {
+    block_in(block, page, section, "../")
+}
+fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<String, ClewError> {
     let mut out = format!("{}\n\n", md(text(&block["text"])));
     for link in rows(&block["links"]) {
         let subject = text(&link["subject"]);
@@ -277,18 +286,23 @@ fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError
         } else {
             text(&link["label"])
         };
-        let target = if directory == "scenarios"
+        let target = if directory == "services"
+            && !operation.starts_with("section-")
+            && operation != "service-overview"
+        {
+            format!("{prefix}operations/services-{id}--{operation}.mdx")
+        } else if directory == "scenarios"
             && operation != "process-overview"
             && operation != id
             && !operation.starts_with("question-")
         {
-            format!("../operations/scenarios-{id}--{operation}.mdx")
+            format!("{prefix}operations/scenarios-{id}--{operation}.mdx")
         } else {
-            format!("../{directory}/{id}.mdx#{operation}")
+            format!("{prefix}{directory}/{id}.mdx#{operation}")
         };
         out.push_str(&format!("[{}]({target})\n\n", md(label)));
     }
-    out.push_str(&evidence(block)?);
+    out.push_str(&evidence_in(block, prefix)?);
     if block["disclosure"] == true || block["disclosure"].is_string() {
         Ok(details(text(&block["title"]), &out))
     } else if matches!(text(&block["tone"]), "ERROR" | "WARNING" | "INFO") {
@@ -314,8 +328,9 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
+    out.push_str("<span id=\"process-overview\"></span>\n\n");
     out.push_str(&format!(
-        "# {} {{#process-overview}}\n\n{}\n\n",
+        "# {}\n\n{}\n\n",
         md(text(&guide["title"])),
         md(text(&guide["purpose"]))
     ));
@@ -391,38 +406,239 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-fn operation_page(page: &Value, op: &Value, prefix: &str) -> Result<String, ClewError> {
-    let id = text(&op["id"]);
-    let mut out = header(text(&op["title"]), &format!("/operations/{prefix}--{id}"));
-    out.push_str(IMPORTS);
-    let state = &page["operationStates"][id];
-    out.push_str(&format!("# {}\n\nRetained account · {} · {}. Runtime behavior is not established by this export.\n\n{}\n\n",md(text(&op["title"])),md(text(&state["freshness"])),md(text(&state["verification"])),md(text(&op["summary"]["text"]))));
-    let sources = &page["operationSources"][id];
-    let cite = |claim: &Value| -> Result<String, ClewError> {
-        let mut result = String::new();
-        for sid in rows(&claim["sourceIds"]).filter_map(Value::as_str) {
-            let s = sources.get(sid).or_else(|| page["sources"].get(sid));
-            if let Some(s) = s {
-                result.push_str(&format!("- {}\n", source_link(s)?));
+fn citations(page: &Value, operation: &str, claim: &Value) -> Result<String, ClewError> {
+    let mut out = String::new();
+    for id in rows(&claim["sourceIds"]).filter_map(Value::as_str) {
+        if let Some(source) = page["operationSources"][operation]
+            .get(id)
+            .or_else(|| page["sources"].get(id))
+        {
+            out.push_str(&format!("- {}\n", source_link(source)?));
+        }
+    }
+    Ok(out)
+}
+
+fn diagram_text(value: &str) -> String {
+    let short = value.chars().take(140).collect::<String>();
+    let words = short.split_whitespace();
+    let mut lines = vec![String::new()];
+    for word in words {
+        if lines.last().unwrap().len() + word.len() > 42 {
+            lines.push(String::new());
+        }
+        let line = lines.last_mut().unwrap();
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .map(|c| match c {
+                    '&' => "#38;".to_owned(),
+                    '<' => "#60;".to_owned(),
+                    '>' => "#62;".to_owned(),
+                    ';' => "#59;".to_owned(),
+                    '"' => "#quot;".to_owned(),
+                    _ => c.to_string(),
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("<br/>")
+}
+
+fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
+    if !rows(&op["events"]).any(|e| matches!(text(&e["kind"]), "message" | "return")) {
+        return Ok(None);
+    }
+    let mut participants = Vec::new();
+    for p in rows(&op["participants"]) {
+        participants.push((text(&p["id"]).to_owned(), text(&p["label"]).to_owned()));
+    }
+    for e in rows(&op["events"]).filter(|e| matches!(text(&e["kind"]), "message" | "return")) {
+        for key in ["from", "to"] {
+            let id = text(&e[key]);
+            if !id.is_empty() && !participants.iter().any(|(p, _)| p == id) {
+                participants.push((id.into(), id.into()));
             }
         }
-        Ok(result)
-    };
-    out.push_str(&details("Summary source bindings", &cite(&op["summary"])?));
-    out.push_str("## Sequence and branches\n\n");
-    for (i, event) in rows(&op["events"]).enumerate() {
+    }
+    let names = participants
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (id.as_str(), format!("p{i}")))
+        .collect::<BTreeMap<_, _>>();
+    let mut out = String::from("sequenceDiagram\n");
+    for (id, label) in &participants {
         out.push_str(&format!(
-            "### {}. {}\n\n{}\n\n",
+            "participant {} as {}\n",
+            names[id.as_str()],
+            diagram_text(label)
+        ));
+    }
+    let mut stack = Vec::new();
+    for event in rows(&op["events"]) {
+        let kind = text(&event["kind"]);
+        let label = diagram_text(text(&event["text"]));
+        match kind {
+            "message" | "return" => {
+                let (Some(from), Some(to)) = (
+                    names.get(text(&event["from"])),
+                    names.get(text(&event["to"])),
+                ) else {
+                    return Err(invalid("retained sequence has an unbound participant"));
+                };
+                out.push_str(&format!(
+                    "{from}{}{to}: {label}\n",
+                    if kind == "return" { "-->>" } else { "->>" }
+                ));
+            }
+            "alt" | "opt" | "loop" => {
+                stack.push(kind);
+                out.push_str(&format!("{kind} {label}\n"));
+            }
+            "else" => {
+                if stack.last() != Some(&"alt") {
+                    return Err(invalid("retained sequence else has no alternative"));
+                }
+                out.push_str(&format!("else {label}\n"));
+            }
+            "end" => {
+                if stack.pop().is_none() {
+                    return Err(invalid("retained sequence end has no open branch"));
+                }
+                out.push_str("end\n");
+            }
+            "note" => {}
+            _ => {
+                return Err(invalid(
+                    "retained sequence kind is unsupported by the native MDX diagram",
+                ));
+            }
+        }
+    }
+    if !stack.is_empty() {
+        return Err(invalid("retained sequence has an unclosed branch"));
+    }
+    Ok(Some(out))
+}
+
+fn http_binding(page: &Value, operation: Option<&str>, record: &Value) -> Value {
+    let sources = rows(&record["sourceIds"])
+        .filter_map(Value::as_str)
+        .filter_map(|id| {
+            let source = if let Some(operation) = operation {
+                page["operationSources"][operation]
+                    .get(id)
+                    .or_else(|| page["sources"].get(id))
+            } else {
+                page["selectedSources"]
+                    .get(id)
+                    .or_else(|| page["sources"].get(id))
+            };
+            source.map(|source| (id.to_owned(), source.clone()))
+        })
+        .collect::<Map<_, _>>();
+    json!({"record":record,"sources":sources})
+}
+
+fn http_links(page: &Value, operation: &str) -> Result<String, ClewError> {
+    let mut out = String::new();
+    for record in rows(&page["operationContracts"][operation])
+        .filter(|r| r["normalized"]["method"].is_string())
+    {
+        let key = digest(&http_binding(page, Some(operation), record))?;
+        out.push_str(&format!(
+            "- [{} {}](../http/{}.mdx) · declared request/response schemas\n",
+            md(text(&record["normalized"]["method"])),
+            md(text(&record["normalized"]["path"])),
+            &key[7..]
+        ));
+    }
+    Ok(out)
+}
+
+fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, ClewError> {
+    let id = text(&op["id"]);
+    let state = page["operationStates"]
+        .get(id)
+        .or_else(|| page["sectionState"].get(id))
+        .unwrap_or(&page["sectionState"]);
+    let mut out = format!(
+        "Retained account · {} · {}. Runtime behavior is not established by this export.\n\n{}\n\n",
+        md(state["freshness"].as_str().unwrap_or("UNVERIFIED")),
+        md(state["verification"].as_str().unwrap_or("UNASSESSED")),
+        md(text(&op["summary"]["text"]))
+    );
+    out.push_str(&details(
+        "Summary source bindings",
+        &citations(page, id, &op["summary"])?,
+    ));
+    for contract in rows(&op["interfaceContracts"]) {
+        out.push_str(&format!(
+            "{heading} {}\n\n| Topic | Retained contract detail |\n| --- | --- |\n",
+            md(text(&contract["title"]))
+        ));
+        let mut bound = String::new();
+        for row in rows(&contract["rows"]) {
+            out.push_str(&format!(
+                "| {} | {} |\n",
+                md(text(&row["label"])),
+                md(text(&row["value"])).replace('\n', "<br/>")
+            ));
+            bound.push_str(&format!(
+                "**{}**\n\n{}\n",
+                md(text(&row["label"])),
+                citations(page, id, row)?
+            ));
+        }
+        out.push('\n');
+        out.push_str(&details("Contract source bindings", &bound));
+    }
+    let declared = http_links(page, id)?;
+    if !declared.is_empty() {
+        out.push_str(&format!(
+            "{heading} Declared interface schemas\n\n{declared}\n"
+        ));
+    }
+    if let Some(diagram) = sequence(op)? {
+        out.push_str(&format!("{heading} Interaction diagram\n\nActors and nested branches from the retained account; not a runtime trace. Labels are shortened for readability. Full messages and notes follow.\n\n{}",fence(&diagram,"mermaid")));
+    }
+    let mut events = String::new();
+    for (i, event) in rows(&op["events"]).enumerate() {
+        events.push_str(&format!(
+            "#### {}. {}\n\n{}\n\n{}",
             i + 1,
             md(text(&event["kind"])),
-            md(text(&event["text"]))
+            md(text(&event["text"])),
+            details("Source bindings", &citations(page, id, event)?)
         ));
-        out.push_str(&details("Source bindings", &cite(event)?));
     }
-    out.push_str("## Implementation explanation\n\n");
+    if !events.is_empty() {
+        out.push_str(&details(
+            "Full original sequence, branches and notes",
+            &events,
+        ));
+    }
+    if rows(&op["explanation"]).next().is_some() {
+        out.push_str(&format!("{heading} Implementation explanation\n\n"));
+    }
     for claim in rows(&op["explanation"]) {
-        out.push_str(&format!("{}\n\n", md(text(&claim["text"]))));
-        out.push_str(&details("Source bindings", &cite(claim)?));
+        out.push_str(&format!(
+            "{}\n\n{}",
+            md(text(&claim["text"])),
+            details("Source bindings", &citations(page, id, claim)?)
+        ));
+    }
+    for finding in rows(&op["findings"]) {
+        out.push_str(&fence(
+            &serde_json::to_string_pretty(finding).map_err(io_error)?,
+            "json",
+        ));
     }
     out.push_str(&details(
         "Retained boundaries",
@@ -430,6 +646,230 @@ fn operation_page(page: &Value, op: &Value, prefix: &str) -> Result<String, Clew
             .map(|v| format!("- {}\n", md(text(v))))
             .collect::<String>(),
     ));
+    Ok(out)
+}
+
+fn operation_page(page: &Value, op: &Value, prefix: &str) -> Result<String, ClewError> {
+    let id = text(&op["id"]);
+    let mut out = header(text(&op["title"]), &format!("/operations/{prefix}--{id}"));
+    out.push_str(IMPORTS);
+    out.push_str(&format!("# {}\n\n", md(text(&op["title"]))));
+    out.push_str(&operation_body(page, op, "##")?);
+    Ok(out)
+}
+
+fn http_page(binding: &Value, key: &str) -> Result<String, ClewError> {
+    let record = &binding["record"];
+    let n = &record["normalized"];
+    let operation = &n["operation"];
+    let title = format!("{} {}", text(&n["method"]), text(&n["path"]));
+    let mut out = header(&title, &format!("/http/{key}"));
+    out.push_str(IMPORTS);
+    out.push_str(&format!("# {}\n\nDeclared interface · {}. Runtime enforcement and full specification validation are not established by this bounded record.\n\n",md(&title),md(text(&n["authority"]))));
+    for source in binding["sources"]
+        .as_object()
+        .into_iter()
+        .flat_map(|s| s.values())
+    {
+        out.push_str(&format!("- {}\n", source_link(source)?));
+    }
+    out.push('\n');
+    if rows(&n["parameters"]).next().is_some() {
+        out.push_str(&format!(
+            "## Parameters\n\n{}",
+            fence(
+                &serde_json::to_string_pretty(&n["parameters"]).map_err(io_error)?,
+                "json"
+            )
+        ));
+    }
+    if operation["requestBody"].is_object() {
+        out.push_str(&format!(
+            "## Request body\n\n{}",
+            fence(
+                &serde_json::to_string_pretty(&operation["requestBody"]).map_err(io_error)?,
+                "json"
+            )
+        ));
+    }
+    out.push_str("## Declared responses\n\n");
+    for (status, response) in operation["responses"]
+        .as_object()
+        .into_iter()
+        .flat_map(|v| v.iter())
+    {
+        out.push_str(&format!(
+            "### {}\n\n{}\n\n",
+            md(status),
+            md(text(&response["description"]))
+        ));
+        let content = response["content"].as_object();
+        if content.is_none_or(|v| v.is_empty()) {
+            out.push_str("No response media or body schema is recorded for this status in the retained declaration.\n\n");
+        }
+        for (media, body) in content.into_iter().flat_map(|v| v.iter()) {
+            out.push_str(&format!(
+                "**Media:** {}\n\n{}",
+                md(media),
+                fence(
+                    &serde_json::to_string_pretty(&body["schema"]).map_err(io_error)?,
+                    "json"
+                )
+            ));
+        }
+    }
+    let mut context = n.clone();
+    context.as_object_mut().unwrap().remove("operation");
+    out.push_str(&details(
+        "Declaration reader and source context",
+        &fence(
+            &serde_json::to_string_pretty(&context).map_err(io_error)?,
+            "json",
+        ),
+    ));
+    Ok(out)
+}
+
+fn comparison_rows(entry: &Value) -> String {
+    let mut out = format!(
+        "{}\n\n| Retained case | HTTP status | Status declared | Media assessment | Request assessment | Body assessment |\n| --- | --- | --- | --- | --- | --- |\n",
+        md(text(&entry["coverage"]))
+    );
+    for case in rows(&entry["cases"]) {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} |\n",
+            md(text(&case["id"])),
+            case["response"]["status"],
+            case["statusDeclared"],
+            md(text(&case["mediaAssessment"])),
+            md(text(&case["requestAssessment"])),
+            md(text(&case["bodyAssessment"]))
+        ));
+    }
+    out.push('\n');
+    for finding in rows(&entry["findings"]) {
+        out.push_str(&fence(
+            &serde_json::to_string_pretty(finding).unwrap(),
+            "json",
+        ));
+    }
+    out
+}
+
+fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
+    let mut out = header(text(&page["title"]), &format!("/services/{id}"));
+    out.push_str(IMPORTS);
+    out.push_str(&format!(
+        "<span id=\"service-overview\"></span>\n\n# {}\n\n{}\n\n",
+        md(text(&page["title"])),
+        md(text(&page["subtitle"]))
+    ));
+    for section in rows(&page["sections"]) {
+        let sid = text(&section["id"]);
+        out.push_str(&format!(
+            "## {} {{#{sid}}}\n\n",
+            md(text(&section["title"]))
+        ));
+        if section["content"].is_object() {
+            out.push_str(&operation_body(page, &section["content"], "###")?);
+        } else {
+            out.push_str(&format!("{}\n\n", md(text(&section["gap"]))));
+        }
+        if sid == "section-ingress" {
+            out.push_str("### Captured public inputs\n\n");
+            for entry in rows(&page["catalogue"]).filter(|v| {
+                serde_json::from_value::<crate::documentation::model::Entrypoint>((*v).clone())
+                    .is_ok_and(|e| crate::documentation::process_candidates::public_boundary(&e))
+            }) {
+                let eid = text(&entry["id"]);
+                let label = entry["trigger"]["name"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or(text(&entry["symbol"]));
+                out.push_str(&format!(
+                    "#### {} {{#entry-{eid}}}\n\n{}\n\n{}",
+                    md(label),
+                    md(text(&entry["kind"])),
+                    fence(
+                        &serde_json::to_string_pretty(&entry["trigger"]).map_err(io_error)?,
+                        "json"
+                    )
+                ));
+                for process in rows(&page["entryProcesses"][eid]) {
+                    out.push_str(&format!("- [Retained process: {}](../scenarios/{}.mdx#process-overview) · {} · source revision {}\n",md(text(&process["id"])),text(&process["id"]),md(text(&process["binding"])),md(text(&process["sourceRevision"]))));
+                }
+                out.push('\n');
+                for compared in rows(&page["contractComparison"]["entries"])
+                    .filter(|v| v["entrypoint"] == entry["id"])
+                {
+                    out.push_str("##### Retained HTTP comparison\n\n");
+                    out.push_str(&comparison_rows(compared));
+                    out.push_str(&format!("[Comparison scope and original test artifacts](../comparisons/{id}.mdx)\n\n"));
+                }
+            }
+        }
+    }
+    out.push_str("## Original operations\n\n");
+    for op in rows(&page["operations"]) {
+        out.push_str(&format!(
+            "- [{}](../operations/services-{id}--{}.mdx)\n",
+            md(text(&op["title"])),
+            text(&op["id"])
+        ));
+    }
+    out.push('\n');
+    out.push_str(&archive_link(&format!("services/{id}.json")));
+    Ok(out)
+}
+
+fn comparison_page(c: &Value, id: &str) -> Result<String, ClewError> {
+    let title = format!("{id}: retained HTTP comparison");
+    let mut out = header(&title, &format!("/comparisons/{id}"));
+    out.push_str(IMPORTS);
+    out.push_str(&format!(
+        "# {}\n\n{}\n\nAuthority: {} · binding: {}\n\nSnapshot: {}\n\nRevision: {}\n\n",
+        md(&title),
+        md(text(&c["scope"])),
+        md(text(&c["authority"])),
+        md(text(&c["bindingStatus"])),
+        md(text(&c["snapshot"])),
+        md(text(&c["revision"]))
+    ));
+    for entry in rows(&c["entries"]) {
+        out.push_str(&format!(
+            "## {} {}\n\n{}",
+            md(text(&entry["method"])),
+            md(text(&entry["path"])),
+            comparison_rows(entry)
+        ));
+    }
+    out.push_str("## Scope and limitations\n\n");
+    for limit in rows(&c["limitations"]) {
+        out.push_str(&format!("- {}\n", md(text(limit))));
+    }
+    out.push('\n');
+    for source in c["sources"]
+        .as_object()
+        .into_iter()
+        .flat_map(|v| v.values())
+    {
+        out.push_str(&format!("- {}\n", source_link(source)?));
+    }
+    out.push('\n');
+    for (name, artifact) in c["artifacts"]
+        .as_object()
+        .into_iter()
+        .flat_map(|v| v.iter())
+    {
+        out.push_str(&details(
+            &format!("Retained artifact: {name}"),
+            &format!(
+                "Digest: {}\n\n{}",
+                md(text(&artifact["digest"])),
+                fence(text(&artifact["text"]), "text")
+            ),
+        ));
+    }
     Ok(out)
 }
 
@@ -498,7 +938,7 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
         out.push_str(&format!("<ClewFieldTrace field={} />\n\n", json!(fid)));
     }
     out.push_str(&format!(
-        "<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## Processes\n\n"
+        "## Field usage and focused flow {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## Processes\n\n"
     ));
     for link in rows(&model["processLinks"]) {
         if let Some(process) = text(&link["subject"]).strip_prefix("scenario:") {
@@ -540,12 +980,25 @@ pub(super) fn project(
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect::<Vec<_>>();
+    let mut http_documents = BTreeMap::new();
     let mut process_items = Vec::new();
     let mut service_items = Vec::new();
     let mut overview = header("Documentation", "/");
     overview.push_str(IMPORTS);
     overview.push_str("# Documentation\n\nFollow a process, inspect its contracts and data, and return to the source evidence when needed.\n\n## Processes\n\n");
     for (name, page) in &pages {
+        for op in rows(&page["operations"]).chain(rows(&page["sections"]).map(|s| &s["content"])) {
+            for contract in rows(&page["operationContracts"][text(&op["id"])])
+                .filter(|c| c["normalized"]["method"].is_string())
+            {
+                let binding = http_binding(page, Some(text(&op["id"])), contract);
+                http_documents.insert(digest(&binding)?, binding);
+            }
+        }
+        for contract in rows(&page["contracts"]).filter(|c| c["normalized"]["method"].is_string()) {
+            let binding = http_binding(page, None, contract);
+            http_documents.insert(digest(&binding)?, binding);
+        }
         let id = name.rsplit('/').next().unwrap().trim_end_matches(".json");
         let process = name.starts_with("native/scenarios/");
         let directory = if process { "scenarios" } else { "services" };
@@ -556,36 +1009,23 @@ pub(super) fn project(
         };
         let body = if process && page["questionReader"].is_object() {
             process_page(page, id)?
+        } else if !process {
+            service_page(page, id)?
         } else {
-            let mut body = header(title, &format!("/{directory}/{id}"));
+            let mut body = header(title, &format!("/scenarios/{id}"));
             body.push_str(IMPORTS);
             body.push_str(&format!(
-                "# {}\n\n{}\n\n",
-                md(title),
-                md(text(&page["subtitle"]))
+                "<span id=\"process-overview\"></span>\n\n# {}\n\n",
+                md(title)
             ));
-            for section in rows(&page["sections"]) {
-                body.push_str(&format!(
-                    "## {} {{#{}}}\n\n{}\n\n",
-                    md(text(&section["title"])),
-                    text(&section["id"]),
-                    md(text(&section["summary"]["text"]))
-                ));
-            }
-            // Legacy service context remains distinct from the canonical models.
-            if !body.contains("{#section-entities}") {
-                body.push_str("## Legacy entity context {#section-entities}\n\nThis saved service projection has its own evidence scope. Canonical models are linked separately from the process reading pages.\n\n");
-            }
-            body.push_str("## Original operations\n\n");
             for op in rows(&page["operations"]) {
                 body.push_str(&format!(
-                    "- [{}](../operations/{directory}-{id}--{}.mdx)\n",
+                    "## {} {{#{}}}\n\n",
                     md(text(&op["title"])),
                     text(&op["id"])
                 ));
+                body.push_str(&operation_body(page, op, "###")?);
             }
-            body.push('\n');
-            body.push_str(&archive_link(name.trim_start_matches("native/")));
             body
         };
         put(&mut files, format!("docs/{directory}/{id}.mdx"), body);
@@ -609,8 +1049,29 @@ pub(super) fn project(
             );
         }
     }
-    sidebars.push(json!({"type":"category","label":"Processes","items":process_items}));
-    overview.push_str("\n## Data model\n\n");
+    for (key, binding) in &http_documents {
+        put(
+            &mut files,
+            format!("docs/http/{}.mdx", &key[7..]),
+            http_page(binding, &key[7..])?,
+        );
+    }
+    for (name, page) in &pages {
+        if name.starts_with("native/services/") && page["contractComparison"].is_object() {
+            let id = name.rsplit('/').next().unwrap().trim_end_matches(".json");
+            put(
+                &mut files,
+                format!("docs/comparisons/{id}.mdx"),
+                comparison_page(&page["contractComparison"], id)?,
+            );
+        }
+    }
+    if !process_items.is_empty() {
+        sidebars.push(json!({"type":"category","label":"Processes","items":process_items}));
+    }
+    if rows(&catalog["models"]).next().is_some() {
+        overview.push_str("\n## Data model\n\n");
+    }
     let mut model_items = Vec::new();
     for model in rows(&catalog["models"]) {
         let id = text(&model["id"]);
@@ -626,7 +1087,9 @@ pub(super) fn project(
             md(text(&model["title"]))
         ));
     }
-    sidebars.push(json!({"type":"category","label":"Data model","items":model_items}));
+    if !model_items.is_empty() {
+        sidebars.push(json!({"type":"category","label":"Data model","items":model_items}));
+    }
     let mut contract_items = Vec::new();
     for contract in rows(&catalog["contracts"]) {
         let id = text(&contract["id"]);
@@ -650,8 +1113,32 @@ pub(super) fn project(
         put(&mut files, format!("docs/contracts/{id}.mdx"), body);
         contract_items.push(json!(format!("contracts/{id}")));
     }
-    sidebars.push(json!({"type":"category","label":"Declared contracts","items":contract_items}));
-    sidebars.push(json!({"type":"category","label":"Service context","items":service_items}));
+    if !contract_items.is_empty() {
+        sidebars
+            .push(json!({"type":"category","label":"Declared contracts","items":contract_items}));
+    }
+    if !service_items.is_empty() {
+        sidebars.push(json!({"type":"category","label":"Service context","items":service_items}));
+    }
+    if let Some(guide) = documents.get("native/system-reading-guide.json") {
+        let mut story = format!("{}\n\n", md(text(&guide["purpose"])));
+        for section in rows(&guide["sections"]) {
+            story.push_str(&format!("## {}\n\n", md(text(&section["title"]))));
+            for b in rows(&section["blocks"]) {
+                story.push_str(&format!("### {}\n\n", md(text(&b["title"]))));
+                story.push_str(&block_in(b, &Value::Null, text(&section["id"]), "")?);
+            }
+        }
+        story.push_str(&block_in(
+            &guide["conclusion"],
+            &Value::Null,
+            "confidence",
+            "",
+        )?);
+        let marker = "## Processes\n\n";
+        let position = overview.find(marker).unwrap();
+        overview.insert_str(position, &story);
+    }
     overview.push_str("\n## Provenance\n\nOriginal claims, evidence and their independent review states remain in the reference archive. Source references include the original revision, digest and line range; no runtime guarantee is added by export.\n\n");
     overview.push_str("[Source fragments](sources/index.mdx)\n\n");
     put(&mut files, "docs/overview.mdx", overview);
@@ -761,6 +1248,10 @@ pub(super) fn project(
             include_bytes!("../../../assets/documentation/data-model.js").as_slice(),
         ),
         (
+            "scripts/pack-evidence.mjs",
+            include_bytes!("../../../assets/documentation/docusaurus/pack-evidence.mjs").as_slice(),
+        ),
+        (
             "src/css/clew.css",
             include_bytes!("../../../assets/documentation/docusaurus/clew.css").as_slice(),
         ),
@@ -774,9 +1265,13 @@ pub(super) fn project(
     put(
         &mut files,
         ".gitignore",
-        b"node_modules/\nbuild/\n.docusaurus/\n".to_vec(),
+        b"node_modules/\nbuild/\n.docusaurus/\nstatic/clew-reader-packs/\n".to_vec(),
     );
-    put(&mut files,"README.md",b"# Codeclew documentation export\n\nCommit inputs/, docs/, static/clew-data/, src/, package.json, package-lock.json, sidebars.js, docusaurus.config.js and the export manifest. Do not commit node_modules/, build/ or .docusaurus/. Markdown is the reading projection; normalized data and content-addressed objects retain complete original provenance. Source identity includes the whole binding, including revision and range.\n\nRun npm ci, then npm run build. Set CODECLEW_DOCS_BASE_URL for a non-root deployment path and CODECLEW_DOCS_URL for its origin. Deploy build/ only. This export does not deploy a website.\n\nThe standalone HTML profile remains the default. Historical paths inside source text are retained evidence, not dependencies on the author machine. New Markdown contains local file links; interactive readers use baseUrl-aware site routes. Original saved accounts and the selected snapshot retain independent authority and review state.\n".to_vec());
+    put(
+        &mut files,
+        "README.md",
+        include_bytes!("../../../assets/documentation/docusaurus/README.md").to_vec(),
+    );
     let mut result = manifest.clone();
     result["schema"] = json!("codeclew-docusaurus-export/1.0");
     result["format"] = json!("docusaurus");
@@ -800,6 +1295,55 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sequence_preserves_nested_branches_returns_and_participants_without_diagram_notes() {
+        let op = json!({"participants":[{"id":"caller","label":"Caller"},{"id":"service","label":"Service"}],"events":[
+            {"kind":"alt","text":"accepted"},{"kind":"loop","text":"each item"},
+            {"kind":"message","from":"caller","to":"service","text":"post <body>; safely"},
+            {"kind":"return","from":"service","to":"caller","text":"200"},
+            {"kind":"end"},{"kind":"else","text":"rejected"},
+            {"kind":"note","text":"Keep this only in the original account"},{"kind":"end"}
+        ]});
+        let diagram = sequence(&op).unwrap().unwrap();
+        assert!(diagram.contains("participant p0 as Caller"));
+        assert!(diagram.contains("alt accepted\nloop each item\np0->>p1: post #60;body#62;#59; safely\np1-->>p0: 200\nend\nelse rejected\nend"));
+        assert!(!diagram.contains("Keep this"));
+        assert!(
+            sequence(&json!({"events":[{"kind":"message","from":"a","to":"b"},{"kind":"end"}]}))
+                .is_err()
+        );
+    }
+    #[test]
+    fn service_content_and_interface_rows_are_readable_without_opening_the_json_archive() {
+        let op = json!({"id":"section-ingress","summary":{"text":"Actual saved ingress account."},"interfaceContracts":[{"title":"Declared statuses","rows":[{"label":"Responses","value":"400, 415, 500 and 503 retain independent schemas."}]}]});
+        let page = json!({"title":"Service","sections":[{"id":"section-ingress","title":"Ingress","content":op}],"catalogue":[],"operations":[]});
+        let rendered = service_page(&page, "service").unwrap();
+        assert!(rendered.contains("Actual saved ingress account."));
+        assert!(
+            rendered.contains("| Responses | 400, 415, 500 and 503 retain independent schemas. |")
+        );
+        assert!(rendered.contains("UNVERIFIED · UNASSESSED"));
+    }
+    #[test]
+    fn overview_keeps_the_system_guide_and_uses_root_markdown_file_links() {
+        let guide = json!({"title":"Saved system","purpose":"Real system purpose.","sections":[{"id":"story","title":"System story","blocks":[{"title":"Save","text":"Real saved outcome.","links":[{"subject":"scenario:save","operation":"process-overview","label":"Follow save"}],"evidence":[]}]}],"conclusion":{"text":"No delivery guarantee.","evidence":[]}});
+        let native = BTreeMap::from([(
+            "system-reading-guide.json".into(),
+            serde_json::to_vec(&guide).unwrap(),
+        )]);
+        let inputs = super::super::full::ReadingInputs {
+            reading_plan: None,
+            contract_comparison: None,
+            data_model: None,
+            format: super::super::PageFormat::Docusaurus,
+        };
+        let (files, manifest) =
+            project(&native, &json!({"output":"machine-only"}), &inputs).unwrap();
+        let overview = std::str::from_utf8(&files["docs/overview.mdx"]).unwrap();
+        assert!(overview.contains("Real saved outcome."));
+        assert!(overview.contains("[Follow save](scenarios/save.mdx#process-overview)"));
+        assert_eq!(manifest["output"], ".");
+    }
     #[test]
     fn revisions_ranges_and_literal_reference_keys_round_trip_without_source_aliasing() {
         let source = json!({"id":"same","file":"a.cs","revision":"old","startLine":1,"endLine":2,"text":"a\r\nλ","textDigest":"saved","authority":"EXACT_SNAPSHOT_TEXT"});

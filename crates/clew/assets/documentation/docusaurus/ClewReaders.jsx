@@ -1,7 +1,9 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {flushSync} from 'react-dom';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
 const cache = new Map();
+const packedObjects = new Map();
 async function jsonAt(url) {
   if (!cache.has(url)) cache.set(url, fetch(url).then(response => {
     if (!response.ok) throw new Error(`Saved documentation resource unavailable (${response.status})`);
@@ -15,7 +17,8 @@ async function resolve(value, base, seen = new Set()) {
   if (Object.keys(value).length === 1 && typeof value.$clewRef === 'string') {
     const id = value.$clewRef;
     if (!/^sha256:[a-f0-9]{64}$/.test(id) || seen.has(id)) throw new Error('Invalid saved evidence reference');
-    const object = await jsonAt(`${base}clew-data/objects/${id.slice(7)}.json`);
+    const object = packedObjects.get(id);
+    if (!object) throw new Error('Packed evidence reference is missing');
     if (object.schema !== 'codeclew-export-object/1.0' || object.identity !== id) throw new Error('Saved evidence identity differs');
     return resolve(object.value, base, new Set([...seen, id]));
   }
@@ -26,6 +29,16 @@ async function resolve(value, base, seen = new Set()) {
 async function documentAt(path, base) {
   const document = await jsonAt(base + path.replace(/^\//, ''));
   if (document.schema !== 'codeclew-normalized-data/1.0') throw new Error('Unsupported saved documentation format');
+  const manifest = await jsonAt(base + 'clew-reader-packs/manifest.json');
+  if (manifest.schema !== 'codeclew-reader-packs/1.0' || !manifest.widgets[path]) throw new Error('Reader transport manifest is incomplete; run npm run build');
+  await Promise.all(manifest.widgets[path].packs.map(async packPath => {
+    const pack = await jsonAt(base + packPath.replace(/^\//, ''));
+    if (pack.schema !== 'codeclew-reader-pack/1.0') throw new Error('Unsupported saved evidence pack');
+    for (const [id, record] of Object.entries(pack.objects)) {
+      if (record.identity !== id || record.schema !== 'codeclew-export-object/1.0') throw new Error('Packed evidence identity differs');
+      packedObjects.set(id, record);
+    }
+  }));
   return resolve(document.value, base);
 }
 
@@ -100,7 +113,7 @@ function Widget({dataPath, anchor}) {
 }
 
 export function ClewDataModel({dataPath}) {
-  return <section id="field-usage"><h2>Field usage and focused flow</h2><Widget dataPath={dataPath} /></section>;
+  return <Widget dataPath={dataPath} />;
 }
 export function ClewProcess({dataPath, defaultAnchor, children}) {
   const [flow, setFlow] = useState(false);
@@ -108,6 +121,27 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
   useEffect(() => {
     setFlow(new URLSearchParams(location.search).get('view') === 'data-flow');
     if (/^#question-[a-zA-Z0-9_-]+$/.test(location.hash)) setAnchor(location.hash.slice(1));
+    const questionNavigation = event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = event.target.closest?.('a[href]'); if (!link) return;
+      const url = new URL(link.href, location.href);
+      if (url.origin !== location.origin || url.pathname !== location.pathname || !url.hash) return;
+      const target = document.getElementById(decodeURIComponent(url.hash.slice(1)));
+      if (!target || !document.getElementById('clew-process')?.contains(target)) return;
+      event.preventDefault(); event.stopPropagation();
+      flushSync(() => {setFlow(false); if (target.id.startsWith('question-')) setAnchor(target.id);});
+      const next = new URL(location.href); next.searchParams.set('view', 'process'); next.hash = url.hash;
+      history.pushState(null, '', next); target.scrollIntoView({block: 'start'});
+    };
+    const historyNavigation = () => {
+      flushSync(() => {
+        setFlow(new URLSearchParams(location.search).get('view') === 'data-flow');
+        if (/^#question-[a-zA-Z0-9_-]+$/.test(location.hash)) setAnchor(location.hash.slice(1));
+      });
+    };
+    document.addEventListener('click', questionNavigation, true);
+    window.addEventListener('popstate', historyNavigation);
+    return () => {document.removeEventListener('click', questionNavigation, true);window.removeEventListener('popstate', historyNavigation);};
   }, [dataPath]);
   function select(on) {
     if (on && /^#question-[a-zA-Z0-9_-]+$/.test(location.hash)) setAnchor(location.hash.slice(1));
