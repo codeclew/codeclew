@@ -884,6 +884,22 @@ class BootstrapAuthorityTest(unittest.TestCase):
         }
         self.assertEqual(changed_ids, {"kotlin24"})
 
+        # Every installed skill file contributes to the embedded digest. Editing
+        # any one must rebuild the core, without invalidating a language worker.
+        for path in sorted((repository / "skills/codeclew").rglob("*")):
+            if not path.is_file() or path.name == ".DS_Store":
+                continue
+            relative = path.relative_to(repository).as_posix()
+            skill_inputs = [dict(row) for row in inputs]
+            row = next(row for row in skill_inputs if row["path"] == relative)
+            row["sha256"] = "sha256:" + "7" * 64
+            revised = bootstrap.runtime_component_specs("RELEASE", skill_inputs, tools, registry)
+            self.assertEqual(
+                {before["componentId"] for before, after in zip(first, revised, strict=True)
+                 if before["authority"]["componentKey"] != after["authority"]["componentKey"]},
+                {"clew"}, relative,
+            )
+
     def test_documentation_embedded_resources_are_in_staged_runtime_inputs(self) -> None:
         import re
         repository = MODULE_PATH.parent.parent

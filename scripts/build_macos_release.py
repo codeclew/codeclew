@@ -109,6 +109,7 @@ MINIMAL_SOURCE_FILES = (
     "packaging/macos/upgrade",
     "scripts/install_agent_skill.py",
     "site/install.sh",
+    "skills/codeclew/README.md",
     "skills/codeclew/SKILL.md",
     "skills/codeclew/agents/openai.yaml",
     "skills/codeclew/references/authoring-example.md",
@@ -116,6 +117,8 @@ MINIMAL_SOURCE_FILES = (
     "skills/codeclew/references/documentation-processes.md",
     "skills/codeclew/references/documentation-views.md",
     "skills/codeclew/references/service-documentation.md",
+    "skills/codeclew/references/managed-code.md",
+    "skills/codeclew/scripts/prepared_source.py",
 )
 
 

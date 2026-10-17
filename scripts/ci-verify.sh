@@ -82,6 +82,7 @@ python3 -I -S scripts/test_documentation_selection_contract.py
 python3 -I -S scripts/test_first_document.py
 python3 -I -S scripts/build_cli_documentation.py --check
 python3 -I -S scripts/test_agent_skill.py
+python3 -I -S scripts/test_prepared_source.py
 python3 -I -S scripts/test_pilot.py
 python3 -I -S scripts/test_macos_distribution.py
 python3 -I -S scripts/test_support_diagnostics.py

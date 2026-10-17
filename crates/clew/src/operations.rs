@@ -29,6 +29,10 @@ const COLD_BUILD_MINIMUM_FREE_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 fn agent_skill_digest() -> String {
     let mut payload = Vec::new();
     for (relative, content) in [
+        (
+            "README.md",
+            include_bytes!("../../../skills/codeclew/README.md").as_slice(),
+        ),
         ("SKILL.md", AGENT_SKILL_BYTES),
         ("agents/openai.yaml", AGENT_SKILL_OPENAI_BYTES),
         (
@@ -50,9 +54,17 @@ fn agent_skill_digest() -> String {
             include_bytes!("../../../skills/codeclew/references/documentation-views.md").as_slice(),
         ),
         (
+            "references/managed-code.md",
+            include_bytes!("../../../skills/codeclew/references/managed-code.md").as_slice(),
+        ),
+        (
             "references/service-documentation.md",
             include_bytes!("../../../skills/codeclew/references/service-documentation.md")
                 .as_slice(),
+        ),
+        (
+            "scripts/prepared_source.py",
+            include_bytes!("../../../skills/codeclew/scripts/prepared_source.py").as_slice(),
         ),
     ] {
         payload.extend_from_slice(relative.as_bytes());
