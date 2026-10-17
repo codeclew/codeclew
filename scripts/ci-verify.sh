@@ -101,6 +101,7 @@ ci_run() {
 
 ci_run checks python3 -I -S scripts/test_pilot_case_record.py
 ci_run checks python3 -I -S scripts/test_ci_verify.py
+ci_run checks python3 -I -S scripts/test_ci_reuse.py
 ci_run checks python3 -I -S bootstrap/test_clew_bootstrap.py
 ci_run checks python3 -I -S scripts/test_pilot_release_gate.py
 ci_run checks python3 -I -S scripts/test_language_mutation_pilot.py

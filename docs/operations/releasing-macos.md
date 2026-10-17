@@ -43,6 +43,15 @@ native host; the same launcher and updater work on both macOS and Linux.
 ## Publishing
 
 1. Merge only a clean, fully verified default branch.
+   Batch accepted slices, the final version and release notes into one integration
+   head and run full CI on that exact head. When the default branch is still its
+   ancestor, promote the reviewed head with a regular fast-forward push. This
+   preserves its commit SHA. The main
+   workflow reuses only the latest successful full PR or manually dispatched CI
+   for the identical commit in this repository. It links the original run in its
+   summary. A new merge commit, changed SHA, failed or incomplete latest run, or
+   unavailable lookup runs the full matrix instead. Matching trees alone never
+   authorize reuse. Do not force a promotion over a changed default branch.
 2. Run `python3 -I -S scripts/language_mutation_pilot.py` and require 6/6,
    3/3 per language, with `runtimeMode: RELEASE`.
 3. Confirm the workspace version matches the intended package version. Replace

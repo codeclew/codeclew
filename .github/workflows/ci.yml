@@ -9,8 +9,29 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  ci-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      reuse_full_ci: ${{ steps.reuse.outputs.reuse_full_ci }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Find full CI for an unchanged promoted commit
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLEW_CI_REPOSITORY_ID: ${{ github.repository_id }}
+        run: python3 -I -S scripts/ci_reuse.py
+
   verify-linux:
+    needs: ci-plan
+    if: needs.ci-plan.outputs.reuse_full_ci != 'true'
     name: Linux (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -53,6 +74,8 @@ jobs:
       - run: ./scripts/ci-verify.sh --suite '${{ matrix.suite }}'
 
   documentation-recovery-macos:
+    needs: ci-plan
+    if: needs.ci-plan.outputs.reuse_full_ci != 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -79,13 +102,17 @@ jobs:
 
   verify:
     if: always()
-    needs: [verify-linux, documentation-recovery-macos]
+    needs: [ci-plan, verify-linux, documentation-recovery-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Require every Linux suite and macOS recovery check
         env:
+          PLAN_RESULT: ${{ needs.ci-plan.result }}
+          REUSE_FULL_CI: ${{ needs.ci-plan.outputs.reuse_full_ci }}
           LINUX_RESULT: ${{ needs.verify-linux.result }}
           MACOS_RESULT: ${{ needs.documentation-recovery-macos.result }}
         run: |
+          test "$PLAN_RESULT" = success
+          if [ "$REUSE_FULL_CI" = true ]; then exit 0; fi
           test "$LINUX_RESULT" = success
           test "$MACOS_RESULT" = success
