@@ -7,6 +7,7 @@ body :where(main,nav,aside,header,footer,.dm-page,.reader-nav) :where(strong,b,s
 body main h1,body .dm-page h1{font-size:var(--clew-title)!important;line-height:40px!important;font-weight:600!important}
 body main h2,body .dm-page h2{font-size:var(--clew-section)!important;line-height:32px!important;font-weight:600!important}
 body :where(code,pre,kbd,samp),body pre *{font-family:var(--clew-mono)!important;font-size:var(--clew-compact)!important;font-weight:400!important;letter-spacing:normal!important}
+body pre *{line-height:22px!important}
 body pre{line-height:22px!important;white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;overflow:auto}
 body code{line-height:inherit!important;overflow-wrap:anywhere}
 body :where(.breadcrumb,.sequential-breadcrumb,.dm-inventory,.dm-legend,.dm-scroll-hint,.dm-matrix button,.dm-matrix th,.dm-matrix caption,.question-status,.question-status small,.question-context-links,.ingress-status,.catalog-meta,.catalog-detail){font-size:var(--clew-compact)!important;line-height:22px!important}

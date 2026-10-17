@@ -74,3 +74,16 @@ test('default overview precedes optional trail and cell drilldown retains overvi
  assert.equal((nodes['.dm-matrix'].innerHTML.match(/<td /g)||[]).length,21);assert.equal(new URL(location.href).searchParams.get('stage'),'Validate');
  assert.equal(new URL(location.href).searchParams.get('cellStage'),null);
 });
+
+test('a sole contract does not silently hide related model fields on fresh overview entry',()=>{
+ const data=JSON.parse(JSON.stringify(scaling));
+ data.models.push({id:'related',title:'Related model',fields:[{id:'outside',path:'outside',selectedProcessField:false,meaning:{text:'Outside selected trace.'},representations:[],usage:[]}]});
+ const {nodes}=mounted(data);
+ assert.equal(nodes['.dm-contract-select'].value,'');
+ assert.match(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
+ assert.match(nodes['.dm-overview-summary'].innerHTML,/22 displayed rows/);
+ assert.match(nodes['.dm-overview-summary'].innerHTML,/related inventory: Related model: 1 fields/);
+ nodes['.dm-contract-select'].value='fixture';nodes['.dm-contract-select'].events.change();
+ assert.doesNotMatch(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
+ assert.match(nodes['.dm-overview-summary'].innerHTML,/21 displayed rows/);
+});
