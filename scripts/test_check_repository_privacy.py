@@ -9,7 +9,6 @@ import re
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().with_name("check_repository_privacy.py")
@@ -21,29 +20,46 @@ SPEC.loader.exec_module(privacy)
 
 
 class RepositoryPrivacyTest(unittest.TestCase):
-    def test_history_identity_checks_github_merge_forms(self) -> None:
-        generic = (privacy.GENERIC_NAME, privacy.GENERIC_EMAIL)
-        contributor = ("Example Contributor", "contributor@" + "example.invalid")
-        github = ("GitHub", "noreply@" + "github.com")
-        cases = [
-            ("ordinary", "parent", "Ordinary change", generic, generic, []),
-            ("merge", "parent-a parent-b", "Merge pull request #21 from example/topic", contributor, github, []),
-            ("squash", "parent", "Scope scenario evidence and ship all seven skill files (#21)", contributor, github, []),
-            ("ordinary-github", "parent", "Ordinary change", contributor, github, ["non-generic-author", "non-generic-committer"]),
-            ("squash-other", "parent", "Change (#21)", contributor, contributor, ["non-generic-author", "non-generic-committer"]),
-            ("squash-zero", "parent", "Change (#0)", contributor, github, ["non-generic-author", "non-generic-committer"]),
-            ("squash-root", "", "Change (#21)", contributor, github, ["non-generic-author", "non-generic-committer"]),
-            ("private-author", "parent", "Ordinary change", contributor, generic, ["non-generic-author"]),
-            ("370a5f20b4676ad926a80cbdb3ad3be212898e37", "parent", "Recognize GitHub squash merge metadata in privacy checks", contributor, github, []),
-            ("other-custom-squash", "parent", "Recognize GitHub squash merge metadata in privacy checks", contributor, github, ["non-generic-author", "non-generic-committer"]),
-            ("370a5f20b4676ad926a80cbdb3ad3be212898e37", "parent", "Unrelated subject", contributor, github, ["non-generic-author", "non-generic-committer"]),
-            ("370a5f20b4676ad926a80cbdb3ad3be212898e37", "parent", "Recognize GitHub squash merge metadata in privacy checks", contributor, contributor, ["non-generic-author", "non-generic-committer"]),
-        ]
-        for commit, parents, subject, author, committer, rules in cases:
-            with self.subTest(commit=commit):
-                row = "\0".join((commit, parents, subject, *author, *committer)).encode()
-                with patch.object(privacy, "git", return_value=row):
-                    self.assertEqual(privacy.check_history_metadata(), [(commit, rule) for rule in rules])
+    def test_personal_and_bot_identities_pass_without_weakening_content_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args: str) -> None:
+                subprocess.run(["git", "-C", str(root), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            def check(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run([sys.executable, "-I", "-S", str(MODULE_PATH), *args],
+                                      cwd=root, capture_output=True, text=True, check=False)
+            git("init", "-q")
+            git("config", "user.name", "Example Contributor")
+            git("config", "user.email", "contributor@example.invalid")
+            public = root / "public.txt"
+            public.write_text("Public source")
+            git("add", ".")
+            git("commit", "-qm", "Personal contribution")
+            self.assertEqual(check("--history").returncode, 0)
+            self.assertEqual(check("--worktree", "--pre-commit").returncode, 0)
+            git("config", "user.name", "Example Bot")
+            git("config", "user.email", "bot@example.invalid")
+            public.write_text("Public bot contribution")
+            git("add", ".")
+            git("commit", "-qm", "Bot contribution")
+            self.assertEqual(check("--history").returncode, 0)
+            self.assertEqual(check("--pre-commit").returncode, 0)
+            private = b"/Users/" + b"private-example/source"
+            public.write_bytes(private)
+            git("add", ".")
+            rejected = check("--pre-commit")
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("public.txt: personal-home-path", rejected.stderr)
+            git("commit", "-qm", "Private content control")
+            public.write_text("Public source restored")
+            git("add", ".")
+            git("commit", "-qm", "Restore public content")
+            self.assertEqual(check("--worktree").returncode, 0)
+            rejected = check("--history")
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("personal-home-path", rejected.stderr)
+            self.assertNotIn("private-example", rejected.stderr)
 
     def test_large_inline_assets_do_not_require_an_email_to_make_progress(self) -> None:
         asset = b"A" * 65536
