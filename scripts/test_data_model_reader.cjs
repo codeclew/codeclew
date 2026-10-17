@@ -12,7 +12,7 @@ test('many consumer stages transpose into rows without dropping field-stage cell
 test('a process with many fields keeps its short consumer scope in columns',()=>{const a=api(),rows=Array.from({length:11},(_,i)=>({key:'model/'+i,label:'Model.field'+i,field:{usage:[]}})),stages=['Receive','Validate','Store'],html=a.matrixHtml(rows,stages,'event');assert.equal((html.match(/scope="col"/g)||[]).length,4);assert.equal((html.match(/scope="row"/g)||[]).length,11);assert.equal((html.match(/<td /g)||[]).length,33);assert.ok(html.includes('data-stage-label="Store"'));});
 
 test('field changes synchronize existing canonical links while preserving each process question',()=>{
- const location={href:'http://localhost/scenarios/example.html#question-apply',search:'',hash:'#question-apply'};
+ const location={href:'http://localhost/scenarios/example.html?stage=Store&contract=event&cellStage=Store#question-apply',search:'?stage=Store&contract=event&cellStage=Store',hash:'#question-apply'};
  const attrs={href:'../data-model/entity.html?fromProcess=example&fromAnchor=question-save','data-dm-return-anchor':'question-save'};
  const link={getAttribute:name=>attrs[name],setAttribute:(name,value)=>attrs[name]=value};
  const document={getElementById:()=>null,querySelectorAll:()=>[link]};
@@ -28,10 +28,12 @@ test('field changes synchronize existing canonical links while preserving each p
  context.window.CodeclewDataModel.mount(container,data);
  let url=new URL(attrs.href,location.href);
  assert.equal(url.searchParams.get('fromField'),'entity/a');
+ assert.equal(url.searchParams.get('fromStage'),'Store');assert.equal(url.searchParams.get('fromContract'),'event');assert.equal(url.searchParams.get('fromCellStage'),'Store');
  assert.equal(url.searchParams.get('fromAnchor'),'question-save');
  nodes['.dm-field-select'].value='entity/b';nodes['.dm-field-select'].events.change();
  url=new URL(attrs.href,location.href);
  assert.equal(url.searchParams.get('fromField'),'entity/b');
+ assert.equal(url.searchParams.get('fromStage'),'Store');assert.equal(url.searchParams.get('fromContract'),'event');assert.equal(url.searchParams.get('fromCellStage'),null);
  assert.equal(url.searchParams.get('fromAnchor'),'question-save');
  assert.equal(new URL(location.href).searchParams.get('field'),'entity/b');
 });
