@@ -35,6 +35,14 @@
   if(!uses.length)return 'Not investigated';
   return [...new Set(uses.flatMap(u=>u.assessment==='observed-static-use'?u.kinds.map(k=>labels[k]||k):[states[u.assessment]||u.assessment]))].join(' · ');
  }
+ function matrixHtml(rows,stages,contract){
+  const transposed=stages.length>Math.max(3,rows.length);
+  const fieldButton=r=>`<button type="button" data-dm-cell data-field="${esc(r.key)}" data-stage="">${esc(r.label)}</button>`;
+  const cell=(r,stage,label)=>`<td data-stage-label="${esc(label)}"><button type="button" data-dm-cell data-field="${esc(r.key)}" data-stage="${esc(stage)}" aria-label="${esc(r.label+' · '+stage+' · '+cellLabel(cellUses(r,stage,contract)))}">${esc(cellLabel(cellUses(r,stage,contract)))}</button></td>`;
+  const head=transposed?`<th scope="col">Consumer stage</th>${rows.map(r=>`<th scope="col">${fieldButton(r)}</th>`).join('')}`:`<th scope="col">Field</th>${stages.map(stage=>`<th scope="col">${esc(stage)}</th>`).join('')}`;
+  const body=transposed?stages.map(stage=>`<tr><th scope="row">${esc(stage)}</th>${rows.map(r=>cell(r,stage,r.label)).join('')}</tr>`).join(''):rows.map(r=>`<tr><th scope="row">${fieldButton(r)}</th>${stages.map(stage=>cell(r,stage,stage)).join('')}</tr>`).join('');
+  return `<div class="dm-matrix-scroll" tabindex="0" aria-label="Field usage by consumer"><table><caption>Field usage by consumer — ${transposed?'one consumer stage per row':'one field per row'}. Select a cell for its statement and exact evidence.</caption><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+ }
  function contractContext(row,u,data){
   const c=(data.contracts||[]).find(c=>c.id===u.contract);if(!c)return esc(u.contract)+' · No exact contract leaf modeled for this representation.';
   const leaves=leafFor(row,c);
@@ -74,7 +82,7 @@
    container.querySelector('.dm-counts').innerHTML=summary||'<p>Select an exact contract branch for required-leaf counts. Counts describe this documented scope, not utilization or runtime frequency.</p>';
    if(focus)flow.querySelector('h3')?.focus({preventScroll:true});
   }
-  function table(){const visibleStages=stage?[stage]:stages;matrix.innerHTML=`<div class="dm-matrix-scroll" tabindex="0" aria-label="Field usage by consumer"><table><caption>Field usage by consumer — select a cell for its statement and exact evidence</caption><thead><tr><th>Field</th>${visibleStages.map(s=>`<th>${esc(s)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr><th><button type="button" data-dm-cell data-field="${esc(r.key)}" data-stage="">${esc(r.label)}</button></th>${visibleStages.map(s=>`<td data-stage-label="${esc(s)}"><button type="button" data-dm-cell data-field="${esc(r.key)}" data-stage="${esc(s)}" aria-label="${esc(r.label+' · '+s+' · '+cellLabel(cellUses(r,s,contractSelect.value)))}">${esc(cellLabel(cellUses(r,s,contractSelect.value)))}</button></td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  function table(){const visibleStages=stage?[stage]:stages;matrix.innerHTML=matrixHtml(rows,visibleStages,contractSelect.value);
    matrix.querySelectorAll('[data-dm-cell]').forEach(button=>button.addEventListener('click',()=>{selected=rows.find(r=>r.key===button.dataset.field);stage=button.dataset.stage;table();update(true);flow.scrollIntoView({block:'start'});}));
   }
   fieldSelect.addEventListener('change',()=>{selected=rows.find(r=>r.key===fieldSelect.value);update();});
@@ -93,7 +101,7 @@
   const all=[...root.querySelectorAll('.question-mobile-nav,.question-section')],panel=document.createElement('div');panel.id='dm-process-view';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','dm-tab-process');all.forEach(node=>panel.appendChild(node));root.appendChild(panel);
   const controls=document.createElement('div');controls.className='dm-process-controls';controls.innerHTML='<div role="tablist" aria-label="Process reading view"><button type="button" role="tab" id="dm-tab-process" aria-controls="dm-process-view" aria-selected="true">Process</button><button type="button" role="tab" id="dm-tab-flow" aria-controls="dm-process-flow" aria-selected="false" tabindex="-1">Data Flow</button></div>';root.querySelector('header')?.after(controls);
   const flow=document.createElement('section');flow.id='dm-process-flow';flow.className='dm-page dm-process';flow.hidden=true;flow.setAttribute('role','tabpanel');flow.setAttribute('aria-labelledby','dm-tab-flow');flow.innerHTML=`<h2>${esc(data.request.title)}</h2><p>Agent proposal · Not reviewed. This view covers only the requested process fields and consumer stages.</p><p><a href="#${esc(data.request.anchor)}" class="dm-back-process">Return to process step</a></p><div class="dm-process-usage"></div>`;root.appendChild(flow);
-  const references=document.createElement('p');references.className='dm-relations';references.innerHTML='Data handled by this step: '+(data.relatedModels||data.models).map(m=>`<a href="../data-model/${esc(m.id)}.html?fromProcess=${encodeURIComponent(data.request.subject.slice(9))}&fromAnchor=${encodeURIComponent(data.request.anchor)}">${esc(m.title)}</a>`).join(' · ');document.getElementById(data.request.anchor)?.appendChild(references);
+  const references=document.createElement('p');references.className='dm-relations';references.innerHTML='Data handled by this step: '+(data.relatedModels||data.models).map(m=>`<a href="../data-model/${esc(m.id)}.html?fromProcess=${encodeURIComponent(data.request.subject.slice(9))}&fromAnchor=${encodeURIComponent(data.request.anchor)}">${esc(m.title)}</a>`).join(' · ');const step=document.getElementById(data.request.anchor);(step?.querySelector(':scope > div')||step)?.appendChild(references);
   let mounted=false;const tabs=[...controls.querySelectorAll('[role=tab]')];
   function view(name,save=true){const on=name==='data-flow';if(on&&!panel.hidden){const anchor=location.hash.slice(1);data.returnAnchor=/^question-[a-zA-Z0-9_-]+$/.test(anchor)?anchor:(data.returnAnchor||data.request.anchor);flow.querySelector('.dm-back-process').setAttribute('href','#'+data.returnAnchor);} panel.hidden=on;flow.hidden=!on;tabs.forEach((tab,i)=>{tab.setAttribute('aria-selected',String(on?i===1:i===0));tab.tabIndex=(on?i===1:i===0)?0:-1;});if(on&&!mounted){mount(flow.querySelector('.dm-process-usage'),data);mounted=true;}if(on)contextLinks(flow,data);if(save){const u=new URL(location.href);u.searchParams.set('view',on?'data-flow':'process');history.replaceState(null,'',u);}}
   tabs.forEach((tab,i)=>{tab.addEventListener('click',()=>view(i?'data-flow':'process'));tab.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();event.stopPropagation();const next=event.key==='Home'?0:event.key==='End'?1:1-i;view(next?'data-flow':'process');tabs[next].focus();}});});
@@ -102,7 +110,7 @@
   root.dmSelectProcess=()=>view('process');
   view(new URLSearchParams(location.search||'').get('view')==='data-flow'?'data-flow':'process',false);
  }
- const api={stats,fields,cellLabel,focused,mount,processMount};window.CodeclewDataModel=api;
+ const api={stats,fields,cellLabel,matrixHtml,focused,mount,processMount};window.CodeclewDataModel=api;
  const node=document.getElementById('dm-data');
  if(node?.textContent?.trim()){
   const data=JSON.parse(node.textContent),container=document.getElementById('dm-usage'),handle=container?mount(container,data):null;
