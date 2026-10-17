@@ -15,7 +15,8 @@ metadata:
 When the caller supplies a documentation root, service, exact selector and saved
 snapshot or answer/evidence, read only [README.md](README.md). It is the complete
 short route for SOURCE Q&A and answer maintenance, including the bounded packet
-helper. Do not load the references below for that route. If relevant inputs are
+helper. With a previous full packet and exact target, compare directly; no
+preliminary packet metadata, Git or hash read is required. Do not load the references below for that route. If relevant inputs are
 already verified unchanged, reuse the saved answer/evidence without context fetch
 or full JSON output.
 

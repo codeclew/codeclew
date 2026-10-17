@@ -99,3 +99,43 @@ The canonical short agent entry is [the skill README](../../skills/codeclew/READ
 After engine admission/compare, agents must not repeat Git/digest/catalogue checks
 for already covered inputs. A local packet fingerprint identifies the helper's
 artifact only; it is not an additional source freshness verdict.
+
+## Exact historical SOURCE drill
+
+When source text is actually missing, use `docs context --root DOCS --service ID
+--snapshot SNAPSHOT --source SOURCE_ID --limit 20`, or the portable helper's
+`drill` recipe. Only an explicit snapshot plus exact SOURCE IDs selects this
+historical route. It shares retain/compare's full immutable snapshot admission,
+including object integrity and the captured source-input configuration binding.
+It preserves original revision, file, line span, source authority and coverage;
+no live checkout or current catalogue match is claimed. Current publication
+narratives are not mixed into a historical source drill.
+
+`evidenceValidation.mode=PINNED_SOURCE_SNAPSHOT_CLOSURE` identifies this route.
+Missing/corrupt objects and unknown or cross-service source IDs fail closed.
+Ordinary context without an exact SOURCE selector still checks the current
+catalogue and may require recapture or recomposition. Output budgets, omitted
+items and cursors are unchanged. A successful historical read establishes no
+current freshness, semantic completeness or runtime equivalence.
+
+## One-compare maintenance view
+
+Pass the previous full packet directly to the helper's `compare` command. It makes
+one supported `compare-source` call; packet reads, hashes and immutable admission
+are internal. Neither a preliminary agent metadata read nor transcription of an
+opaque evidence reference is part of the prepared path.
+
+The `codeclew-prepared-maintenance-view/1.0` projection keeps baseline/target
+snapshot, revision and configuration bindings, actual dependency values, changed
+source windows, citation updates, coverage, unresolved inputs and all limits.
+Unchanged SOURCE bodies are omitted. The full packet is retained privately for
+subsequent comparisons and exact local continuation. The previous old-SOURCE
+snapshot drill remains available and does not compare against today's catalogue.
+
+`--metadata-only` and `--max-sources 0` omit SOURCE bodies without omitting changed
+values, citations or limits. Large change collections have a typed local
+`LOCAL_MAINTENANCE_RECORDS` continuation (`read --record-offset N`); SOURCE text
+uses the existing Unicode character offsets. A view that cannot fit mandatory
+metadata and one change fails explicitly; it must not hide limits or imply that
+partial evidence is unchanged. No model-cost improvement is established by this
+projection alone.
