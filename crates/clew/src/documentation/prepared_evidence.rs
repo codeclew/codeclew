@@ -427,6 +427,81 @@ fn source_identity(source: &Source) -> Value {
     value.as_object_mut().unwrap().remove("text");
     value
 }
+/// Whole-file content identities come only from already admitted SOURCE
+/// occurrences. Span text, syntax fingerprints and live Git are not substitutes.
+fn selected_file_comparisons(
+    old: &Evidence,
+    new: &Evidence,
+    baseline: &Check,
+    target: &Check,
+) -> Vec<Value> {
+    type FileSources<'a> = (Vec<&'a Source>, Vec<&'a Source>);
+    let mut files: BTreeMap<(&str, &str), FileSources<'_>> = BTreeMap::new();
+    let before = baseline.sources();
+    let after = target.sources();
+    for (ids, sources, is_before) in [
+        (&old.source_ids, &before, true),
+        (&new.source_ids, &after, false),
+    ] {
+        for id in ids {
+            if let Some(source) = sources.get(id) {
+                let pair = files.entry((&source.service, &source.file)).or_default();
+                if is_before {
+                    pair.0.push(source);
+                } else {
+                    pair.1.push(source);
+                }
+            }
+        }
+    }
+    fn object<'a>(sources: &[&'a Source]) -> Result<&'a str, &'static str> {
+        let Some(first) = sources.first() else {
+            return Err("FILE_BINDING_UNAVAILABLE");
+        };
+        let mut blob = None;
+        for source in sources {
+            let Some(occurrence) = &source.occurrence else {
+                return Err("FILE_OCCURRENCE_UNAVAILABLE");
+            };
+            if source.authority != "EXACT_SNAPSHOT_TEXT"
+                || occurrence.generated_origin.is_some()
+                || occurrence.blob.len() != 40
+                || !occurrence
+                    .blob
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || occurrence.blob.bytes().all(|b| b == b'0')
+                || occurrence.snapshot.is_empty()
+            {
+                return Err("UNSUPPORTED_FILE_OBJECT_BINDING");
+            }
+            if occurrence.end_byte.checked_sub(occurrence.start_byte) != Some(source.text.len())
+                || source.text_digest != crate::canonical::hash_bytes(source.text.as_bytes())
+            {
+                return Err("INCONSISTENT_SOURCE_OCCURRENCE");
+            }
+            if source.revision != first.revision || blob.is_some_and(|b| b != occurrence.blob) {
+                return Err("CONFLICTING_FILE_OBJECT_BINDINGS");
+            }
+            blob = Some(occurrence.blob.as_str());
+        }
+        Ok(blob.unwrap())
+    }
+    files.into_iter().map(|((service, file), (before, after))| {
+        let (status, reason) = match (object(&before), object(&after)) {
+            (Ok(a), Ok(b)) if a == b => (Verdict::Unchanged, "ADMITTED_GIT_BLOB_IDENTICAL"),
+            (Ok(_), Ok(_)) => (Verdict::Changed, "ADMITTED_GIT_BLOB_DIFFERENT"),
+            (Err(reason), _) | (_, Err(reason)) => (Verdict::Unknown, reason),
+        };
+        let ids = before.iter().chain(&after).map(|s| &s.id).collect::<BTreeSet<_>>();
+        json!({"service":service,"file":file,"status":status,"reason":reason,
+            "supportedObjectFormat":"GIT_SHA1_BLOB","sourceIds":ids,
+            "before":before.first().map(|s|source_identity(s)),
+            "after":after.first().map(|s|source_identity(s)),
+            "scope":"WHOLE_FILE_BYTES_OF_SELECTED_SOURCE_NOT_COMMIT_OR_BEHAVIOR",
+            "citationScope":"SOURCE_LINES_IDENTIFY_SELECTED_SPAN; FILE_VERDICT_USES_ADMITTED_OCCURRENCE_BLOB"})
+    }).collect()
+}
 fn maintenance_binding(checked: &Check, evidence: &Evidence) -> Result<Value, ClewError> {
     Ok(
         json!({"snapshot":evidence.snapshot,"service":evidence.service,"symbol":evidence.symbol,
@@ -589,6 +664,14 @@ fn compare_frames(
     {
         changes.push(json!({"reason":"DEPENDENCY_CLOSURE_ADDED","dependency":id}));
     }
+    for file in selected_file_comparisons(old, new, baseline, target) {
+        if file["status"] == "CHANGED" {
+            changes.push(json!({"reason":"SELECTED_SOURCE_FILE_BYTES_CHANGED","service":file["service"],"file":file["file"],"sourceIds":file["sourceIds"],"proof":"comparison.selectedSourceFiles"}));
+        } else if file["status"] == "UNKNOWN" {
+            missing = true;
+            changes.push(json!({"reason":"SELECTED_SOURCE_FILE_COMPARISON_UNKNOWN","service":file["service"],"file":file["file"],"details":file["reason"],"proof":"comparison.selectedSourceFiles"}));
+        }
+    }
     let before = baseline.sources();
     let after = target.sources();
     for id in &old.source_ids {
@@ -615,7 +698,11 @@ fn compare_frames(
     let changed = changes.iter().any(|v| {
         !matches!(
             v["reason"].as_str(),
-            Some("DEPENDENCY_UNAVAILABLE" | "SELECTED_SOURCE_UNAVAILABLE")
+            Some(
+                "DEPENDENCY_UNAVAILABLE"
+                    | "SELECTED_SOURCE_UNAVAILABLE"
+                    | "SELECTED_SOURCE_FILE_COMPARISON_UNKNOWN"
+            )
         )
     });
     let status = if changed {
@@ -720,6 +807,8 @@ pub(super) fn compare(
             result["inputDigest"] = json!(target.input_digest);
             result["contextDigest"] = json!(target.context_digest);
             result["comparison"] = json!({"status":Verdict::Unknown,"reason":"TARGET_CONTEXT_UNAVAILABLE","detailsCode":error.code,"scope":"REGISTERED_INPUTS_ONLY_NOT_RUNTIME_BEHAVIOR","baselineSnapshot":old.snapshot,"targetSnapshot":snapshot,"behaviorEquivalence":"NOT_ESTABLISHED","unresolvedSemanticsPreserved":true});
+            result["comparison"]["selectedSourceFiles"] =
+                json!(selected_file_comparisons(&old, &old, &baseline, &target));
             result["targetNativeInputLimits"] = json!(native.limits);
             result["targetUnresolved"] = json!(target.unresolved);
             result["comparison"]["baselineBinding"] = maintenance_binding(&baseline, &old)?;
@@ -790,6 +879,8 @@ pub(super) fn compare(
         Verdict::Unchanged
     };
     result["comparison"] = json!({"status":status,"scope":"REGISTERED_INPUTS_ONLY_NOT_RUNTIME_BEHAVIOR","integrity":"BOTH_IMMUTABLE_SNAPSHOT_CLOSURES_ADMITTED","baselineSnapshot":old.snapshot,"targetSnapshot":snapshot,"changeCount":changes.len(),"sourceBindingUpdateCount":links.len(),"selectedSourceBytes":selected_source_bytes,"semanticCompleteness":"NOT_ESTABLISHED","reasonExamples":changes.iter().take(4).map(|v|json!({"reason":v["reason"],"kind":v["kind"],"dependency":v["dependency"],"source":v["source"],"input":v["input"],"file":v["file"],"changedWindow":v["changedWindow"],"sourceReferences":v["sourceReferences"]})).collect::<Vec<_>>(),"unresolvedSemanticsPreserved":true,"unregisteredReferences":"UNKNOWN_OUT_OF_SCOPE","behaviorEquivalence":"NOT_ESTABLISHED"});
+    result["comparison"]["selectedSourceFiles"] =
+        json!(selected_file_comparisons(&old, &next, &baseline, &target));
     result["comparison"]["baselineBinding"] = maintenance_binding(&baseline, &old)?;
     result["comparison"]["targetBinding"] = maintenance_binding(&target, &next)?;
     let mut rows=changes.into_iter().enumerate().map(|(i,record)|json!({"kind":"EVIDENCE_CHANGE","id":format!("change-{i}"),"record":record})).collect::<Vec<_>>();
@@ -812,6 +903,20 @@ mod tests {
         ] {
             check.dependencies.insert(id.into(),serde_json::from_value(json!({"id":id,"service":"sample","kind":kind,"symbol":id,"normalized":{},"digest":format!("digest-{id}"),"sourceIds":["source"]})).unwrap());
         }
+        check
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .get_mut("source")
+            .unwrap()
+            .occurrence = Some(super::super::model::SourceOccurrence {
+            snapshot: "source-snapshot".into(),
+            blob: "a".repeat(40),
+            start_byte: 0,
+            end_byte: 7,
+            generated_origin: None,
+        });
         let evidence = Evidence {
             schema: SCHEMA.into(),
             snapshot: "baseline".into(),
@@ -828,6 +933,135 @@ mod tests {
             native: NativeState::default(),
         };
         (evidence, check)
+    }
+    #[test]
+    fn file_verdict_uses_admitted_objects_not_unchanged_span_or_syntax() {
+        let (old, baseline) = fixture();
+        let mut target = baseline.clone();
+        target
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .get_mut("source")
+            .unwrap()
+            .occurrence
+            .as_mut()
+            .unwrap()
+            .blob = "b".repeat(40);
+        // Unchanged selected span and normalized SOURCE_SCOPE inventory cannot
+        // hide a changed whole-file object (outside-span or whitespace bytes).
+        assert_eq!(
+            serde_json::to_value(&baseline.dependencies).unwrap(),
+            serde_json::to_value(&target.dependencies).unwrap()
+        );
+        let files = selected_file_comparisons(&old, &old, &baseline, &target);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["status"], "CHANGED");
+        assert_eq!(files[0]["before"]["occurrence"]["blob"], "a".repeat(40));
+        assert_eq!(files[0]["after"]["occurrence"]["blob"], "b".repeat(40));
+        let (status, changes) = compare_frames(&old, &old, &baseline, &target);
+        assert_eq!(status, Verdict::Changed);
+        assert!(
+            changes
+                .iter()
+                .any(|v| v["reason"] == "SELECTED_SOURCE_FILE_BYTES_CHANGED")
+        );
+        assert!(
+            changes
+                .iter()
+                .all(|v| v["reason"] != "SELECTED_SOURCE_BYTES_CHANGED")
+        );
+    }
+    #[test]
+    fn file_equality_deduplicates_selected_spans_and_keeps_both_citations() {
+        let (mut old, mut baseline) = fixture();
+        let mut second = baseline.services["sample"].sources["source"].clone();
+        second.id = "second".into();
+        baseline
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .insert(second.id.clone(), second);
+        old.source_ids.push("second".into());
+        let mut target = baseline.clone();
+        for source in target
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .values_mut()
+        {
+            source.revision = "new".into();
+            source.url = Some("https://example.test/new/main.ts#L1".into());
+        }
+        for checked in [&baseline, &target] {
+            let files = selected_file_comparisons(&old, &old, &baseline, checked);
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0]["status"], "UNCHANGED");
+            assert_eq!(files[0]["sourceIds"], json!(["second", "source"]));
+            assert_eq!(files[0]["before"]["revision"], "old");
+            assert_eq!(
+                files[0]["after"]["revision"],
+                checked.services["sample"].sources["source"].revision
+            );
+            assert!(
+                files[0]["scope"]
+                    .as_str()
+                    .unwrap()
+                    .contains("NOT_COMMIT_OR_BEHAVIOR")
+            );
+        }
+    }
+    #[test]
+    fn missing_generated_unsupported_and_conflicting_file_bindings_are_unknown() {
+        let (old, baseline) = fixture();
+        for case in 0..5 {
+            let mut target = baseline.clone();
+            let source = target
+                .services
+                .get_mut("sample")
+                .unwrap()
+                .sources
+                .get_mut("source")
+                .unwrap();
+            match case {
+                0 => source.occurrence = None,
+                1 => {
+                    source.authority = "EXPLICIT_GENERATED_SOURCE_TEXT".into();
+                    source.occurrence.as_mut().unwrap().generated_origin = Some("generated".into());
+                }
+                2 => source.occurrence.as_mut().unwrap().blob = "not-a-git-object".into(),
+                3 => source.occurrence.as_mut().unwrap().end_byte = 100,
+                _ => {
+                    target.services.get_mut("sample").unwrap().sources.clear();
+                }
+            }
+            assert_eq!(
+                selected_file_comparisons(&old, &old, &baseline, &target)[0]["status"],
+                "UNKNOWN"
+            );
+            assert_eq!(
+                compare_frames(&old, &old, &baseline, &target).0,
+                Verdict::Unknown
+            );
+        }
+        let mut contradictory = baseline.clone();
+        let mut second = contradictory.services["sample"].sources["source"].clone();
+        second.id = "second".into();
+        second.occurrence.as_mut().unwrap().blob = "b".repeat(40);
+        contradictory
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .insert(second.id.clone(), second);
+        let mut next = old.clone();
+        next.source_ids.push("second".into());
+        let files = selected_file_comparisons(&old, &next, &baseline, &contradictory);
+        assert_eq!(files[0]["status"], "UNKNOWN");
+        assert_eq!(files[0]["reason"], "CONFLICTING_FILE_OBJECT_BINDINGS");
     }
     #[test]
     fn same_inputs_and_revision_only_changes_retain_syntax_limits_without_runtime_claims() {

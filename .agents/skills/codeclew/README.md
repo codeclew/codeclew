@@ -61,6 +61,20 @@ bodies are not replayed. The full current packet stays at `--output` for the nex
 stage; do not compute, transcribe or rewrite its SHA or opaque evidence set.
 No preliminary packet `read` or optional widening is needed for the ordinary path.
 
+`comparison.selectedSourceFiles` separately reports whole-file byte status for
+selected SOURCE files, deduplicated by service/path. Each row carries both exact
+SOURCE citations and their admitted Git blob occurrences. `UNCHANGED` means those
+complete file objects have identical bytes; `CHANGED` can occur outside an unchanged
+selected span, including whitespace ignored by syntax fingerprints. Missing,
+generated or incomparable file-object bindings remain `UNKNOWN`. An unchanged
+selected span is never a whole-file equality proof.
+
+Keep four scopes separate: selected span, admitted selected file, registered
+dependency/native closure, and complete commit change set. File equality does not
+prove a commit-wide only-change claim. If the question requires complete commit
+scope beyond registration, acquire that missing scope with native discovery.
+Do not repeat Git reads for the file objects already compared by the engine.
+
 The engine compares the registered dependency closure, source/configuration,
 membership, generated inputs and explicit native references. It preserves
 unresolved analysis limits. Read the typed result:
