@@ -450,15 +450,150 @@ fn diagram_text(value: &str) -> String {
         .join("<br/>")
 }
 
+enum SequenceNode {
+    Event(Value),
+    Group(SequenceFrame),
+}
+
+struct SequenceFrame {
+    kind: String,
+    arms: Vec<(Value, Vec<SequenceNode>)>,
+    end: Option<Value>,
+}
+
+// Match the standalone reader's visible-action projection. In particular an
+// else action must keep the earlier authored guards when empty arms disappear.
+fn sequence_events(op: &Value) -> Result<Vec<Value>, ClewError> {
+    let mut stack = vec![SequenceFrame {
+        kind: String::new(),
+        arms: vec![(Value::Null, Vec::new())],
+        end: None,
+    }];
+    for event in rows(&op["events"]) {
+        match text(&event["kind"]) {
+            kind @ ("alt" | "opt" | "loop") => stack.push(SequenceFrame {
+                kind: kind.into(),
+                arms: vec![(event.clone(), Vec::new())],
+                end: None,
+            }),
+            "else" => {
+                let frame = stack.last_mut().unwrap();
+                if frame.kind != "alt" {
+                    return Err(invalid("retained sequence else has no alternative"));
+                }
+                frame.arms.push((event.clone(), Vec::new()));
+            }
+            "end" => {
+                if stack.len() == 1 {
+                    return Err(invalid("retained sequence end has no open branch"));
+                }
+                let mut frame = stack.pop().unwrap();
+                frame.end = Some(event.clone());
+                stack
+                    .last_mut()
+                    .unwrap()
+                    .arms
+                    .last_mut()
+                    .unwrap()
+                    .1
+                    .push(SequenceNode::Group(frame));
+            }
+            "message" | "return" | "declared" => stack
+                .last_mut()
+                .unwrap()
+                .arms
+                .last_mut()
+                .unwrap()
+                .1
+                .push(SequenceNode::Event(event.clone())),
+            "note" => {}
+            _ => {
+                return Err(invalid(
+                    "retained sequence kind is unsupported by the native MDX diagram",
+                ));
+            }
+        }
+    }
+    if stack.len() != 1 {
+        return Err(invalid("retained sequence has an unclosed branch"));
+    }
+    fn project(nodes: Vec<SequenceNode>) -> Vec<Value> {
+        let mut result = Vec::new();
+        for node in nodes {
+            match node {
+                SequenceNode::Event(event) => result.push(event),
+                SequenceNode::Group(frame) => {
+                    let markers = frame
+                        .arms
+                        .iter()
+                        .map(|(marker, _)| marker.clone())
+                        .collect::<Vec<_>>();
+                    let mut first = true;
+                    let mut visible = false;
+                    for (index, (mut marker, nodes)) in frame.arms.into_iter().enumerate() {
+                        let events = project(nodes);
+                        if events.is_empty() {
+                            continue;
+                        }
+                        if first && index > 0 {
+                            let mut guards = vec!["Otherwise".to_owned()];
+                            guards.extend(
+                                markers[..index].iter().map(|m| text(&m["text"]).to_owned()),
+                            );
+                            if !text(&marker["text"]).eq_ignore_ascii_case("otherwise") {
+                                guards.push(text(&marker["text"]).to_owned());
+                            }
+                            marker["kind"] = json!("alt");
+                            marker["text"] = json!(guards.join(" · "));
+                            for key in ["sourceIds", "dependencyIds"] {
+                                let mut seen = std::collections::BTreeSet::new();
+                                marker[key] = json!(
+                                    markers[..=index]
+                                        .iter()
+                                        .flat_map(|m| rows(&m[key]))
+                                        .filter_map(Value::as_str)
+                                        .filter(|id| seen.insert((*id).to_owned()))
+                                        .collect::<Vec<_>>()
+                                );
+                            }
+                        }
+                        result.push(marker);
+                        result.extend(events);
+                        first = false;
+                        visible = true;
+                    }
+                    if visible && let Some(end) = frame.end {
+                        result.push(end);
+                    }
+                }
+            }
+        }
+        result
+    }
+    Ok(project(stack.pop().unwrap().arms.pop().unwrap().1))
+}
+
 fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
-    if !rows(&op["events"]).any(|e| matches!(text(&e["kind"]), "message" | "return")) {
+    let events = sequence_events(op)?;
+    if !events
+        .iter()
+        .any(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
+    {
         return Ok(None);
     }
+    let referenced = events
+        .iter()
+        .filter(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
+        .flat_map(|e| [text(&e["from"]), text(&e["to"])])
+        .collect::<std::collections::BTreeSet<_>>();
     let mut participants = Vec::new();
-    for p in rows(&op["participants"]) {
+    for p in rows(&op["participants"]).filter(|p| referenced.contains(text(&p["id"]))) {
         participants.push((text(&p["id"]).to_owned(), text(&p["label"]).to_owned()));
     }
-    for e in rows(&op["events"]).filter(|e| matches!(text(&e["kind"]), "message" | "return")) {
+    for e in events
+        .iter()
+        .filter(|e| matches!(text(&e["kind"]), "message" | "return" | "declared"))
+    {
         for key in ["from", "to"] {
             let id = text(&e[key]);
             if !id.is_empty() && !participants.iter().any(|(p, _)| p == id) {
@@ -480,11 +615,11 @@ fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
         ));
     }
     let mut stack = Vec::new();
-    for event in rows(&op["events"]) {
+    for event in &events {
         let kind = text(&event["kind"]);
         let label = diagram_text(text(&event["text"]));
         match kind {
-            "message" | "return" => {
+            "message" | "return" | "declared" => {
                 let (Some(from), Some(to)) = (
                     names.get(text(&event["from"])),
                     names.get(text(&event["to"])),
@@ -492,8 +627,13 @@ fn sequence(op: &Value) -> Result<Option<String>, ClewError> {
                     return Err(invalid("retained sequence has an unbound participant"));
                 };
                 out.push_str(&format!(
-                    "{from}{}{to}: {label}\n",
-                    if kind == "return" { "-->>" } else { "->>" }
+                    "{from}{}{to}: {}{label}\n",
+                    if kind == "message" { "->>" } else { "-->>" },
+                    if kind == "declared" {
+                        "[declared] "
+                    } else {
+                        ""
+                    }
                 ));
             }
             "alt" | "opt" | "loop" => {
@@ -1305,12 +1445,34 @@ mod tests {
         ]});
         let diagram = sequence(&op).unwrap().unwrap();
         assert!(diagram.contains("participant p0 as Caller"));
-        assert!(diagram.contains("alt accepted\nloop each item\np0->>p1: post #60;body#62;#59; safely\np1-->>p0: 200\nend\nelse rejected\nend"));
+        assert!(diagram.contains("alt accepted\nloop each item\np0->>p1: post #60;body#62;#59; safely\np1-->>p0: 200\nend\nend"));
+        assert!(!diagram.contains("else rejected"));
         assert!(!diagram.contains("Keep this"));
         assert!(
             sequence(&json!({"events":[{"kind":"message","from":"a","to":"b"},{"kind":"end"}]}))
                 .is_err()
         );
+    }
+    #[test]
+    fn sequence_removes_empty_groups_and_unused_actors_without_losing_else_conditions() {
+        let op = json!({"participants":[{"id":"caller","label":"Unused caller"},{"id":"service","label":"Service"},{"id":"db","label":"Database"}],"events":[
+            {"kind":"alt","text":"Duplicate event","sourceIds":["duplicate"]},
+            {"kind":"note","text":"Return without changing the card"},
+            {"kind":"else","text":"Otherwise","sourceIds":["new-event"]},
+            {"kind":"message","from":"service","to":"db","text":"Insert or update the card"},
+            {"kind":"alt","text":"Changed row"},{"kind":"note","text":"Applied"},
+            {"kind":"else","text":"Otherwise"},{"kind":"note","text":"Older or equal"},
+            {"kind":"end"},{"kind":"end"},
+            {"kind":"declared","from":"service","to":"db","text":"Declared transfer only"}
+        ]});
+        let projected = sequence_events(&op).unwrap();
+        assert_eq!(projected.len(), 4);
+        assert_eq!(projected[0]["text"], "Otherwise · Duplicate event");
+        assert_eq!(projected[0]["sourceIds"], json!(["duplicate", "new-event"]));
+        let diagram = sequence(&op).unwrap().unwrap();
+        assert!(!diagram.contains("Unused caller"));
+        assert!(!diagram.contains("Changed row"));
+        assert!(diagram.contains("alt Otherwise · Duplicate event\np0->>p1: Insert or update the card\nend\np0-->>p1: [declared] Declared transfer only"));
     }
     #[test]
     fn service_content_and_interface_rows_are_readable_without_opening_the_json_archive() {
