@@ -370,7 +370,7 @@ python3 -I -S scripts/check_repository_privacy.py --pre-commit
   2. Run fmt/clippy, targeted unit/bootstrap/pilot unit tests, and privacy, then
      exactly one final `./scripts/ci-verify.sh` as the third local product E2E.
   3. Do not repeat smoke, pilot, or `ci-verify` for diagnosis.
-  4. Commit with generic identity, push with lease safety, and find the GitHub
+  4. Commit with the configured contributor identity, push with lease safety, and find the GitHub
      run for the exact SHA.
   5. Observe the sole CI run to terminal state. On failure, do not fix and push
      again within this plan; record the exact cause and leave T05/the goal

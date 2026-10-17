@@ -56,6 +56,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/ci-verify.sh
 ```
 
+The identity-only restrictions recorded below were retired on 2026-10-17;
+see [repository privacy](../operations/repository-privacy.md). Historical CI
+results remain unchanged. Personal contributor identity is now allowed.
+
 Use pinned Rust 1.92 and the native worker environment. Resolve all compile/test
 failures before integration. GitHub connector commits use a personal identity;
 maintainer integration must preserve the repository privacy policy rather than
