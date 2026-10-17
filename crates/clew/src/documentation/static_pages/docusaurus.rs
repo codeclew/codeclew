@@ -328,9 +328,8 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
-    out.push_str("<span id=\"process-overview\"></span>\n\n");
     out.push_str(&format!(
-        "# {}\n\n{}\n\n",
+        "# {}\n\n## Process overview {{#process-overview}}\n\n{}\n\n",
         md(text(&guide["title"])),
         md(text(&guide["purpose"]))
     ));

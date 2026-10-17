@@ -24,7 +24,7 @@
     if(uses.some(u=>u.assessment==='stale-evidence'))stale++;
     const observed=uses.filter(u=>u.assessment==='observed-static-use');
     const bounded=uses.some(u=>u.assessment==='no-use-found-in-bounded-complete-scope');
-    if(observed.length||bounded){seen.add(leaf.field);if(bounded)negative++;for(const kind of new Set(observed.flatMap(u=>u.kinds)))count[kind]++;}
+    if(observed.length||bounded){seen.add(leaf.field);if(bounded)negative++;for(const kind of Array.from(new Set(observed.flatMap(u=>u.kinds))))count[kind]++;}
    }
   }
   unknown=required.length-seen.size;
@@ -33,7 +33,7 @@
  function cellUses(row,stage,contract){return row.field.usage.filter(u=>u.stage===stage&&(!contract||u.contract===contract));}
  function cellLabel(uses){
   if(!uses.length)return 'Not investigated';
-  return [...new Set(uses.flatMap(u=>u.assessment==='observed-static-use'?u.kinds.map(k=>labels[k]||k):[states[u.assessment]||u.assessment]))].join(' · ');
+  return Array.from(new Set(uses.flatMap(u=>u.assessment==='observed-static-use'?u.kinds.map(k=>labels[k]||k):[states[u.assessment]||u.assessment]))).join(' · ');
  }
  function matrixHtml(rows,stages,contract){
   const transposed=stages.length>Math.max(3,rows.length);
@@ -65,7 +65,7 @@
   const requestedField=query.get('field')||(location.hash.startsWith('#field-')?location.hash.slice(7):'');
   let selected=rows.find(r=>[r.key,r.field.id,r.field.path].some(k=>k.toLowerCase()===requestedField.toLowerCase()))||rows[0];
   const requestedStages=data.request?.stages;
-  const stages=requestedStages||[...new Set(rows.flatMap(r=>r.field.usage.map(u=>u.stage)))];
+  const stages=requestedStages||Array.from(new Set(rows.flatMap(r=>r.field.usage.map(u=>u.stage))));
   let stage=query.get('stage')||'';if(!stages.includes(stage))stage='';
   const contractIds=new Set(rows.flatMap(r=>r.field.representations.map(rep=>rep.contract).filter(Boolean)));
   const contracts=(data.contracts||[]).filter(c=>contractIds.has(c.id));
