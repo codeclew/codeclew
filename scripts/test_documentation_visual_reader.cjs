@@ -1551,3 +1551,31 @@ test('operation links expose retained processes and existing data descriptions w
  assert.doesNotMatch(html,/No domain entity identities have been declared/);
  assert.equal(r.run('JSON.stringify(D.operations)'),original);
 });
+
+test('OpenAPI literal and enum constraints never invent an object type',()=>{
+ const ui=load();
+ const html=ui.run(`fields({type:'object',required:['status'],properties:{status:{const:'QUEUED'},mode:{enum:['fast','safe']},empty:{},disabled:{const:false},nil:{const:null}}})`);
+ assert.match(html,/const: &quot;QUEUED&quot;/);assert.match(html,/enum: \[&quot;fast&quot;,&quot;safe&quot;\]/);
+ assert.match(html,/const: false/);assert.match(html,/const: null/);
+ assert.match(html,/<code>status<\/code><\/td><td>Not declared<\/td><td class="required">required/);
+ assert.equal(ui.run('type({})'),'Not declared');assert.equal(ui.run('type({$ref:"#/missing"})'),'#/missing');
+ assert.match(ui.run('fields(false)'),/No value allowed/);
+});
+test('response JSON location respects operation path, escaped keys and unsupported input',()=>{
+ const ui=load(),text=JSON.stringify({paths:{'/other':{post:{responses:{202:{description:'wrong'}}}},'/work/{id}':{post:{responses:{202:{description:'right',content:{'application/json':{schema:{properties:{status:{const:'QUEUED'}}}}}}}}}}},null,2);
+ const location=ui.run(`jsonSourceLocation(${JSON.stringify(text)},['paths','/work/{id}','post','responses','202'])`);
+ assert.equal(JSON.parse(text.slice(location.start,location.end)).description,'right');assert.ok(location.start>text.indexOf('wrong'));
+ assert.equal(ui.run(`jsonSourceLocation('paths: yaml',['paths'])`),null);
+ assert.equal(ui.run(`jsonSourceLocation('{"a":{},"a":{}}',['a'])`),null);
+ assert.equal(ui.run(`jsonSourceLocation('{"a":{}}',['missing'])`),null);
+});
+test('response source opens its exact line span while preserving the complete retained bytes',()=>{
+ const data=fixture(),text=JSON.stringify({openapi:'3.1.0',paths:{'/work':{post:{responses:{202:{description:'Queued',content:{'application/json':{schema:{properties:{status:{const:'QUEUED'}}}}}}}}}}},null,2);
+ const record={...source(text),file:'contract.json',startLine:10,endLine:10+text.split('\n').length-1,url:'https://example.test/blob/abc/contract.json#L10-L99',textDigest:'retained-digest',evidenceDigest:'retained-evidence'};
+ data.selectedSources={'contract-source':record};const before=JSON.stringify(data.selectedSources),ui=load(data);
+ ui.run(`source(['contract-source'],'Response contract',true,'', '',['paths','/work','post','responses','202'])`);
+ const location=ui.run(`jsonSourceLocation(${JSON.stringify(text)},['paths','/work','post','responses','202'])`),line=10+text.slice(0,location.start).split('\n').length-1;
+ assert.match(ui.e('source-meta').innerHTML,new RegExp('#L'+line+'-L'));assert.match(ui.e('source-meta').innerHTML,/Selected response/);
+ assert.match(ui.e('source-code').innerHTML,/openapi/);assert.match(ui.e('source-code').innerHTML,/QUEUED/);
+ assert.equal(JSON.stringify(data.selectedSources),before);assert.match(ui.e('source-foot').innerHTML,/retained-digest/);
+});

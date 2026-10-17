@@ -152,6 +152,22 @@ pub(super) fn render(
             .into_bytes();
         let _ = name;
     }
+    if let Some(guide) = questions.get("system:overview") {
+        let original = files
+            .get("overview.html")
+            .ok_or_else(|| invalid("system guide has no frozen overview"))?
+            .clone();
+        let html = super::question_reading::overview_html(
+            std::str::from_utf8(&original).map_err(io_error)?,
+            guide,
+        )?;
+        files.insert("retained-overview.html".into(), original);
+        files.insert("overview.html".into(), html.into_bytes());
+        files.insert(
+            "system-reading-guide.json".into(),
+            serde_json::to_vec_pretty(guide).map_err(io_error)?,
+        );
+    }
     files.insert(
         "index.html".into(),
         files
