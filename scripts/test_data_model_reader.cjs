@@ -10,3 +10,28 @@ test('an unconfigured reader mounts no Data Flow controls',()=>{let writes=0;con
 
 test('many consumer stages transpose into rows without dropping field-stage cells',()=>{const a=api(),rows=Array.from({length:4},(_,i)=>({key:'place/'+i,label:'Place.field'+i,field:{usage:[]}})),stages=Array.from({length:12},(_,i)=>'Consumer stage '+i),html=a.matrixHtml(rows,stages,'event');assert.equal((html.match(/scope="col"/g)||[]).length,5);assert.equal((html.match(/scope="row"/g)||[]).length,12);assert.equal((html.match(/<td /g)||[]).length,48);for(const stage of stages)for(const row of rows)assert.ok(html.includes('data-field="'+row.key+'" data-stage="'+stage+'"'));});
 test('a process with many fields keeps its short consumer scope in columns',()=>{const a=api(),rows=Array.from({length:11},(_,i)=>({key:'model/'+i,label:'Model.field'+i,field:{usage:[]}})),stages=['Receive','Validate','Store'],html=a.matrixHtml(rows,stages,'event');assert.equal((html.match(/scope="col"/g)||[]).length,4);assert.equal((html.match(/scope="row"/g)||[]).length,11);assert.equal((html.match(/<td /g)||[]).length,33);assert.ok(html.includes('data-stage-label="Store"'));});
+
+test('field changes synchronize existing canonical links while preserving each process question',()=>{
+ const location={href:'http://localhost/scenarios/example.html#question-apply',search:'',hash:'#question-apply'};
+ const attrs={href:'../data-model/entity.html?fromProcess=example&fromAnchor=question-save','data-dm-return-anchor':'question-save'};
+ const link={getAttribute:name=>attrs[name],setAttribute:(name,value)=>attrs[name]=value};
+ const document={getElementById:()=>null,querySelectorAll:()=>[link]};
+ const history={replaceState(_,__,next){const u=new URL(next,location.href);location.href=u.href;location.search=u.search;location.hash=u.hash;}};
+ const context={window:{},document,location,history,URL,URLSearchParams};vm.runInNewContext(script,context);
+ const nodes={};
+ for(const selector of ['.dm-field-select','.dm-contract-select','.dm-stage-select','.dm-matrix','.dm-focused','.dm-counts']){
+  nodes[selector]={value:'',innerHTML:'',events:{},addEventListener(name,fn){this.events[name]=fn;},querySelectorAll:()=>[],querySelector:()=>null};
+ }
+ const container={innerHTML:'',querySelector:selector=>nodes[selector],querySelectorAll:()=>[]};
+ const data=sample();for(const f of data.models[0].fields)f.usage=[];
+ data.request={subject:'scenario:example',anchor:'question-apply',stages:['Store']};
+ context.window.CodeclewDataModel.mount(container,data);
+ let url=new URL(attrs.href,location.href);
+ assert.equal(url.searchParams.get('fromField'),'entity/a');
+ assert.equal(url.searchParams.get('fromAnchor'),'question-save');
+ nodes['.dm-field-select'].value='entity/b';nodes['.dm-field-select'].events.change();
+ url=new URL(attrs.href,location.href);
+ assert.equal(url.searchParams.get('fromField'),'entity/b');
+ assert.equal(url.searchParams.get('fromAnchor'),'question-save');
+ assert.equal(new URL(location.href).searchParams.get('field'),'entity/b');
+});

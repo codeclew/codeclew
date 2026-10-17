@@ -32,7 +32,7 @@ function questionLink(link,section){
   if(models?.length){
    const field=new URLSearchParams(location.search||'').get('field');
    const query='?fromProcess='+encodeURIComponent(D.subject.slice(9))+'&fromAnchor='+encodeURIComponent(questionAnchor(section))+(field?'&fromField='+encodeURIComponent(field):'');
-   return chromeHtml`<span class="question-model-links">${models.map(model=>chromeHtml`<a href="${esc(model.href+query)}">${esc(model.title)} · ${esc(questionText('data model','модель данных'))}</a>`).join(' · ')} <a class="question-technical-link" href="${esc(href)}" title="${esc(link.label)}">${esc(questionText('Technical context','Технический контекст'))}</a></span>`;
+   return chromeHtml`<span class="question-model-links">${models.map(model=>chromeHtml`<a data-dm-context data-dm-return-anchor="${esc(questionAnchor(section))}" href="${esc(model.href+query)}">${esc(model.title)} · ${esc(questionText('data model','модель данных'))}</a>`).join(' · ')} <a class="question-technical-link" href="${esc(href)}" title="${esc(link.label)}">${esc(questionText('Technical context','Технический контекст'))}</a></span>`;
   }
  }
  return chromeHtml`<a href="${esc(href)}">${esc(link.label)}</a>`;

@@ -76,7 +76,7 @@
   function update(focus=false){
    fieldSelect.value=selected.key;stageSelect.value=stage;
    const uses=selected.field.usage.filter(u=>(!contractSelect.value||u.contract===contractSelect.value)&&(!stage||u.stage===stage));
-   locationUpdate();flow.innerHTML=focused(selected,uses,data);contextLinks(flow,data);
+   locationUpdate();flow.innerHTML=focused(selected,uses,data);contextLinks(document,data);
    container.querySelectorAll('[data-dm-cell]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.field===selected.key&&(!stage||button.dataset.stage===stage))));
    const summaryStages=stage?[stage]:stages;const summary=summaryStages.map(s=>stats(data,contractSelect.value,s)).map((s,i)=>s?`<details><summary>${esc(summaryStages[i])}: ${s.investigated}/${s.required} required leaves investigated · ${s.unknown} unknown/not investigated${s.stale?' · '+s.stale+' stale':''}</summary><p>${esc(s.contract)}. Categories overlap; array element leaves counted once.</p><ul>${Object.entries(s.categories).map(([k,n])=>`<li>${esc(labels[k])}: ${n}</li>`).join('')}</ul><p>Scoped negative findings: ${s.negative}. Uninvestigated leaves: ${esc(s.uninvestigated.join(', ')||'none')}.</p></details>`:'').join('');
    container.querySelector('.dm-counts').innerHTML=summary||'<p>Select an exact contract branch for required-leaf counts. Counts describe this documented scope, not utilization or runtime frequency.</p>';
@@ -92,7 +92,7 @@
  function contextLinks(root,data){
   const q=new URLSearchParams(location.search||''),process=q.get('fromProcess')||data.request?.subject?.slice(9),anchor=data.request?(data.returnAnchor||data.request.anchor):q.get('fromAnchor');
   if(!/^[a-zA-Z0-9_-]{1,160}$/.test(process||'')||!/^[a-zA-Z0-9_-]{1,160}$/.test(anchor||''))return;
-  root.querySelectorAll('[data-dm-context]').forEach(link=>{const url=new URL(link.getAttribute('href'),location.href);url.searchParams.set('fromProcess',process);url.searchParams.set('fromAnchor',anchor);const fromField=q.get('fromField')||(data.request?q.get('field'):null);if(fromField)url.searchParams.set('fromField',fromField);link.setAttribute('href',url.pathname+url.search+url.hash);});
+  root.querySelectorAll('[data-dm-context]').forEach(link=>{const url=new URL(link.getAttribute('href'),location.href);url.searchParams.set('fromProcess',process);url.searchParams.set('fromAnchor',link.getAttribute('data-dm-return-anchor')||anchor);const fromField=q.get('fromField')||(data.request?q.get('field'):null);if(fromField)url.searchParams.set('fromField',fromField);link.setAttribute('href',url.pathname+url.search+url.hash);});
   const target=document.getElementById('dm-return');if(target)target.innerHTML=`<a href="../scenarios/${esc(process)}.html?view=process${q.get('fromField')?'&amp;field='+encodeURIComponent(q.get('fromField')):''}#${esc(anchor)}">Return to the same process step</a>`;
  }
  function processMount(){
@@ -101,9 +101,9 @@
   const all=[...root.querySelectorAll('.question-mobile-nav,.question-section')],panel=document.createElement('div');panel.id='dm-process-view';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby','dm-tab-process');all.forEach(node=>panel.appendChild(node));root.appendChild(panel);
   const controls=document.createElement('div');controls.className='dm-process-controls';controls.innerHTML='<div role="tablist" aria-label="Process reading view"><button type="button" role="tab" id="dm-tab-process" aria-controls="dm-process-view" aria-selected="true">Process</button><button type="button" role="tab" id="dm-tab-flow" aria-controls="dm-process-flow" aria-selected="false" tabindex="-1">Data Flow</button></div>';root.querySelector('header')?.after(controls);
   const flow=document.createElement('section');flow.id='dm-process-flow';flow.className='dm-page dm-process';flow.hidden=true;flow.setAttribute('role','tabpanel');flow.setAttribute('aria-labelledby','dm-tab-flow');flow.innerHTML=`<h2>${esc(data.request.title)}</h2><p>Agent proposal · Not reviewed. This view covers only the requested process fields and consumer stages.</p><p><a href="#${esc(data.request.anchor)}" class="dm-back-process">Return to process step</a></p><div class="dm-process-usage"></div>`;root.appendChild(flow);
-  const references=document.createElement('p');references.className='dm-relations';references.innerHTML='Data handled by this step: '+(data.relatedModels||data.models).map(m=>`<a href="../data-model/${esc(m.id)}.html?fromProcess=${encodeURIComponent(data.request.subject.slice(9))}&fromAnchor=${encodeURIComponent(data.request.anchor)}">${esc(m.title)}</a>`).join(' · ');const step=document.getElementById(data.request.anchor);(step?.querySelector(':scope > div')||step)?.appendChild(references);
+  const references=document.createElement('p');references.className='dm-relations';references.innerHTML='Data handled by this step: '+(data.relatedModels||data.models).map(m=>`<a data-dm-context data-dm-return-anchor="${esc(data.request.anchor)}" href="../data-model/${esc(m.id)}.html?fromProcess=${encodeURIComponent(data.request.subject.slice(9))}&fromAnchor=${encodeURIComponent(data.request.anchor)}">${esc(m.title)}</a>`).join(' · ');const step=document.getElementById(data.request.anchor);(step?.querySelector(':scope > div')||step)?.appendChild(references);
   let mounted=false;const tabs=[...controls.querySelectorAll('[role=tab]')];
-  function view(name,save=true){const on=name==='data-flow';if(on&&!panel.hidden){const anchor=location.hash.slice(1);data.returnAnchor=/^question-[a-zA-Z0-9_-]+$/.test(anchor)?anchor:(data.returnAnchor||data.request.anchor);flow.querySelector('.dm-back-process').setAttribute('href','#'+data.returnAnchor);} panel.hidden=on;flow.hidden=!on;tabs.forEach((tab,i)=>{tab.setAttribute('aria-selected',String(on?i===1:i===0));tab.tabIndex=(on?i===1:i===0)?0:-1;});if(on&&!mounted){mount(flow.querySelector('.dm-process-usage'),data);mounted=true;}if(on)contextLinks(flow,data);if(save){const u=new URL(location.href);u.searchParams.set('view',on?'data-flow':'process');history.replaceState(null,'',u);}}
+  function view(name,save=true){const on=name==='data-flow';if(on&&!panel.hidden){const anchor=location.hash.slice(1);data.returnAnchor=/^question-[a-zA-Z0-9_-]+$/.test(anchor)?anchor:(data.returnAnchor||data.request.anchor);flow.querySelector('.dm-back-process').setAttribute('href','#'+data.returnAnchor);} panel.hidden=on;flow.hidden=!on;tabs.forEach((tab,i)=>{tab.setAttribute('aria-selected',String(on?i===1:i===0));tab.tabIndex=(on?i===1:i===0)?0:-1;});if(on&&!mounted){mount(flow.querySelector('.dm-process-usage'),data);mounted=true;}contextLinks(document,data);if(save){const u=new URL(location.href);u.searchParams.set('view',on?'data-flow':'process');history.replaceState(null,'',u);}}
   tabs.forEach((tab,i)=>{tab.addEventListener('click',()=>view(i?'data-flow':'process'));tab.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();event.stopPropagation();const next=event.key==='Home'?0:event.key==='End'?1:1-i;view(next?'data-flow':'process');tabs[next].focus();}});});
   flow.querySelector('.dm-back-process').addEventListener('click',()=>view('process'));
   controls.setAttribute('data-process-context',data.request.subject);
@@ -114,7 +114,12 @@
  const node=document.getElementById('dm-data');
  if(node?.textContent?.trim()){
   const data=JSON.parse(node.textContent),container=document.getElementById('dm-usage'),handle=container?mount(container,data):null;
-  contextLinks(document,data);document.querySelectorAll('[data-dm-field]').forEach(link=>link.addEventListener('click',()=>handle?.selectField(link.dataset.dmField)));
+  contextLinks(document,data);document.querySelectorAll('[data-dm-field]').forEach(link=>link.addEventListener('click',event=>{
+   if(!handle||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+   event.preventDefault();handle.selectField(link.dataset.dmField);
+   if(location.hash!=='#field-usage')history.pushState(null,'','#field-usage');
+   document.getElementById('field-usage')?.scrollIntoView({block:'start'});
+  }));
  }
  if(typeof D!=='undefined'&&D.processDataFlow){
   const original=showSequentialReader;showSequentialReader=function(){original();processMount();};

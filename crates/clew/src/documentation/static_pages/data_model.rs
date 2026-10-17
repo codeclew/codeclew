@@ -825,7 +825,7 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
                     evidence(&r["mapping"])
                 ));
             }
-            body.push_str(&format!("</tbody></table><p><a href=\"#field-usage\" data-dm-field=\"{}\">Trace this field</a></p></section>",escape(strv(&f["id"]))));
+            body.push_str(&format!("</tbody></table><p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">Trace this field</a></p></section>",escape(strv(&f["id"])),escape(strv(&f["id"]))));
         }
         body.push_str("<section id=\"field-usage\"><h2>Field usage and focused flow</h2><p>Choose one field or consumer cell. Validation, business decisions, display, storage, forwarding and whole-object comparison remain separate. Unknown is not zero usage.</p><div id=\"dm-usage\"></div></section>");
         body.push_str("<h2>Processes</h2><ul>");
