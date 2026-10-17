@@ -1,0 +1,1320 @@
+{
+  "schema": "codeclew-agent-efficiency-report/1.0",
+  "baseline": "bare",
+  "candidate": "clew-current",
+  "authority": "OFFLINE_ACCOUNTING_NOT_RUNTIME_OR_PERFORMANCE_QUALIFICATION",
+  "groups": [
+    {
+      "group": {
+        "experiment": "weather-citation-rerun-20261017",
+        "corpus": "weather-source-qa-four-stage-v1",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "harness": "codex-cli 0.159.2; frozen-harness-ad8b5900f93a8854310359f01ffc289a5c437807286862b7aaa8bafc01305bfe",
+        "guarantees": "static-source-qa-frozen-oracle-006d0ac87dc7372e0b666fc9c63b3545d88b34dddbc567fa9ee1f0230aa9a5b0; no mutation/publication",
+        "cache": "warm",
+        "stratum": "prepared-source-changed",
+        "evidenceKind": "observed"
+      },
+      "pairedRuns": 1,
+      "unmatchedBaseline": [],
+      "unmatchedCandidate": [],
+      "allTasksPaired": true,
+      "qualityLosses": [],
+      "arms": {
+        "bare": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "codex-cli 0.159.2"
+          ],
+          "skillDigests": [
+            "NOT_USED"
+          ]
+        },
+        "clew-current": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "824d4fb335e8b1ddeaf60977ea29619aa8be4d8d"
+          ],
+          "skillDigests": [
+            "sha256:f227002fbf4ed92f5ab07d45fd20c8e4b541c23a69b8ef72d0e41ff6eb13ee06"
+          ]
+        }
+      },
+      "allPairedMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 33378.36829107255,
+          "candidateSumKnown": 45130.66083402373,
+          "medianCandidateOverBaseline": 1.3520930813773324,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 110551,
+          "candidateSumKnown": 220949,
+          "medianCandidateOverBaseline": 1.9986160233738275,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 96384,
+          "candidateSumKnown": 181632,
+          "medianCandidateOverBaseline": 1.8844621513944224,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 14167,
+          "candidateSumKnown": 39317,
+          "medianCandidateOverBaseline": 2.7752523470036,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1677,
+          "candidateSumKnown": 2108,
+          "medianCandidateOverBaseline": 1.2570065593321407,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 6,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1,
+          "candidateSumKnown": 1,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 5,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.4,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 22706,
+          "candidateSumKnown": 50702,
+          "medianCandidateOverBaseline": 2.232978067471153,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      },
+      "bothQualityPassMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 33378.36829107255,
+          "candidateSumKnown": 45130.66083402373,
+          "medianCandidateOverBaseline": 1.3520930813773324,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 110551,
+          "candidateSumKnown": 220949,
+          "medianCandidateOverBaseline": 1.9986160233738275,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 96384,
+          "candidateSumKnown": 181632,
+          "medianCandidateOverBaseline": 1.8844621513944224,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 14167,
+          "candidateSumKnown": 39317,
+          "medianCandidateOverBaseline": 2.7752523470036,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1677,
+          "candidateSumKnown": 2108,
+          "medianCandidateOverBaseline": 1.2570065593321407,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 6,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1,
+          "candidateSumKnown": 1,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 5,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.4,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 22706,
+          "candidateSumKnown": 50702,
+          "medianCandidateOverBaseline": 2.232978067471153,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      }
+    },
+    {
+      "group": {
+        "experiment": "weather-citation-rerun-20261017",
+        "corpus": "weather-source-qa-four-stage-v1",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "harness": "codex-cli 0.159.2; frozen-harness-ad8b5900f93a8854310359f01ffc289a5c437807286862b7aaa8bafc01305bfe",
+        "guarantees": "static-source-qa-frozen-oracle-006d0ac87dc7372e0b666fc9c63b3545d88b34dddbc567fa9ee1f0230aa9a5b0; no mutation/publication",
+        "cache": "warm",
+        "stratum": "prepared-source-initial",
+        "evidenceKind": "observed"
+      },
+      "pairedRuns": 1,
+      "unmatchedBaseline": [],
+      "unmatchedCandidate": [],
+      "allTasksPaired": true,
+      "qualityLosses": [],
+      "arms": {
+        "bare": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "codex-cli 0.159.2"
+          ],
+          "skillDigests": [
+            "NOT_USED"
+          ]
+        },
+        "clew-current": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "824d4fb335e8b1ddeaf60977ea29619aa8be4d8d"
+          ],
+          "skillDigests": [
+            "sha256:f227002fbf4ed92f5ab07d45fd20c8e4b541c23a69b8ef72d0e41ff6eb13ee06"
+          ]
+        }
+      },
+      "allPairedMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 38461.46566607058,
+          "candidateSumKnown": 50471.455874852836,
+          "medianCandidateOverBaseline": 1.3122603364379082,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 100513,
+          "candidateSumKnown": 202459,
+          "medianCandidateOverBaseline": 2.014256862296419,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 83584,
+          "candidateSumKnown": 178432,
+          "medianCandidateOverBaseline": 2.134762633996937,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 16929,
+          "candidateSumKnown": 24027,
+          "medianCandidateOverBaseline": 1.4192805245436824,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1625,
+          "candidateSumKnown": 2565,
+          "medianCandidateOverBaseline": 1.5784615384615384,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 11,
+          "medianCandidateOverBaseline": 1.8333333333333333,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": 0.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 4,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.75,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 19010,
+          "candidateSumKnown": 37212,
+          "medianCandidateOverBaseline": 1.9574960547080484,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      },
+      "bothQualityPassMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 38461.46566607058,
+          "candidateSumKnown": 50471.455874852836,
+          "medianCandidateOverBaseline": 1.3122603364379082,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 100513,
+          "candidateSumKnown": 202459,
+          "medianCandidateOverBaseline": 2.014256862296419,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 83584,
+          "candidateSumKnown": 178432,
+          "medianCandidateOverBaseline": 2.134762633996937,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 16929,
+          "candidateSumKnown": 24027,
+          "medianCandidateOverBaseline": 1.4192805245436824,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1625,
+          "candidateSumKnown": 2565,
+          "medianCandidateOverBaseline": 1.5784615384615384,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 11,
+          "medianCandidateOverBaseline": 1.8333333333333333,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": 0.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 4,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.75,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 19010,
+          "candidateSumKnown": 37212,
+          "medianCandidateOverBaseline": 1.9574960547080484,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      }
+    },
+    {
+      "group": {
+        "experiment": "weather-citation-rerun-20261017",
+        "corpus": "weather-source-qa-four-stage-v1",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "harness": "codex-cli 0.159.2; frozen-harness-ad8b5900f93a8854310359f01ffc289a5c437807286862b7aaa8bafc01305bfe",
+        "guarantees": "static-source-qa-frozen-oracle-006d0ac87dc7372e0b666fc9c63b3545d88b34dddbc567fa9ee1f0230aa9a5b0; no mutation/publication",
+        "cache": "warm",
+        "stratum": "prepared-source-unchanged",
+        "evidenceKind": "observed"
+      },
+      "pairedRuns": 1,
+      "unmatchedBaseline": [],
+      "unmatchedCandidate": [],
+      "allTasksPaired": true,
+      "qualityLosses": [],
+      "arms": {
+        "bare": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "codex-cli 0.159.2"
+          ],
+          "skillDigests": [
+            "NOT_USED"
+          ]
+        },
+        "clew-current": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "824d4fb335e8b1ddeaf60977ea29619aa8be4d8d"
+          ],
+          "skillDigests": [
+            "sha256:f227002fbf4ed92f5ab07d45fd20c8e4b541c23a69b8ef72d0e41ff6eb13ee06"
+          ]
+        }
+      },
+      "allPairedMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 28410.23337491788,
+          "candidateSumKnown": 30990.211833035573,
+          "medianCandidateOverBaseline": 1.0908115897560855,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 129000,
+          "candidateSumKnown": 140891,
+          "medianCandidateOverBaseline": 1.0921782945736433,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 111232,
+          "candidateSumKnown": 102144,
+          "medianCandidateOverBaseline": 0.9182968929804373,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 17768,
+          "candidateSumKnown": 38747,
+          "medianCandidateOverBaseline": 2.180718144979739,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1266,
+          "candidateSumKnown": 1382,
+          "medianCandidateOverBaseline": 1.0916271721958926,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 9,
+          "candidateSumKnown": 9,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 2,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": 0.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 5,
+          "candidateSumKnown": 5,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 22138,
+          "candidateSumKnown": 28047,
+          "medianCandidateOverBaseline": 1.2669166139669348,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      },
+      "bothQualityPassMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 28410.23337491788,
+          "candidateSumKnown": 30990.211833035573,
+          "medianCandidateOverBaseline": 1.0908115897560855,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 129000,
+          "candidateSumKnown": 140891,
+          "medianCandidateOverBaseline": 1.0921782945736433,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 111232,
+          "candidateSumKnown": 102144,
+          "medianCandidateOverBaseline": 0.9182968929804373,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 17768,
+          "candidateSumKnown": 38747,
+          "medianCandidateOverBaseline": 2.180718144979739,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1266,
+          "candidateSumKnown": 1382,
+          "medianCandidateOverBaseline": 1.0916271721958926,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 9,
+          "candidateSumKnown": 9,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 2,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": 0.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 5,
+          "candidateSumKnown": 5,
+          "medianCandidateOverBaseline": 1.0,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 22138,
+          "candidateSumKnown": 28047,
+          "medianCandidateOverBaseline": 1.2669166139669348,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      }
+    },
+    {
+      "group": {
+        "experiment": "weather-citation-rerun-20261017",
+        "corpus": "weather-source-qa-four-stage-v1",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "harness": "codex-cli 0.159.2; frozen-harness-ad8b5900f93a8854310359f01ffc289a5c437807286862b7aaa8bafc01305bfe",
+        "guarantees": "static-source-qa-frozen-oracle-006d0ac87dc7372e0b666fc9c63b3545d88b34dddbc567fa9ee1f0230aa9a5b0; no mutation/publication",
+        "cache": "warm",
+        "stratum": "prepared-source-unrelated",
+        "evidenceKind": "observed"
+      },
+      "pairedRuns": 1,
+      "unmatchedBaseline": [],
+      "unmatchedCandidate": [],
+      "allTasksPaired": true,
+      "qualityLosses": [],
+      "arms": {
+        "bare": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "codex-cli 0.159.2"
+          ],
+          "skillDigests": [
+            "NOT_USED"
+          ]
+        },
+        "clew-current": {
+          "runs": 1,
+          "outcomes": {
+            "pass": 1,
+            "fail": 0,
+            "unresolved": 0
+          },
+          "qualityPasses": 1,
+          "criticalMisses": 0,
+          "falseExactClaims": 0,
+          "implementationRevisions": [
+            "824d4fb335e8b1ddeaf60977ea29619aa8be4d8d"
+          ],
+          "skillDigests": [
+            "sha256:f227002fbf4ed92f5ab07d45fd20c8e4b541c23a69b8ef72d0e41ff6eb13ee06"
+          ]
+        }
+      },
+      "allPairedMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 34503.77883389592,
+          "candidateSumKnown": 47345.446750056,
+          "medianCandidateOverBaseline": 1.3721814928730254,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 135997,
+          "candidateSumKnown": 175107,
+          "medianCandidateOverBaseline": 1.2875798730854358,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 107648,
+          "candidateSumKnown": 133632,
+          "medianCandidateOverBaseline": 1.2413793103448276,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 28349,
+          "candidateSumKnown": 41475,
+          "medianCandidateOverBaseline": 1.4630145684151117,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1410,
+          "candidateSumKnown": 2159,
+          "medianCandidateOverBaseline": 1.5312056737588653,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.1666666666666667,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.1666666666666667,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 25831,
+          "candidateSumKnown": 34172,
+          "medianCandidateOverBaseline": 1.3229065851109132,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      },
+      "bothQualityPassMetrics": {
+        "elapsedMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 34503.77883389592,
+          "candidateSumKnown": 47345.446750056,
+          "medianCandidateOverBaseline": 1.3721814928730254,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "firstJustifiedEditMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "verifiedPatchMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "inputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 135997,
+          "candidateSumKnown": 175107,
+          "medianCandidateOverBaseline": 1.2875798730854358,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "cachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 107648,
+          "candidateSumKnown": 133632,
+          "medianCandidateOverBaseline": 1.2413793103448276,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "uncachedInputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 28349,
+          "candidateSumKnown": 41475,
+          "medianCandidateOverBaseline": 1.4630145684151117,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "outputTokens": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 1410,
+          "candidateSumKnown": 2159,
+          "medianCandidateOverBaseline": 1.5312056737588653,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.1666666666666667,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "failedToolCalls": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "modelRounds": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 6,
+          "candidateSumKnown": 7,
+          "medianCandidateOverBaseline": 1.1666666666666667,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "toolOutputBytes": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 25831,
+          "candidateSumKnown": 34172,
+          "medianCandidateOverBaseline": 1.3229065851109132,
+          "ratioPairs": 1,
+          "complete": true
+        },
+        "sourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "repeatedSourceBytes": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        },
+        "indexMs": {
+          "knownPairs": 1,
+          "totalPairs": 1,
+          "baselineSumKnown": 0,
+          "candidateSumKnown": 0,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": true
+        },
+        "validationMs": {
+          "knownPairs": 0,
+          "totalPairs": 1,
+          "baselineSumKnown": null,
+          "candidateSumKnown": null,
+          "medianCandidateOverBaseline": null,
+          "ratioPairs": 0,
+          "complete": false
+        }
+      }
+    }
+  ]
+}

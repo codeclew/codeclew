@@ -1,0 +1,97 @@
+{
+  "status": "PASS",
+  "sourceExperimentProtocolSha256": "511b7190925bb113b3000b5691bc3f765b4a561229c5dd6c725f1633121ae404",
+  "oracleSha256": "006d0ac87dc7372e0b666fc9c63b3545d88b34dddbc567fa9ee1f0230aa9a5b0",
+  "repairs": 0,
+  "rows": [
+    {
+      "task": "initial",
+      "arm": "bare",
+      "auditSha256": "dc8445172faf1258b0cea2648b73c8d46641eb8385e5224b5002b38575a9e067",
+      "rawSessionSha256": "4ce58c676862c632693d5213edf239eb79bfe77199f3dc44faca19d9981532ac",
+      "cliLogSha256": "5f22f28d56b84f5826a26f9b0c6c4dd02b84fe32eb3eabba2b8ebfd1b44fc29b",
+      "answerSha256": "ac1381aa2a3934ef080e39ee5f2cd355751fa6c5382b555824e3bd46ee121b86",
+      "outerHostToolCalls": 3,
+      "nestedTerminalCommands": 6
+    },
+    {
+      "task": "initial",
+      "arm": "clew-current",
+      "auditSha256": "e3866dbbe1a1ec5af8e68fc8a2b9dc555ddb9128d50114783e40182d2ccf2021",
+      "rawSessionSha256": "8a24ee3e0ea30cca161c1985cfba01e03df2856d9e9f597a3a598530a31ceb4b",
+      "cliLogSha256": "c793dbae79dcac64ed25a169ee1e5c550ec8619bcabfafe1f8ce05dda6af4a0b",
+      "answerSha256": "c828fcae6e54c625e75865b0fa7dad89a95c0e833eb590216bb1a131dcd50270",
+      "outerHostToolCalls": 6,
+      "nestedTerminalCommands": 11
+    },
+    {
+      "task": "changed",
+      "arm": "bare",
+      "auditSha256": "33d1e487340fbbe68c059499dc4241200587ce3e0a31daceb02e7cd95b139f50",
+      "rawSessionSha256": "f2135e1869276397bb7f66dda2f67e856427d04a3bccc1b2c25b85bfef361892",
+      "cliLogSha256": "807f069c9140cb67e417be5a6aa55cfa0a46d8eff9df27b582b4b2b52c2d0806",
+      "answerSha256": "619a89216add502825d7dcd29b62b24191875e20760e29b5625fa62e6d85b137",
+      "outerHostToolCalls": 4,
+      "nestedTerminalCommands": 6
+    },
+    {
+      "task": "changed",
+      "arm": "clew-current",
+      "auditSha256": "f299ba423e3a2e7220cd98836bfbc9b609dafc426ea78a4c0a03acc40aa1bb11",
+      "rawSessionSha256": "df6df814bbfa50fc4d12a2ee4a2fbbb237b8491b07ef452891e9708dcbd975c1",
+      "cliLogSha256": "fd90c5bb494abd7324edd4329eea3ce90bb97e17b2ddb6d196f3aef63e4c9371",
+      "answerSha256": "61e4032590c00a8457873555114a51223106fd398ada9cd1b654766ebcdddd45",
+      "outerHostToolCalls": 6,
+      "nestedTerminalCommands": 6
+    },
+    {
+      "task": "unchanged",
+      "arm": "bare",
+      "auditSha256": "1f65d787bf725cf0e0ee802335983ec9bba5694b03088e6d05c346347e5b6e58",
+      "rawSessionSha256": "f2b63255122c917bf71fb1b6913278b386c1e8dfe7bcc4ba4f2a41b1c3b5de10",
+      "cliLogSha256": "6a093e5836ceef3e85e428183b6dbdf6d0d918eca91b902e06814e32f16094b2",
+      "answerSha256": "35ee3e84b048b220f661035fad0aac275648c037e818aac89b3792ca9eae6c1e",
+      "outerHostToolCalls": 4,
+      "nestedTerminalCommands": 9
+    },
+    {
+      "task": "unchanged",
+      "arm": "clew-current",
+      "auditSha256": "5624366f95e30c9248e26a382d5e1564c7315071d505e4750af0384807aa7581",
+      "rawSessionSha256": "442f5fb8c0f19849ddc55152d654238299a2377d9f280a16c7b618fa9168f07b",
+      "cliLogSha256": "6e5e6851e49c16459c7369c3da83b72e14cf85fec4676a28a3c7da7fb02884c8",
+      "answerSha256": "cf1d6eb3cf6e7a3447d217174618ffa599007540c68d4f6eeedf195619b276e5",
+      "outerHostToolCalls": 4,
+      "nestedTerminalCommands": 9
+    },
+    {
+      "task": "unrelated",
+      "arm": "bare",
+      "auditSha256": "fbe7328cc70a5ea97c7766b24ae8e44622788ef3f42b5af486a679007b24d09a",
+      "rawSessionSha256": "6543a924d01a977e4dde66bd333c2d27a800a8a04447ad101cbd57ab65aa15ed",
+      "cliLogSha256": "ea595a66a9b6f1f7b6fccdbe4fd8efd867cf9b514611169acec7d4d8286c1ab3",
+      "answerSha256": "8be297aecdc4ceda6c57b012a8a2b69fa4f9ea39a24d2758bf5bbaabbf2214bc",
+      "outerHostToolCalls": 5,
+      "nestedTerminalCommands": 6
+    },
+    {
+      "task": "unrelated",
+      "arm": "clew-current",
+      "auditSha256": "45c6182cb2262a3acf10d38d2011d0d842d51dbb8c14686061d30ff6149d79ac",
+      "rawSessionSha256": "8aedebdb5b76478e02ecb24b0d0bca02020ae5e7d0355781436fe0262eea7550",
+      "cliLogSha256": "a7f8fe7d37343014492233c13bfdd982bd83187999d65c3d397ecee552317f31",
+      "answerSha256": "32b66fc25cc5250148ac678d693fa2a993c656144572ebb4bb0718e6ce4b1936",
+      "outerHostToolCalls": 6,
+      "nestedTerminalCommands": 7
+    }
+  ],
+  "limits": [
+    "No new model execution.",
+    "Exact source/repeated-source byte classification unavailable and null.",
+    "toolCalls counts nested terminal commands; outer host batches recorded separately.",
+    "Tool output bytes are decoded textual blocks retained in host response messages, excluding envelope representation; not model tokens or wire bytes.",
+    "Warm means prepared artifacts; no claim about provider cache being fixed.",
+    "Shared taskDigest hashes canonical task+stage+oracle, not the different per-arm prompts; raw prompt hashes remain in original metrics.",
+    "Per-stage one pair; no cross-stratum pooling or inferential confidence."
+  ]
+}

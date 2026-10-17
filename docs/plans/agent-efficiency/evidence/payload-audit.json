@@ -1,0 +1,210 @@
+[
+  {
+    "stage": "initial",
+    "projectionBytes": 10346,
+    "topLevelValueBytes": {
+      "schema": 35,
+      "packet": 231,
+      "evidence": 2190,
+      "coverage": 598,
+      "sources": 6437,
+      "handles": 2,
+      "recordLimits": 551,
+      "projection": 205
+    },
+    "largestEvidenceFields": [
+      [
+        "registeredInputLimits",
+        611
+      ],
+      [
+        "evidenceSet",
+        554
+      ],
+      [
+        "evidenceValidation",
+        436
+      ],
+      [
+        "snapshot",
+        79
+      ],
+      [
+        "contextDigest",
+        73
+      ],
+      [
+        "inputDigest",
+        73
+      ],
+      [
+        "authority",
+        32
+      ],
+      [
+        "sourceAuthorities",
+        31
+      ]
+    ],
+    "fullSourceCharactersShown": 3688,
+    "duplicatedReasonObjects": 0,
+    "duplicatedReasonValueBytes": 0,
+    "note": "Offline regeneration of existing default projection; bytes not tokens, no agent rerun, no proposed compression score."
+  },
+  {
+    "stage": "changed",
+    "projectionBytes": 11560,
+    "topLevelValueBytes": {
+      "schema": 35,
+      "packet": 225,
+      "evidence": 3567,
+      "coverage": 598,
+      "sources": 5558,
+      "handles": 2,
+      "recordLimits": 1273,
+      "projection": 205
+    },
+    "largestEvidenceFields": [
+      [
+        "comparison",
+        1363
+      ],
+      [
+        "registeredInputLimits",
+        611
+      ],
+      [
+        "evidenceSet",
+        554
+      ],
+      [
+        "evidenceValidation",
+        436
+      ],
+      [
+        "snapshot",
+        79
+      ],
+      [
+        "contextDigest",
+        73
+      ],
+      [
+        "inputDigest",
+        73
+      ],
+      [
+        "authority",
+        32
+      ]
+    ],
+    "fullSourceCharactersShown": 2825,
+    "duplicatedReasonObjects": 0,
+    "duplicatedReasonValueBytes": 0,
+    "note": "Offline regeneration of existing default projection; bytes not tokens, no agent rerun, no proposed compression score."
+  },
+  {
+    "stage": "unchanged",
+    "projectionBytes": 3290,
+    "topLevelValueBytes": {
+      "schema": 35,
+      "packet": 229,
+      "evidence": 2717,
+      "coverage": 2,
+      "sources": 2,
+      "handles": 2,
+      "recordLimits": 2,
+      "projection": 204
+    },
+    "largestEvidenceFields": [
+      [
+        "registeredInputLimits",
+        611
+      ],
+      [
+        "comparison",
+        592
+      ],
+      [
+        "evidenceSet",
+        554
+      ],
+      [
+        "evidenceValidation",
+        436
+      ],
+      [
+        "snapshot",
+        79
+      ],
+      [
+        "contextDigest",
+        73
+      ],
+      [
+        "inputDigest",
+        73
+      ],
+      [
+        "authority",
+        32
+      ]
+    ],
+    "fullSourceCharactersShown": 0,
+    "duplicatedReasonObjects": 0,
+    "duplicatedReasonValueBytes": 0,
+    "note": "Offline regeneration of existing default projection; bytes not tokens, no agent rerun, no proposed compression score."
+  },
+  {
+    "stage": "unrelated",
+    "projectionBytes": 11909,
+    "topLevelValueBytes": {
+      "schema": 35,
+      "packet": 228,
+      "evidence": 5572,
+      "coverage": 598,
+      "sources": 3910,
+      "handles": 2,
+      "recordLimits": 1262,
+      "projection": 205
+    },
+    "largestEvidenceFields": [
+      [
+        "comparison",
+        3368
+      ],
+      [
+        "registeredInputLimits",
+        611
+      ],
+      [
+        "evidenceSet",
+        554
+      ],
+      [
+        "evidenceValidation",
+        436
+      ],
+      [
+        "snapshot",
+        79
+      ],
+      [
+        "contextDigest",
+        73
+      ],
+      [
+        "inputDigest",
+        73
+      ],
+      [
+        "authority",
+        32
+      ]
+    ],
+    "fullSourceCharactersShown": 1243,
+    "duplicatedReasonObjects": 0,
+    "duplicatedReasonValueBytes": 0,
+    "note": "Offline regeneration of existing default projection; bytes not tokens, no agent rerun, no proposed compression score."
+  }
+]

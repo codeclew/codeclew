@@ -5,6 +5,14 @@ Date: 2026-10-17. Base: `b77635448eaab2202c26d38e21e1cec5fe291c29` (main,
 agent benchmark, provider authoring, runtime qualification or product optimization
 is claimed by this branch.
 
+## Options and current evidence
+
+Read [the decision study](options.md) before choosing an implementation slice.
+It incorporates a completed eight-chat Weather experiment and an offline replay
+through this branch's analyzer. Prepared SOURCE maintenance and unknown-location
+editing remain separate strata. The proposed compact/edit paths have not been
+implemented or evaluated by that study.
+
 ## Start here, Codex
 
 Implement a bounded **task-to-edit-context** path using existing Codeclew admission,
