@@ -174,16 +174,24 @@ def compare(args, path):
     invoke(args, path, command)
 
 
+def drill(args, path):
+    command = [args.clew, 'docs', 'context', '--root', args.root,
+               '--service', args.service, '--snapshot', args.snapshot, '--limit', '20']
+    for source in args.source:
+        command += ['--source', source]
+    invoke(args, path, command)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest='mode', required=True)
-    for mode in ('read', 'fetch', 'compare'):
+    for mode in ('read', 'fetch', 'compare', 'drill'):
         sub = modes.add_parser(mode)
         if mode in ('read', 'compare'):
             sub.add_argument('--input', required=True, type=Path)
         if mode != 'read':
             sub.add_argument('--output', required=True, type=Path)
-        sub.add_argument('--source', action='append', default=[], help='Exact returned SOURCE ID; repeat only as needed')
+        sub.add_argument('--source', action='append', default=[], required=mode == 'drill', help='Exact returned SOURCE ID; repeat only as needed')
         sub.add_argument('--max-bytes', type=int, default=12000, help='Strict stdout UTF-8 byte budget, 1024..65536')
         sub.add_argument('--text-chars', type=int, default=6000, help='At most this many characters per selected source')
         sub.add_argument('--text-offset', type=int, default=0, help='Continue one exact source locally without fetching')
@@ -192,6 +200,9 @@ def main():
         if mode != 'read':
             sub.add_argument('--clew', required=True, help='Already resolved installed release launcher')
             sub.add_argument('--root', required=True)
+        if mode == 'drill':
+            sub.add_argument('--snapshot', required=True)
+            sub.add_argument('--service', required=True)
         if mode == 'compare':
             sub.add_argument('--snapshot', required=True)
             sub.add_argument('--include-context', action='store_true')
@@ -213,11 +224,15 @@ def main():
             fetch(args, path)
         elif args.mode == 'compare':
             compare(args, path)
+        elif args.mode == 'drill':
+            drill(args, path)
         packet, digest = load_packet(path)
         if args.mode == 'fetch' and (not isinstance(packet.get('evidenceSet'), dict) or packet['evidenceSet'].get('schema') != 'codeclew-prepared-source-evidence/1.0'):
             raise ViewError('ENGINE_RETAIN_RESULT_MISSING; no admitted evidence view delivered')
         if args.mode == 'compare' and (not isinstance(packet.get('comparison'), dict) or packet['comparison'].get('status') not in ('UNCHANGED', 'CHANGED', 'UNKNOWN')):
             raise ViewError('ENGINE_COMPARE_RESULT_MISSING; no comparison view delivered')
+        if args.mode == 'drill' and packet.get('evidenceValidation', {}).get('mode') != 'PINNED_SOURCE_SNAPSHOT_CLOSURE':
+            raise ViewError('PINNED_SOURCE_ADMISSION_MISSING; no historical source view delivered')
         sys.stdout.write(project(packet, path, digest, args.source, args.max_bytes,
                                  args.text_chars, args.text_offset, args.max_sources, args.max_handles))
         return 0

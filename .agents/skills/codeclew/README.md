@@ -86,6 +86,7 @@ its registered native inputs are also acquired at the correct repository revisio
 
 ## Bounded evidence, full packet local
 
+Use the recipes here; reading the helper implementation is not a preparation step.
 Read saved packets locally without another CLI call:
 
 ```sh
@@ -106,8 +107,19 @@ Changed windows carry their own before/after citation metadata even when their
 source IDs are absent from the selected SOURCE rows. Do not use `read --source`
 for such absent rows just to recover a citation. Changed windows are explicitly
 projections; complete SOURCE retains its own
-bindings. Follow an exact source/dependency drill or original cursor only when
-needed evidence is missing. `compare --include-context` delivers current SOURCE
+bindings. Only when required captured SOURCE text is missing, drill its exact ID
+at the required snapshot (including an old snapshot after catalogue advancement):
+
+```sh
+python3 -I -S SKILL/scripts/prepared_source.py drill --clew CLEW --root DOCS --snapshot SNAPSHOT --service SERVICE --source SOURCE_ID --output SOURCE_PACKET.json
+```
+
+The engine admits the immutable snapshot and captured configuration, not the
+current catalogue or checkout. Integrity failures still reject the read. The
+helper retains the raw packet privately and bounds stdout just like `read`.
+Stop after the required answer and citations are supported; do not fetch the old
+source merely to repeat a ready `beforeCitation`. `compare --include-context`
+delivers current SOURCE
 also for unchanged inputs. A helper budget error delivers no evidence; inspect
 its retained log or request a bounded larger view instead of suppressing limits.
 

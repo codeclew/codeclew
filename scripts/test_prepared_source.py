@@ -215,6 +215,40 @@ class PreparedSourceTest(unittest.TestCase):
             self.assertIn('ENGINE_COMPARE_RESULT_MISSING', json.loads(wrong.stdout)['reason'])
             self.assertFalse(json.loads(wrong.stdout)['evidenceDelivered'])
 
+    def test_historical_drill_is_one_exact_command_and_requires_immutable_admission(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = packet()
+            original['evidenceValidation'] = {'mode': 'PINNED_SOURCE_SNAPSHOT_CLOSURE',
+                                               'liveCheckoutRechecked': False}
+            fixture = root / 'response.json'
+            fixture.write_text(json.dumps(original))
+            calls = root / 'calls.jsonl'
+            launcher = root / 'candidate-clew'
+            launcher.write_text('#!' + sys.executable + '\nimport json,sys\nfrom pathlib import Path\n' +
+                f'with Path({str(calls)!r}).open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n' +
+                f'sys.stdout.buffer.write(Path({str(fixture)!r}).read_bytes())\n')
+            launcher.chmod(0o700)
+            output = root / 'historical.json'
+            command = [sys.executable, '-I', '-S', str(HELPER), 'drill', '--clew', str(launcher),
+                       '--root', str(root / 'docs'), '--snapshot', 'old-snapshot', '--service', 'worker',
+                       '--source', 'body-1', '--output', str(output)]
+            result = subprocess.run(command, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            view = json.loads(result.stdout)
+            self.assertEqual(view['sources'][0]['record']['revision'], 'rev-1')
+            self.assertEqual(view['sources'][0]['text'], original['items'][1]['record']['text'])
+            self.assertEqual(json.loads(calls.read_text()), ['docs', 'context', '--root', str(root / 'docs'),
+                             '--service', 'worker', '--snapshot', 'old-snapshot', '--limit', '20', '--source', 'body-1'])
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            original.pop('evidenceValidation')
+            fixture.write_text(json.dumps(original))
+            command[-1] = str(root / 'unadmitted.json')
+            rejected = subprocess.run(command, capture_output=True)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn('PINNED_SOURCE_ADMISSION_MISSING', json.loads(rejected.stdout)['reason'])
+            self.assertFalse(json.loads(rejected.stdout)['evidenceDelivered'])
+
     def test_malformed_or_overbudget_packet_never_prints_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'bad.json'

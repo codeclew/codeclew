@@ -811,6 +811,26 @@ pub fn page(
 
 fn context(mut args: ContextArgs) -> Result<Value, ClewError> {
     let repo = Repository::open(&args.root)?;
+    if !args.refresh
+        && !args.source_ids.is_empty()
+        && let Some(snapshot) = args.snapshot.as_deref()
+    {
+        // An exact historical source drill is evidence acquisition, not a claim
+        // about today's catalogue. Share retain/compare's immutable admission,
+        // and never mix a current publication narrative into the old source.
+        let checked = check::Check::load_snapshot(&repo, snapshot)?;
+        return context_from_with_validation(
+            &checked,
+            &args,
+            None,
+            "PINNED_SNAPSHOT_NOT_REVERIFIED",
+            Some(json!({"mode":"PINNED_SOURCE_SNAPSHOT_CLOSURE",
+                "integrity":"VERIFIED_LOADED_IMMUTABLE_CHECK_CLOSURE",
+                "binding":"EXACT_PINNED_SOURCE_INPUT_CONFIGURATION",
+                "liveCheckoutRechecked":false,"currentCatalogueCompared":false,
+                "behaviorEquivalence":"NOT_ESTABLISHED"})),
+        );
+    }
     let selected = args.service.iter().cloned().collect::<BTreeSet<_>>();
     let mut retained_semantic_closure = false;
     let (checked, snapshot, authority) = if args.refresh {
@@ -2836,6 +2856,137 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn pinned_source_drill_admits_old_snapshot_without_current_catalogue_or_checkout() {
+        let temporary = tempfile::tempdir().unwrap();
+        Repository::init(temporary.path(), "Historical source").unwrap();
+        let repo = Repository::open(temporary.path()).unwrap();
+        let mut service: Service = serde_json::from_value(json!({
+            "schema":"codeclew-documentation-service/1.0", "id":"orders", "title":"Orders",
+            "repositoryId":"orders", "repository":"https://example.invalid/orders",
+            "language":"typescript", "profile":"source-syntax", "targetRef":"old",
+            "source":{"roots":["src"],"dialect":"7.0.2"}
+        }))
+        .unwrap();
+        repo.service_add(service.clone(), Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let mut checked = symbol_context(&[]);
+        checked.input_digest = repo.input_digest().unwrap();
+        checked.source_inputs = Some(check::SourceInputs {
+            schema: check::SOURCE_INPUTS_SCHEMA.into(),
+            input_digest: checked.input_digest.clone(),
+            inputs: repo.inputs().unwrap(),
+            selected_services: BTreeSet::from(["orders".into()]),
+            retained_services: BTreeSet::new(),
+        });
+        let evidence = checked.services.get_mut("orders").unwrap();
+        evidence.service_digest = super::super::digest(&service).unwrap();
+        evidence.revision = "old".into();
+        evidence.coverage = "SYNTAX".into();
+        evidence.boundaries = vec!["CALL_TARGETS_UNRESOLVED".into()];
+        let source: Source = serde_json::from_value(json!({
+            "id":"source-old", "service":"orders", "revision":"old", "file":"src/title.html",
+            "startLine":7,"endLine":8,"text":"<title>Weather</title>\nλ",
+            "textDigest":crate::canonical::hash_bytes("<title>Weather</title>\nλ".as_bytes()),
+            "evidenceDigest":"original-evidence", "authority":"EXACT_SNAPSHOT_TEXT",
+            "url":"https://example.invalid/orders/blob/old/src/title.html#L7-L8"
+        }))
+        .unwrap();
+        evidence.sources.insert(source.id.clone(), source.clone());
+        checked.refresh_digest().unwrap();
+        let snapshot = checked.save_snapshot(&repo).unwrap();
+        let mut request = symbol_context_args("unused");
+        request.root = repo.root.clone();
+        request.service = Some("orders".into());
+        request.symbols.clear();
+        request.source_ids = vec![source.id.clone()];
+        request.snapshot = Some(snapshot.clone());
+
+        // Advance the declaration's revision and source configuration, without
+        // binding or opening a live checkout. The old captured config stays valid.
+        service.target_ref = "new".into();
+        service.source.as_mut().unwrap().roots = vec!["new-src".into()];
+        repo.service_add(service, Some(&repo.input_digest().unwrap()))
+            .unwrap();
+        let output = context(request.clone()).unwrap();
+        assert_eq!(output["snapshot"], snapshot);
+        assert_eq!(output["authority"], "PINNED_SNAPSHOT_NOT_REVERIFIED");
+        assert_eq!(
+            output["evidenceValidation"]["mode"],
+            "PINNED_SOURCE_SNAPSHOT_CLOSURE"
+        );
+        assert_eq!(output["evidenceValidation"]["liveCheckoutRechecked"], false);
+        let returned = output["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["kind"] == "SOURCE")
+            .unwrap();
+        assert_eq!(returned["record"], serde_json::to_value(&source).unwrap());
+        assert!(super::super::bytes(&output).unwrap().len() < 12_000);
+        let mut ordinary = request.clone();
+        ordinary.source_ids.clear();
+        assert_eq!(
+            context(ordinary).unwrap_err().code,
+            crate::error::ErrorCode::StaleRequiresReslice
+        );
+        let mut latest = request.clone();
+        latest.snapshot = None;
+        assert_eq!(
+            context(latest).unwrap_err().code,
+            crate::error::ErrorCode::StaleRequiresReslice
+        );
+        let mut unknown = request.clone();
+        unknown.source_ids = vec!["absent".into()];
+        assert!(context(unknown).is_err());
+        let mut wrong_service = request.clone();
+        wrong_service.service = Some("other".into());
+        assert!(context(wrong_service).is_err());
+
+        // Replacing latest does not redirect the explicit old handle or cursor.
+        let mut newer = checked.clone();
+        let current_service = repo.services().unwrap().remove("orders").unwrap();
+        newer.input_digest = repo.input_digest().unwrap();
+        newer.source_inputs.as_mut().unwrap().input_digest = newer.input_digest.clone();
+        newer.source_inputs.as_mut().unwrap().inputs = repo.inputs().unwrap();
+        let evidence = newer.services.get_mut("orders").unwrap();
+        evidence.revision = "new".into();
+        evidence.service_digest = super::super::digest(&current_service).unwrap();
+        let current = evidence.sources.get_mut(&source.id).unwrap();
+        current.text = "new body".into();
+        current.text_digest = crate::canonical::hash_bytes(current.text.as_bytes());
+        current.revision = "new".into();
+        newer.refresh_digest().unwrap();
+        newer.save_snapshot(&repo).unwrap();
+        request.limit = 1;
+        let first = context(request.clone()).unwrap();
+        request.cursor = first["nextCursor"].as_str().map(str::to_owned);
+        assert!(request.cursor.is_some());
+        let continuation = context(request.clone()).unwrap();
+        assert_eq!(
+            continuation["items"][0]["record"],
+            serde_json::to_value(&source).unwrap()
+        );
+        request.cursor = None;
+        for bad_binding in [false, true] {
+            let mut manifest = checked.store_manifest(&repo).unwrap();
+            let capture = manifest.service_manifests.get_mut("orders").unwrap();
+            if bad_binding {
+                capture.service_digest = "wrong-configuration".into();
+            } else {
+                capture.sources.digest = format!("sha256:{}", "0".repeat(64));
+            }
+            let raw = super::super::bytes(&manifest).unwrap();
+            let reference =
+                super::super::cache::put(&repo, check::CHECK_MANIFEST_SCHEMA, &raw).unwrap();
+            request.snapshot = Some(format!("{}/{}", reference.digest, reference.size));
+            assert!(
+                context(request.clone()).is_err(),
+                "bad binding: {bad_binding}"
+            );
+        }
     }
 
     #[test]

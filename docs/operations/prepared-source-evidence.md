@@ -99,3 +99,21 @@ The canonical short agent entry is [the skill README](../../skills/codeclew/READ
 After engine admission/compare, agents must not repeat Git/digest/catalogue checks
 for already covered inputs. A local packet fingerprint identifies the helper's
 artifact only; it is not an additional source freshness verdict.
+
+## Exact historical SOURCE drill
+
+When source text is actually missing, use `docs context --root DOCS --service ID
+--snapshot SNAPSHOT --source SOURCE_ID --limit 20`, or the portable helper's
+`drill` recipe. Only an explicit snapshot plus exact SOURCE IDs selects this
+historical route. It shares retain/compare's full immutable snapshot admission,
+including object integrity and the captured source-input configuration binding.
+It preserves original revision, file, line span, source authority and coverage;
+no live checkout or current catalogue match is claimed. Current publication
+narratives are not mixed into a historical source drill.
+
+`evidenceValidation.mode=PINNED_SOURCE_SNAPSHOT_CLOSURE` identifies this route.
+Missing/corrupt objects and unknown or cross-service source IDs fail closed.
+Ordinary context without an exact SOURCE selector still checks the current
+catalogue and may require recapture or recomposition. Output budgets, omitted
+items and cursors are unchanged. A successful historical read establishes no
+current freshness, semantic completeness or runtime equivalence.
