@@ -155,12 +155,7 @@ cargo test --locked -p clew --test managed_cli \
   managed_python_context_rejects_missing_plan_without_project_processes -- --exact --test-threads=1
 cargo test --locked -p clew --test managed_cli \
   managed_support_summary_requires_private_input_and_drops_private_material -- --test-threads=1
-GIT_CONFIG_COUNT=2 \
-GIT_CONFIG_KEY_0=user.name \
-GIT_CONFIG_VALUE_0='Codeclew Maintainers' \
-GIT_CONFIG_KEY_1=user.email \
-GIT_CONFIG_VALUE_1='maintainers@codeclew.invalid' \
-python3 -I -S scripts/check_repository_privacy.py --worktree --pre-commit
+python3 -I -S scripts/check_repository_privacy.py --worktree
 python3 -I -S scripts/usability-smoke.py
 
 printf '%s\n' '{"schema":"codeclew-verification/1.0","status":"PASSED"}'

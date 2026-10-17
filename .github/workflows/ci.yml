@@ -15,8 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # GitHub's synthetic pull-request merge commit contains the actor's
-          # identity. Scan the submitted head and its real history instead.
+          # Scan the submitted head and its content history rather than the
+          # synthetic pull-request merge tree. Git author identity is unrestricted.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - run: python3 scripts/check_repository_privacy.py --self-test
