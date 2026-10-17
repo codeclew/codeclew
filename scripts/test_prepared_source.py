@@ -275,7 +275,7 @@ class PreparedSourceTest(unittest.TestCase):
         self.assertNotIn('reasonExamples', view['evidence']['comparison'])
         self.assertEqual(view['changes'][0]['record']['changedWindow'], window)
         self.assertEqual(view['citationUpdates'][0]['binding']['after'], after)
-        pointer = view['citationUpdates'][0]['binding']['completeBeforeAfter']['pointer']
+        pointer = view['citationUpdates'][0]['localPointer']
         binding = json.loads(helper.local_record(original, Path('/packet.json'), 'digest', pointer, 12000))
         self.assertEqual(binding['item']['record']['before'], before)
         with self.assertRaisesRegex(helper.ViewError, 'INVALID_LOCAL_PACKET_POINTER'):

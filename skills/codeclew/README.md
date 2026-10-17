@@ -104,7 +104,7 @@ Read saved packets locally without another CLI call:
 python3 -I -S SKILL/scripts/prepared_source.py read --input PACKET.json
 ```
 
-Default stdout is at most 12,000 UTF-8 bytes. Fetch/drill views select up to three
+Default stdout is at most 16,384 UTF-8 bytes for maintenance and 12,000 for SOURCE views. Fetch/drill views select up to three
 SOURCE records and four handles; saved comparison packets automatically use the
 maintenance view. Authority, coverage, engine comparison/bindings, omitted evidence and
 cursors remain visible. Full packets and private stderr logs are never replaced.

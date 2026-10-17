@@ -142,9 +142,31 @@ def project(packet, path, packet_digest, source_ids=(), max_bytes=12000,
 
 def citation(value):
     """Navigation metadata, not a replacement for the retained source record."""
-    return {k: v for k, v in value.items() if k in (
+    return {**limits(value), **{k: v for k, v in value.items() if k in (
         'id', 'service', 'bindingService', 'revision', 'file', 'startLine', 'endLine',
-        'url', 'textDigest', 'authority', 'membershipCoverage')}
+        'url', 'authority', 'membershipCoverage')}}
+
+
+def value_changes(before, after, pointer=''):
+    if isinstance(before, dict) and isinstance(after, dict):
+        result = []
+        for key in sorted(before.keys() | after.keys()):
+            part = pointer + '/' + key.replace('~', '~0').replace('/', '~1')
+            if key not in before or key not in after:
+                result.append({'pointer': part, 'beforePresent': key in before,
+                               'afterPresent': key in after,
+                               **({'before': before[key]} if key in before else {}),
+                               **({'after': after[key]} if key in after else {})})
+            else:
+                result.extend(value_changes(before[key], after[key], part))
+        return result
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        return [change for index, pair in enumerate(zip(before, after))
+                for change in value_changes(*pair, pointer + '/' + str(index))]
+    if before == after:
+        return []
+    return [{'pointer': pointer, 'beforePresent': True, 'afterPresent': True,
+             'before': before, 'after': after}]
 
 
 def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
@@ -172,6 +194,13 @@ def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
             if not isinstance(after, dict):
                 raise ViewError('INVALID_NATIVE_CHANGE_RECORD')
             changed_files.add((after.get('service'), after.get('path')))
+    aliases = {item.get('id'): item.get('coveredBy') for item in items if item.get('kind') == 'SOURCE_ALIAS'}
+    dependency_sources = {}
+    for item in items:
+        if item.get('kind') != 'DEPENDENCY': continue
+        ids = item.get('record', {}).get('sourceIds', [])
+        covered = [aliases.get(i, i) for i in ids]
+        dependency_sources[item.get('id')] = {source for value in covered for source in (value if isinstance(value, list) else [value])}
     rows = []
     for item in source_items:
         record = item.get('record', {})
@@ -185,10 +214,20 @@ def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
                      'record': {k: v for k, v in record.items() if k != 'text'},
                      'text': record['text'][:text_chars],
                      'textDelivery': {'offset': 0, 'totalCharacters': len(record['text'])}})
-    evidence = {k: v for k, v in packet.items() if k != 'items'}
-    if records:
-        # Concrete records replace the small redundant reason-example header.
-        evidence['comparison'] = {k: v for k, v in comparison.items() if k != 'reasonExamples'}
+    evidence = {k: v for k, v in packet.items() if k not in ('items', 'total', 'subject', 'schema')}
+    ticket = evidence.pop('evidenceSet', None)
+    if isinstance(ticket, dict):
+        evidence['registeredEvidenceScope'] = {k: v for k, v in ticket.items() if k in ('scope', 'nativeFiles', 'nativeMembershipScopes')}
+    target_binding = comparison.get('targetBinding', {})
+    for key in ('snapshot', 'inputDigest', 'contextDigest'):
+        if isinstance(target_binding, dict) and evidence.get(key) == target_binding.get(key):
+            evidence.pop(key, None)
+    # Concrete records replace the redundant examples without mutating the packet.
+    evidence['comparison'] = {k: v for k, v in comparison.items() if not (records and k == 'reasonExamples')}
+    for side in ('baseline', 'target'):
+        binding = comparison.get(side + 'Binding', {})
+        if isinstance(binding, dict) and comparison.get(side + 'Snapshot') == binding.get('snapshot'):
+            evidence.setdefault('comparison', dict(comparison)).pop(side + 'Snapshot', None)
     view = {'schema': 'codeclew-prepared-maintenance-view/1.0', 'status': comparison['status'],
             'packet': {'path': str(path), 'sha256': packet_digest}, 'evidence': evidence,
             'coverage': [i for i in items if i.get('kind') == 'COVERAGE'],
@@ -196,6 +235,8 @@ def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
             'recordLimits': record_limits(items, include_sources=True),
             'projection': {'authority': 'LOCAL_PROJECTION_NOT_ADDITIONAL_VERIFICATION',
                            'unchangedSourceBodies': 'NOT_REPLAYED',
+                           'normalizedValues': 'Changed SOURCE text is shown once for covered IR projections; other values use JSON pointers',
+                           'recordContinuation': {'kind': 'LOCAL_PACKET_RECORD', 'selector': 'localPointer'},
                            'sourceBodies': 'METADATA_ONLY' if max_sources == 0 else 'CHANGED_SOURCE_ONLY',
                            'totalRecords': len(records), 'recordOffset': record_offset,
                            'bindingCompleteness': 'ENGINE_BOUND' if all(isinstance(comparison.get(k), dict) for k in ('baselineBinding', 'targetBinding')) else 'LEGACY_PACKET_BINDINGS_NOT_RETURNED',
@@ -203,25 +244,45 @@ def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
             'continuation': None}
     shown = records[record_offset:]
     while True:
-        changes, bindings = [], []
+        changes, bindings, windows = [], [], {}
         for index, item in shown:
             record = item.get('record', {})
             row = {'id': item.get('id'), 'localPointer': f'/items/{index}'}
             if item.get('kind') == 'SOURCE_BINDING_UPDATE':
                 row['binding'] = {k: v for k, v in record.items() if k not in ('before', 'after')}
                 row['binding']['after'] = citation(record.get('after', {}))
-                row['binding']['previousRevision'] = record.get('before', {}).get('revision')
-                row['binding']['completeBeforeAfter'] = {'kind': 'LOCAL_PACKET_RECORD',
-                                                        'input': str(path), 'pointer': f'/items/{index}'}
+                previous = record.get('before', {}).get('revision')
+                if previous != comparison.get('baselineBinding', {}).get('revision'):
+                    row['binding']['previousRevision'] = previous
                 bindings.append(row)
             else:
                 row['record'] = dict(record)
+                if 'beforeValues' in record and 'afterValues' in record:
+                    values = value_changes(record['beforeValues'], record['afterValues'])
+                    semantic = [v for v in values if not v['pointer'].endswith('/fingerprint')]
+                    row['record']['valueChanges'] = semantic or values
+                    row['record'].pop('beforeValues', None)
+                    row['record'].pop('afterValues', None)
+                    row['record'].pop('before', None)
+                    row['record'].pop('after', None)
+                covered = dependency_sources.get(record.get('dependency'), set())
+                if record.get('kind') in ('FLOW', 'SYMBOL') and covered and covered <= changed_ids:
+                    row['record'].pop('valueChanges', None)
+                    row['record']['valuesInChangedSources'] = sorted(covered)
+                row['record'].pop('valueRepresentation', None)
                 window = record.get('changedWindow')
                 if isinstance(window, dict) and isinstance(window.get('afterCitation'), dict):
                     row['record']['changedWindow'] = {k: citation(v) if k in ('beforeCitation', 'afterCitation') and isinstance(v, dict) else v for k, v in window.items()}
                     if record.get('reason') == 'SELECTED_SOURCE_BYTES_CHANGED':
                         row['record'].pop('before', None)
                         row['record'].pop('after', None)
+                    row['record'].pop('sourceReferences', None)
+                    key = encode(row['record']['changedWindow'])
+                    if key in windows:
+                        row['record'].pop('changedWindow')
+                        row['record']['changedWindowRef'] = windows[key]
+                    else:
+                        windows[key] = item.get('id')
                     source = window['afterCitation']
                     if source.get('id') not in {i.get('id') for i in source_items}:
                         row['sourceContinuation'] = {'kind': 'PINNED_SOURCE_DRILL',
@@ -238,8 +299,7 @@ def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
             end = len(row['text'])
             row['textDelivery'].update(complete=end == row['textDelivery']['totalCharacters'],
                 nextOffset=end if end < row['textDelivery']['totalCharacters'] else None)
-            row['continuation'] = {'kind': 'LOCAL_SOURCE_TEXT', 'input': str(path),
-                                   'source': row['id'], 'textOffset': end}
+            row['continuation'] = {'kind': 'LOCAL_SOURCE_TEXT', 'source': row['id'], 'textOffset': end}
         rendered = encode(view)
         if len(rendered.encode('utf-8')) <= max_bytes:
             return rendered
@@ -324,7 +384,7 @@ def main():
         if mode != 'read':
             sub.add_argument('--output', required=True, type=Path)
         sub.add_argument('--source', action='append', default=[], required=mode == 'drill', help='Exact returned SOURCE ID; repeat only as needed')
-        sub.add_argument('--max-bytes', type=int, default=12000, help='Strict stdout UTF-8 byte budget, 1024..65536')
+        sub.add_argument('--max-bytes', type=int, help='Strict UTF-8 bytes, 1024..65536; default 16384 maintenance / 12000 SOURCE')
         sub.add_argument('--text-chars', type=int, default=6000, help='At most this many characters per selected source')
         sub.add_argument('--text-offset', type=int, default=0, help='Continue one exact source locally without fetching')
         sub.add_argument('--max-sources', type=int, default=3, help='0 is metadata-only; no SOURCE bodies')
@@ -348,7 +408,7 @@ def main():
             selection.add_argument('--snapshot')
             selection.add_argument('--refresh', action='store_true')
     args = parser.parse_args()
-    if not (1024 <= args.max_bytes <= 65536 and 0 <= args.max_sources <= 16
+    if not ((args.max_bytes is None or 1024 <= args.max_bytes <= 65536) and 0 <= args.max_sources <= 16
             and 0 <= args.max_handles <= 32 and 0 <= args.text_chars <= 65536
             and args.text_offset >= 0 and args.record_offset >= 0):
         parser.error('invalid projection bounds')
@@ -363,6 +423,8 @@ def main():
         elif args.mode == 'drill':
             drill(args, path)
         packet, digest = load_packet(path)
+        if args.max_bytes is None:
+            args.max_bytes = 16384 if 'comparison' in packet and not args.source and not getattr(args, 'record', None) else 12000
         if args.mode == 'fetch' and (not isinstance(packet.get('evidenceSet'), dict) or packet['evidenceSet'].get('schema') != 'codeclew-prepared-source-evidence/1.0'):
             raise ViewError('ENGINE_RETAIN_RESULT_MISSING; no admitted evidence view delivered')
         if args.mode == 'compare' and (not isinstance(packet.get('comparison'), dict) or packet['comparison'].get('status') not in ('UNCHANGED', 'CHANGED', 'UNKNOWN')):

@@ -436,6 +436,7 @@ fn maintenance_binding(checked: &Check, evidence: &Evidence) -> Result<Value, Cl
         "registeredNativeRevisions":evidence.native.files.values().map(|f|(&f.service,&f.revision)).collect::<BTreeMap<_,_>>() }),
     )
 }
+#[cfg(test)]
 fn file_excerpt<'a>(checked: &'a Check, service: &str, file: &str) -> Option<&'a Source> {
     checked
         .services
@@ -478,7 +479,12 @@ fn scope_changes(id: &str, baseline: &Check, target: &Check) -> Vec<Value> {
     let paths = a.keys().chain(b.keys()).collect::<BTreeSet<_>>();
     paths.into_iter().filter(|p|a.get(*p)!=b.get(*p)).map(|path|{
         let mut change=json!({"reason":"REGISTERED_SOURCE_SCOPE_FILE_CHANGED","dependency":id,"file":path,"before":a.get(path),"after":b.get(path),"meaningImpact":"NOT_INFERRED"});
-        if let (Some(before),Some(after))=(file_excerpt(baseline,&a_service,path),file_excerpt(target,&a_service,path)){change["changedWindow"]=changed_window(before,after);}
+        let pair = baseline.services.values().flat_map(|s|s.sources.values())
+            .filter(|s|s.service==a_service && s.file==*path)
+            .filter_map(|before|target.services.get(&a_service)?.sources.get(&before.id).map(|after|(before,after)))
+            .filter(|(before,after)|before.text!=after.text)
+            .max_by_key(|(before,_)|before.text.len());
+        if let Some((before,after))=pair {change["changedWindow"]=changed_window(before,after);}
         change["sourceReferences"]=json!({"before":baseline.services.get(&a_service).map(|s|s.sources.values().filter(|v|v.file==*path).map(|v|&v.id).take(8).collect::<Vec<_>>()),"after":target.services.get(&a_service).map(|s|s.sources.values().filter(|v|v.file==*path).map(|v|&v.id).take(8).collect::<Vec<_>>())});
         change
     }).collect()
