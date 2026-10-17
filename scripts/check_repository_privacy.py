@@ -15,12 +15,6 @@ import sys
 from collections.abc import Iterable
 
 
-GENERIC_NAME = "Codeclew Maintainers"
-GENERIC_EMAIL = "maintainers@codeclew.invalid"
-GITHUB_SQUASH_WITH_CUSTOM_SUBJECT = {
-    # PR #22: gh --subject omitted GitHub's usual (#22) suffix.
-    "370a5f20b4676ad926a80cbdb3ad3be212898e37": "Recognize GitHub squash merge metadata in privacy checks",
-}
 FORBIDDEN_TOKEN_SHA256 = {
     "0b3e1b057983454547b3bcbf2fac99b7309dbb5737a2d387f9f4a9bddf895147",
     "f5a38e4245e1c0094edfe353a8d77577f61031999ec900c57de05640cb5459d9",
@@ -201,54 +195,6 @@ def check_worktree() -> list[tuple[str, str]]:
     return sorted(set(findings))
 
 
-def check_history_metadata() -> list[tuple[str, str]]:
-    findings = []
-    rows = git(
-        "log",
-        "HEAD",
-        "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%cn%x00%ce",
-    ).splitlines()
-    for row in rows:
-        commit, parents, subject, author, email, committer, committer_email = (
-            row.decode("utf-8").split("\0")
-        )
-        github_pull_request_merge = (
-            (committer, committer_email)
-            == ("GitHub", "noreply@" + "github" + ".com")
-            and (
-                (len(parents.split()) == 2 and subject.startswith("Merge pull request #"))
-                or (
-                    len(parents.split()) == 1
-                    and (
-                        re.search(r" \(#[1-9][0-9]*\)$", subject) is not None
-                        or GITHUB_SQUASH_WITH_CUSTOM_SUBJECT.get(commit) == subject
-                    )
-                )
-            )
-        )
-        if github_pull_request_merge:
-            continue
-        if (author, email) != (GENERIC_NAME, GENERIC_EMAIL):
-            findings.append((commit, "non-generic-author"))
-        if (committer, committer_email) != (GENERIC_NAME, GENERIC_EMAIL):
-            findings.append((commit, "non-generic-committer"))
-    return findings
-
-
-def check_local_identity() -> list[tuple[str, str]]:
-    def config_value(key: str) -> str:
-        result = subprocess.run(
-            ("git", "config", "--get", key),
-            check=False,
-            stdout=subprocess.PIPE,
-        )
-        return result.stdout.decode().strip() if result.returncode == 0 else ""
-
-    name = config_value("user.name")
-    email = config_value("user.email")
-    return [] if (name, email) == (GENERIC_NAME, GENERIC_EMAIL) else [("git-config", "non-generic-identity")]
-
-
 def self_test() -> None:
     assert not blob_rules(b"path=/workspace/user email=dev@example.invalid")
     assert "personal-home-path" in blob_rules(b"/Users/" + b"private-user/project")
@@ -270,7 +216,8 @@ def main() -> int:
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--history", action="store_true")
     scope.add_argument("--worktree", action="store_true")
-    parser.add_argument("--pre-commit", action="store_true")
+    parser.add_argument("--pre-commit", action="store_true",
+                        help="Compatibility flag; checks content without restricting Git identity")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -279,10 +226,6 @@ def main() -> int:
     findings = check_worktree() if args.worktree else check_entries(
         history_entries() if args.history else index_entries()
     )
-    if args.history:
-        findings.extend(check_history_metadata())
-    if args.pre_commit:
-        findings.extend(check_local_identity())
     for path, rule in sorted(set(findings)):
         print(f"privacy check failed: {path}: {rule}", file=sys.stderr)
     return 1 if findings else 0

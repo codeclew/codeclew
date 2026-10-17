@@ -290,6 +290,28 @@ class PreparedSourceTest(unittest.TestCase):
         self.assertEqual(metadata['projection']['sourceBodies'], 'METADATA_ONLY')
         self.assertLessEqual(len(result.encode()), 12000)
 
+    def test_maintenance_preserves_engine_file_verdicts_and_occurrences_without_inference(self):
+        original = packet()
+        file_result = {'service': 'worker', 'file': 'src/worker.py', 'status': 'CHANGED',
+                       'before': {'revision': 'old', 'occurrence': {'blob': 'a' * 40}},
+                       'after': {'revision': 'new', 'occurrence': {'blob': 'b' * 40}},
+                       'scope': 'WHOLE_FILE_BYTES_OF_SELECTED_SOURCE_NOT_COMMIT_OR_BEHAVIOR'}
+        original['comparison'] = {'status': 'CHANGED', 'selectedSourceBytes': 'UNCHANGED',
+                                  'selectedSourceFiles': [file_result]}
+        for state in ['UNCHANGED', 'CHANGED', 'UNKNOWN']:
+            file_result['status'] = state
+            view = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest', max_sources=0))
+            self.assertEqual(view['evidence']['comparison']['selectedSourceFiles'], [file_result])
+            self.assertEqual(view['evidence']['comparison']['selectedSourceBytes'], 'UNCHANGED')
+            self.assertEqual(view['sources'], [])
+        with self.assertRaisesRegex(helper.ViewError, 'BUDGET'):
+            helper.maintenance(original, Path('/packet.json'), 'digest', max_bytes=64)
+        # Legacy packets retain their limitation: helper must not derive a file
+        # verdict from an unchanged span or the SOURCE occurrence on its own.
+        del original['comparison']['selectedSourceFiles']
+        view = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest'))
+        self.assertNotIn('selectedSourceFiles', view['evidence']['comparison'])
+
     def test_maintenance_unchanged_unknown_and_local_record_pages_are_explicit(self):
         original = packet('unchanged body')
         original['comparison'] = {'status': 'UNCHANGED', 'selectedSourceBytes': 'UNCHANGED'}
