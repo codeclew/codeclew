@@ -24,19 +24,35 @@ it to comparison instead of reconstructing hashes or revisions in prose.
 Comparison re-admits both snapshot object closures, validates the retained
 selector/configuration binding and uses the existing dependency-delta primitive.
 Analysis configuration is separate from target ref, source-link presentation and
-service title. Selected source byte changes, new closure membership, watched
+service title. Selected source span and whole-file byte changes, new closure membership, watched
 source inventory, generated inputs and explicit native references remain tracked.
 
 The serialized verdict is an enum:
 
 - `UNCHANGED`: registered inputs match. This does not establish complete
   dependencies, runtime equivalence or correctness of arbitrary answer prose.
-- `CHANGED`: a registered configuration, observation, source byte span, native
+- `CHANGED`: a registered configuration, observation, source byte span or admitted whole-file object, native
   file or membership changed. Conservative source-scope changes identify the
   affected file; meaning impact is not inferred.
 - `UNKNOWN`: a registered dependency/source is unavailable, the target selector
-  cannot be resolved or a native input has an unresolved acquisition limit.
+  cannot be resolved, a selected file object is unsupported/incomparable, or a
+  native input has an unresolved acquisition limit.
   Missing/corrupt immutable objects fail admission instead of returning evidence.
+
+`comparison.selectedSourceFiles` reports one whole-file byte verdict per selected
+service/path, retaining before/after SOURCE identities and their immutable Git
+blob occurrences. It uses the two already admitted captures; no live Git read or
+new acquisition pipeline is required. Equal supported Git objects prove equal
+complete file bytes, including inter-token whitespace. Different blobs report
+`CHANGED` even when the selected span and syntax fingerprints stay equal. Missing,
+generated, malformed or conflicting object bindings report `UNKNOWN`; corrupt
+snapshot objects still fail the existing admission path. No full-file equality
+is inferred from span text or a SOURCE_SCOPE inventory fingerprint.
+
+These selected files, their spans, the registered evidence closure and the full
+commit change set are separate scopes. A file verdict does not prove commit-wide
+coverage, runtime behavior or semantic equivalence. Unsupported file formats and
+unregistered repository changes remain explicit gaps, not negative proof.
 
 `selectedSourceBytes` is separate from the overall decision. An unchanged handler
 cannot hide a changed callee, configuration, generated input or watched membership.
