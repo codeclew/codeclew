@@ -17,6 +17,8 @@ pub(super) fn render(
     checked: &Check,
     snapshot: &str,
     publication: &str,
+    reading_plan: Option<&Path>,
+    contract_comparison: Option<&Path>,
     output: &Path,
 ) -> Result<Value, ClewError> {
     validate_output(output)?;
@@ -52,6 +54,12 @@ pub(super) fn render(
         remaining -= bytes.len() as u64;
         files.insert(name.clone(), bytes);
     }
+    let questions = super::question_reading::load(reading_plan, publication, &files, checked)?;
+    let comparisons =
+        super::contract_comparison::load(contract_comparison, publication, snapshot, checked)?;
+    let process_theme = questions
+        .values()
+        .any(|guide| guide["presentation"] == "SEQUENTIAL");
     for name in manifest.files.keys().filter(|name| {
         (name.starts_with("services/") || name.starts_with("scenarios/")) && name.ends_with(".json")
     }) {
@@ -68,6 +76,9 @@ pub(super) fn render(
             return Err(invalid(
                 "full pages operation bodies differ from frozen narrative",
             ));
+        }
+        if let Some(guide) = questions.get(&subject) {
+            payload["questionReader"] = guide.clone();
         }
         payload["selectedSnapshot"] = json!(snapshot);
         payload["frozenPublication"] = json!(publication);
@@ -87,6 +98,12 @@ pub(super) fn render(
                     .collect::<Vec<_>>()
             );
             merge_sources(&mut payload, json!(service.sources))?;
+            if let Some(comparison) = comparisons
+                .as_ref()
+                .filter(|c| c["service"] == service.service)
+            {
+                payload["contractComparison"] = comparison.clone();
+            }
             // Keep operationSources/operationContracts/operationStates and all
             // narrative/thread data byte-equivalent as parsed frozen records.
         }
@@ -134,11 +151,38 @@ pub(super) fn render(
             files.insert(format!("frozen-{name}"), bytes);
         }
     }
-    files.insert("catalog.html".into(), reader::catalog(&files).into_bytes());
-    files.insert("history.html".into(), reader::page("Selected publication", &format!("<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",render::escape(publication),render::escape(snapshot))).into_bytes());
+    if let Some(comparison) = &comparisons {
+        files.insert(
+            "http-contract-comparison.json".into(),
+            serde_json::to_vec_pretty(comparison).map_err(io_error)?,
+        );
+    }
+    let navigation = reader::navigation("", "overview.html", Some("history.html"), &[]);
+    let catalog = reader::decorate(&reader::catalog(&files), &navigation);
+    files.insert("catalog.html".into(), catalog.into_bytes());
+    let history = reader::page(
+        "Selected publication",
+        &format!(
+            "<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",
+            render::escape(publication),
+            render::escape(snapshot)
+        ),
+    );
+    files.insert(
+        "history.html".into(),
+        reader::decorate(&history, &navigation).into_bytes(),
+    );
+    if process_theme {
+        for (name, bytes) in &mut files {
+            if name.ends_with(".html") {
+                let html = std::str::from_utf8(bytes).map_err(io_error)?;
+                *bytes = reader::process_theme(html).into_bytes();
+            }
+        }
+    }
     let result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
-        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,
+        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
     files.insert(
         "pages-manifest.json".into(),
