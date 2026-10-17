@@ -328,14 +328,7 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
-    out.push_str(&format!(
-        "# {}\n\n## Process overview {{#process-overview}}\n\n{}\n\n",
-        md(text(&guide["title"])),
-        md(text(&guide["purpose"]))
-    ));
-    out.push_str(
-        "Editorial reading guide · original source scopes and review states remain separate.\n\n",
-    );
+    out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
     let flow = page["processDataFlow"].is_object();
     if flow {
         out.push_str(&format!(
@@ -343,6 +336,13 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
             json!(text(&page["processDataFlow"]["request"]["anchor"]))
         ));
     }
+    out.push_str(&format!(
+        "## Process overview {{#process-overview}}\n\n{}\n\n",
+        md(text(&guide["purpose"]))
+    ));
+    out.push_str(
+        "Editorial reading guide · original source scopes and review states remain separate.\n\n",
+    );
     let mut graph = String::from("flowchart TD\n");
     let mut previous = None;
     for (i, section) in rows(&guide["sections"])
@@ -1546,6 +1546,20 @@ mod tests {
         let id = objects.values.keys().next().unwrap().clone();
         objects.values.insert(id, json!({"changed":true}));
         assert!(objects.expand(&value, 0).is_err());
+    }
+    #[test]
+    fn process_overview_and_original_guide_stay_inside_the_process_panel() {
+        let page = json!({"questionReader":{"title":"Save","purpose":"Saved purpose.","sections":[]},"processDataFlow":{"request":{"anchor":"question-save"}}});
+        let mdx = process_page(&page, "save").unwrap();
+        let start = mdx.find("<ClewProcess ").unwrap();
+        let overview = mdx.find("## Process overview {#process-overview}").unwrap();
+        let end = mdx.find("</ClewProcess>").unwrap();
+        assert!(start < overview && overview < end);
+        assert!(mdx[start..end].contains("Saved purpose."));
+        let plain =
+            process_page(&json!({"questionReader":page["questionReader"]}), "save").unwrap();
+        assert!(plain.contains("Saved purpose."));
+        assert!(!plain.contains("<ClewProcess"));
     }
     #[test]
     fn source_fences_and_editorial_text_cannot_become_executable_mdx() {

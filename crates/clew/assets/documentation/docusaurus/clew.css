@@ -17,3 +17,9 @@
 @media(max-width:600px){.clew-tabs{top:var(--ifm-navbar-height)}.clew-tabs button{padding:8px 12px}.clew-exception{padding:10px 12px}}
 
 .clew-tabs{background:var(--ifm-background-surface-color,#fff);isolation:isolate}
+
+/* Process navigation returns unchanged when the process panel is selected. */
+body:has(.clew-process[data-reading-view="data-flow"]) :is(.theme-doc-toc-desktop,.theme-doc-toc-mobile){display:none}
+body:has(.clew-process[data-reading-view="data-flow"]) .col--3:has(.theme-doc-toc-desktop){display:none}
+body:has(.clew-process[data-reading-view="data-flow"]) [class*="docItemCol_"]{max-width:100%!important;flex-basis:100%}
+.clew-widget.dm-page{padding:0;margin:8px 0}.clew-tabs{margin-bottom:8px;z-index:4}.dm-origin{margin:8px 0}

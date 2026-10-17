@@ -53,7 +53,7 @@ test('bounded inventory preserves twenty fields, omitted fields, unmapped leaves
 function mounted(data){
  const location={href:'http://localhost/process.html?view=data-flow',search:'?view=data-flow',hash:''},history={replaceState(_,__,next){const u=new URL(next,location.href);location.href=u.href;location.search=u.search;}};
  const nodes={};let focusCount=0;
- for(const selector of ['.dm-field-select','.dm-contract-select','.dm-stage-select','.dm-matrix','.dm-focused','.dm-counts','.dm-overview-summary','.dm-return-overview','.dm-drilldown','.dm-overview'])nodes[selector]={value:'',innerHTML:'',events:{},addEventListener(n,fn){this.events[n]=fn;},focus(){focusCount++;},scrollIntoView(){},querySelector(){return {focus(){focusCount++;}};},querySelectorAll(){return [];}};
+ for(const selector of ['.dm-field-select','.dm-contract-select','.dm-stage-select','.dm-matrix','.dm-focused','.dm-counts','.dm-overview-summary','.dm-return-overview','.dm-drilldown','.dm-overview'])nodes[selector]={value:'',innerHTML:'',events:{},addEventListener(n,fn){this.events[n]=fn;},focus(){focusCount++;},scrollIntoView(){this.scrolled=true;},querySelector(){return {focus(){focusCount++;}};},querySelectorAll(){return [];}};
  let cachedHtml,cachedButtons;
  nodes['.dm-matrix'].querySelectorAll=()=>{if(cachedHtml===nodes['.dm-matrix'].innerHTML)return cachedButtons;cachedHtml=nodes['.dm-matrix'].innerHTML;return cachedButtons=Array.from(nodes['.dm-matrix'].innerHTML.matchAll(/<button type="button" data-dm-cell data-field="([^"]*)" data-stage="([^"]*)"/g),m=>({dataset:{field:m[1],stage:m[2]},events:{},addEventListener(n,fn){this.events[n]=fn;}}));};
  const container={innerHTML:'',querySelector:s=>nodes[s],querySelectorAll:()=>[]};
@@ -68,7 +68,7 @@ test('default overview precedes optional trail and cell drilldown retains overvi
  const cell=nodes['.dm-matrix'].querySelectorAll().find(b=>b.dataset.stage==='Store');cell.events.click();
  assert.equal(nodes['.dm-matrix'].innerHTML,original);assert.equal(nodes['.dm-stage-select'].value,'');
  assert.equal(new URL(location.href).searchParams.get('cellStage'),'Store');assert.equal(new URL(location.href).searchParams.get('stage'),null);
- assert.equal(nodes['.dm-drilldown'].open,true);assert.ok(focusCount()>0,'detail heading receives keyboard-visible focus');
+ assert.equal(nodes['.dm-drilldown'].open,true);assert.equal(nodes['.dm-drilldown'].scrolled,true,'detail navigation stays visible above focused heading');assert.equal(nodes['.dm-focused'].scrolled,undefined);assert.ok(focusCount()>0,'detail heading receives keyboard-visible focus');
  nodes['.dm-return-overview'].events.click();assert.ok(focusCount()>1,'return control focuses overview');
  nodes['.dm-stage-select'].value='Validate';nodes['.dm-stage-select'].events.change();
  assert.equal((nodes['.dm-matrix'].innerHTML.match(/<td /g)||[]).length,21);assert.equal(new URL(location.href).searchParams.get('stage'),'Validate');
@@ -86,4 +86,13 @@ test('a sole contract does not silently hide related model fields on fresh overv
  nodes['.dm-contract-select'].value='fixture';nodes['.dm-contract-select'].events.change();
  assert.doesNotMatch(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
  assert.match(nodes['.dm-overview-summary'].innerHTML,/21 displayed rows/);
+});
+
+test('overview keeps denominator explanations in a closed disclosure and concise visible counts',()=>{
+ const a=api(),html=a.overviewHtml(scaling,a.overviewRows(scaling),scaling.request.stages),visible=html.split('<details class="dm-scope-details">')[0];
+ assert.match(visible,/21 rows · 3 stages · 20 model paths · 18 traced fields/);
+ assert.match(visible,/Unknown ≠ unused/);
+ assert.doesNotMatch(visible,/Fixture contract|Required-leaf counts|Known model|Mapped leaves/);
+ assert.match(html,/<details class="dm-scope-details"><summary>Scope and evidence key<\/summary>/);
+ assert.match(html,/Required-leaf counts below are separate/);
 });

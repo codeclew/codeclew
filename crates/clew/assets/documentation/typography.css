@@ -10,8 +10,8 @@ body :where(code,pre,kbd,samp),body pre *{font-family:var(--clew-mono)!important
 body pre *{line-height:22px!important}
 body pre{line-height:22px!important;white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;overflow:auto}
 body code{line-height:inherit!important;overflow-wrap:anywhere}
-body :where(.breadcrumb,.sequential-breadcrumb,.dm-inventory,.dm-legend,.dm-scroll-hint,.dm-matrix button,.dm-matrix th,.dm-matrix caption,.question-status,.question-status small,.question-context-links,.ingress-status,.catalog-meta,.catalog-detail){font-size:var(--clew-compact)!important;line-height:22px!important}
-body :where(main,.dm-page) :where(h1,h2,h3,h4,h5,h6,section,[tabindex="-1"]){scroll-margin-top:calc(var(--ifm-navbar-height,64px) + 88px)}
+body :where(.dm-overview-counts,.dm-overview-key,.dm-origin,.breadcrumb,.sequential-breadcrumb,.dm-inventory,.dm-legend,.dm-scroll-hint,.dm-matrix button,.dm-matrix th,.dm-matrix caption,.question-status,.question-status small,.question-context-links,.ingress-status,.catalog-meta,.catalog-detail){font-size:var(--clew-compact)!important;line-height:22px!important}
+body :where(main,.dm-page) :where(h1,h2,h3,h4,h5,h6,section,details,[tabindex="-1"]){scroll-margin-top:calc(var(--ifm-navbar-height,64px) + 88px)!important}
 
 body svg text{font-family:var(--clew-sans)!important;font-size:14px!important;font-weight:400!important;letter-spacing:normal!important}
 body svg :is(.actor-label,.branch-title){font-weight:600!important}

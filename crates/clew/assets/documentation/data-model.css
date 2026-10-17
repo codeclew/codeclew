@@ -10,9 +10,19 @@
 .dm-overview{min-width:0}.dm-overview .dm-matrix-scroll{overflow:auto;max-height:36rem;scroll-padding:4rem 1rem}
 .dm-overview .dm-matrix table{display:table;width:max-content;min-width:100%;max-width:none;table-layout:fixed}
 .dm-overview .dm-matrix thead{display:table-header-group}.dm-overview .dm-matrix tbody{display:table-row-group}
-.dm-overview .dm-matrix tr{display:table-row}.dm-overview .dm-matrix :is(th,td){display:table-cell;width:11rem;min-width:11rem;max-width:16rem;padding:.4rem;overflow-wrap:anywhere}
+.dm-overview .dm-matrix tr{display:table-row}.dm-overview .dm-matrix :is(th,td){display:table-cell;width:9rem;min-width:9rem;max-width:12rem;padding:.4rem;overflow-wrap:anywhere}
 .dm-overview .dm-matrix td:before{display:none}.dm-overview .dm-matrix th:first-child{position:sticky;left:0;z-index:1;background:#edf3f4}
 .dm-overview .dm-matrix thead th{position:sticky;top:0;z-index:2}.dm-overview .dm-matrix thead th:first-child{z-index:3}
 .dm-overview .dm-matrix caption{display:table-caption;width:auto}.dm-matrix button{overflow-wrap:anywhere}
 .dm-drilldown select{display:block;max-width:100%;font:inherit;min-height:44px}.dm-return-overview{font:inherit;min-height:44px;padding:.5rem;border:1px solid #9eb7bf;border-radius:6px;background:white;color:#173b4d;cursor:pointer}
 .dm-page .dm-inventory,.dm-page .dm-legend,.dm-page .dm-scroll-hint{font-size:14px;line-height:22px}
+
+.dm-page .dm-overview{padding:0;border:0}.dm-overview h3,.dm-overview-counts,.dm-overview-key{margin:0 0 4px}
+.dm-page .dm-overview-counts,.dm-page .dm-overview-key,.dm-page .dm-origin{font-size:14px;line-height:22px}
+.dm-page .dm-scope-details{margin:4px 0;padding:0;border:0}.dm-page .dm-scope-details>summary{min-height:26px}
+.dm-overview .dm-controls{margin:8px 0;gap:8px}.dm-overview .dm-controls label{min-width:150px}
+.dm-overview .dm-controls select{padding:4px 8px;min-height:40px}.dm-overview .dm-matrix table{margin:0}
+.dm-overview .dm-matrix caption{padding:4px 0}.dm-overview .dm-matrix button{padding:4px;min-height:40px}
+@media(max-width:650px){.dm-overview .dm-controls{display:flex}.dm-overview .dm-controls label{margin:0;min-width:130px}}
+
+.dm-page [tabindex="-1"]:focus-visible{outline:2px solid #087b83;outline-offset:4px}

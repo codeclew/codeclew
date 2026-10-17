@@ -99,7 +99,6 @@ function Widget({dataPath, anchor}) {
           if (!handle || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           event.preventDefault(); handle.selectField(link.dataset.dmField);
           if (location.hash !== '#field-usage') history.pushState(null, '', '#field-usage');
-          document.getElementById('field-usage')?.scrollIntoView({block: 'start'});
         };
         link.addEventListener('click', click); removals.push(() => link.removeEventListener('click', click));
       });
@@ -150,7 +149,7 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
     const url = new URL(location.href); url.searchParams.set('view', on ? 'data-flow' : 'process');
     history.replaceState(null, '', url); setFlow(on);
   }
-  return <section className="clew-process">
+  return <section className="clew-process" data-reading-view={flow ? 'data-flow' : 'process'}>
     <div role="tablist" aria-label="Process reading view" className="clew-tabs">
       {[false, true].map(on => <button key={String(on)} type="button" role="tab" aria-selected={flow === on}
         aria-controls={on ? 'clew-flow' : 'clew-process'} id={on ? 'clew-flow-tab' : 'clew-process-tab'}
@@ -163,8 +162,7 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
     </div>
     <div id="clew-process" role="tabpanel" aria-labelledby="clew-process-tab" hidden={flow}>{children}</div>
     <div id="clew-flow" role="tabpanel" aria-labelledby="clew-flow-tab" hidden={!flow}>
-      <p>Agent proposal · Not reviewed. Overview includes directly referenced model fields and contract leaves; investigation is limited to selected process fields and stages.</p>
-      <p><a href={`#${anchor}`} onClick={() => select(false)}>Return to the same process step</a></p>
+      <p className="dm-origin">Agent proposal · Not reviewed · <a href={`#${anchor}`} onClick={() => select(false)}>Return to process step</a></p>
       {flow && <Widget dataPath={dataPath} anchor={anchor} />}
     </div>
   </section>;
