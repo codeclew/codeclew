@@ -29,3 +29,8 @@ zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = "symbols"
+
+# CLI integration tests verify whole runtime artifacts on each process launch.
+# Keep the hash implementation optimized without changing test assertions.
+[profile.dev.package.sha2]
+opt-level = 3
