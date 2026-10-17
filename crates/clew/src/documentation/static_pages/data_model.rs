@@ -99,6 +99,21 @@ struct ProcessView {
     related_models: Vec<String>,
     #[serde(default)]
     transfers: Vec<Transfer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reading_guide: Option<ReadingGuide>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReadingGuide {
+    purpose: String,
+    points: Vec<ReadingPoint>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReadingPoint {
+    fields: Vec<FieldRef>,
+    stages: Vec<String>,
+    claim: Value,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -530,6 +545,41 @@ pub(super) fn load(
                 checked,
                 &mut bytes,
             )?;
+        }
+        if let Some(guide) = &mut view.reading_guide {
+            text(&guide.purpose)?;
+            if guide.points.is_empty() || guide.points.len() > 4 {
+                return Err(invalid(
+                    "process reading guide needs one to four evidence-bound points",
+                ));
+            }
+            for point in &mut guide.points {
+                if point.fields.is_empty()
+                    || point.fields.len() > 8
+                    || point.stages.is_empty()
+                    || point.stages.len() > 4
+                    || point.fields.iter().any(|f| {
+                        !view
+                            .fields
+                            .iter()
+                            .any(|r| r.model == f.model && r.field == f.field)
+                    })
+                    || point
+                        .stages
+                        .iter()
+                        .any(|stage| !view.stages.contains(stage))
+                {
+                    return Err(invalid(
+                        "process reading guide references fields or stages outside its selected scope",
+                    ));
+                }
+                point.claim = super::question_reading::bind_block(
+                    point.claim.clone(),
+                    files,
+                    checked,
+                    &mut bytes,
+                )?;
+            }
         }
         for f in &view.fields {
             if !plan
@@ -1147,6 +1197,29 @@ mod tests {
             fields[1]["meaning"],
             model["models"][0]["fields"][1]["meaning"]
         );
+    }
+    #[test]
+    fn reading_guide_is_additive_evidence_bound_and_limited_to_selected_fields_and_stages() {
+        let (mut plan, files, guides, check) = fixture();
+        let original = plan["models"].clone();
+        plan["processViews"][0]["readingGuide"] = json!({"purpose":"Compare where this field is used.","points":[{"fields":[{"model":"record","field":"value"}],"stages":["Store"],"claim":plan["models"][0]["purpose"]}]});
+        let model = read(&plan, &files, &guides, &check).unwrap();
+        assert_eq!(
+            model["processViews"][0]["readingGuide"]["points"][0]["claim"]["evidence"][0]["fragment"]
+                ["text"],
+            "Stored field"
+        );
+        assert_eq!(plan["models"], original);
+        let mut bad = plan.clone();
+        bad["processViews"][0]["readingGuide"]["points"][0]["stages"] = json!(["Other reader"]);
+        assert!(read(&bad, &files, &guides, &check).is_err());
+        let mut bad = plan.clone();
+        bad["processViews"][0]["readingGuide"]["points"][0]["fields"][0]["field"] =
+            json!("unmapped");
+        assert!(read(&bad, &files, &guides, &check).is_err());
+        plan["processViews"][0]["readingGuide"]["points"][0]["claim"]["evidence"][0]["textDigest"] =
+            json!("changed");
+        assert!(read(&plan, &files, &guides, &check).is_err());
     }
     #[test]
     fn unrelated_contract_changes_do_not_rewrite_a_canonical_model_page() {

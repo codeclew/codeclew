@@ -167,7 +167,8 @@
               "claim": {
                 "text": "Synthetic assessment for UI verification only.",
                 "evidence": []
-              }
+              },
+              "coveredScope": "Synthetic Receive handler only"
             }
           ]
         },

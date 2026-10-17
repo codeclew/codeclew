@@ -81,3 +81,19 @@ context. The comparison stays a contained scrollable table on small screens.
 Native buttons support keyboard activation; detail and return controls move focus
 to their destination. HTML and MDX share the same typography roles: 16px reading,
 24px section headings and 14px technical text, with 32px reserved for page titles.
+
+A process view may include an additive `readingGuide` with a plain-language
+`purpose` and one to four short `points`. Each point names selected `fields`
+(model/field pairs), selected `stages`, and a source-bound `claim` using the same
+block/evidence contract as usage statements. References outside the selected
+process scope or changed source bindings fail admission. The guide remains an
+agent proposal, not runtime proof; it does not replace original usage descriptions.
+
+The overview groups canonical fields and unmapped contract paths. Recorded
+representations and conditions appear beside documented field operations.
+Object handling is distinguished from a separate field read, and unknowns cannot
+establish removable fields. Narrow screens show all stages in vertical field rows;
+wide screens keep the comparison matrix. Explicit evidence actions open the
+recorded claim and source, while the sticky detail toolbar returns to the selected
+field/stage with filters preserved. Keyboard/DOM checks do not establish full
+screen-reader certification.
