@@ -674,7 +674,7 @@ pub(super) fn attach_process(
     };
     let requested = view["fields"].as_array().unwrap();
     let stages = view["stages"].as_array().unwrap();
-    let models = model["models"]
+    let mut models = model["models"]
         .as_array()
         .unwrap()
         .iter()
@@ -717,8 +717,20 @@ pub(super) fn attach_process(
         .iter()
         .flat_map(|m| m["fields"].as_array().into_iter().flatten())
         .flat_map(|f| f["usage"].as_array().into_iter().flatten())
-        .filter_map(|u| u["contract"].as_str())
+        .filter_map(|u| u["contract"].as_str().map(str::to_owned))
         .collect::<BTreeSet<_>>();
+    for m in &mut models {
+        for field in m["fields"].as_array_mut().unwrap() {
+            field["representations"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|r| {
+                    r["contract"]
+                        .as_str()
+                        .is_none_or(|id| used_contracts.contains(id))
+                });
+        }
+    }
     let contracts = model["contracts"]
         .as_array()
         .into_iter()
@@ -743,6 +755,27 @@ pub(super) fn attach_process(
         .collect::<Vec<_>>();
     payload["processDataFlow"] = json!({"relatedModels":related_models,"request":view,"models":models,"contracts":contracts,"authority":model["authority"],"review":model["review"],"scope":"Only explicitly requested fields and consumer stages; static interpretation, not observed runtime transfer."});
     Ok(())
+}
+fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'a Value> {
+    let used = model["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|f| {
+            f["representations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(f["usage"].as_array().into_iter().flatten())
+        })
+        .filter_map(|r| r["contract"].as_str())
+        .collect::<BTreeSet<_>>();
+    contracts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["id"].as_str().is_some_and(|id| used.contains(id)))
+        .collect()
 }
 pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(), ClewError> {
     let mut index = String::from(
@@ -845,7 +878,7 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
             ));
         }
         body.push_str("</ul></div>");
-        let data = json!({"models":[m],"contracts":model["contracts"],"authority":model["authority"],"review":model["review"]});
+        let data = json!({"models":[m],"contracts":model_contracts(m,&model["contracts"]),"authority":model["authority"],"review":model["review"]});
         body.push_str(&data_script(&data));
         files.insert(
             format!("data-model/{id}.html"),
@@ -1041,6 +1074,11 @@ mod tests {
         let (mut plan, files, guides, check) = fixture();
         let mut model = read(&plan, &files, &guides, &check).unwrap();
         model["contracts"] = json!([{"id":"branch"},{"id":"unrelated"}]);
+        model["models"][0]["fields"][0]["representations"] = json!([
+            {"contract":"branch","field":"value"},
+            {"contract":"unrelated","field":"other"},
+            {"label":"storage mapping"}
+        ]);
         let original = json!({"operations":[{"id":"saved","text":"unchanged"}],"entities":[]});
         let mut payload = original.clone();
         attach_process(None, "scenario:example", &mut payload).unwrap();
@@ -1052,6 +1090,10 @@ mod tests {
         assert_eq!(
             payload["processDataFlow"]["contracts"],
             json!([{"id":"branch"}])
+        );
+        assert_eq!(
+            payload["processDataFlow"]["models"][0]["fields"][0]["representations"],
+            json!([{"contract":"branch","field":"value"},{"label":"storage mapping"}])
         );
         assert_eq!(
             payload["processDataFlow"]["models"][0]["fields"][0]["usage"]
@@ -1071,6 +1113,24 @@ mod tests {
         assert_eq!(off, original);
         assert_eq!(model["authority"], "AGENT_PROPOSAL");
         assert_eq!(model["review"], "UNASSESSED");
+    }
+    #[test]
+    fn unrelated_contract_changes_do_not_rewrite_a_canonical_model_page() {
+        let (plan, mut files, guides, check) = fixture();
+        let mut model = read(&plan, &files, &guides, &check).unwrap();
+        model["contracts"] = json!([
+            {"id":"branch","title":"Used branch","leaves":[]},
+            {"id":"unrelated","title":"Unrelated branch","leaves":[]}
+        ]);
+        write(&model, &mut files).unwrap();
+        let before = files["data-model/record.html"].clone();
+        let index = files["data-model.html"].clone();
+        model["contracts"][1]["title"] = json!("Unrelated branch changed");
+        write(&model, &mut files).unwrap();
+        assert_eq!(files["data-model/record.html"], before);
+        assert_ne!(files["data-model.html"], index);
+        let data: Value = serde_json::from_slice(&files["data-model.json"]).unwrap();
+        assert_eq!(data["contracts"][1]["title"], "Unrelated branch changed");
     }
     #[test]
     fn canonical_entity_navigation_is_explicit_and_independent_of_field_flow() {

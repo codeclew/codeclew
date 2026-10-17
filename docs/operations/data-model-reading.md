@@ -37,6 +37,10 @@ A process Data Flow requires an explicit `processViews` entry with `enabled:true
 a real process subject/reading anchor, requested model/field IDs and consumer
 stages. Only usage statements explicitly assigned to that process and those
 stages enter its projection. A global entity flow is not silently substituted.
+Contract-specific representations in that projection follow its documented usage
+contracts. Each canonical model page embeds only contracts referenced by its own
+fields; the complete authored model and contract catalog remain in `data-model.json`.
+An unrelated contract change therefore does not rewrite a canonical model page.
 An enabled process view requires its explicit sequential reading plan. The existing
 Process view remains the default. The accessible
 Process/Data Flow tabs retain the process anchor and selected field. Canonical
