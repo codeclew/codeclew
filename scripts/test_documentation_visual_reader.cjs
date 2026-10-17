@@ -624,7 +624,7 @@ test('entity section shows only its accepted local visuals while the process gal
  const data=entitySectionFixture();data.savedProcesses=[{id:'saved',title:'Saved workflow',href:'../scenarios/saved.html',status:'AUTHORED'}];
  const r=load(data);r.run("showEntry('section-entities')");
  const html=r.e('scenario-content').innerHTML;
- assert.match(html,/Current entity declarations/);assert.match(html,/Synthetic Order/);
+ assert.match(html,/Recorded domain ownership/);assert.match(html,/Synthetic Order/);
  assert.match(html,/<h3>Entity views<\/h3>/);assert.match(html,/Order identity map/);assert.match(html,/Ownership criteria/);
  assert.doesNotMatch(html,/Dispatch work|Select handler/);
  assert.equal((html.match(/class="visual-artifact"/g)||[]).length,2);
@@ -1515,4 +1515,39 @@ test('retained HTTP comparison never attaches findings to a mismatched or ambigu
   const data=retainedHttpFixture();change(data);const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
   assert.match(html,/No applicable recorded HTTP checks/);assert.doesNotMatch(html,/class="ingress-http-finding"/);
  }
+});
+
+test('selected route inventory supersedes an empty frozen inventory without rewriting retained evidence',()=>{
+ const {data}=ingressFixture();
+ data.selectedBoundaryInventory=structuredClone(data.boundaryInventory);
+ data.selectedPublicBoundaryIds=data.catalogue.map(entry=>entry.id);
+ data.boundaryInventory={publicBoundaries:[],gaps:[]};data.publicBoundaryIds=[];
+ const r=load(data);r.run("showEntry('section-ingress')");
+ assert.equal((r.e('scenario-content').innerHTML.match(/Route agrees/g)||[]).length,2);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/No source match in selected evidence/);
+ assert.equal(r.run('D.boundaryInventory.publicBoundaries.length'),0);
+ assert.equal(r.run('publicBoundaryIds.has("post-item")'),true);
+});
+test('an explicitly empty selected inventory never falls back to historical routes',()=>{
+ const {data}=ingressFixture();data.selectedBoundaryInventory={publicBoundaries:[],gaps:[]};data.selectedPublicBoundaryIds=[];
+ const r=load(data);r.run("showEntry('section-ingress')");
+ assert.equal((r.e('scenario-content').innerHTML.match(/No source match in selected evidence/g)||[]).length,2);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/Route agrees/);
+ assert.equal(r.run('publicBoundaryIds.size'),0);
+});
+test('operation links expose retained processes and existing data descriptions without inventing ownership',()=>{
+ const {data}=ingressFixture();
+ data.entryProcesses={'post-item':[{title:'Saved item journey',href:'../scenarios/item.html#process-overview',state:{freshness:'STALE',verification:'UNASSESSED'}}]};
+ data.sections.push({id:'section-entities',title:'Domain entities'});
+ data.operations.push({...data.operations[0],id:'post-item',summary:fragment('Original operation description'),visuals:[]},
+  {...data.operations[0],id:'section-entities',summary:fragment('The item row stores an identifier and a value.'),visuals:[]});
+ const original=JSON.stringify(data.operations),r=load(data);
+ r.run("showEntry('section-ingress')");assert.match(r.e('scenario-content').innerHTML,/Saved process: Saved item journey/);
+ r.click({entry:'post-item'});let html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Saved process: Saved item journey/);assert.match(html,/Service data and domain context/);assert.match(html,/Retained explanation/);
+ r.click({entry:'section-entities'});html=r.e('scenario-content').innerHTML;
+ assert.match(html,/The item row stores an identifier and a value/);
+ assert.match(html,/Recorded domain ownership/);assert.match(html,/No domain ownership declarations have been recorded/);
+ assert.doesNotMatch(html,/No domain entity identities have been declared/);
+ assert.equal(r.run('JSON.stringify(D.operations)'),original);
 });

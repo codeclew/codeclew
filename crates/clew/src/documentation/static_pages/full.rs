@@ -90,6 +90,20 @@ pub(super) fn render(
             .and_then(|id| checked.services.get(id))
         {
             payload["catalogue"] = json!(service.entrypoints);
+            // The frozen inventory can predate route discovery. Keep it as
+            // retained evidence, and project the selected inventory separately.
+            let inventory = crate::documentation::sections::inventory(&service.service, checked);
+            payload["selectedPublicBoundaryIds"] = json!(
+                inventory["publicBoundaries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| &entry["id"])
+                    .collect::<Vec<_>>()
+            );
+            payload["selectedBoundaryInventory"] = inventory;
+            payload["entryProcesses"] =
+                retained_entry_processes(&files, &service.service, &service.entrypoints)?;
             payload["contracts"] = json!(
                 service
                     .observations
@@ -223,6 +237,43 @@ pub(super) fn render(
     Ok(result)
 }
 
+fn retained_entry_processes(
+    files: &BTreeMap<String, Vec<u8>>,
+    service: &str,
+    entries: &[crate::documentation::model::Entrypoint],
+) -> Result<Value, ClewError> {
+    let mut links: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for (path, bytes) in files
+        .iter()
+        .filter(|(path, _)| path.starts_with("scenarios/") && path.ends_with(".json"))
+    {
+        let page: Value = serde_json::from_slice(bytes).map_err(io_error)?;
+        let thread = &page["processThread"];
+        if thread["status"] != "SOURCE_BOUND_DECLARATION" {
+            continue;
+        }
+        let Some(root_id) = thread["rootMethod"].as_str() else {
+            continue;
+        };
+        let root = &thread["methods"][root_id];
+        let Some(entry) = entries.iter().find(|entry| {
+            root["source"]["service"] == service
+                && root["entrypoint"] == entry.id
+                && root["symbol"] == entry.symbol
+        }) else {
+            continue;
+        };
+        links.entry(entry.id.clone()).or_default().push(json!({
+            "id":page["process"]["definition"]["id"], "title":page["title"],
+            "href":format!("../{}.html#process-overview", path.strip_suffix(".json").unwrap()),
+            "binding":"EXACT_RETAINED_ROOT_DECLARATION",
+            "sourceRevision":root["source"]["revision"],
+            "state":page["operationStates"]["process-overview"]
+        }));
+    }
+    Ok(json!(links))
+}
+
 fn merge_sources(payload: &mut Value, selected: Value) -> Result<(), ClewError> {
     let retained = payload["sources"]
         .as_object_mut()
@@ -255,6 +306,53 @@ fn validate_output(output: &Path) -> Result<(), ClewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_links_require_the_exact_retained_root_declaration() {
+        let entry = crate::documentation::model::Entrypoint {
+            id: "svc-save".into(),
+            service: "svc".into(),
+            symbol: "exact:save".into(),
+            kind: "HTTP_ENDPOINT".into(),
+            trigger: json!({}),
+            source_ids: vec![],
+            dependency_ids: vec![],
+            boundaries: vec![],
+        };
+        let page = json!({"title":"Saved flow", "process":{"definition":{"id":"save"}},
+            "processThread":{"status":"SOURCE_BOUND_DECLARATION", "rootMethod":"root",
+                "methods":{"root":{"entrypoint":"svc-save", "symbol":"exact:save",
+                    "source":{"service":"svc", "revision":"old-revision"}}}},
+            "operationStates":{"process-overview":{"freshness":"STALE", "verification":"UNASSESSED"}}});
+        let mut files = BTreeMap::new();
+        files.insert(
+            "scenarios/save.json".into(),
+            serde_json::to_vec(&page).unwrap(),
+        );
+        for (name, field, value) in [
+            ("same-name-other-service", "service", "other"),
+            ("same-id-other-symbol", "symbol", "other:save"),
+            ("same-symbol-other-entry", "entrypoint", "other-entry"),
+        ] {
+            let mut other = page.clone();
+            if field == "service" {
+                other["processThread"]["methods"]["root"]["source"][field] = json!(value);
+            } else {
+                other["processThread"]["methods"]["root"][field] = json!(value);
+            }
+            files.insert(
+                format!("scenarios/{name}.json"),
+                serde_json::to_vec(&other).unwrap(),
+            );
+        }
+        let links = retained_entry_processes(&files, "svc", &[entry]).unwrap();
+        let rows = links["svc-save"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["href"], "../scenarios/save.html#process-overview");
+        assert_eq!(rows[0]["sourceRevision"], "old-revision");
+        assert_eq!(rows[0]["state"]["freshness"], "STALE");
+        assert_eq!(rows[0]["binding"], "EXACT_RETAINED_ROOT_DECLARATION");
+    }
 
     #[test]
     fn retained_citations_keep_original_revision_and_cross_service_records() {
