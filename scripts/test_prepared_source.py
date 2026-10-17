@@ -316,6 +316,35 @@ class PreparedSourceTest(unittest.TestCase):
         with self.assertRaisesRegex(helper.ViewError, 'EXCEEDS_OUTPUT_BUDGET'):
             helper.maintenance(original, Path('/packet.json'), 'digest', max_bytes=1024)
 
+    def test_changed_values_preserve_json_types_and_missing_fields(self):
+        changes = helper.value_changes({'enabled': True, 'removed': None},
+                                       {'enabled': 1, 'added': None})
+        self.assertEqual(changes, [
+            {'pointer': '/added', 'beforePresent': False, 'afterPresent': True, 'after': None},
+            {'pointer': '/enabled', 'beforePresent': True, 'afterPresent': True,
+             'before': True, 'after': 1},
+            {'pointer': '/removed', 'beforePresent': True, 'afterPresent': False, 'before': None}])
+
+    def test_default_maintenance_keeps_changed_body_and_multiple_citation_updates(self):
+        original = packet('return "changed λ"\n' * 220)
+        original['comparison'] = {'status': 'CHANGED', 'selectedSourceBytes': 'CHANGED'}
+        original['items'].append({'kind': 'EVIDENCE_CHANGE', 'id': 'change', 'record': {
+            'reason': 'SELECTED_SOURCE_BYTES_CHANGED', 'source': 'body-1'}})
+        for index in range(14):
+            before = {'id': f'native-{index}', 'service': 'worker', 'revision': 'a' * 40,
+                      'file': f'src/Receiver{index}.cs', 'startLine': 1, 'endLine': 100,
+                      'authority': 'REGISTERED_NATIVE_BYTES_ONLY_NO_SEMANTIC_ANALYSIS',
+                      'membershipCoverage': 'EXPLICIT_REGISTERED_FILES_ONLY',
+                      'url': f'https://example.invalid/repository/blob/{"a" * 40}/src/Receiver{index}.cs#L1-L100'}
+            original['items'].append({'kind': 'SOURCE_BINDING_UPDATE', 'id': f'binding-{index}',
+                'record': {'source': before['id'], 'before': before,
+                           'after': {**before, 'revision': 'b' * 40}}})
+        view = json.loads(helper.maintenance(original, Path('/packet.json'), 'digest'))
+        self.assertIsNone(view['continuation'])
+        self.assertEqual(len(view['citationUpdates']), 14)
+        self.assertEqual(view['sources'][0]['text'], original['items'][1]['record']['text'])
+        self.assertTrue(view['sources'][0]['textDelivery']['complete'])
+
     def test_zero_sources_is_a_supported_metadata_only_cli_view(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'packet.json'

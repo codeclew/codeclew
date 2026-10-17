@@ -11,6 +11,8 @@ import subprocess
 import sys
 
 MAX_PACKET_BYTES = 32 * 1024 * 1024
+SOURCE_VIEW_BYTES = 12000
+MAINTENANCE_VIEW_BYTES = 20480
 
 
 class ViewError(Exception):
@@ -163,13 +165,13 @@ def value_changes(before, after, pointer=''):
     if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
         return [change for index, pair in enumerate(zip(before, after))
                 for change in value_changes(*pair, pointer + '/' + str(index))]
-    if before == after:
+    if type(before) is type(after) and before == after:
         return []
     return [{'pointer': pointer, 'beforePresent': True, 'afterPresent': True,
              'before': before, 'after': after}]
 
 
-def maintenance(packet, path, packet_digest, max_bytes=12000, text_chars=6000,
+def maintenance(packet, path, packet_digest, max_bytes=MAINTENANCE_VIEW_BYTES, text_chars=6000,
                 max_sources=3, record_offset=0):
     comparison = packet.get('comparison')
     if not isinstance(comparison, dict) or comparison.get('status') not in ('UNCHANGED', 'CHANGED', 'UNKNOWN'):
@@ -384,7 +386,7 @@ def main():
         if mode != 'read':
             sub.add_argument('--output', required=True, type=Path)
         sub.add_argument('--source', action='append', default=[], required=mode == 'drill', help='Exact returned SOURCE ID; repeat only as needed')
-        sub.add_argument('--max-bytes', type=int, help='Strict UTF-8 bytes, 1024..65536; default 16384 maintenance / 12000 SOURCE')
+        sub.add_argument('--max-bytes', type=int, help='Strict UTF-8 bytes, 1024..65536; default 20480 maintenance / 12000 SOURCE')
         sub.add_argument('--text-chars', type=int, default=6000, help='At most this many characters per selected source')
         sub.add_argument('--text-offset', type=int, default=0, help='Continue one exact source locally without fetching')
         sub.add_argument('--max-sources', type=int, default=3, help='0 is metadata-only; no SOURCE bodies')
@@ -424,7 +426,7 @@ def main():
             drill(args, path)
         packet, digest = load_packet(path)
         if args.max_bytes is None:
-            args.max_bytes = 16384 if 'comparison' in packet and not args.source and not getattr(args, 'record', None) else 12000
+            args.max_bytes = MAINTENANCE_VIEW_BYTES if 'comparison' in packet and not args.source and not getattr(args, 'record', None) else SOURCE_VIEW_BYTES
         if args.mode == 'fetch' and (not isinstance(packet.get('evidenceSet'), dict) or packet['evidenceSet'].get('schema') != 'codeclew-prepared-source-evidence/1.0'):
             raise ViewError('ENGINE_RETAIN_RESULT_MISSING; no admitted evidence view delivered')
         if args.mode == 'compare' and (not isinstance(packet.get('comparison'), dict) or packet['comparison'].get('status') not in ('UNCHANGED', 'CHANGED', 'UNKNOWN')):
