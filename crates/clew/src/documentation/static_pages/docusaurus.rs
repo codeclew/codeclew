@@ -1367,7 +1367,7 @@ mod tests {
         let mut objects = Objects::default();
         objects.count(&input).unwrap();
         let value = objects.normalize(&input).unwrap();
-        assert!(objects.values.len() >= 1);
+        assert!(!objects.values.is_empty());
         assert_eq!(objects.expand(&value, 0).unwrap(), input);
         let id = objects.values.keys().next().unwrap().clone();
         objects.values.insert(id, json!({"changed":true}));
