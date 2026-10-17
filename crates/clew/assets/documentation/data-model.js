@@ -55,7 +55,7 @@
   return Array.from(new Set(uses.flatMap(u=>u.assessment==='observed-static-use'?u.kinds.map(k=>labels[k]||k):[states[u.assessment]||u.assessment]))).join(' · ');
  }
  function rowGroup(row){return row.leaf?'Unmapped contract fields · '+row.contract.title:row.model?.title||'Fields';}
- function grouped(rows){const groups=new Map();for(const row of rows){const key=rowGroup(row);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);}return Array.from(groups.entries());}
+ function grouped(rows){const groups=new Map();for(const row of rows){const key=row.leaf?'contract:'+row.contract.id:'model:'+(row.model?.id||'fields');if(!groups.has(key))groups.set(key,{key,title:rowGroup(row),rows:[]});groups.get(key).rows.push(row);}const values=Array.from(groups.values());return values.map(group=>[group.title+(values.filter(other=>other.title===group.title).length>1?' ('+group.key+')':''),group.rows]);}
  const operations={'validate':'Checks field','identify-or-route':'Uses field as identity / selector','calculate-or-decide':'Uses field in a decision / derivation','display':'Displays field','persist':'Stores field','forward':'Passes field','whole-object-serialization-or-comparison':'Object handling'};
  function readableUse(row,uses){
   if(row.leaf)return 'Unknown — no canonical field mapping';
@@ -70,8 +70,8 @@
   const fieldButton=r=>`<button type="button" data-dm-cell data-field="${esc(r.key)}" data-stage="" aria-controls="dm-focused" aria-expanded="false" aria-label="${esc('View field details: '+r.label)}">${esc(r.label)}</button>`;
   const cell=(r,stage,label)=>`<td data-stage-label="${esc(label)}">${evidenceButton(r,stage,contract)}${representationHtml(r,cellUses(r,stage,contract))}</td>`;
   const head=transposed?`<th scope="col">Consumer stage</th>${rows.map(r=>`<th scope="col">${fieldButton(r)}</th>`).join('')}`:`<th scope="col">Field</th>${stages.map(stage=>`<th scope="col">${esc(stage)}</th>`).join('')}`;
-  const body=transposed?stages.map(stage=>`<tr><th scope="row">${esc(stage)}</th>${rows.map(r=>cell(r,stage,r.label)).join('')}</tr>`).join(''):grouped(rows).map(([group,items])=>`<tr class="dm-group"><th scope="rowgroup" colspan="${stages.length+1}">${esc(group)}${items[0].leaf?'<span>These paths have no canonical field mapping. Matching names do not establish the same identity.</span>':''}</th></tr>`+items.map(r=>`<tr><th scope="row">${fieldButton(r)}</th>${stages.map(stage=>cell(r,stage,stage)).join('')}</tr>`).join('')).join('');
-  return `<div class="dm-matrix-scroll" tabindex="0" aria-label="Field usage by consumer"><table><caption>${transposed?'One stage per row':'One field per row'} · View evidence opens the recorded statement and source</caption><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  const body=transposed?'<tbody>'+stages.map(stage=>`<tr><th scope="row">${esc(stage)}</th>${rows.map(r=>cell(r,stage,r.label)).join('')}</tr>`).join('')+'</tbody>':grouped(rows).map(([group,items])=>`<tbody><tr class="dm-group"><th scope="rowgroup" colspan="${stages.length+1}">${esc(group)}${items[0].leaf?'<span>These paths have no canonical field mapping. Matching names do not establish the same identity.</span>':''}</th></tr>`+items.map(r=>`<tr><th scope="row">${fieldButton(r)}</th>${stages.map(stage=>cell(r,stage,stage)).join('')}</tr>`).join('')+'</tbody>').join('');
+  return `<div class="dm-matrix-scroll" tabindex="0" aria-label="Field usage by consumer"><table><caption>${transposed?'One stage per row':'One field per row'} · View evidence opens the recorded statement and source</caption><thead><tr>${head}</tr></thead>${body}</table></div>`;
  }
  function compactHtml(rows,stages,contract){
   const fieldRow=r=>{const known=stages.filter(stage=>!r.leaf&&r.field.selectedProcessField!==false&&cellUses(r,stage,contract).length),unknown=stages.filter(stage=>!known.includes(stage));

@@ -126,3 +126,16 @@ test('editorial reading notes expose purpose and stale interpretation qualificat
  const before=JSON.stringify(data),html=a.overviewHtml(data,a.overviewRows(data),data.request.stages),visible=html.split('<details class="dm-scope-details">')[0];
  assert.match(visible,/Compare the requested values with what is stored/);assert.match(visible,/A source-bound editorial statement/);assert.match(visible,/Retained evidence is not current/);assert.equal(JSON.stringify(data),before);
 });
+
+test('model and unmapped-contract groups have distinct native table row groups',()=>{
+ const a=api(),rows=a.overviewRows(scaling),html=a.matrixHtml(rows,scaling.request.stages,'fixture');
+ assert.equal((html.match(/<tbody>/g)||[]).length,2);
+ assert.equal((html.match(/scope="rowgroup"/g)||[]).length,2);
+ assert.equal((html.match(/<td /g)||[]).length,63);
+});
+
+test('equal display titles do not merge distinct canonical model groups',()=>{
+ const rows=['one','two'].map(id=>({key:id+'/value',label:'Record.value',model:{id,title:'Record'},field:{usage:[]}}));
+ const html=api().matrixHtml(rows,['Read'],'');
+ assert.equal((html.match(/<tbody>/g)||[]).length,2);assert.match(html,/Record \(model:one\)/);assert.match(html,/Record \(model:two\)/);
+});
