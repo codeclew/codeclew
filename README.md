@@ -46,5 +46,7 @@ The agent uses its configured model/provider. Codeclew does not require a paid
 API or hosted model service; optional model-assisted authoring is separate.
 For execution details, use the [agent workflow](skills/codeclew/SKILL.md) and
 [native source documentation guide](docs/guides/native-retained-source.md).
+For a full saved publication, the [Docusaurus export](docs/operations/docusaurus-export.md)
+provides linked Markdown/MDX pages, source evidence and optional field readers.
 The [Weather reader](https://codeclew.github.io/clew-weather-demo/index.html) has
 its own retained evidence and limits; it is separate from the fictional example.

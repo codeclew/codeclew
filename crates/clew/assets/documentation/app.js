@@ -762,10 +762,9 @@ function sequenceEvents(o){
   const arms=node.arms.map((arm,index)=>({...arm,index,events:project(arm.nodes)})).filter(arm=>arm.events.length);
   if(!arms.length)return [];
   const first=arms[0];
-  // A surviving alternative stays conditional on the original guards. Keep
-  // their complete text rather than making an else action unconditional or
-  // inventing a logical negation of authored prose.
-  const marker=first.index===0?first.marker:{...first.marker,kind:'alt',text:[t('Otherwise'),...node.arms.slice(0,first.index).map(arm=>arm.marker.text),first.marker.text.toLowerCase()==='otherwise'?'':first.marker.text].filter(Boolean).join(' · '),sourceIds:[...new Set(node.arms.slice(0,first.index+1).flatMap(arm=>arm.marker.sourceIds||[]))],dependencyIds:[...new Set(node.arms.slice(0,first.index+1).flatMap(arm=>arm.marker.dependencyIds||[]))]};
+  // A surviving alternative stays conditional on earlier branches not being
+  // taken. Keep their authored guards and make that negative condition explicit.
+  const marker=first.index===0?first.marker:{...first.marker,kind:'alt',text:[`${t(first.index===1?'Condition not met':'Earlier branches not taken')}: ${node.arms.slice(0,first.index).map(arm=>arm.marker.text).join('; ')}`,first.marker.text.toLowerCase()==='otherwise'?'':`${t('Selected branch')}: ${first.marker.text}`].filter(Boolean).join(' · '),sourceIds:[...new Set(node.arms.slice(0,first.index+1).flatMap(arm=>arm.marker.sourceIds||[]))],dependencyIds:[...new Set(node.arms.slice(0,first.index+1).flatMap(arm=>arm.marker.dependencyIds||[]))]};
   return [marker,...first.events,...arms.slice(1).flatMap(arm=>[arm.marker,...arm.events]),...(node.end?[node.end]:[])];
  });
  return project(root);

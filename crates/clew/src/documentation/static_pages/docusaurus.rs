@@ -536,12 +536,21 @@ fn sequence_events(op: &Value) -> Result<Vec<Value>, ClewError> {
                             continue;
                         }
                         if first && index > 0 {
-                            let mut guards = vec!["Otherwise".to_owned()];
-                            guards.extend(
-                                markers[..index].iter().map(|m| text(&m["text"]).to_owned()),
-                            );
+                            let mut guards = vec![format!(
+                                "{}: {}",
+                                if index == 1 {
+                                    "Condition not met"
+                                } else {
+                                    "Earlier branches not taken"
+                                },
+                                markers[..index]
+                                    .iter()
+                                    .map(|m| text(&m["text"]))
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            )];
                             if !text(&marker["text"]).eq_ignore_ascii_case("otherwise") {
-                                guards.push(text(&marker["text"]).to_owned());
+                                guards.push(format!("Selected branch: {}", text(&marker["text"])));
                             }
                             marker["kind"] = json!("alt");
                             marker["text"] = json!(guards.join(" · "));
@@ -1467,12 +1476,12 @@ mod tests {
         ]});
         let projected = sequence_events(&op).unwrap();
         assert_eq!(projected.len(), 4);
-        assert_eq!(projected[0]["text"], "Otherwise · Duplicate event");
+        assert_eq!(projected[0]["text"], "Condition not met: Duplicate event");
         assert_eq!(projected[0]["sourceIds"], json!(["duplicate", "new-event"]));
         let diagram = sequence(&op).unwrap().unwrap();
         assert!(!diagram.contains("Unused caller"));
         assert!(!diagram.contains("Changed row"));
-        assert!(diagram.contains("alt Otherwise · Duplicate event\np0->>p1: Insert or update the card\nend\np0-->>p1: [declared] Declared transfer only"));
+        assert!(diagram.contains("alt Condition not met: Duplicate event\np0->>p1: Insert or update the card\nend\np0-->>p1: [declared] Declared transfer only"));
     }
     #[test]
     fn service_content_and_interface_rows_are_readable_without_opening_the_json_archive() {

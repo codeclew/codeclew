@@ -196,7 +196,7 @@ test('sequence projection prunes empty nested arms and retains surviving else gu
  op.events=[event('guard','alt','A duplicate was already processed'),event('empty-loop','loop','For every duplicate'),event('empty-inner','opt','A stored timestamp is newer'),event('note','note','Keep the current value'),event('inner-end','end',''),event('loop-end','end',''),event('surviving-else','else','For a new event'),event('write','message','Apply the forecast'),event('outer-end','end','')];
  const before=JSON.stringify(data),r=load(data),projected=JSON.parse(r.run('JSON.stringify(sequenceEvents(D.operations[0]))'));
  assert.deepEqual(projected.map(e=>e.id),['surviving-else','write','outer-end']);
- assert.equal(projected[0].kind,'alt');assert.match(projected[0].text,/Otherwise/);assert.ok(projected[0].text.includes('A duplicate was already processed'));assert.ok(projected[0].text.includes('For a new event'));
+ assert.equal(projected[0].kind,'alt');assert.equal(projected[0].text,'Condition not met: A duplicate was already processed · Selected branch: For a new event');
  assert.deepEqual(projected[1],op.events.find(e=>e.id==='write'));
  const svg=r.run('diagram(D.operations[0])');assert.doesNotMatch(svg,/data-event="(?:guard|empty-loop|empty-inner|note)"/);assert.match(svg,/data-event="surviving-else"/);
  const behavior=r.run('behaviorPseudocode(D.operations[0])');for(const text of ['A duplicate was already processed','A stored timestamp is newer','Keep the current value','For a new event','Apply the forecast'])assert.ok(behavior.includes(text));
