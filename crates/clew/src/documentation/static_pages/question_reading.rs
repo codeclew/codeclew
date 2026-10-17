@@ -247,6 +247,21 @@ fn project_block(
         json!({"id":block.id,"navTitle":block.nav_title,"tone":block.tone,"disclosure":block.disclosure,"preview":block.preview,"title":block.title,"text":block.text,"evidence":evidence,"links":links,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE"}),
     )
 }
+/// Share exact retained/selected evidence admission with optional editorial models.
+pub(super) fn bind_block(
+    value: Value,
+    files: &BTreeMap<String, Vec<u8>>,
+    checked: &Check,
+    bytes: &mut usize,
+) -> Result<Value, ClewError> {
+    project_block(
+        serde_json::from_value(value).map_err(io_error)?,
+        files,
+        checked,
+        bytes,
+    )
+}
+
 pub(super) fn load(
     path: Option<&Path>,
     publication: &str,

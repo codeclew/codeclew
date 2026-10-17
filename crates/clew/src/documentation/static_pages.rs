@@ -1,6 +1,7 @@
 //! Offline native-source pages over explicit immutable documentation snapshots.
 mod authored;
 mod contract_comparison;
+mod data_model;
 mod data_state;
 mod full;
 mod linked;
@@ -34,6 +35,7 @@ fn full_pages_saved_publication_replay() {
         publication: Some(std::env::var("CODECLEW_FULL_PAGES_PUBLICATION").unwrap()),
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: path("CODECLEW_FULL_PAGES_OUTPUT"),
     })
     .unwrap();
@@ -54,6 +56,7 @@ fn source_pages_saved_snapshot_replay() {
         publication: None,
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: path("CODECLEW_PAGES_REPLAY_OUTPUT"),
     })
     .expect("saved SOURCE pages replay must render");
@@ -156,6 +159,9 @@ pub enum Command {
         /// Retained external HTTP comparison bound to this exact snapshot.
         #[arg(long, requires = "publication")]
         contract_comparison: Option<PathBuf>,
+        /// Optional evidence-bound domain model and explicit process Data Flow requests.
+        #[arg(long, requires = "publication")]
+        data_model: Option<PathBuf>,
         /// New or empty directory; generated files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -171,6 +177,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             publication,
             reading_plan,
             contract_comparison,
+            data_model,
             output,
         } => {
             let repo = Repository::open(&root)?;
@@ -181,8 +188,11 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                     &checked,
                     &snapshot,
                     &publication,
-                    reading_plan.as_deref(),
-                    contract_comparison.as_deref(),
+                    full::ReadingInputs {
+                        reading_plan: reading_plan.as_deref(),
+                        contract_comparison: contract_comparison.as_deref(),
+                        data_model: data_model.as_deref(),
+                    },
                     &output,
                 );
             }

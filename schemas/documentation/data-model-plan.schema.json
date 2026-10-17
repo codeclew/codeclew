@@ -1,0 +1,647 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/data-model-plan.schema.json",
+  "title": "Evidence-bound authored domain model and optional process field flow",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-data-model-plan/1.0"
+    },
+    "publication": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "snapshot": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/model"
+      },
+      "maxItems": 32,
+      "minItems": 1
+    },
+    "contracts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contract"
+      },
+      "maxItems": 32
+    },
+    "processViews": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/processView"
+      },
+      "maxItems": 32
+    }
+  },
+  "required": [
+    "schema",
+    "publication",
+    "snapshot",
+    "models"
+  ],
+  "$defs": {
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "SOURCE"
+                  },
+                  "service": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "sourceId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "textDigest": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "startLine": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "endLine": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "service",
+                  "sourceId",
+                  "textDigest",
+                  "startLine",
+                  "endLine"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "RETAINED"
+                  },
+                  "subject": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "operation": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "fragmentId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "textDigest": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "kind",
+                  "subject",
+                  "operation",
+                  "fragmentId",
+                  "textDigest"
+                ]
+              }
+            ]
+          },
+          "maxItems": 8,
+          "minItems": 1
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "operation": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "subject",
+              "operation",
+              "label"
+            ]
+          },
+          "maxItems": 8
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "navTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tone": {
+          "enum": [
+            "NORMAL",
+            "ERROR",
+            "WARNING",
+            "INFO"
+          ]
+        },
+        "disclosure": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "preview": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "title",
+        "text",
+        "evidence"
+      ]
+    },
+    "representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "typeLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "requiredness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "nullability": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "mapping": {
+          "$ref": "#/$defs/block"
+        },
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "relatedModel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "label",
+        "typeLabel",
+        "requiredness",
+        "nullability",
+        "mapping"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "consumer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "representation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "validate",
+              "identify-or-route",
+              "calculate-or-decide",
+              "display",
+              "persist",
+              "forward",
+              "whole-object-serialization-or-comparison"
+            ]
+          },
+          "maxItems": 7
+        },
+        "assessment": {
+          "enum": [
+            "observed-static-use",
+            "no-use-found-in-bounded-complete-scope",
+            "not-investigated",
+            "unresolved-dynamic-use",
+            "stale-evidence"
+          ]
+        },
+        "coveredScope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "unresolved": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "claim": {
+          "$ref": "#/$defs/block"
+        },
+        "processes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "stage",
+        "producer",
+        "consumer",
+        "contract",
+        "representation",
+        "condition",
+        "kinds",
+        "assessment",
+        "coveredScope",
+        "unresolved",
+        "claim"
+      ]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "meaning": {
+          "$ref": "#/$defs/block"
+        },
+        "representations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/representation"
+          },
+          "maxItems": 16,
+          "minItems": 1
+        },
+        "usage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/usage"
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "meaning",
+        "representations"
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "kind": {
+          "enum": [
+            "ENTITY",
+            "VALUE_OBJECT",
+            "READ_MODEL"
+          ]
+        },
+        "purpose": {
+          "$ref": "#/$defs/block"
+        },
+        "identity": {
+          "$ref": "#/$defs/block"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          },
+          "maxItems": 128,
+          "minItems": 1
+        },
+        "processLinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "anchor": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "subject",
+              "anchor",
+              "label"
+            ]
+          },
+          "maxItems": 32
+        },
+        "relatedModels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "purpose",
+        "identity",
+        "fields"
+      ]
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "service": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "textDigest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "branchPointer": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 1024
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "service",
+        "sourceId",
+        "textDigest",
+        "branchPointer"
+      ]
+    },
+    "processView": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "anchor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "field": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              }
+            },
+            "required": [
+              "model",
+              "field"
+            ]
+          },
+          "maxItems": 64
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "maxItems": 32
+        },
+        "relatedModels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          },
+          "maxItems": 32
+        },
+        "transfers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to",
+              "kind",
+              "authority",
+              "condition",
+              "claim"
+            ],
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "read",
+                  "transform",
+                  "write",
+                  "transfer",
+                  "candidate"
+                ]
+              },
+              "authority": {
+                "enum": [
+                  "SOURCE_INTERPRETATION",
+                  "DECLARED_TRANSFER",
+                  "UNKNOWN"
+                ]
+              },
+              "condition": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "claim": {
+                "$ref": "#/$defs/block"
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "subject",
+        "enabled",
+        "anchor",
+        "title",
+        "fields",
+        "stages"
+      ]
+    }
+  }
+}

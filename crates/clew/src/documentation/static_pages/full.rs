@@ -10,6 +10,12 @@ use std::{collections::BTreeMap, fs, io::Write, path::Path};
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
+pub(super) struct ReadingInputs<'a> {
+    pub reading_plan: Option<&'a Path>,
+    pub contract_comparison: Option<&'a Path>,
+    pub data_model: Option<&'a Path>,
+}
+
 /// Prose, threads, assessments and their retained evidence stay on the existing
 /// publication contract. Selected facts are a separate reader evidence view.
 pub(super) fn render(
@@ -17,8 +23,7 @@ pub(super) fn render(
     checked: &Check,
     snapshot: &str,
     publication: &str,
-    reading_plan: Option<&Path>,
-    contract_comparison: Option<&Path>,
+    inputs: ReadingInputs<'_>,
     output: &Path,
 ) -> Result<Value, ClewError> {
     validate_output(output)?;
@@ -54,9 +59,22 @@ pub(super) fn render(
         remaining -= bytes.len() as u64;
         files.insert(name.clone(), bytes);
     }
-    let questions = super::question_reading::load(reading_plan, publication, &files, checked)?;
-    let comparisons =
-        super::contract_comparison::load(contract_comparison, publication, snapshot, checked)?;
+    let questions =
+        super::question_reading::load(inputs.reading_plan, publication, &files, checked)?;
+    let model = super::data_model::load(
+        inputs.data_model,
+        publication,
+        snapshot,
+        &files,
+        checked,
+        &questions,
+    )?;
+    let comparisons = super::contract_comparison::load(
+        inputs.contract_comparison,
+        publication,
+        snapshot,
+        checked,
+    )?;
     let process_theme = questions
         .values()
         .any(|guide| guide["presentation"] == "SEQUENTIAL");
@@ -121,6 +139,7 @@ pub(super) fn render(
             // Keep operationSources/operationContracts/operationStates and all
             // narrative/thread data byte-equivalent as parsed frozen records.
         }
+        super::data_model::attach_process(model.as_ref(), &subject, &mut payload)?;
         let html_name = name.strip_suffix(".json").unwrap().to_owned() + ".html";
         let html = render::html(&payload)?;
         let prefix = "../";
@@ -168,6 +187,9 @@ pub(super) fn render(
             serde_json::to_vec_pretty(guide).map_err(io_error)?,
         );
     }
+    if let Some(model) = &model {
+        super::data_model::write(model, &mut files)?;
+    }
     files.insert(
         "index.html".into(),
         files
@@ -212,7 +234,7 @@ pub(super) fn render(
     }
     let result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
-        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),
+        "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
     files.insert(
         "pages-manifest.json".into(),

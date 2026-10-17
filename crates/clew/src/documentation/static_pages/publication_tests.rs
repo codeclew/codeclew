@@ -371,6 +371,7 @@ fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output
         publication: Some("a".repeat(64)),
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: output.clone(),
     })
     .unwrap_err();
@@ -399,6 +400,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
         publication: Some(publication.clone()),
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: output.clone(),
     })
     .unwrap();
@@ -425,6 +427,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
             publication: Some(publication.clone()),
             reading_plan: None,
             contract_comparison: None,
+            data_model: None,
             output: output.clone()
         })
         .is_err()
@@ -446,6 +449,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
             publication: Some(publication),
             reading_plan: None,
             contract_comparison: None,
+            data_model: None,
             output: refused.clone()
         })
         .is_err()
@@ -479,6 +483,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             publication: None,
             reading_plan: None,
             contract_comparison: None,
+            data_model: None,
             output: output.clone(),
         })
         .unwrap();
@@ -505,6 +510,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
                 publication: None,
                 reading_plan: None,
                 contract_comparison: None,
+                data_model: None,
                 output: output.clone(),
             })
             .is_err()
@@ -519,6 +525,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         publication: None,
         reading_plan: None,
         contract_comparison: None,
+        data_model: None,
         output: output.clone(),
     })
     .unwrap();
@@ -540,6 +547,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             publication: None,
             reading_plan: None,
             contract_comparison: None,
+            data_model: None,
             output: rejected.clone()
         })
         .is_err()
