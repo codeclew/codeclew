@@ -231,7 +231,7 @@ def main():
             raise ViewError('ENGINE_RETAIN_RESULT_MISSING; no admitted evidence view delivered')
         if args.mode == 'compare' and (not isinstance(packet.get('comparison'), dict) or packet['comparison'].get('status') not in ('UNCHANGED', 'CHANGED', 'UNKNOWN')):
             raise ViewError('ENGINE_COMPARE_RESULT_MISSING; no comparison view delivered')
-        if args.mode == 'drill' and packet.get('evidenceValidation', {}).get('mode') != 'PINNED_SOURCE_SNAPSHOT_CLOSURE':
+        if args.mode == 'drill' and (not isinstance(packet.get('evidenceValidation'), dict) or packet['evidenceValidation'].get('mode') != 'PINNED_SOURCE_SNAPSHOT_CLOSURE'):
             raise ViewError('PINNED_SOURCE_ADMISSION_MISSING; no historical source view delivered')
         sys.stdout.write(project(packet, path, digest, args.source, args.max_bytes,
                                  args.text_chars, args.text_offset, args.max_sources, args.max_handles))

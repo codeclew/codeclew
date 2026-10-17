@@ -243,11 +243,15 @@ class PreparedSourceTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
             original.pop('evidenceValidation')
             fixture.write_text(json.dumps(original))
-            command[-1] = str(root / 'unadmitted.json')
-            rejected = subprocess.run(command, capture_output=True)
-            self.assertEqual(rejected.returncode, 2)
-            self.assertIn('PINNED_SOURCE_ADMISSION_MISSING', json.loads(rejected.stdout)['reason'])
-            self.assertFalse(json.loads(rejected.stdout)['evidenceDelivered'])
+            for index, validation in enumerate([None, [], {}, 'not-admitted']):
+                original['evidenceValidation'] = validation
+                fixture.write_text(json.dumps(original))
+                command[-1] = str(root / f'unadmitted-{index}.json')
+                rejected = subprocess.run(command, capture_output=True)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn('PINNED_SOURCE_ADMISSION_MISSING', json.loads(rejected.stdout)['reason'])
+                self.assertFalse(json.loads(rejected.stdout)['evidenceDelivered'])
+                self.assertEqual(rejected.stderr, b'')
 
     def test_malformed_or_overbudget_packet_never_prints_source(self):
         with tempfile.TemporaryDirectory() as temporary:
