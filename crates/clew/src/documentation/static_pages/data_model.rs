@@ -756,7 +756,7 @@ pub(super) fn attach_process(
     payload["processDataFlow"] = json!({"relatedModels":related_models,"request":view,"models":models,"contracts":contracts,"authority":model["authority"],"review":model["review"],"scope":"Only explicitly requested fields and consumer stages; static interpretation, not observed runtime transfer."});
     Ok(())
 }
-fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'a Value> {
+pub(super) fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'a Value> {
     let used = model["fields"]
         .as_array()
         .into_iter()

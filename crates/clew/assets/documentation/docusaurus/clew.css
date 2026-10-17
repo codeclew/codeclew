@@ -1,0 +1,15 @@
+@import './data-model.css';
+.clew-process [hidden]{display:none!important}
+.clew-process h2,.clew-process h3{scroll-margin-top:6rem}
+.clew-tabs{display:flex;gap:8px;position:sticky;top:var(--ifm-navbar-height);background:var(--ifm-background-color);z-index:2;padding:12px 0;border-bottom:1px solid var(--ifm-color-emphasis-300);margin-bottom:24px}
+.clew-tabs button{font:inherit;color:var(--ifm-font-color-base);border:1px solid var(--ifm-color-emphasis-400);border-radius:6px;padding:8px 16px;background:var(--ifm-background-color);cursor:pointer}
+.clew-tabs button[aria-selected=true]{background:var(--ifm-color-primary);color:#fff;border-color:var(--ifm-color-primary)}
+.clew-tabs button:focus-visible,.clew-widget button:focus-visible{outline:2px solid var(--ifm-color-primary);outline-offset:3px}
+.clew-exception{border-left:3px solid #b54645;background:#fff5f3;padding:12px 18px;margin:12px 0 24px}
+.clew-exception h3{margin-top:0}
+.clew-info{border-left:3px solid var(--ifm-color-primary);padding:10px 18px;margin:12px 0 24px;background:var(--ifm-color-emphasis-100)}
+.clew-widget{min-width:0;margin:16px 0}
+.clew-widget .dm-scope,.clew-widget .dm-counts{color:var(--ifm-font-color-base)}
+.clew-widget pre,.clew-widget code{white-space:pre-wrap;overflow-wrap:anywhere}
+.clew-evidence{font-size:.9rem}
+@media(max-width:600px){.clew-tabs{top:var(--ifm-navbar-height)}.clew-tabs button{padding:8px 12px}.clew-exception{padding:10px 12px}}

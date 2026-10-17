@@ -14,6 +14,7 @@ pub(super) struct ReadingInputs<'a> {
     pub reading_plan: Option<&'a Path>,
     pub contract_comparison: Option<&'a Path>,
     pub data_model: Option<&'a Path>,
+    pub format: super::PageFormat,
 }
 
 /// Prose, threads, assessments and their retained evidence stay on the existing
@@ -232,12 +233,21 @@ pub(super) fn render(
             }
         }
     }
-    let result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
+    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});
+    let portable = inputs.format == super::PageFormat::Docusaurus;
+    if portable {
+        (files, result) = super::docusaurus::project(&files, &result, &inputs)?;
+    }
     files.insert(
-        "pages-manifest.json".into(),
+        if portable {
+            "export-manifest.json"
+        } else {
+            "pages-manifest.json"
+        }
+        .into(),
         serde_json::to_vec_pretty(&result).map_err(io_error)?,
     );
     validate_output(output)?;

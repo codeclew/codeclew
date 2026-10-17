@@ -365,6 +365,7 @@ fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output
     edit(&repo, &snapshot, true);
     let output = temporary.path().join("full-excluded");
     let error = run(Command::Render {
+        format: PageFormat::Standalone,
         root: repo.root.clone(),
         snapshot,
         input: None,
@@ -394,6 +395,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     let previous_index = fs::read(repo.path("docs/index.html").unwrap()).unwrap();
     let output = temporary.path().join("full-valid");
     let rendered = run(Command::Render {
+        format: PageFormat::Standalone,
         root: repo.root.clone(),
         snapshot: snapshot.clone(),
         input: None,
@@ -421,6 +423,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     fs::write(&sentinel, "previous output").unwrap();
     assert!(
         run(Command::Render {
+            format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
             input: None,
@@ -443,6 +446,7 @@ fn full_publication_render_preserves_previous_data_and_refuses_damaged_frozen_in
     fs::create_dir(&refused).unwrap();
     assert!(
         run(Command::Render {
+            format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot,
             input: None,
@@ -477,6 +481,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
             fs::create_dir(&output).unwrap();
         }
         let response = run(Command::Render {
+            format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot: snapshot.clone(),
             input: Some(input.clone()),
@@ -504,6 +509,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
         assert_eq!(catalogue["rows"], json!([]));
         assert!(
             run(Command::Render {
+                format: PageFormat::Standalone,
                 root: repo.root.clone(),
                 snapshot: snapshot.clone(),
                 input: Some(input.clone()),
@@ -519,6 +525,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     edit(&repo, &snapshot, false);
     let output = temporary.path().join("restored");
     let restored = run(Command::Render {
+        format: PageFormat::Standalone,
         root: repo.root.clone(),
         snapshot: snapshot.clone(),
         input: Some(input.clone()),
@@ -541,6 +548,7 @@ fn persistent_policy_renders_all_excluded_into_new_or_empty_output_and_restores_
     let rejected = temporary.path().join("invalid-empty-input");
     assert!(
         run(Command::Render {
+            format: PageFormat::Standalone,
             root: repo.root.clone(),
             snapshot,
             input: Some(input),
