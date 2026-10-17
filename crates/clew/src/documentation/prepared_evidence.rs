@@ -427,6 +427,16 @@ fn source_identity(source: &Source) -> Value {
     value.as_object_mut().unwrap().remove("text");
     value
 }
+fn maintenance_binding(checked: &Check, evidence: &Evidence) -> Result<Value, ClewError> {
+    Ok(
+        json!({"snapshot":evidence.snapshot,"service":evidence.service,"symbol":evidence.symbol,
+        "inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
+        "revision":checked.services.get(&evidence.service).map(|s|&s.revision),
+        "analysisConfigurationDigest":digest(&evidence.analysis_config)?,
+        "registeredNativeRevisions":evidence.native.files.values().map(|f|(&f.service,&f.revision)).collect::<BTreeMap<_,_>>() }),
+    )
+}
+#[cfg(test)]
 fn file_excerpt<'a>(checked: &'a Check, service: &str, file: &str) -> Option<&'a Source> {
     checked
         .services
@@ -436,15 +446,21 @@ fn file_excerpt<'a>(checked: &'a Check, service: &str, file: &str) -> Option<&'a
         .max_by_key(|s| s.text.len())
 }
 fn changed_window(before_source: &Source, after_source: &Source) -> Value {
-    let before = before_source.text.as_str();
-    let after = after_source.text.as_str();
+    text_window(
+        &before_source.text,
+        &after_source.text,
+        source_identity(before_source),
+        source_identity(after_source),
+    )
+}
+fn text_window(before: &str, after: &str, before_citation: Value, after_citation: Value) -> Value {
     let prefix = before
         .chars()
         .zip(after.chars())
         .take_while(|(a, b)| a == b)
         .count();
     let offset = prefix.saturating_sub(80);
-    json!({"representation":"CHARACTER_WINDOW_PROJECTION_NOT_EXACT_FULL_SOURCE","offsetCharacters":offset,"beforeCitation":source_identity(before_source),"afterCitation":source_identity(after_source),"before":before.chars().skip(offset).take(320).collect::<String>(),"after":after.chars().skip(offset).take(320).collect::<String>()})
+    json!({"representation":"CHARACTER_WINDOW_PROJECTION_NOT_EXACT_FULL_SOURCE","offsetCharacters":offset,"beforeCitation":before_citation,"afterCitation":after_citation,"before":before.chars().skip(offset).take(320).collect::<String>(),"after":after.chars().skip(offset).take(320).collect::<String>()})
 }
 fn scope_changes(id: &str, baseline: &Check, target: &Check) -> Vec<Value> {
     let (Some(a), Some(b)) = (baseline.dependencies.get(id), target.dependencies.get(id)) else {
@@ -463,7 +479,12 @@ fn scope_changes(id: &str, baseline: &Check, target: &Check) -> Vec<Value> {
     let paths = a.keys().chain(b.keys()).collect::<BTreeSet<_>>();
     paths.into_iter().filter(|p|a.get(*p)!=b.get(*p)).map(|path|{
         let mut change=json!({"reason":"REGISTERED_SOURCE_SCOPE_FILE_CHANGED","dependency":id,"file":path,"before":a.get(path),"after":b.get(path),"meaningImpact":"NOT_INFERRED"});
-        if let (Some(before),Some(after))=(file_excerpt(baseline,&a_service,path),file_excerpt(target,&a_service,path)){change["changedWindow"]=changed_window(before,after);}
+        let pair = baseline.services.values().flat_map(|s|s.sources.values())
+            .filter(|s|s.service==a_service && s.file==*path)
+            .filter_map(|before|target.services.get(&a_service)?.sources.get(&before.id).map(|after|(before,after)))
+            .filter(|(before,after)|before.text!=after.text)
+            .max_by_key(|(before,_)|before.text.len());
+        if let Some((before,after))=pair {change["changedWindow"]=changed_window(before,after);}
         change["sourceReferences"]=json!({"before":baseline.services.get(&a_service).map(|s|s.sources.values().filter(|v|v.file==*path).map(|v|&v.id).take(8).collect::<Vec<_>>()),"after":target.services.get(&a_service).map(|s|s.sources.values().filter(|v|v.file==*path).map(|v|&v.id).take(8).collect::<Vec<_>>())});
         change
     }).collect()
@@ -498,8 +519,66 @@ fn compare_frames(
                     .map(|o| &o.kind)
             );
         }
-        if let Some(id) = change["dependency"].as_str() {
-            changes.extend(scope_changes(id, baseline, target));
+        if let Some(id) = change["dependency"].as_str().map(str::to_owned) {
+            changes.extend(scope_changes(&id, baseline, target));
+            // Return changed normalized fields, not unchanged catalogues.
+            // Inventory changes already have separate file-level records.
+            let before = baseline
+                .dependencies
+                .get(&id)
+                .map(|d| d.normalized.clone())
+                .unwrap_or(Value::Null);
+            let after = target
+                .dependencies
+                .get(&id)
+                .map(|d| d.normalized.clone())
+                .unwrap_or(Value::Null);
+            let (before, after) =
+                if let (Some(a), Some(b)) = (before.as_object(), after.as_object()) {
+                    let keys = a
+                        .keys()
+                        .chain(b.keys())
+                        .filter(|k| !(change["kind"] == "SOURCE_SCOPE" && *k == "inventory"))
+                        .collect::<BTreeSet<_>>();
+                    let keys = keys
+                        .into_iter()
+                        .filter(|k| a.get(*k) != b.get(*k))
+                        .collect::<Vec<_>>();
+                    let added = keys
+                        .iter()
+                        .filter(|k| !a.contains_key(**k))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let removed = keys
+                        .iter()
+                        .filter(|k| !b.contains_key(**k))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !added.is_empty() {
+                        change["addedFields"] = json!(added);
+                    }
+                    if !removed.is_empty() {
+                        change["removedFields"] = json!(removed);
+                    }
+                    (
+                        json!(
+                            keys.iter()
+                                .filter_map(|k| a.get(*k).map(|v| ((*k).clone(), v.clone())))
+                                .collect::<BTreeMap<_, _>>()
+                        ),
+                        json!(
+                            keys.iter()
+                                .filter_map(|k| b.get(*k).map(|v| ((*k).clone(), v.clone())))
+                                .collect::<BTreeMap<_, _>>()
+                        ),
+                    )
+                } else {
+                    (before, after)
+                };
+            change["beforeValues"] = before;
+            change["afterValues"] = after;
+            change["valueRepresentation"] =
+                json!("CHANGED_NORMALIZED_FIELDS_ONLY_INVENTORY_DELTAS_SEPARATE");
         }
         changes.push(change);
     }
@@ -514,7 +593,7 @@ fn compare_frames(
     let after = target.sources();
     for id in &old.source_ids {
         match (before.get(id),after.get(id)) {
-            (Some(a),Some(b)) if a.text_digest!=b.text_digest||a.file!=b.file=>changes.push(json!({"reason":"SELECTED_SOURCE_BYTES_CHANGED","source":id,"before":source_identity(a),"after":source_identity(b)})),
+            (Some(a),Some(b)) if a.text_digest!=b.text_digest||a.file!=b.file=>changes.push(json!({"reason":"SELECTED_SOURCE_BYTES_CHANGED","source":id,"before":source_identity(a),"after":source_identity(b),"changedWindow":changed_window(a,b)})),
             (_,None)=>{missing=true;changes.push(json!({"reason":"SELECTED_SOURCE_UNAVAILABLE","source":id}));},_=>{}
         }
     }
@@ -642,10 +721,37 @@ pub(super) fn compare(
             result["contextDigest"] = json!(target.context_digest);
             result["comparison"] = json!({"status":Verdict::Unknown,"reason":"TARGET_CONTEXT_UNAVAILABLE","detailsCode":error.code,"scope":"REGISTERED_INPUTS_ONLY_NOT_RUNTIME_BEHAVIOR","baselineSnapshot":old.snapshot,"targetSnapshot":snapshot,"behaviorEquivalence":"NOT_ESTABLISHED","unresolvedSemanticsPreserved":true});
             result["targetNativeInputLimits"] = json!(native.limits);
+            result["targetUnresolved"] = json!(target.unresolved);
+            result["comparison"]["baselineBinding"] = maintenance_binding(&baseline, &old)?;
+            result["comparison"]["targetBinding"] = json!({"snapshot":snapshot,"service":old.service,"symbol":old.symbol,"inputDigest":target.input_digest,"contextDigest":target.context_digest,"revision":target.services.get(&old.service).map(|s|&s.revision),"analysisConfigurationDigest":digest(&next_config)?});
             return Ok(result);
         }
     };
-    let (status, changes) = compare_frames(&old, &next, &baseline, &target);
+    let (status, mut changes) = compare_frames(&old, &next, &baseline, &target);
+    let new_native_items = native_items(repo, &next.native, &target)?;
+    for change in &mut changes {
+        if change["reason"] == "REGISTERED_NATIVE_FILE_CHANGED" {
+            fn find<'a>(items: &'a [Value], file: &Value) -> Option<&'a Value> {
+                items
+                    .iter()
+                    .map(|i| &i["record"])
+                    .find(|r| r["service"] == file["service"] && r["file"] == file["path"])
+            }
+            if let (Some(a), Some(b)) = (
+                find(&old_native_items, &change["before"]),
+                find(&new_native_items, &change["after"]),
+            ) {
+                let identity = |v: &Value| {
+                    let mut v = v.clone();
+                    v.as_object_mut().unwrap().remove("text");
+                    v
+                };
+                if let (Some(before), Some(after)) = (a["text"].as_str(), b["text"].as_str()) {
+                    change["changedWindow"] = text_window(before, after, identity(a), identity(b));
+                }
+            }
+        }
+    }
     let next_ref = store_evidence(repo, &next)?;
     let mut result = packet(
         repo,
@@ -657,7 +763,7 @@ pub(super) fn compare(
     let old_sources = baseline.sources();
     let new_sources = target.sources();
     let mut links=old.source_ids.iter().filter_map(|id|Some((id,old_sources.get(id)?,new_sources.get(id)?))).filter(|(_,a,b)|a.revision!=b.revision||a.url!=b.url||a.start_line!=b.start_line||a.end_line!=b.end_line).map(|(id,a,b)|json!({"source":id,"before":source_identity(a),"after":source_identity(b),"meaning":"PROVENANCE_OR_LOCATION_ONLY_UNLESS_SEPARATELY_LISTED_AS_BYTE_CHANGE"})).collect::<Vec<_>>();
-    for after in native_items(repo, &next.native, &target)? {
+    for after in new_native_items {
         if let Some(before) = old_native_items.iter().find(|v| v["id"] == after["id"])
             && (before["record"]["revision"] != after["record"]["revision"]
                 || before["record"]["url"] != after["record"]["url"])
@@ -684,6 +790,8 @@ pub(super) fn compare(
         Verdict::Unchanged
     };
     result["comparison"] = json!({"status":status,"scope":"REGISTERED_INPUTS_ONLY_NOT_RUNTIME_BEHAVIOR","integrity":"BOTH_IMMUTABLE_SNAPSHOT_CLOSURES_ADMITTED","baselineSnapshot":old.snapshot,"targetSnapshot":snapshot,"changeCount":changes.len(),"sourceBindingUpdateCount":links.len(),"selectedSourceBytes":selected_source_bytes,"semanticCompleteness":"NOT_ESTABLISHED","reasonExamples":changes.iter().take(4).map(|v|json!({"reason":v["reason"],"kind":v["kind"],"dependency":v["dependency"],"source":v["source"],"input":v["input"],"file":v["file"],"changedWindow":v["changedWindow"],"sourceReferences":v["sourceReferences"]})).collect::<Vec<_>>(),"unresolvedSemanticsPreserved":true,"unregisteredReferences":"UNKNOWN_OUT_OF_SCOPE","behaviorEquivalence":"NOT_ESTABLISHED"});
+    result["comparison"]["baselineBinding"] = maintenance_binding(&baseline, &old)?;
+    result["comparison"]["targetBinding"] = maintenance_binding(&target, &next)?;
     let mut rows=changes.into_iter().enumerate().map(|(i,record)|json!({"kind":"EVIDENCE_CHANGE","id":format!("change-{i}"),"record":record})).collect::<Vec<_>>();
     rows.extend(links.into_iter().enumerate().map(|(i,record)|json!({"kind":"SOURCE_BINDING_UPDATE","id":format!("binding-{i}"),"record":record})));
     rows.extend(std::mem::take(result["items"].as_array_mut().unwrap()));
@@ -942,6 +1050,56 @@ mod tests {
                 .contains("PROJECTION")
         );
     }
+    #[test]
+    fn maintenance_reports_callee_values_and_selected_text_without_source_replay() {
+        let (old, baseline) = fixture();
+        let mut target = baseline.clone();
+        let callee = target.dependencies.get_mut("callee").unwrap();
+        callee.normalized = json!({"retryLimit":2});
+        callee.digest = "changed".into();
+        let (status, changes) = compare_frames(&old, &old, &baseline, &target);
+        assert_eq!(status, Verdict::Changed);
+        assert!(
+            changes
+                .iter()
+                .all(|c| c["reason"] != "SELECTED_SOURCE_BYTES_CHANGED")
+        );
+        let delta = changes
+            .iter()
+            .find(|c| c["dependency"] == "callee")
+            .unwrap();
+        assert_eq!(delta["beforeValues"], json!({}));
+        assert_eq!(delta["afterValues"], json!({"retryLimit":2}));
+        assert_eq!(delta["addedFields"], json!(["retryLimit"]));
+        let source = target
+            .services
+            .get_mut("sample")
+            .unwrap()
+            .sources
+            .get_mut("source")
+            .unwrap();
+        source.text = "new λ🙂 handler".into();
+        source.text_digest = crate::canonical::hash_bytes(source.text.as_bytes());
+        let (_, changes) = compare_frames(&old, &old, &baseline, &target);
+        let delta = changes
+            .iter()
+            .find(|c| c["reason"] == "SELECTED_SOURCE_BYTES_CHANGED")
+            .unwrap();
+        assert_eq!(delta["changedWindow"]["before"], "handler");
+        assert_eq!(delta["changedWindow"]["after"], "new λ🙂 handler");
+        assert_eq!(
+            delta["changedWindow"]["afterCitation"]["textDigest"],
+            target.services["sample"].sources["source"].text_digest
+        );
+        let binding = maintenance_binding(&baseline, &old).unwrap();
+        assert_eq!(binding["snapshot"], "baseline");
+        assert_eq!(binding["revision"], "old");
+        assert_eq!(
+            binding["analysisConfigurationDigest"],
+            digest(&old.analysis_config).unwrap()
+        );
+    }
+
     #[test]
     fn native_registration_rejects_unsafe_scopes_and_missing_retained_bytes() {
         for path in ["../secret", "src/*.cs", "src/file\nother", "/absolute"] {
