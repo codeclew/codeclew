@@ -77,7 +77,8 @@ unmapped leaves. Required-leaf statistics retain their separate branch scope.
 Selecting a cell opens secondary field details without changing overview filters.
 The explicit consumer-stage selector narrows columns. Return to the overview keeps
 those filters; canonical-model navigation preserves field, contract and stage
-context. The comparison stays a contained scrollable table on small screens.
+context. The wide view uses a contained comparison table; narrow screens show every
+stage in vertical field rows.
 Native buttons support keyboard activation; detail and return controls move focus
 to their destination. HTML and MDX share the same typography roles: 16px reading,
 24px section headings and 14px technical text, with 32px reserved for page titles.
