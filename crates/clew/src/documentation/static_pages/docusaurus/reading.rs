@@ -150,6 +150,10 @@ pub(super) fn note_page(page: &Value, service: &str, note: &Value) -> Result<Str
     out.push_str(IMPORTS);
     out.push_str(&format!("# {}\n\n", md(note_title(note))));
     out.push_str("<ClewPageContext />\n\n");
+    out.push_str(&super::operation_language_notice(
+        page,
+        &note["assessment"],
+    )?);
     out.push_str(&format!(
         "Original record: **{}** · {}\n\n",
         md(text(&note["association"]["title"])),

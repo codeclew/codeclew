@@ -89,6 +89,8 @@ pub(super) fn render(
     let mut guide_notice_files = BTreeMap::new();
     let mut authored_gaps = BTreeMap::new();
     let mut authored_notice_files = BTreeMap::new();
+    let mut narrative_gaps = BTreeMap::new();
+    let mut narrative_notice_files = BTreeMap::new();
     for name in manifest.files.keys().filter(|name| {
         (name.starts_with("services/") || name.starts_with("scenarios/")) && name.ends_with(".json")
     }) {
@@ -172,7 +174,17 @@ pub(super) fn render(
             requested_language,
             &mut files,
         )?;
+        let narrative = super::prose_language::attach_narrative(
+            &mut payload,
+            name,
+            requested_language,
+            &mut files,
+        )?;
         let html_name = name.strip_suffix(".json").unwrap().to_owned() + ".html";
+        if !narrative.is_empty() {
+            narrative_gaps.insert(subject.clone(), narrative.clone());
+            narrative_notice_files.insert(html_name.clone(), narrative);
+        }
         if !gaps.is_empty() {
             authored_gaps.insert(subject.clone(), gaps.clone());
             authored_notice_files.insert(html_name.clone(), gaps);
@@ -323,6 +335,11 @@ pub(super) fn render(
             if let Some(gaps) = authored_notice_files.get(name) {
                 navigation.push_str(&super::prose_language::page_notices(gaps));
             }
+            if let Some(gaps) = narrative_notice_files.get(name) {
+                navigation.push_str(&super::prose_language::narrative_notice_html(
+                    gaps, language,
+                ));
+            }
             *bytes = reader::attach_navigation_context(
                 &reader::refresh_chrome(html, &navigation),
                 &navigation_context,
@@ -338,7 +355,7 @@ pub(super) fn render(
             }
         }
     }
-    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":if guide_gaps.is_empty() && model_gaps.is_empty() && contract_gaps.is_empty() && authored_gaps.is_empty(){"RENDERED"}else{"PARTIAL"},"documentationLanguage":language,"requestedDocumentationLanguage":requested_language,"authoredTranslationGaps":authored_gaps,"authoredTranslationComplete":requested_language.map(|_|authored_gaps.is_empty()),"declaredContractTranslationGaps":contract_gaps,"declaredContractTranslationComplete":requested_language.map(|_|contract_gaps.is_empty()),"modelTranslationGaps":model_gaps,"modelTranslationComplete":requested_language.map(|_|model_gaps.is_empty()),"readingGuideTranslationGaps":guide_gaps,"readingGuideTranslationComplete":requested_language.map(|_|guide_gaps.is_empty()),"snapshot":snapshot,"publication":publication,
+    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":if guide_gaps.is_empty() && model_gaps.is_empty() && contract_gaps.is_empty() && authored_gaps.is_empty() && narrative_gaps.is_empty(){"RENDERED"}else{"PARTIAL"},"documentationLanguage":language,"requestedDocumentationLanguage":requested_language,"narrativeTranslationGaps":narrative_gaps,"narrativeTranslationComplete":requested_language.map(|_|narrative_gaps.is_empty()),"narrativeTranslationCoverage":["OPERATIONS","SECTIONS","NOTE_ASSESSMENTS"],"authoredTranslationGaps":authored_gaps,"authoredTranslationComplete":requested_language.map(|_|authored_gaps.is_empty()),"declaredContractTranslationGaps":contract_gaps,"declaredContractTranslationComplete":requested_language.map(|_|contract_gaps.is_empty()),"modelTranslationGaps":model_gaps,"modelTranslationComplete":requested_language.map(|_|model_gaps.is_empty()),"readingGuideTranslationGaps":guide_gaps,"readingGuideTranslationComplete":requested_language.map(|_|guide_gaps.is_empty()),"snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});

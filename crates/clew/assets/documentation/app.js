@@ -8,10 +8,11 @@ const {t,chromeHtml}=clewLocale(language,CLEW_RU_MESSAGES);
 function statusLabel(value){return t(value);}
 function meaningReviewLabel(value){return value==='VERIFIED'?t('Model approved'):value==='VERIFIED_WITH_LIMITATIONS'?t('Model approved with limitations'):statusLabel(value);}
 const explicitLanguage=['en','ru'].includes(publication.requestedDocumentationLanguage);
-const translationGaps=explicitLanguage?(publication.translationGaps||{}):{};
+const translationGaps=explicitLanguage&&publication.proseDisplayPolicy!=='READABLE_ORIGINALS'?(publication.translationGaps||{}):{};
 const sectionTitles={'section-overview':language==='ru'?'Обзор':'Overview','section-responsibilities':t('Responsibilities'),'section-entities':t('Domain entities'),'section-ingress':t('Entry points'),'section-egress':t('External calls and storage')};
 // Keep the embedded publication immutable: accepted digests refer to its exact content.
-// The display projection excludes mismatched authored prose and visual interpretations.
+// The normal publication view excludes mismatched prose; full Pages retains
+// readable originals with separate language notices and unchanged review states.
 const D={...publication,operations:publication.operations.filter(op=>!translationGaps[op.id]),sections:(publication.sections||[]).map(section=>translationGaps[section.id]?{...section,title:sectionTitles[section.id]||section.id,content:null,gap:t('The description is not yet available in the selected language.')}:section)};
 
 const $=id=>document.getElementById(id);

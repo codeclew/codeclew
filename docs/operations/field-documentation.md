@@ -939,6 +939,17 @@ schema, pointer, requiredness and nullability alongside the language notice.
 `contracts/ID.original.json` provides the exact bound contract record; the
 portable export retains it as a raw original download.
 
+Full Pages also recomputes retained operation, section and note-assessment
+availability for the selected language. `narrativeTranslationGaps` and
+`narrativeTranslationComplete` cover those operation records; the original frozen
+language request and availability remain in each page's
+`frozenLanguageAvailability`. Readable-original mode keeps accepted accounts and
+visuals available with explicit language notices. Original operation JSON
+packets retain their source bindings, review state and contracts. Future section
+work requests use the selected target language without rewriting accepted prose
+or authored gap reasons. This metadata does not declare a translation of human
+note originals or other input families.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with

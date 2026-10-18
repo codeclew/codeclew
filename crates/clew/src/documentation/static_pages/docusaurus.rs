@@ -398,6 +398,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
 
+    out.push_str(&narrative_page_notice(page)?);
     out.push_str(&page_prose_gaps(page)?);
     if page["questionReaderTranslationGap"].is_object() {
         out.push_str(&reading_guide_gap(
@@ -862,6 +863,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         md(state["verification"].as_str().unwrap_or("UNASSESSED")),
         reading::inline(text(&op["summary"]["text"]))
     );
+    out.insert_str(0, &operation_language_notice(page, op)?);
     out.push_str(&details(
         "Summary source bindings",
         &citations(page, id, &op["summary"])?,
@@ -1088,6 +1090,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         "<span id=\"service-overview\"></span>\n\n# {}\n\n",
         md(text(&page["title"]))
     ));
+    out.push_str(&narrative_page_notice(page)?);
     out.push_str(&page_prose_gaps(page)?);
     out.push_str(&reading::status(page));
     out.push_str(&format!("{}\n\n", md(text(&page["subtitle"]))));
@@ -1505,6 +1508,76 @@ fn put(files: &mut BTreeMap<String, Vec<u8>>, name: impl Into<String>, body: imp
     files.insert(name.into(), body.into());
 }
 
+fn narrative_page_notice(page: &Value) -> Result<String, ClewError> {
+    let Some(gaps) = page["translationGaps"]
+        .as_object()
+        .filter(|gaps| !gaps.is_empty())
+    else {
+        return Ok(String::new());
+    };
+    if page["proseDisplayPolicy"] != "READABLE_ORIGINALS" {
+        return Ok(String::new());
+    }
+    use crate::documentation::reader::text as label;
+    let language = page["language"].as_str().unwrap_or("en");
+    let mut out = format!(
+        "<aside className=\"translation-gap gap-card\">\n\n{}\n\n<details><summary>{}: {}</summary>\n\n",
+        super::prose_language::narrative_explanation(language),
+        label(
+            language,
+            "Descriptions awaiting translation",
+            "Описания, требующие перевода"
+        ),
+        gaps.len()
+    );
+    for gap in gaps.values() {
+        let original = text(&gap["originalPath"]);
+        crate::documentation::store::relative(original)?;
+        out.push_str(&format!(
+            "- {} · {} · <ClewDownload path={}>{}</ClewDownload>\n",
+            md(text(&gap["title"])),
+            super::question_reading::available_language_label(gap, language),
+            json!(format!("/clew-original/{original}")),
+            label(
+                language,
+                "Original description and evidence (JSON)",
+                "Исходное описание и основания (JSON)"
+            )
+        ));
+    }
+    out.push_str("\n</details>\n</aside>\n\n");
+    Ok(out)
+}
+
+fn operation_language_notice(page: &Value, operation: &Value) -> Result<String, ClewError> {
+    if page["proseDisplayPolicy"] != "READABLE_ORIGINALS" {
+        return Ok(String::new());
+    }
+    let Some(gap) = page["translationGaps"].get(text(&operation["id"])) else {
+        return Ok(String::new());
+    };
+    use crate::documentation::reader::text as label;
+    let language = page["language"].as_str().unwrap_or("en");
+    let original = text(&gap["originalPath"]);
+    crate::documentation::store::relative(original)?;
+    Ok(format!(
+        "<p className=\"original-language\">{} · {}: {} · <ClewDownload path={}>{}</ClewDownload></p>\n\n",
+        label(language, "Translation pending", "Требуется перевод"),
+        label(
+            language,
+            "Original prose language",
+            "Язык исходного описания"
+        ),
+        super::question_reading::available_language_label(gap, language),
+        json!(format!("/clew-original/{original}")),
+        label(
+            language,
+            "Original description and evidence (JSON)",
+            "Исходное описание и основания (JSON)"
+        )
+    ))
+}
+
 fn page_prose_gaps(page: &Value) -> Result<String, ClewError> {
     let mut notices = String::new();
     let language = page["language"].as_str().unwrap_or("en");
@@ -1651,6 +1724,7 @@ pub(super) fn project(
                 "<ClewAnchor id=\"process-overview\" pageStart />\n\n# {}\n\n",
                 md(title)
             ));
+            body.push_str(&narrative_page_notice(page)?);
             body.push_str(&page_prose_gaps(page)?);
             for op in rows(&page["operations"]) {
                 body.push_str(&format!(
@@ -2092,6 +2166,34 @@ mod tests {
         assert!(comparison.contains("/clew-original/scenarios/save.comparison.original.json"));
         assert_eq!(page["contractComparison"], original["contractComparison"]);
         assert_eq!(page["processDataFlow"], original["processDataFlow"]);
+    }
+
+    #[test]
+    fn retained_operation_language_notices_do_not_remove_the_account_or_its_sources() {
+        let operation = json!({"id":"section-overview","title":"Original account","documentationLanguage":"en","summary":{"text":"Original source-backed explanation","sourceIds":[]},"events":[],"findings":[],"boundaries":["Original boundary"]});
+        let mut page = json!({"language":"ru","subject":"service:sample","title":"Service","operations":[operation],"sections":[],"operationStates":{"section-overview":{"freshness":"STALE","verification":"UNASSESSED"}}});
+        let original = page["operations"].clone();
+        let mut files = BTreeMap::new();
+        super::super::prose_language::attach_narrative(
+            &mut page,
+            "services/sample.json",
+            Some("ru"),
+            &mut files,
+        )
+        .unwrap();
+        let body = operation_body(&page, &operation, "###").unwrap();
+        assert!(body.contains("Original source-backed explanation"));
+        assert!(body.contains("Original boundary"));
+        assert!(body.contains("STALE") && body.contains("UNASSESSED"));
+        assert!(
+            body.contains(
+                "/clew-original/services/sample.operation-section-overview.original.json"
+            )
+        );
+        let overview = service_page(&page, "sample").unwrap();
+        assert!(overview.contains("Original account"));
+        assert!(overview.contains("sample.operation-section-overview.original.json"));
+        assert_eq!(page["operations"], original);
     }
 
     #[test]

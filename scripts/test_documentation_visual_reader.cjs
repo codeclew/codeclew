@@ -786,6 +786,19 @@ test('explicit language gap suppresses foreign prose and visuals, keeps accepted
  assert.doesNotMatch(r.e('scenario-content').innerHTML,/Documented responsibilities|Dispatch work/);
  r.run("showEntry('process-catalog')");assert.doesNotMatch(r.e('scenario-content').innerHTML,/Dispatch work|Select handler/);
 });
+test('full Pages readable-original policy keeps mismatched descriptions and visuals with their original state',()=>{
+ const data=entitySectionFixture();data.language='ru';data.requestedDocumentationLanguage='ru';
+ data.proseDisplayPolicy='READABLE_ORIGINALS';data.translationComplete=false;
+ data.translationGaps={'section-entities':{requestedLanguage:'ru',availableLanguage:'en',originalPath:'services/sample.operation-section-entities.original.json'}};
+ const original=JSON.stringify(data),r=load(data);r.run("showEntry('section-entities')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Synthetic Order|Order identity map/);
+ assert.doesNotMatch(html,/They are hidden here until|Они скрыты/);
+ assert.equal(r.run('D.operations.length'),data.operations.length);
+ assert.equal(r.run('JSON.stringify(publication)'),original);
+ assert.equal(r.e('document-data').textContent,original);
+});
+
 test('unknown-language operation shows original-version gap; absent explicit request retains legacy content',()=>{
  const data=fixture();data.language='en';data.requestedDocumentationLanguage='en';
  data.translationGaps={'section-responsibilities':{requestedLanguage:'en',availableLanguage:null,href:'../history/original.html'}};

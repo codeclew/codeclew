@@ -146,6 +146,157 @@ pub(super) fn page_notices(gaps: &[Value]) -> String {
         .collect()
 }
 
+/// Recompute presentation availability without changing accepted operations.
+/// The frozen publication's language request is retained as provenance.
+pub(super) fn attach_narrative(
+    payload: &mut Value,
+    name: &str,
+    requested: Option<&str>,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<BTreeMap<String, Value>, ClewError> {
+    store::relative(name)?;
+    language::validate(requested)?;
+    let base = name
+        .strip_suffix(".json")
+        .ok_or_else(|| crate::documentation::invalid("narrative page path must be JSON"))?;
+    let mut operations = BTreeMap::new();
+    for operation in payload["operations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            payload["sections"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|section| &section["content"]),
+        )
+        .chain(
+            payload["notes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|note| &note["assessment"]),
+        )
+    {
+        let Some(id) = operation["id"].as_str() else {
+            continue;
+        };
+        if !store::valid_id(id) {
+            return Err(crate::documentation::invalid(
+                "narrative original identifier is unsafe",
+            ));
+        }
+        operations
+            .entry(id.to_owned())
+            .or_insert_with(|| operation.clone());
+    }
+    let mut gaps = BTreeMap::new();
+    for (id, operation) in operations {
+        let original_path = format!("{base}.operation-{id}.original.json");
+        let original = json!({"operation":operation,"sources":payload["operationSources"][&id],
+            "state":payload["operationStates"][&id],"sectionState":payload["sectionState"].get(&id).unwrap_or(&payload["sectionState"]),"contracts":payload["operationContracts"][&id],
+            "externalCalls":payload["operationExternalCalls"][&id]});
+        files.insert(
+            original_path.clone(),
+            serde_json::to_vec_pretty(&original).map_err(crate::documentation::io_error)?,
+        );
+        if let Some(mut gap) = gap(
+            &operation["documentationLanguage"],
+            requested,
+            "RETAINED_OPERATION_TRANSLATION",
+            &original_path,
+        )? {
+            gap["operationId"] = json!(id);
+            gap["title"] = operation["title"].clone();
+            gaps.insert(id, gap);
+        }
+    }
+    if !payload["frozenLanguageAvailability"].is_object() {
+        payload["frozenLanguageAvailability"] = json!({
+            "requestedDocumentationLanguage":payload["requestedDocumentationLanguage"],
+            "translationComplete":payload["translationComplete"],"translationGaps":payload["translationGaps"]});
+    }
+    payload["requestedDocumentationLanguage"] = json!(requested);
+    payload["translationComplete"] = json!(requested.map(|_| gaps.is_empty()));
+    payload["translationGaps"] = json!(gaps);
+    payload["proseDisplayPolicy"] = json!("READABLE_ORIGINALS");
+    // Only generated section labels and future request templates use the target
+    // locale; accepted section content and authored gap reasons stay unchanged.
+    if let Some(target) = requested {
+        let original_gaps: BTreeMap<String, Value> = payload["sections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|section| {
+                section["id"]
+                    .as_str()
+                    .map(|id| (id.to_owned(), section["gap"].clone()))
+            })
+            .collect();
+        crate::documentation::language::section_labels(payload, target);
+        for section in payload["sections"].as_array_mut().into_iter().flatten() {
+            if target == "en"
+                && let Some((_, title, purpose)) = crate::documentation::sections::REQUIRED
+                    .iter()
+                    .find(|(id, _, _)| section["id"] == *id)
+            {
+                section["title"] = json!(title);
+                section["purpose"] = json!(purpose);
+            }
+            if let Some(original_gap) = section["id"].as_str().and_then(|id| original_gaps.get(id))
+            {
+                section["gap"] = original_gap.clone();
+            }
+            if section["workRequest"].is_object() {
+                section["workRequest"]["documentationLanguage"] = json!(target);
+            }
+        }
+    }
+    Ok(gaps)
+}
+
+pub(super) fn narrative_notice_html(gaps: &BTreeMap<String, Value>, language: &str) -> String {
+    if gaps.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "<aside class=\"translation-gap gap-card\"><p>{}</p><details><summary>{}: {}</summary><ul>",
+        narrative_explanation(language),
+        text(
+            language,
+            "Descriptions awaiting translation",
+            "Описания, требующие перевода"
+        ),
+        gaps.len()
+    );
+    for gap in gaps.values() {
+        let original = gap["originalPath"].as_str().unwrap_or("");
+        let href = original.rsplit('/').next().unwrap_or("");
+        out.push_str(&format!(
+            "<li>{} · {} · <a href=\"{}\">{}</a></li>",
+            escape(gap["title"].as_str().unwrap_or("")),
+            super::question_reading::available_language_label(gap, language),
+            escape(href),
+            text(
+                language,
+                "Original description and evidence (JSON)",
+                "Исходное описание и основания (JSON)"
+            )
+        ));
+    }
+    out.push_str("</ul></details></aside>");
+    out
+}
+
+pub(super) fn narrative_explanation(language: &str) -> &'static str {
+    text(
+        language,
+        "Some retained descriptions have another or unknown prose language. Their originals remain readable; evidence, diagrams and review states are unchanged. Availability in the selected language is not established for the listed descriptions.",
+        "Некоторые сохранённые описания имеют другой или неизвестный язык. Их оригиналы доступны для чтения; основания, диаграммы и состояния проверки сохранены. Для перечисленных описаний доступность на выбранном языке не подтверждена.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +359,79 @@ mod tests {
         assert!(attach_payload(&mut page, "../outside.json", Some("en"), &mut files).is_err());
         assert!(files.is_empty());
         assert!(original_path("../outside").is_err());
+    }
+    #[test]
+    fn target_language_refreshes_availability_and_requests_without_rewriting_retained_content() {
+        for target in ["en", "ru"] {
+            for available in [Some("en"), Some("ru"), None] {
+                let operation = json!({"id":"section-overview","title":"Source fragments","documentationLanguage":available,"summary":{"text":"Original account"},"events":[{"text":"Revision"}]});
+                let mut payload = json!({"operations":[operation],"sections":[{"id":"section-overview","title":"Overview","purpose":"Original generated purpose","content":operation,"gap":"Original diagnostic reason","workRequest":{"entrypoint":"section-overview","documentationLanguage":"en"}}],
+                    "notes":[{"assessment":operation}],"requestedDocumentationLanguage":"en","translationComplete":true,"translationGaps":{},
+                    "operationSources":{"section-overview":{"source":{"text":"Original source bytes","textDigest":"same","revision":"r1"}}},"operationStates":{"section-overview":{"freshness":"STALE","verification":"UNASSESSED"}}});
+                let original = payload.clone();
+                let mut files = BTreeMap::new();
+                let gaps = attach_narrative(
+                    &mut payload,
+                    "services/sample.json",
+                    Some(target),
+                    &mut files,
+                )
+                .unwrap();
+                assert_eq!(payload["operations"], original["operations"]);
+                assert_eq!(payload["notes"], original["notes"]);
+                assert_eq!(payload["sections"][0]["content"], operation);
+                assert_eq!(payload["sections"][0]["gap"], "Original diagnostic reason");
+                assert_eq!(payload["operationSources"], original["operationSources"]);
+                assert_eq!(payload["operationStates"], original["operationStates"]);
+                assert_eq!(payload["requestedDocumentationLanguage"], target);
+                assert_eq!(
+                    payload["sections"][0]["workRequest"]["documentationLanguage"],
+                    target
+                );
+                assert_eq!(payload["translationComplete"], available == Some(target));
+                assert_eq!(gaps.len(), usize::from(available != Some(target)));
+                assert_eq!(
+                    payload["frozenLanguageAvailability"]["requestedDocumentationLanguage"],
+                    "en"
+                );
+                assert_eq!(
+                    payload["frozenLanguageAvailability"]["translationComplete"],
+                    true
+                );
+                let packet: Value = serde_json::from_slice(
+                    &files["services/sample.operation-section-overview.original.json"],
+                )
+                .unwrap();
+                assert_eq!(packet["operation"], operation);
+                assert_eq!(
+                    packet["sources"],
+                    original["operationSources"]["section-overview"]
+                );
+                assert_eq!(
+                    packet["state"],
+                    original["operationStates"]["section-overview"]
+                );
+                assert_eq!(
+                    files.len(),
+                    1,
+                    "the operation, section and assessment share one retained operation"
+                );
+                let notice = narrative_notice_html(&gaps, target);
+                assert_eq!(notice.is_empty(), available == Some(target));
+                if !gaps.is_empty() {
+                    assert!(notice.contains("sample.operation-section-overview.original.json"));
+                    assert!(notice.contains("Source fragments"));
+                }
+                let legacy =
+                    attach_narrative(&mut payload, "services/sample.json", None, &mut files)
+                        .unwrap();
+                assert!(legacy.is_empty());
+                assert!(payload["translationComplete"].is_null());
+                assert_eq!(
+                    payload["frozenLanguageAvailability"]["requestedDocumentationLanguage"],
+                    "en"
+                );
+            }
+        }
     }
 }
