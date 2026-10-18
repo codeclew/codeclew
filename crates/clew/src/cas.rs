@@ -15,6 +15,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 mod lookup;
+mod retention_diagnostics;
+use retention_diagnostics::ReachabilityTrace;
+pub use retention_diagnostics::{StorageDiagnostics, diagnose_storage};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -1470,6 +1473,15 @@ impl CasStore {
         authority: &StateAuthority,
         released: &crate::session::ReleasedSessionCasRoots,
     ) -> Result<StoragePlan, ClewError> {
+        self.storage_plan_traced(authority, released, &mut None)
+    }
+
+    fn storage_plan_traced(
+        &self,
+        authority: &StateAuthority,
+        released: &crate::session::ReleasedSessionCasRoots,
+        trace: &mut Option<ReachabilityTrace>,
+    ) -> Result<StoragePlan, ClewError> {
         // Reachability and physical reclamation require the complete pack set.
         self.sync_catalog()?;
         let mut roots = BTreeMap::<String, CasObject>::new();
@@ -1481,6 +1493,7 @@ impl CasStore {
                 bytes_scanned: &mut root_bytes_scanned,
                 references: &mut roots,
                 released,
+                trace,
             };
             for name in [
                 "repos",
@@ -1525,11 +1538,20 @@ impl CasStore {
             }
             if !self.object_has_authoritative_location(&object)? {
                 dangling.insert(object.digest.clone());
+                if let Some(trace) = trace.as_mut() {
+                    trace.missing(&object)?;
+                }
                 continue;
             }
             let lease = self.read(&object, limit)?;
             if let Ok(value) = serde_json::from_slice::<Value>(lease.bytes()) {
-                collect_cas_references(&value, &mut authorities, &mut pending)?;
+                collect_cas_references_traced(
+                    &value,
+                    &mut authorities,
+                    &mut pending,
+                    trace,
+                    Some((&object.digest, false)),
+                )?;
             }
         }
 
@@ -1787,6 +1809,7 @@ struct ManagedRootScan<'a> {
     bytes_scanned: &'a mut u64,
     references: &'a mut BTreeMap<String, CasObject>,
     released: &'a crate::session::ReleasedSessionCasRoots,
+    trace: &'a mut Option<ReachabilityTrace>,
 }
 
 fn scan_managed_roots(
@@ -1870,12 +1893,28 @@ fn scan_managed_roots(
                         let value: Value = serde_json::from_slice(line).map_err(|_| {
                             corrupt("managed-state JSONL reachability root is invalid")
                         })?;
-                        collect_root_cas_references(&value, scan.references)?;
+                        let mut pending = VecDeque::new();
+                        let owner = format!("{root}/{}", relative.join(&name).display());
+                        collect_cas_references_traced(
+                            &value,
+                            scan.references,
+                            &mut pending,
+                            scan.trace,
+                            Some((&owner, true)),
+                        )?;
                     }
                 } else {
                     let value: Value = serde_json::from_slice(&bytes)
                         .map_err(|_| corrupt("managed-state JSON reachability root is invalid"))?;
-                    collect_root_cas_references(&value, scan.references)?;
+                    let mut pending = VecDeque::new();
+                    let owner = format!("{root}/{}", relative.join(&name).display());
+                    collect_cas_references_traced(
+                        &value,
+                        scan.references,
+                        &mut pending,
+                        scan.trace,
+                        Some((&owner, true)),
+                    )?;
                 }
             }
         }
@@ -1903,18 +1942,12 @@ fn is_opaque_reachability_subtree(root: &str, relative: &Path) -> bool {
     }
 }
 
-fn collect_root_cas_references(
-    value: &Value,
-    references: &mut BTreeMap<String, CasObject>,
-) -> Result<(), ClewError> {
-    let mut pending = VecDeque::new();
-    collect_cas_references(value, references, &mut pending)
-}
-
-fn collect_cas_references(
+fn collect_cas_references_traced(
     value: &Value,
     authorities: &mut BTreeMap<String, CasObject>,
     pending: &mut VecDeque<CasObject>,
+    trace: &mut Option<ReachabilityTrace>,
+    origin: Option<(&str, bool)>,
 ) -> Result<(), ClewError> {
     match value {
         Value::Object(map) => {
@@ -1922,6 +1955,9 @@ fn collect_cas_references(
                 let object: CasObject = serde_json::from_value(value.clone())
                     .map_err(|_| corrupt("embedded CAS reference is invalid"))?;
                 validate_reference(&object)?;
+                if let (Some(trace), Some((owner, root))) = (trace.as_mut(), origin) {
+                    trace.reference(&object.digest, owner, root)?;
+                }
                 match authorities.get(&object.digest) {
                     Some(existing) if existing != &object => {
                         return Err(corrupt("embedded CAS digest has conflicting authority"));
@@ -1935,12 +1971,12 @@ fn collect_cas_references(
                 return Ok(());
             }
             for nested in map.values() {
-                collect_cas_references(nested, authorities, pending)?;
+                collect_cas_references_traced(nested, authorities, pending, trace, origin)?;
             }
         }
         Value::Array(items) => {
             for nested in items {
-                collect_cas_references(nested, authorities, pending)?;
+                collect_cas_references_traced(nested, authorities, pending, trace, origin)?;
             }
         }
         _ => {}

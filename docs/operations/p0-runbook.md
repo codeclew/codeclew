@@ -589,6 +589,47 @@ additional descendants. Existing-but-tampered bytes remain `STATE_CORRUPT`.
 Never remove managed objects manually; preserve the typed diagnostic and repair
 or release the owning terminal state first.
 
+### Missing retained objects and addressed reconciliation
+
+Run `clew storage diagnose` to attribute missing objects to every retained
+metadata file that reaches them. It uses the same parser and reachability walk
+as GC, reporting one direct or transitive digest-chain witness per owner. It
+returns no source text or repository snapshot and never deletes objects. Bounds
+are four million reference edges, 1,024 missing objects, 4,096 owner files per
+missing object and 512 digests per witness; exceeding a bound fails explicitly.
+An absent object's unknown descendants cannot be diagnosed from absent bytes.
+
+A hash-valid historical recovery cancellation remains pinned by default. If its
+owner is confirmed obsolete and is already `GARBAGE_COLLECTED`, use the addressed
+reconciliation dry-run:
+
+```bash
+clew session gc --session "$SESSION_ID" --reconcile-retention
+```
+
+This refuses active/process-owned runs, remaining source/candidate worktrees,
+unknown candidate state, invalid authority/history, and Git repository contents.
+It proposes an exact plan binding session authority, lifecycle head, all run
+heads, directory identities and the complete bounded metadata archive. It does
+not repair or rewrite history. Retain the dry-run output and apply its exact
+`planDigest` only for the confirmed obsolete owner:
+
+```bash
+clew session gc --session "$SESSION_ID" --reconcile-retention \
+  --expected-plan "$PLAN_DIGEST" --apply
+clew storage diagnose
+clew storage gc
+```
+
+Apply stores the exact metadata archive and receipt under
+`gc/retention-reconciliations/<session-component>/` in private state. Original
+session/run files remain untouched. Every subsequent collector verifies the
+archive and receipt against the still-current terminal state before releasing
+those exact roots. Changed metadata, hashes or identities fail closed. This
+releases no other session; a shared reference from another retained root still
+blocks collection. Run the physical `storage gc --apply` only after reviewing its
+new successful dry-run. Reconciliation itself deletes no CAS bytes.
+
 ### Dirty worktree
 
 Codeclew never runs stash or reset. The owner chooses whether to commit, create

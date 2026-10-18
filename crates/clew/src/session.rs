@@ -1,4 +1,5 @@
 pub mod mission;
+pub mod retention;
 
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
@@ -269,6 +270,7 @@ enum RunReadMode {
 struct SessionRunProjections {
     records: Vec<RunRecord>,
     legacy_recovery_cancellations: u64,
+    _locks: Vec<RunLedgerLock>,
 }
 
 pub struct SessionAdmission {
@@ -1727,7 +1729,9 @@ fn load_session_runs_in_mode(
     mode: RunReadMode,
 ) -> Result<SessionRunProjections, ClewError> {
     let references_root = session_root.join("runs");
-    let references = state.directory_at(&references_root)?.entries()?;
+    let mut references = state.directory_at(&references_root)?.entries()?;
+    references.sort();
+    let mut locks = Vec::new();
     let mut runs = Vec::with_capacity(references.len());
     let mut legacy_recovery_cancellations = 0;
     for name in references {
@@ -1760,10 +1764,14 @@ fn load_session_runs_in_mode(
         }
         runs.push(run);
         legacy_recovery_cancellations += u64::from(legacy_recovery_cancellation);
+        if mode == RunReadMode::Retention {
+            locks.push(_run_lock);
+        }
     }
     Ok(SessionRunProjections {
         records: runs,
         legacy_recovery_cancellations,
+        _locks: locks,
     })
 }
 
@@ -1802,15 +1810,17 @@ pub(crate) fn released_session_cas_roots(
         let _lock = SessionLifecycleLock::acquire(state, &root)?;
         let lifecycle = verify_session_lifecycle_unlocked(state, &root, &authority)?;
         let loaded = load_session_runs_in_mode(state, &root, &authority, RunReadMode::Retention)?;
+        let reconciled =
+            retention::release_authorized(state, &root, &authority, &lifecycle, &loaded)?;
         let runs = loaded.records;
-        if loaded.legacy_recovery_cancellations > 0 {
+        if loaded.legacy_recovery_cancellations > 0 && !reconciled {
             released.retained_legacy_recovery_sessions += 1;
             released.retained_legacy_recovery_runs += loaded.legacy_recovery_cancellations;
         }
         // An old cancellation cannot authorize releasing recovery evidence,
         // even when a later lifecycle claims that the session was collected.
         if lifecycle.status != SessionStatus::GarbageCollected
-            || loaded.legacy_recovery_cancellations > 0
+            || (loaded.legacy_recovery_cancellations > 0 && !reconciled)
         {
             retained_runs.extend(
                 runs.iter()
@@ -4124,7 +4134,7 @@ mod tests {
         assert_eq!(released.reclaimable_loose_objects, 1);
     }
 
-    fn retained_recovery_fixture(
+    pub(super) fn retained_recovery_fixture(
         legacy_cancelled: bool,
         collected: bool,
     ) -> (
