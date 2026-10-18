@@ -154,7 +154,9 @@ pub(super) fn fields(schema: &Value, depth: usize) -> String {
         }
         out.push_str("</tbody></table></div>\n\n");
     }
-    out
+    // A table with nested disclosures must stay in one JSX flow block: MDX
+    // otherwise treats a row or disclosure newline as a Markdown paragraph.
+    format!("{}\n\n", out.replace('\n', " "))
 }
 pub(super) fn content(content: &Value) -> Result<String, ClewError> {
     let mut out = String::new();
@@ -392,6 +394,7 @@ mod tests {
         let output = fields(&schema, 0);
         assert!(output.contains("additionalProperties: false"));
         assert!(output.contains("Required</td>"));
+        assert!(!output.trim().contains('\n'));
         assert!(output.contains("oslo"));
         assert!(output.contains("Reference: #/components/schemas/City"));
         assert!(
