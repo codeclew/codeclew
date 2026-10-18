@@ -41,8 +41,15 @@ jobs:
           do
             ./scripts/kotlin-compatibility-gate.py \
               --row "$row" \
-              --full-lifecycle
+              --full-lifecycle \
+              --output "$RUNNER_TEMP/kotlin-compatibility/$row"
           done
+      - name: Retain compatibility facts and row logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-compatibility-${{ matrix.os }}
+          path: ${{ runner.temp }}/kotlin-compatibility
 
   kotlin24-pilot:
     strategy:

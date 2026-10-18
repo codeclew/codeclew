@@ -605,7 +605,7 @@ fn worker_process_group_exists(pgid: i32) -> Result<bool, ClewError> {
 
 const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BLOB_BYTES: u64 = 256 * 1024 * 1024;
-const SEALED_WORKER_JVM_OPTIONS: &str = "-Xms64m -Xmx1024m -XX:MaxMetaspaceSize=384m -XX:MaxDirectMemorySize=256m -XX:+ExitOnOutOfMemoryError";
+const SEALED_WORKER_JVM_OPTIONS: &str = "-Xms64m -Xmx2048m -XX:MaxMetaspaceSize=384m -XX:MaxDirectMemorySize=256m -XX:+ExitOnOutOfMemoryError";
 
 fn configure_sealed_worker_process(command: &mut Command, transport_root: &Path) {
     command
