@@ -949,14 +949,20 @@ fn operation_page(page: &Value, op: &Value, prefix: &str) -> Result<String, Clew
     Ok(out)
 }
 
-fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String, ClewError> {
+fn http_page(
+    binding: &Value,
+    key: &str,
+    owner: Option<&Value>,
+    language: &str,
+) -> Result<String, ClewError> {
+    let t = |key| crate::documentation::language::label(language, key);
     let record = &binding["record"];
     let n = &record["normalized"];
     let operation = &n["operation"];
     let title = format!("{} {}", text(&n["method"]), text(&n["path"]));
     let mut out = header(&title, &format!("/http/{key}"));
     out.push_str(IMPORTS);
-    out.push_str(&format!("# {}\n\n<ClewPageContext />\n\nDeclared interface · {}. Runtime enforcement and full specification validation are not established by this bounded record.\n\n", md(&title), md(text(&n["authority"]))));
+    out.push_str(&format!("# {}\n\n<ClewPageContext />\n\n{} · {}. {}\n\n", md(&title), t("Declared interface"), md(text(&n["authority"])), t("Runtime enforcement and full specification validation are not established by this bounded record.")));
     if let Some(page) = owner {
         for gap in rows(&page["authoredTranslationGaps"])
             .filter(|gap| gap["record"] == "contractComparison")
@@ -981,8 +987,9 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
                 }
             });
         out.push_str(&format!(
-            "<ClewContextLink path={}>Service and input context · {}</ClewContextLink>\n\n",
+            "<ClewContextLink path={}>{} · {}</ClewContextLink>\n\n",
             json!(format!("/services/{service}#{anchor}")),
+            t("Service and input context"),
             md(text(&page["title"]))
         ));
     }
@@ -992,23 +999,38 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
         .into_iter()
         .flat_map(|v| v.values())
     {
-        sources.push_str(&format!("- {}\n", source_link(source)?));
+        sources.push_str(&format!(
+            "- {}\n",
+            source_link_in_language(source, "../", language)?
+        ));
     }
-    out.push_str(&details("Declaration source and provenance", &sources));
-    out.push_str("## Parameters\n\n");
-    out.push_str(&contracts::parameters(&n["parameters"])?);
-    out.push_str("## Request body\n\n");
+    out.push_str(&details(t("Declaration source and provenance"), &sources));
+    out.push_str(&format!("## {} {{#parameters}}\n\n", t("Parameters")));
+    out.push_str(&contracts::parameters(&n["parameters"], language)?);
+    out.push_str(&format!("## {} {{#request-body}}\n\n", t("Request body")));
     if operation["requestBody"].is_object() {
-        out.push_str(if operation["requestBody"]["required"] == true {
-            "Required body.\n\n"
-        } else {
-            "Optional or absent body.\n\n"
-        });
-        out.push_str(&contracts::content(&operation["requestBody"]["content"])?);
+        out.push_str(&format!(
+            "{}\n\n",
+            t(if operation["requestBody"]["required"] == true {
+                "Required body."
+            } else {
+                "Optional or absent body."
+            })
+        ));
+        out.push_str(&contracts::content(
+            &operation["requestBody"]["content"],
+            language,
+        )?);
     } else {
-        out.push_str("No request body is recorded in this declaration.\n\n");
+        out.push_str(&format!(
+            "{}\n\n",
+            t("No request body is recorded in this declaration.")
+        ));
     }
-    out.push_str("## Declared responses\n\n");
+    out.push_str(&format!(
+        "## {} {{#declared-responses}}\n\n",
+        t("Declared responses")
+    ));
     for (status, response) in operation["responses"]
         .as_object()
         .into_iter()
@@ -1020,13 +1042,18 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
             reading::inline(text(&response["description"]))
         ));
         if response["content"].as_object().is_none_or(|v| v.is_empty()) {
-            out.push_str(&contracts::content(&response["content"])?);
+            out.push_str(&contracts::content(&response["content"], language)?);
         } else {
-            out.push_str(&format!("<details{}>\n<summary>Response media and body schema</summary>\n\n{}\n</details>\n\n",if status.starts_with('2'){" open"}else{""},contracts::content(&response["content"])?));
+            out.push_str(&format!(
+                "<details{}>\n<summary>{}</summary>\n\n{}\n</details>\n\n",
+                if status.starts_with('2') { " open" } else { "" },
+                t("Response media and body schema"),
+                contracts::content(&response["content"], language)?
+            ));
         }
     }
     out.push_str(&details(
-        "Complete retained operation contract",
+        t("Complete retained operation contract"),
         &fence(
             &serde_json::to_string_pretty(operation).map_err(io_error)?,
             "json",
@@ -1035,7 +1062,7 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
     let mut context = n.clone();
     context.as_object_mut().unwrap().remove("operation");
     out.push_str(&details(
-        "Declaration reader and source context",
+        t("Declaration reader and source context"),
         &fence(
             &serde_json::to_string_pretty(&context).map_err(io_error)?,
             "json",
@@ -1886,6 +1913,7 @@ pub(super) fn project(
                 pages.iter().map(|(_, p)| p).find(|p| {
                     p["subject"] == format!("service:{}", text(&binding["record"]["service"]))
                 }),
+                language,
             )?,
         );
     }
@@ -2169,6 +2197,41 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn http_locale_preserves_contract_values_and_legacy_heading_anchors_without_an_owner() {
+        let binding = json!({"record":{"normalized":{"method":"POST","path":"/Field", "authority":"DECLARED_OPENAPI_CONTRACT",
+            "parameters":[{"name":"Media","in":"query","description":"No parameters declared.","required":false,"schema":{"type":"string","default":null,"enum":["Required"]}}],
+            "operation":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"Field":{"type":"string","description":"Parameters","default":null}},"required":["Field"]},"example":{"Field":"Media"}}}},
+            "responses":{"200":{"description":"Request body","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Media"}}}}}}}},"sources":{}});
+        let original = binding.clone();
+        for language in ["en", "ru"] {
+            let body = http_page(&binding, "same-contract", None, language).unwrap();
+            for anchor in ["parameters", "request-body", "declared-responses"] {
+                assert!(body.contains(&format!("{{#{anchor}}}")));
+            }
+            for literal in [
+                "POST /Field",
+                "<code>Media</code>",
+                "<code>Field</code>",
+                "application/json",
+                "Parameters",
+                "Request body",
+                "#/components/schemas/Media",
+                "default: null",
+            ] {
+                assert!(body.contains(literal), "{literal}");
+            }
+            if language == "ru" {
+                assert!(body.contains("## Параметры {#parameters}"));
+                assert!(body.contains("## Тело запроса {#request-body}"));
+                assert!(body.contains("data-label=\"Обязательность\""));
+                assert!(body.contains(">Необязательно<") && body.contains(">Обязательно<"));
+                assert!(body.contains("Медиатипы ответа и схема тела"));
+            }
+        }
+        assert_eq!(binding, original);
+    }
+
     #[test]
     fn guide_language_gap_keeps_original_steps_context_links_and_provenance_readable() {
         let block = json!({"title":"Original block","text":"Original retained explanation.","evidence":[],"links":[{"subject":"service:sample","operation":"section-entities","label":"Original service context"}]});

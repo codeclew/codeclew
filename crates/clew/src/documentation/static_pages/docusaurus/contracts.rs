@@ -10,6 +10,7 @@ pub(super) fn literal(value: &str) -> String {
         .replace('{', "&#123;")
         .replace('}', "&#125;")
 }
+#[cfg(test)]
 pub(super) fn schema_type(schema: &Value) -> String {
     schema_type_language(schema, "en")
 }
@@ -93,30 +94,53 @@ pub(super) fn constraints(schema: &Value) -> String {
     }
     values.join("; ")
 }
+#[cfg(test)]
 pub(super) fn fields(schema: &Value, depth: usize) -> String {
+    fields_language(schema, depth, "en")
+}
+fn required_value<'a>(value: &'a str, language: &str) -> &'a str {
+    if language != "ru" {
+        return value;
+    }
+    match value {
+        "Required" => "Обязательно",
+        "Optional" => "Необязательно",
+        "Requiredness unknown" => "Обязательность не установлена",
+        _ => value,
+    }
+}
+pub(super) fn fields_language(schema: &Value, depth: usize, language: &str) -> String {
+    let t = |key| label(language, key);
     if depth > 6 {
-        return "<p>See the exact retained schema for deeper fields.</p>\n\n".into();
+        return format!(
+            "<p>{}</p>\n\n",
+            t("See the exact retained schema for deeper fields.")
+        );
     }
     if schema.is_null() {
-        return "<p>No schema declared.</p>\n\n".into();
+        return format!("<p>{}</p>\n\n", t("No schema declared."));
     }
     if !schema.is_object() && !schema.is_boolean() {
-        return "<p>Unsupported schema value; see the exact retained schema.</p>\n\n".into();
+        return format!(
+            "<p>{}</p>\n\n",
+            t("Unsupported schema value; see the exact retained schema.")
+        );
     }
     if schema["$ref"].is_string() {
         return format!(
-            "<p><code>{}</code> · Referenced schema retained without expansion.</p>\n\n",
-            literal(&schema_type(schema))
+            "<p><code>{}</code> · {}</p>\n\n",
+            literal(&schema_type_language(schema, language)),
+            t("Referenced schema retained without expansion.")
         );
     }
     let mut out = String::new();
     for kind in ["allOf", "oneOf", "anyOf"] {
         if let Some(branches) = schema[kind].as_array() {
-            out.push_str(&format!("<p>{kind} composition · branches remain separate; this reader does not merge their validation rules.</p>\n\n"));
+            out.push_str(&format!("<p>{kind} {}</p>\n\n", t("composition · branches remain separate; this reader does not merge their validation rules.")));
             for (index, branch) in branches.iter().enumerate() {
                 out.push_str(&details(
-                    &format!("{kind} branch {}", index + 1),
-                    &fields(branch, depth + 1),
+                    &format!("{kind} {} {}", t("branch"), index + 1),
+                    &fields_language(branch, depth + 1, language),
                 ));
             }
         }
@@ -124,18 +148,22 @@ pub(super) fn fields(schema: &Value, depth: usize) -> String {
     let declared = constraints(schema);
     out.push_str(&format!(
         "<p className=\"clew-schema-scope\">{}{}{}</p>\n\n",
-        literal(&schema_type(schema)),
+        literal(&schema_type_language(schema, language)),
         if declared.is_empty() { "" } else { " · " },
         literal(&declared)
     ));
     if schema["type"] == "array" {
-        out.push_str(&fields(&schema["items"], depth + 1));
+        out.push_str(&fields_language(&schema["items"], depth + 1, language));
         return out;
     }
     if let Some(properties) = schema["properties"].as_object().filter(|p| !p.is_empty()) {
-        out.push_str("<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">Field</th><th scope=\"col\">Type</th><th scope=\"col\">Required</th><th scope=\"col\">Declared constraints / description</th></tr></thead><tbody>\n");
+        let field = literal(t("Field"));
+        let kind = literal(t("Type"));
+        let required = literal(t("Required"));
+        let description = literal(t("Declared constraints / description"));
+        out.push_str(&format!("<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">{field}</th><th scope=\"col\">{kind}</th><th scope=\"col\">{required}</th><th scope=\"col\">{description}</th></tr></thead><tbody>\n"));
         for (name, property) in properties {
-            let required = match schema.get("required") {
+            let requirement = match schema.get("required") {
                 None => "Optional",
                 Some(Value::Array(names)) if names.iter().all(Value::is_string) => {
                     if names.iter().any(|v| v == name) {
@@ -146,6 +174,7 @@ pub(super) fn fields(schema: &Value, depth: usize) -> String {
                 }
                 _ => "Requiredness unknown",
             };
+            let requirement = required_value(requirement, language);
             let mut nested = String::new();
             if property["properties"].is_object()
                 || property["items"].is_object()
@@ -153,28 +182,31 @@ pub(super) fn fields(schema: &Value, depth: usize) -> String {
                     .iter()
                     .any(|k| property[*k].is_array())
             {
-                nested = details("Nested fields", &fields(property, depth + 1));
+                nested = details(
+                    t("Nested fields"),
+                    &fields_language(property, depth + 1, language),
+                );
             }
             let declared = constraints(property);
-            out.push_str(&format!("<tr><td data-label=\"Field\"><code>{}</code></td><td data-label=\"Type\">{}{nested}</td><td data-label=\"Required\">{required}</td><td data-label=\"Declared constraints / description\">{}{}{}</td></tr>\n", literal(name), literal(&schema_type(property)), literal(&declared), if declared.is_empty() { "" } else { "<br/>" }, literal(text(&property["description"]))));
+            out.push_str(&format!("<tr><td data-label=\"{field}\"><code>{}</code></td><td data-label=\"{kind}\">{}{nested}</td><td data-label=\"{required}\">{requirement}</td><td data-label=\"{description}\">{}{}{}</td></tr>\n", literal(name), literal(&schema_type_language(property, language)), literal(&declared), if declared.is_empty() { "" } else { "<br/>" }, literal(text(&property["description"]))));
         }
         out.push_str("</tbody></table></div>\n\n");
     }
-    // A table with nested disclosures must stay in one JSX flow block: MDX
-    // otherwise treats a row or disclosure newline as a Markdown paragraph.
     format!("{}\n\n", out.replace('\n', " "))
 }
-pub(super) fn content(content: &Value) -> Result<String, ClewError> {
+pub(super) fn content(content: &Value, language: &str) -> Result<String, ClewError> {
+    let t = |key| label(language, key);
     let mut out = String::new();
     for (media, body) in content.as_object().into_iter().flat_map(|m| m.iter()) {
         out.push_str(&format!(
-            "**Media:** {}\n\n{}",
+            "**{}:** {}\n\n{}",
+            t("Media"),
             md(media),
-            fields(&body["schema"], 0)
+            fields_language(&body["schema"], 0, language)
         ));
         if !body["example"].is_null() {
             out.push_str(&details(
-                "Declared example · not an observation",
+                t("Declared example · not an observation"),
                 &fence(
                     &serde_json::to_string_pretty(&body["example"]).map_err(io_error)?,
                     "json",
@@ -182,7 +214,7 @@ pub(super) fn content(content: &Value) -> Result<String, ClewError> {
             ));
         }
         out.push_str(&details(
-            "Exact retained media schema and examples",
+            t("Exact retained media schema and examples"),
             &fence(
                 &serde_json::to_string_pretty(body).map_err(io_error)?,
                 "json",
@@ -190,35 +222,28 @@ pub(super) fn content(content: &Value) -> Result<String, ClewError> {
         ));
     }
     if out.is_empty() {
-        out.push_str("No response media or body schema is recorded for this status in the retained declaration.\n\n");
+        out.push_str(&format!("{}\n\n", t("No response media or body schema is recorded for this status in the retained declaration.")));
     }
     Ok(out)
 }
-pub(super) fn parameters(parameters: &Value) -> Result<String, ClewError> {
+pub(super) fn parameters(parameters: &Value, language: &str) -> Result<String, ClewError> {
+    let t = |key| label(language, key);
     if rows(parameters).next().is_none() {
-        return Ok("No parameters declared.\n\n".into());
+        return Ok(format!("{}\n\n", t("No parameters declared.")));
     }
-    let mut out = String::from(
-        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">Parameter</th><th scope=\"col\">Location / type</th><th scope=\"col\">Required</th><th scope=\"col\">Declared constraints</th></tr></thead><tbody>",
+    let parameter = literal(t("Parameter"));
+    let location = literal(t("Location / type"));
+    let required = literal(t("Required"));
+    let declared = literal(t("Declared constraints"));
+    let mut out = format!(
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">{parameter}</th><th scope=\"col\">{location}</th><th scope=\"col\">{required}</th><th scope=\"col\">{declared}</th></tr></thead><tbody>"
     );
     for p in rows(parameters) {
-        out.push_str(&format!(
-            "<tr><td data-label=\"Parameter\"><code>{}</code><br/>{}</td><td data-label=\"Location / type\">{} / {}</td><td data-label=\"Required\">{}</td><td data-label=\"Declared constraints\">{}</td></tr>",
-            literal(text(&p["name"])),
-            literal(text(&p["description"])),
-            literal(text(&p["in"])),
-            literal(&schema_type(&p["schema"])),
-            if p["required"] == true {
-                "Required"
-            } else {
-                "Optional"
-            },
-            literal(&constraints(&p["schema"]))
-        ));
+        out.push_str(&format!("<tr><td data-label=\"{parameter}\"><code>{}</code><br/>{}</td><td data-label=\"{location}\">{} / {}</td><td data-label=\"{required}\">{}</td><td data-label=\"{declared}\">{}</td></tr>", literal(text(&p["name"])), literal(text(&p["description"])), literal(text(&p["in"])), literal(&schema_type_language(&p["schema"], language)), required_value(if p["required"] == true { "Required" } else { "Optional" }, language), literal(&constraints(&p["schema"]))));
     }
     out.push_str("</tbody></table></div>\n\n");
     out.push_str(&details(
-        "Exact retained parameter declarations",
+        t("Exact retained parameter declarations"),
         &fence(
             &serde_json::to_string_pretty(parameters).map_err(io_error)?,
             "json",
@@ -226,6 +251,7 @@ pub(super) fn parameters(parameters: &Value) -> Result<String, ClewError> {
     ));
     Ok(out)
 }
+
 pub(super) fn comparison_current(page: &Value, entry: &Value) -> bool {
     let c = &page["contractComparison"];
     let service = text(&c["service"]);
