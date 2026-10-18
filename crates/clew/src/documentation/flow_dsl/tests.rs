@@ -324,8 +324,17 @@ fn unknown_or_other_profile_language_is_an_explicit_gap_with_original_downloads(
             }
             assert!(view.contains("href=\"profile.json\""));
             assert!(view.contains("href=\"projection.json\""));
-            assert!(!view.contains(&format!("<h1>{}</h1>", p.title)));
-            assert!(!view.contains("#steps"));
+            assert!(view.contains(&format!("<h1>{}</h1>", p.title)));
+            assert_eq!(view.matches("<h1>").count(), 1);
+            assert!(view.find("<h1>").unwrap() < view.find("class=\"translation-gap\"").unwrap());
+            assert!(view.contains("Ниже доступна исходная интерпретация для чтения"));
+            assert!(view.contains("#steps"));
+            for phase in &projection.phases {
+                assert!(view.contains(&format!("id=\"{}\"", phase.id)));
+            }
+            for item in &projection.items {
+                assert!(view.contains(&format!("id=\"{}\"", item.id)));
+            }
         }
         let saved: Value =
             serde_json::from_slice(&std::fs::read(out.path().join("projection.json")).unwrap())

@@ -39,9 +39,9 @@ fn list(items: impl IntoIterator<Item = String>) -> String {
             .collect::<String>()
     )
 }
-fn content(p: &Projection, language: &str) -> String {
+fn content(p: &Projection, language: &str, notice: &str) -> String {
     let l = |en, ru| language::choose(language, en, ru);
-    let mut out = format!("<main>\n<h1>{}</h1>\n", escape(&p.title));
+    let mut out = format!("<main>\n<h1>{}</h1>\n{notice}", escape(&p.title));
     out += &paragraph(l(
         "Source interpretation with a declared profile. This is a static possible path, not a runtime trace or an incident diagnosis.",
         "Интерпретация исходного кода по заявленному профилю. Это возможный статический путь, а не трассировка выполнения или диагностика инцидента.",
@@ -199,9 +199,8 @@ fn write_inner(
     let l = |en, ru| language::choose(language, en, ru);
     let available = profile.and_then(|p| p.documentation_language.as_deref());
     let complete = profile.is_none() || available == Some(language);
-    let title = if complete {
-        p.title.as_str()
-    } else if available.is_none() {
+    let title = p.title.as_str();
+    let gap_heading = if available.is_none() {
         l(
             "Availability in the selected language is not established",
             "Доступность на выбранном языке не установлена",
@@ -209,12 +208,12 @@ fn write_inner(
     } else {
         l("Translation required", "Требуется перевод")
     };
-    let body = if complete {
-        content(p, language)
+    let notice = if complete {
+        String::new()
     } else {
         format!(
-            "<main><h1>{}</h1><p>{}</p><dl><dt>{}</dt><dd>{}</dd><dt>{}</dt><dd>{}</dd></dl><p id=\"sources\"><a href=\"profile.json\">{}</a> · <a href=\"projection.json\">{}</a> · <a href=\"sources.html\">{}</a></p></main>",
-            title,
+            "<aside class=\"translation-gap\"><h2>{}</h2><p>{}</p><dl><dt>{}</dt><dd>{}</dd><dt>{}</dt><dd>{}</dd></dl><p><a href=\"profile.json\">{}</a> · <a href=\"projection.json\">{}</a> · <a href=\"sources.html\">{}</a></p><p>{}</p></aside>",
+            gap_heading,
             if available.is_none() {
                 l(
                     "The original profile has no declared prose language. Its original text and source bindings are preserved; no translation or review is inferred.",
@@ -241,9 +240,14 @@ fn write_inner(
             l(
                 "Retained source appendix",
                 "Приложение с сохранённым исходным кодом"
+            ),
+            l(
+                "Readable original interpretation below",
+                "Ниже доступна исходная интерпретация для чтения"
             )
         )
     };
+    let body = content(p, language, &notice);
     let appendix_title = l(
         "Retained source appendix",
         "Приложение с сохранённым исходным кодом",
@@ -332,5 +336,5 @@ fn write_inner(
 }
 #[cfg(test)]
 pub(super) fn body(p: &Projection) -> String {
-    content(p, "en")
+    content(p, "en", "")
 }
