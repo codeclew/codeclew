@@ -366,6 +366,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
+    out.push_str(&page_prose_gaps(page)?);
     if page["questionReaderTranslationGap"].is_object() {
         out.push_str(&reading_guide_gap(
             &page["questionReaderTranslationGap"],
@@ -925,6 +926,11 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
     out.push_str(IMPORTS);
     out.push_str(&format!("# {}\n\n<ClewPageContext />\n\nDeclared interface · {}. Runtime enforcement and full specification validation are not established by this bounded record.\n\n", md(&title), md(text(&n["authority"]))));
     if let Some(page) = owner {
+        for gap in rows(&page["authoredTranslationGaps"])
+            .filter(|gap| gap["record"] == "contractComparison")
+        {
+            out.push_str(&prose_gap(gap, page["language"].as_str().unwrap_or("en"))?);
+        }
         let service = text(&page["subject"])
             .strip_prefix("service:")
             .unwrap_or("");
@@ -1048,6 +1054,7 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
 fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let mut out = header(text(&page["title"]), &format!("/services/{id}"));
     out.push_str(IMPORTS);
+    out.push_str(&page_prose_gaps(page)?);
     out.push_str(&format!(
         "<span id=\"service-overview\"></span>\n\n# {}\n\n",
         md(text(&page["title"]))
@@ -1144,10 +1151,15 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     Ok(out)
 }
 
-fn comparison_page(c: &Value, id: &str) -> Result<String, ClewError> {
+fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewError> {
     let title = format!("{id}: retained HTTP comparison");
     let mut out = header(&title, &format!("/comparisons/{id}"));
     out.push_str(IMPORTS);
+    for gap in
+        rows(&page["authoredTranslationGaps"]).filter(|gap| gap["record"] == "contractComparison")
+    {
+        out.push_str(&prose_gap(gap, page["language"].as_str().unwrap_or("en"))?);
+    }
     out.push_str(&format!(
         "# {}\n\n{}\n\nAuthority: {} · binding: {}\n\nSnapshot: {}\n\nRevision: {}\n\n",
         md(&title),
@@ -1352,6 +1364,15 @@ fn put(files: &mut BTreeMap<String, Vec<u8>>, name: impl Into<String>, body: imp
     files.insert(name.into(), body.into());
 }
 
+fn page_prose_gaps(page: &Value) -> Result<String, ClewError> {
+    let mut notices = String::new();
+    let language = page["language"].as_str().unwrap_or("en");
+    for gap in rows(&page["authoredTranslationGaps"]) {
+        notices.push_str(&prose_gap(gap, language)?);
+    }
+    Ok(notices)
+}
+
 fn prose_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
     use crate::documentation::{reader::text as label, render::escape, store};
     let original = text(&gap["originalPath"]);
@@ -1360,8 +1381,9 @@ fn prose_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
         .replace('{', "&#123;")
         .replace('}', "&#125;");
     Ok(format!(
-        "## {}\n\n{}\n\n{}: {}\n\n<ClewDownload path=\"{path}\">{}</ClewDownload>\n\n",
+        "## {}: {}\n\n{}\n\n{}: {}\n\n<ClewDownload path=\"{path}\">{}</ClewDownload>\n\n",
         label(language, "Translation pending", "Требуется перевод"),
+        super::prose_language::description_label(gap, language),
         super::prose_language::explanation(language),
         label(
             language,
@@ -1484,6 +1506,7 @@ pub(super) fn project(
         } else {
             let mut body = header(title, &format!("/scenarios/{id}"));
             body.push_str(IMPORTS);
+            body.push_str(&page_prose_gaps(page)?);
             body.push_str(&format!(
                 "<ClewAnchor id=\"process-overview\" pageStart />\n\n# {}\n\n",
                 md(title)
@@ -1547,7 +1570,7 @@ pub(super) fn project(
             put(
                 &mut files,
                 format!("docs/comparisons/{id}.mdx"),
-                comparison_page(&page["contractComparison"], id)?,
+                comparison_page(&page["contractComparison"], id, page)?,
             );
         }
     }
@@ -1903,6 +1926,34 @@ mod tests {
         ] {
             assert!(rendered.contains(value), "{value}");
         }
+    }
+
+    #[test]
+    fn portable_flow_and_comparison_notices_keep_readable_originals_and_widgets() {
+        let original = json!({"language":"ru","subject":"scenario:save","title":"Original service",
+            "questionReader":{"title":"Original process","purpose":"Original process purpose","sections":[]},
+            "processDataFlow":{"request":{"documentationLanguage":"en","anchor":"question-save","title":"Original flow"},"models":[]},
+            "contractComparison":{"documentationLanguage":"en","scope":"Original comparison scope","entries":[],"limitations":["Original bounded limitation"],"sources":{},"artifacts":{}}});
+        let mut page = original.clone();
+        let mut files = BTreeMap::new();
+        super::super::prose_language::attach_payload(
+            &mut page,
+            "scenarios/save.json",
+            Some("ru"),
+            &mut files,
+        )
+        .unwrap();
+        let process = process_page(&page, "save").unwrap();
+        assert!(process.contains("Original process purpose"));
+        assert!(process.contains("<ClewProcess"));
+        assert!(process.contains("question-save"));
+        assert!(process.contains("/clew-original/scenarios/save.data-flow.original.json"));
+        let comparison = comparison_page(&page["contractComparison"], "save", &page).unwrap();
+        assert!(comparison.contains("Original comparison scope"));
+        assert!(comparison.contains("Original bounded limitation"));
+        assert!(comparison.contains("/clew-original/scenarios/save.comparison.original.json"));
+        assert_eq!(page["contractComparison"], original["contractComparison"]);
+        assert_eq!(page["processDataFlow"], original["processDataFlow"]);
     }
 
     #[test]

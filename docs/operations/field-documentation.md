@@ -923,6 +923,14 @@ record; portable exports offer it as a raw JSON download. Language availability
 does not change the evidence or review status and does not assert that every
 other documentation family has a translation.
 
+Process data-flow descriptions and HTTP comparison packets also retain their
+own language. Their availability is recorded separately in
+`authoredTranslationGaps` and `authoredTranslationComplete`; the latter is null
+without a selected prose language. A notice identifies the affected description,
+while original data, limitations, results and technical links remain available.
+The original bound flow or comparison record is downloadable as raw JSON in
+both formats. A language gap does not change an analysis finding.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with
