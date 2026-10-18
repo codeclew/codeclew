@@ -285,12 +285,15 @@ LOCALIZATION_ASSETS = ("app.js", "analysis.js", "reader.js", "limits.js")
 # The v0.13.7 bodies were verified against source revision fd82a763.
 # The v0.13.13 body was verified against source revision 56a9e33a.
 # The v0.13.20 body was verified against source revision 65b146e2.
+# The shared reader/limits body was verified against efbeaeaf and the unchanged
+# committed clew-starter publication before the native style alignment.
 # New reader assets must not invalidate already published frozen snapshots.
 FROZEN_LOCALIZATION_SCRIPT_DIGESTS = {
     "7e772ad1b4c368ba5d3a49f0a1e3dd306f7b51e2bbba552f9b600e9a49d28faa",
     "81169526b9b54c0c78da0eeadfb6035e955aee15444772bd1158a81dc651252e",
     "5c50f53ee17dae7c291c6596f63db02c43e1381eeb6fd6fd90cee4581638bc3f",
     "92dc041c814a8cc158c42732268af942ae3ae27bb8c3a517d948d9bf0e675548",
+    "926417ffa670751f405468192568409f6f6767f5e29f326d9e1d35976e2eaa5b",
 }
 
 

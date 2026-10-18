@@ -100,6 +100,34 @@ function load(data=fixture(),mobile=false){
  vm.runInContext(script,context);
  return {data,e:element,document:testDocument,media,navigationHistory,run:code=>vm.runInContext(code,context),key(key,shiftKey=false){const event={key,shiftKey,target:testDocument.activeElement,preventDefault(){this.prevented=true;}};listeners.keydown(event);return event.prevented===true;},click(dataset,currentSources=false){listeners.click({target:{closest:()=>({dataset,classList:{add(){}},hasAttribute:name=>name==='data-current-sources'&&currentSources})},preventDefault(){}});}};
 }
+function importedObservationFixture(value){
+ const data=fixture(),text=JSON.stringify(value,null,2),id='assessment-observation';
+ data.notes=[{id,association:{title:'original-observation.json',classification:'mixed',targets:[],period:value.nodeVersion||value.startedAt||'recorded label',service:'sample'},associationDigest:'association-digest',original:{status:'CAPTURED',digest:'original-digest',text},snapshotLabel:'Original imported text, not a verified fact.',assessmentSubject:data.subject,assessment:{id,title:'A bounded assessment of the recorded exercise',summary:fragment('Exact assessment prose.\nIts limitations remain visible.'),assessment:{outcome:'CONSISTENT',period:value.nodeVersion||value.startedAt||'recorded label',noteDigest:'original-digest',associationDigest:'association-digest'}},missingTargets:[]}];
+ data.operationStates[id]={freshness:'SOURCE_BOUND',verification:'UNASSESSED'};
+ return data;
+}
+test('recognized imported observations keep historical results separate from assessment and collapsed originals',()=>{
+ const value={schema:'clew-weather-runtime-observation/1.0',id:'synthetic-replay',origin:'LOCAL_TEST_OBSERVATION',compilerEvidence:false,status:'PASS',sourceCommit:'a'.repeat(40),startedAt:'2026-10-13T01:19:20Z',cases:[{case:'forecast-before-place',pass:true},{case:'<script>unsafe</script>',pass:false}]};
+ const data=importedObservationFixture(value),before=JSON.stringify(data),r=load(data);r.run("showEntry('assessment-observation')");
+ const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Historical runtime observation/);assert.match(html,/1 of 2 replay cases reported passing/);
+ assert.match(html,/Imported, unverified record/);assert.match(html,/Assessment conclusion: CONSISTENT/);
+ assert.ok(html.indexOf('Separate agent assessment')<html.indexOf('<summary>Original record'));
+ assert.match(html,/<details class="note-record-details"><summary>Original record/);
+ assert.match(html,/Exact assessment prose\.\nIts limitations remain visible\./);
+ assert.doesNotMatch(html,/<script>unsafe/);assert.match(html,/&lt;script&gt;unsafe/);
+ assert.equal(JSON.stringify(data),before);assert.equal(r.run('D.notes[0].original.text'),data.notes[0].original.text);
+});
+test('Node observation labels its version correctly and arbitrary note JSON has no runtime-result projection',()=>{
+ const value={schema:'clew-weather-runtime-observation/1.0',id:'synthetic-validator',origin:'LOCAL_TEST_OBSERVATION',compilerEvidence:false,status:'PASSED',repositoryRevision:'b'.repeat(40),nodeVersion:'v24.21.0',exerciseResult:{status:'PASSED',assertions:6,runtime:'v24.21.0'}};
+ const r=load(importedObservationFixture(value));r.run("showEntry('assessment-observation')");
+ assert.match(r.e('scenario-content').innerHTML,/Node version: <code>v24.21.0/);
+ assert.match(r.e('scenario-content').innerHTML,/Node version assessed: v24.21.0/);
+ assert.doesNotMatch(r.e('scenario-content').innerHTML,/Period: v24/);
+ const other=load(importedObservationFixture({...value,schema:'arbitrary-json/1.0'}));other.run("showEntry('assessment-observation')");
+ assert.doesNotMatch(other.e('scenario-content').innerHTML,/Historical runtime observation|Reported result:/);
+ assert.match(other.e('scenario-content').innerHTML,/Original record/);
+});
 test('default service overview exposes the first native graph and all visual navigation',()=>{
  const r=load(),html=r.e('scenario-content').innerHTML;
  assert.match(html,/<svg class="artifact-svg"/);
@@ -110,6 +138,26 @@ test('default service overview exposes the first native graph and all visual nav
  assert.match(r.e('scenario-nav').innerHTML,/Dispatch work/);
  assert.match(r.e('scenario-nav').innerHTML,/Select handler/);
  assert.equal(r.run('inventoryEntries().length'),0);
+});
+test('Kafka boundaries keep local publication separate from linked continuations without upgrading evidence',()=>{
+ const r=load(),from={service:'producer',selector:{language:'kotlin',owner:'class:Producer',name:'publish',parameterTypes:[]}},to={service:'consumer',selector:{language:'typescript',owner:'package:',name:'consume',parameterTypes:[]}};
+ const interaction={id:'event-route',origin:'agent-proposal',runtime:'UNKNOWN',declaration:{id:'event-route',from,to,transport:{kind:'kafka',topic:'event.changed'},declaration:{origin:'agent-proposal',rationale:'A declared mapping, not observed delivery.'}},from:{sourceIds:['publisher-source'],candidates:['producer-symbol']},to:{sourceIds:['consumer-source'],candidates:['consumer-symbol']},callSite:{sourceIds:['call-source'],candidates:['call-observation']},topic:{caller:{status:'UNRESOLVED'},receiver:{status:'UNRESOLVED'}},boundaries:['UNACCEPTED_AGENT_PROPOSAL']};
+ const publisher={id:'publisher',title:'Publish pending events',href:'../scenarios/publisher.html#process-overview',root:{service:'producer',selector:{...from.selector,name:'runLoop'}},interactions:[interaction.id],steps:[{id:'send',blocks:[{text:'Send to event.changed.',sourceIds:['publisher-source'],dependencyIds:[]}]},{id:'commit',blocks:[{text:'Mark the outbox row and commit.',sourceIds:['publisher-source'],dependencyIds:[]}]}]};
+ const consumer={id:'consumer',title:'Consume events',href:'../scenarios/consumer.html#process-overview',root:to,interactions:[interaction.id],steps:[{id:'receive',blocks:[{text:'Receive event.changed.',sourceIds:['consumer-source'],dependencyIds:[]}]}]};
+ r.e('reader-context').textContent=JSON.stringify({processLinks:[publisher,consumer],serviceLabels:{producer:'Producer',consumer:'Consumer'}});
+ r.run(`D.interactions=${JSON.stringify([interaction])};D.subject='scenario:save';D.process={definition:{id:'save',root:{service:'front',selector:{name:'save'}},interactions:['event-route']}};`);
+ assert.equal(r.run("processTopicSection('send')"),'');
+ const related=r.run('relatedTopicContinuations()');
+ assert.match(related,/Related asynchronous continuation/);assert.match(related,/not additional publishing steps/);
+ assert.match(related,/publisher\.html\?fromProcess=save/);assert.doesNotMatch(related,/Outgoing Kafka topic/);
+ r.run(`D.subject='scenario:publisher';D.process={definition:${JSON.stringify({id:'publisher',root:publisher.root,interactions:[interaction.id]})}};`);
+ const before=r.run('JSON.stringify(D)'),local=r.run("processTopicSection('send')");
+ assert.match(local,/Outgoing Kafka topic/);assert.match(local,/event.changed/);assert.match(local,/UNRESOLVED/);assert.match(local,/UNKNOWN/);assert.match(local,/runtime delivery has not been verified/);
+ assert.match(local,/consumer\.html\?fromProcess=publisher/);assert.equal(r.run("processTopicSection('commit')"),'');
+ assert.equal(r.run('JSON.stringify(D)'),before);
+ r.run("D.subject='service:consumer';D.process=null;");
+ assert.match(r.run("serviceTopicBoundaries('incoming')"),/id="topic-incoming-event.changed"/);
+ assert.equal(r.run("serviceTopicBoundaries('outgoing')"),'');
 });
 test('documented events render as localized, evidence-linked pseudocode while the sequence stays available',()=>{
  const data=behaviorFixture(),en=load(data),html=en.e('scenario-content').innerHTML;
@@ -1349,6 +1397,12 @@ function questionFixture(){
  d.questionReader={title:'Save a city',purpose:'Follow the bounded save',authority:'EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE',sections:[{id:'story',title:'What happens?',blocks:[block]},{id:'confidence',title:'Source and confidence',blocks:[block]}],conclusion:{...block,title:'Local result'}};
  return d;
 }
+test('sequential reading retains the shared global header and search',()=>{
+ const d=questionFixture();d.questionReader.presentation='SEQUENTIAL';d.questionReader.sections[0].number=1;
+ const r=load(d);
+ r.run("globalThis.sharedHeader={innerHTML:'shared navigation and global search',dataset:{}};document.querySelector=selector=>selector==='.reader-nav'?sharedHeader:null;sequentialNav()");
+ assert.equal(r.run('sharedHeader.innerHTML'),'shared navigation and global search');
+});
 test('canonical model is primary without Data Flow and retains exact process return and legacy context',()=>{
  const d=questionFixture(),original=JSON.stringify({operations:d.operations,guide:d.questionReader});
  d.canonicalEntityLinks={'question-story':{places:[{id:'place',title:'Place',href:'../data-model/place.html'}]}};

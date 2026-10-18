@@ -4,6 +4,8 @@ use crate::documentation::{digest, invalid, io_error};
 use crate::error::ClewError;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+mod contracts;
+mod reading;
 
 const REF: &str = "$clewRef";
 const LITERAL: &str = "$clewLiteral";
@@ -222,7 +224,7 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
                 md(text(&e["title"])),
                 md(text(&e["state"]["freshness"])),
                 md(text(&e["state"]["verification"])),
-                md(text(&e["fragment"]["text"]))
+                reading::inline(text(&e["fragment"]["text"]))
             ));
             for source in e["sources"]
                 .as_object()
@@ -239,7 +241,7 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -262,7 +264,8 @@ fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError
     block_in(block, page, section, "../")
 }
 fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<String, ClewError> {
-    let mut out = format!("{}\n\n", md(text(&block["text"])));
+    let mut out = format!("{}\n\n", reading::inline(text(&block["text"])));
+    let mut links = String::new();
     for link in rows(&block["links"]) {
         let subject = text(&link["subject"]);
         let operation = text(&link["operation"]);
@@ -271,7 +274,7 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
             &page["canonicalEntityLinks"][&anchor][subject.strip_prefix("service:").unwrap_or("")];
         if operation == "section-entities" && canonical.is_array() {
             for model in rows(canonical) {
-                out.push_str(&format!("<ClewModelLink model={} process={} anchor={}>{} · data model</ClewModelLink>\n\n",
+                links.push_str(&format!("<ClewModelLink model={} process={} anchor={}>{} · data model</ClewModelLink>\n\n",
                     json!(text(&model["id"])),json!(text(&page["subject"]).strip_prefix("scenario:").unwrap_or("")),json!(anchor),md(text(&model["title"]))));
             }
         }
@@ -300,11 +303,42 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
         } else {
             format!("{prefix}{directory}/{id}.mdx#{operation}")
         };
-        out.push_str(&format!("[{}]({target})\n\n", md(label)));
+        if let Some(process) = text(&page["subject"]).strip_prefix("scenario:") {
+            let path = target.trim_start_matches("../").replace(".mdx", "");
+            links.push_str(&format!(
+                "<ClewContextLink path={} fromProcess={} fromQuestion={}>{}</ClewContextLink>\n\n",
+                json!(format!("/{path}")),
+                json!(process),
+                json!(anchor),
+                md(label)
+            ));
+        } else {
+            links.push_str(&format!("[{}]({target})\n\n", md(label)));
+        }
+    }
+    if !links.is_empty() {
+        out.push_str(&format!(
+            "<div className=\"clew-context-links\">\n\n{links}</div>\n\n"
+        ));
     }
     out.push_str(&evidence_in(block, prefix)?);
     if block["disclosure"] == true || block["disclosure"].is_string() {
-        Ok(details(text(&block["title"]), &out))
+        let title = block["disclosure"]
+            .as_str()
+            .unwrap_or(text(&block["title"]));
+        let preview = block["preview"]
+            .as_str()
+            .map(|value| {
+                format!(
+                    "<span className=\"clew-disclosure-preview\">{}</span>",
+                    reading::inline(value)
+                )
+            })
+            .unwrap_or_default();
+        Ok(format!(
+            "<details className=\"clew-context-disclosure\">\n<summary>{}{preview}</summary>\n\n{out}\n</details>\n\n",
+            md(title)
+        ))
     } else if matches!(text(&block["tone"]), "ERROR" | "WARNING" | "INFO") {
         let anchor = block["id"]
             .as_str()
@@ -324,11 +358,17 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
     }
 }
 
+#[cfg(test)]
 fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
+    process_page_with_context(page, id, &Value::Null)
+}
+fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
+    out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
+    out.push_str(&reading::status(page));
     let flow = page["processDataFlow"].is_object();
     if flow {
         out.push_str(&format!(
@@ -336,11 +376,8 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
             json!(text(&page["processDataFlow"]["request"]["anchor"]))
         ));
     }
-    out.push_str(&format!(
-        "## Process overview {{#process-overview}}\n\n{}\n\n",
-        md(text(&guide["purpose"]))
-    ));
-    out.push_str(
+    out.push_str(&format!("{}\n\n", reading::inline(text(&guide["purpose"]))));
+    let mut reading_context = String::from(
         "Editorial reading guide · original source scopes and review states remain separate.\n\n",
     );
     let mut graph = String::from("flowchart TD\n");
@@ -359,7 +396,7 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
         previous = Some(i);
     }
     if previous.is_some() {
-        out.push_str(&details("Reading map",&(String::from("Reading order only. Conditions and failures remain beside the steps below; this is not a runtime trace.\n\n")+&fence(&graph,"mermaid"))));
+        reading_context.push_str(&(String::from("Reading order only. Conditions and failures remain beside the steps below; this is not a runtime trace.\n\n")+&fence(&graph,"mermaid")));
     }
     for section in rows(&guide["sections"]) {
         let sid = text(&section["id"]);
@@ -368,17 +405,26 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
         if exception {
             out.push_str("<aside className=\"clew-exception\">\n\n");
         }
+        let number = section["number"]
+            .as_u64()
+            .map(|n| format!("{n}. "))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{} {} {{#{anchor}}}\n\n",
+            "{} {number}{} {{#{anchor}}}\n\n",
             if exception { "###" } else { "##" },
             md(text(&section["title"]))
         ));
         if !text(&section["route"]).is_empty() {
-            out.push_str(&fence(text(&section["route"]), "text"));
+            out.push_str(&format!(
+                "<p className=\"clew-route\"><code>{{{}}}</code></p>\n\n",
+                json!(text(&section["route"]))
+            ));
         }
         for (index, b) in rows(&section["blocks"]).enumerate() {
             out.push_str(&block(b, page, sid)?);
             if index == 0 {
+                out.push_str(&reading::step_models(page, &anchor));
+                out.push_str(&reading::process_topics(page, context, Some(sid))?);
                 for reference in rows(&page["modelReferences"]).filter(|r| r["anchor"] == anchor) {
                     out.push_str(&format!(
                         "<ClewModelLink model={} process={} anchor={}>{}</ClewModelLink>\n\n",
@@ -394,6 +440,8 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
             out.push_str("</aside>\n\n");
         }
     }
+    out.push_str(&reading::process_topics(page, context, None)?);
+    out.push_str(&details("Reading guide and map", &reading_context));
     if guide["conclusion"].is_object() {
         out.push_str(&details(
             text(&guide["conclusion"]["title"]),
@@ -705,20 +753,49 @@ fn http_binding(page: &Value, operation: Option<&str>, record: &Value) -> Value 
     json!({"record":record,"sources":sources})
 }
 
-fn http_links(page: &Value, operation: &str) -> Result<String, ClewError> {
-    let mut out = String::new();
-    for record in rows(&page["operationContracts"][operation])
-        .filter(|r| r["normalized"]["method"].is_string())
-    {
-        let key = digest(&http_binding(page, Some(operation), record))?;
-        out.push_str(&format!(
-            "- [{} {}](../http/{}.mdx) · declared request/response schemas\n",
-            md(text(&record["normalized"]["method"])),
-            md(text(&record["normalized"]["path"])),
-            &key[7..]
-        ));
+fn http_record_links<'a>(
+    page: &Value,
+    records: impl Iterator<Item = &'a Value>,
+    operation: Option<&str>,
+) -> Result<String, ClewError> {
+    let mut links = String::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for record in records.filter(|r| r["normalized"]["method"].is_string()) {
+        let key = digest(&http_binding(page, operation, record))?;
+        if seen.insert(key.clone()) {
+            links.push_str(&format!(
+                "<ClewContextLink path={}>{} {}</ClewContextLink>\n\n",
+                json!(format!("/http/{}", &key[7..])),
+                md(text(&record["normalized"]["method"])),
+                md(text(&record["normalized"]["path"]))
+            ));
+        }
     }
-    Ok(out)
+    if links.is_empty() {
+        Ok(links)
+    } else {
+        Ok(format!(
+            "<div className=\"clew-context-links\">\n\n{links}</div>\n\n"
+        ))
+    }
+}
+fn http_links(page: &Value, operation: &str) -> Result<String, ClewError> {
+    if text(&page["subject"]).starts_with("service:") && operation.starts_with("section-") {
+        return Ok(String::new());
+    }
+    http_record_links(
+        page,
+        rows(&page["operationContracts"][operation]),
+        Some(operation),
+    )
+}
+fn selected_http_links(page: &Value, input: Option<&str>) -> Result<String, ClewError> {
+    http_record_links(
+        page,
+        rows(&page["contracts"])
+            .filter(|r| input.is_none_or(|id| r["normalized"]["entrypoint"] == id)),
+        None,
+    )
 }
 
 fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, ClewError> {
@@ -731,7 +808,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         "Retained account · {} · {}. Runtime behavior is not established by this export.\n\n{}\n\n",
         md(state["freshness"].as_str().unwrap_or("UNVERIFIED")),
         md(state["verification"].as_str().unwrap_or("UNASSESSED")),
-        md(text(&op["summary"]["text"]))
+        reading::inline(text(&op["summary"]["text"]))
     );
     out.push_str(&details(
         "Summary source bindings",
@@ -773,7 +850,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             "#### {}. {}\n\n{}\n\n{}",
             i + 1,
             md(text(&event["kind"])),
-            md(text(&event["text"])),
+            reading::inline(text(&event["text"])),
             details("Source bindings", &citations(page, id, event)?)
         ));
     }
@@ -789,7 +866,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
     for claim in rows(&op["explanation"]) {
         out.push_str(&format!(
             "{}\n\n{}",
-            md(text(&claim["text"])),
+            reading::inline(text(&claim["text"])),
             details("Source bindings", &citations(page, id, claim)?)
         ));
     }
@@ -813,43 +890,64 @@ fn operation_page(page: &Value, op: &Value, prefix: &str) -> Result<String, Clew
     let mut out = header(text(&op["title"]), &format!("/operations/{prefix}--{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!("# {}\n\n", md(text(&op["title"]))));
+    out.push_str("<ClewPageContext />\n\n");
     out.push_str(&operation_body(page, op, "##")?);
     Ok(out)
 }
 
-fn http_page(binding: &Value, key: &str) -> Result<String, ClewError> {
+fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String, ClewError> {
     let record = &binding["record"];
     let n = &record["normalized"];
     let operation = &n["operation"];
     let title = format!("{} {}", text(&n["method"]), text(&n["path"]));
     let mut out = header(&title, &format!("/http/{key}"));
     out.push_str(IMPORTS);
-    out.push_str(&format!("# {}\n\nDeclared interface · {}. Runtime enforcement and full specification validation are not established by this bounded record.\n\n",md(&title),md(text(&n["authority"]))));
+    out.push_str(&format!("# {}\n\n<ClewPageContext />\n\nDeclared interface · {}. Runtime enforcement and full specification validation are not established by this bounded record.\n\n", md(&title), md(text(&n["authority"]))));
+    if let Some(page) = owner {
+        let service = text(&page["subject"])
+            .strip_prefix("service:")
+            .unwrap_or("");
+        let input = rows(&page["catalogue"]).find(|e| {
+            e["id"] == n["entrypoint"]
+                && serde_json::from_value::<crate::documentation::model::Entrypoint>((*e).clone())
+                    .is_ok_and(|e| crate::documentation::process_candidates::public_boundary(&e))
+        });
+        let anchor = input
+            .map(|e| format!("entry-{}", text(&e["id"])))
+            .unwrap_or_else(|| {
+                if rows(&page["sections"]).any(|v| v["id"] == "section-ingress") {
+                    "section-ingress".into()
+                } else {
+                    "service-overview".into()
+                }
+            });
+        out.push_str(&format!(
+            "<ClewContextLink path={}>Service and input context · {}</ClewContextLink>\n\n",
+            json!(format!("/services/{service}#{anchor}")),
+            md(text(&page["title"]))
+        ));
+    }
+    let mut sources = String::new();
     for source in binding["sources"]
         .as_object()
         .into_iter()
-        .flat_map(|s| s.values())
+        .flat_map(|v| v.values())
     {
-        out.push_str(&format!("- {}\n", source_link(source)?));
+        sources.push_str(&format!("- {}\n", source_link(source)?));
     }
-    out.push('\n');
-    if rows(&n["parameters"]).next().is_some() {
-        out.push_str(&format!(
-            "## Parameters\n\n{}",
-            fence(
-                &serde_json::to_string_pretty(&n["parameters"]).map_err(io_error)?,
-                "json"
-            )
-        ));
-    }
+    out.push_str(&details("Declaration source and provenance", &sources));
+    out.push_str("## Parameters\n\n");
+    out.push_str(&contracts::parameters(&n["parameters"])?);
+    out.push_str("## Request body\n\n");
     if operation["requestBody"].is_object() {
-        out.push_str(&format!(
-            "## Request body\n\n{}",
-            fence(
-                &serde_json::to_string_pretty(&operation["requestBody"]).map_err(io_error)?,
-                "json"
-            )
-        ));
+        out.push_str(if operation["requestBody"]["required"] == true {
+            "Required body.\n\n"
+        } else {
+            "Optional or absent body.\n\n"
+        });
+        out.push_str(&contracts::content(&operation["requestBody"]["content"])?);
+    } else {
+        out.push_str("No request body is recorded in this declaration.\n\n");
     }
     out.push_str("## Declared responses\n\n");
     for (status, response) in operation["responses"]
@@ -860,23 +958,21 @@ fn http_page(binding: &Value, key: &str) -> Result<String, ClewError> {
         out.push_str(&format!(
             "### {}\n\n{}\n\n",
             md(status),
-            md(text(&response["description"]))
+            reading::inline(text(&response["description"]))
         ));
-        let content = response["content"].as_object();
-        if content.is_none_or(|v| v.is_empty()) {
-            out.push_str("No response media or body schema is recorded for this status in the retained declaration.\n\n");
-        }
-        for (media, body) in content.into_iter().flat_map(|v| v.iter()) {
-            out.push_str(&format!(
-                "**Media:** {}\n\n{}",
-                md(media),
-                fence(
-                    &serde_json::to_string_pretty(&body["schema"]).map_err(io_error)?,
-                    "json"
-                )
-            ));
+        if response["content"].as_object().is_none_or(|v| v.is_empty()) {
+            out.push_str(&contracts::content(&response["content"])?);
+        } else {
+            out.push_str(&format!("<details{}>\n<summary>Response media and body schema</summary>\n\n{}\n</details>\n\n",if status.starts_with('2'){" open"}else{""},contracts::content(&response["content"])?));
         }
     }
+    out.push_str(&details(
+        "Complete retained operation contract",
+        &fence(
+            &serde_json::to_string_pretty(operation).map_err(io_error)?,
+            "json",
+        ),
+    ));
     let mut context = n.clone();
     context.as_object_mut().unwrap().remove("operation");
     out.push_str(&details(
@@ -889,52 +985,78 @@ fn http_page(binding: &Value, key: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-fn comparison_rows(entry: &Value) -> String {
+fn comparison_rows(entry: &Value, packet: &Value) -> String {
     let mut out = format!(
-        "{}\n\n| Retained case | HTTP status | Status declared | Media assessment | Request assessment | Body assessment |\n| --- | --- | --- | --- | --- | --- |\n",
-        md(text(&entry["coverage"]))
+        "{}\n\n{}",
+        md(text(&entry["coverage"])),
+        contracts::findings(entry)
+    );
+    let mut cases = String::from(
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table clew-case-table\"><thead><tr><th scope=\"col\">Retained case</th><th scope=\"col\">HTTP status</th><th scope=\"col\">Status declared</th><th scope=\"col\">Recorded media</th><th scope=\"col\">Request assessment</th><th scope=\"col\">Body assessment</th></tr></thead><tbody>",
     );
     for case in rows(&entry["cases"]) {
-        out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} |\n",
-            md(text(&case["id"])),
-            case["response"]["status"],
-            case["statusDeclared"],
-            md(text(&case["mediaAssessment"])),
-            md(text(&case["requestAssessment"])),
-            md(text(&case["bodyAssessment"]))
-        ));
+        cases.push_str(&format!("<tr><td data-label=\"Retained case\">{}</td><td data-label=\"HTTP status\">{}</td><td data-label=\"Status declared\">{}</td><td data-label=\"Recorded media\">{} · {}</td><td data-label=\"Request assessment\">{}</td><td data-label=\"Body assessment\">{}</td></tr>",
+            contracts::literal(text(&case["id"])),
+            contracts::literal(&case["response"]["status"].to_string()),
+            contracts::literal(&case["statusDeclared"].to_string()),
+            contracts::literal(text(&case["response"]["contentType"])),
+            contracts::literal(text(&case["mediaAssessment"])),
+            contracts::literal(text(&case["requestAssessment"])),
+            contracts::literal(text(&case["bodyAssessment"]))));
     }
-    out.push('\n');
-    for finding in rows(&entry["findings"]) {
-        out.push_str(&fence(
-            &serde_json::to_string_pretty(finding).unwrap(),
+    cases.push_str("</tbody></table></div>\n\n");
+    cases.push_str(&format!("\n{}\n\nExternal JSON-schema assessments are retained from {}; this reader verifies saved bindings and does not rerun that validator.\n\n",md(text(&packet["scope"])),md(text(&packet["validator"]))));
+    for limit in rows(&packet["limitations"]) {
+        cases.push_str(&format!("- {}\n", md(text(limit))));
+    }
+    cases.push_str(&details(
+        "Raw recorded cases, differences and bindings",
+        &fence(
+            &serde_json::to_string_pretty(entry).expect("JSON value"),
             "json",
-        ));
-    }
+        ),
+    ));
+    out.push_str(&details("Cases, evidence and limits", &cases));
     out
 }
 
+#[cfg(test)]
 fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
+    service_page_with_context(page, id, &Value::Null)
+}
+fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let mut out = header(text(&page["title"]), &format!("/services/{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!(
-        "<span id=\"service-overview\"></span>\n\n# {}\n\n{}\n\n",
-        md(text(&page["title"])),
-        md(text(&page["subtitle"]))
+        "<span id=\"service-overview\"></span>\n\n# {}\n\n",
+        md(text(&page["title"]))
     ));
+    out.push_str(&reading::status(page));
+    out.push_str(&format!("{}\n\n", md(text(&page["subtitle"]))));
     for section in rows(&page["sections"]) {
         let sid = text(&section["id"]);
         out.push_str(&format!(
             "## {} {{#{sid}}}\n\n",
             md(text(&section["title"]))
         ));
+        if matches!(sid, "section-ingress" | "section-egress") {
+            out.push_str(&reading::service_topics(
+                page,
+                context,
+                sid == "section-ingress",
+            )?);
+        }
         if section["content"].is_object() {
             out.push_str(&operation_body(page, &section["content"], "###")?);
         } else {
             out.push_str(&format!("{}\n\n", md(text(&section["gap"]))));
         }
         if sid == "section-ingress" {
+            let inventory = selected_http_links(page, None)?;
+            if !inventory.is_empty() {
+                out.push_str("### Declared HTTP interface schemas\n\n");
+                out.push_str(&inventory);
+            }
             out.push_str("### Captured public inputs\n\n");
             for entry in rows(&page["catalogue"]).filter(|v| {
                 serde_json::from_value::<crate::documentation::model::Entrypoint>((*v).clone())
@@ -945,15 +1067,25 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
                     .as_str()
                     .filter(|v| !v.is_empty())
                     .unwrap_or(text(&entry["symbol"]));
+                let route = rows(&entry["trigger"]["methods"])
+                    .chain(rows(&entry["trigger"]["paths"]))
+                    .map(text)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let label = if route.is_empty() { label } else { &route };
                 out.push_str(&format!(
                     "#### {} {{#entry-{eid}}}\n\n{}\n\n{}",
                     md(label),
                     md(text(&entry["kind"])),
-                    fence(
-                        &serde_json::to_string_pretty(&entry["trigger"]).map_err(io_error)?,
-                        "json"
+                    details(
+                        "Declared trigger details",
+                        &fence(
+                            &serde_json::to_string_pretty(&entry["trigger"]).map_err(io_error)?,
+                            "json"
+                        )
                     )
                 ));
+                out.push_str(&selected_http_links(page, Some(eid))?);
                 for process in rows(&page["entryProcesses"][eid]) {
                     out.push_str(&format!("- [Retained process: {}](../scenarios/{}.mdx#process-overview) · {} · source revision {}\n",md(text(&process["id"])),text(&process["id"]),md(text(&process["binding"])),md(text(&process["sourceRevision"]))));
                 }
@@ -962,10 +1094,20 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
                     .filter(|v| v["entrypoint"] == entry["id"])
                 {
                     out.push_str("##### Retained HTTP comparison\n\n");
-                    out.push_str(&comparison_rows(compared));
+                    if contracts::comparison_current(page, compared) {
+                        out.push_str(&comparison_rows(compared, &page["contractComparison"]));
+                    } else {
+                        out.push_str("Retained HTTP comparison does not match this selected snapshot. Its findings are not applied.\n\n");
+                    }
                     out.push_str(&format!("[Comparison scope and original test artifacts](../comparisons/{id}.mdx)\n\n"));
                 }
             }
+        }
+    }
+    if rows(&page["notes"]).next().is_some() {
+        out.push_str("## Notes and assessments\n\n");
+        for note in rows(&page["notes"]) {
+            out.push_str(&format!("### {} {{#{}}}\n\n[Open the retained record and separate assessment](../notes/{id}--{}.mdx)\n\n", md(reading::note_title(note)), text(&note["id"]), text(&note["id"])));
         }
     }
     out.push_str("## Original operations\n\n");
@@ -999,7 +1141,7 @@ fn comparison_page(c: &Value, id: &str) -> Result<String, ClewError> {
             "## {} {}\n\n{}",
             md(text(&entry["method"])),
             md(text(&entry["path"])),
-            comparison_rows(entry)
+            comparison_rows(entry, c)
         ));
     }
     out.push_str("## Scope and limitations\n\n");
@@ -1039,19 +1181,32 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
     out.push_str(&format!(
         "# {}\n\nAgent proposal · Not reviewed.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
         md(text(&model["title"])),
-        md(text(&model["purpose"]["text"]))
+        reading::inline(text(&model["purpose"]["text"]))
     ));
     out.push_str(&evidence(&model["purpose"])?);
     out.push_str(&format!(
         "## Identity and relationships\n\n{}\n\n",
-        md(text(&model["identity"]["text"]))
+        reading::inline(text(&model["identity"]["text"]))
     ));
     out.push_str(&evidence(&model["identity"])?);
-    for related in rows(&model["relatedModels"]).filter_map(Value::as_str) {
+    let related = rows(&model["relatedModels"])
+        .filter_map(Value::as_str)
+        .map(|id| {
+            let title = rows(&catalog["models"])
+                .find(|m| m["id"] == id)
+                .and_then(|m| m["title"].as_str())
+                .unwrap_or(id);
+            format!(
+                "<ClewRelatedModelLink model={}>{}</ClewRelatedModelLink>",
+                json!(id),
+                md(title)
+            )
+        })
+        .collect::<Vec<_>>();
+    if !related.is_empty() {
         out.push_str(&format!(
-            "<ClewRelatedModelLink model={}>{}</ClewRelatedModelLink>\n\n",
-            json!(related),
-            md(related)
+            "<p className=\"clew-related-models\">Related concepts: {}</p>\n\n",
+            related.join(" · ")
         ));
     }
     out.push('\n');
@@ -1092,7 +1247,7 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
                     &format!("Record {}: source and scope", index + 1),
                     &format!(
                         "{}\n\n{}",
-                        md(text(&record["claim"]["text"])),
+                        reading::inline(text(&record["claim"]["text"])),
                         evidence(&record["claim"])?
                     )
                 )
@@ -1105,16 +1260,17 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
         out.push_str(&format!(
             "### {} {{#field-{fid}}}\n\n{}\n\n",
             md(text(&field["path"])),
-            md(text(&field["meaning"]["text"]))
+            reading::inline(text(&field["meaning"]["text"]))
         ));
         out.push_str(&evidence(&field["meaning"])?);
+        out.push_str(&contracts::representations(field, catalog));
         for rep in rows(&field["representations"]) {
             let mut body = format!(
                 "{} · {} · {}\n\n{}\n\n",
                 md(text(&rep["typeLabel"])),
                 md(text(&rep["requiredness"])),
                 md(text(&rep["nullability"])),
-                md(text(&rep["mapping"]["text"]))
+                reading::inline(text(&rep["mapping"]["text"]))
             );
             if let Some(contract) = rows(&catalog["contracts"])
                 .find(|c| c["id"] == rep["contract"] && rep["contract"].is_string())
@@ -1173,6 +1329,7 @@ pub(super) fn project(
 ) -> Result<(BTreeMap<String, Vec<u8>>, Value), ClewError> {
     let mut files = BTreeMap::new();
     let mut documents = BTreeMap::new();
+    let context = crate::documentation::reader::navigation_context(native)?;
     let mut sidebars = vec![json!("overview")];
     for (name, bytes) in native.iter().filter(|(name, _)| name.ends_with(".json")) {
         let value = crate::canonical::parse_json_strict(bytes).map_err(io_error)?;
@@ -1192,9 +1349,14 @@ pub(super) fn project(
     let mut http_documents = BTreeMap::new();
     let mut process_items = Vec::new();
     let mut service_items = Vec::new();
-    let mut overview = header("Documentation", "/");
+    let system_title = documents
+        .get("native/system-reading-guide.json")
+        .and_then(|g| g["title"].as_str())
+        .unwrap_or("Documentation");
+    let mut overview = header(system_title, "/");
     overview.push_str(IMPORTS);
-    overview.push_str("# Documentation\n\nFollow a process, inspect its contracts and data, and return to the source evidence when needed.\n\n## Processes\n\n");
+    overview.push_str(&format!("# {}\n\n", md(system_title)));
+    overview.push_str("<ClewStatus />\n\nFollow a process, inspect its contracts and data, and return to the source evidence when needed.\n\n## Processes\n\n");
     for (name, page) in &pages {
         for op in rows(&page["operations"]).chain(rows(&page["sections"]).map(|s| &s["content"])) {
             for contract in rows(&page["operationContracts"][text(&op["id"])])
@@ -1217,14 +1379,14 @@ pub(super) fn project(
             text(&page["title"])
         };
         let body = if process && page["questionReader"].is_object() {
-            process_page(page, id)?
+            process_page_with_context(page, id, &context)?
         } else if !process {
-            service_page(page, id)?
+            service_page_with_context(page, id, &context)?
         } else {
             let mut body = header(title, &format!("/scenarios/{id}"));
             body.push_str(IMPORTS);
             body.push_str(&format!(
-                "<span id=\"process-overview\"></span>\n\n# {}\n\n",
+                "<ClewAnchor id=\"process-overview\" pageStart />\n\n# {}\n\n",
                 md(title)
             ));
             for op in rows(&page["operations"]) {
@@ -1238,6 +1400,15 @@ pub(super) fn project(
             body
         };
         put(&mut files, format!("docs/{directory}/{id}.mdx"), body);
+        if !process {
+            for note in rows(&page["notes"]) {
+                put(
+                    &mut files,
+                    format!("docs/notes/{id}--{}.mdx", text(&note["id"])),
+                    reading::note_page(page, id, note)?,
+                );
+            }
+        }
         if process {
             process_items.push(json!(format!("scenarios/{id}")));
             overview.push_str(&format!("- [{}](scenarios/{id}.mdx)\n", md(title)));
@@ -1262,7 +1433,13 @@ pub(super) fn project(
         put(
             &mut files,
             format!("docs/http/{}.mdx", &key[7..]),
-            http_page(binding, &key[7..])?,
+            http_page(
+                binding,
+                &key[7..],
+                pages.iter().map(|(_, p)| p).find(|p| {
+                    p["subject"] == format!("service:{}", text(&binding["record"]["service"]))
+                }),
+            )?,
         );
     }
     for (name, page) in &pages {
@@ -1330,13 +1507,21 @@ pub(super) fn project(
         sidebars.push(json!({"type":"category","label":"Service context","items":service_items}));
     }
     if let Some(guide) = documents.get("native/system-reading-guide.json") {
-        let mut story = format!("{}\n\n", md(text(&guide["purpose"])));
+        let mut story = format!("{}\n\n", reading::inline(text(&guide["purpose"])));
         for section in rows(&guide["sections"]) {
             story.push_str(&format!("## {}\n\n", md(text(&section["title"]))));
             for b in rows(&section["blocks"]) {
+                story.push_str("<article className=\"clew-outcome\">\n\n");
                 story.push_str(&format!("### {}\n\n", md(text(&b["title"]))));
                 story.push_str(&block_in(b, &Value::Null, text(&section["id"]), "")?);
+                story.push_str("</article>\n\n");
             }
+        }
+        if !text(&guide["conclusion"]["title"]).is_empty() {
+            story.push_str(&format!(
+                "<aside className=\"clew-completion-boundary\">\n\n## {}\n\n",
+                md(text(&guide["conclusion"]["title"]))
+            ));
         }
         story.push_str(&block_in(
             &guide["conclusion"],
@@ -1344,6 +1529,9 @@ pub(super) fn project(
             "confidence",
             "",
         )?);
+        if !text(&guide["conclusion"]["title"]).is_empty() {
+            story.push_str("</aside>\n\n");
+        }
         let marker = "## Processes\n\n";
         let position = overview.find(marker).unwrap();
         overview.insert_str(position, &story);
@@ -1351,6 +1539,19 @@ pub(super) fn project(
     overview.push_str("\n## Provenance\n\nOriginal claims, evidence and their independent review states remain in the reference archive. Source references include the original revision, digest and line range; no runtime guarantee is added by export.\n\n");
     overview.push_str("[Source fragments](sources/index.mdx)\n\n");
     put(&mut files, "docs/overview.mdx", overview);
+    reading::ancillary_pages(native, &mut files, &mut sidebars)?;
+    let mut routes = reading::route_map(native, &pages)?;
+    reading::linked_downloads(native, &mut files, &mut routes)?;
+    put(
+        &mut files,
+        "src/components/clew-routes.json",
+        serde_json::to_vec(&routes).map_err(io_error)?,
+    );
+    put(
+        &mut files,
+        "route-map.json",
+        serde_json::to_vec_pretty(&routes).map_err(io_error)?,
+    );
     let mut objects = Objects::default();
     for value in documents.values() {
         objects.count(value)?;
@@ -1453,6 +1654,14 @@ pub(super) fn project(
             include_bytes!("../../../assets/documentation/docusaurus/ClewReaders.jsx").as_slice(),
         ),
         (
+            "src/theme/NavbarItem/ComponentTypes.js",
+            include_bytes!("../../../assets/documentation/docusaurus/NavbarItems.js").as_slice(),
+        ),
+        (
+            "src/components/ClewSearch.jsx",
+            include_bytes!("../../../assets/documentation/docusaurus/ClewSearch.jsx").as_slice(),
+        ),
+        (
             "src/components/clew-model-runtime.js",
             include_bytes!("../../../assets/documentation/data-model.js").as_slice(),
         ),
@@ -1508,6 +1717,37 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_http_cases_have_named_cells_and_preserve_every_assessment() {
+        let rendered = comparison_rows(
+            &json!({"coverage":"Selected cases only","cases":[{"id":"extra-property","response":{"status":200,"contentType":"application/json"},"statusDeclared":true,"mediaAssessment":"declared","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]}),
+            &json!({"validator":"retained validator"}),
+        );
+        for label in [
+            "Retained case",
+            "HTTP status",
+            "Status declared",
+            "Recorded media",
+            "Request assessment",
+            "Body assessment",
+        ] {
+            assert!(rendered.contains(&format!("data-label=\"{label}\"")));
+        }
+        for value in [
+            "extra-property",
+            "200",
+            "true",
+            "application/json",
+            "outside-schema",
+            "matches-selected-schema",
+            "Selected cases only",
+            "retained validator",
+            "Raw recorded cases",
+        ] {
+            assert!(rendered.contains(value), "{value}");
+        }
+    }
+
     #[test]
     fn reference_records_and_process_links_are_portable_and_keep_evidence() {
         let model = json!({"id":"lookup","title":"Lookup","purpose":{"text":"Supported values","evidence":[]},"identity":{"text":"Source literals","evidence":[]},"fields":[{"id":"id","path":"id","meaning":{"text":"Key","evidence":[]},"representations":[],"usage":[]}],"records":[{"values":{"id":"<literal>|value"},"claim":{"text":"Exact retained literal","evidence":[]}}],"processLinks":[],"relatedModels":[]});
@@ -1623,13 +1863,16 @@ mod tests {
         assert!(objects.expand(&value, 0).is_err());
     }
     #[test]
-    fn process_overview_and_original_guide_stay_inside_the_process_panel() {
+    fn process_entry_precedes_title_and_controls_while_step_content_stays_in_the_panel() {
         let page = json!({"questionReader":{"title":"Save","purpose":"Saved purpose.","sections":[]},"processDataFlow":{"request":{"anchor":"question-save"}}});
         let mdx = process_page(&page, "save").unwrap();
         let start = mdx.find("<ClewProcess ").unwrap();
-        let overview = mdx.find("## Process overview {#process-overview}").unwrap();
+        let overview = mdx
+            .find("<ClewAnchor id=\"process-overview\" pageStart />")
+            .unwrap();
+        let title = mdx.find("# Save\n").unwrap();
         let end = mdx.find("</ClewProcess>").unwrap();
-        assert!(start < overview && overview < end);
+        assert!(overview < title && title < start && start < end);
         assert!(mdx[start..end].contains("Saved purpose."));
         let plain =
             process_page(&json!({"questionReader":page["questionReader"]}), "save").unwrap();
@@ -1642,5 +1885,18 @@ mod tests {
         assert!(md(value).starts_with("&#105;mport"));
         assert!(md(value).contains("&#123;unsafe()&#125;"));
         assert!(fence(value, "text").starts_with("````text\n"));
+    }
+    #[test]
+    fn closed_context_summary_keeps_authored_preview_and_separates_adjacent_links() {
+        let preview = "Compose POST http://places:8080/places · production URL unknown.";
+        let fragment = json!({"title":"Technical context","disclosure":"Address and contracts","preview":preview,"text":"Full retained address explanation.","links":[{"subject":"service:dashboard","operation":"save","label":"Dashboard entry and contract"},{"subject":"service:places","operation":"save","label":"Places handler and contract"}],"evidence":[]});
+        let rendered = block(&fragment, &json!({"subject":"scenario:save"}), "request").unwrap();
+        let summary = &rendered[..rendered.find("</summary>").unwrap()];
+        assert!(summary.contains("Address and contracts"));
+        assert!(summary.contains(preview));
+        assert!(rendered.contains("Full retained address explanation."));
+        assert!(rendered.contains("<div className=\"clew-context-links\">"));
+        assert_eq!(rendered.matches("<ClewContextLink ").count(), 2);
+        assert!(rendered.contains("fromQuestion=\"question-request\""));
     }
 }

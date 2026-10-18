@@ -79,22 +79,25 @@ pub(super) fn navigation_language(
     let history_label = label("History", "История");
     let documentation = label("Documentation", "Документация");
     let overview_label = label("Overview", "Обзор");
-    let browse = label("Browse", "Каталог");
+    let browse = label("Processes and services", "Процессы и сервисы");
     let help = label("Help", "Справка (английский)");
     let runbooks = label("Runbooks", "Инструкции (английский)");
     let search = label(
         "Search documentation metadata",
         "Поиск по метаданным документации",
     );
-    let placeholder = label(
-        "Search services, APIs, handlers and entities…",
-        "Найти сервис, API, обработчик или сущность…",
-    );
+    let placeholder = label("Search docs", "Поиск");
+    let search_button = label("Search", "Найти");
     let history_link = history
-        .map(|path| format!("<a href=\"{}\">{history_label}</a>", render::escape(path)))
+        .map(|path| {
+            format!(
+                "<a data-reader-destination=\"history\" href=\"{}\">{history_label}</a>",
+                render::escape(path)
+            )
+        })
         .unwrap_or_default();
     format!(
-        "<nav class=\"reader-nav\" aria-label=\"{documentation}\"><a class=\"reader-brand\" href=\"{}\">{icon}<span>Codeclew</span></a><div class=\"reader-links\"><a href=\"{}\">{overview_label}</a><a href=\"{prefix}catalog.html\">{browse}</a><a href=\"{prefix}help.html\">{help}</a><a href=\"{prefix}runbooks.html\">{runbooks}</a>{history_link}</div><form class=\"reader-search\" action=\"{prefix}catalog.html\" method=\"get\" role=\"search\"><input type=\"search\" name=\"q\" aria-label=\"{search}\" placeholder=\"{placeholder}\"></form></nav>",
+        "<nav class=\"reader-nav\" aria-label=\"{documentation}\"><a class=\"reader-brand\" href=\"{}\">{icon}<span>Codeclew</span></a><form class=\"reader-search\" action=\"{prefix}catalog.html\" method=\"get\" role=\"search\"><input type=\"search\" name=\"q\" aria-label=\"{search}\" placeholder=\"{placeholder}\"><button type=\"submit\">{search_button}</button></form><div class=\"reader-menu\"><div class=\"reader-links\"><a data-reader-destination=\"overview\" href=\"{}\">{overview_label}</a><a data-reader-destination=\"catalog\" href=\"{prefix}catalog.html\">{browse}</a></div><div class=\"reader-utilities\"><a data-reader-destination=\"help\" href=\"{prefix}help.html\">{help}</a><a data-reader-destination=\"runbooks\" href=\"{prefix}runbooks.html\">{runbooks}</a>{history_link}</div></div></nav>",
         render::escape(overview),
         render::escape(overview)
     )
@@ -114,18 +117,154 @@ pub(super) fn decorate(html: &str, navigation: &str) -> String {
     )
 }
 
+/// Refresh generated chrome around retained pages without changing their body
+/// content or embedded document payloads.
+pub(super) fn refresh_chrome(html: &str, navigation: &str) -> String {
+    let mut html = html.to_owned();
+    if let Some(start) = html.find("<nav class=\"reader-nav\"") {
+        if let Some(end) = html[start..].find("</nav>") {
+            html.replace_range(start..start + end + "</nav>".len(), navigation);
+        }
+    } else if let Some(start) = html.find("<body")
+        && let Some(end) = html[start..].find('>')
+    {
+        html.insert_str(start + end + 1, navigation);
+    }
+    html = remove_reader_resource(&html, "style", |_, body| {
+        body.starts_with("/* Shared engineering documentation shell:")
+    });
+    html = remove_reader_resource(&html, "script", |_, body| {
+        body.starts_with("(()=>{\n const ru=document.documentElement.lang==='ru'")
+    });
+    html.replacen(
+        "</head>",
+        &format!("<style data-clew-reader>{STYLE}</style></head>"),
+        1,
+    )
+    .replacen(
+        "</body>",
+        &format!("<script data-clew-reader>{SCRIPT}\n{LIMITS}</script></body>"),
+        1,
+    )
+}
+
+pub(super) fn navigation_context(
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<serde_json::Value, ClewError> {
+    let mut processes = Vec::new();
+    let mut services = BTreeMap::new();
+    for (name, bytes) in files {
+        if let Some(service) = name
+            .strip_prefix("services/")
+            .and_then(|s| s.strip_suffix(".json"))
+        {
+            let value: serde_json::Value = serde_json::from_slice(bytes).map_err(io_error)?;
+            if let Some(title) = value["title"].as_str() {
+                services.insert(service, title.to_owned());
+            }
+            continue;
+        }
+        let Some(stem) = name
+            .strip_prefix("scenarios/")
+            .and_then(|s| s.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if stem.contains('/') || !files.contains_key(&format!("scenarios/{stem}.html")) {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(io_error)?;
+        let definition = &value["process"]["definition"];
+        if !definition["root"].is_object() {
+            continue;
+        }
+        let guide = &value["questionReader"];
+        let steps = guide["sections"].as_array().into_iter().flatten()
+            .filter(|s| s["number"].as_u64().is_some())
+            .map(|section| {
+                let blocks = section["blocks"].as_array().into_iter().flatten().map(|block| {
+                    let evidence = block["evidence"].as_array().into_iter().flatten().collect::<Vec<_>>();
+                    let sources = evidence.iter().flat_map(|e| e["fragment"]["sourceIds"].as_array().into_iter().flatten().cloned()).collect::<Vec<_>>();
+                    let dependencies = evidence.iter().flat_map(|e| e["fragment"]["dependencyIds"].as_array().into_iter().flatten().cloned()).collect::<Vec<_>>();
+                    serde_json::json!({"text":block["text"],"sourceIds":sources,"dependencyIds":dependencies})
+                }).collect::<Vec<_>>();
+                serde_json::json!({"id":section["id"],"blocks":blocks})
+            }).collect::<Vec<_>>();
+        let title = guide["title"]
+            .as_str()
+            .or_else(|| definition["title"].as_str())
+            .unwrap_or(stem);
+        processes.push(serde_json::json!({"id":definition["id"],"href":format!("../scenarios/{stem}.html#process-overview"),
+            "title":title,"root":definition["root"],
+            "interactions":definition["interactions"],"steps":steps}));
+    }
+    Ok(serde_json::json!({"processLinks":processes,"serviceLabels":services}))
+}
+
+pub(super) fn attach_navigation_context(
+    html: &str,
+    context: &serde_json::Value,
+) -> Result<String, ClewError> {
+    let html = remove_reader_resource(html, "script", |opening, _| {
+        opening.contains("id=\"reader-context\"")
+    });
+    let data = serde_json::to_string(context)
+        .map_err(io_error)?
+        .replace('<', "\\u003c")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    Ok(html.replacen(
+        "</head>",
+        &format!("<script id=\"reader-context\" type=\"application/json\">{data}</script></head>"),
+        1,
+    ))
+}
+
+fn remove_reader_resource(html: &str, tag: &str, matches: impl Fn(&str, &str) -> bool) -> String {
+    let mut output = String::with_capacity(html.len());
+    let mut remaining = html;
+    let opening = format!("<{tag}");
+    let closing = format!("</{tag}>");
+    while let Some(start) = remaining.find(&opening) {
+        let Some(open_end) = remaining[start..].find('>').map(|i| start + i + 1) else {
+            break;
+        };
+        let Some(end) = remaining[open_end..].find(&closing).map(|i| open_end + i) else {
+            break;
+        };
+        output.push_str(&remaining[..start]);
+        let after = end + closing.len();
+        if !matches(&remaining[start..open_end], &remaining[open_end..end]) {
+            output.push_str(&remaining[start..after]);
+        }
+        remaining = &remaining[after..];
+    }
+    output.push_str(remaining);
+    output
+}
+
 /// Apply the selected process vocabulary to every linked publication page.
 /// Keep document payloads and existing body classes untouched.
 pub(super) fn process_theme(html: &str) -> String {
-    if html.contains("<style data-clew-theme=\"process\">") {
-        return html.to_owned();
-    }
-    html.replacen(
+    let html = remove_reader_resource(html, "style", |opening, _| {
+        opening.contains("data-clew-theme=\"process\"")
+    });
+    let html = html.replacen(
         "</head>",
         &format!("<style data-clew-theme=\"process\">{PROCESS_THEME}</style></head>"),
         1,
-    )
-    .replacen("<body", "<body data-clew-theme=\"process\"", 1)
+    );
+    let already_themed = html.find("<body").is_some_and(|start| {
+        html[start..]
+            .split('>')
+            .next()
+            .is_some_and(|opening| opening.contains("data-clew-theme=\"process\""))
+    });
+    if already_themed {
+        html
+    } else {
+        html.replacen("<body", "<body data-clew-theme=\"process\"", 1)
+    }
 }
 
 pub(super) fn catalog(files: &BTreeMap<String, Vec<u8>>) -> String {
@@ -652,6 +791,41 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
         }
         rows.push(serde_json::json!({"id":entry.id,"title":entry.title,"kind":"Reviewed answer","href":entry.route(),"context":entry.source_snapshot,"summary":"MODEL REVIEW: APPROVED · saved snapshot; current source and runtime not verified","searchText":[entry.work,entry.review_run,entry.title]}));
     }
+    if let Some(model) = files
+        .get("data-model.json")
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+    {
+        for model in model["models"].as_array().into_iter().flatten() {
+            let Some(id) = model["id"].as_str().filter(|id| super::store::valid_id(id)) else {
+                continue;
+            };
+            let href = format!("data-model/{id}.html");
+            if !files.contains_key(&href) {
+                continue;
+            }
+            let mut row = serde_json::json!({"id":format!("data-model:{id}"),"title":model["title"],"kind":"Data model","href":href,"coverage":"authored","context":"Authored data model","summary":model["purpose"]["text"],"searchText":[]});
+            search_terms(
+                &mut row,
+                string_values(&serde_json::json!([
+                    model["id"],
+                    model["title"],
+                    model["fields"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|f| &f["path"])
+                        .collect::<Vec<_>>(),
+                    model["records"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|r| &r["values"])
+                        .collect::<Vec<_>>()
+                ])),
+            );
+            rows.push(row);
+        }
+    }
     rows.sort_by(|left, right| {
         (
             left["kind"].as_str().unwrap_or(""),
@@ -672,9 +846,9 @@ pub(super) fn catalog_language(files: &BTreeMap<String, Vec<u8>>, language: &str
         .expect("catalog strings serialize")
         .replace('<', "\\u003c");
     let catalog = if language == "ru" {
-        page_language("Каталог документации", &format!(r#"<div class="eyebrow">КАТАЛОГ ДОКУМЕНТАЦИИ</div><h1>Поиск по документации</h1><p>Ищите сервисы, маршруты API, обработчики, процессы и сущности по названию или идентификатору. Откройте результат, чтобы посмотреть разделы, операции и подтверждения.</p><p class="catalog-caveat">Метаданные каталога помогают искать сведения, но не подтверждают полноту описания.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Найти документы" placeholder="Сервис, API, обработчик или сущность"><select id="catalog-kind" aria-label="Тип документа"><option value="">Все типы</option><option value="Service">Сервис</option><option value="Process">Процесс</option><option value="Dataflow">Движение данных</option><option value="API">API</option><option value="Entrypoint">Точка входа</option><option value="Entity">Сущность</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Назад</button><button id="catalog-next" type="button">Далее</button></div><noscript><p>Для поиска в локальном каталоге включите JavaScript или откройте обзор через меню.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#), language).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
+        page_language("Каталог документации", &format!(r#"<div class="eyebrow">КАТАЛОГ ДОКУМЕНТАЦИИ</div><h1>Поиск по документации</h1><p>Ищите сервисы, маршруты API, обработчики, процессы и сущности по названию или идентификатору. Откройте результат, чтобы посмотреть разделы, операции и подтверждения.</p><p class="catalog-caveat">Метаданные каталога помогают искать сведения, но не подтверждают полноту описания.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Найти документы" placeholder="Сервис, API, обработчик или сущность"><select id="catalog-kind" aria-label="Тип документа"><option value="">Все типы</option><option value="Service">Сервис</option><option value="Process">Процесс</option><option value="Dataflow">Движение данных</option><option value="Data model">Модель данных</option><option value="API">API</option><option value="Entrypoint">Точка входа</option><option value="Entity">Сущность</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Назад</button><button id="catalog-next" type="button">Далее</button></div><noscript><p>Для поиска в локальном каталоге включите JavaScript или откройте обзор через меню.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#), language).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
     } else {
-        page("Browse documentation", &format!(r#"<div class="eyebrow">DOCUMENTATION CATALOG</div><h1>Search documentation</h1><p>Search services, API routes, handlers, processes and entities by name or identifier. Open a result to browse its sections, operations and evidence.</p><p class="catalog-caveat">Catalog metadata helps discovery; it does not establish that explanations are complete.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Find documentation metadata" placeholder="Service, API, handler or entity"><select id="catalog-kind" aria-label="Document type"><option value="">All types</option><option>Service</option><option>Process</option><option>Dataflow</option><option>API</option><option>Entrypoint</option><option>Entity</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Enable JavaScript to search this offline catalog, or open the overview from the navigation.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#)).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
+        page("Browse documentation", &format!(r#"<div class="eyebrow">DOCUMENTATION CATALOG</div><h1>Search documentation</h1><p>Search services, API routes, handlers, processes and entities by name or identifier. Open a result to browse its sections, operations and evidence.</p><p class="catalog-caveat">Catalog metadata helps discovery; it does not establish that explanations are complete.</p><div class="catalog-controls"><input id="catalog-query" type="search" aria-label="Find documentation metadata" placeholder="Service, API, handler or entity"><select id="catalog-kind" aria-label="Document type"><option value="">All types</option><option>Service</option><option>Process</option><option>Dataflow</option><option>Data model</option><option>API</option><option>Entrypoint</option><option>Entity</option></select></div><p id="catalog-status" class="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results" class="catalog-results"></ul><div class="catalog-pager"><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>Enable JavaScript to search this offline catalog, or open the overview from the navigation.</p></noscript><script id="catalog-data" type="application/json">{payload}</script>"#)).replace("class=\"reader-guide\"", "class=\"reader-guide catalog-page\"")
     };
     let mut catalog = catalog;
     if has_source_declarations {
@@ -919,6 +1093,102 @@ pub(super) fn decorate_bundle_language(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_pages_refresh_only_generated_chrome() {
+        let original = "<html lang=\"en\"><head><style>.authored{color:red}</style><style>/* Shared engineering documentation shell: old */obsolete-reader-style</style></head><body class=\"reader\"><nav class=\"reader-nav\"><a>Browse</a></nav><main><h1>Original account</h1><p>Retained meaning.</p></main><script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script><script>window.authored=true;</script><script>(()=>{\n const ru=document.documentElement.lang==='ru';obsolete-reader-script})();</script></body></html>";
+        let nav = navigation("", "overview.html", Some("history.html"), &[]);
+        let refreshed = refresh_chrome(original, &nav);
+        assert_eq!(refreshed.matches("<nav class=\"reader-nav\"").count(), 1);
+        assert!(refreshed.contains("type=\"submit\""));
+        assert!(refreshed.contains("Processes and services"));
+        assert!(!refreshed.contains("obsolete-reader-"));
+        for retained in [
+            "<style>.authored{color:red}</style>",
+            "<h1>Original account</h1><p>Retained meaning.</p>",
+            "<script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script>",
+            "<script>window.authored=true;</script>",
+        ] {
+            assert!(refreshed.contains(retained));
+        }
+        assert_eq!(refresh_chrome(&refreshed, &nav), refreshed);
+        let themed = process_theme(&refreshed);
+        assert_eq!(process_theme(&themed), themed);
+        let stale = themed.replace(PROCESS_THEME, "obsolete-theme");
+        assert_eq!(process_theme(&stale), themed);
+    }
+
+    #[test]
+    fn process_navigation_context_preserves_declared_roots_and_escapes_titles() {
+        let payload = serde_json::json!({"process":{"definition":{"id":"publisher","title":"Publisher","root":{"service":"sample","selector":{"name":"publish"}},"interactions":["event-route"]}},
+            "questionReader":{"title":"</script><script>unsafe()</script>","sections":[{"id":"send","number":1,"blocks":[{"text":"Send the declared topic.","evidence":[{"fragment":{"sourceIds":["publisher-source"],"dependencyIds":["interaction:event-route"]}}]}]}]}});
+        let files = BTreeMap::from([
+            (
+                "scenarios/publisher.json".into(),
+                serde_json::to_vec(&payload).unwrap(),
+            ),
+            ("scenarios/publisher.html".into(), Vec::new()),
+        ]);
+        let context = navigation_context(&files).unwrap();
+        let process = &context["processLinks"][0];
+        assert_eq!(
+            process["href"],
+            "../scenarios/publisher.html#process-overview"
+        );
+        assert_eq!(process["root"], payload["process"]["definition"]["root"]);
+        assert_eq!(
+            process["steps"][0]["blocks"][0]["sourceIds"][0],
+            "publisher-source"
+        );
+        let html = attach_navigation_context(
+            "<html><head></head><body>Original text</body></html>",
+            &context,
+        )
+        .unwrap();
+        assert!(!html.contains("<script>unsafe()"));
+        assert!(html.contains("\\u003c/script>"));
+        assert!(html.contains("<body>Original text</body>"));
+        assert_eq!(attach_navigation_context(&html, &context).unwrap(), html);
+    }
+
+    #[test]
+    fn canonical_models_are_searchable_without_inventing_review_status() {
+        let files = BTreeMap::from([
+            ("data-model.json".into(), serde_json::to_vec(&serde_json::json!({"models":[
+                {"id":"lookup","title":"City lookup","purpose":{"text":"Supported records"},"fields":[{"path":"latitude"}],"records":[{"values":{"name":"Oslo"}}]},
+                {"id":"absent","title":"Missing page"}, {"id":"../outside","title":"Unsafe path"}
+            ]})).unwrap()),
+            ("data-model/lookup.html".into(), page("Lookup", "Reference").into_bytes()),
+        ]);
+        let html = catalog(&files);
+        let data = html
+            .split("id=\"catalog-data\" type=\"application/json\">")
+            .nth(1)
+            .unwrap()
+            .split("</script>")
+            .next()
+            .unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_str(data).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["kind"], "Data model");
+        assert_eq!(rows[0]["href"], "data-model/lookup.html");
+        assert_eq!(rows[0]["context"], "Authored data model");
+        assert!(rows[0]["searchText"].to_string().contains("latitude"));
+        assert!(rows[0]["searchText"].to_string().contains("Oslo"));
+    }
+    #[test]
+    fn shared_header_preserves_global_destinations_and_search_from_nested_pages() {
+        let html = navigation("../", "../overview.html", Some("../history.html"), &[]);
+        assert_eq!(html.matches("data-reader-destination=").count(), 5);
+        assert!(html.contains("Processes and services"));
+        assert!(html.contains("action=\"../catalog.html\" method=\"get\" role=\"search\""));
+        assert!(html.contains("name=\"q\""));
+        assert!(html.contains("type=\"submit\""));
+        assert!(
+            html.contains("../help.html")
+                && html.contains("../runbooks.html")
+                && html.contains("../history.html")
+        );
+    }
     #[test]
     fn process_theme_preserves_payload_and_existing_body_classes() {
         let html = "<html><head></head><body class=\"reader\"><script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script></body></html>";

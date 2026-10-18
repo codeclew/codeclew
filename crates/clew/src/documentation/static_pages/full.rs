@@ -225,6 +225,38 @@ pub(super) fn render(
         "history.html".into(),
         reader::decorate(&history, &navigation).into_bytes(),
     );
+    let navigation_context = reader::navigation_context(&files)?;
+    for (name, bytes) in &mut files {
+        if name.ends_with(".html") {
+            let html = std::str::from_utf8(bytes).map_err(io_error)?;
+            let language = html
+                .split_once("<html lang=\"")
+                .and_then(|(_, rest)| rest.split_once('"').map(|(lang, _)| lang))
+                .unwrap_or("en");
+            let navigation = if name.contains('/') {
+                reader::navigation_language(
+                    "../",
+                    "../overview.html",
+                    Some("../history.html"),
+                    &[],
+                    language,
+                )
+            } else {
+                reader::navigation_language(
+                    "",
+                    "overview.html",
+                    Some("history.html"),
+                    &[],
+                    language,
+                )
+            };
+            *bytes = reader::attach_navigation_context(
+                &reader::refresh_chrome(html, &navigation),
+                &navigation_context,
+            )?
+            .into_bytes();
+        }
+    }
     if process_theme {
         for (name, bytes) in &mut files {
             if name.ends_with(".html") {

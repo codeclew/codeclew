@@ -20,6 +20,7 @@
 .dm-page .dm-overview{padding:0;border:0}.dm-overview h3,.dm-overview-counts,.dm-overview-key{margin:0 0 4px}
 .dm-page .dm-overview-counts,.dm-page .dm-overview-key,.dm-page .dm-origin{font-size:14px;line-height:22px}
 .dm-page .dm-scope-details{margin:4px 0;padding:0;border:0}.dm-page .dm-scope-details>summary{min-height:26px}
+.dm-page summary{white-space:normal;overflow-wrap:anywhere}
 .dm-overview .dm-controls{margin:8px 0;gap:8px}.dm-overview .dm-controls label{min-width:150px}
 .dm-overview .dm-controls select{padding:4px 8px;min-height:40px}.dm-overview .dm-matrix table{margin:0}
 .dm-overview .dm-matrix caption{padding:4px 0}.dm-overview .dm-matrix button{padding:4px;min-height:40px}

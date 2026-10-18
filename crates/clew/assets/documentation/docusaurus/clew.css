@@ -25,3 +25,52 @@ body:has(.clew-process[data-reading-view="data-flow"]) [class*="docItemCol_"]{ma
 .clew-widget.dm-page{padding:0;margin:8px 0}.clew-tabs{margin-bottom:8px;z-index:4}.dm-origin{margin:8px 0}
 
 .clew-widget{--dm-detail-top:calc(var(--ifm-navbar-height,60px) + 70px)}
+
+/* The Docusaurus navbar owns the shell; reading controls stay in document flow. */
+:root{--ifm-color-primary:#075fbd;--ifm-font-color-base:#182033;--ifm-background-color:#fff;--ifm-heading-color:#182033}
+.clew-tabs{position:static;top:auto;z-index:auto;isolation:auto;flex-wrap:wrap}
+.clew-tabs button[aria-selected=true]{color:#075fbd;background:#e9f2ff;border-color:#075fbd}
+.clew-widget{--dm-detail-top:calc(var(--ifm-navbar-height,60px) + 16px)}
+.theme-doc-markdown{min-width:0}.theme-doc-markdown :is(summary,p,li,a,code){overflow-wrap:anywhere}.theme-doc-markdown summary{white-space:normal}
+.theme-doc-markdown :is(h1,h2,h3,h4,section,article,details,[tabindex="-1"]){scroll-margin-top:calc(var(--ifm-navbar-height,60px) + 20px)!important}
+.theme-doc-markdown :is(h2,h3){margin-top:24px}.theme-doc-markdown p{max-width:76ch}
+.clew-status{border:1px solid #ccd4de;border-left:3px solid #8293ab;padding:12px 16px;margin:16px 0 24px;background:#f7f9fc}.clew-status>span{display:block}.clew-status details{margin:6px 0 0}
+body .clew-status :is(span,p,summary){font-size:14px!important;line-height:22px!important;color:#42516a}
+.clew-return{border-left:3px solid #075fbd;padding:8px 12px}
+.clew-topic{border:1px solid #ccd4de;border-radius:8px;padding:16px;margin:16px 0}.clew-topic>h3{margin-top:0}.clew-topic-path{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);gap:12px;align-items:center}.clew-topic-path>div{min-width:0;overflow-wrap:anywhere}.clew-topic-path p{margin:4px 0}
+.clew-search{display:flex;gap:8px;min-width:0;max-width:280px;margin:0 8px}.clew-search input{width:150px;min-width:0}.clew-search :is(input,button),.clew-catalog-controls :is(input,select){font:inherit;min-height:44px;border:1px solid #8293ab;border-radius:6px;padding:6px 10px;background:#fff;color:#182033}
+.clew-catalog-controls{display:flex;gap:16px;flex-wrap:wrap}.clew-catalog-controls label{display:flex;flex-direction:column;max-width:100%}.clew-catalog-controls input{max-width:100%}.clew-catalog li{margin:16px 0}.clew-catalog li p{margin:2px 0}
+.clew-retained .guide-toc{display:none}.clew-retained .system-guide-grid,.clew-retained .dm-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:16px}.clew-retained :is(.system-guide-card,.mini-card){border:1px solid #ccd4de;border-radius:8px;padding:16px}
+@media(max-width:600px){.clew-topic-path{grid-template-columns:1fr}.clew-topic-path>span{transform:rotate(90deg);justify-self:center}.clew-topic{padding:12px}.clew-search{max-width:100%;margin:8px 0}.clew-search input{width:180px;max-width:100%}.clew-retained.dm-page{padding:0;max-width:100%}}
+.clew-outcome{padding:16px;border:1px solid #ccd4de;border-radius:8px;margin:16px 0}.clew-outcome>h3{margin-top:0}
+.clew-status{padding:8px 12px;margin:12px 0 16px}.clew-status details{margin:0}.clew-status summary{cursor:pointer}.clew-route{padding:6px 10px;background:#f7f9fc;border:1px solid #d7dfe8;border-radius:4px}.clew-route code{white-space:normal;background:transparent;padding:0}
+.clew-retained .dm-status{background:#f7f9fc;border-left-color:#8293ab;color:#42516a}
+.clew-status{padding:4px 10px;margin:8px 0 12px}.clew-tabs{padding:0;margin:0 0 12px;border-bottom:0}
+.clew-page-start{display:block;height:0}.clew-context-disclosure>summary .clew-disclosure-preview{display:block;font-weight:400!important;color:#42516a;font-size:14px!important;line-height:22px!important;overflow-wrap:anywhere}
+.clew-context-links{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0 12px}.clew-context-links>p{margin:0}.clew-context-links a{text-decoration:underline;text-underline-offset:3px}.clew-step-data a{white-space:normal}.clew-topic>.clew-return{margin:8px 0 12px}
+.clew-table-scroll{max-width:100%;overflow:auto;margin:12px 0}.clew-schema-table{display:table;width:100%;border-collapse:collapse;table-layout:fixed}.clew-schema-table :is(th,td){padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere}.clew-schema-table th{background:#f2f5f9}.clew-schema-table td details{margin:8px 0}.clew-http-finding,.clew-completion-boundary{border-left:3px solid #ad7b32;background:#fff9ec;padding:12px 16px;margin:16px 0}.clew-http-finding>h4,.clew-completion-boundary>h2{margin-top:0}.clew-related-models a{display:inline-block;text-decoration:underline;text-underline-offset:3px;margin:0 4px}
+
+/* Keep every table value with its heading when columns no longer fit. */
+@media(max-width:700px){
+  .clew-table-scroll{overflow:visible;min-width:0}
+  .clew-schema-table,.clew-schema-table tbody,.clew-schema-table tr,.clew-schema-table td{display:block;width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+  .clew-schema-table thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+  .clew-schema-table tr{border:1px solid #ccd4de;border-radius:6px;margin:12px 0;padding:4px 0}
+  .clew-schema-table tbody tr:nth-child(2n){background:transparent}
+  .clew-schema-table td{border:0;padding:8px 12px;overflow-wrap:break-word;word-break:normal}
+  .clew-schema-table td::before{content:attr(data-label);display:block;margin-bottom:3px;font-size:14px;line-height:20px;font-weight:650;color:#42516a}
+  .clew-schema-table td:empty{display:none}
+  .clew-widget .dm-overview .dm-controls{display:grid;grid-template-columns:minmax(0,1fr);width:100%;gap:12px}
+  .clew-widget .dm-overview .dm-controls label{min-width:0;width:100%;margin:0}
+  .clew-widget .dm-overview .dm-controls select{width:100%;max-width:100%;box-sizing:border-box}
+  .clew-widget .dm-field-row button{width:100%;max-width:100%;box-sizing:border-box;margin-right:0}
+  .clew-widget .dm-field-row,.clew-widget .dm-field-row>ul>li{min-width:0;max-width:100%;box-sizing:border-box}
+}
+@media(max-width:600px){
+  .navbar__inner>.navbar__items:not(.navbar__items--right){flex:0 0 auto;min-width:0}
+  .navbar__inner>.navbar__items--right{flex:1 1 0;min-width:0}
+  .navbar__inner .navbar__brand{flex:0 0 auto;min-width:0;margin-right:8px}
+  .navbar__inner .clew-search{flex:1 1 0;width:auto;min-width:0;max-width:100%;margin:0;gap:4px}
+  .navbar__inner .clew-search input{flex:1 1 0;width:0;min-width:0;max-width:100%;padding:6px 8px}
+  .navbar__inner .clew-search button{flex:0 0 auto;padding:6px 8px;font-size:14px}
+}
