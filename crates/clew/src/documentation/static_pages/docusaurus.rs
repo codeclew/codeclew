@@ -1741,12 +1741,8 @@ fn reading_guide_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
     };
     Ok(format!(
         "## {}\n\n{}\n\n{}: {}\n\n<ClewDownload path=\"{path}\">{}</ClewDownload>\n",
-        label(language, "Translation pending", "Требуется перевод"),
-        label(
-            language,
-            "This reading guide is not available in the selected language. Its readable original remains below, with the same anchors and evidence. This is not a translation or a new review.",
-            "План чтения недоступен на выбранном языке. Ниже доступен исходный план с прежними ссылками, якорями и основаниями. Это не перевод и не новая проверка."
-        ),
+        super::prose_language::availability_heading(gap, language),
+        super::question_reading::gap_explanation(gap, language),
         label(
             language,
             "Original prose language",

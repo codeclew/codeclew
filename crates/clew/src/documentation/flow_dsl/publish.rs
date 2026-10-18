@@ -201,6 +201,11 @@ fn write_inner(
     let complete = profile.is_none() || available == Some(language);
     let title = if complete {
         p.title.as_str()
+    } else if available.is_none() {
+        l(
+            "Availability in the selected language is not established",
+            "Доступность на выбранном языке не установлена",
+        )
     } else {
         l("Translation required", "Требуется перевод")
     };
@@ -210,10 +215,17 @@ fn write_inner(
         format!(
             "<main><h1>{}</h1><p>{}</p><dl><dt>{}</dt><dd>{}</dd><dt>{}</dt><dd>{}</dd></dl><p id=\"sources\"><a href=\"profile.json\">{}</a> · <a href=\"projection.json\">{}</a> · <a href=\"sources.html\">{}</a></p></main>",
             title,
-            l(
-                "The profile prose has not been prepared in the requested language. Its original text is preserved; no translation or review is inferred.",
-                "Авторский текст профиля не подготовлен на запрошенном языке. Оригинал сохранён; перевод и проверка не подразумеваются."
-            ),
+            if available.is_none() {
+                l(
+                    "The original profile has no declared prose language. Its original text and source bindings are preserved; no translation or review is inferred.",
+                    "Язык авторского текста исходного профиля не указан. Исходный текст и привязки к коду сохранены; перевод и проверка не подразумеваются.",
+                )
+            } else {
+                l(
+                    "The profile prose has not been prepared in the requested language. Its original text is preserved; no translation or review is inferred.",
+                    "Авторский текст профиля не подготовлен на запрошенном языке. Оригинал сохранён; перевод и проверка не подразумеваются.",
+                )
+            },
             l("Requested language", "Запрошенный язык"),
             language,
             l("Available prose language", "Язык доступного текста"),

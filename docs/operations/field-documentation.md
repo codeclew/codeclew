@@ -914,6 +914,15 @@ assert that translation is needed or scheduled. Source facts and their input and
 context digests are independent of the reader language. Selection digests include
 explicit question metadata.
 
+Protected note associations accept optional `documentationLanguage` for the
+original human/imported prose. This changes association provenance, never the
+captured Markdown or its content digest, and does not assign a language to an
+assessment. Full Pages record original-note availability separately from
+assessment operations under `narrativeTranslationGaps`; the explicit coverage
+includes `NOTE_ORIGINALS`. Downloadable original-note packets retain the exact
+association, captured text and authority without substituting an assessment.
+Selected-native instruction availability reads the same captured declaration.
+
 Authored Pages inputs also record their prose language explicitly. A data-model
 plan accepts `documentationLanguage`; each `models`, `contracts` or
 `processViews` record can override it for that record. This permits a translated

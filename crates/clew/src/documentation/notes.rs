@@ -25,6 +25,9 @@ pub struct Association {
     pub targets: Vec<String>,
     pub classification: String,
     pub period: String,
+    /// Declared language of original human/imported prose, independent of assessment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -49,6 +52,7 @@ pub fn is_root(id: &str) -> bool {
     id.starts_with("assessment-")
 }
 fn validate(a: &Association) -> Result<(), ClewError> {
+    super::language::validate(a.documentation_language.as_deref())?;
     store::relative(&a.path)?;
     if a.schema != "codeclew-documentation-note-association/1.0"
         || !store::valid_id(&a.id)
@@ -153,6 +157,7 @@ pub fn attach_from_inputs(
         let mut value = captured.clone();
         let a: Association =
             serde_json::from_value(value["association"].clone()).map_err(io_error)?;
+        validate(&a)?;
         let missing: Vec<_> = a
             .targets
             .iter()
@@ -468,4 +473,50 @@ pub fn markdown(rows: &Value) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn original_note_language_is_optional_validated_and_not_assessment_language() {
+        let original = json!({"schema":"codeclew-documentation-note-association/1.0",
+            "id":"instructions","title":"Original title","service":"orders",
+            "path":"notes/instructions.md","targets":["service:orders"],
+            "classification":"policy","period":"2026","metadata":{"author":"Maintainer"}});
+        for value in [
+            Value::Null,
+            json!("en"),
+            json!("ru"),
+            json!("de"),
+            json!(true),
+        ] {
+            let mut input = original.clone();
+            input["documentationLanguage"] = value.clone();
+            let admitted = serde_json::from_value::<Association>(input).and_then(|association| {
+                validate(&association).map_err(serde::de::Error::custom)?;
+                Ok(association)
+            });
+            assert_eq!(
+                admitted.is_ok(),
+                value.is_null() || value == "en" || value == "ru"
+            );
+            if let Ok(association) = admitted {
+                assert_eq!(
+                    association.documentation_language.as_deref(),
+                    value.as_str()
+                );
+                let serialized = serde_json::to_value(association).unwrap();
+                assert!(serialized.get("assessmentLanguage").is_none());
+                assert_eq!(serialized["metadata"], original["metadata"]);
+                if value.is_null() {
+                    assert!(serialized.get("documentationLanguage").is_none());
+                }
+            }
+        }
+        let legacy: Association = serde_json::from_value(original).unwrap();
+        assert!(legacy.documentation_language.is_none());
+        validate(&legacy).unwrap();
+    }
 }

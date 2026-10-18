@@ -80,7 +80,7 @@ pub(super) fn description_label(gap: &Value, language: &str) -> &'static str {
             "Maintained user documentation",
             "Поддерживаемая пользовательская документация",
         ),
-        Some("SELECTED_NOTE_TRANSLATION") => text(
+        Some("SELECTED_NOTE_TRANSLATION" | "NOTE_ORIGINAL_TRANSLATION") => text(
             language,
             "Human or imported instruction",
             "Пользовательская или импортированная инструкция",
@@ -249,6 +249,32 @@ pub(super) fn attach_narrative(
             gaps.insert(id, gap);
         }
     }
+    for note in payload["notes"].as_array().into_iter().flatten() {
+        if note["original"]["text"].as_str().is_none() {
+            continue;
+        }
+        let id = note["association"]["id"]
+            .as_str()
+            .filter(|id| store::valid_id(id))
+            .ok_or_else(|| crate::documentation::invalid("original note identifier is unsafe"))?;
+        let original_path = format!("{base}.note-{id}.original.json");
+        let original = json!({"association":note["association"],"original":note["original"],
+            "associationDigest":note["associationDigest"],"authority":note["authority"],"snapshotLabel":note["snapshotLabel"]});
+        files.insert(
+            original_path.clone(),
+            serde_json::to_vec_pretty(&original).map_err(crate::documentation::io_error)?,
+        );
+        if let Some(mut gap) = gap(
+            &note["association"]["documentationLanguage"],
+            requested,
+            "NOTE_ORIGINAL_TRANSLATION",
+            &original_path,
+        )? {
+            gap["noteId"] = json!(id);
+            gap["title"] = note["association"]["title"].clone();
+            gaps.insert(format!("original-note-{id}"), gap);
+        }
+    }
     if !payload["frozenLanguageAvailability"].is_object() {
         payload["frozenLanguageAvailability"] = json!({
             "requestedDocumentationLanguage":payload["requestedDocumentationLanguage"],
@@ -397,6 +423,48 @@ mod tests {
         assert!(files.is_empty());
         assert!(original_path("../outside").is_err());
     }
+    #[test]
+    fn original_note_and_assessment_keep_independent_language_and_provenance() {
+        for target in ["en", "ru"] {
+            for available in [Some("en"), Some("ru"), None] {
+                let assessment_language = if target == "en" { "ru" } else { "en" };
+                let note = json!({"id":"assessment-operations", "association":{"id":"operations",
+                    "title":"Source appendix", "documentationLanguage":available},
+                    "original":{"status":"CAPTURED","text":"Original note <Data>{kept}\r\n","digest":"original-digest"},
+                    "associationDigest":"association-digest","authority":"HUMAN_OR_IMPORTED_UNVERIFIED",
+                    "assessment":{"id":"assessment-operations","title":"Assessment", "documentationLanguage":assessment_language}});
+                let mut payload = json!({"notes":[note],"operations":[],"sections":[]});
+                let mut files = BTreeMap::new();
+                let gaps = attach_narrative(
+                    &mut payload,
+                    "services/orders.json",
+                    Some(target),
+                    &mut files,
+                )
+                .unwrap();
+                assert_eq!(payload["notes"][0], note);
+                assert_eq!(
+                    gaps["assessment-operations"]["availableLanguage"],
+                    assessment_language
+                );
+                assert_eq!(
+                    gaps.contains_key("original-note-operations"),
+                    available != Some(target)
+                );
+                assert_eq!(gaps.len(), 1 + usize::from(available != Some(target)));
+                let original: Value =
+                    serde_json::from_slice(&files["services/orders.note-operations.original.json"])
+                        .unwrap();
+                assert_eq!(original["association"], note["association"]);
+                assert_eq!(original["original"], note["original"]);
+                assert_eq!(original["authority"], note["authority"]);
+                assert_eq!(original["associationDigest"], note["associationDigest"]);
+                assert!(original.get("assessment").is_none());
+                assert_eq!(files.len(), 2);
+            }
+        }
+    }
+
     #[test]
     fn target_language_refreshes_availability_and_requests_without_rewriting_retained_content() {
         for target in ["en", "ru"] {

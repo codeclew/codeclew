@@ -315,7 +315,13 @@ fn unknown_or_other_profile_language_is_an_explicit_gap_with_original_downloads(
         let html = std::fs::read_to_string(out.path().join("page.html")).unwrap();
         let mdx = std::fs::read_to_string(out.path().join("page.mdx")).unwrap();
         for view in [&html, &mdx] {
-            assert!(view.contains("Требуется перевод"));
+            if available.is_none() {
+                assert!(view.contains("Доступность на выбранном языке не установлена"));
+                assert!(!view.contains("Требуется перевод"));
+                assert!(!view.contains("не подготовлен"));
+            } else {
+                assert!(view.contains("Требуется перевод"));
+            }
             assert!(view.contains("href=\"profile.json\""));
             assert!(view.contains("href=\"projection.json\""));
             assert!(!view.contains(&format!("<h1>{}</h1>", p.title)));

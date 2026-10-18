@@ -57,7 +57,7 @@ impl Presentation {
                     &page.id,
                     &["overview"],
                     "SELECTED_NOTE_TRANSLATION",
-                    None,
+                    note.association["documentationLanguage"].as_str(),
                     requested,
                     format!("{}.note-{index}.original.json", page.id),
                     serde_json::to_value(note).map_err(crate::documentation::io_error)?,

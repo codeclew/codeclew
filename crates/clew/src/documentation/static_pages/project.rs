@@ -477,6 +477,7 @@ fn human_instructions(
             .ok_or_else(|| invalid("native page selected note is not captured in Check"))?;
         let association: Association = serde_json::from_value(captured["association"].clone())
             .map_err(|_| invalid("native page captured note association is invalid"))?;
+        crate::documentation::language::validate(association.documentation_language.as_deref())?;
         let association_digest = digest(&association)?;
         if association.id != *id
             || association.schema != "codeclew-documentation-note-association/1.0"

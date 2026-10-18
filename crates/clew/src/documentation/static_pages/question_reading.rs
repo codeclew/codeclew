@@ -430,18 +430,26 @@ pub(super) fn available_language_label(gap: &Value, language: &str) -> &'static 
     }
 }
 
+pub(super) fn gap_explanation(gap: &Value, language: &str) -> &'static str {
+    if gap["availableLanguage"].is_null() {
+        super::prose_language::availability_explanation(gap, language)
+    } else {
+        super::super::reader::text(
+            language,
+            "This reading guide is not available in the selected language. Its readable original remains below, with the same anchors and evidence. This is not a translation or a new review.",
+            "План чтения недоступен на выбранном языке. Ниже доступен исходный план с прежними ссылками, якорями и основаниями. Это не перевод и не новая проверка.",
+        )
+    }
+}
+
 pub(super) fn translation_gap_html(gap: &Value) -> String {
     use super::super::{reader::text, render::escape};
     let language = gap["requestedLanguage"].as_str().unwrap_or("en");
     let available = available_language_label(gap, language);
     format!(
         "<aside class=\"translation-gap gap-card\"><h2>{}</h2><p>{}</p><p>{}: {}</p><p><a href=\"{}\">{}</a></p></aside>",
-        text(language, "Translation pending", "Требуется перевод"),
-        text(
-            language,
-            "This reading guide is not available in the selected language. Its readable original remains below, with the same anchors and evidence. This is not a translation or a new review.",
-            "План чтения недоступен на выбранном языке. Ниже доступен исходный план с прежними ссылками, якорями и основаниями. Это не перевод и не новая проверка."
-        ),
+        super::prose_language::availability_heading(gap, language),
+        gap_explanation(gap, language),
         text(
             language,
             "Original prose language",
@@ -794,11 +802,17 @@ mod tests {
                     assert_eq!(gap["href"], "example.reading-guide.original.json");
                     let html = translation_gap_html(&gap);
                     assert!(html.contains("example.reading-guide.original.json"));
-                    assert!(html.contains(if requested == "ru" {
-                        "Требуется перевод"
-                    } else {
-                        "Translation pending"
-                    }));
+                    assert!(
+                        html.contains(super::super::prose_language::availability_heading(
+                            &gap, requested
+                        ))
+                    );
+                    if available.is_none() {
+                        assert!(
+                            !html.contains("Translation pending")
+                                && !html.contains("Требуется перевод")
+                        );
+                    }
                     assert!(
                         !html.contains("<main"),
                         "notice must not replace unrelated content"

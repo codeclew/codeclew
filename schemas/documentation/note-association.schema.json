@@ -53,6 +53,14 @@
     },
     "metadata": {
       "type": "object"
+    },
+    "documentationLanguage": {
+      "enum": [
+        "en",
+        "ru",
+        null
+      ],
+      "description": "Declared language of original note prose; absent or null means unknown. Does not label an assessment or change review authority."
     }
   },
   "required": [

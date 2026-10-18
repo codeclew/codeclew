@@ -474,7 +474,11 @@ fn explicit_pages_language_preserves_readable_original_guides_in_both_formats() 
                 assert!(output.join("docs/services/sample.mdx").is_file());
             }
             if available != Some("ru") {
-                assert!(body.contains("Требуется перевод"));
+                assert!(body.contains(if available.is_none() {
+                    "Доступность на выбранном языке не установлена"
+                } else {
+                    "Требуется перевод"
+                }));
                 assert!(body.contains("system-reading-guide.original.json"));
             }
             let original: Value = serde_json::from_slice(&fs::read(original).unwrap()).unwrap();
@@ -933,7 +937,7 @@ fn selected_language_preserves_question_sources_and_format_boundaries() {
 }
 
 #[test]
-fn selection_question_language_does_not_relabel_imported_paragraphs() {
+fn selection_question_language_does_not_relabel_imported_prose() {
     let mut selected = selection("independent", "sample", "endpoint-a");
     selected.question = Some("Reviewed question".into());
     selected.documentation_language = Some("ru".into());
@@ -951,12 +955,27 @@ fn selection_question_language_does_not_relabel_imported_paragraphs() {
     projection.pages[0]
         .authored_paragraphs
         .push(paragraph.clone());
+    let note: model::HumanInstruction = serde_json::from_value(json!({
+        "id":"operations", "title":"Original note", "declaredAuthor":"Maintainer", "classification":"policy",
+        "period":"2026", "versionDigest":"version", "contentDigest":"content", "associationDigest":"association",
+        "text":"Original instruction", "authority":"HUMAN_OR_IMPORTED_UNVERIFIED", "sourceClaimStatus":"UNASSESSED",
+        "association":{"documentationLanguage":"en"}
+    })).unwrap();
+    projection.pages[0].human_instructions.push(note.clone());
     let before = serde_json::to_value(&projection).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let manifest =
         publish::write_language(temporary.path(), "snapshot", &projection, Some("ru")).unwrap();
     let gaps = manifest["translationGaps"].as_array().unwrap();
-    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps.len(), 2);
+    assert_eq!(gaps[1]["kind"], "SELECTED_NOTE_TRANSLATION");
+    assert_eq!(gaps[1]["availableLanguage"], "en");
+    let original_note: Value = store::read(
+        &temporary.path().join("independent.note-0.original.json"),
+        1024 * 1024,
+    )
+    .unwrap();
+    assert_eq!(original_note, serde_json::to_value(note).unwrap());
     assert_eq!(gaps[0]["kind"], "SELECTED_PARAGRAPH_TRANSLATION");
     assert_eq!(gaps[0]["availableLanguage"], "en");
     let raw: Value = store::read(
