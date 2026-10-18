@@ -537,10 +537,23 @@ pub(super) fn route_map(
                     format!("{name}.html#{}", text(&entry["id"])),
                     json!(format!("/{name}#entry-{}", text(&entry["id"]))),
                 );
+            } else if let Some(source) = rows(&entry["sourceIds"])
+                .filter_map(|id| page["sources"].get(text(id)))
+                .find(|source| super::is_source(source))
+            {
+                let identity = crate::documentation::digest(source)?;
+                routes.insert(
+                    format!("{name}.html#{}", text(&entry["id"])),
+                    json!(format!("/sources/{}", &identity[7..])),
+                );
             }
         }
         for op in rows(&page["operations"]) {
             let id = text(&op["id"]);
+            if id == "process-overview" || id.starts_with("section-") {
+                routes.insert(format!("{name}.html#{id}"), json!(format!("/{name}#{id}")));
+                continue;
+            }
             routes.insert(
                 format!("{name}.html#{id}"),
                 json!(format!("/operations/{}--{id}", name.replace('/', "-"))),
@@ -556,6 +569,70 @@ pub(super) fn route_map(
         }
     }
     Ok(Value::Object(routes))
+}
+
+pub(super) fn linked_downloads(
+    native: &BTreeMap<String, Vec<u8>>,
+    files: &mut BTreeMap<String, Vec<u8>>,
+    routes: &mut Value,
+) -> Result<(), ClewError> {
+    use std::path::{Component, Path};
+    let mut linked = BTreeSet::new();
+    for (name, bytes) in native.iter().filter(|(name, _)| name.ends_with(".html")) {
+        let html = std::str::from_utf8(bytes).map_err(io_error)?;
+        for remainder in html.split("href=\"").skip(1) {
+            let href = remainder
+                .split('"')
+                .next()
+                .unwrap_or("")
+                .split(['?', '#'])
+                .next()
+                .unwrap_or("");
+            if !href.ends_with(".json") || href.contains(':') || href.starts_with("//") {
+                continue;
+            }
+            let path = if let Some(root) = href.strip_prefix('/') {
+                Path::new(root).to_path_buf()
+            } else {
+                Path::new(name).parent().unwrap_or(Path::new("")).join(href)
+            };
+            let mut parts = Vec::new();
+            let mut valid = true;
+            for component in path.components() {
+                match component {
+                    Component::Normal(part) => parts.push(part),
+                    Component::ParentDir => {
+                        if parts.pop().is_none() {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    Component::CurDir => {}
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if !valid {
+                continue;
+            }
+            let name = parts
+                .iter()
+                .map(|p| p.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            if native.contains_key(&name) {
+                linked.insert(name);
+            }
+        }
+    }
+    for name in linked {
+        let target = format!("clew-data/downloads/{name}");
+        files.insert(format!("static/{target}"), native[&name].clone());
+        routes[&name] = json!(format!("/{target}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -619,10 +696,49 @@ mod tests {
         assert!(body.contains("hide_title: true"));
         let pages = vec![(
             "native/services/s.json".into(),
-            json!({"operations":[{"id":"op"}],"notes":[{"id":"note","association":{"service":"s"}}]}),
+            json!({"operations":[{"id":"op"},{"id":"section-ingress"},{"id":"process-overview"}],"notes":[{"id":"note","association":{"service":"s"}}]}),
         )];
         let routes = route_map(&native, &pages).unwrap();
         assert_eq!(routes["services/s.html#op"], "/operations/services-s--op");
         assert_eq!(routes["services/s.html#note"], "/notes/s--note");
+        assert_eq!(
+            routes["services/s.html#section-ingress"],
+            "/services/s#section-ingress"
+        );
+        assert_eq!(
+            routes["services/s.html#process-overview"],
+            "/services/s#process-overview"
+        );
+    }
+    #[test]
+    fn retained_downloads_keep_exact_bytes_and_source_only_catalogue_links_resolve() {
+        let bytes = b"{\r\n  \"literal\": 1.0\r\n}\r\n".to_vec();
+        let native = BTreeMap::from([
+            ("data-model.json".into(), bytes.clone()),
+            (
+                "data-model.html".into(),
+                b"<main><a href=\"data-model.json\" download>Original JSON</a></main>".to_vec(),
+            ),
+        ]);
+        let source = json!({"file":"Example.kt","revision":"a".repeat(40),"startLine":1,"endLine":1,"text":"fun main() {}","textDigest":"retained"});
+        let pages = vec![(
+            "native/services/s.json".into(),
+            json!({"catalogue":[{"id":"source-only","sourceIds":["source"]}],"sources":{"source":source}}),
+        )];
+        let mut routes = route_map(&native, &pages).unwrap();
+        let mut files = BTreeMap::new();
+        linked_downloads(&native, &mut files, &mut routes).unwrap();
+        assert_eq!(files["static/clew-data/downloads/data-model.json"], bytes);
+        assert_eq!(
+            routes["data-model.json"],
+            "/clew-data/downloads/data-model.json"
+        );
+        assert_eq!(
+            routes["services/s.html#source-only"],
+            format!(
+                "/sources/{}",
+                &crate::documentation::digest(&source).unwrap()[7..]
+            )
+        );
     }
 }

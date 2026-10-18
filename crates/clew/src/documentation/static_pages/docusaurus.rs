@@ -385,8 +385,12 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         if exception {
             out.push_str("<aside className=\"clew-exception\">\n\n");
         }
+        let number = section["number"]
+            .as_u64()
+            .map(|n| format!("{n}. "))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{} {} {{#{anchor}}}\n\n",
+            "{} {number}{} {{#{anchor}}}\n\n",
             if exception { "###" } else { "##" },
             md(text(&section["title"]))
         ));
@@ -1396,8 +1400,10 @@ pub(super) fn project(
         for section in rows(&guide["sections"]) {
             story.push_str(&format!("## {}\n\n", md(text(&section["title"]))));
             for b in rows(&section["blocks"]) {
+                story.push_str("<article className=\"clew-outcome\">\n\n");
                 story.push_str(&format!("### {}\n\n", md(text(&b["title"]))));
                 story.push_str(&block_in(b, &Value::Null, text(&section["id"]), "")?);
+                story.push_str("</article>\n\n");
             }
         }
         story.push_str(&block_in(
@@ -1414,7 +1420,8 @@ pub(super) fn project(
     overview.push_str("[Source fragments](sources/index.mdx)\n\n");
     put(&mut files, "docs/overview.mdx", overview);
     reading::ancillary_pages(native, &mut files, &mut sidebars)?;
-    let routes = reading::route_map(native, &pages)?;
+    let mut routes = reading::route_map(native, &pages)?;
+    reading::linked_downloads(native, &mut files, &mut routes)?;
     put(
         &mut files,
         "src/components/clew-routes.json",
