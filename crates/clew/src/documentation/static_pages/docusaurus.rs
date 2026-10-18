@@ -376,8 +376,19 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
         if !text(&section["route"]).is_empty() {
             out.push_str(&fence(text(&section["route"]), "text"));
         }
-        for b in rows(&section["blocks"]) {
+        for (index, b) in rows(&section["blocks"]).enumerate() {
             out.push_str(&block(b, page, sid)?);
+            if index == 0 {
+                for reference in rows(&page["modelReferences"]).filter(|r| r["anchor"] == anchor) {
+                    out.push_str(&format!(
+                        "<ClewModelLink model={} process={} anchor={}>{}</ClewModelLink>\n\n",
+                        json!(text(&reference["id"])),
+                        json!(id),
+                        json!(anchor),
+                        md(text(&reference["title"]))
+                    ));
+                }
+            }
         }
         if exception {
             out.push_str("</aside>\n\n");
@@ -1044,6 +1055,50 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
         ));
     }
     out.push('\n');
+    if rows(&model["records"]).next().is_some() {
+        let literal = |value: &str| {
+            super::super::render::escape(value)
+                .replace('{', "&#123;")
+                .replace('}', "&#125;")
+        };
+        out.push_str("## Reference records\n\n<table className=\"dm-records\"><caption>Source-backed literal records · authored interpretation</caption><thead><tr>");
+        for field in rows(&model["fields"]) {
+            out.push_str(&format!(
+                "<th scope=\"col\">{}</th>",
+                literal(text(&field["path"]))
+            ));
+        }
+        out.push_str("<th scope=\"col\">Evidence</th></tr></thead><tbody>");
+        for (index, record) in rows(&model["records"]).enumerate() {
+            out.push_str("<tr>");
+            for field in rows(&model["fields"]) {
+                out.push_str(&format!(
+                    "<td data-field={{{}}}><code>{}</code></td>",
+                    json!(text(&field["path"])),
+                    literal(&record["values"][text(&field["id"])].to_string())
+                ));
+            }
+            out.push_str(&format!(
+                "<td data-field=\"Evidence\"><a href=\"#reference-record-{}\">Source {}</a></td></tr>",
+                index + 1, index + 1
+            ));
+        }
+        out.push_str("</tbody></table>\n\n");
+        for (index, record) in rows(&model["records"]).enumerate() {
+            out.push_str(&format!(
+                "<span id=\"reference-record-{}\"></span>\n\n{}",
+                index + 1,
+                details(
+                    &format!("Record {}: source and scope", index + 1),
+                    &format!(
+                        "{}\n\n{}",
+                        md(text(&record["claim"]["text"])),
+                        evidence(&record["claim"])?
+                    )
+                )
+            ));
+        }
+    }
     out.push_str("## Fields and representations\n\n");
     for field in rows(&model["fields"]) {
         let fid = text(&field["id"]);
@@ -1083,11 +1138,17 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
             body.push_str(&evidence(&rep["mapping"])?);
             out.push_str(&details(text(&rep["label"]), &body));
         }
-        out.push_str(&format!("<ClewFieldTrace field={} />\n\n", json!(fid)));
+        if !super::data_model::reference_only(model) {
+            out.push_str(&format!("<ClewFieldTrace field={} />\n\n", json!(fid)));
+        }
     }
-    out.push_str(&format!(
-        "## Field usage and focused flow {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## Processes\n\n"
-    ));
+    if super::data_model::reference_only(model) {
+        out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## Processes\n\n"));
+    } else {
+        out.push_str(&format!(
+            "## Field usage and focused flow {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## Processes\n\n"
+        ));
+    }
     for link in rows(&model["processLinks"]) {
         if let Some(process) = text(&link["subject"]).strip_prefix("scenario:") {
             out.push_str(&format!(
@@ -1447,6 +1508,20 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reference_records_and_process_links_are_portable_and_keep_evidence() {
+        let model = json!({"id":"lookup","title":"Lookup","purpose":{"text":"Supported values","evidence":[]},"identity":{"text":"Source literals","evidence":[]},"fields":[{"id":"id","path":"id","meaning":{"text":"Key","evidence":[]},"representations":[],"usage":[]}],"records":[{"values":{"id":"<literal>|value"},"claim":{"text":"Exact retained literal","evidence":[]}}],"processLinks":[],"relatedModels":[]});
+        let body = model_page(&model, &json!({"contracts":[]})).unwrap();
+        assert!(body.contains("Reference records"));
+        assert!(!body.contains("<literal>"));
+        assert!(body.contains("#reference-record-1"));
+        assert!(body.contains("contextOnly"));
+        assert!(!body.contains("<ClewFieldTrace"));
+        let page = json!({"questionReader":{"title":"Process","purpose":"Select","sections":[{"id":"select","title":"Select","number":1,"blocks":[{"text":"Existing explanation","evidence":[],"links":[]}]}]},"modelReferences":[{"id":"lookup","title":"Lookup","anchor":"question-select"}]});
+        let process = process_page(&page, "example").unwrap();
+        assert!(process.contains("Existing explanation"));
+        assert!(process.contains("<ClewModelLink model=\"lookup\" process=\"example\" anchor=\"question-select\">Lookup</ClewModelLink>"));
+    }
     #[test]
     fn sequence_preserves_nested_branches_returns_and_participants_without_diagram_notes() {
         let op = json!({"participants":[{"id":"caller","label":"Caller"},{"id":"service","label":"Service"}],"events":[

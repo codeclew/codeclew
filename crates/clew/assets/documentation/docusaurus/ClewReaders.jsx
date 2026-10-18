@@ -76,7 +76,7 @@ export function ClewFieldTrace({field}) {
   return <a ref={ref} data-dm-context data-dm-field={field} href={`?field=${encodeURIComponent(field)}#field-usage`}>Trace this field</a>;
 }
 
-function Widget({dataPath, anchor}) {
+function Widget({dataPath, anchor, contextOnly = false}) {
   const base = useBaseUrl('/');
   const target = useRef(null);
   const [error, setError] = useState('');
@@ -88,12 +88,13 @@ function Widget({dataPath, anchor}) {
     Promise.all([documentAt(dataPath, base), import('./clew-model-runtime.js')]).then(([saved]) => {
       if (disposed || !target.current) return;
       const data = {...saved};
-      data.modelHrefs = Object.fromEntries((data.models || []).map(m => [m.id, `${base}data-model/${m.id}`]));
+      data.modelHrefs = Object.fromEntries([...(data.models || []), ...(data.modelReferences || [])].map(m => [m.id, `${base}data-model/${m.id}`]));
       const query = new URLSearchParams(location.search);
       const process = data.request?.subject?.slice(9) || query.get('fromProcess');
       if (process && /^[a-zA-Z0-9_-]{1,160}$/.test(process)) data.processHrefs = {[process]: `${base}scenarios/${process}`};
       if (anchor) data.returnAnchor = anchor;
-      const handle = window.CodeclewDataModel.mount(target.current, data);
+      const handle = contextOnly ? null : window.CodeclewDataModel.mount(target.current, data);
+      if (contextOnly) window.CodeclewDataModel.contextLinks(document, data);
       document.querySelectorAll('[data-dm-field]').forEach(link => {
         const click = event => {
           if (!handle || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -105,7 +106,7 @@ function Widget({dataPath, anchor}) {
       setReady(true);
     }).catch(reason => { if (!disposed) setError(reason.message); });
     return () => { disposed = true; removals.forEach(remove => remove()); };
-  }, [dataPath, base, anchor]);
+  }, [dataPath, base, anchor, contextOnly]);
   return <div className="dm-page clew-widget">
     {!ready && !error && <p role="status">Loading saved field evidence…</p>}
     {error && <p role="alert">{error}. The original prose and source links remain available.</p>}
@@ -113,8 +114,8 @@ function Widget({dataPath, anchor}) {
   </div>;
 }
 
-export function ClewDataModel({dataPath}) {
-  return <Widget dataPath={dataPath} />;
+export function ClewDataModel({dataPath, contextOnly = false}) {
+  return <Widget dataPath={dataPath} contextOnly={contextOnly} />;
 }
 export function ClewProcess({dataPath, defaultAnchor, children}) {
   const [flow, setFlow] = useState(false);

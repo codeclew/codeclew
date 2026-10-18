@@ -3,6 +3,15 @@ const {test}=require('node:test');const assert=require('node:assert/strict');con
 const script=fs.readFileSync('crates/clew/assets/documentation/data-model.js','utf8');
 function api(){const context={window:{},document:{getElementById:()=>null},URLSearchParams};vm.runInNewContext(script,context);return context.window.CodeclewDataModel;}
 function sample(){return {contracts:[{id:'event',title:'Event v1',leaves:['a','b','c'].map(field=>({field,requiredWhenBranchMatches:true}))}],models:[{id:'entity',title:'Entity',fields:[{id:'a',path:'a',representations:[{contract:'event',field:'a'}],usage:[{stage:'Store',contract:'event',assessment:'observed-static-use',kinds:['persist','forward']}]},{id:'b',path:'b',representations:[{contract:'event',field:'b'}],usage:[{stage:'Store',contract:'event',assessment:'stale-evidence',kinds:['display']}]}]}]};}
+test('reference links stay at their explicit stage and use portable model paths',()=>{
+ const data={modelReferences:[{id:'lookup',title:'Lookup <records>',anchor:'question-select',stages:['Lookup'],href:'../data-model/lookup.html'}]};
+ assert.equal(api().referenceLinks('Store',data),'');
+ assert.match(api().referenceLinks('Lookup',data),/data-dm-return-anchor="question-select"/);
+ assert.match(api().referenceLinks('Lookup',data),/Lookup &lt;records&gt;/);
+ data.modelHrefs={lookup:'/preview/data-model/lookup'};
+ const html=api().referenceLinks('Lookup',data);
+ assert.match(html,/href="\/preview\/data-model\/lookup"/);assert.doesNotMatch(html,/\.html/);
+});
 test('required-leaf counts keep unknown and stale separate from observed uses',()=>{const s=api().stats(sample(),'event','Store');assert.equal(s.required,3);assert.equal(s.investigated,1);assert.equal(s.unknown,2);assert.equal(s.stale,1);assert.equal(s.categories.persist,1);assert.equal(s.categories.forward,1);assert.equal(s.categories.display,0);});
 test('whole-object use is not promoted to direct display or business decisions',()=>{const d=sample();d.models[0].fields[0].usage[0].kinds=['whole-object-serialization-or-comparison'];const s=api().stats(d,'event','Store');assert.equal(s.categories['whole-object-serialization-or-comparison'],1);assert.equal(s.categories.display,0);assert.equal(s.categories['calculate-or-decide'],0);});
 test('scoped negative findings remain investigated without becoming observed use',()=>{const d=sample();d.models[0].fields[0].usage[0]={stage:'UI',contract:'event',assessment:'no-use-found-in-bounded-complete-scope',kinds:[]};const s=api().stats(d,'event','UI');assert.equal(s.negative,1);assert.equal(s.investigated,1);assert.equal(s.unknown,2);assert.equal(s.categories.display,0);assert.equal(api().cellLabel([]),'Not investigated');assert.match(api().cellLabel([{assessment:'stale-evidence'}]),/unknown/);});
