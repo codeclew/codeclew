@@ -127,12 +127,6 @@ function sequentialNav(){
  document.documentElement.lang=reading?guide.language:(D.language||'en');
  $('freshness-status').hidden=reading;
  $('project-title').textContent=questionText('On this page','На этой странице');$('project-subtitle').hidden=true;$('project-kind').hidden=true;$('revision-links').hidden=true;$('catalogue-button').hidden=true;
- const header=document.querySelector('.reader-nav');
- if(header&&!header.dataset.sequential){
-  const brand=header.querySelector('.reader-brand')?.outerHTML||'<a class="reader-brand" href="../overview.html">Codeclew</a>';
-  header.innerHTML=brand+chromeHtml`<div class="reader-links"><a href="../overview.html">${esc(questionText('Overview','Обзор'))}</a><a href="../catalog.html">${esc(questionText('Processes and services','Процессы и сервисы'))}</a><a href="../history.html">${esc(questionText('History','История'))}</a></div>`;
-  header.dataset.sequential='true';
- }
  const rows=sequentialNavigationRows(),steps=rows.filter(row=>!row.exception&&!row.reference),exceptions=rows.filter(row=>row.exception),reference=rows.filter(row=>row.reference);
  const item=row=>chromeHtml`<a class="question-link" href="#${esc(questionAnchor(row.id))}">${esc(row.title)}</a>`;
  const entitySection=guide.sections.find(section=>section.blocks.some(block=>block.links?.some(link=>link.operation==='section-entities')));

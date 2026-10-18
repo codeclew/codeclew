@@ -1349,6 +1349,12 @@ function questionFixture(){
  d.questionReader={title:'Save a city',purpose:'Follow the bounded save',authority:'EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE',sections:[{id:'story',title:'What happens?',blocks:[block]},{id:'confidence',title:'Source and confidence',blocks:[block]}],conclusion:{...block,title:'Local result'}};
  return d;
 }
+test('sequential reading retains the shared global header and search',()=>{
+ const d=questionFixture();d.questionReader.presentation='SEQUENTIAL';d.questionReader.sections[0].number=1;
+ const r=load(d);
+ r.run("globalThis.sharedHeader={innerHTML:'shared navigation and global search',dataset:{}};document.querySelector=selector=>selector==='.reader-nav'?sharedHeader:null;sequentialNav()");
+ assert.equal(r.run('sharedHeader.innerHTML'),'shared navigation and global search');
+});
 test('canonical model is primary without Data Flow and retains exact process return and legacy context',()=>{
  const d=questionFixture(),original=JSON.stringify({operations:d.operations,guide:d.questionReader});
  d.canonicalEntityLinks={'question-story':{places:[{id:'place',title:'Place',href:'../data-model/place.html'}]}};
