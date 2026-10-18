@@ -144,10 +144,15 @@ fn method_node<'a>(root: Node<'a>, s: &str, method: &str) -> Result<Node<'a>, Cl
 struct Extractor<'a> {
     e: &'a super::super::model::ServiceEvidence,
     p: &'a Profile,
+    language: &'a str,
     items: Vec<Item>,
     sources: BTreeMap<String, Source>,
 }
 impl Extractor<'_> {
+    fn ui(&self, value: &str) -> String {
+        language::owned(value, self.language).into_owned()
+    }
+
     // Keep semantic record fields explicit at each emission site.
     #[allow(clippy::too_many_arguments)]
     fn add(
@@ -197,14 +202,14 @@ impl Extractor<'_> {
                 call_target_authority: call_target_authority.into(),
                 compiler_call_relation,
             },
-            limitations,
+            limitations: limitations.iter().map(|text| self.ui(text)).collect(),
         });
         Ok(())
     }
     fn gap(&mut self, sel: &Selected<'_>, n: Node<'_>, message: &str) -> Result<(), ClewError> {
         self.add(
             "gap",
-            message.into(),
+            self.ui(message),
             text(n, &sel.source.text).into(),
             vec![],
             &[],
@@ -325,7 +330,7 @@ impl Extractor<'_> {
                         continue;
                     }
                     init += 1;
-                    self.add("callback-group", "Initialize context".into(), text(*n,s).into(), members.unwrap(), &[], &sel,*n,vec!["Declaration order; callback group does not establish parallel execution".into()])?;
+                    self.add("callback-group", self.ui("Initialize context"), text(*n,s).into(), members.unwrap(), &[], &sel,*n,vec!["Declaration order; callback group does not establish parallel execution".into()])?;
                 }
             }
             if init != 1 {
@@ -371,7 +376,7 @@ impl Extractor<'_> {
                         let label = members
                             .first()
                             .map(|m| self.label(m.rsplit("::").next().unwrap_or(m)))
-                            .unwrap_or_else(|| "Declared callback group".into());
+                            .unwrap_or_else(|| self.ui("Declared callback group"));
                         self.add("callback-group",label,text(call,s).into(),members,&[],&sel,call,vec!["Declared chain group; scheduler, exceptions and parallelism remain unresolved".into()])?;
                     } else {
                         self.gap(&sel, call, "Unsupported chain callback expression")?;
@@ -419,7 +424,7 @@ impl Extractor<'_> {
                     self.gap(&sel, op, "Unsupported initial operation expression")?;
                 }
             }
-            self.add("initial-queue","Declared initial operation queue".into(),text(n,s).into(),members,&[],&sel,n,vec!["Constructor argument order only; dequeue and delivery semantics require engine evidence".into()])?;
+            self.add("initial-queue",self.ui("Declared initial operation queue"),text(n,s).into(),members,&[],&sel,n,vec!["Constructor argument order only; dequeue and delivery semantics require engine evidence".into()])?;
         }
         Ok(())
     }
@@ -512,7 +517,7 @@ impl Extractor<'_> {
                 .first()
                 .and_then(|v| operation(*v, s, &self.p.task_type));
             if let Some(v) = v {
-                self.add("factory-task-type","Declared factory task type".into(),text(n,s).into(),vec![v],&[],&sel,n,vec!["Factory return declaration does not prove runtime registration or trigger activation".into()])?;
+                self.add("factory-task-type",self.ui("Declared factory task type"),text(n,s).into(),vec![v],&[],&sel,n,vec!["Factory return declaration does not prove runtime registration or trigger activation".into()])?;
             } else {
                 self.gap(
                     &sel,
@@ -555,7 +560,21 @@ impl Extractor<'_> {
         for item in &mut self.items {
             let owner = callback_owner(&item.kind);
             if owner != c.owner && item.members.iter().any(|m| m.starts_with("this::")) {
-                item.limitations.push(format!("this callback belongs to {owner}; delegation to configured context {} is unresolved",c.owner));
+                item.limitations.push(format!(
+                    "{} {owner}; {} {} {}",
+                    language::choose(
+                        self.language,
+                        "this callback belongs to",
+                        "этот обработчик принадлежит"
+                    ),
+                    language::choose(
+                        self.language,
+                        "delegation to configured context",
+                        "делегирование настроенному контексту"
+                    ),
+                    c.owner,
+                    language::choose(self.language, "is unresolved", "не установлено")
+                ));
             }
         }
         let referenced: BTreeSet<_> = self
@@ -582,8 +601,14 @@ impl Extractor<'_> {
                             .any(|m| m.ends_with(&format!("::{method}")))
                     })
                     .for_each(|i| {
-                        i.limitations
-                            .push(format!("Callback source unavailable: {method}"))
+                        i.limitations.push(format!(
+                            "{}: {method}",
+                            language::choose(
+                                self.language,
+                                "Callback source unavailable",
+                                "Исходный код обработчика недоступен"
+                            )
+                        ))
                     });
                 continue;
             }
@@ -719,7 +744,7 @@ impl Extractor<'_> {
                 .collect();
             self.add(
                 "condition",
-                "Local if/else condition".into(),
+                self.ui("Local if/else condition"),
                 expr.clone(),
                 vec![],
                 conditions,
@@ -727,7 +752,16 @@ impl Extractor<'_> {
                 condition,
                 helpers
                     .into_iter()
-                    .map(|h| format!("Condition helper semantics unresolved: {h}"))
+                    .map(|h| {
+                        format!(
+                            "{}: {h}",
+                            language::choose(
+                                self.language,
+                                "Condition helper semantics unresolved",
+                                "Семантика вспомогательного метода условия не установлена"
+                            )
+                        )
+                    })
                     .collect(),
             )?;
             let mut yes = conditions.to_vec();
@@ -737,7 +771,10 @@ impl Extractor<'_> {
             }
             if let Some(body) = field(n, "alternative") {
                 let mut no = conditions.to_vec();
-                no.push(format!("else of {expr}"));
+                no.push(format!(
+                    "{} {expr}",
+                    language::choose(self.language, "else of", "иначе для")
+                ));
                 self.walk(body, sel, &no, decision, depth + 1)?;
             }
             return Ok(());
@@ -745,7 +782,7 @@ impl Extractor<'_> {
         if n.kind() == "assignment_expression" {
             self.add(
                 "mapping",
-                "Assign local data".into(),
+                self.ui("Assign local data"),
                 text(n, s).into(),
                 vec![],
                 conditions,
@@ -763,7 +800,7 @@ impl Extractor<'_> {
                     .any(|b| self.call_match(n, sel, b))
             {
                 let members = operation_list(&args(n), s, &self.p.operation_type);
-                match members {Some(m) if !m.is_empty()=>self.add("selected-next-operations","Conditionally select next operations".into(),text(n,s).into(),m,conditions,sel,n,vec!["Syntactic selection; activation, queue merge and repeat policy remain unresolved".into()])?,_=>self.gap(sel,n,"Unsupported next-operation expression")?};
+                match members {Some(m) if !m.is_empty()=>self.add("selected-next-operations",self.ui("Conditionally select next operations"),text(n,s).into(),m,conditions,sel,n,vec!["Syntactic selection; activation, queue merge and repeat policy remain unresolved".into()])?,_=>self.gap(sel,n,"Unsupported next-operation expression")?};
                 return Ok(());
             }
             if let Some(effect) = self
@@ -799,7 +836,7 @@ impl Extractor<'_> {
             if name(n, s) != "name" {
                 self.add(
                     "unknown-helper",
-                    "Local helper or call".into(),
+                    self.ui("Local helper or call"),
                     text(n, s).into(),
                     vec![],
                     conditions,
@@ -816,17 +853,16 @@ impl Extractor<'_> {
                 && let Some(members) = operation_list(&[*v], s, &self.p.operation_type)
                 && !members.is_empty()
             {
-                self.add("selected-next-operations","Return selected next operations".into(),text(n,s).into(),members,conditions,sel,n,vec!["Return selection is not runtime execution or successful business completion".into()])?;
+                self.add("selected-next-operations",self.ui("Return selected next operations"),text(n,s).into(),members,conditions,sel,n,vec!["Return selection is not runtime execution or successful business completion".into()])?;
                 return Ok(());
             }
             self.add(
                 "exit",
-                if n.kind() == "throw_statement" {
+                self.ui(if n.kind() == "throw_statement" {
                     "Throw from local method"
                 } else {
                     "Return from local method"
-                }
-                .into(),
+                }),
                 text(n, s).into(),
                 vec![],
                 conditions,
@@ -960,11 +996,22 @@ fn human(id: &str) -> String {
     }
     s
 }
+#[cfg(test)]
 pub(super) fn project(
     e: &super::super::model::ServiceEvidence,
     snapshot: &str,
     p: &Profile,
 ) -> Result<Projection, ClewError> {
+    project_language(e, snapshot, p, "en")
+}
+
+pub(super) fn project_language(
+    e: &super::super::model::ServiceEvidence,
+    snapshot: &str,
+    p: &Profile,
+    language: &str,
+) -> Result<Projection, ClewError> {
+    super::super::language::validate(Some(language))?;
     p.validate()?;
     if e.sources
         .values()
@@ -975,6 +1022,7 @@ pub(super) fn project(
     let mut x = Extractor {
         e,
         p,
+        language,
         items: vec![],
         sources: BTreeMap::new(),
     };
@@ -1025,7 +1073,7 @@ pub(super) fn project(
         if !item_ids.is_empty() {
             phases.push(Phase {
                 id: id.into(),
-                label: label.into(),
+                label: language::owned(label, language).into_owned(),
                 item_ids,
             });
         }
@@ -1048,14 +1096,16 @@ pub(super) fn project(
                 Phase {
                     id: format!("stages-{}", i + 1),
                     label: format!(
-                        "Declared stages {}–{} (grouped)",
+                        "{} {}–{} ({})",
+                        language::choose(language, "Declared stages", "Объявленные этапы"),
                         i * chunk + 1,
-                        i * chunk + ids.len()
+                        i * chunk + ids.len(),
+                        language::choose(language, "grouped", "сгруппированы")
                     ),
                     item_ids: ids.to_vec(),
                 },
             );
         }
     }
-    Ok(Projection{schema:PROJECTION_SCHEMA.into(),id:p.id.clone(),title:p.title.clone(),service:e.service.clone(),revision:e.revision.clone(),snapshot:snapshot.into(),profile_digest:digest(p)?,framework:p.framework.clone(),engine_version:p.engine_version.clone(),authority:"SOURCE_INTERPRETATION_WITH_DECLARED_PROFILE_NOT_RUNTIME_TRACE".into(),family:p.family.clone(),items:x.items,phases,limitations:vec!["Overview phases are editorial groups; their order does not assert execution across categories".into(),"Engine version is profile-declared or unresolved; framework scheduling, runtime activation, retries, ordering and delivery require separate evidence".into(),"This static projection describes possible source structure, not incident causality or successful completion".into()],sources:x.sources})
+    Ok(Projection{schema:PROJECTION_SCHEMA.into(),id:p.id.clone(),title:p.title.clone(),service:e.service.clone(),revision:e.revision.clone(),snapshot:snapshot.into(),profile_digest:digest(p)?,framework:p.framework.clone(),engine_version:p.engine_version.clone(),authority:"SOURCE_INTERPRETATION_WITH_DECLARED_PROFILE_NOT_RUNTIME_TRACE".into(),family:p.family.clone(),items:x.items,phases,limitations:vec![language::owned("Overview phases are editorial groups; their order does not assert execution across categories", language).into_owned(),language::owned("Engine version is profile-declared or unresolved; framework scheduling, runtime activation, retries, ordering and delivery require separate evidence", language).into_owned(),language::owned("This static projection describes possible source structure, not incident causality or successful completion", language).into_owned()],sources:x.sources})
 }

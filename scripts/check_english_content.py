@@ -33,10 +33,14 @@ RUSSIAN_LOCALIZATION_FILES = {
     "scripts/test_documentation_visual_reader.cjs",
 }
 
-# This source contains reader-facing localized strings alongside English code
-# and comments. Only complete Rust string literals in this one file are exempt.
+# These sources contain reader-facing localized strings alongside English code
+# and comments. Only complete Rust string literals in these files are exempt.
 RUSSIAN_LOCALIZATION_STRING_FILES = {
     "crates/clew/src/documentation/operation_answer.rs",
+    "crates/clew/src/documentation/flow_dsl/language.rs",
+    "crates/clew/src/documentation/flow_dsl/extract.rs",
+    "crates/clew/src/documentation/flow_dsl/publish.rs",
+    "crates/clew/src/documentation/flow_dsl/tests.rs",
 }
 
 

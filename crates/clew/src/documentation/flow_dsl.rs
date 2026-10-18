@@ -1,6 +1,7 @@
 //! Offline, declared-profile interpretation of retained Java flow DSL source.
 //! Structural ordering is deliberately separate from runtime execution semantics.
 mod extract;
+mod language;
 mod publish;
 #[cfg(test)]
 mod tests;
@@ -32,6 +33,9 @@ pub enum Command {
         service: String,
         #[arg(long)]
         profile: PathBuf,
+        /// Reader language. Inherits the profile prose language, otherwise English.
+        #[arg(long, value_parser = ["en", "ru"])]
+        language: Option<String>,
         /// A new directory, or an existing empty directory. Existing files are preserved.
         #[arg(long)]
         output: PathBuf,
@@ -88,6 +92,10 @@ pub struct Profile {
     pub schema: String,
     pub id: String,
     pub title: String,
+    /// Language of the authored profile title, labels and effect descriptions.
+    /// Absence means unknown; it never asserts that existing prose is English.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation_language: Option<String>,
     /// Authored declaration, not an independently verified engine version.
     pub framework: String,
     pub engine_version: Option<String>,
@@ -124,6 +132,7 @@ pub struct Profile {
 }
 impl Profile {
     fn validate(&self) -> Result<(), ClewError> {
+        super::language::validate(self.documentation_language.as_deref())?;
         if self.schema != PROFILE_SCHEMA
             || !store::valid_id(&self.id)
             || self.title.trim().is_empty()
@@ -239,6 +248,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             snapshot,
             service,
             profile,
+            language,
             output,
         } => {
             let repo = Repository::open(&root)?;
@@ -250,10 +260,15 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 .ok_or_else(|| invalid("flow DSL service is absent from the original snapshot"))?;
             let profile: Profile = store::read(&profile, 1024 * 1024)?;
             profile.validate()?;
-            let projection = extract::project(evidence, &snapshot, &profile)?;
-            publish::write(&output, &projection)?;
+            let requested = language
+                .as_deref()
+                .or(profile.documentation_language.as_deref())
+                .unwrap_or("en");
+            let projection = extract::project_language(evidence, &snapshot, &profile, requested)?;
+            let complete = profile.documentation_language.as_deref() == Some(requested);
+            publish::write_language(&output, &projection, &profile, requested)?;
             Ok(
-                json!({"schema":"codeclew-flow-dsl-render/1.0", "snapshot":snapshot,"service":service,"profileDigest":digest(&profile)?,"projection":projection,"output":output,"files":["projection.json","page.mdx","page.html","style.css","manifest.json","sources.html"]}),
+                json!({"schema":"codeclew-flow-dsl-render/1.0", "status":if complete {"RENDERED"} else {"PARTIAL"},"documentationLanguage":requested,"availableDocumentationLanguage":profile.documentation_language,"translationComplete":complete,"translationGaps":if complete {0} else {1},"snapshot":snapshot,"service":service,"profileDigest":digest(&profile)?,"projection":projection,"output":output,"files":["projection.json","profile.json","page.mdx","page.html","style.css","manifest.json","sources.html"]}),
             )
         }
     }

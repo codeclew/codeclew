@@ -886,6 +886,16 @@ analysis gaps; it does not trigger capture. Reusing the same source snapshot for
 a translated author Work requires no reindexing. Review the translation normally;
 `--unassessed` still means the explanation has not passed meaning review.
 
+The declared-profile Java flow reader also accepts `docs dsl render
+--language en|ru`. Its profile may declare `documentationLanguage` for the
+authored title, callback labels and effect descriptions. Without a flag, the
+reader inherits that declaration and otherwise selects English. A missing or
+different profile prose language produces a separate translation gap in HTML,
+inert MDX and `manifest.json`, with links to the original `profile.json`, typed
+projection and exact retained source. It does not relabel the original prose or
+infer a review. Owned phase names and explanatory text use the reader language;
+source identifiers, expressions, revisions and digests retain their exact values.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with

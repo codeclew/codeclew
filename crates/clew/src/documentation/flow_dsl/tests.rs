@@ -238,6 +238,161 @@ fn publication_is_inert_has_parity_and_preserves_existing_files() {
         "authored"
     );
 }
+
+#[test]
+fn bilingual_publication_localizes_owned_text_and_preserves_authored_labels_and_sources() {
+    let evidence = fixture();
+    let mut p = profile(false);
+    // These exact English UI labels are intentional authored text, even in a
+    // Russian profile. Localization must not replace them by matching text.
+    p.title = "Overview".into();
+    p.labels
+        .insert("readHistory".into(), "Declared callback group".into());
+    p.labels.insert("persist".into(), "Сохранить запрос".into());
+    for language in ["en", "ru"] {
+        p.documentation_language = Some(language.into());
+        let original = serde_json::to_value(&p).unwrap();
+        let projection = extract::project_language(&evidence, "snapshot", &p, language).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        publish::write_language(out.path(), &projection, &p, language).unwrap();
+        let html = std::fs::read_to_string(out.path().join("page.html")).unwrap();
+        let mdx = std::fs::read_to_string(out.path().join("page.mdx")).unwrap();
+        let appendix = std::fs::read_to_string(out.path().join("sources.html")).unwrap();
+        assert!(html.contains(&format!("<html lang=\"{language}\">")));
+        assert!(mdx.contains(&format!("<div lang=\"{language}\">")));
+        for text in [
+            "<h1>Overview</h1>",
+            "Declared callback group",
+            "Сохранить запрос",
+        ] {
+            assert!(
+                html.contains(text) && mdx.contains(text),
+                "authored text changed: {text}"
+            );
+        }
+        let heading = if language == "ru" {
+            "<h2 id=\"steps\">Шаги и решения</h2>"
+        } else {
+            "<h2 id=\"steps\">Steps and decisions</h2>"
+        };
+        assert!(html.contains(heading) && mdx.contains(heading));
+        if language == "ru" {
+            assert!(!html.contains("<summary>Sources and version</summary>"));
+            assert!(html.contains("Объявленные этапы"));
+            assert!(html.contains("Локальное условие if/else"));
+        }
+        for source in projection.sources.values() {
+            // Inert escaping is the same for each language, and raw JSON keeps
+            // the exact original bytes and digest for every retained source.
+            assert!(appendix.contains(&source.text_digest));
+            assert_eq!(
+                crate::canonical::hash_bytes(source.text.as_bytes()),
+                source.text_digest
+            );
+        }
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(out.path().join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved, original);
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(out.path().join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["translationComplete"], true);
+        assert_eq!(manifest["translationGaps"], json!([]));
+        assert_eq!(manifest["profileDigest"], digest(&p).unwrap());
+        assert_eq!(serde_json::to_value(&p).unwrap(), original);
+    }
+}
+
+#[test]
+fn unknown_or_other_profile_language_is_an_explicit_gap_with_original_downloads() {
+    for available in [None, Some("en")] {
+        let mut p = profile(false);
+        p.documentation_language = available.map(str::to_owned);
+        let projection = extract::project_language(&fixture(), "snapshot", &p, "ru").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        publish::write_language(out.path(), &projection, &p, "ru").unwrap();
+        let html = std::fs::read_to_string(out.path().join("page.html")).unwrap();
+        let mdx = std::fs::read_to_string(out.path().join("page.mdx")).unwrap();
+        for view in [&html, &mdx] {
+            assert!(view.contains("Требуется перевод"));
+            assert!(view.contains("href=\"profile.json\""));
+            assert!(view.contains("href=\"projection.json\""));
+            assert!(!view.contains(&format!("<h1>{}</h1>", p.title)));
+            assert!(!view.contains("#steps"));
+        }
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(out.path().join("projection.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["title"], p.title);
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(out.path().join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["translationComplete"], false);
+        assert_eq!(
+            manifest["translationGaps"][0]["kind"],
+            "PROFILE_PROSE_LANGUAGE"
+        );
+        assert_eq!(
+            manifest["translationGaps"][0]["availableLanguage"],
+            json!(available)
+        );
+        assert_eq!(manifest["translationGaps"][0]["original"], "profile.json");
+    }
+}
+
+#[test]
+fn profile_and_reader_reject_unsupported_languages_before_publication() {
+    let mut p = profile(false);
+    p.documentation_language = Some("de".into());
+    assert!(p.validate().is_err());
+    p.documentation_language = Some("en".into());
+    assert!(extract::project_language(&fixture(), "snapshot", &p, "de").is_err());
+    let projection = extract::project(&fixture(), "snapshot", &p).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let output = parent.path().join("must-not-exist");
+    assert!(publish::write_language(&output, &projection, &p, "de").is_err());
+    assert!(!output.exists());
+}
+
+#[test]
+fn flow_reader_language_flag_is_optional_and_validated_at_the_cli_boundary() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+    let args = [
+        "flow",
+        "render",
+        "--root",
+        "root",
+        "--snapshot",
+        "snapshot",
+        "--service",
+        "example",
+        "--profile",
+        "profile.json",
+        "--output",
+        "output",
+    ];
+    assert!(matches!(
+        Cli::try_parse_from(args).unwrap().command,
+        Command::Render { language: None, .. }
+    ));
+    for language in ["en", "ru", "de"] {
+        let parsed = Cli::try_parse_from(args.into_iter().chain(["--language", language]));
+        if language == "de" {
+            assert!(parsed.is_err());
+        } else {
+            let Command::Render {
+                language: selected, ..
+            } = parsed.unwrap().command;
+            assert_eq!(selected.as_deref(), Some(language));
+        }
+    }
+}
 #[test]
 fn overloaded_method_and_conditional_factory_fail_closed() {
     let mut e = fixture();
