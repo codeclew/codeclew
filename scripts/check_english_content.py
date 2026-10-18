@@ -32,6 +32,7 @@ RUSSIAN_LOCALIZATION_FILES = {
     "crates/clew/tests/documentation_language.rs",
     "crates/clew/tests/documentation_system.rs",
     "scripts/test_documentation_visual_reader.cjs",
+    "scripts/test_data_model_reader.cjs",
 }
 
 # These sources contain reader-facing localized strings alongside English code

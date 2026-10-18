@@ -18,6 +18,7 @@ test('shared locale translates owned template chunks without touching matching a
  assert.match(output,/<p>Overview<\/p>/);
  assert.match(output,/&quot;description&quot;:&quot;Overview&quot;/);
  assert.match(output,/&quot;enum&quot;:\[&quot;required&quot;,&quot;UNKNOWN&quot;\]/);
+ assert.equal(reader.run('chromeHtml`<code>in</code>`'),'<code>in</code>');
  assert.equal(data.operations[0].summary.text,fixture().operations[0].summary.text);
 });
 const source=text=>({service:'sample',file:'Worker.kt',startLine:1,endLine:1,text,revision:'abc',authority:'RETAINED_SOURCE_NOT_REVERIFIED'});

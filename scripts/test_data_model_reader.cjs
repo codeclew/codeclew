@@ -1,7 +1,7 @@
 'use strict';
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');
-const script=fs.readFileSync('crates/clew/assets/documentation/data-model.js','utf8');
-function api(){const context={window:{},document:{getElementById:()=>null},URLSearchParams};vm.runInNewContext(script,context);return context.window.CodeclewDataModel;}
+const script='var CLEW_RU_MESSAGES='+fs.readFileSync('crates/clew/assets/documentation/ru.json','utf8')+';\n'+fs.readFileSync('crates/clew/assets/documentation/locale.js','utf8')+'\n'+fs.readFileSync('crates/clew/assets/documentation/data-model.js','utf8');
+function api(language='en'){const context={window:{},document:{documentElement:{lang:language},getElementById:()=>null},URLSearchParams};vm.runInNewContext(script,context);return context.window.CodeclewDataModel;}
 function sample(){return {contracts:[{id:'event',title:'Event v1',leaves:['a','b','c'].map(field=>({field,requiredWhenBranchMatches:true}))}],models:[{id:'entity',title:'Entity',fields:[{id:'a',path:'a',representations:[{contract:'event',field:'a'}],usage:[{stage:'Store',contract:'event',assessment:'observed-static-use',kinds:['persist','forward']}]},{id:'b',path:'b',representations:[{contract:'event',field:'b'}],usage:[{stage:'Store',contract:'event',assessment:'stale-evidence',kinds:['display']}]}]}]};}
 test('reference links stay at their explicit stage and use portable model paths',()=>{
  const data={modelReferences:[{id:'lookup',title:'Lookup <records>',anchor:'question-select',stages:['Lookup'],href:'../data-model/lookup.html'}]};
@@ -48,12 +48,33 @@ test('field changes synchronize existing canonical links while preserving each p
 });
 
 const scaling=JSON.parse(fs.readFileSync('fixtures/documentation-field-overview/twenty-fields.json','utf8'));
+test('an explicit widget locale localizes controls while preserving authored words, stage keys and counts',()=>{
+ const data=JSON.parse(JSON.stringify(scaling));data.language='ru';
+ data.models[0].title='Overview';
+ data.models[0].fields[0].meaning.text='View evidence';
+ const before=JSON.stringify(data),englishRoot=api(),russianRoot=api('ru');
+ const rows=englishRoot.overviewRows(data),overview=englishRoot.overviewHtml(data,rows,data.request.stages);
+ assert.match(overview,/<h3>Где используется каждое поле<\/h3>/);
+ assert.match(overview,/Показано строк: 21/);
+ assert.match(overview,/Известных полей модели и путей контейнеров: 20/);
+ const matrix=russianRoot.matrixHtml(rows,data.request.stages,'fixture');
+ assert.match(matrix,/Показать основания вывода/);
+ assert.doesNotMatch(matrix,/Подтверждения схемы/);
+ assert.ok(matrix.includes('Overview.field01'),'authored model title remains exact');
+ for(const stage of data.request.stages)assert.ok(matrix.includes('data-stage="'+stage+'"'),'stage identity remains exact');
+ const row=rows[0],focused=englishRoot.focused(row,row.field.usage,data);
+ assert.match(focused,/<p>View evidence<\/p>/,'authored text matching the owned action stays English');
+ assert.equal(englishRoot.stats(data,'fixture','Receive').required,20);
+ assert.equal(JSON.stringify(data),before,'locale never rewrites recorded data');
+ assert.throws(()=>englishRoot.overviewHtml({...data,language:'de'},rows,data.request.stages),/must be en or ru/);
+});
+
 test('bounded inventory preserves twenty fields, omitted fields, unmapped leaves and every evidence state',()=>{
  const a=api(),before=JSON.stringify(scaling),rows=a.overviewRows(scaling),html=a.matrixHtml(rows,scaling.request.stages,'fixture');
  assert.equal(rows.length,21);assert.match(html,/aria-label="View evidence: Fixture.field01, Receive, Displays field"/);assert.equal((html.match(/<td /g)||[]).length,63);
  for(const label of ['Displays field','Object handling','No direct use found in Synthetic Receive handler only','Unknown — not investigated','Unknown — dynamic use unresolved','Unknown — stale evidence','Unknown — outside the selected investigation','Unknown — no canonical field mapping'])assert.ok(html.includes(label),label);
- assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/20 known model fields \/ container paths.*18 selected process fields/);
- assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/21 contract leaves/);
+ assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/Known model fields \/ container paths: 20.*Selected process fields: 18/);
+ assert.match(a.overviewHtml(scaling,rows,scaling.request.stages),/Contract leaves: 21/);
  assert.equal(JSON.stringify(scaling),before,'inventory must not mutate evidence');
  const selected=a.overviewRows(scaling,'fixture');assert.equal(selected.length,21);
  assert.doesNotMatch(html,/role="grid"/);assert.equal((html.match(/<button type="button"/g)||[]).length,84,'native keyboard buttons for field and cell details');
@@ -90,16 +111,16 @@ test('a sole contract does not silently hide related model fields on fresh overv
  const {nodes}=mounted(data);
  assert.equal(nodes['.dm-contract-select'].value,'');
  assert.match(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
- assert.match(nodes['.dm-overview-summary'].innerHTML,/22 displayed rows/);
- assert.match(nodes['.dm-overview-summary'].innerHTML,/related inventory: Related model: 1 fields/);
+ assert.match(nodes['.dm-overview-summary'].innerHTML,/Displayed rows: 22/);
+ assert.match(nodes['.dm-overview-summary'].innerHTML,/related inventory: Related model · Model fields: 1/);
  nodes['.dm-contract-select'].value='fixture';nodes['.dm-contract-select'].events.change();
  assert.doesNotMatch(nodes['.dm-matrix'].innerHTML,/Related model.outside/);
- assert.match(nodes['.dm-overview-summary'].innerHTML,/21 displayed rows/);
+ assert.match(nodes['.dm-overview-summary'].innerHTML,/Displayed rows: 21/);
 });
 
 test('first-visit purpose and decision limits precede mechanical count explanations',()=>{
  const a=api(),html=a.overviewHtml(scaling,a.overviewRows(scaling),scaling.request.stages),visible=html.split('<details class="dm-scope-details">')[0];
- assert.match(visible,/Compare where fields are checked, used, stored or passed on/);assert.doesNotMatch(visible,/21 displayed rows|20 known model/);
+ assert.match(visible,/Compare where fields are checked, used, stored or passed on/);assert.doesNotMatch(visible,/Displayed rows: 21|Known model fields \/ container paths: 20/);
  assert.match(visible,/Unknown/);assert.match(visible,/No field is proven safe to remove/);
  assert.doesNotMatch(visible,/Fixture contract|Required-leaf counts|Known model|Mapped leaves/);
  assert.match(html,/<details class="dm-scope-details"><summary>Scope, counts and evidence key<\/summary>/);
