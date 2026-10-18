@@ -950,7 +950,7 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
                     ));
                 }
                 body.push_str(&format!(
-                    "<td data-field=\"Evidence\">{}</td></tr>",
+                    "<td data-field=\"Evidence\"><details><summary>Source and scope</summary>{}</details></td></tr>",
                     evidence(&record["claim"])
                 ));
             }
@@ -1163,7 +1163,10 @@ fn model_identity(m: &Value, all: &Value) -> String {
             escape(title)
         ));
     }
-    text.push_str("</p><p><a href=\"#field-usage\">Explore field usage and focused flow</a></p>");
+    text.push_str("</p>");
+    if !reference_only(m) {
+        text.push_str("<p><a href=\"#field-usage\">Explore field usage and focused flow</a></p>");
+    }
     text
 }
 
@@ -1243,6 +1246,8 @@ mod tests {
         assert!(!html.contains("<literal>"));
         assert!(html.contains("Agent proposal · Not reviewed"));
         assert!(!html.contains("id=\"field-usage\""));
+        assert!(!html.contains("href=\"#field-usage\""));
+        assert!(html.contains("<summary>Source and scope</summary><p>Proposed field meaning</p>"));
         assert!(html.contains("id=\"dm-return\""));
     }
     #[test]
