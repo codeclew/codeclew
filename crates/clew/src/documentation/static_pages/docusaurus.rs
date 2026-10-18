@@ -223,7 +223,7 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
                 md(text(&e["title"])),
                 md(text(&e["state"]["freshness"])),
                 md(text(&e["state"]["verification"])),
-                md(text(&e["fragment"]["text"]))
+                reading::inline(text(&e["fragment"]["text"]))
             ));
             for source in e["sources"]
                 .as_object()
@@ -263,7 +263,7 @@ fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError
     block_in(block, page, section, "../")
 }
 fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<String, ClewError> {
-    let mut out = format!("{}\n\n", md(text(&block["text"])));
+    let mut out = format!("{}\n\n", reading::inline(text(&block["text"])));
     for link in rows(&block["links"]) {
         let subject = text(&link["subject"]);
         let operation = text(&link["operation"]);
@@ -354,10 +354,10 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         ));
     }
     out.push_str(&format!(
-        "## Process overview {{#process-overview}}\n\n{}\n\n",
-        md(text(&guide["purpose"]))
+        "<span id=\"process-overview\"></span>\n\n{}\n\n",
+        reading::inline(text(&guide["purpose"]))
     ));
-    out.push_str(
+    let mut reading_context = String::from(
         "Editorial reading guide · original source scopes and review states remain separate.\n\n",
     );
     let mut graph = String::from("flowchart TD\n");
@@ -376,7 +376,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         previous = Some(i);
     }
     if previous.is_some() {
-        out.push_str(&details("Reading map",&(String::from("Reading order only. Conditions and failures remain beside the steps below; this is not a runtime trace.\n\n")+&fence(&graph,"mermaid"))));
+        reading_context.push_str(&(String::from("Reading order only. Conditions and failures remain beside the steps below; this is not a runtime trace.\n\n")+&fence(&graph,"mermaid")));
     }
     for section in rows(&guide["sections"]) {
         let sid = text(&section["id"]);
@@ -395,7 +395,10 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             md(text(&section["title"]))
         ));
         if !text(&section["route"]).is_empty() {
-            out.push_str(&fence(text(&section["route"]), "text"));
+            out.push_str(&format!(
+                "<p className=\"clew-route\"><code>{{{}}}</code></p>\n\n",
+                json!(text(&section["route"]))
+            ));
         }
         for (index, b) in rows(&section["blocks"]).enumerate() {
             out.push_str(&block(b, page, sid)?);
@@ -417,6 +420,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         }
     }
     out.push_str(&reading::process_topics(page, context, None)?);
+    out.push_str(&details("Reading guide and map", &reading_context));
     if guide["conclusion"].is_object() {
         out.push_str(&details(
             text(&guide["conclusion"]["title"]),
@@ -754,7 +758,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
         "Retained account · {} · {}. Runtime behavior is not established by this export.\n\n{}\n\n",
         md(state["freshness"].as_str().unwrap_or("UNVERIFIED")),
         md(state["verification"].as_str().unwrap_or("UNASSESSED")),
-        md(text(&op["summary"]["text"]))
+        reading::inline(text(&op["summary"]["text"]))
     );
     out.push_str(&details(
         "Summary source bindings",
@@ -796,7 +800,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
             "#### {}. {}\n\n{}\n\n{}",
             i + 1,
             md(text(&event["kind"])),
-            md(text(&event["text"])),
+            reading::inline(text(&event["text"])),
             details("Source bindings", &citations(page, id, event)?)
         ));
     }
@@ -812,7 +816,7 @@ fn operation_body(page: &Value, op: &Value, heading: &str) -> Result<String, Cle
     for claim in rows(&op["explanation"]) {
         out.push_str(&format!(
             "{}\n\n{}",
-            md(text(&claim["text"])),
+            reading::inline(text(&claim["text"])),
             details("Source bindings", &citations(page, id, claim)?)
         ));
     }
@@ -1090,12 +1094,12 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
     out.push_str(&format!(
         "# {}\n\nAgent proposal · Not reviewed.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
         md(text(&model["title"])),
-        md(text(&model["purpose"]["text"]))
+        reading::inline(text(&model["purpose"]["text"]))
     ));
     out.push_str(&evidence(&model["purpose"])?);
     out.push_str(&format!(
         "## Identity and relationships\n\n{}\n\n",
-        md(text(&model["identity"]["text"]))
+        reading::inline(text(&model["identity"]["text"]))
     ));
     out.push_str(&evidence(&model["identity"])?);
     for related in rows(&model["relatedModels"]).filter_map(Value::as_str) {
@@ -1143,7 +1147,7 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
                     &format!("Record {}: source and scope", index + 1),
                     &format!(
                         "{}\n\n{}",
-                        md(text(&record["claim"]["text"])),
+                        reading::inline(text(&record["claim"]["text"])),
                         evidence(&record["claim"])?
                     )
                 )
@@ -1156,7 +1160,7 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
         out.push_str(&format!(
             "### {} {{#field-{fid}}}\n\n{}\n\n",
             md(text(&field["path"])),
-            md(text(&field["meaning"]["text"]))
+            reading::inline(text(&field["meaning"]["text"]))
         ));
         out.push_str(&evidence(&field["meaning"])?);
         for rep in rows(&field["representations"]) {
@@ -1165,7 +1169,7 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
                 md(text(&rep["typeLabel"])),
                 md(text(&rep["requiredness"])),
                 md(text(&rep["nullability"])),
-                md(text(&rep["mapping"]["text"]))
+                reading::inline(text(&rep["mapping"]["text"]))
             );
             if let Some(contract) = rows(&catalog["contracts"])
                 .find(|c| c["id"] == rep["contract"] && rep["contract"].is_string())
@@ -1396,7 +1400,7 @@ pub(super) fn project(
         sidebars.push(json!({"type":"category","label":"Service context","items":service_items}));
     }
     if let Some(guide) = documents.get("native/system-reading-guide.json") {
-        let mut story = format!("{}\n\n", md(text(&guide["purpose"])));
+        let mut story = format!("{}\n\n", reading::inline(text(&guide["purpose"])));
         for section in rows(&guide["sections"]) {
             story.push_str(&format!("## {}\n\n", md(text(&section["title"]))));
             for b in rows(&section["blocks"]) {
@@ -1716,7 +1720,7 @@ mod tests {
         let page = json!({"questionReader":{"title":"Save","purpose":"Saved purpose.","sections":[]},"processDataFlow":{"request":{"anchor":"question-save"}}});
         let mdx = process_page(&page, "save").unwrap();
         let start = mdx.find("<ClewProcess ").unwrap();
-        let overview = mdx.find("## Process overview {#process-overview}").unwrap();
+        let overview = mdx.find("<span id=\"process-overview\"></span>").unwrap();
         let end = mdx.find("</ClewProcess>").unwrap();
         assert!(start < overview && overview < end);
         assert!(mdx[start..end].contains("Saved purpose."));

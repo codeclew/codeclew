@@ -20,6 +20,41 @@ pub(super) fn status(page: &Value) -> String {
         )
     )
 }
+/// Match the native reader's single-backtick spans without admitting authored JSX.
+pub(super) fn inline(value: &str) -> String {
+    let mut remaining = value;
+    let mut out = String::new();
+    while let Some(start) = remaining.find('`') {
+        out.push_str(&md(&remaining[..start]));
+        if remaining[..start].ends_with('\n') {
+            out.push('\n');
+        }
+        let after = &remaining[start + 1..];
+        if after.starts_with('`') {
+            let count = remaining[start..]
+                .bytes()
+                .take_while(|b| *b == b'`')
+                .count();
+            out.push_str(&md(&remaining[start..start + count]));
+            remaining = &remaining[start + count..];
+            continue;
+        }
+        if let Some(end) = after.find('`')
+            && end > 0
+            && !after[..end].contains(['\n', '\r'])
+            && !after[end + 1..].starts_with('`')
+        {
+            let literal = json!(&after[..end]).to_string().replace('|', "\\u007c");
+            out.push_str(&format!("<code>{{{literal}}}</code>"));
+            remaining = &after[end + 1..];
+        } else {
+            out.push_str("\\`");
+            remaining = after;
+        }
+    }
+    out.push_str(&md(remaining));
+    out
+}
 pub(super) fn note_title(note: &Value) -> &str {
     note["assessment"]["title"]
         .as_str()
@@ -131,7 +166,7 @@ pub(super) fn note_page(page: &Value, service: &str, note: &Value) -> Result<Str
         let matches = a["noteDigest"] == note["original"]["digest"]
             && a["associationDigest"] == note["associationDigest"]
             && note["targetChanged"] != true;
-        out.push_str(&format!("**Assessment conclusion: {}** · Assessed label: {}\n\nInput binding: {} · Meaning review: {} · Freshness: {}\n\n{}\n\n", md(text(&a["outcome"])), md(text(&a["period"])), if matches { "matches displayed capture" } else { "STALE" }, md(page["operationStates"][text(&note["id"])]["verification"].as_str().unwrap_or("UNASSESSED")), md(page["operationStates"][text(&note["id"])]["freshness"].as_str().unwrap_or("UNVERIFIED")), md(text(&assessment["summary"]["text"]))));
+        out.push_str(&format!("**Assessment conclusion: {}** · Assessed label: {}\n\nInput binding: {} · Meaning review: {} · Freshness: {}\n\n{}\n\n", md(text(&a["outcome"])), md(text(&a["period"])), if matches { "matches displayed capture" } else { "STALE" }, md(page["operationStates"][text(&note["id"])]["verification"].as_str().unwrap_or("UNASSESSED")), md(page["operationStates"][text(&note["id"])]["freshness"].as_str().unwrap_or("UNVERIFIED")), inline(text(&assessment["summary"]["text"]))));
         out.push_str(&sources(
             page,
             rows(&assessment["summary"]["sourceIds"]).map(text),
@@ -139,7 +174,7 @@ pub(super) fn note_page(page: &Value, service: &str, note: &Value) -> Result<Str
         if a["proposedCorrection"].is_object() {
             out.push_str(&format!(
                 "### Proposed correction · original unchanged\n\n{}\n\n",
-                md(text(&a["proposedCorrection"]["text"]))
+                inline(text(&a["proposedCorrection"]["text"]))
             ));
             out.push_str(&sources(
                 page,
@@ -487,7 +522,18 @@ pub(super) fn ancillary_pages(
             json!(body)
         ));
         files.insert(format!("docs/{slug}.mdx"), out.into_bytes());
-        items.push(json!(slug));
+        if slug == "data-model" {
+            if let Some(category) = sidebars.iter_mut().find(|c| c["label"] == "Data model") {
+                category["items"]
+                    .as_array_mut()
+                    .expect("generated sidebar items")
+                    .insert(0, json!(slug));
+            } else {
+                sidebars.push(json!({"type":"category","label":"Data model","items":[slug]}));
+            }
+        } else {
+            items.push(json!(slug));
+        }
     }
     if let Some(bytes) = native.get("catalog.html") {
         let html = std::str::from_utf8(bytes).map_err(io_error)?;
@@ -639,6 +685,22 @@ pub(super) fn linked_downloads(
 mod tests {
     use super::*;
     #[test]
+    fn inline_tokens_are_literal_react_children_and_cannot_execute_mdx() {
+        let rendered = inline("Send `weather.place-requested`; retry `PUBLISH_RETRY`.");
+        assert!(rendered.contains("<code>{\"weather.place-requested\"}</code>"));
+        assert!(!rendered.contains('`'));
+        let payload = "<script>{execute()}|</script>";
+        let rendered = inline(&format!(
+            "Before `{payload}` after <script>{{unsafe()}}</script>"
+        ));
+        assert!(rendered.contains("<code>{\"<script>{execute()}\\u007c</script>\"}</code>"));
+        assert!(rendered.contains("&lt;script&gt;&#123;unsafe()&#125;&lt;/script&gt;"));
+        assert_eq!(
+            inline("```text\nnot inline\n```"),
+            md("```text\nnot inline\n```")
+        );
+    }
+    #[test]
     fn only_bounded_recognized_observations_receive_runtime_projection() {
         let raw = json!({"schema":"clew-weather-runtime-observation/1.0","origin":"LOCAL_TEST_OBSERVATION","compilerEvidence":false,"id":"runtime","status":"PASS","sourceCommit":"a".repeat(40),"nodeVersion":"v24.21.0","exerciseResult":{"runtime":"v24.21.0","assertions":6}});
         let note = json!({"id":"note","association":{"title":"record.json","classification":"IMPORTED"},"original":{"text":raw.to_string(),"digest":"original"},"assessment":{"title":"Readable title","summary":{"text":"Every original assessment paragraph."},"assessment":{"outcome":"CONTRADICTION","period":"v24.21.0"}}});
@@ -683,6 +745,10 @@ mod tests {
         let html = b"<main><h1>Original heading</h1><p>All retained prose.</p><details><summary>Long/pointer</summary>Original scope</details><script>not portable</script><style>old shell</style></main>".to_vec();
         let native = BTreeMap::from([
             ("help.html".into(), html),
+            (
+                "data-model.html".into(),
+                b"<main><h1>Models</h1></main>".to_vec(),
+            ),
             ("services/s.html".into(), Vec::new()),
         ]);
         let mut files = BTreeMap::new();
@@ -694,6 +760,11 @@ mod tests {
         assert!(!body.contains("<script>"));
         assert!(!body.contains("old shell"));
         assert!(body.contains("hide_title: true"));
+        assert!(
+            sidebar
+                .iter()
+                .any(|c| c["label"] == "Data model" && c["items"][0] == "data-model")
+        );
         let pages = vec![(
             "native/services/s.json".into(),
             json!({"operations":[{"id":"op"},{"id":"section-ingress"},{"id":"process-overview"}],"notes":[{"id":"note","association":{"service":"s"}}]}),

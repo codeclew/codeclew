@@ -43,3 +43,6 @@ body .clew-status :is(span,p,summary){font-size:14px!important;line-height:22px!
 .clew-retained .guide-toc{display:none}.clew-retained .system-guide-grid,.clew-retained .dm-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:16px}.clew-retained :is(.system-guide-card,.mini-card){border:1px solid #ccd4de;border-radius:8px;padding:16px}
 @media(max-width:600px){.clew-topic-path{grid-template-columns:1fr}.clew-topic-path>span{transform:rotate(90deg);justify-self:center}.clew-topic{padding:12px}.clew-search{max-width:100%;margin:8px 0}.clew-search input{width:180px;max-width:100%}.clew-retained.dm-page{padding:0;max-width:100%}}
 .clew-outcome{padding:16px;border:1px solid #ccd4de;border-radius:8px;margin:16px 0}.clew-outcome>h3{margin-top:0}
+.clew-status{padding:8px 12px;margin:12px 0 16px}.clew-status details{margin:0}.clew-status summary{cursor:pointer}.clew-route{padding:6px 10px;background:#f7f9fc;border:1px solid #d7dfe8;border-radius:4px}.clew-route code{white-space:normal;background:transparent;padding:0}
+.clew-retained .dm-status{background:#f7f9fc;border-left-color:#8293ab;color:#42516a}
+.clew-status{padding:4px 10px;margin:8px 0 12px}.clew-tabs{padding:0;margin:0 0 12px;border-bottom:0}

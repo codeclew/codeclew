@@ -81,8 +81,10 @@ export function ClewPageContext() {
 }
 export function ClewStatus({freshness = 'UNVERIFIED', verification = 'UNASSESSED'}) {
   return <aside className="clew-status" aria-label="Source and review scope">
-    <strong>Retained source account</strong><span>Source and review states are tracked separately; runtime behavior is not established.</span>
-    <details><summary>Source status and scope</summary><p>Freshness: {freshness} · Meaning review: {verification}</p></details>
+    <details><summary><strong>Retained source account</strong> · Runtime unverified</summary>
+      <p>Source and review states are tracked separately; runtime behavior is not established.</p>
+      <p>Freshness: {freshness} · Meaning review: {verification}</p>
+    </details>
   </aside>;
 }
 function portableHref(href, nativePath, base) {
