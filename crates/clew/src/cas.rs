@@ -1729,6 +1729,16 @@ pub fn storage_status(authority: &StateAuthority) -> Result<StorageReport, ClewE
     Ok(report)
 }
 
+/// Serialize small addressed root-retirement operations with every CAS-backed
+/// publisher (including older processes) and physical collection. Callers must
+/// acquire this before managed-root locks and must not open another CasStore.
+pub(crate) fn storage_maintenance_lease(authority: &StateAuthority) -> Result<File, ClewError> {
+    acquire_world_lease(
+        &authority.directory(Path::new("locks"))?,
+        LockMode::Exclusive,
+    )
+}
+
 pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageReport, ClewError> {
     let released = released_session_cas_roots(authority)?;
     let locks = authority.directory(Path::new("locks"))?;
@@ -2298,7 +2308,7 @@ fn object_digest(object_schema: &str, bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(digest.finalize()))
 }
 
-fn validate_reference(object: &CasObject) -> Result<(), ClewError> {
+pub(crate) fn validate_reference(object: &CasObject) -> Result<(), ClewError> {
     if object.schema != CAS_OBJECT_SCHEMA || object.size > usize::MAX as u64 {
         return Err(corrupt("CAS object reference is invalid"));
     }

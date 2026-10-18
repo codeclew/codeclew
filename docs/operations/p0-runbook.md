@@ -634,6 +634,36 @@ releases no other session; a shared reference from another retained root still
 blocks collection. Run the physical `storage gc --apply` only after reviewing its
 new successful dry-run. Reconciliation itself deletes no CAS bytes.
 
+### Retiring one obsolete incremental cache head
+
+If diagnosis witnesses a derived repository incremental head, retire only that
+explicit head after confirming it is obsolete. This does not retire sessions or
+source and does not delete CAS objects:
+
+```bash
+clew storage retire-incremental --repository-key "$REPOSITORY_KEY" \
+  --head-key "$HEAD_KEY"
+clew storage retire-incremental --repository-key "$REPOSITORY_KEY" \
+  --head-key "$HEAD_KEY" --expected-plan "$PLAN_DIGEST" --apply
+```
+
+Both keys are lowercase 64-digit hexadecimal path components, not arbitrary
+paths. The dry-run binds the canonical head's exact bytes, compiler-store key,
+file identity/change time and both parent directory identities. Apply refuses a
+stale plan and waits for the exclusive CAS world lease, which excludes existing
+CAS-backed publishers and physical GC, including older writer processes. It
+archives the head and publishes a hash-bound `PREPARED` receipt under
+`gc/incremental-retirements/` before unlinking the exact file; the receipt then
+becomes `APPLIED`. A repeated apply can finish an interrupted receipt only after
+verifying its archive and current directory identities. A replacement head is
+never consumed using an earlier plan.
+
+Other heads, historical cache roots, session/run metadata, source and CAS remain
+unchanged. A subsequent analysis may publish a new head normally. Diagnose again
+after retirement: another retained root may reference the same missing object.
+Only a complete global `storage gc` dry-run with zero dangling objects and
+`collectionBlocked: false` permits physical collection.
+
 ### Dirty worktree
 
 Codeclew never runs stash or reset. The owner chooses whether to commit, create

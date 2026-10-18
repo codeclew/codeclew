@@ -201,8 +201,22 @@ enum SupportCommand {
 enum StorageCommand {
     /// Attribute missing retained CAS references to their metadata owners.
     Diagnose,
+    /// Retire exactly one obsolete derived repository incremental head.
+    RetireIncremental(StorageRetireIncrementalArgs),
     /// Plan reclamation by default; mutate only with explicit --apply.
     Gc(StorageGcArgs),
+}
+
+#[derive(Args)]
+struct StorageRetireIncrementalArgs {
+    #[arg(long)]
+    repository_key: String,
+    #[arg(long)]
+    head_key: String,
+    #[arg(long)]
+    expected_plan: Option<String>,
+    #[arg(long, requires = "expected_plan")]
+    apply: bool,
 }
 
 #[derive(Args)]
@@ -2144,6 +2158,14 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 }),
         ),
         Command::Storage {
+            command: StorageCommand::RetireIncremental(args),
+        } => clew::generation_service::cache_retirement::retire(
+            &args.repository_key,
+            &args.head_key,
+            args.expected_plan.as_deref(),
+            args.apply,
+        ),
+        Command::Storage {
             command: StorageCommand::Diagnose,
         } => {
             let state = clew::state::StateAuthority::process_default()?;
@@ -4028,6 +4050,25 @@ mod tests {
     fn addressed_retention_cli_requires_exact_dry_run_plan_before_apply() {
         use clap::Parser;
         assert!(super::Cli::try_parse_from(["clew", "storage", "diagnose"]).is_ok());
+        let retire = [
+            "clew",
+            "storage",
+            "retire-incremental",
+            "--repository-key",
+            "repo",
+            "--head-key",
+            "head",
+        ];
+        assert!(super::Cli::try_parse_from(retire).is_ok());
+        assert!(super::Cli::try_parse_from(retire.into_iter().chain(["--apply"])).is_err());
+        assert!(
+            super::Cli::try_parse_from(retire.into_iter().chain([
+                "--apply",
+                "--expected-plan",
+                "sha256:plan"
+            ]))
+            .is_ok()
+        );
         let base = ["clew", "session", "gc", "--session", "session:example"];
         assert!(
             super::Cli::try_parse_from(base.into_iter().chain(["--reconcile-retention"])).is_ok()
