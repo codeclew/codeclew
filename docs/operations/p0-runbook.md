@@ -515,7 +515,7 @@ bounded observation window; `UNAVAILABLE` means no status could be established.
 A reported SIGKILL is not by itself evidence of OOM. Check the private stderr
 and host process diagnostics before attributing a cause.
 
-The sealed worker still uses `-Xms64m -Xmx1024m`,
+The sealed worker uses `-Xms64m -Xmx2048m`,
 `-XX:MaxMetaspaceSize=384m`, `-XX:MaxDirectMemorySize=256m`, and
 `-XX:+ExitOnOutOfMemoryError`. These are fixed worker settings, not a promise
 about all Gradle/Maven child-process memory. The launcher sets `KOTLIN_OPTS`;

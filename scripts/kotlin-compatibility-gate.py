@@ -163,6 +163,7 @@ def main() -> int:
     parser.add_argument("--row", choices=sorted(ROWS), required=True)
     parser.add_argument("--full-lifecycle", action="store_true")
     parser.add_argument("--discover-golden", action="store_true")
+    parser.add_argument("--output", type=Path, help="retain this row's normalized facts and test log")
     args = parser.parse_args()
     row = ROWS[args.row]
     positive = row["outcome"] == "QUALIFIED"
@@ -182,6 +183,11 @@ def main() -> int:
                 "CODECLEW_KOTLIN_QUALIFICATION_OUTCOME": str(row["outcome"]),
             }
         )
+        if args.output:
+            args.output.mkdir(parents=True, exist_ok=True)
+            environment["CODECLEW_KOTLIN_QUALIFICATION_FACTS_OUTPUT"] = str(
+                (args.output / "normalized-facts.json").resolve()
+            )
         if args.full_lifecycle and positive:
             environment["CODECLEW_KOTLIN_QUALIFICATION_FULL_LIFECYCLE"] = "1"
         if row.get("k23_oracle"):
@@ -216,7 +222,10 @@ def main() -> int:
             stderr=subprocess.STDOUT,
             text=True,
         )
+        if args.output:
+            (args.output / "test.log").write_text(completed.stdout, encoding="utf-8")
         if completed.returncode != 0:
+            sys.stderr.write(f"Kotlin compatibility row failed: {args.row}\n")
             sys.stderr.write(completed.stdout)
             return completed.returncode
         result = next(

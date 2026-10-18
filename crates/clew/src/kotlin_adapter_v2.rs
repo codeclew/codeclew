@@ -2786,6 +2786,13 @@ mod tests {
         assert_complete_qualification_index(&cold_index);
         assert_one_real_index_request(&cold_requests);
         let cold_digest = normalized_semantic_facts_digest(&cold_index);
+        if let Some(path) = std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_FACTS_OUTPUT") {
+            std::fs::write(
+                path,
+                canonical::bytes(&normalized_semantic_facts(&cold_index)).unwrap(),
+            )
+            .expect("write normalized qualification facts");
+        }
 
         if std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_K23_ORACLE").is_some() {
             let oracle_root = tempfile::tempdir().unwrap();
@@ -2802,6 +2809,15 @@ mod tests {
         }
 
         if let Ok(expected_digest) = std::env::var("CODECLEW_KOTLIN_QUALIFICATION_GOLDEN") {
+            let expected_facts: Value = serde_json::from_str(include_str!(
+                "../../../scripts/qualification/kotlin-compatibility-facts.json"
+            ))
+            .expect("checked-in normalized qualification facts");
+            pretty_assertions::assert_eq!(
+                normalized_semantic_facts(&cold_index),
+                expected_facts,
+                "qualification facts changed; inspect the structural diff before updating goldens",
+            );
             assert_eq!(cold_digest, expected_digest, "qualification golden changed");
         }
 

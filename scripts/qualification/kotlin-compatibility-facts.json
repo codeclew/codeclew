@@ -1,0 +1,1174 @@
+{
+  "descriptorBoundaries": [],
+  "descriptors": [
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerCallableId": "com/acme/Box.Box",
+      "compilerClassId": "com/acme/Box",
+      "containment": [
+        "class:com/acme/Box"
+      ],
+      "declarationKind": "CONSTRUCTOR",
+      "documentationConstructorStorage": {
+        "authority": "K2_PRIMARY_PARAMETER_PROPERTY_INITIALIZER",
+        "bindings": [
+          {
+            "parameterIdentity": "constructor:com/acme/Box.Box#jvm:(Ljava/lang/String;)V/parameter/0",
+            "parameterIndex": 0,
+            "propertyIdentity": "property:com/acme/Box.value"
+          }
+        ],
+        "constructorIdentity": "constructor:com/acme/Box.Box#jvm:(Ljava/lang/String;)V",
+        "schema": "kotlin-documentation-constructor-storage/1.0"
+      },
+      "effectiveVisibility": "public",
+      "end": 46,
+      "endLine": 3,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "isPrimary": true,
+      "jvmDescriptor": "(Ljava/lang/String;)V",
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "FINAL",
+      "module": ":",
+      "ownerIdentity": "class:com/acme/Box",
+      "parameterTypes": [
+        {
+          "hasDefault": false,
+          "index": 0,
+          "nullable": false,
+          "type": "kotlin/String"
+        }
+      ],
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 27,
+      "startLine": 3,
+      "symbolIdentity": "constructor:com/acme/Box.Box#jvm:(Ljava/lang/String;)V",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerCallableId": "com/acme/Box.value",
+      "containment": [
+        "class:com/acme/Box"
+      ],
+      "declarationKind": "PROPERTY",
+      "declaredNullable": false,
+      "declaredType": "kotlin/String",
+      "documentationStorage": {
+        "authority": "K2_DEFAULT_BACKING_PROPERTY",
+        "contextParameters": 0,
+        "defaultGetter": true,
+        "defaultSetter": true,
+        "delegated": false,
+        "extension": false,
+        "hasBackingField": true,
+        "isOverride": false,
+        "lateinit": false,
+        "modality": "FINAL",
+        "qualified": true,
+        "schema": "kotlin-documentation-property-storage/1.0"
+      },
+      "effectiveVisibility": "public",
+      "end": 45,
+      "endLine": 3,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "isOverride": false,
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "FINAL",
+      "module": ":",
+      "ownerIdentity": "class:com/acme/Box",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 28,
+      "startLine": 3,
+      "symbolIdentity": "property:com/acme/Box.value",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerCallableId": "com/acme/IntegerSource.IntegerSource",
+      "compilerClassId": "com/acme/IntegerSource",
+      "containment": [
+        "class:com/acme/IntegerSource"
+      ],
+      "declarationKind": "CONSTRUCTOR",
+      "effectiveVisibility": "public",
+      "end": 153,
+      "endLine": 4,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "isPrimary": true,
+      "jvmDescriptor": "()V",
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "FINAL",
+      "module": ":",
+      "ownerIdentity": "class:com/acme/IntegerSource",
+      "parameterTypes": [],
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 68,
+      "startLine": 4,
+      "symbolIdentity": "constructor:com/acme/IntegerSource.IntegerSource#jvm:()V",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerCallableId": "com/acme/IntegerSource.read",
+      "containment": [
+        "class:com/acme/IntegerSource"
+      ],
+      "declarationKind": "FUNCTION",
+      "effectiveVisibility": "public",
+      "end": 151,
+      "endLine": 4,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "isOverride": true,
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [
+          {
+            "abstractMethod": true,
+            "beanClass": "class:com/acme/IntegerSource",
+            "classes": [
+              {
+                "annotations": [],
+                "directSupertypes": [
+                  "com/acme/Source"
+                ],
+                "identity": "class:com/acme/IntegerSource"
+              },
+              {
+                "annotations": [],
+                "directSupertypes": [
+                  "kotlin/Any"
+                ],
+                "identity": "class:com/acme/Source"
+              },
+              {
+                "annotations": [],
+                "directSupertypes": [],
+                "identity": "class:kotlin/Any"
+              }
+            ],
+            "implementationSource": true,
+            "inherited": false,
+            "method": {
+              "annotations": [],
+              "identity": "callable:com/acme/IntegerSource.read#jvm:(I)I",
+              "overrides": [
+                {
+                  "annotations": [],
+                  "identity": "callable:com/acme/Source.read#jvm:(I)Ljava/lang/Number;",
+                  "overrides": []
+                }
+              ]
+            }
+          }
+        ],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "callable:com/acme/IntegerSource.read#jvm:(I)I",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "com/acme/Source"
+            ],
+            "identity": "class:com/acme/IntegerSource"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/Source"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "jvmDescriptor": "(I)I",
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "ABSTRACT",
+      "module": ":",
+      "ownerIdentity": "class:com/acme/IntegerSource",
+      "parameterTypes": [
+        {
+          "hasDefault": false,
+          "index": 0,
+          "nullable": false,
+          "type": "kotlin/Int"
+        }
+      ],
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "returnNullable": false,
+      "returnType": "kotlin/Int",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 108,
+      "startLine": 4,
+      "symbolIdentity": "callable:com/acme/IntegerSource.read#jvm:(I)I",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerCallableId": "com/acme/NullableReader.nullableLength",
+      "containment": [
+        "class:com/acme/NullableReader"
+      ],
+      "declarationKind": "FUNCTION",
+      "effectiveVisibility": "public",
+      "end": 113,
+      "endLine": 4,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "isOverride": false,
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [
+          {
+            "abstractMethod": true,
+            "beanClass": "class:com/acme/NullableReader",
+            "classes": [
+              {
+                "annotations": [],
+                "directSupertypes": [
+                  "kotlin/Any"
+                ],
+                "identity": "class:com/acme/NullableReader"
+              },
+              {
+                "annotations": [],
+                "directSupertypes": [],
+                "identity": "class:kotlin/Any"
+              }
+            ],
+            "implementationSource": true,
+            "inherited": false,
+            "method": {
+              "annotations": [],
+              "identity": "callable:com/acme/NullableReader.nullableLength#jvm:(Ljava/lang/String;)I",
+              "overrides": []
+            }
+          }
+        ],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "callable:com/acme/NullableReader.nullableLength#jvm:(Ljava/lang/String;)I",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/NullableReader"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "jvmDescriptor": "(Ljava/lang/String;)I",
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "ABSTRACT",
+      "module": ":",
+      "ownerIdentity": "class:com/acme/NullableReader",
+      "parameterTypes": [
+        {
+          "hasDefault": false,
+          "index": 0,
+          "nullable": true,
+          "type": "kotlin/String?"
+        }
+      ],
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "returnNullable": false,
+      "returnType": "kotlin/Int",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 74,
+      "startLine": 4,
+      "symbolIdentity": "callable:com/acme/NullableReader.nullableLength#jvm:(Ljava/lang/String;)I",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerCallableId": "com/acme/Source.read",
+      "containment": [
+        "class:com/acme/Source"
+      ],
+      "declarationKind": "FUNCTION",
+      "effectiveVisibility": "public",
+      "end": 65,
+      "endLine": 3,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "isOverride": false,
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [
+          {
+            "abstractMethod": true,
+            "beanClass": "class:com/acme/Source",
+            "classes": [
+              {
+                "annotations": [],
+                "directSupertypes": [
+                  "kotlin/Any"
+                ],
+                "identity": "class:com/acme/Source"
+              },
+              {
+                "annotations": [],
+                "directSupertypes": [],
+                "identity": "class:kotlin/Any"
+              }
+            ],
+            "implementationSource": true,
+            "inherited": false,
+            "method": {
+              "annotations": [],
+              "identity": "callable:com/acme/Source.read#jvm:(I)Ljava/lang/Number;",
+              "overrides": []
+            }
+          }
+        ],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "callable:com/acme/Source.read#jvm:(I)Ljava/lang/Number;",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/Source"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "jvmDescriptor": "(I)Ljava/lang/Number;",
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "ABSTRACT",
+      "module": ":",
+      "ownerIdentity": "class:com/acme/Source",
+      "parameterTypes": [
+        {
+          "hasDefault": false,
+          "index": 0,
+          "nullable": false,
+          "type": "kotlin/Int"
+        }
+      ],
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "returnNullable": false,
+      "returnType": "kotlin/Number",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 37,
+      "startLine": 3,
+      "symbolIdentity": "callable:com/acme/Source.read#jvm:(I)Ljava/lang/Number;",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerClassId": "com/acme/Box",
+      "containment": [],
+      "declarationKind": "CLASS",
+      "effectiveVisibility": "public",
+      "end": 46,
+      "endLine": 3,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "class:com/acme/Box",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/Box"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "FINAL",
+      "module": ":",
+      "ownerIdentity": "package:com.acme",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 18,
+      "startLine": 3,
+      "symbolIdentity": "class:com/acme/Box",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerClassId": "com/acme/IntegerSource",
+      "containment": [],
+      "declarationKind": "CLASS",
+      "effectiveVisibility": "public",
+      "end": 153,
+      "endLine": 4,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "class:com/acme/IntegerSource",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "com/acme/Source"
+            ],
+            "identity": "class:com/acme/IntegerSource"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/Source"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "ABSTRACT",
+      "module": ":",
+      "ownerIdentity": "package:com.acme",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 68,
+      "startLine": 4,
+      "symbolIdentity": "class:com/acme/IntegerSource",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerClassId": "com/acme/NullableReader",
+      "containment": [],
+      "declarationKind": "CLASS",
+      "effectiveVisibility": "public",
+      "end": 115,
+      "endLine": 4,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "class:com/acme/NullableReader",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/NullableReader"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "ABSTRACT",
+      "module": ":",
+      "ownerIdentity": "package:com.acme",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 47,
+      "startLine": 4,
+      "symbolIdentity": "class:com/acme/NullableReader",
+      "typeParameters": [],
+      "visibility": "public"
+    },
+    {
+      "compilerAuthority": "fir-facts-extractor/0.6",
+      "compilerClassId": "com/acme/Source",
+      "containment": [],
+      "declarationKind": "CLASS",
+      "effectiveVisibility": "public",
+      "end": 67,
+      "endLine": 3,
+      "exportBoundary": "PUBLIC_API",
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "jvmAnnotations": {
+        "authority": "K2_RESOLVED_ANNOTATIONS",
+        "boundaries": [],
+        "callables": [],
+        "coverage": {
+          "scope": "REACHABLE_ANNOTATIONS_AND_HIERARCHY",
+          "status": "COMPLETE"
+        },
+        "declaration": "class:com/acme/Source",
+        "definitions": {},
+        "schema": "jvm-annotation-facts/1.0",
+        "types": [
+          {
+            "annotations": [],
+            "directSupertypes": [
+              "kotlin/Any"
+            ],
+            "identity": "class:com/acme/Source"
+          },
+          {
+            "annotations": [],
+            "directSupertypes": [],
+            "identity": "class:kotlin/Any"
+          }
+        ]
+      },
+      "lineProvenance": "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+      "modality": "ABSTRACT",
+      "module": ":",
+      "ownerIdentity": "package:com.acme",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-descriptor/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceSet": "main",
+      "start": 18,
+      "startLine": 3,
+      "symbolIdentity": "class:com/acme/Source",
+      "typeParameters": [],
+      "visibility": "public"
+    }
+  ],
+  "files": [
+    {
+      "bom": false,
+      "contentHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "declarationIds": [],
+      "declarations": [],
+      "diagnostics": [],
+      "fileId": "file:3987dc576a2cb1cef91fbf34839ecaa7e5257dce5b5aa7c3de3153adfea4153c",
+      "functionSummaries": [],
+      "imports": [],
+      "inheritance": [],
+      "lineEnding": "LF",
+      "module": ":",
+      "normalizedRelativePath": "src/main/kotlin/com/acme/Empty.kt",
+      "overrides": [],
+      "package": "",
+      "path": "src/main/kotlin/com/acme/Empty.kt",
+      "semanticFactCount": 0,
+      "semanticFactsDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sourceSet": "main"
+    },
+    {
+      "bom": false,
+      "contentHash": "sha256:1dc451bcb2da9bf2c19e024bb486bebe1489bf31c490625f06eeb78dde277094",
+      "declarationIds": [
+        "declaration:5dc9f0245f7b22a959e58a03c2b972d8e81f142bf9da5a3b52c59894ae1427e1",
+        "declaration:5fd8a5b6747a183060ec9326e6044ecbb2815638380f99dc1c15bf76855e73ba",
+        "declaration:9e59b44d58524a5e3192f80af5bfb0ebedf26fb0e1008ab66a9ab83b8befe55f",
+        "declaration:f5a96b22ac837805c8efbf718b3b2bc1c57876740c09e99a3f65da67a7abe780"
+      ],
+      "declarations": [
+        {
+          "abiHash": "sha256:0bdc0d0fd9e1564fb0add30f7aa50a507f69e6150e3fd4795222a21fac7230c1",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "declarationId": "declaration:9e59b44d58524a5e3192f80af5bfb0ebedf26fb0e1008ab66a9ab83b8befe55f",
+          "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+          "kind": "KtClass",
+          "legacySymbolId": "com.acme.Source",
+          "name": "Source",
+          "rangeEnd": 67,
+          "rangeStart": 18,
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "signatureHash": "sha256:690828847f2acdd7f606de986d67e5930c344c4ff216aebed81ff587ad848b26",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+            "rangeEnd": 67,
+            "rangeStart": 18
+          },
+          "sourceSignatureHash": "sha256:690828847f2acdd7f606de986d67e5930c344c4ff216aebed81ff587ad848b26",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"Source\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"Source\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/Source;\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [],
+            "contextReceiverTypes": [],
+            "declarationKind": "CLASS",
+            "declarationName": "Source",
+            "jvmDescriptor": "Lcom.acme/Source;",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [],
+            "receiverTypes": [],
+            "returnType": "Source",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        },
+        {
+          "abiHash": "sha256:44d732e51e8864d2ca10da2e83788bd28fd427b8de8375ab93ab4f51e6407889",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "compilerSymbol": "com/acme/Source.read",
+          "containingDeclaration": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"Source\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"Source\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/Source;\"}",
+          "declarationId": "declaration:5fd8a5b6747a183060ec9326e6044ecbb2815638380f99dc1c15bf76855e73ba",
+          "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+          "kind": "KtNamedFunction",
+          "legacySymbolId": "com.acme.Source.read(Int)",
+          "name": "read",
+          "rangeEnd": 65,
+          "rangeStart": 37,
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "signatureHash": "sha256:24ed09e1c678a7f7408aeb53ec421a056ea72f0c6807a83fc492d72b25c86cb6",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+            "rangeEnd": 65,
+            "rangeStart": 37
+          },
+          "sourceSignatureHash": "sha256:24ed09e1c678a7f7408aeb53ec421a056ea72f0c6807a83fc492d72b25c86cb6",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"Source\"],\"declarationName\":\"read\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"kotlin/Int\"],\"returnType\":\"kotlin/Number\",\"suspendFlag\":false,\"jvmDescriptor\":\"(I)Ljava/lang/Number;\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [
+              "Source"
+            ],
+            "contextReceiverTypes": [],
+            "declarationKind": "FUNCTION",
+            "declarationName": "read",
+            "jvmDescriptor": "(I)Ljava/lang/Number;",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [
+              "kotlin/Int"
+            ],
+            "receiverTypes": [],
+            "returnType": "kotlin/Number",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        },
+        {
+          "abiHash": "sha256:47d43b79f54adf47cb5fec4b7d964703c7b91d0118b265fadc46e7884e7f0e3b",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "declarationId": "declaration:5dc9f0245f7b22a959e58a03c2b972d8e81f142bf9da5a3b52c59894ae1427e1",
+          "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+          "kind": "KtClass",
+          "legacySymbolId": "com.acme.IntegerSource",
+          "name": "IntegerSource",
+          "rangeEnd": 153,
+          "rangeStart": 68,
+          "semanticSummaryHash": "sha256:73f425cf8b454d359c50e92e94541637caf72db38fc072fc4370cabcb27347fa",
+          "signatureHash": "sha256:f8b02800f10284dcf0607b508e0319a311565a5f179930cb4f6d8c2b8ff94d92",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+            "rangeEnd": 153,
+            "rangeStart": 68
+          },
+          "sourceSignatureHash": "sha256:f8b02800f10284dcf0607b508e0319a311565a5f179930cb4f6d8c2b8ff94d92",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"IntegerSource\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"IntegerSource\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/IntegerSource;\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [],
+            "contextReceiverTypes": [],
+            "declarationKind": "CLASS",
+            "declarationName": "IntegerSource",
+            "jvmDescriptor": "Lcom.acme/IntegerSource;",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [],
+            "receiverTypes": [],
+            "returnType": "IntegerSource",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        },
+        {
+          "abiHash": "sha256:189f339ae8b2ce04cf65f987e28a0c6c825d086e76e590d01e10b0076087ba92",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "compilerSymbol": "com/acme/IntegerSource.read",
+          "containingDeclaration": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"IntegerSource\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"IntegerSource\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/IntegerSource;\"}",
+          "declarationId": "declaration:f5a96b22ac837805c8efbf718b3b2bc1c57876740c09e99a3f65da67a7abe780",
+          "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+          "kind": "KtNamedFunction",
+          "legacySymbolId": "com.acme.IntegerSource.read(Int)",
+          "name": "read",
+          "rangeEnd": 151,
+          "rangeStart": 108,
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "signatureHash": "sha256:84cb7393c44c219083c35fb9830352620598f4ff7dfcb10c896466a6512cf0a2",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+            "rangeEnd": 151,
+            "rangeStart": 108
+          },
+          "sourceSignatureHash": "sha256:84cb7393c44c219083c35fb9830352620598f4ff7dfcb10c896466a6512cf0a2",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"IntegerSource\"],\"declarationName\":\"read\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"kotlin/Int\"],\"returnType\":\"kotlin/Int\",\"suspendFlag\":false,\"jvmDescriptor\":\"(I)I\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [
+              "IntegerSource"
+            ],
+            "contextReceiverTypes": [],
+            "declarationKind": "FUNCTION",
+            "declarationName": "read",
+            "jvmDescriptor": "(I)I",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [
+              "kotlin/Int"
+            ],
+            "receiverTypes": [],
+            "returnType": "kotlin/Int",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        }
+      ],
+      "diagnostics": [],
+      "fileId": "file:196933ae9fbadb2815943639397bdda719196595cab6537625aebfc91b1fb7db",
+      "functionSummaries": [
+        {
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"Source\"],\"declarationName\":\"read\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"kotlin/Int\"],\"returnType\":\"kotlin/Number\",\"suspendFlag\":false,\"jvmDescriptor\":\"(I)Ljava/lang/Number;\"}"
+        },
+        {
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"IntegerSource\"],\"declarationName\":\"read\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"kotlin/Int\"],\"returnType\":\"kotlin/Int\",\"suspendFlag\":false,\"jvmDescriptor\":\"(I)I\"}"
+        }
+      ],
+      "imports": [],
+      "inheritance": [
+        {
+          "supertypes": [
+            "Source"
+          ],
+          "symbol": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"IntegerSource\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"IntegerSource\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/IntegerSource;\"}"
+        },
+        {
+          "supertypes": [],
+          "symbol": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"Source\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"Source\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/Source;\"}"
+        }
+      ],
+      "lineEnding": "LF",
+      "module": ":",
+      "normalizedRelativePath": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "overrides": [
+        "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"IntegerSource\"],\"declarationName\":\"read\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"Int\"],\"returnType\":\"Int\",\"suspendFlag\":false,\"jvmDescriptor\":\"(I)I\"}"
+      ],
+      "package": "com.acme",
+      "path": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "semanticFactCount": 1,
+      "semanticFactsDigest": "sha256:223ff4d403d52c55a83c2669c8bdf255ffb2e977219ccd1d80340427ceb50259",
+      "sourceSet": "main"
+    },
+    {
+      "bom": false,
+      "contentHash": "sha256:665c843e586d352a07cc38cb11a68dc85e76967df6f5b0b2434f23905b9faccc",
+      "declarationIds": [
+        "declaration:1a4e6a6feec5c2006f48ce7630269df0bd1bdcae8833468e21eba8cc13943c58",
+        "declaration:bc6a72112bf5e0681fec8caf3c0bf3094b566d230cde5be112501b10f6309515",
+        "declaration:c4f4ceed1d8a0764542ceae4e49c0d84d20702bd7604df7f94357c7c0b46f23b"
+      ],
+      "declarations": [
+        {
+          "abiHash": "sha256:c058c24befabc9e8505010167536bc8759c5aad5c2def7cc656b08a838e82d0b",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "declarationId": "declaration:bc6a72112bf5e0681fec8caf3c0bf3094b566d230cde5be112501b10f6309515",
+          "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+          "kind": "KtClass",
+          "legacySymbolId": "com.acme.Box",
+          "name": "Box",
+          "rangeEnd": 46,
+          "rangeStart": 18,
+          "semanticSummaryHash": "sha256:fe63e7cb9be2a81af178fff9456a1f5f4299a2712fc80ccafc1b06122276088a",
+          "signatureHash": "sha256:57f1cb6dcdd156e45cc4bba721da63645e9952b249302c923fe14db88aa11f4f",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+            "rangeEnd": 46,
+            "rangeStart": 18
+          },
+          "sourceSignatureHash": "sha256:57f1cb6dcdd156e45cc4bba721da63645e9952b249302c923fe14db88aa11f4f",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"Box\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"Box\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/Box;\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [],
+            "contextReceiverTypes": [],
+            "declarationKind": "CLASS",
+            "declarationName": "Box",
+            "jvmDescriptor": "Lcom.acme/Box;",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [],
+            "receiverTypes": [],
+            "returnType": "Box",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        },
+        {
+          "abiHash": "sha256:c93ce39b79e38437026acf31fb94c27b4d89bac98cba4c295ee8c5b856febb95",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "declarationId": "declaration:c4f4ceed1d8a0764542ceae4e49c0d84d20702bd7604df7f94357c7c0b46f23b",
+          "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+          "kind": "KtClass",
+          "legacySymbolId": "com.acme.NullableReader",
+          "name": "NullableReader",
+          "rangeEnd": 115,
+          "rangeStart": 47,
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "signatureHash": "sha256:616713d8a748f6d300ce52a08473424be1de81fdb7048139f027a4c6af1bf489",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+            "rangeEnd": 115,
+            "rangeStart": 47
+          },
+          "sourceSignatureHash": "sha256:616713d8a748f6d300ce52a08473424be1de81fdb7048139f027a4c6af1bf489",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"NullableReader\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"NullableReader\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/NullableReader;\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [],
+            "contextReceiverTypes": [],
+            "declarationKind": "CLASS",
+            "declarationName": "NullableReader",
+            "jvmDescriptor": "Lcom.acme/NullableReader;",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [],
+            "receiverTypes": [],
+            "returnType": "NullableReader",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        },
+        {
+          "abiHash": "sha256:194a9db9327b574c4c4e7dddf2eb7ca8e0f74017dd5fa84f1a6e5c3c6286535d",
+          "bodyHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "compilerSymbol": "com/acme/NullableReader.nullableLength",
+          "containingDeclaration": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"NullableReader\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"NullableReader\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/NullableReader;\"}",
+          "declarationId": "declaration:1a4e6a6feec5c2006f48ce7630269df0bd1bdcae8833468e21eba8cc13943c58",
+          "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+          "kind": "KtNamedFunction",
+          "legacySymbolId": "com.acme.NullableReader.nullableLength(String?)",
+          "name": "nullableLength",
+          "rangeEnd": 113,
+          "rangeStart": 74,
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "signatureHash": "sha256:4c4b92bba2451eb092a40141131c32479ff507b2cedff9e436899cc7a7a45469",
+          "sourceOrigin": {
+            "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+            "rangeEnd": 113,
+            "rangeStart": 74
+          },
+          "sourceSignatureHash": "sha256:4c4b92bba2451eb092a40141131c32479ff507b2cedff9e436899cc7a7a45469",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"NullableReader\"],\"declarationName\":\"nullableLength\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"kotlin/String?\"],\"returnType\":\"kotlin/Int\",\"suspendFlag\":false,\"jvmDescriptor\":\"(Ljava/lang/String;)I\"}",
+          "symbolIdentity": {
+            "containingDeclarations": [
+              "NullableReader"
+            ],
+            "contextReceiverTypes": [],
+            "declarationKind": "FUNCTION",
+            "declarationName": "nullableLength",
+            "jvmDescriptor": "(Ljava/lang/String;)I",
+            "module": ":",
+            "package": "com.acme",
+            "parameterTypes": [
+              "kotlin/String?"
+            ],
+            "receiverTypes": [],
+            "returnType": "kotlin/Int",
+            "sourceSet": "main",
+            "suspendFlag": false,
+            "typeParameterArity": 0
+          }
+        }
+      ],
+      "diagnostics": [],
+      "fileId": "file:f507a6459d6d28ab5a7553c7860e13b121a04571050eae89178ebd3477fb043f",
+      "functionSummaries": [
+        {
+          "semanticSummaryHash": "sha256:aa5b6d422fb947e46944d8840d28223a1861dd9267657fdcdc0c2226b2f80f37",
+          "symbolId": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[\"NullableReader\"],\"declarationName\":\"nullableLength\",\"declarationKind\":\"FUNCTION\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[\"kotlin/String?\"],\"returnType\":\"kotlin/Int\",\"suspendFlag\":false,\"jvmDescriptor\":\"(Ljava/lang/String;)I\"}"
+        }
+      ],
+      "imports": [],
+      "inheritance": [
+        {
+          "supertypes": [],
+          "symbol": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"Box\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"Box\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/Box;\"}"
+        },
+        {
+          "supertypes": [],
+          "symbol": "{\"module\":\":\",\"sourceSet\":\"main\",\"package\":\"com.acme\",\"containingDeclarations\":[],\"declarationName\":\"NullableReader\",\"declarationKind\":\"CLASS\",\"typeParameterArity\":0,\"receiverTypes\":[],\"contextReceiverTypes\":[],\"parameterTypes\":[],\"returnType\":\"NullableReader\",\"suspendFlag\":false,\"jvmDescriptor\":\"Lcom.acme/NullableReader;\"}"
+        }
+      ],
+      "lineEnding": "LF",
+      "module": ":",
+      "normalizedRelativePath": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "overrides": [],
+      "package": "com.acme",
+      "path": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "semanticFactCount": 2,
+      "semanticFactsDigest": "sha256:6de1a818dd046d0c4393484ba3fe796b91822c93584633f7a137730da94e0b0f",
+      "sourceSet": "main"
+    }
+  ],
+  "localCfgs": [
+    {
+      "compilerGraphName": "nullableLength",
+      "edges": [
+        {
+          "kind": "NEXT",
+          "label": "NormalPath",
+          "sourceNodeId": 0,
+          "targetNodeId": 1
+        }
+      ],
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "graphId": "sha256:d5a4d1e6368f0096664fd94e2f326c653675259f4eeb3a835cf74af9bc33d921",
+      "nodes": [
+        {
+          "nodeId": 0,
+          "role": "ENTRY",
+          "source": {
+            "end": 113,
+            "start": 74
+          }
+        },
+        {
+          "nodeId": 1,
+          "role": "EXIT",
+          "source": {
+            "end": 113,
+            "start": 74
+          }
+        }
+      ],
+      "ownerSymbolIdentity": "callable:com/acme/NullableReader.nullableLength#jvm:(Ljava/lang/String;)I",
+      "provider": "K2_FIR_CFG",
+      "schema": "local-cfg/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+    },
+    {
+      "compilerGraphName": "read",
+      "edges": [
+        {
+          "kind": "NEXT",
+          "label": "NormalPath",
+          "sourceNodeId": 0,
+          "targetNodeId": 1
+        }
+      ],
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "graphId": "sha256:2b1d528193f0e5adbfb87bd653874fc7ce088886f1ff4b509cb1522215acb5ee",
+      "nodes": [
+        {
+          "nodeId": 0,
+          "role": "ENTRY",
+          "source": {
+            "end": 151,
+            "start": 108
+          }
+        },
+        {
+          "nodeId": 1,
+          "role": "EXIT",
+          "source": {
+            "end": 151,
+            "start": 108
+          }
+        }
+      ],
+      "ownerSymbolIdentity": "callable:com/acme/IntegerSource.read#jvm:(I)I",
+      "provider": "K2_FIR_CFG",
+      "schema": "local-cfg/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+    },
+    {
+      "compilerGraphName": "read",
+      "edges": [
+        {
+          "kind": "NEXT",
+          "label": "NormalPath",
+          "sourceNodeId": 0,
+          "targetNodeId": 1
+        }
+      ],
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "graphId": "sha256:4a9bd4962361c738376de38021117efac3079b6a70a4098657b35744634ad00a",
+      "nodes": [
+        {
+          "nodeId": 0,
+          "role": "ENTRY",
+          "source": {
+            "end": 65,
+            "start": 37
+          }
+        },
+        {
+          "nodeId": 1,
+          "role": "EXIT",
+          "source": {
+            "end": 65,
+            "start": 37
+          }
+        }
+      ],
+      "ownerSymbolIdentity": "callable:com/acme/Source.read#jvm:(I)Ljava/lang/Number;",
+      "provider": "K2_FIR_CFG",
+      "schema": "local-cfg/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+    }
+  ],
+  "relationBoundaries": [],
+  "relations": [
+    {
+      "baseParameterTypes": [
+        "kotlin/Int"
+      ],
+      "baseReturnType": "kotlin/Number",
+      "cfgNodeIds": [
+        0,
+        1
+      ],
+      "end": 151,
+      "file": "src/main/kotlin/com/acme/QualifiedA.kt",
+      "kind": "OVERRIDES",
+      "orderProvenance": "K2_FIR_CFG",
+      "owner": "com/acme/IntegerSource.read",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-relation/0.1",
+      "sourceParameterTypes": [
+        "kotlin/Int"
+      ],
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "sourceReturnType": "kotlin/Int",
+      "start": 108,
+      "target": "com/acme/Source.read"
+    },
+    {
+      "cfgNodeIds": [],
+      "end": 45,
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "kind": "INITIALIZES",
+      "orderKey": 28,
+      "orderProvenance": "FIR_SOURCE_RANGE",
+      "owner": "com/acme/Box",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "schema": "declaration-relation/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "start": 28,
+      "target": "com/acme/Box.value",
+      "targetType": "kotlin/String",
+      "valueType": "kotlin/String"
+    },
+    {
+      "cfgNodeIds": [],
+      "end": 45,
+      "file": "src/main/kotlin/com/acme/QualifiedB.kt",
+      "kind": "REFERENCES",
+      "orderProvenance": "UNKNOWN",
+      "owner": "com/acme/Box.value",
+      "provider": "K2_FIR",
+      "resolution": "PROVEN",
+      "resultType": "kotlin/String",
+      "schema": "declaration-relation/0.1",
+      "sourceProvenance": "COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+      "start": 28,
+      "target": "<local>/value"
+    }
+  ],
+  "schema": "codeclew-kotlin-normalized-cross-engine-facts/1.0"
+}
