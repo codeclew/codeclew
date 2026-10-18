@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const MAX_RELATIONS: usize = 32_768;
+// A supported generation may contain this many facts. Retain its relation
+// subset within the same count bound; payload and report byte limits still apply.
+pub const MAX_RELATIONS: usize = 131_072;
 const MAX_NODES: usize = 512;
 const MAX_EDGES: usize = 2_048;
 const MAX_SUPPORT_PER_SIDE: usize = 64;

@@ -32,3 +32,9 @@ The worker heap ceiling is 2 GiB so the real worker-source dogfood compilation
 can complete with its expanded compiler facts. Frame and blob limits, typed
 response checks, and compiler-evidence validation remain in force. This does
 not bound the memory of project-native Gradle or Maven children.
+
+Retained working-tree comparison allows up to 131,072 relation facts, matching
+its existing total generation-fact visit ceiling. The older 32,768-relation
+ceiling rejected the self-hosting compilation after successful compiler
+analysis. The 64 MiB semantic-payload and retained-report limits still apply;
+exceeding a bound remains an explicit failure rather than a complete result.
