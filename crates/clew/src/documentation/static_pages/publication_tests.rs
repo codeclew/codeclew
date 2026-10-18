@@ -991,3 +991,51 @@ fn selection_question_language_does_not_relabel_imported_prose() {
     assert!(overview.contains("Original paragraph &lt;Data&gt;&#123;kept&#125;"));
     assert!(overview.contains("UNASSESSED"));
 }
+
+#[test]
+fn selected_native_locale_is_local_to_each_export_and_does_not_rewrite_evidence() {
+    let mut selected = selection("locale", "sample", "endpoint-a");
+    selected.question = Some("Source appendix".into());
+    selected.documentation_language = Some("en".into());
+    let projection = project::project(&checked(), &[selected]).unwrap();
+    let original = serde_json::to_vec_pretty(&projection).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let mut english_files = BTreeMap::new();
+    for (index, language) in ["en", "ru", "en"].into_iter().enumerate() {
+        let folder = temporary.path().join(index.to_string());
+        let manifest =
+            publish::write_language(&folder, "same-snapshot", &projection, Some(language)).unwrap();
+        assert_eq!(fs::read(folder.join("projection.json")).unwrap(), original);
+        for name in [
+            "locale-overview.html",
+            "locale-diagnostic.mdx",
+            "sources.html",
+            "index.html",
+        ] {
+            let text = fs::read_to_string(folder.join(name)).unwrap();
+            if language == "en" && index == 0 {
+                english_files.insert(name, text);
+            } else if language == "en" {
+                assert_eq!(text, english_files[name]);
+            } else {
+                assert!(text.contains("lang=\"ru\""));
+                if name == "index.html" {
+                    assert!(text.contains("Документация по сохранённому исходному коду"));
+                }
+                if name == "locale-overview.html" {
+                    assert!(text.contains("Страницы документации"));
+                    assert!(text.contains("Приложение с исходными материалами"));
+                    assert!(text.contains("Исходные материалы и версия"));
+                }
+                if name == "locale-diagnostic.mdx" {
+                    assert!(text.contains("Source appendix"));
+                }
+            }
+        }
+        for file in manifest["files"].as_array().unwrap() {
+            let bytes = fs::read(folder.join(file["path"].as_str().unwrap())).unwrap();
+            assert_eq!(crate::canonical::hash_bytes(&bytes), file["digest"]);
+        }
+    }
+    assert_eq!(serde_json::to_vec_pretty(&projection).unwrap(), original);
+}

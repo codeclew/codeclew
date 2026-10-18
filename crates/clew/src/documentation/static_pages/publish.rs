@@ -12,6 +12,72 @@ use std::{
     path::Path,
 };
 
+struct Ui<'a> {
+    language: &'a str,
+    presentation: &'a super::selected_language::Presentation,
+}
+impl Ui<'_> {
+    fn t<'a>(&self, key: &'a str) -> &'a str {
+        crate::documentation::language::label(self.language, key)
+    }
+
+    fn projection_text<'a>(&self, value: &'a str) -> &'a str {
+        match value {
+            "Declaration-only pages retain compiler declarations without proving source behavior, shared-object wiring, activation, delivery, or completion." => self.t("Declaration-only pages retain compiler declarations without proving source behavior, shared-object wiring, activation, delivery, or completion."),
+            "Source-declared shared object wiring does not prove enqueue success, scheduling, deployed activation, delivery, or completion." => self.t("Source-declared shared object wiring does not prove enqueue success, scheduling, deployed activation, delivery, or completion."),
+            "This alternative can leave the selected call unreached through an earlier return or throw, or choose a different branch." => self.t("This alternative can leave the selected call unreached through an earlier return or throw, or choose a different branch."),
+            "DEP-01 identifies the admitted dependency target and source availability. Invocation, response, implementation choice and success are not observed." => self.t("DEP-01 identifies the admitted dependency target and source availability. Invocation, response, implementation choice and success are not observed."),
+            _ => value,
+        }
+    }
+
+    /// Only compiled markup enters here; source and prose are inserted separately.
+    fn markup(&self, template: &'static str) -> String {
+        if self.language != "ru" {
+            return template.to_owned();
+        }
+        let mut remaining = template;
+        let mut output = String::new();
+        while let Some(start) = remaining.find('<') {
+            output.push_str(&self.owned_text(&remaining[..start]));
+            let Some(end) = remaining[start..].find('>').map(|end| start + end + 1) else {
+                output.push_str(&remaining[start..]);
+                return output;
+            };
+            let mut tag = remaining[start..end].to_owned();
+            for attribute in ["aria-label", "title", "placeholder"] {
+                let prefix = format!("{attribute}=\"");
+                if let Some(value_start) = tag.find(&prefix).map(|index| index + prefix.len())
+                    && let Some(value_end) = tag[value_start..]
+                        .find('\"')
+                        .map(|index| value_start + index)
+                {
+                    let translated = escape(self.t(&tag[value_start..value_end]));
+                    tag.replace_range(value_start..value_end, &translated);
+                }
+            }
+            output.push_str(&tag);
+            remaining = &remaining[end..];
+        }
+        output.push_str(&self.owned_text(remaining));
+        output
+    }
+
+    fn owned_text(&self, raw: &str) -> String {
+        let key = raw.trim();
+        if key.is_empty() {
+            return raw.to_owned();
+        }
+        let start = raw.len() - raw.trim_start().len();
+        format!(
+            "{}{}{}",
+            &raw[..start],
+            self.t(key),
+            &raw[start + key.len()..]
+        )
+    }
+}
+
 fn escape(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -39,10 +105,13 @@ fn paragraph(text: &str) -> String {
 fn link(path: &str, label: &str) -> String {
     format!("<a href=\"{}\">{}</a>", escape(path), escape(label))
 }
-fn cite(id: &str, ext: &str) -> String {
-    link(&format!("sources.{ext}#{}", anchor(id)), "Retained source")
+fn cite(id: &str, ext: &str, ui: &Ui<'_>) -> String {
+    link(
+        &format!("sources.{ext}#{}", anchor(id)),
+        ui.t("Retained source"),
+    )
 }
-fn gaps(rows: &[Gap], ext: &str) -> String {
+fn gaps(rows: &[Gap], ext: &str, ui: &Ui<'_>) -> String {
     rows.iter()
         .map(|g| {
             format!(
@@ -51,85 +120,102 @@ fn gaps(rows: &[Gap], ext: &str) -> String {
                 escape(&g.detail),
                 g.citation_id
                     .as_deref()
-                    .map(|id| cite(id, ext))
+                    .map(|id| cite(id, ext, ui))
                     .unwrap_or_default()
             )
         })
         .collect::<String>()
 }
-fn conditions(rows: &[PathCondition], ext: &str) -> String {
+fn conditions(rows: &[PathCondition], ext: &str, ui: &Ui<'_>) -> String {
     rows.iter()
         .map(|p| {
             format!(
                 "<li>{} = {} {}</li>\n",
                 escape(&p.expression),
                 p.holds,
-                cite(&p.citation_id, ext)
+                cite(&p.citation_id, ext, ui)
             )
         })
         .collect()
 }
-fn statement(s: &Statement, ext: &str) -> String {
+fn statement(s: &Statement, ext: &str, ui: &Ui<'_>) -> String {
     let mut out = format!(
-        "<li><pre>{}</pre><p>Kind: {:?}; reachable in retained source path: {}. {}</p>\n",
+        "<li><pre>{}</pre><p>{ui_text0} {:?}{ui_text1} {}. {}</p>\n",
         escape(&s.expression),
         s.kind,
         s.reachable,
-        cite(&s.citation_id, ext)
+        cite(&s.citation_id, ext, ui),
+        ui_text0 = ui.t("Kind:"),
+        ui_text1 = ui.t("; reachable in retained source path:")
     );
     if !s.conditions.is_empty() {
-        out += &format!("<ul>{}</ul>\n", conditions(&s.conditions, ext));
+        out += &format!("<ul>{}</ul>\n", conditions(&s.conditions, ext, ui));
     }
     for call in &s.calls {
-        out += &paragraph(&format!("Call phase: {}.", call.phase));
-        out += &format!("<p>{}</p>\n", cite(&call.citation_id, ext));
+        out += &paragraph(&format!(
+            "{ui_text0} {}.",
+            call.phase,
+            ui_text0 = ui.t("Call phase:")
+        ));
+        out += &format!("<p>{}</p>\n", cite(&call.citation_id, ext, ui));
         if let Some(node) = &call.expanded_node {
             out += &format!(
                 "<p>{}</p>\n",
                 link(
                     &format!("source-calls.{ext}#{}", anchor(node)),
-                    "Read the retained target body (runtime dispatch unobserved)"
+                    ui.t("Read the retained target body (runtime dispatch unobserved)")
                 )
             );
         }
         out += &format!(
-            "<details><summary>Exact call identity</summary>{}</details>\n",
+            "<details><summary>{ui_text0}</summary>{}</details>\n",
             paragraph(&format!(
-                "Expression: {}. Target: {}. Authority: {}. Relation: {}.",
+                "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}.",
                 call.expression,
                 call.target.as_deref().unwrap_or("unresolved"),
                 call.authority,
-                call.relation_id.as_deref().unwrap_or("unresolved")
-            ))
+                call.relation_id.as_deref().unwrap_or("unresolved"),
+                ui_text0 = ui.t("Expression:"),
+                ui_text1 = ui.t(". Target:"),
+                ui_text2 = ui.t(". Authority:"),
+                ui_text3 = ui.t(". Relation:")
+            )),
+            ui_text0 = ui.t("Exact call identity")
         );
         if let Some(b) = &call.external_boundary {
             out += &paragraph(&format!(
-                "External boundary: {}. Source status: {}. {}",
-                b.target, b.source_status, b.limitation
+                "{ui_text0} {}{ui_text1} {}. {}",
+                b.target,
+                b.source_status,
+                b.limitation,
+                ui_text0 = ui.t("External boundary:"),
+                ui_text1 = ui.t(". Source status:")
             ));
             for id in &b.citation_ids {
-                out += &format!("<p>{}</p>\n", cite(id, ext));
+                out += &format!("<p>{}</p>\n", cite(id, ext, ui));
             }
         }
-        out += &format!("<ul>{}</ul>\n", gaps(&call.gaps, ext));
+        out += &format!("<ul>{}</ul>\n", gaps(&call.gaps, ext, ui));
     }
-    out += &format!("<ul>{}</ul>\n", gaps(&s.gaps, ext));
+    out += &format!("<ul>{}</ul>\n", gaps(&s.gaps, ext, ui));
     if !s.children.is_empty() {
         out += &format!(
-            "<p>Body / true alternative</p><ol>{}</ol>\n",
+            "<p>{ui_text0}</p><ol>{}</ol>\n",
             s.children
                 .iter()
-                .map(|s| statement(s, ext))
-                .collect::<String>()
+                .map(|s| statement(s, ext, ui))
+                .collect::<String>(),
+            ui_text0 = ui.t("Body / true alternative")
         );
     }
     if !s.alternative.is_empty() {
         out += &format!(
-            "<p>False alternative</p><ol>{}</ol>\n",
+            "<p>{ui_text0}</p><ol>{}</ol>\n",
             s.alternative
                 .iter()
-                .map(|s| statement(s, ext))
-                .collect::<String>()
+                .map(|s| statement(s, ext, ui))
+                .collect::<String>(),
+            ui_text0 = ui.t("False alternative")
         );
     }
     out += "</li>\n";
@@ -164,12 +250,12 @@ fn process_label(p: &PageContent) -> String {
         )
     }
 }
-fn citation_group(p: &PageContent, ids: &[String], ext: &str) -> String {
+fn citation_group(p: &PageContent, ids: &[String], ext: &str, ui: &Ui<'_>) -> String {
     if ids.is_empty() {
         return String::new();
     }
     format!(
-        "<p>Sources: {}</p>\n",
+        "<p>{ui_text0} {}</p>\n",
         ids.iter()
             .map(|id| {
                 let label = p
@@ -187,10 +273,11 @@ fn citation_group(p: &PageContent, ids: &[String], ext: &str) -> String {
                 link(&format!("sources.{ext}#{}", anchor(id)), &label)
             })
             .collect::<Vec<_>>()
-            .join(" · ")
+            .join(" · "),
+        ui_text0 = ui.t("Sources:")
     )
 }
-fn attempt_summary(callable: &CallableProjection, ext: &str) -> String {
+fn attempt_summary(callable: &CallableProjection, ext: &str, ui: &Ui<'_>) -> String {
     fn collect<'a>(steps: &'a [Statement], out: &mut Vec<&'a CallProjection>) {
         for step in steps {
             if step.reachable {
@@ -214,37 +301,49 @@ fn attempt_summary(callable: &CallableProjection, ext: &str) -> String {
             format!(
                 "<li><pre>{}</pre>{}</li>\n",
                 escape(&c.expression),
-                cite(&c.citation_id, ext)
+                cite(&c.citation_id, ext, ui)
             )
         })
         .collect()
 }
-fn callable(c: &CallableProjection, ext: &str) -> String {
+fn callable(c: &CallableProjection, ext: &str, ui: &Ui<'_>) -> String {
     let mut out = paragraph(&callable_label(&c.symbol));
     if let Some(id) = &c.citation_id {
-        out += &format!("<p>{}</p>\n", cite(id, ext));
+        out += &format!("<p>{}</p>\n", cite(id, ext, ui));
     }
     out += &format!(
         "<ol>{}</ol><ul>{}</ul>\n",
         c.steps
             .iter()
-            .map(|s| statement(s, ext))
+            .map(|s| statement(s, ext, ui))
             .collect::<String>(),
-        gaps(&c.gaps, ext)
+        gaps(&c.gaps, ext, ui)
     );
     out += &format!(
-        "<details><summary>Exact declaration identity</summary>{}</details>\n",
+        "<details><summary>{ui_text0}</summary>{}</details>\n",
         paragraph(&format!(
-            "Declaration: {}. Symbol: {}. Authority: {}.",
-            c.declaration_id, c.symbol, c.authority
-        ))
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}.",
+            c.declaration_id,
+            c.symbol,
+            c.authority,
+            ui_text0 = ui.t("Declaration:"),
+            ui_text1 = ui.t(". Symbol:"),
+            ui_text2 = ui.t(". Authority:")
+        )),
+        ui_text0 = ui.t("Exact declaration identity")
     );
     out
 }
-fn state(c: &CallableProjection, ext: &str) -> String {
+fn state(c: &CallableProjection, ext: &str, ui: &Ui<'_>) -> String {
     let mut out = format!(
-        "<h2>{}</h2><table tabIndex=\"0\"><caption>Scroll horizontally: fields and state</caption><thead><tr><th scope=\"col\">Name</th><th scope=\"col\">Expression</th><th scope=\"col\">Kind</th><th scope=\"col\">Condition path</th><th scope=\"col\">Source</th></tr></thead><tbody>\n",
-        escape(&callable_label(&c.symbol))
+        "<h2>{}</h2><table tabIndex=\"0\"><caption>{ui_text0}</caption><thead><tr><th scope=\"col\">{ui_text1}</th><th scope=\"col\">{ui_text2}</th><th scope=\"col\">{ui_text3}</th><th scope=\"col\">{ui_text4}</th><th scope=\"col\">{ui_text5}</th></tr></thead><tbody>\n",
+        escape(&callable_label(&c.symbol)),
+        ui_text0 = ui.t("Scroll horizontally: fields and state"),
+        ui_text1 = ui.t("Name"),
+        ui_text2 = ui.t("Expression"),
+        ui_text3 = ui.t("Kind"),
+        ui_text4 = ui.t("Condition path"),
+        ui_text5 = ui.t("Source")
     );
     for row in &c.state {
         out += &format!(
@@ -252,36 +351,49 @@ fn state(c: &CallableProjection, ext: &str) -> String {
             escape(&row.name),
             escape(&row.expression),
             escape(&row.kind),
-            conditions(&row.conditions, ext),
-            cite(&row.citation_id, ext)
+            conditions(&row.conditions, ext, ui),
+            cite(&row.citation_id, ext, ui)
         );
     }
     out += "</tbody></table>\n";
     out
 }
-fn operational_instructions(rows: &[HumanInstruction]) -> String {
+fn operational_instructions(rows: &[HumanInstruction], ui: &Ui<'_>) -> String {
     let mut out =
-        "<section id=\"operational-instructions\"><h2>Operational instructions</h2>\n".to_string();
+        ui.markup("<section id=\"operational-instructions\"><h2>Operational instructions</h2>\n");
     out += &paragraph(
-        "Captured human/imported instructions are unverified. Source-claim status: UNASSESSED; their content does not establish source or runtime behavior.",
+        ui.t("Captured human/imported instructions are unverified. Source-claim status: UNASSESSED; their content does not establish source or runtime behavior."),
     );
     for note in rows {
         out += &format!("<article><h3>{}</h3>\n", escape(&note.title));
         out += &paragraph(&format!(
-            "Declared author: {}. Classification: {}. Period: {}. Authority: {}. Source-claim status: {}.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}.",
             note.declared_author,
             note.classification,
             note.period,
             note.authority,
-            note.source_claim_status
+            note.source_claim_status,
+            ui_text0 = ui.t("Declared author:"),
+            ui_text1 = ui.t(". Classification:"),
+            ui_text2 = ui.t(". Period:"),
+            ui_text3 = ui.t(". Authority:"),
+            ui_text4 = ui.t(". Source-claim status:")
         ));
         out += &format!("<pre>{}</pre>\n", escape(&note.text));
         out += &format!(
-            "<details><summary>Captured note identity</summary>{}</details></article>\n",
+            "<details><summary>{ui_text0}</summary>{}</details></article>\n",
             paragraph(&format!(
-                "Note ID: {}. Version digest: {}. Content digest: {}. Association digest: {}.",
-                note.id, note.version_digest, note.content_digest, note.association_digest
-            ))
+                "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}.",
+                note.id,
+                note.version_digest,
+                note.content_digest,
+                note.association_digest,
+                ui_text0 = ui.t("Note ID:"),
+                ui_text1 = ui.t(". Version digest:"),
+                ui_text2 = ui.t(". Content digest:"),
+                ui_text3 = ui.t(". Association digest:")
+            )),
+            ui_text0 = ui.t("Captured note identity")
         );
     }
     out += "</section>\n";
@@ -313,51 +425,60 @@ fn views_for(p: &PageContent) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-fn control_flow_panel(c: &CallableProjection, ext: &str, full: bool) -> String {
+fn control_flow_panel(c: &CallableProjection, ext: &str, full: bool, ui: &Ui<'_>) -> String {
     let Some(graph) = &c.control_flow else {
         return String::new();
     };
     let mut out = format!(
-        "<section><h3>Compiler-provided local control flow</h3>\n{}",
+        "<section><h3>{ui_text0}</h3>\n{}",
         paragraph(&format!(
-            "Provider: {}. Nodes: {}. Edges: {}. Node IDs are identifiers, not execution order. Edge kinds and labels are retained compiler metadata; labels are not interpreted as conditions or branch truth.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3}",
             graph.provider,
             graph.nodes.len(),
             graph.edges.len()
-        ))
-    );
+        , ui_text0 = ui.t("Provider:"), ui_text1 = ui.t(". Nodes:"), ui_text2 = ui.t(". Edges:"), ui_text3 = ui.t(". Node IDs are identifiers, not execution order. Edge kinds and labels are retained compiler metadata; labels are not interpreted as conditions or branch truth.")))
+    , ui_text0 = ui.t("Compiler-provided local control flow"));
     out += &format!(
-        "<details><summary>Compiler graph bindings</summary>{}</details>\n",
+        "<details><summary>{ui_text0}</summary>{}</details>\n",
         paragraph(&format!(
-            "Graph ID: {}. Graph observation: {}. Graph evidence binding: {}. Descriptor evidence binding: {}. Compiler graph name: {}.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}.",
             graph.graph_id,
             graph.graph_observation_id,
             graph.graph_evidence_binding,
             graph.descriptor_evidence_binding,
-            graph.compiler_graph_name
-        ))
+            graph.compiler_graph_name,
+            ui_text0 = ui.t("Graph ID:"),
+            ui_text1 = ui.t(". Graph observation:"),
+            ui_text2 = ui.t(". Graph evidence binding:"),
+            ui_text3 = ui.t(". Descriptor evidence binding:"),
+            ui_text4 = ui.t(". Compiler graph name:")
+        )),
+        ui_text0 = ui.t("Compiler graph bindings")
     );
     if full {
-        out += "<table><caption>Retained compiler control-flow nodes and outgoing edges</caption><thead><tr><th scope=\"col\">Node ID</th><th scope=\"col\">Role</th><th scope=\"col\">Source</th><th scope=\"col\">Outgoing target, kind and label</th></tr></thead><tbody>\n";
+        out += &ui.markup("<table><caption>Retained compiler control-flow nodes and outgoing edges</caption><thead><tr><th scope=\"col\">Node ID</th><th scope=\"col\">Role</th><th scope=\"col\">Source</th><th scope=\"col\">Outgoing target, kind and label</th></tr></thead><tbody>\n");
         for node in &graph.nodes {
             let source = node
                 .citation_id
                 .as_deref()
-                .map(|id| cite(id, ext))
-                .unwrap_or_else(|| "No source range retained for this node.".into());
+                .map(|id| cite(id, ext, ui))
+                .unwrap_or_else(|| ui.t("No source range retained for this node.").into());
             let outgoing = graph
                 .edges
                 .iter()
                 .filter(|edge| edge.source_node_id == node.node_id)
                 .map(|edge| {
                     format!(
-                        "<li>Target node ID {} · kind {} · label {}</li>\n",
+                        "<li>{ui_text0} {} {ui_text1} {} {ui_text2} {}</li>\n",
                         edge.target_node_id,
                         control_flow_edge_label(edge.kind),
                         edge.label
                             .as_deref()
                             .map(escape)
-                            .unwrap_or_else(|| "(none)".into())
+                            .unwrap_or_else(|| "(none)".into()),
+                        ui_text0 = ui.t("Target node ID"),
+                        ui_text1 = ui.t("· kind"),
+                        ui_text2 = ui.t("· label")
                     )
                 })
                 .collect::<String>();
@@ -376,14 +497,18 @@ fn control_flow_panel(c: &CallableProjection, ext: &str, full: bool) -> String {
 }
 
 /// Common inert rendering for exact source coordinates admitted by any adapter.
-fn exact_source_span_item(exact: &crate::documentation::source_span::ExactSourceSpan) -> String {
+fn exact_source_span_item(
+    exact: &crate::documentation::source_span::ExactSourceSpan,
+    ui: &Ui<'_>,
+) -> String {
     format!(
-        "<li>Retained source: <code>{}</code></li>\n",
-        escape(&exact.expression)
+        "<li>{ui_text0} <code>{}</code></li>\n",
+        escape(&exact.expression),
+        ui_text0 = ui.t("Retained source:")
     )
 }
 
-fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
+fn source_outline_panel(c: &CallableProjection, ext: &str, ui: &Ui<'_>) -> String {
     let Some(outline) = &c.source_outline else {
         return String::new();
     };
@@ -407,31 +532,47 @@ fn source_outline_panel(c: &CallableProjection, ext: &str) -> String {
     } else {
         "This tree preserves retained Roslyn source structure and exact compiler call-target metadata. It is not an execution trace: source conditions do not establish predicate truth, and event ordinals do not represent runtime invocation counts."
     };
+    let heading = if ui.language == "ru" {
+        format!("{} · {}", ui.t("Cited source outline"), ui.t(label))
+    } else {
+        format!("Cited {label} source outline")
+    };
     let mut out = format!(
-        "<section><h3>Cited {label} source outline</h3>\n{}",
-        paragraph(explanation)
+        "<section><h3>{}</h3>\n{}",
+        escape(&heading),
+        paragraph(ui.t(explanation))
     );
     if let Some(tree) = &outline.tree {
         out += &format!("<pre>{}</pre>\n", escape(tree));
     } else {
-        out += &format!("<ul>{}</ul>\n", gaps(&outline.gaps, ext));
+        out += &format!("<ul>{}</ul>\n", gaps(&outline.gaps, ext, ui));
     }
     if !outline.events.is_empty() {
-        out += &format!("<ul aria-label=\"Retained {event_label} event citations\">\n");
+        let citations_label = if ui.language == "ru" {
+            ui.t("Retained event citations").to_owned()
+        } else {
+            format!("Retained {event_label} event citations")
+        };
+        let ordinal_label = if ui.language == "ru" {
+            ui.t("Event ordinal").to_owned()
+        } else {
+            format!("{event_label} event ordinal")
+        };
+        out += &format!("<ul aria-label=\"{}\">\n", escape(&citations_label));
         for event in &outline.events {
             out += &format!(
-                "<li>{event_label} event ordinal {} · {} · {}-{}: {}</li>\n",
+                "<li>{ordinal_label} {} · {} · {}-{}: {}</li>\n",
                 event.ordinal,
                 escape(&event.kind),
                 event.start_line,
                 event.end_line,
-                cite(&event.citation_id, ext)
+                cite(&event.citation_id, ext, ui)
             );
             if let Some(exact) = &event.exact_source {
-                out += &exact_source_span_item(exact);
+                out += &exact_source_span_item(exact, ui);
             }
             if !event.gaps.is_empty() {
-                out += &format!("<li><ul>{}</ul></li>\n", gaps(&event.gaps, ext));
+                out += &format!("<li><ul>{}</ul></li>\n", gaps(&event.gaps, ext, ui));
             }
         }
         out += "</ul>\n";
@@ -445,6 +586,7 @@ fn retained_call_sites_panel(
     ext: &str,
     service: &str,
     graph: Option<&SourceCallGraph>,
+    ui: &Ui<'_>,
 ) -> String {
     let Some(retained) = &c.retained_call_sites else {
         return String::new();
@@ -462,15 +604,16 @@ fn retained_call_sites_panel(
         .iter()
         .any(|site| source_event(&site.relation_id));
     let mut out = format!(
-        "<section><h3>Retained exact call sites</h3>\n{}",
-        paragraph(if has_source_events {
+        "<section><h3>{ui_text0}</h3>\n{}",
+        paragraph(ui.t(if has_source_events {
             "These sites come from retained compiler call relations or compiler-target source events with exact captured spans. Source-event sites do not supply receiver identity or argument mappings. No site establishes runtime execution, invocation count, ordering, or reachability."
         } else {
             "These are retained compiler call relations with their captured source snippets. They do not establish runtime execution, invocation count, ordering, or reachability."
-        })
+        })),
+        ui_text0 = ui.t("Retained exact call sites")
     );
     if retained.sites.is_empty() {
-        out += &format!("<ul>{}</ul>\n", gaps(&retained.gaps, ext));
+        out += &format!("<ul>{}</ul>\n", gaps(&retained.gaps, ext, ui));
     } else {
         let owner_node = graph.and_then(|graph| {
             graph.nodes.values().find(|node| {
@@ -480,10 +623,10 @@ fn retained_call_sites_panel(
                     && node.node_projection_kind.is_some()
             })
         });
-        out += "<ol aria-label=\"Retained exact call sites\">\n";
+        out += &ui.markup("<ol aria-label=\"Retained exact call sites\">\n");
         for site in &retained.sites {
             out += &format!(
-                "<li><p>Target identity: {}. Source: {}:{}-{}. Captured source span bytes [{}, {}). {}: {}. {}",
+                "<li><p>{ui_text0} {}{ui_text1} {}:{}-{}{ui_text2}{}, {}). {}: {}. {}",
                 escape(&site.target_identity),
                 escape(&site.file),
                 site.start_line,
@@ -491,12 +634,15 @@ fn retained_call_sites_panel(
                 site.compilation_byte_start,
                 site.compilation_byte_end,
                 if source_event(&site.relation_id) {
-                    "Compiler source event"
+                    ui.t("Compiler source event")
                 } else {
                     "Relation"
                 },
                 escape(&site.relation_id),
-                cite(&site.citation_id, ext)
+                cite(&site.citation_id, ext, ui),
+                ui_text0 = ui.t("Target identity:"),
+                ui_text1 = ui.t(". Source:"),
+                ui_text2 = ui.t(". Captured source span bytes [")
             );
             if let Some(edge) = owner_node.and_then(|node| {
                 node.calls.iter().find(|edge| {
@@ -510,7 +656,7 @@ fn retained_call_sites_panel(
                         " Navigation: {}.",
                         link(
                             &format!("source-calls.{ext}#{}", anchor(target_node)),
-                            "Retained target body"
+                            ui.t("Retained target body")
                         )
                     );
                 } else {
@@ -521,9 +667,12 @@ fn retained_call_sites_panel(
                         .collect::<Vec<_>>()
                         .join(", ");
                     out += &format!(
-                        " Navigation status: {}. Target declaration: {}. Frontiers: {}.",
+                        " {} {}{} {}{} {}.",
+                        ui.t("Navigation status:"),
                         escape(&edge.status),
+                        ui.t(". Target declaration:"),
                         escape(edge.target_declaration.as_deref().unwrap_or("unavailable")),
+                        ui.t(". Frontiers:"),
                         escape(if frontier_codes.is_empty() {
                             "none"
                         } else {
@@ -533,7 +682,7 @@ fn retained_call_sites_panel(
                 }
             }
             out += &format!("</p><pre>{}</pre>", escape(&site.expression));
-            out += &argument_bindings_panel(site, ext);
+            out += &argument_bindings_panel(site, ext, ui);
             out += "</li>\n";
         }
         out += "</ol>\n";
@@ -542,28 +691,28 @@ fn retained_call_sites_panel(
     out
 }
 
-fn argument_bindings_panel(site: &NeutralExactCallSite, ext: &str) -> String {
+fn argument_bindings_panel(site: &NeutralExactCallSite, ext: &str, ui: &Ui<'_>) -> String {
     let Some(bindings) = &site.argument_bindings else {
         return String::new();
     };
-    let mut out = String::from("<div><h4>Compiler argument bindings</h4>\n");
+    let mut out = ui.markup("<div><h4>Compiler argument bindings</h4>\n");
     if !bindings.gaps.is_empty() {
-        out += &format!("<ul>{}</ul>\n", gaps(&bindings.gaps, ext));
+        out += &format!("<ul>{}</ul>\n", gaps(&bindings.gaps, ext, ui));
         out += "</div>\n";
         return out;
     }
     if bindings.arguments.is_empty() {
-        out += "<p>No explicit argument mappings were reported by the retained compiler payload.</p>\n";
+        out += &ui.markup("<p>No explicit argument mappings were reported by the retained compiler payload.</p>\n");
     } else {
-        out += "<ul aria-label=\"Compiler argument-to-parameter mappings\">\n";
+        out += &ui.markup("<ul aria-label=\"Compiler argument-to-parameter mappings\">\n");
         for argument in &bindings.arguments {
             let named = argument
                 .argument_name
                 .as_deref()
-                .map(|name| format!(" Named argument: {}.", escape(name)))
+                .map(|name| format!(" {} {}.", ui.t("Named argument:"), escape(name)))
                 .unwrap_or_default();
             out += &format!(
-                "<li>Captured argument bytes [{}, {}).{} Argument type: {}. Formal parameter {} (index {}): {}. {}<pre>{}</pre></li>\n",
+                "<li>{ui_text0}{}, {}).{} {ui_text1} {}{ui_text2} {} {ui_text3} {}): {}. {}<pre>{}</pre></li>\n",
                 argument.compilation_byte_start,
                 argument.compilation_byte_end,
                 named,
@@ -571,8 +720,12 @@ fn argument_bindings_panel(site: &NeutralExactCallSite, ext: &str) -> String {
                 escape(&argument.parameter),
                 argument.parameter_index,
                 escape(&argument.parameter_type),
-                cite(&argument.citation_id, ext),
-                escape(&argument.expression)
+                cite(&argument.citation_id, ext, ui),
+                escape(&argument.expression),
+                ui_text0 = ui.t("Captured argument bytes ["),
+                ui_text1 = ui.t("Argument type:"),
+                ui_text2 = ui.t(". Formal parameter"),
+                ui_text3 = ui.t("(index")
             );
         }
         out += "</ul>\n";
@@ -585,8 +738,9 @@ fn argument_bindings_panel(site: &NeutralExactCallSite, ext: &str) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         out += &format!(
-            "<p>Omitted default parameter indices reported by the compiler: {}.</p>\n",
-            escape(&indices)
+            "<p>{ui_text0} {}.</p>\n",
+            escape(&indices),
+            ui_text0 = ui.t("Omitted default parameter indices reported by the compiler:")
         );
     }
     out += "</div>\n";
@@ -603,14 +757,24 @@ fn selected_declaration(
     graph: Option<&SourceCallGraph>,
     observations: &BTreeMap<String, crate::documentation::model::Observation>,
     sources: &BTreeMap<String, crate::documentation::model::Source>,
+    ui: &Ui<'_>,
 ) -> String {
     let mut out = format!("<section><h2>{}</h2>\n", escape(label));
     out += &paragraph(&format!(
-        "Declaration: {}. Symbol: {}. Authority: {}.",
-        c.declaration_id, c.symbol, c.authority
+        "{ui_text0} {}{ui_text1} {}{ui_text2} {}.",
+        c.declaration_id,
+        c.symbol,
+        c.authority,
+        ui_text0 = ui.t("Declaration:"),
+        ui_text1 = ui.t(". Symbol:"),
+        ui_text2 = ui.t(". Authority:")
     ));
     if let Some(id) = &c.citation_id {
-        out += &format!("<p>Retained source: {}</p>\n", cite(id, ext));
+        out += &format!(
+            "<p>{ui_text0} {}</p>\n",
+            cite(id, ext, ui),
+            ui_text0 = ui.t("Retained source:")
+        );
     }
     if let Some(signature) = observations
         .get(&c.declaration_id)
@@ -627,13 +791,13 @@ fn selected_declaration(
         } else {
             "Retained declaration source"
         };
-        out += &format!("<p>{label}:</p><pre>{}</pre>\n", escape(signature));
+        out += &format!("<p>{}:</p><pre>{}</pre>\n", ui.t(label), escape(signature));
     }
-    out += &control_flow_panel(c, ext, full_control_flow);
-    out += &source_outline_panel(c, ext);
-    out += &retained_call_sites_panel(c, ext, service, graph);
+    out += &control_flow_panel(c, ext, full_control_flow, ui);
+    out += &source_outline_panel(c, ext, ui);
+    out += &retained_call_sites_panel(c, ext, service, graph, ui);
     if !c.gaps.is_empty() {
-        out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext));
+        out += &format!("<ul>{}</ul>\n", gaps(&c.gaps, ext, ui));
     }
     out += "</section>\n";
     out
@@ -678,6 +842,7 @@ fn retained_data_context_links(
     p: &PageContent,
     graph: Option<&SourceCallGraph>,
     ext: &str,
+    ui: &Ui<'_>,
 ) -> String {
     let (Some(state), Some(graph)) = (&p.data_state, graph) else {
         return String::new();
@@ -695,8 +860,9 @@ fn retained_data_context_links(
             link(
                 &format!("source-calls.{ext}#{}-data", anchor(id)),
                 &format!(
-                    "Source data transformations: {}",
-                    callable_label(&node.callable.symbol)
+                    "{ui_text0} {}",
+                    callable_label(&node.callable.symbol),
+                    ui_text0 = ui.t("Source data transformations:")
                 )
             )
         );
@@ -707,7 +873,7 @@ fn retained_data_context_links(
     format!(
         "{}<ul>{links}</ul>\n",
         paragraph(
-            "Retained source data transformations are available in the expanded source-call context. Definitions, guards and call prerequisites describe source syntax; runtime values and completion remain unproven."
+            ui.t("Retained source data transformations are available in the expanded source-call context. Definitions, guards and call prerequisites describe source syntax; runtime values and completion remain unproven.")
         )
     )
 }
@@ -719,31 +885,39 @@ fn declaration_only_page(
     snapshot: &str,
     ext: &str,
     graph: Option<&SourceCallGraph>,
-    notice: &str,
+    ui: &Ui<'_>,
 ) -> String {
+    let notice = ui.presentation.notice(&p.id, view);
     let graph = p.selection.expand_source_calls.then_some(graph).flatten();
-    let data_context_links = retained_data_context_links(p, graph, ext);
+    let data_context_links = retained_data_context_links(p, graph, ext, ui);
     let same_declaration = p.endpoint.declaration_id == p.worker.declaration_id;
     let has_control_flow = p.projection_kind == Some(ProjectionKind::CompilerControlFlow);
     let mut out = format!(
-        "<main><h1>{}: {}</h1>\n{notice}<nav aria-label=\"Documentation pages\">{}",
+        "<main><h1>{}: {}</h1>\n{notice}<nav aria-label=\"{ui_text0}\">{}",
         escape(&p.title),
         escape(title),
-        link(&format!("index.{ext}"), "All selected declarations")
+        link(&format!("index.{ext}"), ui.t("All selected declarations")),
+        ui_text0 = ui.t("Documentation pages")
     );
     for (slug, label) in DECLARATION_VIEWS {
-        out += &format!(" · {}", link(&format!("{}-{slug}.{ext}", p.id), label));
+        out += &format!(
+            " · {}",
+            link(&format!("{}-{slug}.{ext}", p.id), ui.t(label))
+        );
     }
     out += &format!(
         " · {}</nav>\n",
-        link(&format!("sources.{ext}"), "Source appendix")
+        link(&format!("sources.{ext}"), ui.t("Source appendix"))
     );
     match view {
         "overview" => {
             if let Some(question) = &p.selection.question {
-                out += &paragraph(&format!("Question: {question}"));
+                out += &paragraph(&format!(
+                    "{ui_text0} {question}",
+                    ui_text0 = ui.t("Question:")
+                ));
             }
-            out += &paragraph(if has_control_flow {
+            out += &paragraph(ui.t(if has_control_flow {
                 "This page retains selected compiler declarations and function-local compiler control-flow graphs. The graphs do not establish relationships between declarations, execution order, branch truth or deployed runtime behavior."
             } else if p.endpoint.authority == "SYNTAX_DECLARATION"
                 || p.worker.authority == "SYNTAX_DECLARATION"
@@ -753,154 +927,178 @@ fn declaration_only_page(
                 "This page retains selected compiler declarations, source structure and source-declared shared queue wiring. Runtime behavior remains unobserved."
             } else {
                 "This page retains selected compiler declarations and their source. It does not project source behavior or infer relationships between declarations."
-            });
+            }));
             if same_declaration {
                 out += &selected_declaration(
                     &p.endpoint,
-                    "Selected declaration",
+                    ui.t("Selected declaration"),
                     ext,
                     false,
                     &p.selection.service,
                     graph,
                     &p.observations,
                     &p.sources,
+                    ui,
                 );
             } else {
                 out += &selected_declaration(
                     &p.endpoint,
-                    "First selected declaration",
+                    ui.t("First selected declaration"),
                     ext,
                     false,
                     &p.selection.service,
                     graph,
                     &p.observations,
                     &p.sources,
+                    ui,
                 );
                 out += &selected_declaration(
                     &p.worker,
-                    "Second selected declaration",
+                    ui.t("Second selected declaration"),
                     ext,
                     false,
                     &p.selection.service,
                     graph,
                     &p.observations,
                     &p.sources,
+                    ui,
                 );
             }
             if let Some(wiring) = &p.wiring {
                 out += &selected_declaration(
                     wiring,
-                    "Additional selected declaration",
+                    ui.t("Additional selected declaration"),
                     ext,
                     false,
                     &p.selection.service,
                     graph,
                     &p.observations,
                     &p.sources,
+                    ui,
                 );
             }
             if p.handoff.status == "SOURCE_DECLARED_SHARED_QUEUE" {
-                out += "<h2>Source-declared shared queue</h2>\n";
+                out += &ui.markup("<h2>Source-declared shared queue</h2>\n");
                 out += &paragraph(&format!(
-                    "Source binds {} and {} to the same queue allocation.",
+                    "{ui_text0} {} {ui_text1} {} {ui_text2}",
                     p.handoff
                         .endpoint_field
                         .as_deref()
-                        .unwrap_or("endpoint property"),
+                        .unwrap_or(ui.t("endpoint property")),
                     p.handoff
                         .worker_field
                         .as_deref()
-                        .unwrap_or("worker property")
+                        .unwrap_or(ui.t("worker property")),
+                    ui_text0 = ui.t(if ui.language == "ru" {
+                        "Source binds endpoint field"
+                    } else {
+                        "Source binds"
+                    }),
+                    ui_text1 = ui.t(if ui.language == "ru" {
+                        "and worker field"
+                    } else {
+                        "and"
+                    }),
+                    ui_text2 = ui.t("to the same queue allocation.")
                 ));
-                out += &citation_group(p, &p.handoff.citation_ids, ext);
+                out += &citation_group(p, &p.handoff.citation_ids, ext, ui);
             } else if p.handoff.status == "LOCAL_GAP" {
-                out += "<h2>Shared queue wiring unresolved</h2>\n";
-                out += &format!("<ul>{}</ul>\n", gaps(&p.handoff.gaps, ext));
+                out += &ui.markup("<h2>Shared queue wiring unresolved</h2>\n");
+                out += &format!("<ul>{}</ul>\n", gaps(&p.handoff.gaps, ext, ui));
             }
-            out += &paragraph(&p.handoff.limitation);
+            out += &paragraph(ui.projection_text(&p.handoff.limitation));
         }
         "endpoint" => {
             out += &selected_declaration(
                 &p.endpoint,
-                if same_declaration {
+                ui.t(if same_declaration {
                     "Selected declaration"
                 } else {
                     "First selected declaration"
-                },
+                }),
                 ext,
                 true,
                 &p.selection.service,
                 graph,
                 &p.observations,
                 &p.sources,
+                ui,
             );
         }
         "worker" => {
             out += &selected_declaration(
                 &p.worker,
-                if same_declaration {
+                ui.t(if same_declaration {
                     "Selected declaration"
                 } else {
                     "Second selected declaration"
-                },
+                }),
                 ext,
                 true,
                 &p.selection.service,
                 graph,
                 &p.observations,
                 &p.sources,
+                ui,
             );
         }
         "fields-state" => {
             if data_context_links.is_empty() {
-                out += &paragraph(
-                    "Field and data-state analysis is unavailable for declaration-only pages.",
-                );
+                out +=
+                    &paragraph(ui.t(
+                        "Field and data-state analysis is unavailable for declaration-only pages.",
+                    ));
             } else {
                 out += &data_context_links;
             }
             out += &selected_declaration(
                 &p.endpoint,
-                "First retained declaration",
+                ui.t("First retained declaration"),
                 ext,
                 false,
                 &p.selection.service,
                 graph,
                 &p.observations,
                 &p.sources,
+                ui,
             );
             if !same_declaration {
                 out += &selected_declaration(
                     &p.worker,
-                    "Second retained declaration",
+                    ui.t("Second retained declaration"),
                     ext,
                     false,
                     &p.selection.service,
                     graph,
                     &p.observations,
                     &p.sources,
+                    ui,
                 );
             }
             if let Some(wiring) = &p.wiring {
                 out += &selected_declaration(
                     wiring,
-                    "Additional retained declaration",
+                    ui.t("Additional retained declaration"),
                     ext,
                     true,
                     &p.selection.service,
                     graph,
                     &p.observations,
                     &p.sources,
+                    ui,
                 );
             }
         }
         "diagnostic" => {
             if let Some(question) = &p.selection.question {
-                out += &paragraph(&format!("Question: {question}"));
+                out += &paragraph(&format!(
+                    "{ui_text0} {question}",
+                    ui_text0 = ui.t("Question:")
+                ));
             }
             if data_context_links.is_empty() {
                 out += &paragraph(
-                    "Source-condition analysis is unavailable for declaration-only pages. The selected declarations do not establish behavior or a relationship between them.",
+                    ui.t("Source-condition analysis is unavailable for declaration-only pages. The selected declarations do not establish behavior or a relationship between them."),
                 );
             } else {
                 out += &data_context_links;
@@ -910,26 +1108,26 @@ fn declaration_only_page(
     }
     if !p.human_instructions.is_empty() {
         if view == "overview" {
-            out += &operational_instructions(&p.human_instructions);
+            out += &operational_instructions(&p.human_instructions, ui);
         } else {
             out += &format!(
                 "<p>{}</p>\n",
                 link(
                     &format!("{}-overview.{ext}#operational-instructions", p.id),
-                    "Operational instructions and captured note identities"
+                    ui.t("Operational instructions and captured note identities")
                 )
             );
         }
     }
     if !p.authored_paragraphs.is_empty() {
         if view == "overview" {
-            out += &authored_paragraphs(&p.authored_paragraphs, ext);
+            out += &authored_paragraphs(&p.authored_paragraphs, ext, ui);
         } else {
             out += &format!(
                 "<p>{}</p>\n",
                 link(
                     &format!("{}-overview.{ext}#authored-paragraphs", p.id),
-                    "Maintained user documentation and original source context"
+                    ui.t("Maintained user documentation and original source context")
                 )
             );
         }
@@ -939,29 +1137,37 @@ fn declaration_only_page(
             "<p>{}</p>\n",
             link(
                 &format!("source-calls.{ext}"),
-                "Expanded exact source-call context"
+                ui.t("Expanded exact source-call context")
             )
         );
     }
     out += &format!(
-        "<details><summary>Sources and version</summary>{}</details>\n",
+        "<details><summary>{ui_text0}</summary>{}</details>\n",
         paragraph(&format!(
-            "Service: {}. Revision: {}. Snapshot: {}. Service digest: {}. First selected symbol: {}. Second selected symbol: {}.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}.",
             p.selection.service,
             p.service_revision,
             snapshot,
             p.service_digest,
             p.endpoint.symbol,
-            p.worker.symbol
-        ))
+            p.worker.symbol,
+            ui_text0 = ui.t("Service:"),
+            ui_text1 = ui.t(". Revision:"),
+            ui_text2 = ui.t(". Snapshot:"),
+            ui_text3 = ui.t(". Service digest:"),
+            ui_text4 = ui.t(". First selected symbol:"),
+            ui_text5 = ui.t(". Second selected symbol:")
+        )),
+        ui_text0 = ui.t("Sources and version")
     );
     out += &format!(
-        "<details><summary>Retained limitations</summary><ul>{}</ul></details><p>{}</p></main>\n",
-        gaps(&p.limitations, ext),
+        "<details><summary>{ui_text0}</summary><ul>{}</ul></details><p>{}</p></main>\n",
+        gaps(&p.limitations, ext, ui),
         link(
             "projection.json",
-            "Complete typed projection and retained evidence"
-        )
+            ui.t("Complete typed projection and retained evidence")
+        ),
+        ui_text0 = ui.t("Retained limitations")
     );
     out
 }
@@ -977,28 +1183,31 @@ fn authored_source_anchor(paragraph: &AuthoredParagraph, id: &str) -> String {
         .to_string(),
     )
 }
-fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
+fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str, ui: &Ui<'_>) -> String {
     let mut out =
-        "<section id=\"authored-paragraphs\"><h2>Maintained user documentation</h2>\n".to_owned();
+        ui.markup("<section id=\"authored-paragraphs\"><h2>Maintained user documentation</h2>\n");
     for row in rows {
         let authorship = row.paragraph.authorship.as_ref().unwrap();
         out += &format!("<article><pre>{}</pre>\n", escape(&row.paragraph.text));
         if let Some(migration) = &authorship.context_migration {
             out += &paragraph(&format!(
-                "Declared text author: {}. Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Context selected by {}. Context review: UNASSESSED. Explicitly selected code is unverified context. Source context freshness: {}. Current freshness does not establish semantic review.",
+                "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3}",
                 authorship.author, migration.editor, row.context_freshness
-            ));
+            , ui_text0 = ui.t("Declared text author:"), ui_text1 = ui.t(". Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Context selected by"), ui_text2 = ui.t(". Context review: UNASSESSED. Explicitly selected code is unverified context. Source context freshness:"), ui_text3 = ui.t(". Current freshness does not establish semantic review.")));
             out += &paragraph(&format!(
-                "Previous source snapshot: {}. Previous context digest: {}. Context instruction digest: {}.",
+                "{ui_text0} {}{ui_text1} {}{ui_text2} {}.",
                 migration.previous_source_snapshot,
                 migration.previous_context_digest,
-                migration.instruction_digest
+                migration.instruction_digest,
+                ui_text0 = ui.t("Previous source snapshot:"),
+                ui_text1 = ui.t(". Previous context digest:"),
+                ui_text2 = ui.t(". Context instruction digest:")
             ));
         } else {
             out += &paragraph(&format!(
-                "Declared author: {}. Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Originally linked code is retained unverified context. Source context freshness: {}.",
+                "{ui_text0} {}{ui_text1} {}.",
                 authorship.author, row.context_freshness
-            ));
+            , ui_text0 = ui.t("Declared author:"), ui_text1 = ui.t(". Authority: USER_DOCUMENTATION. Meaning review: UNASSESSED. Originally linked code is retained unverified context. Source context freshness:")));
         }
         out += "<ul>\n";
         for id in &row.paragraph.source_ids {
@@ -1007,19 +1216,20 @@ fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
                 link(
                     &format!("sources.{ext}#{}", authored_source_anchor(row, id)),
                     &format!(
-                        "{} source {id}",
+                        "{} {ui_text0} {id}",
                         if authorship.context_migration.is_some() {
-                            "Explicitly selected"
+                            ui.t("Explicitly selected")
                         } else {
-                            "Originally linked"
-                        }
+                            ui.t("Originally linked")
+                        },
+                        ui_text0 = ui.t("source")
                     )
                 )
             );
         }
-        out += "</ul><details><summary>Frozen paragraph identity</summary>\n";
+        out += &ui.markup("</ul><details><summary>Frozen paragraph identity</summary>\n");
         out += &paragraph(&format!(
-            "Bundle: {}. Operation: {}. Fragment: {}. Paragraph digest: {}. Operation digest: {}. Bindings digest: {}. Publication digest: {}. {} source snapshot: {}. Context role: RETAINED_UNVERIFIED_CONTEXT.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}{ui_text6} {}. {} {ui_text7} {}{ui_text8}",
             row.selection.bundle,
             row.selection.operation,
             row.selection.fragment,
@@ -1028,22 +1238,31 @@ fn authored_paragraphs(rows: &[AuthoredParagraph], ext: &str) -> String {
             row.bindings_digest,
             row.publication_digest,
             if authorship.context_migration.is_some() {
-                "Explicitly selected"
+                ui.t("Explicitly selected")
             } else {
                 "Original"
             },
-            authorship.source_snapshot
+            authorship.source_snapshot,
+            ui_text0 = ui.t("Bundle:"),
+            ui_text1 = ui.t(". Operation:"),
+            ui_text2 = ui.t(". Fragment:"),
+            ui_text3 = ui.t(". Paragraph digest:"),
+            ui_text4 = ui.t(". Operation digest:"),
+            ui_text5 = ui.t(". Bindings digest:"),
+            ui_text6 = ui.t(". Publication digest:"),
+            ui_text7 = ui.t("source snapshot:"),
+            ui_text8 = ui.t(". Context role: RETAINED_UNVERIFIED_CONTEXT.")
         ));
         out += "</details></article>\n";
     }
     out += "</section>\n";
     out
 }
-fn process_calls(p: &PageContent, graph: &SourceCallGraph, ext: &str) -> String {
-    let mut out = "<section id=\"source-call-navigation\"><h2>Linked process source context</h2>\n"
-        .to_owned();
+fn process_calls(p: &PageContent, graph: &SourceCallGraph, ext: &str, ui: &Ui<'_>) -> String {
+    let mut out = ui
+        .markup("<section id=\"source-call-navigation\"><h2>Linked process source context</h2>\n");
     out += &paragraph(
-        "Links identify retained source calls to selected endpoints. Child workers are selected context; receiver identity, scheduling, runtime dispatch and delivery are unobserved.",
+        ui.t("Links identify retained source calls to selected endpoints. Child workers are selected context; receiver identity, scheduling, runtime dispatch and delivery are unobserved."),
     );
     for relation in graph
         .process_links
@@ -1069,73 +1288,92 @@ fn process_calls(p: &PageContent, graph: &SourceCallGraph, ext: &str) -> String 
             "<article><h3>{}</h3><pre>{}</pre><p>{} · {}</p><ul>{}</ul>\n",
             link(
                 &format!("{}-overview.{ext}", relation.to_process),
-                &format!("Selected process {}", relation.to_process)
+                &format!(
+                    "{ui_text0} {}",
+                    relation.to_process,
+                    ui_text0 = ui.t("Selected process")
+                )
             ),
             escape(&call.expression),
-            cite(&relation.citation_id, ext),
+            cite(&relation.citation_id, ext, ui),
             link(
                 &format!("source-calls.{ext}#{}", anchor(&relation.caller_node)),
-                "Caller body and exact occurrence"
+                ui.t("Caller body and exact occurrence")
             ),
-            conditions(path_conditions, ext)
+            conditions(path_conditions, ext, ui)
         );
         out += &paragraph(&format!(
-            "Arguments: {}. Target: {}. Scope: {}. Source occurrence: {}. Structurally reachable: {}. Receiver lineage: {}. Runtime dispatch: {}.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}{ui_text6} {}.",
             call.arguments.join(", "),
             call.target.as_deref().unwrap_or("unresolved"),
             edge.target_scope,
             occurrence,
             edge.reachable.unwrap_or(false),
             edge.receiver_lineage,
-            edge.runtime_dispatch
+            edge.runtime_dispatch,
+            ui_text0 = ui.t("Arguments:"),
+            ui_text1 = ui.t(". Target:"),
+            ui_text2 = ui.t(". Scope:"),
+            ui_text3 = ui.t(". Source occurrence:"),
+            ui_text4 = ui.t(". Structurally reachable:"),
+            ui_text5 = ui.t(". Receiver lineage:"),
+            ui_text6 = ui.t(". Runtime dispatch:")
         ));
         out += &paragraph(&relation.limitation);
         out += "</article>\n";
     }
     for relation in graph.process_links.iter().filter(|l| l.to_process == p.id) {
         out += &format!(
-            "<p>Source caller: {} · {}</p>\n",
+            "<p>{ui_text0} {} · {}</p>\n",
             link(
                 &format!("{}-worker.{ext}", relation.from_process),
                 &relation.from_process
             ),
-            cite(&relation.citation_id, ext)
+            cite(&relation.citation_id, ext, ui),
+            ui_text0 = ui.t("Source caller:")
         );
     }
     if let Some(examined) = &p.examined_sources {
         out += &paragraph(&format!(
-            "Examined source digest: {}. Schema: {}. This is a documentation review fingerprint, not a file digest or runtime impact claim.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2}",
             examined.examined_source_digest, examined.schema
-        ));
+        , ui_text0 = ui.t("Examined source digest:"), ui_text1 = ui.t(". Schema:"), ui_text2 = ui.t(". This is a documentation review fingerprint, not a file digest or runtime impact claim.")));
         out += &format!(
             "<p>{}</p>\n",
             link(
                 &format!("source-calls.{ext}"),
-                "Expanded source bodies, frontiers and reverse examined context"
+                ui.t("Expanded source bodies, frontiers and reverse examined context")
             )
         );
     }
     if let Some(state) = &p.data_state {
         out += &paragraph(&format!(
-            "Source data state digest: {}. This separate syntax fingerprint does not prove runtime values or completion.",
-            state.data_state_digest
+            "{ui_text0} {}{ui_text1}",
+            state.data_state_digest,
+            ui_text0 = ui.t("Source data state digest:"),
+            ui_text1 = ui.t(
+                ". This separate syntax fingerprint does not prove runtime values or completion."
+            )
         ));
     }
     out += "</section>\n";
     out
 }
 
-fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
-    let mut out = "<main><h1>Retained source-call bodies</h1>\n".to_owned();
+fn expanded_sources(graph: &SourceCallGraph, ext: &str, ui: &Ui<'_>) -> String {
+    let mut out = ui.markup("<main><h1>Retained source-call bodies</h1>\n");
     out += &format!(
         "<p>{} · {}</p>\n",
-        link(&format!("index.{ext}"), "All processes"),
-        link(&format!("sources.{ext}"), "Exact retained source appendix")
+        link(&format!("index.{ext}"), ui.t("All processes")),
+        link(
+            &format!("sources.{ext}"),
+            ui.t("Exact retained source appendix")
+        )
     );
     out += &paragraph(&format!(
-        "Expansion: at most {} source-call edges from a selected root, {} additional bodies and {} additional retained-source bytes. Cached body links and frontiers do not prove execution or instance lineage.",
+        "{ui_text0} {} {ui_text1} {} {ui_text2} {} {ui_text3}",
         graph.max_depth, graph.max_additional_bodies, graph.max_additional_source_bytes
-    ));
+    , ui_text0 = ui.t("Expansion: at most"), ui_text1 = ui.t("source-call edges from a selected root,"), ui_text2 = ui.t("additional bodies and"), ui_text3 = ui.t("additional retained-source bytes. Cached body links and frontiers do not prove execution or instance lineage.")));
     for node in graph.nodes.values() {
         out += &format!(
             "<section id=\"{}\"><h2>{}</h2>\n",
@@ -1143,8 +1381,13 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
             escape(&callable_label(&node.callable.symbol))
         );
         out += &paragraph(&format!(
-            "Service: {}. Compiler scope: {}. Examined source digest: {}.",
-            node.service, node.scope, node.examined_source_digest
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}.",
+            node.service,
+            node.scope,
+            node.examined_source_digest,
+            ui_text0 = ui.t("Service:"),
+            ui_text1 = ui.t(". Compiler scope:"),
+            ui_text2 = ui.t(". Examined source digest:")
         ));
         let producer_label = if node
             .observations
@@ -1167,26 +1410,33 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
         if node.node_projection_kind.is_some() {
             out += &selected_declaration(
                 &node.callable,
-                &format!("Retained {producer_label} declaration"),
+                &if ui.language == "ru" {
+                    format!("{} {producer_label}", ui.t("Retained declaration"))
+                } else {
+                    format!("Retained {producer_label} declaration")
+                },
                 ext,
                 true,
                 &node.service,
                 Some(graph),
                 &node.observations,
                 &node.sources,
+                ui,
             );
         } else {
-            out += &callable(&node.callable, ext);
+            out += &callable(&node.callable, ext, ui);
         }
         if let Some(state) = &node.data_state {
             out += &format!(
-                "<details id=\"{}-data\"><summary>Source data transformations</summary><h3>Guarded definitions and call prerequisites</h3>",
-                anchor(&node.id)
+                "<details id=\"{}-data\"><summary>{ui_text0}</summary><h3>{ui_text1}</h3>",
+                anchor(&node.id),
+                ui_text0 = ui.t("Source data transformations"),
+                ui_text1 = ui.t("Guarded definitions and call prerequisites")
             );
             out += &paragraph(&format!(
-                "Data state digest: {}. Compiler facts identify declarations; transformations and guards describe source syntax. Values, receiver aliases, external results and normal runtime completion are unproven.",
+                "{ui_text0} {}{ui_text1}",
                 state.data_state_digest
-            ));
+            , ui_text0 = ui.t("Data state digest:"), ui_text1 = ui.t(". Compiler facts identify declarations; transformations and guards describe source syntax. Values, receiver aliases, external results and normal runtime completion are unproven.")));
             for definition in &state.definitions {
                 out += &format!(
                     "<details><summary>{}</summary><pre>{}</pre>{}</details>",
@@ -1195,14 +1445,14 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                     definition
                         .citation_id
                         .as_ref()
-                        .map(|c| cite(c, ext))
+                        .map(|c| cite(c, ext, ui))
                         .unwrap_or_default()
                 );
             }
             if !state.accessor_attempts.is_empty() {
-                out += "<h3>Property accessor attempts</h3>";
+                out += &ui.markup("<h3>Property accessor attempts</h3>");
                 out += &paragraph(
-                    "These are attempts to invoke a getter or setter. Actual dispatch, returned values and storage changes remain unknown; subsequent steps require normal completion.",
+                    ui.t("These are attempts to invoke a getter or setter. Actual dispatch, returned values and storage changes remain unknown; subsequent steps require normal completion."),
                 );
                 for attempt in &state.accessor_attempts {
                     out += &format!(
@@ -1213,44 +1463,54 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                         attempt
                             .citation_id
                             .as_ref()
-                            .map(|c| cite(c, ext))
+                            .map(|c| cite(c, ext, ui))
                             .unwrap_or_default()
                     );
                 }
             }
-            out += "<h3>Per-occurrence argument and return mappings</h3>";
+            out += &ui.markup("<h3>Per-occurrence argument and return mappings</h3>");
             out += &format!(
                 "<pre>{}</pre><ul>{}</ul></details>",
                 escape(&serde_json::to_string_pretty(&state.calls).unwrap()),
-                gaps(&state.gaps, ext)
+                gaps(&state.gaps, ext, ui)
             );
         }
         for edge in &node.calls {
             if let Some(call) = &edge.call {
                 out += &format!(
-                    "<details><summary>Source call {}</summary><pre>{}</pre><ul>{}</ul>\n",
+                    "<details><summary>{ui_text0} {}</summary><pre>{}</pre><ul>{}</ul>\n",
                     escape(edge.occurrence_path.as_deref().unwrap_or("")),
                     escape(&call.expression),
-                    conditions(edge.conditions.as_deref().unwrap_or_default(), ext)
+                    conditions(edge.conditions.as_deref().unwrap_or_default(), ext, ui),
+                    ui_text0 = ui.t("Source call")
                 );
                 out += &paragraph(&format!(
-                    "Status: {}. Source identity: {}. Target scope: {}. Target declaration: {}. Relation digest: {}. Receiver lineage: {}. Runtime dispatch: {}.",
+                    "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}{ui_text6} {}.",
                     edge.status,
                     edge.source_identity,
                     edge.target_scope,
                     edge.target_declaration.as_deref().unwrap_or("unavailable"),
                     edge.relation_digest.as_deref().unwrap_or("unavailable"),
                     edge.receiver_lineage,
-                    edge.runtime_dispatch
+                    edge.runtime_dispatch,
+                    ui_text0 = ui.t("Status:"),
+                    ui_text1 = ui.t(". Source identity:"),
+                    ui_text2 = ui.t(". Target scope:"),
+                    ui_text3 = ui.t(". Target declaration:"),
+                    ui_text4 = ui.t(". Relation digest:"),
+                    ui_text5 = ui.t(". Receiver lineage:"),
+                    ui_text6 = ui.t(". Runtime dispatch:")
                 ));
             } else if let Some(site) = &edge.exact_call_site {
                 out += &format!(
-                    "<details><summary>Exact {producer_label} source site {}</summary><pre>{}</pre>",
+                    "<details><summary>{ui_text0} {producer_label} {ui_text1} {}</summary><pre>{}</pre>",
                     escape(&site.relation_id),
-                    escape(&site.expression)
+                    escape(&site.expression),
+                    ui_text0 = ui.t("Exact"),
+                    ui_text1 = ui.t("source site")
                 );
                 out += &format!(
-                    "<p>Status: {}. Source identity: {}. Target scope: {}. Target declaration: {}. Normalized relation digest: {}. Captured bytes [{}, {}). {}</p>\n",
+                    "<p>{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5}{}, {}). {}</p>\n",
                     escape(&edge.status),
                     escape(&edge.source_identity),
                     escape(&edge.target_scope),
@@ -1258,27 +1518,35 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
                     escape(&site.normalized_digest),
                     site.compilation_byte_start,
                     site.compilation_byte_end,
-                    cite(&site.citation_id, ext)
+                    cite(&site.citation_id, ext, ui),
+                    ui_text0 = ui.t("Status:"),
+                    ui_text1 = ui.t(". Source identity:"),
+                    ui_text2 = ui.t(". Target scope:"),
+                    ui_text3 = ui.t(". Target declaration:"),
+                    ui_text4 = ui.t(". Normalized relation digest:"),
+                    ui_text5 = ui.t(". Captured bytes [")
                 );
-                out += &argument_bindings_panel(site, ext);
+                out += &argument_bindings_panel(site, ext, ui);
                 if let Some(target) = &edge.target_node {
                     out += &format!(
                         "<p>{}</p>\n",
                         link(
                             &format!("source-calls.{ext}#{}", anchor(target)),
-                            "Cached target declaration",
+                            ui.t("Cached target declaration"),
                         )
                     );
                 }
                 out += &format!(
-                    "<p>Receiver lineage: {}. Runtime dispatch: {}.</p>\n",
+                    "<p>{ui_text0} {}{ui_text1} {}.</p>\n",
                     escape(&edge.receiver_lineage),
-                    escape(&edge.runtime_dispatch)
+                    escape(&edge.runtime_dispatch),
+                    ui_text0 = ui.t("Receiver lineage:"),
+                    ui_text1 = ui.t(". Runtime dispatch:")
                 );
             }
-            out += &format!("<ul>{}</ul></details>\n", gaps(&edge.frontiers, ext));
+            out += &format!("<ul>{}</ul></details>\n", gaps(&edge.frontiers, ext, ui));
         }
-        out += "<h3>Examined documentation context</h3><ul>\n";
+        out += &ui.markup("<h3>Examined documentation context</h3><ul>\n");
         if let Some(rows) = graph.reverse_examined_processes.get(&node.id) {
             for row in rows {
                 out += &format!(
@@ -1319,9 +1587,9 @@ fn expanded_sources(graph: &SourceCallGraph, ext: &str) -> String {
         if references.is_empty() {
             continue;
         }
-        out += &format!("<h2>{heading}</h2>");
+        out += &format!("<h2>{}</h2>", ui.t(heading));
         out += &paragraph(
-            "These are references in examined source bodies, not runtime instance identities or an impact inventory.",
+            ui.t("These are references in examined source bodies, not runtime instance identities or an impact inventory."),
         );
         for (field, nodes) in references {
             out += &format!(
@@ -1346,46 +1614,65 @@ fn page(
     snapshot: &str,
     ext: &str,
     graph: Option<&SourceCallGraph>,
-    notice: &str,
+    ui: &Ui<'_>,
 ) -> String {
+    let notice = ui.presentation.notice(&p.id, view);
     if p.projection_kind
         .is_some_and(ProjectionKind::is_declaration_view)
     {
-        return declaration_only_page(p, view, title, snapshot, ext, graph, notice);
+        return declaration_only_page(p, view, title, snapshot, ext, graph, ui);
     }
     let mut out = format!(
-        "<main><h1>{}: {}</h1>\n{notice}<nav aria-label=\"Documentation pages\">{}",
+        "<main><h1>{}: {}</h1>\n{notice}<nav aria-label=\"{ui_text0}\">{}",
         escape(&process_label(p)),
         escape(title),
-        link(&format!("index.{ext}"), "All processes")
+        link(&format!("index.{ext}"), ui.t("All processes")),
+        ui_text0 = ui.t("Documentation pages")
     );
     for (slug, label) in views_for(p) {
-        out += &format!(" · {}", link(&format!("{}-{slug}.{ext}", p.id), label));
+        out += &format!(
+            " · {}",
+            link(&format!("{}-{slug}.{ext}", p.id), ui.t(label))
+        );
     }
     out += &format!(
         " · {}</nav>\n",
-        link(&format!("sources.{ext}"), "Source appendix")
+        link(&format!("sources.{ext}"), ui.t("Source appendix"))
     );
     match view {
         "overview" => {
             if p.handoff.status == "SOURCE_DECLARED_SHARED_QUEUE" {
                 out += &paragraph(&format!(
-                    "Source binds {} and {} to the same queue allocation.",
+                    "{ui_text0} {} {ui_text1} {} {ui_text2}",
                     p.handoff
                         .endpoint_field
                         .as_deref()
-                        .unwrap_or("endpoint field"),
-                    p.handoff.worker_field.as_deref().unwrap_or("worker field")
+                        .unwrap_or(ui.t("endpoint field")),
+                    p.handoff
+                        .worker_field
+                        .as_deref()
+                        .unwrap_or(ui.t("worker field")),
+                    ui_text0 = ui.t(if ui.language == "ru" {
+                        "Source binds endpoint field"
+                    } else {
+                        "Source binds"
+                    }),
+                    ui_text1 = ui.t(if ui.language == "ru" {
+                        "and worker field"
+                    } else {
+                        "and"
+                    }),
+                    ui_text2 = ui.t("to the same queue allocation.")
                 ));
             } else {
-                out += &paragraph("Shared queue wiring unresolved.");
-                out += &format!("<ul>{}</ul>\n", gaps(&p.handoff.gaps, ext));
+                out += &paragraph(ui.t("Shared queue wiring unresolved."));
+                out += &format!("<ul>{}</ul>\n", gaps(&p.handoff.gaps, ext, ui));
             }
-            out += &paragraph(&p.handoff.limitation);
-            out += &citation_group(p, &p.handoff.citation_ids, ext);
-            out += "<h2>Source call attempts</h2><ul>\n";
-            out += &attempt_summary(&p.endpoint, ext);
-            out += &attempt_summary(&p.worker, ext);
+            out += &paragraph(ui.projection_text(&p.handoff.limitation));
+            out += &citation_group(p, &p.handoff.citation_ids, ext, ui);
+            out += &ui.markup("<h2>Source call attempts</h2><ul>\n");
+            out += &attempt_summary(&p.endpoint, ext, ui);
+            out += &attempt_summary(&p.worker, ext, ui);
             out += "</ul>\n";
             let mut seen = BTreeSet::new();
             let guards: Vec<_> = p
@@ -1395,7 +1682,7 @@ fn page(
                 .take(4)
                 .collect();
             if !guards.is_empty() {
-                out += "<h2>Worker guard examples</h2><ul>\n";
+                out += &ui.markup("<h2>Worker guard examples</h2><ul>\n");
                 for diagnostic in guards {
                     out += &format!("<li>{}</li>\n", escape(&diagnostic.condition));
                 }
@@ -1403,69 +1690,81 @@ fn page(
                     "</ul><p>{}</p>\n",
                     link(
                         &format!("{}-diagnostic.{ext}", p.id),
-                        "All diagnostic conditions and inspection points"
+                        ui.t("All diagnostic conditions and inspection points")
                     )
                 );
             }
             out += &format!(
-                "<details><summary>Exact handoff identity</summary>{}</details>\n",
+                "<details><summary>{ui_text0}</summary>{}</details>\n",
                 paragraph(&format!(
-                    "Handoff status: {}. Queue allocation: {}. Endpoint field: {}. Worker field: {}.",
+                    "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}.",
                     p.handoff.status,
                     p.handoff
                         .queue_allocation
                         .as_deref()
                         .unwrap_or("unresolved"),
                     p.handoff.endpoint_field.as_deref().unwrap_or("unresolved"),
-                    p.handoff.worker_field.as_deref().unwrap_or("unresolved")
-                ))
+                    p.handoff.worker_field.as_deref().unwrap_or("unresolved"),
+                    ui_text0 = ui.t("Handoff status:"),
+                    ui_text1 = ui.t(". Queue allocation:"),
+                    ui_text2 = ui.t(". Endpoint field:"),
+                    ui_text3 = ui.t(". Worker field:")
+                )),
+                ui_text0 = ui.t("Exact handoff identity")
             );
             if let Some(c) = &p.wiring {
-                out += "<h2>Selected wiring declaration</h2>\n";
-                out += &callable(c, ext);
+                out += &ui.markup("<h2>Selected wiring declaration</h2>\n");
+                out += &callable(c, ext, ui);
             }
         }
-        "endpoint" => out += &callable(&p.endpoint, ext),
-        "worker" => out += &callable(&p.worker, ext),
+        "endpoint" => out += &callable(&p.endpoint, ext, ui),
+        "worker" => out += &callable(&p.worker, ext, ui),
         "fields-state" => {
-            out += &state(&p.endpoint, ext);
-            out += &state(&p.worker, ext);
+            out += &state(&p.endpoint, ext, ui);
+            out += &state(&p.worker, ext, ui);
             if let Some(c) = &p.wiring {
-                out += &state(c, ext);
+                out += &state(c, ext, ui);
             }
         }
         "diagnostic" => {
             if let Some(q) = &p.selection.question {
-                out += &paragraph(&format!("Question: {q}"));
+                out += &paragraph(&format!("{ui_text0} {q}", ui_text0 = ui.t("Question:")));
             }
             out += &paragraph(
-                "Inspect rows describe source-derived possible reasons; they do not diagnose an observed incident.",
+                ui.t("Inspect rows describe source-derived possible reasons; they do not diagnose an observed incident."),
             );
             out += &paragraph(
-                "Rows concern direct calls in the selected worker body. A later result check does not prevent an earlier call. If a call throws, its normal result is unavailable; these rows do not establish which field assignments completed or any runtime outcome.",
+                ui.t("Rows concern direct calls in the selected worker body. A later result check does not prevent an earlier call. If a call throws, its normal result is unavailable; these rows do not establish which field assignments completed or any runtime outcome."),
             );
             out += &format!(
-                "<p>Inspect {} for source order and call boundaries, {} for retained local changes, and {} for exact evidence.</p>\n",
-                link(&format!("{}-worker.{ext}", p.id), "Worker path"),
-                link(&format!("{}-fields-state.{ext}", p.id), "Fields and state"),
-                link(&format!("sources.{ext}"), "Retained sources"),
+                "<p>{ui_text0} {} {ui_text1} {} {ui_text2} {} {ui_text3}</p>\n",
+                link(&format!("{}-worker.{ext}", p.id), ui.t("Worker path")),
+                link(
+                    &format!("{}-fields-state.{ext}", p.id),
+                    ui.t("Fields and state")
+                ),
+                link(&format!("sources.{ext}"), ui.t("Retained sources")),
+                ui_text0 = ui.t("Inspect"),
+                ui_text1 = ui.t("for source order and call boundaries,"),
+                ui_text2 = ui.t("for retained local changes, and"),
+                ui_text3 = ui.t("for exact evidence.")
             );
             if p.diagnostics.is_empty() {
                 out += &paragraph(
-                    "No source-derived guard alternative is available for this selected worker. This does not establish successful delivery or absence of failure; missing call or control evidence remains a boundary. Use the inspection links above.",
+                    ui.t("No source-derived guard alternative is available for this selected worker. This does not establish successful delivery or absence of failure; missing call or control evidence remains a boundary. Use the inspection links above."),
                 );
             } else {
-                out += "<table tabIndex=\"0\"><caption>Scroll horizontally: source condition diagnostic matrix</caption><thead><tr><th scope=\"col\">Condition</th><th scope=\"col\">Possible reason</th><th scope=\"col\">Inspect</th><th scope=\"col\">Selected call</th><th scope=\"col\">Source</th></tr></thead><tbody>\n";
+                out += &ui.markup("<table tabIndex=\"0\"><caption>Scroll horizontally: source condition diagnostic matrix</caption><thead><tr><th scope=\"col\">Condition</th><th scope=\"col\">Possible reason</th><th scope=\"col\">Inspect</th><th scope=\"col\">Selected call</th><th scope=\"col\">Source</th></tr></thead><tbody>\n");
                 for d in &p.diagnostics {
                     out += &format!(
                         "<tr><td><pre>{}</pre></td><td>{}</td><td>{}</td><td><pre>{}</pre></td><td>{}</td></tr>\n",
                         escape(&d.condition),
-                        escape(&d.possible_reason),
+                        escape(ui.projection_text(&d.possible_reason)),
                         escape(&d.inspect.join("; ")),
                         escape(&d.selected_call),
                         d.citation_ids
                             .iter()
-                            .map(|id| cite(id, ext))
+                            .map(|id| cite(id, ext, ui))
                             .collect::<Vec<_>>()
                             .join(" · ")
                     );
@@ -1479,66 +1778,74 @@ fn page(
         && let Some(graph) = graph
     {
         if matches!(view, "overview" | "worker") {
-            out += &process_calls(p, graph, ext);
+            out += &process_calls(p, graph, ext, ui);
         } else {
             out += &format!(
                 "<p>{}</p>\n",
                 link(
                     &format!("{}-overview.{ext}#source-call-navigation", p.id),
-                    "Linked process source context and examined-source identity"
+                    ui.t("Linked process source context and examined-source identity")
                 )
             );
         }
     }
     if !p.human_instructions.is_empty() {
         if view == "overview" {
-            out += &operational_instructions(&p.human_instructions);
+            out += &operational_instructions(&p.human_instructions, ui);
         } else {
             out += &format!(
                 "<p>{}</p>\n",
                 link(
                     &format!("{}-overview.{ext}#operational-instructions", p.id),
-                    "Operational instructions and captured note identities"
+                    ui.t("Operational instructions and captured note identities")
                 )
             );
         }
     }
     if !p.authored_paragraphs.is_empty() {
         if view == "overview" {
-            out += &authored_paragraphs(&p.authored_paragraphs, ext);
+            out += &authored_paragraphs(&p.authored_paragraphs, ext, ui);
         } else {
             out += &format!(
                 "<p>{}</p>\n",
                 link(
                     &format!("{}-overview.{ext}#authored-paragraphs", p.id),
-                    "Maintained user documentation and original source context"
+                    ui.t("Maintained user documentation and original source context")
                 )
             );
         }
     }
     out += &format!(
-        "<details><summary>Sources and version</summary>{}</details>\n",
+        "<details><summary>{ui_text0}</summary>{}</details>\n",
         paragraph(&format!(
-            "Service: {}. Revision: {}. Snapshot: {}. Service digest: {}. Endpoint symbol: {}. Worker symbol: {}.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}.",
             p.selection.service,
             p.service_revision,
             snapshot,
             p.service_digest,
             p.endpoint.symbol,
-            p.worker.symbol
-        ))
+            p.worker.symbol,
+            ui_text0 = ui.t("Service:"),
+            ui_text1 = ui.t(". Revision:"),
+            ui_text2 = ui.t(". Snapshot:"),
+            ui_text3 = ui.t(". Service digest:"),
+            ui_text4 = ui.t(". Endpoint symbol:"),
+            ui_text5 = ui.t(". Worker symbol:")
+        )),
+        ui_text0 = ui.t("Sources and version")
     );
     out += &format!(
-        "<details><summary>Retained limitations</summary><ul>{}</ul></details><p>{}</p></main>\n",
-        gaps(&p.limitations, ext),
+        "<details><summary>{ui_text0}</summary><ul>{}</ul></details><p>{}</p></main>\n",
+        gaps(&p.limitations, ext, ui),
         link(
             "projection.json",
-            "Complete typed projection and retained evidence"
-        )
+            ui.t("Complete typed projection and retained evidence")
+        ),
+        ui_text0 = ui.t("Retained limitations")
     );
     out
 }
-fn appendix(p: &BundleProjection, ext: &str) -> String {
+fn appendix(p: &BundleProjection, ext: &str, ui: &Ui<'_>) -> String {
     let has_declaration_only = p.pages.iter().any(|page| {
         page.projection_kind
             .is_some_and(ProjectionKind::is_declaration_view)
@@ -1561,8 +1868,9 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
         "All selected pages"
     };
     let mut out = format!(
-        "<main><h1>Retained source appendix</h1><p>{}</p>\n",
-        link(&format!("index.{ext}"), index_label)
+        "<main><h1>{ui_text0}</h1><p>{}</p>\n",
+        link(&format!("index.{ext}"), ui.t(index_label)),
+        ui_text0 = ui.t("Retained source appendix")
     );
     let mut citations = BTreeMap::new();
     for page in &p.pages {
@@ -1586,7 +1894,7 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
             c.end_line
         );
         out += &paragraph(&format!(
-            "Citation: {}. Service: {}. Revision: {}. Source ID: {}. Authority: {}. Text digest: {}. Evidence digest: {}. Retained byte range: {}–{}.",
+            "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}{ui_text6} {}{ui_text7} {}–{}.",
             c.id,
             c.service,
             c.revision,
@@ -1595,17 +1903,28 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
             c.text_digest,
             c.evidence_digest,
             c.start_byte,
-            c.end_byte
+            c.end_byte,
+            ui_text0 = ui.t("Citation:"),
+            ui_text1 = ui.t(". Service:"),
+            ui_text2 = ui.t(". Revision:"),
+            ui_text3 = ui.t(". Source ID:"),
+            ui_text4 = ui.t(". Authority:"),
+            ui_text5 = ui.t(". Text digest:"),
+            ui_text6 = ui.t(". Evidence digest:"),
+            ui_text7 = ui.t(". Retained byte range:")
         ));
         if let Some(url) = &c.url {
             if url.starts_with("https://") || url.starts_with("http://") {
-                out += &format!("<p>{}</p>\n", link(url, "Original source anchor"));
+                out += &format!("<p>{}</p>\n", link(url, ui.t("Original source anchor")));
             } else {
-                out += &paragraph(&format!("Original source anchor: {url}"));
+                out += &paragraph(&format!(
+                    "{ui_text0} {url}",
+                    ui_text0 = ui.t("Original source anchor:")
+                ));
             }
         } else {
             out += &paragraph(
-                "Original source URL unavailable; retained source anchor is local to this appendix.",
+                ui.t("Original source URL unavailable; retained source anchor is local to this appendix."),
             );
         }
         if let Some(source) = source_records.get(&c.source_id) {
@@ -1642,8 +1961,15 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
             source.start_line,
             source.end_line,
             escape(&format!(
-                "Revision: {}. Authority: {}. Text digest: {}. Evidence digest: {}.",
-                source.revision, source.authority, source.text_digest, source.evidence_digest
+                "{} {}{} {}{} {}{} {}.",
+                ui.t("Revision:"),
+                source.revision,
+                ui.t(". Authority:"),
+                source.authority,
+                ui.t(". Text digest:"),
+                source.text_digest,
+                ui.t(". Evidence digest:"),
+                source.evidence_digest
             )),
             escape(&source.text)
         );
@@ -1657,7 +1983,7 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
                     continue;
                 }
                 out += &format!(
-                    "<section id=\"{}\"><h2>{} authored paragraph context: {}:{}–{}</h2>\n",
+                    "<section id=\"{}\"><h2>{} {ui_text0} {}:{}–{}</h2>\n",
                     local_anchor,
                     if paragraph
                         .paragraph
@@ -1665,16 +1991,17 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
                         .as_ref()
                         .is_some_and(|a| a.context_migration.is_some())
                     {
-                        "Explicitly selected"
+                        ui.t("Explicitly selected")
                     } else {
                         "Original"
                     },
                     escape(&source.file),
                     source.start_line,
-                    source.end_line
+                    source.end_line,
+                    ui_text0 = ui.t("authored paragraph context:")
                 );
                 out += &self::paragraph(&format!(
-                    "Logical SOURCE ID: {}. Bundle: {}. Operation: {}. Fragment: {}. Revision: {}. Source authority: {}. Text digest: {}. Evidence digest: {}. This source context does not verify the authored prose.",
+                    "{ui_text0} {}{ui_text1} {}{ui_text2} {}{ui_text3} {}{ui_text4} {}{ui_text5} {}{ui_text6} {}{ui_text7} {}{ui_text8}",
                     id,
                     paragraph.selection.bundle,
                     paragraph.selection.operation,
@@ -1682,7 +2009,16 @@ fn appendix(p: &BundleProjection, ext: &str) -> String {
                     source.revision,
                     source.authority,
                     source.text_digest,
-                    source.evidence_digest
+                    source.evidence_digest,
+                    ui_text0 = ui.t("Logical SOURCE ID:"),
+                    ui_text1 = ui.t(". Bundle:"),
+                    ui_text2 = ui.t(". Operation:"),
+                    ui_text3 = ui.t(". Fragment:"),
+                    ui_text4 = ui.t(". Revision:"),
+                    ui_text5 = ui.t(". Source authority:"),
+                    ui_text6 = ui.t(". Text digest:"),
+                    ui_text7 = ui.t(". Evidence digest:"),
+                    ui_text8 = ui.t(". This source context does not verify the authored prose.")
                 ));
                 out += &format!("<pre>{}</pre></section>\n", escape(&source.text));
             }
@@ -1892,7 +2228,11 @@ pub(super) fn write_language(
         }
     }
     let presentation = super::selected_language::Presentation::new(p, language)?;
-    let catalogue = catalogue::rows(p)?;
+    let ui = Ui {
+        language: language.unwrap_or("en"),
+        presentation: &presentation,
+    };
+    let catalogue = catalogue::rows_language(p, ui.language)?;
     let has_declaration_only = p.pages.iter().any(|page| {
         page.projection_kind
             .is_some_and(ProjectionKind::is_declaration_view)
@@ -1905,12 +2245,13 @@ pub(super) fn write_language(
     let mut page_rows = Vec::new();
     for ext in ["html", "mdx"] {
         let mut bodies = BTreeMap::new();
-        let mut index = "<main><h1>Native source documentation</h1>".to_string();
+        let mut index = ui.markup("<main><h1>Native source documentation</h1>");
         if ext == "html" {
-            index += &catalogue::enhancement(
+            index += &catalogue::enhancement_language(
                 &catalogue,
                 has_declaration_only,
                 has_compiler_control_flow,
+                ui.language,
             )?;
         }
         index += "<ul id=\"catalog-processes\">\n";
@@ -1929,15 +2270,15 @@ pub(super) fn write_language(
                 bodies.insert(
                     format!("{}-{slug}", page_content.id),
                     (
-                        title.to_string(),
+                        ui.t(title).to_string(),
                         page(
                             page_content,
                             slug,
-                            title,
+                            ui.t(title),
                             snapshot,
                             ext,
                             p.source_call_graph.as_ref(),
-                            presentation.notice(&page_content.id, slug),
+                            &ui,
                         ),
                     ),
                 );
@@ -1945,39 +2286,49 @@ pub(super) fn write_language(
         }
         index += &format!(
             "</ul><p>{} · {}</p>",
-            link(&format!("sources.{ext}"), "Shared source appendix"),
-            link("projection.json", "Typed projection")
+            link(&format!("sources.{ext}"), ui.t("Shared source appendix")),
+            link("projection.json", ui.t("Typed projection"))
         );
         if p.source_call_graph.is_some() {
             index += &format!(
                 "<p>{}</p>",
                 link(
                     &format!("source-calls.{ext}"),
-                    "Examined callable bodies and reverse process links"
+                    ui.t("Examined callable bodies and reverse process links")
                 )
             );
         }
         index += &format!(
-            "<details><summary>Sources and version</summary>{}</details></main>\n",
+            "<details><summary>{ui_text0}</summary>{}</details></main>\n",
             paragraph(&format!(
-                "Snapshot: {snapshot}. Input digest: {}. Context digest: {}. Selection digest: {}.",
-                p.input_digest, p.context_digest, p.selection_digest
-            ))
+                "{ui_text0} {snapshot}{ui_text1} {}{ui_text2} {}{ui_text3} {}.",
+                p.input_digest,
+                p.context_digest,
+                p.selection_digest,
+                ui_text0 = ui.t("Snapshot:"),
+                ui_text1 = ui.t(". Input digest:"),
+                ui_text2 = ui.t(". Context digest:"),
+                ui_text3 = ui.t(". Selection digest:")
+            )),
+            ui_text0 = ui.t("Sources and version")
         );
         bodies.insert(
             "index".into(),
-            ("Native source documentation".into(), index),
+            (ui.t("Native source documentation").into(), index),
         );
         bodies.insert(
             "sources".into(),
-            ("Retained source appendix".into(), appendix(p, ext)),
+            (
+                ui.t("Retained source appendix").into(),
+                appendix(p, ext, &ui),
+            ),
         );
         if let Some(graph) = &p.source_call_graph {
             bodies.insert(
                 "source-calls".into(),
                 (
-                    "Retained source-call bodies".into(),
-                    expanded_sources(graph, ext),
+                    ui.t("Retained source-call bodies").into(),
+                    expanded_sources(graph, ext, &ui),
                 ),
             );
         }
@@ -2198,7 +2549,13 @@ mod tests {
             source_claim_status: "UNASSESSED".into(),
             association: json!({}),
         };
-        let body = operational_instructions(&[note]);
+        let body = operational_instructions(
+            &[note],
+            &Ui {
+                language: "en",
+                presentation: &super::super::selected_language::Presentation::default(),
+            },
+        );
         assert!(body.contains("café☕&#13;&#10;&lt;Panel&gt;&#123;probe()&#125;&lt;/Panel&gt;"));
         assert!(body.contains("Declared author: &lt;Author&gt;&#123;y&#125;"));
         assert!(

@@ -27,7 +27,14 @@ pub(super) struct Row {
     pub related_links: Vec<CatalogueLink>,
 }
 
+#[cfg(test)]
 pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
+    rows_language(p, "en")
+}
+
+pub(super) fn rows_language(p: &BundleProjection, language: &str) -> Result<Vec<Row>, ClewError> {
+    let t = |key| crate::documentation::language::label(language, key);
+
     let mut rows = BTreeMap::new();
     let pages: BTreeMap<_, _> = p
         .pages
@@ -39,7 +46,7 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
             .observations
             .get(&page.endpoint.declaration_id)
             .and_then(|o| o.normalized["scope"].as_str())
-            .unwrap_or("unavailable scope");
+            .unwrap_or(t("unavailable scope"));
         let context = format!("{} · {scope}", page.selection.service);
         if page
             .projection_kind
@@ -64,11 +71,11 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                     href: format!("{}-overview.html", page.id),
                     context: context.clone(),
                     summary: if page.projection_kind == Some(ProjectionKind::CompilerControlFlow) {
-                        "Retained compiler-bound declarations and function-local control-flow graphs; inter-function relationships, execution order and runtime behavior are not inferred.".into()
+                        t("Retained compiler-bound declarations and function-local control-flow graphs; inter-function relationships, execution order and runtime behavior are not inferred.").into()
                     } else if page.endpoint.authority == "SYNTAX_DECLARATION" || page.worker.authority == "SYNTAX_DECLARATION" {
-                        "Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.".into()
+                        t("Retained syntax declarations, signatures and cited source structure; compiler resolution, behavior and relationships are not inferred.").into()
                     } else {
-                        "Retained compiler-bound declarations and source; behavior and relationships are not inferred.".into()
+                        t("Retained compiler-bound declarations and source; behavior and relationships are not inferred.").into()
                     },
                     search_text: search_text.clone(),
                     related_links: vec![],
@@ -84,7 +91,7 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                         kind: "Selected question".into(),
                         href: format!("{}-diagnostic.html", page.id),
                         context,
-                        summary: "Question text supplied with the selected declarations; no source-condition analysis was projected.".into(),
+                        summary: t("Question text supplied with the selected declarations; no source-condition analysis was projected.").into(),
                         search_text,
                         related_links: vec![],
                     },
@@ -101,9 +108,10 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                 kind: "Process".into(),
                 href: format!("{}-overview.html", page.id),
                 context: context.clone(),
-                summary:
-                    "Selected source process; runtime activation and business meaning unverified."
-                        .into(),
+                summary: t(
+                    "Selected source process; runtime activation and business meaning unverified.",
+                )
+                .into(),
                 search_text: vec![
                     page.selection.service.clone(),
                     scope.into(),
@@ -121,19 +129,19 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
             id: endpoint_key, title: page.endpoint.symbol.clone(),
             display_title: Some(callable_label(&page.endpoint.symbol)), kind: "Endpoint".into(),
             href: format!("{}-endpoint.html", page.id), context,
-            summary: "Explicitly selected compiler declaration; no inferred HTTP route or runtime activation.".into(),
+            summary: t("Explicitly selected compiler declaration; no inferred HTTP route or runtime activation.").into(),
             search_text: vec![page.selection.service.clone(), scope.into(), page.endpoint.symbol.clone()],
             related_links: vec![],
         });
         endpoint.related_links.push(CatalogueLink {
             href: format!("{}-overview.html", page.id),
-            title: format!("Selected process: {}", page.id),
+            title: format!("{} {}", t("Selected process:"), page.id),
         });
         if let Some(question) = &page.selection.question {
             rows.insert(format!("question:{}", page.id), Row {
                 id: format!("diagnostic-{}", page.id), title: question.clone(), display_title: None, kind: "Diagnostic question".into(),
                 href: format!("{}-diagnostic.html", page.id), context: format!("{} · {scope}", page.selection.service),
-                summary: "Supplied diagnostic question; source conditions describe possible reasons, not an approved answer or observed incident.".into(),
+                summary: t("Supplied diagnostic question; source conditions describe possible reasons, not an approved answer or observed incident.").into(),
                 search_text: vec![page.id.clone(), page.selection.service.clone(), scope.into(), page.endpoint.symbol.clone(), page.worker.symbol.clone()],
                 related_links: vec![],
             });
@@ -167,7 +175,7 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                 .filter(|row| pages.contains_key(row.process_id.as_str()))
                 .map(|row| CatalogueLink {
                     href: format!("{}-overview.html", row.process_id),
-                    title: format!("Examined by: {}", row.process_id),
+                    title: format!("{} {}", t("Examined by:"), row.process_id),
                 })
                 .collect::<Vec<_>>();
             let mut search_text = vec![
@@ -188,21 +196,40 @@ pub(super) fn rows(p: &BundleProjection) -> Result<Vec<Row>, ClewError> {
                 display_title: Some(callable_label(&node.callable.symbol)), kind: "Examined callable".into(),
                 href: format!("source-calls.html#{}", anchor(&node.id)),
                 context: format!("{} · {}", node.service, node.scope),
-                summary: "Retained examined source body; reverse links are documentation context, not runtime impact. Call frontiers remain local gaps.".into(),
+                summary: t("Retained examined source body; reverse links are documentation context, not runtime impact. Call frontiers remain local gaps.").into(),
                 search_text, related_links,
             });
         }
     }
     let mut rows = rows.into_values().collect::<Vec<_>>();
+    if language == "ru" {
+        for row in &mut rows {
+            let display_kind = t(&row.kind);
+            if display_kind != row.kind {
+                row.search_text.push(display_kind.into());
+            }
+        }
+    }
     rows.sort_by(|a, b| (&a.kind, &a.title, &a.id).cmp(&(&b.kind, &b.title, &b.id)));
     Ok(rows)
 }
 
+#[cfg(test)]
 pub(super) fn enhancement(
     rows: &[Row],
     has_declaration_only: bool,
     has_compiler_control_flow: bool,
 ) -> Result<String, ClewError> {
+    enhancement_language(rows, has_declaration_only, has_compiler_control_flow, "en")
+}
+
+pub(super) fn enhancement_language(
+    rows: &[Row],
+    has_declaration_only: bool,
+    has_compiler_control_flow: bool,
+    language: &str,
+) -> Result<String, ClewError> {
+    let t = |key| crate::documentation::language::label(language, key);
     let payload = serde_json::to_string(rows)
         .map_err(crate::documentation::io_error)?
         .replace('<', "\\u003c");
@@ -212,7 +239,17 @@ pub(super) fn enhancement(
         .collect::<BTreeSet<_>>();
     let options = kinds
         .into_iter()
-        .map(|kind| format!("<option>{}</option>", escape(kind)))
+        .map(|kind| {
+            if language == "ru" {
+                format!(
+                    "<option value=\"{}\">{}</option>",
+                    escape(kind),
+                    escape(t(kind))
+                )
+            } else {
+                format!("<option>{}</option>", escape(kind))
+            }
+        })
         .collect::<String>();
     let (heading, summary, search_label, noscript) = if has_compiler_control_flow {
         (
@@ -236,8 +273,18 @@ pub(super) fn enhancement(
             "Search requires JavaScript. Use the process list and shared source links below.",
         )
     };
+    let heading = t(heading);
+    let summary = t(summary);
+    let search_label = t(search_label);
+    let noscript = t(noscript);
+    let metadata_search = t("Find native documentation metadata");
+    let result_type = t("Result type");
+    let native_type = t("Native result type");
+    let all_types = t("All types");
+    let previous = t("Previous");
+    let next = t("Next");
     Ok(format!(
-        r#"<!-- native-catalog-start --><section aria-labelledby="catalog-title"><h2 id="catalog-title">{heading}</h2><p>{summary}</p><div id="catalog-controls" class="catalog-controls" hidden><label>{search_label} <input id="catalog-query" type="search" aria-label="Find native documentation metadata" /></label><label>Result type <select id="catalog-kind" aria-label="Native result type"><option value="">All types</option>{options}</select></label></div><p id="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results"></ul><div id="catalog-pager" class="catalog-pager" hidden><button id="catalog-prev" type="button">Previous</button><button id="catalog-next" type="button">Next</button></div><noscript><p>{noscript}</p></noscript><script id="catalog-data" type="application/json">{payload}</script></section><!-- native-catalog-end -->"#
+        r#"<!-- native-catalog-start --><section aria-labelledby="catalog-title"><h2 id="catalog-title">{heading}</h2><p>{summary}</p><div id="catalog-controls" class="catalog-controls" hidden><label>{search_label} <input id="catalog-query" type="search" aria-label="{metadata_search}" /></label><label>{result_type} <select id="catalog-kind" aria-label="{native_type}"><option value="">{all_types}</option>{options}</select></label></div><p id="catalog-status" role="status" aria-live="polite"></p><ul id="catalog-results"></ul><div id="catalog-pager" class="catalog-pager" hidden><button id="catalog-prev" type="button">{previous}</button><button id="catalog-next" type="button">{next}</button></div><noscript><p>{noscript}</p></noscript><script id="catalog-data" type="application/json">{payload}</script></section><!-- native-catalog-end -->"#
     ))
 }
 
@@ -372,6 +419,50 @@ mod tests {
         assert!(html.contains("\\u003cscript>"));
         assert!(html.contains("not approved answers") && html.contains("<noscript>"));
     }
+    #[test]
+    fn native_catalogue_locale_keeps_kind_filter_values_and_authored_questions() {
+        let mut selected = page("locale", ":/main");
+        selected.selection.question = Some("Source appendix <script>{keep}".into());
+        let projection = BundleProjection {
+            schema: SCHEMA.into(),
+            input_digest: "input".into(),
+            context_digest: "context".into(),
+            selection_digest: "selection".into(),
+            endpoint_publication_policy_digest: None,
+            requested_selection_digest: None,
+            pages: vec![selected],
+            source_call_graph: None,
+        };
+        let before = serde_json::to_value(&projection).unwrap();
+        let english = rows_language(&projection, "en").unwrap();
+        let russian = rows_language(&projection, "ru").unwrap();
+        for (en, ru) in english.iter().zip(&russian) {
+            assert_eq!(en.id, ru.id);
+            assert_eq!(en.kind, ru.kind);
+            assert_eq!(en.title, ru.title);
+            assert_eq!(en.href, ru.href);
+        }
+        let question = russian
+            .iter()
+            .find(|row| row.kind == "Diagnostic question")
+            .unwrap();
+        assert_eq!(question.title, "Source appendix <script>{keep}");
+        assert!(
+            question
+                .search_text
+                .iter()
+                .any(|s| s == "Диагностический вопрос")
+        );
+        let html = enhancement_language(&russian, false, false, "ru").unwrap();
+        assert!(html.contains("value=\"Diagnostic question\">Диагностический вопрос</option>"));
+        assert!(
+            html.contains("Тип результата")
+                && html.contains("Найти метаданные документации по исходному коду")
+        );
+        assert!(!html.contains("<script>{keep}"));
+        assert_eq!(serde_json::to_value(&projection).unwrap(), before);
+    }
+
     #[test]
     fn selected_unavailable_roots_are_not_examined_body_results_but_empty_bodies_are() {
         let selected = page("bodyless-endpoint", ":/main");
