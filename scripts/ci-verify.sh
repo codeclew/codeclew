@@ -6,7 +6,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
 ci_usage() {
-  printf '%s\n' 'Usage: scripts/ci-verify.sh [--csharp-only | --suite checks|retained-docs|native-pages|managed-docs|java|kotlin]' >&2
+  printf '%s\n' 'Usage: scripts/ci-verify.sh [--csharp-only | --suite checks|retained-docs|native-pages|managed-docs|java|kotlin|usability]' >&2
   exit 1
 }
 
@@ -18,7 +18,7 @@ case "${1-}" in
     test "$#" -eq 2 || ci_usage
     CLEW_CI_SUITE=$2
     case "$CLEW_CI_SUITE" in
-      checks|retained-docs|native-pages|managed-docs|java|kotlin) ;;
+      checks|retained-docs|native-pages|managed-docs|java|kotlin|usability) ;;
       *) ci_usage ;;
     esac
     ;;
@@ -186,7 +186,7 @@ ci_run checks cargo test --locked -p clew --test managed_cli \
 ci_run checks cargo test --locked -p clew --test managed_cli \
   managed_support_summary_requires_private_input_and_drops_private_material -- --test-threads=1
 ci_run checks python3 -I -S scripts/check_repository_privacy.py --worktree
-ci_run kotlin python3 -I -S scripts/usability-smoke.py
+ci_run usability python3 -I -S scripts/usability-smoke.py
 
 if [ "$CLEW_CI_SUITE" = all ]; then
   printf '%s\n' '{"schema":"codeclew-verification/1.0","status":"PASSED"}'

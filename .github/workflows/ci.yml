@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [checks, retained-docs, native-pages, managed-docs, java, kotlin]
+        suite: [checks, retained-docs, native-pages, managed-docs, java, kotlin, usability]
     steps:
       - uses: actions/checkout@v4
         with:

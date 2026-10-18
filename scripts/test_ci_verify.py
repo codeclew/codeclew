@@ -14,7 +14,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SUITES = ("checks", "retained-docs", "native-pages", "managed-docs", "java", "kotlin")
+SUITES = ("checks", "retained-docs", "native-pages", "managed-docs", "java", "kotlin", "usability")
 STUB = r'''
 import json, os
 from pathlib import Path
@@ -107,6 +107,19 @@ class CiDispatchTests(unittest.TestCase):
         result, commands = self.run_ci("--suite", "native-pages", failure="dotnet", jdk25=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c[0] == "dotnet" for c in commands))
+
+    def test_usability_runs_alone_without_project_toolchain_qualification(self):
+        result, commands = self.run_ci("--suite", "usability", jdk25=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tasks = [c for c in commands if not (c[0] == "python3" and "-c" in c)]
+        self.assertEqual(tasks, [["python3", "-I", "-S", "scripts/usability-smoke.py"]])
+
+    def test_usability_failure_fails_verification(self):
+        result, _ = self.run_ci(
+            "--suite", "usability", failure="python3 -I -S scripts/usability-smoke.py", jdk25=False,
+        )
+        self.assertEqual(result.returncode, 23)
+        self.assertNotIn('"status":"PASSED"', result.stdout)
 
     def test_tool_failure_stops_later_commands(self):
         result, commands = self.run_ci("--suite", "checks", failure="cargo fmt")
