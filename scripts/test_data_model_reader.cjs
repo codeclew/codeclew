@@ -169,3 +169,12 @@ test('equal display titles do not merge distinct canonical model groups',()=>{
  const html=api().matrixHtml(rows,['Read'],'');
  assert.equal((html.match(/<tbody>/g)||[]).length,2);assert.match(html,/Record \(model:one\)/);assert.match(html,/Record \(model:two\)/);
 });
+
+test('owned revision label is translated explicitly while static technical attributes remain exact',()=>{
+ const context={window:{},document:{getElementById:()=>null},URLSearchParams};
+ vm.runInNewContext(script,context);
+ const locale=context.clewLocale('ru',context.CLEW_RU_MESSAGES);
+ const html=locale.chromeHtml`<span data-revision="revision">${locale.t('revision')}: ${'revision'}</span>`;
+ assert.match(html,/data-revision="revision"/);
+ assert.match(html,/>версия: revision<\/span>/);
+});

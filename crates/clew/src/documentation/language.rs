@@ -2,7 +2,7 @@
 use super::{bindings::Bindings, digest, invalid, model::*, render};
 use crate::error::ClewError;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 pub(super) const RUSSIAN_LABELS: &str = include_str!("../../assets/documentation/ru.json");
 pub(super) const BROWSER_LOCALE: &str = include_str!("../../assets/documentation/locale.js");
@@ -14,6 +14,22 @@ pub(super) fn browser_script() -> String {
         "var CLEW_RU_MESSAGES={};\n{BROWSER_LOCALE}\n",
         RUSSIAN_LABELS.replace('<', "\\u003c")
     )
+}
+
+/// Look up an owned display label. Callers insert source and authored values
+/// separately; this function never scans a completed page or rewrites its data.
+pub(super) fn label<'a>(language: &str, key: &'a str) -> &'a str {
+    if language != "ru" {
+        return key;
+    }
+    static LABELS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+    LABELS
+        .get_or_init(|| {
+            serde_json::from_str(RUSSIAN_LABELS).expect("bundled reader labels are valid JSON")
+        })
+        .get(key)
+        .map(String::as_str)
+        .unwrap_or(key)
 }
 
 pub(super) fn validate(language: Option<&str>) -> Result<(), ClewError> {

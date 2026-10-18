@@ -43,3 +43,5 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
 .dm-field-row code{display:block}.dm-field-row button{font:inherit;font-size:14px;border:1px solid #9eb7bf;background:#fff;color:#173b4d;border-radius:4px;min-height:40px;padding:4px 8px;margin:4px 8px 0 0;cursor:pointer}
 .dm-field-row button[aria-current=true]{background:#e2f2f0;border:2px solid #077884}
 @media(max-width:760px){.dm-wide-overview{display:none}.dm-compact-overview{display:block}.dm-overview .dm-matrix-scroll{max-height:none}.dm-field-row .dm-condition{margin-top:2px}.dm-detail-nav{gap:4px}.dm-selected-context{display:block;width:100%}}
+
+@media(max-width:650px){.dm-records td[data-label]::before{content:attr(data-label)}}

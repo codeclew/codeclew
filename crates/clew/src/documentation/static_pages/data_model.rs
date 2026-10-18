@@ -1,5 +1,7 @@
 //! Optional authored domain mappings over admitted publication/source evidence.
-use super::super::{check::Check, invalid, io_error, reader, render::escape, store};
+use super::super::{
+    check::Check, invalid, io_error, language::label, reader, render::escape, store,
+};
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -691,16 +693,18 @@ pub(super) fn load(
 fn strv(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
-fn evidence(claim: &Value) -> String {
+fn evidence(claim: &Value, language: &str) -> String {
     let mut out = format!(
-        "<p>{}</p><details><summary>Evidence and scope</summary>",
-        escape(strv(&claim["text"]))
+        "<p>{}</p><details><summary>{clew_label_0}</summary>",
+        escape(strv(&claim["text"])),
+        clew_label_0 = escape(label(language, "Evidence and scope"))
     );
     for e in claim["evidence"].as_array().into_iter().flatten() {
         if !e["state"].is_null() {
             out.push_str(&format!(
-                "<p>Retained state: {}</p>",
-                escape(&e["state"].to_string())
+                "<p>{clew_label_0}: {}</p>",
+                escape(&e["state"].to_string()),
+                clew_label_0 = escape(label(language, "Retained state"))
             ));
         }
         let sources: Vec<(&Value, u64, u64)> = if e["kind"] == "SELECTED_SOURCE" {
@@ -736,7 +740,7 @@ fn evidence(claim: &Value) -> String {
             } else {
                 ""
             };
-            out.push_str(&format!("<p><a href=\"{}#L{}-L{}\">{}:{}–{}</a> · revision <code>{}</code> · {}</p><pre tabindex=\"0\">{}</pre>",escape(url),start,end,escape(strv(&s["file"])),start,end,escape(strv(&s["revision"])),escape(strv(&s["authority"])),escape(&source)));
+            out.push_str(&format!("<p><a href=\"{}#L{}-L{}\">{}:{}–{}</a> · {clew_label_0} <code>{}</code> · {}</p><pre tabindex=\"0\">{}</pre>",escape(url),start,end,escape(strv(&s["file"])),start,end,escape(strv(&s["revision"])),escape(strv(&s["authority"])),escape(&source), clew_label_0 = escape(label(language, "revision"))));
         }
     }
     out.push_str("</details>");
@@ -957,9 +961,19 @@ pub(super) fn write_language(
     files: &mut BTreeMap<String, Vec<u8>>,
     requested: Option<&str>,
 ) -> Result<BTreeMap<String, Value>, ClewError> {
+    let language = requested.unwrap_or("en");
     let mut gaps = BTreeMap::new();
-    let mut index = String::from(
-        "<div class=\"dm-page\"><h1>Data model</h1><p>Information the system works with, its representations, and the processes that use it.</p><p class=\"dm-status\">Agent proposals · Not reviewed. Original descriptions and review states are retained separately. These are static interpretations, not ownership or runtime guarantees.</p><div class=\"dm-cards\">",
+    let mut index = format!(
+        "<div class=\"dm-page\"><h1>{clew_label_0}</h1><p>{clew_label_1}</p><p class=\"dm-status\">{clew_label_2}</p><div class=\"dm-cards\">",
+        clew_label_0 = escape(label(language, "Data model")),
+        clew_label_1 = escape(label(
+            language,
+            "Information the system works with, its representations, and the processes that use it."
+        )),
+        clew_label_2 = escape(label(
+            language,
+            "Agent proposals · Not reviewed. Original descriptions and review states are retained separately. These are static interpretations, not ownership or runtime guarantees."
+        ))
     );
     for m in model["models"].as_array().unwrap() {
         let id = strv(&m["id"]);
@@ -977,7 +991,7 @@ pub(super) fn write_language(
         )?;
         index.push_str(&format!(
             "<article><p>{}</p><h2><a href=\"data-model/{}.html\">{}</a></h2><p>{}</p></article>",
-            escape(kind_label(strv(&m["kind"]))),
+            escape(kind_label(strv(&m["kind"]), language)),
             escape(id),
             escape(title),
             escape(strv(&m["purpose"]["text"]))
@@ -986,12 +1000,16 @@ pub(super) fn write_language(
             index.push_str(&super::prose_language::html(gap, &original_path));
         }
         let mut body = format!(
-            "<div class=\"dm-page\"><p><a href=\"../data-model.html\">Data model</a> / {}</p><p id=\"dm-return\"></p><h1>{}</h1><p class=\"dm-status\">{} · Agent proposal · Not reviewed</p>{}<h2>Identity and relationships</h2>{}",
+            "<div class=\"dm-page\"><p><a href=\"../data-model.html\">{clew_label_0}</a> / {}</p><p id=\"dm-return\"></p><h1>{}</h1><p class=\"dm-status\">{} · {clew_label_1} · {clew_label_2}</p>{}<h2>{clew_label_3}</h2>{}",
             escape(title),
             escape(title),
-            escape(kind_label(strv(&m["kind"]))),
-            evidence(&m["purpose"]),
-            model_identity(m, model)
+            escape(kind_label(strv(&m["kind"]), language)),
+            evidence(&m["purpose"], language),
+            model_identity(m, model, language),
+            clew_label_0 = escape(label(language, "Data model")),
+            clew_label_1 = escape(label(language, "Agent proposal")),
+            clew_label_2 = escape(label(language, "Not reviewed")),
+            clew_label_3 = escape(label(language, "Identity and relationships"))
         );
         if let Some(gap) = gap {
             let href = original_path.strip_prefix("data-model/").unwrap();
@@ -999,14 +1017,17 @@ pub(super) fn write_language(
             gaps.insert(id.to_owned(), gap);
         }
         if m["records"].as_array().is_some_and(|rows| !rows.is_empty()) {
-            body.push_str("<h2>Reference records</h2><table class=\"dm-records\"><caption>Source-backed literal records · authored interpretation</caption><thead><tr>");
+            body.push_str(&format!("<h2>{clew_label_0}</h2><table class=\"dm-records\"><caption>{clew_label_1}</caption><thead><tr>", clew_label_0 = escape(label(language, "Reference records")), clew_label_1 = escape(label(language, "Source-backed literal records · authored interpretation"))));
             for f in m["fields"].as_array().unwrap() {
                 body.push_str(&format!(
                     "<th scope=\"col\">{}</th>",
                     escape(strv(&f["path"]))
                 ));
             }
-            body.push_str("<th scope=\"col\">Evidence</th></tr></thead><tbody>");
+            body.push_str(&format!(
+                "<th scope=\"col\">{clew_label_0}</th></tr></thead><tbody>",
+                clew_label_0 = escape(label(language, "Evidence"))
+            ));
             for record in m["records"].as_array().unwrap() {
                 body.push_str("<tr>");
                 for f in m["fields"].as_array().unwrap() {
@@ -1016,16 +1037,17 @@ pub(super) fn write_language(
                         escape(&record["values"][strv(&f["id"])].to_string())
                     ));
                 }
-                body.push_str(&format!(
-                    "<td data-field=\"Evidence\"><details><summary>Source and scope</summary>{}</details></td></tr>",
-                    evidence(&record["claim"])
-                ));
+                body.push_str(&format!("<td data-field=\"Evidence\" data-label=\"{clew_label_1}\"><details><summary>{clew_label_0}</summary>{}</details></td></tr>",
+                    evidence(&record["claim"], language), clew_label_0 = escape(label(language, "Source and scope")), clew_label_1 = escape(label(language, "Evidence"))));
             }
             body.push_str("</tbody></table>");
         }
-        body.push_str("<h2>Fields and representations</h2>");
+        body.push_str(&format!(
+            "<h2>{clew_label_0}</h2>",
+            clew_label_0 = escape(label(language, "Fields and representations"))
+        ));
         for f in m["fields"].as_array().unwrap() {
-            body.push_str(&format!("<section id=\"field-{}\"><h3><code>{}</code></h3>{}<table><caption>Representation-specific constraints and mappings</caption><thead><tr><th>Representation</th><th>Type / requiredness / nullability</th><th>Mapping and evidence</th></tr></thead><tbody>",escape(strv(&f["id"])),escape(strv(&f["path"])),evidence(&f["meaning"])));
+            body.push_str(&format!("<section id=\"field-{}\"><h3><code>{}</code></h3>{}<table><caption>{clew_label_0}</caption><thead><tr><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr></thead><tbody>",escape(strv(&f["id"])),escape(strv(&f["path"])),evidence(&f["meaning"], language), clew_label_0 = escape(label(language, "Representation-specific constraints and mappings")), clew_label_1 = escape(label(language, "Representation")), clew_label_2 = escape(label(language, "Type / requiredness / nullability")), clew_label_3 = escape(label(language, "Mapping and evidence"))));
             for r in f["representations"].as_array().unwrap() {
                 let contract = r["contract"].as_str().and_then(|id| {
                     model["contracts"]
@@ -1042,10 +1064,12 @@ pub(super) fn write_language(
                 let constraints = leaf
                     .map(|v| {
                         format!(
-                            "{} · Required when branch matches: {} · Accepts null: {}",
-                            schema_label(&v["schema"]),
+                            "{} · {clew_label_0}: {} · {clew_label_1}: {}",
+                            schema_label(&v["schema"], language),
                             v["requiredWhenBranchMatches"],
-                            v["nullable"]
+                            v["nullable"],
+                            clew_label_0 = label(language, "Required when branch matches"),
+                            clew_label_1 = label(language, "Accepts null")
                         )
                     })
                     .unwrap_or_else(|| {
@@ -1080,19 +1104,22 @@ pub(super) fn write_language(
                     "<tr><th>{}</th><td>{}</td><td>{}</td></tr>",
                     escape(strv(&r["label"])),
                     constraints_html,
-                    evidence(&r["mapping"])
+                    evidence(&r["mapping"], language)
                 ));
             }
             if reference_only(m) {
                 body.push_str("</tbody></table></section>");
             } else {
-                body.push_str(&format!("</tbody></table><p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">Trace this field</a></p></section>",escape(strv(&f["id"])),escape(strv(&f["id"]))));
+                body.push_str(&format!("</tbody></table><p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">{clew_label_0}</a></p></section>",escape(strv(&f["id"])),escape(strv(&f["id"])), clew_label_0 = escape(label(language, "Trace this field"))));
             }
         }
         if !reference_only(m) {
-            body.push_str("<section id=\"field-usage\"><h2>Field usage and focused flow</h2><p>Choose one field or consumer cell. Validation, business decisions, display, storage, forwarding and whole-object comparison remain separate. Unknown is not zero usage.</p><div id=\"dm-usage\"></div></section>");
+            body.push_str(&format!("<section id=\"field-usage\"><h2>{clew_label_0}</h2><p>{clew_label_1}</p><div id=\"dm-usage\"></div></section>", clew_label_0 = escape(label(language, "Field usage and focused flow")), clew_label_1 = escape(label(language, "Choose one field or consumer cell. Validation, business decisions, display, storage, forwarding and whole-object comparison remain separate. Unknown is not zero usage."))));
         }
-        body.push_str("<h2>Processes</h2><ul>");
+        body.push_str(&format!(
+            "<h2>{clew_label_0}</h2><ul>",
+            clew_label_0 = escape(label(language, "Processes"))
+        ));
         for link in m["processLinks"].as_array().into_iter().flatten() {
             let subject = strv(&link["subject"]);
             let (kind, id) = subject.split_once(':').unwrap();
@@ -1116,18 +1143,21 @@ pub(super) fn write_language(
             page_language(title, &body, "../", requested.unwrap_or("en")).into_bytes(),
         );
     }
-    index.push_str("</div><h2>Exact contract branches</h2><p>Requiredness is conditional on the selected branch and required parents. Arrays expand element leaves once; counts do not imply runtime frequency.</p>");
+    index.push_str(&format!("</div><h2>{clew_label_0}</h2><p>{clew_label_1}</p>", clew_label_0 = escape(label(language, "Exact contract branches")), clew_label_1 = escape(label(language, "Requiredness is conditional on the selected branch and required parents. Arrays expand element leaves once; counts do not imply runtime frequency."))));
     for c in model["contracts"].as_array().unwrap() {
-        index.push_str(&format!("<details><summary>{} · {}</summary><p>{}</p><table><tr><th>Field</th><th>Required</th><th>Nullable</th><th>Schema and exact pointer</th></tr>",escape(strv(&c["title"])),escape(strv(&c["branchPointer"])),escape(strv(&c["requiredCondition"]))));
+        index.push_str(&format!("<details><summary>{} · {}</summary><p>{}</p><table><tr><th>{clew_label_0}</th><th>{clew_label_1}</th><th>{clew_label_2}</th><th>{clew_label_3}</th></tr>",escape(strv(&c["title"])),escape(strv(&c["branchPointer"])),escape(strv(&c["requiredCondition"])), clew_label_0 = escape(label(language, "Field")), clew_label_1 = escape(label(language, "Required")), clew_label_2 = escape(label(language, "Nullable")), clew_label_3 = escape(label(language, "Schema and exact pointer"))));
         for f in c["leaves"].as_array().unwrap() {
             index.push_str(&format!("<tr><th>{}</th><td>{}</td><td>{}</td><td><code>{}</code><br><code>{}</code></td></tr>",escape(strv(&f["field"])),f["requiredWhenBranchMatches"],f["nullable"],escape(&f["schema"].to_string()),escape(strv(&f["pointer"]))));
         }
         index.push_str("</table></details>");
     }
-    index.push_str("<p><a href=\"data-model.json\">Data model and evidence (JSON)</a></p></div>");
+    index.push_str(&format!(
+        "<p><a href=\"data-model.json\">{clew_label_0}</a></p></div>",
+        clew_label_0 = escape(label(language, "Data model and evidence (JSON)"))
+    ));
     files.insert(
         "data-model.html".into(),
-        page_language("Data model", &index, "", requested.unwrap_or("en")).into_bytes(),
+        page_language(label(language, "Data model"), &index, "", language).into_bytes(),
     );
     files.insert(
         "data-model.json".into(),
@@ -1139,7 +1169,16 @@ pub(super) fn write_language(
             .find("</h1>")
             .ok_or_else(|| invalid("overview heading missing for data-model link"))?
             + 5;
-        *overview=format!("{}<p class=\"dm-entry\"><a href=\"data-model.html\">Data model — entities, fields and field usage</a></p>{}",&html[..i],&html[i..]).into_bytes();
+        *overview = format!(
+            "{}<p class=\"dm-entry\"><a href=\"data-model.html\">{clew_label_0}</a></p>{}",
+            &html[..i],
+            &html[i..],
+            clew_label_0 = escape(label(
+                language,
+                "Data model — entities, fields and field usage"
+            ))
+        )
+        .into_bytes();
     }
     Ok(gaps)
 }
@@ -1163,31 +1202,38 @@ fn page_language(title: &str, body: &str, prefix: &str, language: &str) -> Strin
     )
 }
 
-fn kind_label(kind: &str) -> &str {
-    match kind {
-        "ENTITY" => "Domain concept",
-        "VALUE_OBJECT" => "Embedded value object",
-        "READ_MODEL" => "Read model",
-        _ => kind,
-    }
+fn kind_label<'a>(kind: &'a str, language: &str) -> &'a str {
+    label(
+        language,
+        match kind {
+            "ENTITY" => "Domain concept",
+            "VALUE_OBJECT" => "Embedded value object",
+            "READ_MODEL" => "Read model",
+            _ => kind,
+        },
+    )
 }
-fn schema_label(schema: &Value) -> String {
+fn schema_label(schema: &Value, language: &str) -> String {
     if let Some(value) = schema.get("const") {
-        return format!("Literal {value}");
+        return format!(
+            "{clew_label_0} {value}",
+            clew_label_0 = label(language, "Literal")
+        );
     }
     let mut text = match &schema["type"] {
         Value::String(t) => t.clone(),
         Value::Array(ts) => ts.iter().map(strv).collect::<Vec<_>>().join(" | "),
-        _ => "Type not declared".into(),
+        _ => label(language, "Type not declared").into(),
     };
     if let Some(values) = schema["enum"].as_array() {
         text.push_str(&format!(
-            " · one of {}",
+            " · {clew_label_0} {}",
             values
                 .iter()
                 .map(Value::to_string)
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            clew_label_0 = label(language, "one of")
         ));
     }
     for key in ["format", "minimum", "maximum", "minLength"] {
@@ -1210,9 +1256,12 @@ fn data_script(data: &Value) -> String {
     )
 }
 
-fn model_identity(m: &Value, all: &Value) -> String {
-    let mut text = evidence(&m["identity"]);
-    text.push_str("<p class=\"dm-relations\">Related concepts: ");
+fn model_identity(m: &Value, all: &Value, language: &str) -> String {
+    let mut text = evidence(&m["identity"], language);
+    text.push_str(&format!(
+        "<p class=\"dm-relations\">{clew_label_0}: ",
+        clew_label_0 = escape(label(language, "Related concepts"))
+    ));
     for id in m["relatedModels"]
         .as_array()
         .into_iter()
@@ -1234,7 +1283,10 @@ fn model_identity(m: &Value, all: &Value) -> String {
     }
     text.push_str("</p>");
     if !reference_only(m) {
-        text.push_str("<p><a href=\"#field-usage\">Explore field usage and focused flow</a></p>");
+        text.push_str(&format!(
+            "<p><a href=\"#field-usage\">{clew_label_0}</a></p>",
+            clew_label_0 = escape(label(language, "Explore field usage and focused flow"))
+        ));
     }
     text
 }
@@ -1316,7 +1368,8 @@ mod tests {
     #[test]
     fn selected_model_language_keeps_readable_originals_fields_and_exact_records() {
         let (mut plan, _, guides, check) = fixture();
-        plan["models"][0]["title"] = json!("Overview");
+        plan["models"][0]["title"] = json!("Data model");
+        plan["models"][0]["fields"][0]["meaning"]["text"] = json!("Source and scope");
         plan["models"][0]["purpose"]["text"] = json!("View evidence");
         for target in ["en", "ru"] {
             for available in [Some("en"), Some("ru"), None] {
@@ -1337,11 +1390,24 @@ mod tests {
                 let index = String::from_utf8(files["data-model.html"].clone()).unwrap();
                 for body in [&html, &index] {
                     assert!(body.contains(&format!("<html lang=\"{target}\"")));
-                    assert!(body.contains("View evidence") && body.contains("Overview"));
+                    assert!(body.contains("View evidence") && body.contains("Data model"));
                     assert_eq!(
                         body.contains("translation-gap gap-card"),
                         available != Some(target)
                     );
+                }
+                assert!(
+                    html.contains("<h1>Data model</h1>"),
+                    "authored title matches an owned label but remains exact"
+                );
+                assert!(
+                    html.contains("<p>Source and scope</p>"),
+                    "authored field meaning remains exact"
+                );
+                if target == "ru" {
+                    assert!(html.contains("<h2>Идентичность и связи</h2>"));
+                    assert!(html.contains("<h2>Поля и представления</h2>"));
+                    assert!(index.contains("<h1>Модель данных</h1>"));
                 }
                 assert!(html.contains("id=\"field-value\""));
                 assert!(html.contains("id=\"field-usage\""));
