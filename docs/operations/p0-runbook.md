@@ -567,6 +567,15 @@ session/run CAS roots. It still performs no physical CAS deletion: bytes are
 removed only by the explicit storage command above, and any evidence shared by
 another retained authority remains live.
 
+`retainedLegacyRecoverySessions` and `retainedLegacyRecoveryRuns` count roots
+pinned by a hash-valid historical `WORKTREE_RECOVERY_REQUIRED` to `CANCELLED`
+entry with cleared process identity and unchanged failure/authority fields.
+Storage retention recognizes this
+shape without rewriting the ledger, but retains the entire session and run even
+if the session lifecycle says `GARBAGE_COLLECTED`. It does not authorize that
+transition for normal run operations. Other invalid transitions, unknown states,
+broken hashes, and missing retention authorities still block collection.
+
 If the dry-run reports `collectionBlocked: true`, one or more retained CAS
 objects are physically absent. The report intentionally proposes zero deletion
 and `--apply` refuses to proceed because the missing object could have named

@@ -228,6 +228,10 @@ pub struct StorageReport {
     pub retained_mixed_packs: u64,
     pub released_sessions: u64,
     pub released_runs: u64,
+    #[serde(default)]
+    pub retained_legacy_recovery_sessions: u64,
+    #[serde(default)]
+    pub retained_legacy_recovery_runs: u64,
     pub dangling_objects: u64,
     pub collection_blocked: bool,
     pub catalog_snapshot_deferred: bool,
@@ -1665,6 +1669,8 @@ impl CasStore {
                 retained_mixed_packs,
                 released_sessions: released.session_components.len() as u64,
                 released_runs: released.run_components.len() as u64,
+                retained_legacy_recovery_sessions: released.retained_legacy_recovery_sessions,
+                retained_legacy_recovery_runs: released.retained_legacy_recovery_runs,
                 dangling_objects: dangling.len() as u64,
                 collection_blocked: !dangling.is_empty(),
                 catalog_snapshot_deferred,
