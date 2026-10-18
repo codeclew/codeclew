@@ -947,13 +947,34 @@ pub(super) fn reference_only(model: &Value) -> bool {
                     .is_some_and(|uses| !uses.is_empty())
             })
 }
+#[cfg(test)]
 pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(), ClewError> {
+    write_language(model, files, None).map(|_| ())
+}
+
+pub(super) fn write_language(
+    model: &Value,
+    files: &mut BTreeMap<String, Vec<u8>>,
+    requested: Option<&str>,
+) -> Result<BTreeMap<String, Value>, ClewError> {
+    let mut gaps = BTreeMap::new();
     let mut index = String::from(
         "<div class=\"dm-page\"><h1>Data model</h1><p>Information the system works with, its representations, and the processes that use it.</p><p class=\"dm-status\">Agent proposals · Not reviewed. Original descriptions and review states are retained separately. These are static interpretations, not ownership or runtime guarantees.</p><div class=\"dm-cards\">",
     );
     for m in model["models"].as_array().unwrap() {
         let id = strv(&m["id"]);
         let title = strv(&m["title"]);
+        let original_path = super::prose_language::original_path(id)?;
+        files.insert(
+            original_path.clone(),
+            serde_json::to_vec_pretty(m).map_err(io_error)?,
+        );
+        let gap = super::prose_language::gap(
+            &m["documentationLanguage"],
+            requested,
+            "MODEL_TRANSLATION",
+            &original_path,
+        )?;
         index.push_str(&format!(
             "<article><p>{}</p><h2><a href=\"data-model/{}.html\">{}</a></h2><p>{}</p></article>",
             escape(kind_label(strv(&m["kind"]))),
@@ -961,6 +982,9 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
             escape(title),
             escape(strv(&m["purpose"]["text"]))
         ));
+        if let Some(gap) = &gap {
+            index.push_str(&super::prose_language::html(gap, &original_path));
+        }
         let mut body = format!(
             "<div class=\"dm-page\"><p><a href=\"../data-model.html\">Data model</a> / {}</p><p id=\"dm-return\"></p><h1>{}</h1><p class=\"dm-status\">{} · Agent proposal · Not reviewed</p>{}<h2>Identity and relationships</h2>{}",
             escape(title),
@@ -969,6 +993,11 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
             evidence(&m["purpose"]),
             model_identity(m, model)
         );
+        if let Some(gap) = gap {
+            let href = original_path.strip_prefix("data-model/").unwrap();
+            body.push_str(&super::prose_language::html(&gap, href));
+            gaps.insert(id.to_owned(), gap);
+        }
         if m["records"].as_array().is_some_and(|rows| !rows.is_empty()) {
             body.push_str("<h2>Reference records</h2><table class=\"dm-records\"><caption>Source-backed literal records · authored interpretation</caption><thead><tr>");
             for f in m["fields"].as_array().unwrap() {
@@ -1084,7 +1113,7 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
         body.push_str(&data_script(&data));
         files.insert(
             format!("data-model/{id}.html"),
-            page(title, &body, "../").into_bytes(),
+            page_language(title, &body, "../", requested.unwrap_or("en")).into_bytes(),
         );
     }
     index.push_str("</div><h2>Exact contract branches</h2><p>Requiredness is conditional on the selected branch and required parents. Arrays expand element leaves once; counts do not imply runtime frequency.</p>");
@@ -1098,7 +1127,7 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
     index.push_str("<p><a href=\"data-model.json\">Data model and evidence (JSON)</a></p></div>");
     files.insert(
         "data-model.html".into(),
-        page("Data model", &index, "").into_bytes(),
+        page_language("Data model", &index, "", requested.unwrap_or("en")).into_bytes(),
     );
     files.insert(
         "data-model.json".into(),
@@ -1112,10 +1141,10 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
             + 5;
         *overview=format!("{}<p class=\"dm-entry\"><a href=\"data-model.html\">Data model — entities, fields and field usage</a></p>{}",&html[..i],&html[i..]).into_bytes();
     }
-    Ok(())
+    Ok(gaps)
 }
-fn page(title: &str, body: &str, prefix: &str) -> String {
-    let html = reader::page(title, body).replace(
+fn page_language(title: &str, body: &str, prefix: &str, language: &str) -> String {
+    let html = reader::page_language(title, body, language).replace(
         "</head>",
         &format!(
             "<style>{}</style></head>",
@@ -1124,11 +1153,12 @@ fn page(title: &str, body: &str, prefix: &str) -> String {
     );
     reader::decorate(
         &html,
-        &reader::navigation(
+        &reader::navigation_language(
             prefix,
             &format!("{prefix}overview.html"),
             Some(&format!("{prefix}history.html")),
             &[],
+            language,
         ),
     )
 }
@@ -1280,6 +1310,53 @@ mod tests {
             let mut invalid = plan.clone();
             *invalid.pointer_mut(pointer).unwrap() = json!("de");
             assert!(read(&invalid, &files, &guides, &check).is_err());
+        }
+    }
+
+    #[test]
+    fn selected_model_language_keeps_readable_originals_fields_and_exact_records() {
+        let (mut plan, _, guides, check) = fixture();
+        plan["models"][0]["title"] = json!("Overview");
+        plan["models"][0]["purpose"]["text"] = json!("View evidence");
+        for target in ["en", "ru"] {
+            for available in [Some("en"), Some("ru"), None] {
+                let (_, mut files, _, _) = fixture();
+                if let Some(language) = available {
+                    plan["models"][0]["documentationLanguage"] = json!(language);
+                } else {
+                    plan["models"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("documentationLanguage");
+                }
+                let model = read(&plan, &files, &guides, &check).unwrap();
+                let original = model.clone();
+                let gaps = write_language(&model, &mut files, Some(target)).unwrap();
+                assert_eq!(model, original);
+                let html = String::from_utf8(files["data-model/record.html"].clone()).unwrap();
+                let index = String::from_utf8(files["data-model.html"].clone()).unwrap();
+                for body in [&html, &index] {
+                    assert!(body.contains(&format!("<html lang=\"{target}\"")));
+                    assert!(body.contains("View evidence") && body.contains("Overview"));
+                    assert_eq!(
+                        body.contains("translation-gap gap-card"),
+                        available != Some(target)
+                    );
+                }
+                assert!(html.contains("id=\"field-value\""));
+                assert!(html.contains("id=\"field-usage\""));
+                assert!(html.contains("../scenarios/example.html#question-apply"));
+                let retained: Value =
+                    serde_json::from_slice(&files["data-model/record.original.json"]).unwrap();
+                assert_eq!(retained, model["models"][0]);
+                assert_eq!(gaps.is_empty(), available == Some(target));
+                if let Some(gap) = gaps.get("record") {
+                    assert_eq!(gap["availableLanguage"], json!(available));
+                    assert_eq!(gap["kind"], "MODEL_TRANSLATION");
+                    assert!(html.contains("href=\"record.original.json\""));
+                    assert!(index.contains("href=\"data-model/record.original.json\""));
+                }
+            }
         }
     }
 

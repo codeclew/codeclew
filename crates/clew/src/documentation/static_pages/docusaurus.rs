@@ -1195,10 +1195,19 @@ fn comparison_page(c: &Value, id: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
+fn model_page(
+    model: &Value,
+    catalog: &Value,
+    gap: Option<&Value>,
+    language: &str,
+) -> Result<String, ClewError> {
     let id = text(&model["id"]);
     let mut out = header(text(&model["title"]), &format!("/data-model/{id}"));
     out.push_str(IMPORTS);
+    if let Some(gap) = gap {
+        out.push_str(&prose_gap(gap, language)?);
+    }
+
     out.push_str(&format!(
         "# {}\n\nAgent proposal · Not reviewed.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
         md(text(&model["title"])),
@@ -1341,6 +1350,31 @@ fn model_page(model: &Value, catalog: &Value) -> Result<String, ClewError> {
 
 fn put(files: &mut BTreeMap<String, Vec<u8>>, name: impl Into<String>, body: impl Into<Vec<u8>>) {
     files.insert(name.into(), body.into());
+}
+
+fn prose_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
+    use crate::documentation::{reader::text as label, render::escape, store};
+    let original = text(&gap["originalPath"]);
+    store::relative(original)?;
+    let path = escape(&format!("/clew-original/{original}"))
+        .replace('{', "&#123;")
+        .replace('}', "&#125;");
+    Ok(format!(
+        "## {}\n\n{}\n\n{}: {}\n\n<ClewDownload path=\"{path}\">{}</ClewDownload>\n\n",
+        label(language, "Translation pending", "Требуется перевод"),
+        super::prose_language::explanation(language),
+        label(
+            language,
+            "Original prose language",
+            "Язык исходного описания"
+        ),
+        super::question_reading::available_language_label(gap, language),
+        label(
+            language,
+            "Original description (JSON)",
+            "Исходное описание (JSON)"
+        )
+    ))
 }
 
 fn reading_guide_gap(gap: &Value, language: &str) -> Result<String, ClewError> {
@@ -1529,7 +1563,12 @@ pub(super) fn project(
         put(
             &mut files,
             format!("docs/data-model/{id}.mdx"),
-            model_page(model, &catalog)?,
+            model_page(
+                model,
+                &catalog,
+                manifest["modelTranslationGaps"].get(id),
+                language,
+            )?,
         );
         documents.insert(format!("widgets/model-{id}.json"),json!({"models":[model],"contracts":super::data_model::model_contracts(model,&catalog["contracts"]),"authority":catalog["authority"],"review":catalog["review"]}));
         model_items.push(json!(format!("data-model/{id}")));
@@ -1867,9 +1906,44 @@ mod tests {
     }
 
     #[test]
+    fn portable_model_language_notice_keeps_original_prose_fields_and_technical_navigation() {
+        let model = json!({"id":"record","title":"Overview","documentationLanguage":"en",
+            "purpose":{"text":"View evidence","evidence":[]},"identity":{"text":"Original identity","evidence":[]},
+            "fields":[{"id":"value","path":"value","meaning":{"text":"Original meaning","evidence":[]},"representations":[],"usage":[{}]}],
+            "records":[],"processLinks":[{"subject":"scenario:example","label":"Original process","anchor":"question-apply"}],"relatedModels":[]});
+        let gap = super::super::prose_language::gap(
+            &model["documentationLanguage"],
+            Some("ru"),
+            "MODEL_TRANSLATION",
+            "data-model/record.original.json",
+        )
+        .unwrap()
+        .unwrap();
+        let body = model_page(&model, &json!({"contracts":[]}), Some(&gap), "ru").unwrap();
+        for original in [
+            "Overview",
+            "View evidence",
+            "Original identity",
+            "Original meaning",
+            "Original process",
+        ] {
+            assert!(body.contains(original));
+        }
+        assert!(body.contains("Требуется перевод"));
+        assert!(body.contains("/clew-original/data-model/record.original.json"));
+        assert!(body.contains("#field-value"));
+        assert!(body.contains("#field-usage"));
+        assert!(body.contains("../scenarios/example.mdx#question-apply"));
+        assert!(body.contains("<ClewDataModel"));
+        let matching = model_page(&model, &json!({"contracts":[]}), None, "en").unwrap();
+        assert!(!matching.contains("Translation pending"));
+        assert!(matching.contains("View evidence"));
+    }
+
+    #[test]
     fn reference_records_and_process_links_are_portable_and_keep_evidence() {
         let model = json!({"id":"lookup","title":"Lookup","purpose":{"text":"Supported values","evidence":[]},"identity":{"text":"Source literals","evidence":[]},"fields":[{"id":"id","path":"id","meaning":{"text":"Key","evidence":[]},"representations":[],"usage":[]}],"records":[{"values":{"id":"<literal>|value"},"claim":{"text":"Exact retained literal","evidence":[]}}],"processLinks":[],"relatedModels":[]});
-        let body = model_page(&model, &json!({"contracts":[]})).unwrap();
+        let body = model_page(&model, &json!({"contracts":[]}), None, "en").unwrap();
         assert!(body.contains("Reference records"));
         assert!(!body.contains("<literal>"));
         assert!(body.contains("#reference-record-1"));

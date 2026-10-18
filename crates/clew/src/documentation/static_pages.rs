@@ -8,6 +8,7 @@ mod full;
 mod linked;
 pub mod model;
 mod project;
+mod prose_language;
 mod publish;
 mod question_reading;
 mod source;

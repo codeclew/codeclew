@@ -914,6 +914,15 @@ and provenance remain available. A separate original-guide JSON download retains
 the exact bound record. This does not translate the guide or create a new review.
 `readingGuideTranslationComplete` is null when no prose language was selected.
 
+Model descriptions follow the same availability boundary in HTML and MDX.
+`modelTranslationGaps` records mismatched or unknown per-model prose language;
+`modelTranslationComplete` is null when no prose language was selected. The
+original purpose, identity, field meanings, representations and process links
+remain readable. `data-model/ID.original.json` retains the exact bound model
+record; portable exports offer it as a raw JSON download. Language availability
+does not change the evidence or review status and does not assert that every
+other documentation family has a translation.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with
