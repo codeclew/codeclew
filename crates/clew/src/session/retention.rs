@@ -513,9 +513,8 @@ mod tests {
         let diagnostic = crate::cas::diagnose_storage(&state).unwrap();
         assert!(diagnostic.report.collection_blocked);
         assert_eq!(diagnostic.missing.len(), 1);
-        assert_eq!(diagnostic.missing[0].owners.len(), 1);
         assert_eq!(
-            diagnostic.missing[0].owners[0].root_file,
+            diagnostic.missing[0].witness.root_file,
             "threads/current.json"
         );
         assert!(crate::cas::garbage_collect_storage(&state).is_err());

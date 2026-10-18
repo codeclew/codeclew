@@ -1,9 +1,8 @@
 //! Optional provenance attached to the collector's existing reference walk.
 use super::*;
 
-const MAX_TRACE_EDGES: usize = 4_000_000;
+const MAX_TRACE_NODES: usize = 2_000_000;
 const MAX_MISSING: usize = 1024;
-const MAX_OWNERS: usize = 4096;
 const MAX_WITNESS_DEPTH: usize = 512;
 
 #[derive(Debug, Serialize)]
@@ -13,12 +12,13 @@ pub struct StorageDiagnostics {
     pub report: StorageReport,
     pub missing: Vec<MissingReference>,
     pub scope: String,
+    pub ownership_complete: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MissingReference {
     pub object: CasObject,
-    pub owners: Vec<RetainingRoot>,
+    pub witness: RetainingRoot,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,9 +29,8 @@ pub struct RetainingRoot {
 }
 #[derive(Default)]
 pub(super) struct ReachabilityTrace {
-    parents: BTreeMap<String, BTreeSet<(bool, String)>>,
+    parents: BTreeMap<String, (bool, String)>,
     missing: BTreeMap<String, CasObject>,
-    edges: usize,
 }
 impl ReachabilityTrace {
     pub(super) fn reference(
@@ -40,16 +39,16 @@ impl ReachabilityTrace {
         owner: &str,
         root: bool,
     ) -> Result<(), ClewError> {
-        if self
-            .parents
+        // The collector calls this while discovering roots/children. Keep only
+        // the first parent: it was discovered earlier, so later shared/cyclic
+        // edges cannot enlarge this forest or replace its rooted witness.
+        self.parents
             .entry(digest.into())
-            .or_default()
-            .insert((root, owner.into()))
-        {
-            self.edges += 1;
-            if self.edges > MAX_TRACE_EDGES {
-                return Err(limit("CAS diagnostic edge count exceeds four million"));
-            }
+            .or_insert_with(|| (root, owner.into()));
+        if self.parents.len() > MAX_TRACE_NODES {
+            return Err(limit(
+                "CAS diagnostic discovered-object count exceeds two million",
+            ));
         }
         Ok(())
     }
@@ -63,44 +62,32 @@ impl ReachabilityTrace {
     fn finish(self, report: StorageReport) -> Result<StorageDiagnostics, ClewError> {
         let mut missing = Vec::new();
         for (digest, object) in &self.missing {
-            let mut pending = VecDeque::from([digest.clone()]);
-            let mut next = BTreeMap::from([(digest.clone(), None::<String>)]);
-            let mut owners = BTreeMap::new();
-            while let Some(current) = pending.pop_front() {
-                for (root, parent) in self.parents.get(&current).into_iter().flatten() {
-                    if *root {
-                        let mut via = vec![current.clone()];
-                        while let Some(Some(child)) =
-                            next.get(via.last().expect("witness has a head"))
-                        {
-                            if via.len() >= MAX_WITNESS_DEPTH {
-                                return Err(limit("CAS diagnostic witness depth exceeds 512"));
-                            }
-                            via.push(child.clone());
-                        }
-                        owners.entry(parent.clone()).or_insert(via);
-                        if owners.len() > MAX_OWNERS {
-                            return Err(limit("CAS diagnostic owning-root count exceeds 4096"));
-                        }
-                    } else if !next.contains_key(parent) {
-                        next.insert(parent.clone(), Some(current.clone()));
-                        pending.push_back(parent.clone());
-                    }
+            let mut via = vec![digest.clone()];
+            let root_file = loop {
+                if via.len() > MAX_WITNESS_DEPTH {
+                    return Err(limit("CAS diagnostic witness depth exceeds 512"));
                 }
-            }
-            if owners.is_empty() {
-                return Err(corrupt("missing CAS reference has no traced retained root"));
-            }
+                let current = via.last().expect("witness starts at missing object");
+                let (root, parent) = self
+                    .parents
+                    .get(current)
+                    .ok_or_else(|| corrupt("missing CAS reference has no discovery witness"))?;
+                if *root {
+                    break parent.clone();
+                }
+                if via.contains(parent) {
+                    return Err(corrupt("CAS diagnostic discovery witness contains a cycle"));
+                }
+                via.push(parent.clone());
+            };
+            via.reverse();
             missing.push(MissingReference {
                 object: object.clone(),
-                owners: owners
-                    .into_iter()
-                    .map(|(root_file, via)| RetainingRoot { root_file, via })
-                    .collect(),
+                witness: RetainingRoot { root_file, via },
             });
         }
-        Ok(StorageDiagnostics { schema:"codeclew-storage-diagnostics/1.0".into(), report, missing,
-            scope:"Read-only retention diagnosis; one witness per owning metadata file. Missing bytes prevent inspection of their unknown descendants. No repository snapshot or source text is included.".into() })
+        Ok(StorageDiagnostics { schema:"codeclew-storage-diagnostics/1.0".into(), report, missing, ownership_complete:false,
+            scope:"Read-only retention diagnosis; one discovery witness per missing object, NOT a complete owner inventory or permission to release other roots. Shared owners can remain undisclosed. Missing bytes prevent inspection of unknown descendants. No source text or Git snapshot. After addressed reconciliation, require a complete storage GC dry-run with zero dangling objects before physical apply.".into() })
     }
 }
 fn limit(message: &str) -> ClewError {
@@ -145,27 +132,43 @@ mod tests {
         assert!(report.report.collection_blocked);
         assert_eq!(report.report.reclaimable_bytes, 0);
         assert_eq!(report.missing.len(), 1);
-        let owners = &report.missing[0].owners;
-        assert_eq!(owners.len(), 3);
-        assert_eq!(owners[0].root_file, "threads/a.json");
+        let witness = &report.missing[0].witness;
+        // All roots are discovered before traversal, so this direct reference
+        // wins over the later path from either shared parent.
+        assert_eq!(witness.root_file, "threads/c.json");
+        assert_eq!(witness.via, vec![missing.digest]);
+        assert!(!report.ownership_complete);
+        state
+            .directory(Path::new("threads"))
+            .unwrap()
+            .remove_file(OsStr::new("c.json"))
+            .unwrap();
+        let transitive = diagnose_storage(&state).unwrap();
+        let witness = &transitive.missing[0].witness;
+        assert!(matches!(
+            witness.root_file.as_str(),
+            "threads/a.json" | "threads/b.json"
+        ));
         assert_eq!(
-            owners[0].via,
-            vec![parent.digest.clone(), missing.digest.clone()]
+            witness.via,
+            vec![
+                parent.digest.clone(),
+                report.missing[0].object.digest.clone()
+            ]
         );
-        assert_eq!(owners[2].via, vec![missing.digest]);
         assert!(CasStore::open(&state).unwrap().read(&parent, 4096).is_ok());
         assert!(garbage_collect_storage(&state).is_err());
     }
     #[test]
-    fn trace_preserves_all_owners_through_shared_ancestors_and_cycles() {
+    fn discovery_witness_stays_rooted_when_later_edges_share_or_cycle() {
         let mut trace = ReachabilityTrace::default();
         let object = CasObject::for_bytes("test/missing", b"absent").unwrap();
         trace.missing(&object).unwrap();
         for (child, parent, root) in [
-            (&*object.digest, "parent", false),
-            ("parent", "cycle", false),
-            ("cycle", "parent", false),
             ("parent", "threads/a.json", true),
+            ("cycle", "parent", false),
+            (&*object.digest, "cycle", false),
+            ("parent", "cycle", false),
             ("cycle", "threads/b.json", true),
         ] {
             trace.reference(child, parent, root).unwrap();
@@ -174,6 +177,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(temp.path().join("v2")).unwrap();
         let result = trace.finish(storage_status(&state).unwrap()).unwrap();
-        assert_eq!(result.missing[0].owners.len(), 2);
+        assert_eq!(result.missing[0].witness.root_file, "threads/a.json");
+        assert_eq!(
+            result.missing[0].witness.via,
+            vec!["parent".to_owned(), "cycle".to_owned(), object.digest]
+        );
     }
 }

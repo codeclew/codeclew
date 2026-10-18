@@ -591,13 +591,17 @@ or release the owning terminal state first.
 
 ### Missing retained objects and addressed reconciliation
 
-Run `clew storage diagnose` to attribute missing objects to every retained
-metadata file that reaches them. It uses the same parser and reachability walk
-as GC, reporting one direct or transitive digest-chain witness per owner. It
-returns no source text or repository snapshot and never deletes objects. Bounds
-are four million reference edges, 1,024 missing objects, 4,096 owner files per
-missing object and 512 digests per witness; exceeding a bound fails explicitly.
-An absent object's unknown descendants cannot be diagnosed from absent bytes.
+Run `clew storage diagnose` to find one retained metadata witness for each
+missing object. It uses the same parser and complete reachability walk as GC,
+storing only the first discovery parent per object. `missing[].witness` contains
+a root file and direct or transitive digest chain; `ownershipComplete: false`
+explicitly means other shared owners may exist. The witness is not permission to
+release other roots. It returns no source text or Git snapshot and never deletes
+objects. Bounds are two million discovered objects, 1,024 missing objects and
+512 digests per witness; exceeding a bound fails explicitly. An absent object's
+unknown descendants cannot be diagnosed from absent bytes. After addressed
+reconciliation, physical collection still requires a complete global GC dry-run
+with zero dangling objects; a remaining shared owner keeps collection blocked.
 
 A hash-valid historical recovery cancellation remains pinned by default. If its
 owner is confirmed obsolete and is already `GARBAGE_COLLECTED`, use the addressed
