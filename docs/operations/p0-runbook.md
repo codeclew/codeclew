@@ -576,6 +576,12 @@ if the session lifecycle says `GARBAGE_COLLECTED`. It does not authorize that
 transition for normal run operations. Other invalid transitions, unknown states,
 broken hashes, and missing retention authorities still block collection.
 
+Retention also recognizes the digest-valid schema6 working-tree authority with
+its original five-field inventory limits. Missing later path bounds are mapped
+only to unusable in-memory placeholders for reading CAS references; stored bytes,
+the original authority digest, normal loading, and capture defaults remain
+unchanged. Partial, unknown, or tampered limit representations are rejected.
+
 If the dry-run reports `collectionBlocked: true`, one or more retained CAS
 objects are physically absent. The report intentionally proposes zero deletion
 and `--apply` refuses to proceed because the missing object could have named

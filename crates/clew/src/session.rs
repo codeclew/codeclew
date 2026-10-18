@@ -1791,7 +1791,7 @@ pub(crate) fn released_session_cas_roots(
         if !state.private_file_exists(&root.join("authority.json"))? {
             continue;
         }
-        let authority = read_session_authority_for_cleanup(
+        let authority = read_session_authority_for_retention(
             state,
             &root.join("authority.json"),
             &expected_session_id,
@@ -2943,15 +2943,30 @@ fn read_session_authority_for_cleanup(
     path: &Path,
     expected_session_id: &str,
 ) -> Result<SessionAuthority, ClewError> {
+    read_compatible_session_authority(state, path, expected_session_id, false)
+}
+
+fn read_session_authority_for_retention(
+    state: &StateAuthority,
+    path: &Path,
+    expected_session_id: &str,
+) -> Result<SessionAuthority, ClewError> {
+    read_compatible_session_authority(state, path, expected_session_id, true)
+}
+
+fn read_compatible_session_authority(
+    state: &StateAuthority,
+    path: &Path,
+    expected_session_id: &str,
+    retention_only: bool,
+) -> Result<SessionAuthority, ClewError> {
     let bytes = state
         .read_private_file(path, MAX_PLAN_BYTES)
         .map_err(|_| invalid("managed JSON object is missing or exceeds its limit"))?;
-
     if let Ok(authority) = serde_json::from_slice::<SessionAuthority>(&bytes) {
         validate_session_authority(&authority, expected_session_id)?;
         return Ok(authority);
     }
-
     let legacy = canonical::parse_json_strict(&bytes).map_err(parse_error)?;
     if canonical::bytes(&legacy).map_err(internal)? != bytes {
         return Err(invalid("legacy session authority is not canonical"));
@@ -2959,29 +2974,50 @@ fn read_session_authority_for_cleanup(
     let object = legacy
         .as_object()
         .ok_or_else(|| invalid("legacy session authority is invalid"))?;
-    if object.get("language").and_then(Value::as_str) != Some("TYPE_SCRIPT") {
-        return Err(invalid("session authority language is invalid"));
-    }
     let stored_digest = object
         .get("authorityDigest")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("legacy session authority digest is invalid"))?
         .to_owned();
-
     let mut unsigned = legacy.clone();
-    unsigned
-        .as_object_mut()
-        .expect("legacy authority was checked as an object")
-        .insert("authorityDigest".into(), Value::String(String::new()));
+    unsigned["authorityDigest"] = json!("");
     if canonical::hash(&unsigned).map_err(internal)? != stored_digest {
         return Err(invalid("legacy session authority identity is invalid"));
     }
-
-    let mut normalized = legacy;
-    normalized
-        .as_object_mut()
-        .expect("legacy authority was checked as an object")
-        .insert("language".into(), Value::String("TYPESCRIPT".into()));
+    let mut normalized = legacy.clone();
+    let legacy_typescript = legacy["language"] == "TYPE_SCRIPT";
+    if legacy_typescript {
+        normalized["language"] = json!("TYPESCRIPT");
+    }
+    let old_limits = legacy["workingTree"]["limits"]
+        .as_object()
+        .is_some_and(|limits| {
+            let keys = [
+                "maxFiles",
+                "maxFileBytes",
+                "maxTotalBytes",
+                "maxInventoryBytes",
+                "maxInventorySeconds",
+            ];
+            limits.len() == keys.len()
+                && keys
+                    .iter()
+                    .all(|key| limits.get(*key).is_some_and(|v| v.as_u64().is_some()))
+        });
+    let legacy_limits =
+        retention_only && legacy["schema"] == WORKING_TREE_SESSION_SCHEMA && old_limits;
+    if legacy_limits {
+        // Retention reads references; it never captures paths. Zero placeholders
+        // keep this in-memory representation unusable for new capture. Original
+        // bytes/digest stay authoritative and no shared admission defaults change.
+        normalized["workingTree"]["limits"]["maxPathBytes"] = json!(0);
+        normalized["workingTree"]["limits"]["maxPathDepth"] = json!(0);
+    }
+    if !legacy_typescript && !legacy_limits {
+        return Err(invalid(&format!(
+            "session {expected_session_id} authority has an unsupported retained representation"
+        )));
+    }
     let authority: SessionAuthority = serde_json::from_value(normalized).map_err(parse_error)?;
     validate_session_authority_shape(&authority, expected_session_id)?;
     Ok(authority)
@@ -3635,6 +3671,31 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .insert("authorityDigest".into(), Value::String(digest.clone()));
+        authority.authority_digest = digest;
+        (authority, canonical::bytes(&legacy).unwrap())
+    }
+
+    fn legacy_working_tree_limits_authority() -> (SessionAuthority, Vec<u8>) {
+        let mut authority = test_session();
+        authority.schema = WORKING_TREE_SESSION_SCHEMA.into();
+        authority.working_tree = Some(WorkingTreeSourceBinding {
+            schema: "codeclew-working-tree-source/1.0".into(),
+            source_selection: "WORKING_TREE".into(),
+            operation: "ANALYSIS".into(),
+            profile_id: "kotlin-jvm-gradle-analysis".into(),
+            snapshot: CasObject::for_bytes(SNAPSHOT_SCHEMA, b"legacy snapshot").unwrap(),
+            capture_scope: "ALL_TRACKED_AND_NON_IGNORED_UNTRACKED_INPUTS".into(),
+            excluded_categories: Vec::new(),
+            consistency: "RETAINED_TEST_CAPTURE".into(),
+            limits: crate::repository_snapshot::WorkingTreeLimits::default(),
+        });
+        authority.authority_digest.clear();
+        let mut legacy = canonical::value(&authority).unwrap();
+        let limits = legacy["workingTree"]["limits"].as_object_mut().unwrap();
+        limits.remove("maxPathBytes");
+        limits.remove("maxPathDepth");
+        let digest = canonical::hash(&legacy).unwrap();
+        legacy["authorityDigest"] = json!(digest);
         authority.authority_digest = digest;
         (authority, canonical::bytes(&legacy).unwrap())
     }
@@ -4349,6 +4410,97 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn retention_accepts_original_five_limit_authority_without_admitting_or_rewriting_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let (authority, bytes) = legacy_working_tree_limits_authority();
+        let root = state.session_root(&authority.session_id).unwrap();
+        for child in ["runs", "candidates"] {
+            create_private_directory(&root.join(child)).unwrap();
+        }
+        let path = root.join("authority.json");
+        state.write_private_atomic(&path, &bytes).unwrap();
+        initialize_session_lifecycle(&state, &root, &authority).unwrap();
+        let snapshot = {
+            let store = CasStore::open(&state).unwrap();
+            store.put(SNAPSHOT_SCHEMA, b"legacy snapshot").unwrap()
+        };
+        let normal: Result<SessionAuthority, _> = read_managed_json(&state, &path, MAX_PLAN_BYTES);
+        assert!(normal.is_err());
+        assert!(read_session_authority_for_cleanup(&state, &path, &authority.session_id).is_err());
+        let retained =
+            read_session_authority_for_retention(&state, &path, &authority.session_id).unwrap();
+        assert_eq!(retained.authority_digest, authority.authority_digest);
+        assert_eq!(retained.working_tree.as_ref().unwrap().snapshot, snapshot);
+        assert_eq!(
+            retained
+                .working_tree
+                .as_ref()
+                .unwrap()
+                .limits
+                .max_path_bytes,
+            0
+        );
+        assert_eq!(
+            retained
+                .working_tree
+                .as_ref()
+                .unwrap()
+                .limits
+                .max_path_depth,
+            0
+        );
+        assert!(validate_session_authority(&retained, &authority.session_id).is_err());
+        let report = crate::cas::storage_status(&state).unwrap();
+        assert_eq!(report.reachable_objects, 1);
+        assert_eq!(report.released_sessions, 0);
+        assert_eq!(report.reclaimable_loose_objects, 0);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn retention_legacy_limits_reader_rejects_tampering_unknown_and_partial_shapes() {
+        for case in [
+            "digest-tamper",
+            "unknown-limit",
+            "one-path-limit",
+            "missing-old-limit",
+            "unknown-language",
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+            let (authority, bytes) = legacy_working_tree_limits_authority();
+            let root = state.session_root(&authority.session_id).unwrap();
+            let path = root.join("authority.json");
+            let mut value = canonical::parse_json_strict(&bytes).unwrap();
+            match case {
+                "digest-tamper" => value["workingTree"]["limits"]["maxFiles"] = json!(1),
+                "unknown-limit" => value["workingTree"]["limits"]["futureLimit"] = json!(1),
+                "one-path-limit" => value["workingTree"]["limits"]["maxPathBytes"] = json!(4096),
+                "missing-old-limit" => {
+                    value["workingTree"]["limits"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("maxFiles");
+                }
+                "unknown-language" => value["language"] = json!("UNKNOWN_LANGUAGE"),
+                _ => unreachable!(),
+            }
+            if case != "digest-tamper" {
+                value["authorityDigest"] = json!("");
+                value["authorityDigest"] = json!(canonical::hash(&value).unwrap());
+            }
+            let malformed = canonical::bytes(&value).unwrap();
+            state.write_private_atomic(&path, &malformed).unwrap();
+            assert!(
+                read_session_authority_for_retention(&state, &path, &authority.session_id).is_err(),
+                "{case}"
+            );
+            assert_eq!(fs::read(path).unwrap(), malformed);
+        }
     }
 
     #[test]
