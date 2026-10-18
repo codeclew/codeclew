@@ -198,25 +198,46 @@ fn source_link(source: &Value) -> Result<String, ClewError> {
     source_link_in(source, "../")
 }
 fn source_link_in(source: &Value, prefix: &str) -> Result<String, ClewError> {
+    source_link_in_language(source, prefix, "en")
+}
+fn source_link_in_language(
+    source: &Value,
+    prefix: &str,
+    language: &str,
+) -> Result<String, ClewError> {
     if !is_source(source) {
-        return Ok("Source binding unavailable in this projection.".into());
+        return Ok(crate::documentation::language::label(
+            language,
+            "Source binding unavailable in this projection.",
+        )
+        .into());
     }
     let id = digest(source)?;
     Ok(format!(
-        "[{}:{}–{} · revision {}]({prefix}sources/{}.mdx)",
+        "[{}:{}–{} · {} {}]({prefix}sources/{}.mdx)",
         md(text(&source["file"])),
         source["startLine"],
         source["endLine"],
+        md(crate::documentation::language::label(language, "revision")),
         md(text(&source["revision"])),
         &id[7..]
     ))
 }
 
-fn evidence(block: &Value) -> Result<String, ClewError> {
-    evidence_in(block, "../")
-}
 fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
-    let mut out = String::from("<details>\n<summary>Evidence and scope</summary>\n\n");
+    evidence_in_language(block, prefix, "en")
+}
+fn evidence_language(block: &Value, language: &str) -> Result<String, ClewError> {
+    evidence_in_language(block, "../", language)
+}
+fn evidence_in_language(block: &Value, prefix: &str, language: &str) -> Result<String, ClewError> {
+    let mut out = format!(
+        "<details>\n<summary>{}</summary>\n\n",
+        crate::documentation::render::escape(crate::documentation::language::label(
+            language,
+            "Evidence and scope"
+        ))
+    );
     for e in block["evidence"].as_array().into_iter().flatten() {
         if e["kind"] == "RETAINED_CLAIM" {
             out.push_str(&format!(
@@ -231,10 +252,16 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
                 .into_iter()
                 .flat_map(|v| v.values())
             {
-                out.push_str(&format!("- {}\n", source_link_in(source, prefix)?));
+                out.push_str(&format!(
+                    "- {}\n",
+                    source_link_in_language(source, prefix, language)?
+                ));
             }
         } else {
-            out.push_str(&format!("- {}\n", source_link_in(&e["source"], prefix)?));
+            out.push_str(&format!(
+                "- {}\n",
+                source_link_in_language(&e["source"], prefix, language)?
+            ));
         }
     }
     out.push_str("\n</details>\n\n");
@@ -1221,16 +1248,28 @@ fn model_page(
     }
 
     out.push_str(&format!(
-        "# {}\n\nAgent proposal · Not reviewed.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
+        "# {}\n\n{clew_label_0} · {clew_label_1}.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
         md(text(&model["title"])),
-        reading::inline(text(&model["purpose"]["text"]))
+        reading::inline(text(&model["purpose"]["text"])),
+        clew_label_0 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Agent proposal"
+        )),
+        clew_label_1 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Not reviewed"
+        ))
     ));
-    out.push_str(&evidence(&model["purpose"])?);
+    out.push_str(&evidence_language(&model["purpose"], language)?);
     out.push_str(&format!(
-        "## Identity and relationships\n\n{}\n\n",
-        reading::inline(text(&model["identity"]["text"]))
+        "## {clew_label_0}\n\n{}\n\n",
+        reading::inline(text(&model["identity"]["text"])),
+        clew_label_0 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Identity and relationships"
+        ))
     ));
-    out.push_str(&evidence(&model["identity"])?);
+    out.push_str(&evidence_language(&model["identity"], language)?);
     let related = rows(&model["relatedModels"])
         .filter_map(Value::as_str)
         .map(|id| {
@@ -1247,8 +1286,12 @@ fn model_page(
         .collect::<Vec<_>>();
     if !related.is_empty() {
         out.push_str(&format!(
-            "<p className=\"clew-related-models\">Related concepts: {}</p>\n\n",
-            related.join(" · ")
+            "<p className=\"clew-related-models\">{clew_label_0}: {}</p>\n\n",
+            related.join(" · "),
+            clew_label_0 = contracts::literal(crate::documentation::language::label(
+                language,
+                "Related concepts"
+            ))
         ));
     }
     out.push('\n');
@@ -1258,14 +1301,18 @@ fn model_page(
                 .replace('{', "&#123;")
                 .replace('}', "&#125;")
         };
-        out.push_str("## Reference records\n\n<table className=\"dm-records\"><caption>Source-backed literal records · authored interpretation</caption><thead><tr>");
+        out.push_str(&format!("## {clew_label_0}\n\n<table className=\"dm-records\"><caption>{clew_label_1}</caption><thead><tr>", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Reference records")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Source-backed literal records · authored interpretation"))));
         for field in rows(&model["fields"]) {
             out.push_str(&format!(
                 "<th scope=\"col\">{}</th>",
                 literal(text(&field["path"]))
             ));
         }
-        out.push_str("<th scope=\"col\">Evidence</th></tr></thead><tbody>");
+        out.push_str(&format!(
+            "<th scope=\"col\">{clew_label_0}</th></tr></thead><tbody>",
+            clew_label_0 =
+                contracts::literal(crate::documentation::language::label(language, "Evidence"))
+        ));
         for (index, record) in rows(&model["records"]).enumerate() {
             out.push_str("<tr>");
             for field in rows(&model["fields"]) {
@@ -1275,10 +1322,8 @@ fn model_page(
                     literal(&record["values"][text(&field["id"])].to_string())
                 ));
             }
-            out.push_str(&format!(
-                "<td data-field=\"Evidence\"><a href=\"#reference-record-{}\">Source {}</a></td></tr>",
-                index + 1, index + 1
-            ));
+            out.push_str(&format!("<td data-field=\"Evidence\" data-label=\"{clew_label_1}\"><a href=\"#reference-record-{}\">{clew_label_0} {}</a></td></tr>",
+                index + 1, index + 1, clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Source")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Evidence"))));
         }
         out.push_str("</tbody></table>\n\n");
         for (index, record) in rows(&model["records"]).enumerate() {
@@ -1286,17 +1331,33 @@ fn model_page(
                 "<span id=\"reference-record-{}\"></span>\n\n{}",
                 index + 1,
                 details(
-                    &format!("Record {}: source and scope", index + 1),
+                    &format!(
+                        "{clew_label_0} {}: {clew_label_1}",
+                        index + 1,
+                        clew_label_0 = contracts::literal(crate::documentation::language::label(
+                            language, "Record"
+                        )),
+                        clew_label_1 = contracts::literal(crate::documentation::language::label(
+                            language,
+                            "source and scope"
+                        ))
+                    ),
                     &format!(
                         "{}\n\n{}",
                         reading::inline(text(&record["claim"]["text"])),
-                        evidence(&record["claim"])?
+                        evidence_language(&record["claim"], language)?
                     )
                 )
             ));
         }
     }
-    out.push_str("## Fields and representations\n\n");
+    out.push_str(&format!(
+        "## {clew_label_0}\n\n",
+        clew_label_0 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Fields and representations"
+        ))
+    ));
     for field in rows(&model["fields"]) {
         let fid = text(&field["id"]);
         out.push_str(&format!(
@@ -1304,8 +1365,8 @@ fn model_page(
             md(text(&field["path"])),
             reading::inline(text(&field["meaning"]["text"]))
         ));
-        out.push_str(&evidence(&field["meaning"])?);
-        out.push_str(&contracts::representations(field, catalog));
+        out.push_str(&evidence_language(&field["meaning"], language)?);
+        out.push_str(&contracts::representations(field, catalog, language));
         for rep in rows(&field["representations"]) {
             let mut body = format!(
                 "{} · {} · {}\n\n{}\n\n",
@@ -1324,8 +1385,17 @@ fn model_page(
                 ));
                 for leaf in rows(&contract["leaves"]).filter(|l| l["field"] == rep["field"]) {
                     body.push_str(&format!(
-                        "Required when branch matches: {} · Accepts null: {}\n\n",
-                        leaf["requiredWhenBranchMatches"], leaf["nullable"]
+                        "{clew_label_0}: {} · {clew_label_1}: {}\n\n",
+                        leaf["requiredWhenBranchMatches"],
+                        leaf["nullable"],
+                        clew_label_0 = contracts::literal(crate::documentation::language::label(
+                            language,
+                            "Required when branch matches"
+                        )),
+                        clew_label_1 = contracts::literal(crate::documentation::language::label(
+                            language,
+                            "Accepts null"
+                        ))
                     ));
                     body.push_str(&fence(
                         &serde_json::to_string_pretty(&leaf["schema"]).map_err(io_error)?,
@@ -1333,7 +1403,7 @@ fn model_page(
                     ));
                 }
             }
-            body.push_str(&evidence(&rep["mapping"])?);
+            body.push_str(&evidence_language(&rep["mapping"], language)?);
             out.push_str(&details(text(&rep["label"]), &body));
         }
         if !super::data_model::reference_only(model) {
@@ -1341,11 +1411,9 @@ fn model_page(
         }
     }
     if super::data_model::reference_only(model) {
-        out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## Processes\n\n"));
+        out.push_str(&format!("<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" contextOnly />\n\n## {clew_label_0}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
     } else {
-        out.push_str(&format!(
-            "## Field usage and focused flow {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## Processes\n\n"
-        ));
+        out.push_str(&format!("## {clew_label_0} {{#field-usage}}\n\n<ClewDataModel dataPath=\"/clew-data/widgets/model-{id}.json\" />\n\n## {clew_label_1}\n\n", clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Field usage and focused flow")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Processes"))));
     }
     for link in rows(&model["processLinks"]) {
         if let Some(process) = text(&link["subject"]).strip_prefix("scenario:") {
@@ -1981,6 +2049,10 @@ mod tests {
             assert!(body.contains(original));
         }
         assert!(body.contains("Требуется перевод"));
+        assert!(body.contains("## Идентичность и связи"));
+        assert!(body.contains("## Поля и представления"));
+        assert!(body.contains("<summary>Основания и область</summary>"));
+        assert!(!body.contains("## Identity and relationships"));
         assert!(body.contains("/clew-original/data-model/record.original.json"));
         assert!(body.contains("#field-value"));
         assert!(body.contains("#field-usage"));

@@ -1,6 +1,6 @@
 //! Bounded reading summaries, never schema validation or reference resolution.
 use super::{details, fence, md, reading, rows, text};
-use crate::documentation::io_error;
+use crate::documentation::{io_error, language::label};
 use crate::error::ClewError;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -11,26 +11,32 @@ pub(super) fn literal(value: &str) -> String {
         .replace('}', "&#125;")
 }
 pub(super) fn schema_type(schema: &Value) -> String {
-    schema_type_at(schema, 0)
+    schema_type_language(schema, "en")
 }
-fn schema_type_at(schema: &Value, depth: usize) -> String {
+fn schema_type_language(schema: &Value, language: &str) -> String {
+    schema_type_at(schema, 0, language)
+}
+fn schema_type_at(schema: &Value, depth: usize, language: &str) -> String {
     if depth > 6 {
-        return "See exact retained schema".into();
+        return label(language, "See exact retained schema").into();
     }
     if schema.is_null() {
-        return "Not declared".into();
+        return label(language, "Not declared").into();
     }
     if schema == &Value::Bool(false) {
-        return "No value allowed (false schema)".into();
+        return label(language, "No value allowed (false schema)").into();
     }
     if schema == &Value::Bool(true) {
-        return "Any value (true schema)".into();
+        return label(language, "Any value (true schema)").into();
     }
     if let Some(reference) = schema["$ref"].as_str() {
-        return format!("Reference: {reference}");
+        return format!("{}: {reference}", label(language, "Reference"));
     }
     if schema["type"] == "array" {
-        return format!("array<{}>", schema_type_at(&schema["items"], depth + 1));
+        return format!(
+            "array<{}>",
+            schema_type_at(&schema["items"], depth + 1, language)
+        );
     }
     let kind = schema["type"]
         .as_str()
@@ -44,7 +50,7 @@ fn schema_type_at(schema: &Value, depth: usize) -> String {
             ["allOf", "oneOf", "anyOf"]
                 .into_iter()
                 .find(|k| schema[*k].is_array())
-                .unwrap_or("Not declared")
+                .unwrap_or_else(|| label(language, "Not declared"))
                 .to_owned()
         });
     if let Some(format) = schema["format"].as_str() {
@@ -335,12 +341,28 @@ pub(super) fn findings(entry: &Value) -> String {
     }
     out
 }
-pub(super) fn representations(field: &Value, catalog: &Value) -> String {
+pub(super) fn representations(field: &Value, catalog: &Value, language: &str) -> String {
     if rows(&field["representations"]).next().is_none() {
         return String::new();
     }
-    let mut out = String::from(
-        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">Representation</th><th scope=\"col\">Type / declared constraints</th><th scope=\"col\">Requiredness / nullability</th><th scope=\"col\">Retained mapping</th></tr></thead><tbody>",
+    let mut out = format!(
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">{clew_label_0}</th><th scope=\"col\">{clew_label_1}</th><th scope=\"col\">{clew_label_2}</th><th scope=\"col\">{clew_label_3}</th></tr></thead><tbody>",
+        clew_label_0 = literal(crate::documentation::language::label(
+            language,
+            "Representation"
+        )),
+        clew_label_1 = literal(crate::documentation::language::label(
+            language,
+            "Type / declared constraints"
+        )),
+        clew_label_2 = literal(crate::documentation::language::label(
+            language,
+            "Requiredness / nullability"
+        )),
+        clew_label_3 = literal(crate::documentation::language::label(
+            language,
+            "Retained mapping"
+        ))
     );
     for rep in rows(&field["representations"]) {
         let leaf = rows(&catalog["contracts"])
@@ -350,18 +372,18 @@ pub(super) fn representations(field: &Value, catalog: &Value) -> String {
             (
                 format!(
                     "{} · {}",
-                    schema_type(&leaf["schema"]),
+                    schema_type_language(&leaf["schema"], language),
                     constraints(&leaf["schema"])
                 ),
                 match leaf["requiredWhenBranchMatches"] {
-                    Value::Bool(true) => "Required when branch matches".into(),
-                    Value::Bool(false) => "Not required by this branch".into(),
-                    _ => "Requiredness unknown".into(),
+                    Value::Bool(true) => label(language, "Required when branch matches").into(),
+                    Value::Bool(false) => label(language, "Not required by this branch").into(),
+                    _ => label(language, "Requiredness unknown").into(),
                 },
                 match leaf["nullable"] {
-                    Value::Bool(true) => "Nullable".into(),
-                    Value::Bool(false) => "Not nullable".into(),
-                    _ => "Nullability unknown".into(),
+                    Value::Bool(true) => label(language, "Nullable").into(),
+                    Value::Bool(false) => label(language, "Not nullable").into(),
+                    _ => label(language, "Nullability unknown").into(),
                 },
             )
         } else {
@@ -371,14 +393,12 @@ pub(super) fn representations(field: &Value, catalog: &Value) -> String {
                 text(&rep["nullability"]).to_owned(),
             )
         };
-        out.push_str(&format!(
-            "<tr><td data-label=\"Representation\">{}</td><td data-label=\"Type / declared constraints\">{}</td><td data-label=\"Requiredness / nullability\">{}<br/>{}</td><td data-label=\"Retained mapping\">{}</td></tr>",
+        out.push_str(&format!("<tr><td data-label=\"{clew_label_0}\">{}</td><td data-label=\"{clew_label_1}\">{}</td><td data-label=\"{clew_label_2}\">{}<br/>{}</td><td data-label=\"{clew_label_3}\">{}</td></tr>",
             literal(text(&rep["label"])),
             literal(&kind),
             literal(&required),
             literal(&nullable),
-            reading::inline(text(&rep["mapping"]["text"]))
-        ));
+            reading::inline(text(&rep["mapping"]["text"])), clew_label_0 = literal(crate::documentation::language::label(language, "Representation")), clew_label_1 = literal(crate::documentation::language::label(language, "Type / declared constraints")), clew_label_2 = literal(crate::documentation::language::label(language, "Requiredness / nullability")), clew_label_3 = literal(crate::documentation::language::label(language, "Retained mapping"))));
     }
     out.push_str("</tbody></table></div>\n\n");
     out
@@ -436,10 +456,33 @@ mod tests {
         assert!(output.contains("&#123;"));
     }
     #[test]
+    fn localized_representations_separate_owned_labels_from_authored_constraints() {
+        let field = json!({"representations":[
+            {"label":"Representation","contract":"event","field":"id","mapping":{"text":"Retained mapping"}},
+            {"label":"Normalized","typeLabel":"Type / declared constraints","requiredness":"Requiredness unknown","nullability":"Not nullable","mapping":{"text":"Source"}}
+        ]});
+        let catalog = json!({"contracts":[{"id":"event","leaves":[{"field":"id","schema":{"type":"string","format":"uuid","enum":["Not declared"]},"requiredWhenBranchMatches":false,"nullable":true}]}]});
+        let before = (field.clone(), catalog.clone());
+        let html = representations(&field, &catalog, "ru");
+        assert!(html.contains("data-label=\"Представление\">Representation</td>"));
+        assert!(html.contains("Не обязательно в этой ветви"));
+        assert!(html.contains("Допускает null"));
+        assert!(html.contains("uuid") && html.contains("Not declared"));
+        assert!(html.contains("Type / declared constraints"));
+        assert!(html.contains("Requiredness unknown") && html.contains("Not nullable"));
+        assert!(html.contains("Retained mapping") && html.contains("Source"));
+        assert_eq!((field, catalog), before);
+        assert_eq!(
+            schema_type_language(&json!({"$ref":"#/components/schemas/Not declared"}), "ru"),
+            "Ссылка: #/components/schemas/Not declared"
+        );
+    }
+
+    #[test]
     fn representations_show_event_and_normalized_types_without_inventing_requiredness() {
         let field = json!({"representations":[{"label":"Event","contract":"event","field":"updatedAt","mapping":{"text":"Separate contract."}},{"label":"Normalized","typeLabel":"string","requiredness":"Present","nullability":"Not nullable","mapping":{"text":"Stored as JSON."}}]});
         let catalog = json!({"contracts":[{"id":"event","leaves":[{"field":"updatedAt","schema":{"type":"string","format":"date-time"},"requiredWhenBranchMatches":true,"nullable":false}]}]});
-        let output = representations(&field, &catalog);
+        let output = representations(&field, &catalog, "en");
         assert!(output.contains("date-time"));
         assert!(output.contains("Required when branch matches"));
         assert!(output.contains("Not nullable"));

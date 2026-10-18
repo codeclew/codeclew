@@ -660,5 +660,20 @@
   "Type not declared": "Тип не объявлен",
   "one of": "одно из",
   "Required when branch matches": "Обязательно при совпадении ветви",
-  "Accepts null": "Допускает null"
+  "Accepts null": "Допускает null",
+  "Source binding unavailable in this projection.": "Привязка к исходному коду недоступна в этом представлении.",
+  "Record": "Запись",
+  "source and scope": "исходный код и область вывода",
+  "Type / declared constraints": "Тип / объявленные ограничения",
+  "Requiredness / nullability": "Обязательность / допустимость null",
+  "Retained mapping": "Сохранённое соответствие",
+  "Not required by this branch": "Не обязательно в этой ветви",
+  "Requiredness unknown": "Обязательность неизвестна",
+  "Not nullable": "Не допускает null",
+  "Nullability unknown": "Допустимость null неизвестна",
+  "See exact retained schema": "См. точную сохранённую схему",
+  "Not declared": "Не объявлено",
+  "No value allowed (false schema)": "Не допускается ни одно значение (схема false)",
+  "Any value (true schema)": "Допускается любое значение (схема true)",
+  "Reference": "Ссылка"
 }
