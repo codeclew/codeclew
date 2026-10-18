@@ -17,6 +17,9 @@ struct Packet {
     snapshot: String,
     service: String,
     revision: String,
+    /// Language of the packet's authored scope and assessment prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    documentation_language: Option<String>,
     scope: String,
     limitations: Vec<String>,
     sources: Vec<Binding>,
@@ -115,6 +118,7 @@ fn project(
     snapshot: &str,
     checked: &Check,
 ) -> Result<Value, ClewError> {
+    super::super::language::validate(packet.documentation_language.as_deref())?;
     if packet.schema != "codeclew-http-comparison/1.0"
         || packet.publication != publication
         || packet.snapshot != snapshot
@@ -387,7 +391,7 @@ fn project(
         return Err(invalid("HTTP comparison contains unbound case assessments"));
     }
     Ok(
-        json!({"schema":"codeclew-http-comparison-view/1.0","service":packet.service,"revision":packet.revision,"snapshot":packet.snapshot,"publication":packet.publication,"bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","authority":"EXTERNAL_RECORDED_LOCAL_PROBE","schemaValidation":"RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED","validator":assessment["validator"],"scope":packet.scope,"limitations":packet.limitations,"entries":entries,"sources":sources,"artifactBindings":artifact_bindings,"artifacts":packet.artifacts,"packetDigest":super::super::digest(&packet)?}),
+        json!({"schema":"codeclew-http-comparison-view/1.0","documentationLanguage":packet.documentation_language,"service":packet.service,"revision":packet.revision,"snapshot":packet.snapshot,"publication":packet.publication,"bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","authority":"EXTERNAL_RECORDED_LOCAL_PROBE","schemaValidation":"RETAINED_EXTERNAL_ASSESSMENT_NOT_REEXECUTED","validator":assessment["validator"],"scope":packet.scope,"limitations":packet.limitations,"entries":entries,"sources":sources,"artifactBindings":artifact_bindings,"artifacts":packet.artifacts,"packetDigest":super::super::digest(&packet)?}),
     )
 }
 
@@ -476,6 +480,23 @@ mod tests {
             assert!(run(packet.clone(), &check).is_err());
         }
     }
+    #[test]
+    fn comparison_prose_language_is_explicit_and_does_not_relabel_probe_artifacts() {
+        let (mut packet, check) = fixture();
+        let unknown = run(packet.clone(), &check).unwrap();
+        assert!(unknown["documentationLanguage"].is_null());
+        for language in ["en", "ru"] {
+            packet["documentationLanguage"] = json!(language);
+            let value = run(packet.clone(), &check).unwrap();
+            assert_eq!(value["documentationLanguage"], language);
+            assert_eq!(value["artifacts"], unknown["artifacts"]);
+            assert_eq!(value["sources"], unknown["sources"]);
+            assert_eq!(value["entries"], unknown["entries"]);
+        }
+        packet["documentationLanguage"] = json!("de");
+        assert!(run(packet, &check).is_err());
+    }
+
     #[test]
     fn rejects_stale_revision_route_contract_snapshot_source_and_corrupt_artifact() {
         let (packet, check) = fixture();

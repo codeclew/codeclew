@@ -391,7 +391,7 @@ fn project_plan(
     let conclusion = project_block(plan.conclusion, files, checked, bytes)?;
     Ok((
         plan.subject.clone(),
-        json!({"schema":plan.schema,"presentation":plan.presentation,"language":plan.language.unwrap_or_else(|| "en".into()),"subject":plan.subject,"title":plan.title,"purpose":plan.purpose,"sections":sections,"conclusion":conclusion,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE","publication":publication}),
+        json!({"schema":plan.schema,"presentation":plan.presentation,"language":plan.language,"subject":plan.subject,"title":plan.title,"purpose":plan.purpose,"sections":sections,"conclusion":conclusion,"authority":"EDITORIAL_READING_GUIDE_NOT_ACCEPTED_PROSE","publication":publication}),
     ))
 }
 
@@ -677,6 +677,27 @@ mod tests {
         );
         assert!(load_plan(&plan, &changed_source).is_err());
     }
+    #[test]
+    fn absent_editorial_language_remains_unknown_without_relabeling_authored_text() {
+        let (mut plan, files) = fixture();
+        plan.as_object_mut().unwrap().remove("language");
+        let unknown = load_plan(&plan, &files).unwrap();
+        assert!(unknown["scenario:example"]["language"].is_null());
+        for language in ["en", "ru"] {
+            plan["language"] = json!(language);
+            let declared = load_plan(&plan, &files).unwrap();
+            assert_eq!(declared["scenario:example"]["language"], language);
+            assert_eq!(
+                declared["scenario:example"]["sections"],
+                unknown["scenario:example"]["sections"]
+            );
+            assert_eq!(
+                declared["scenario:example"]["conclusion"],
+                unknown["scenario:example"]["conclusion"]
+            );
+        }
+    }
+
     #[test]
     fn sequential_plan_retains_editorial_locale_and_rejects_broken_structure() {
         let (mut plan, files) = fixture();

@@ -14,6 +14,9 @@ struct Plan {
     schema: String,
     publication: String,
     snapshot: String,
+    /// Language of authored prose; absence remains unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    documentation_language: Option<String>,
     models: Vec<Model>,
     #[serde(default)]
     contracts: Vec<Contract>,
@@ -24,6 +27,9 @@ struct Plan {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Model {
     id: String,
+    /// Overrides the plan language for this authored model only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    documentation_language: Option<String>,
     title: String,
     kind: String,
     purpose: Value,
@@ -88,6 +94,8 @@ struct Usage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Contract {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    documentation_language: Option<String>,
     title: String,
     service: String,
     source_id: String,
@@ -98,6 +106,8 @@ struct Contract {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProcessView {
     subject: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    documentation_language: Option<String>,
     enabled: bool,
     anchor: String,
     title: String,
@@ -285,6 +295,24 @@ pub(super) fn load(
         return Ok(None);
     };
     let mut plan: Plan = store::read(path, 1024 * 1024)?;
+    super::super::language::validate(plan.documentation_language.as_deref())?;
+    for language in plan
+        .models
+        .iter()
+        .map(|m| m.documentation_language.as_deref())
+        .chain(
+            plan.contracts
+                .iter()
+                .map(|c| c.documentation_language.as_deref()),
+        )
+        .chain(
+            plan.process_views
+                .iter()
+                .map(|v| v.documentation_language.as_deref()),
+        )
+    {
+        super::super::language::validate(language)?;
+    }
     if plan.schema != "codeclew-data-model-plan/1.0"
         || plan.publication != publication
         || plan.snapshot != snapshot
@@ -316,7 +344,7 @@ pub(super) fn load(
             .ok_or_else(|| invalid("data-model contract branch is unavailable"))?;
         let mut rows = Vec::new();
         leaves(branch, "", &c.branch_pointer, true, &mut rows);
-        contracts.push(json!({"id":c.id,"title":c.title,"branchPointer":c.branch_pointer,"leaves":rows,"source":source,"requiredCondition":"Selected contract branch matches; required parents and array element are present. Array leaves expanded once, independent of cardinality."}));
+        contracts.push(json!({"id":c.id,"title":c.title,"documentationLanguage":c.documentation_language.as_ref().or(plan.documentation_language.as_ref()),"branchPointer":c.branch_pointer,"leaves":rows,"source":source,"requiredCondition":"Selected contract branch matches; required parents and array element are present. Array leaves expanded once, independent of cardinality."}));
     }
     ids.clear();
     for model in &mut plan.models {
@@ -643,6 +671,16 @@ pub(super) fn load(
         }
     }
     let mut value = serde_json::to_value(&plan).map_err(io_error)?;
+    value["documentationLanguage"] = json!(plan.documentation_language);
+    for kind in ["models", "processViews"] {
+        if let Some(rows) = value[kind].as_array_mut() {
+            for row in rows {
+                if row["documentationLanguage"].is_null() {
+                    row["documentationLanguage"] = json!(plan.documentation_language);
+                }
+            }
+        }
+    }
     value["schema"] = json!("codeclew-data-model-reading/1.0");
     value["contracts"] = json!(contracts);
     value["authority"] = json!("AGENT_PROPOSAL");
@@ -743,7 +781,7 @@ pub(super) fn attach_process(
     for m in model["models"].as_array().into_iter().flatten() {
         for link in m["processLinks"].as_array().into_iter().flatten() {
             if link["subject"] == subject && link["reference"].is_object() {
-                references.push(json!({"id":m["id"],"title":m["title"],"anchor":link["anchor"],
+                references.push(json!({"id":m["id"],"title":m["title"],"documentationLanguage":m["documentationLanguage"],"anchor":link["anchor"],
                     "stages":link["reference"]["stages"],"href":format!("../data-model/{}.html",strv(&m["id"]))}));
             }
             let Some(service) = link["replacesServiceEntities"].as_str() else {
@@ -763,7 +801,7 @@ pub(super) fn attach_process(
             links
                 .as_array_mut()
                 .unwrap()
-                .push(json!({"id":m["id"],"title":m["title"],
+                .push(json!({"id":m["id"],"title":m["title"],"documentationLanguage":m["documentationLanguage"],
                 "href":format!("../data-model/{}.html",strv(&m["id"]))}));
         }
     }
@@ -866,7 +904,7 @@ pub(super) fn attach_process(
                 .is_some_and(|ids| ids.contains(&m["id"]))
                 || models.iter().any(|used| used["id"] == m["id"])
         })
-        .map(|m| json!({"id":m["id"],"title":m["title"]}))
+        .map(|m| json!({"id":m["id"],"title":m["title"],"documentationLanguage":m["documentationLanguage"]}))
         .collect::<Vec<_>>();
     payload["processDataFlow"] = json!({"relatedModels":related_models,"request":view,"models":models,"contracts":contracts,"authority":model["authority"],"review":model["review"],"scope":"Fields of directly referenced models and contract leaves. Only explicitly selected process fields and consumer stages are investigated here; omitted fields remain outside investigated scope. Static interpretation, not observed runtime transfer."});
     if !references.is_empty() {
@@ -1214,6 +1252,37 @@ mod tests {
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
     }
     #[test]
+    fn authored_language_inherits_per_model_without_changing_bound_claims() {
+        let (mut plan, files, guides, check) = fixture();
+        let unknown = read(&plan, &files, &guides, &check).unwrap();
+        assert!(unknown["documentationLanguage"].is_null());
+        assert!(unknown["models"][0]["documentationLanguage"].is_null());
+        plan["documentationLanguage"] = json!("en");
+        let inherited = read(&plan, &files, &guides, &check).unwrap();
+        assert_eq!(inherited["models"][0]["documentationLanguage"], "en");
+        assert_eq!(inherited["processViews"][0]["documentationLanguage"], "en");
+        plan["models"][0]["documentationLanguage"] = json!("ru");
+        let mixed = read(&plan, &files, &guides, &check).unwrap();
+        assert_eq!(mixed["models"][0]["documentationLanguage"], "ru");
+        assert_eq!(mixed["processViews"][0]["documentationLanguage"], "en");
+        assert_eq!(mixed["models"][0]["fields"], unknown["models"][0]["fields"]);
+        assert_eq!(
+            mixed["models"][0]["purpose"],
+            unknown["models"][0]["purpose"]
+        );
+        plan["processViews"][0]["documentationLanguage"] = json!("en");
+        for pointer in [
+            "/documentationLanguage",
+            "/models/0/documentationLanguage",
+            "/processViews/0/documentationLanguage",
+        ] {
+            let mut invalid = plan.clone();
+            *invalid.pointer_mut(pointer).unwrap() = json!("de");
+            assert!(read(&invalid, &files, &guides, &check).is_err());
+        }
+    }
+
+    #[test]
     fn reference_records_are_bound_bounded_and_linked_to_the_exact_process_stage() {
         let (mut plan, mut files, guides, check) = fixture();
         let mut lookup = plan["models"][0].clone();
@@ -1425,7 +1494,7 @@ mod tests {
         assert!(payload.get("processDataFlow").is_none());
         assert_eq!(
             payload["canonicalEntityLinks"]["question-apply"]["sample"],
-            json!([{"id":"record","title":"Record","href":"../data-model/record.html"}])
+            json!([{"id":"record","title":"Record","documentationLanguage":null,"href":"../data-model/record.html"}])
         );
         let mut other = original.clone();
         attach_process(Some(&model), "scenario:other", &mut other).unwrap();

@@ -896,6 +896,15 @@ projection and exact retained source. It does not relabel the original prose or
 infer a review. Owned phase names and explanatory text use the reader language;
 source identifiers, expressions, revisions and digests retain their exact values.
 
+Authored Pages inputs also record their prose language explicitly. A data-model
+plan accepts `documentationLanguage`; each `models`, `contracts` or
+`processViews` record can override it for that record. This permits a translated
+model alongside original models without changing their claims or source
+bindings. HTTP comparison packets accept `documentationLanguage` for their
+authored scope and assessment prose; recorded probe artifacts remain exact.
+Question and system reading plans retain their existing `language` field.
+Missing declarations remain unknown rather than silently becoming English.
+
 ### TypeScript retained function pages
 
 TypeScript documentation capture accepts `typescript-5-project-read-only` with
