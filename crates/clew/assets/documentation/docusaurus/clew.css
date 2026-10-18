@@ -60,9 +60,9 @@ body .clew-status :is(span,p,summary){font-size:14px!important;line-height:22px!
   .clew-schema-table td{border:0;padding:8px 12px;overflow-wrap:break-word;word-break:normal}
   .clew-schema-table td::before{content:attr(data-label);display:block;margin-bottom:3px;font-size:14px;line-height:20px;font-weight:650;color:#42516a}
   .clew-schema-table td:empty{display:none}
-  .clew-widget .dm-controls{display:grid;grid-template-columns:minmax(0,1fr);width:100%;gap:12px}
-  .clew-widget .dm-controls label{min-width:0;width:100%;margin:0}
-  .clew-widget .dm-controls select{width:100%;max-width:100%;box-sizing:border-box}
+  .clew-widget .dm-overview .dm-controls{display:grid;grid-template-columns:minmax(0,1fr);width:100%;gap:12px}
+  .clew-widget .dm-overview .dm-controls label{min-width:0;width:100%;margin:0}
+  .clew-widget .dm-overview .dm-controls select{width:100%;max-width:100%;box-sizing:border-box}
   .clew-widget .dm-field-row button{width:100%;max-width:100%;box-sizing:border-box;margin-right:0}
   .clew-widget .dm-field-row,.clew-widget .dm-field-row>ul>li{min-width:0;max-width:100%;box-sizing:border-box}
 }
