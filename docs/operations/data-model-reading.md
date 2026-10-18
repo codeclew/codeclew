@@ -55,6 +55,19 @@ as Technical context, without changing retained prose or claims. It works even
 when Data Flow is disabled. Links preserve the originating question and selected
 field for return navigation; unrelated questions keep their existing links.
 
+For a source-backed lookup or literal reference, a model can add `records` with
+`values` keyed by its exact field IDs and an evidence-bound `claim` per record.
+Every record must provide one scalar per field; at most 64 records are accepted.
+Values are authored interpretations, not automatically extracted or type-checked
+against arbitrary source languages. The admitted source/digest/range and proposal
+status remain visible. Models containing only reference records omit the empty
+field-usage reader; this does not assert that their fields have no other uses.
+
+A process link's optional `reference` object adds a direct model link beside its
+exact question anchor. `reference.stages` optionally names existing Data Flow
+stages where the same reference is available. These links preserve process/field
+return context and do not add the reference model to the field-usage inventory.
+
 The standalone field reader offers a matrix and one focused field flow. Selecting
 a cell opens its statement and bounded source evidence; contract/condition and
 technical details stay in disclosures. New interpretations still require review.

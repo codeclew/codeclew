@@ -27,6 +27,10 @@
 
 .dm-page [tabindex="-1"]:focus-visible{outline:2px solid #087b83;outline-offset:4px}
 
+/* Literal reference records keep field labels when columns stack on phones. */
+table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-records th,.dm-records td{overflow-wrap:anywhere;vertical-align:top}.dm-records code{white-space:normal;overflow-wrap:anywhere}.dm-records details,.dm-records pre{max-width:100%;min-width:0}
+@media(max-width:650px){table.dm-records,.dm-records tbody,.dm-records tr,.dm-records td{display:block;width:auto}.dm-records thead{display:none}.dm-records caption{display:block;width:auto}.dm-records tr{margin-bottom:1rem;border:1px solid #cbd5db}.dm-records td{border:0;border-bottom:1px solid #e2e9ec;padding:.6rem}.dm-records td::before{content:attr(data-field);display:block;font-weight:650;margin-bottom:.2rem}}
+
 /* A task-oriented comparison; narrow screens read all stages vertically. */
 .dm-purpose{margin:0 0 6px}.dm-limit{margin:4px 0;color:#52626b}.dm-reading-notes{padding-left:20px;margin:8px 0}.dm-reading-notes li{margin:4px 0}
 .dm-matrix-scroll{overscroll-behavior:contain}.dm-evidence-hint{display:block;color:#365e70;margin-top:2px}

@@ -29,10 +29,18 @@ struct Model {
     purpose: Value,
     identity: Value,
     fields: Vec<Field>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    records: Vec<ReferenceRecord>,
     #[serde(default)]
     process_links: Vec<ProcessLink>,
     #[serde(default)]
     related_models: Vec<String>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReferenceRecord {
+    values: BTreeMap<String, Value>,
+    claim: Value,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -137,12 +145,20 @@ struct ProcessLink {
     subject: String,
     anchor: String,
     label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference: Option<ProcessReference>,
     #[serde(
         rename = "replacesServiceEntities",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     replaces_service_entities: Option<String>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProcessReference {
+    #[serde(default)]
+    stages: Vec<String>,
 }
 const KINDS: &[&str] = &[
     "validate",
@@ -423,6 +439,19 @@ pub(super) fn load(
                 return Err(invalid("data-model process anchor is invalid"));
             }
             text(&link.label)?;
+            if let Some(reference) = &link.reference
+                && (!link.subject.starts_with("scenario:")
+                    || !link.anchor.starts_with("question-")
+                    || reference.stages.len() > 32
+                    || reference.stages.iter().any(|stage| {
+                        !plan
+                            .process_views
+                            .iter()
+                            .any(|view| view.subject == link.subject && view.stages.contains(stage))
+                    }))
+            {
+                return Err(invalid("model reference stage is outside its process view"));
+            }
             if let Some(service) = &link.replaces_service_entities {
                 let _ = page_for(files, &format!("service:{service}"))?;
                 let matched = link.subject.starts_with("scenario:")
@@ -452,6 +481,28 @@ pub(super) fn load(
                     ));
                 }
             }
+        }
+        if model.records.len() > 64 {
+            return Err(invalid("model reference records exceed bounds"));
+        }
+        for record in &mut model.records {
+            if record.values.keys().cloned().collect::<BTreeSet<_>>() != field_ids
+                || record.values.values().any(|value| match value {
+                    Value::Array(_) | Value::Object(_) => true,
+                    Value::String(value) => value.len() > 2048,
+                    _ => false,
+                })
+            {
+                return Err(invalid(
+                    "model reference record must provide one scalar per field",
+                ));
+            }
+            record.claim = super::question_reading::bind_block(
+                record.claim.clone(),
+                files,
+                checked,
+                &mut bytes,
+            )?;
         }
     }
     for m in &plan.models {
@@ -688,8 +739,13 @@ pub(super) fn attach_process(
     // Canonical navigation is independent of the optional field-flow reader.
     // The author must bind the exact legacy service link and question explicitly.
     let mut navigation = serde_json::Map::new();
+    let mut references = Vec::new();
     for m in model["models"].as_array().into_iter().flatten() {
         for link in m["processLinks"].as_array().into_iter().flatten() {
+            if link["subject"] == subject && link["reference"].is_object() {
+                references.push(json!({"id":m["id"],"title":m["title"],"anchor":link["anchor"],
+                    "stages":link["reference"]["stages"],"href":format!("../data-model/{}.html",strv(&m["id"]))}));
+            }
             let Some(service) = link["replacesServiceEntities"].as_str() else {
                 continue;
             };
@@ -713,6 +769,9 @@ pub(super) fn attach_process(
     }
     if !navigation.is_empty() {
         payload["canonicalEntityLinks"] = Value::Object(navigation);
+    }
+    if !references.is_empty() {
+        payload["modelReferences"] = json!(references);
     }
     let Some(view) = model["processViews"]
         .as_array()
@@ -810,6 +869,9 @@ pub(super) fn attach_process(
         .map(|m| json!({"id":m["id"],"title":m["title"]}))
         .collect::<Vec<_>>();
     payload["processDataFlow"] = json!({"relatedModels":related_models,"request":view,"models":models,"contracts":contracts,"authority":model["authority"],"review":model["review"],"scope":"Fields of directly referenced models and contract leaves. Only explicitly selected process fields and consumer stages are investigated here; omitted fields remain outside investigated scope. Static interpretation, not observed runtime transfer."});
+    if !references.is_empty() {
+        payload["processDataFlow"]["modelReferences"] = json!(references);
+    }
     Ok(())
 }
 pub(super) fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'a Value> {
@@ -833,6 +895,20 @@ pub(super) fn model_contracts<'a>(model: &Value, contracts: &'a Value) -> Vec<&'
         .filter(|c| c["id"].as_str().is_some_and(|id| used.contains(id)))
         .collect()
 }
+pub(super) fn reference_only(model: &Value) -> bool {
+    model["records"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty())
+        && !model["fields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|field| {
+                field["usage"]
+                    .as_array()
+                    .is_some_and(|uses| !uses.is_empty())
+            })
+}
 pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(), ClewError> {
     let mut index = String::from(
         "<div class=\"dm-page\"><h1>Data model</h1><p>Information the system works with, its representations, and the processes that use it.</p><p class=\"dm-status\">Agent proposals · Not reviewed. Original descriptions and review states are retained separately. These are static interpretations, not ownership or runtime guarantees.</p><div class=\"dm-cards\">",
@@ -848,13 +924,39 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
             escape(strv(&m["purpose"]["text"]))
         ));
         let mut body = format!(
-            "<div class=\"dm-page\"><p><a href=\"../data-model.html\">Data model</a> / {}</p><p id=\"dm-return\"></p><h1>{}</h1><p class=\"dm-status\">{} · Agent proposal · Not reviewed</p>{}<h2>Identity and relationships</h2>{}<h2>Fields and representations</h2>",
+            "<div class=\"dm-page\"><p><a href=\"../data-model.html\">Data model</a> / {}</p><p id=\"dm-return\"></p><h1>{}</h1><p class=\"dm-status\">{} · Agent proposal · Not reviewed</p>{}<h2>Identity and relationships</h2>{}",
             escape(title),
             escape(title),
             escape(kind_label(strv(&m["kind"]))),
             evidence(&m["purpose"]),
             model_identity(m, model)
         );
+        if m["records"].as_array().is_some_and(|rows| !rows.is_empty()) {
+            body.push_str("<h2>Reference records</h2><table class=\"dm-records\"><caption>Source-backed literal records · authored interpretation</caption><thead><tr>");
+            for f in m["fields"].as_array().unwrap() {
+                body.push_str(&format!(
+                    "<th scope=\"col\">{}</th>",
+                    escape(strv(&f["path"]))
+                ));
+            }
+            body.push_str("<th scope=\"col\">Evidence</th></tr></thead><tbody>");
+            for record in m["records"].as_array().unwrap() {
+                body.push_str("<tr>");
+                for f in m["fields"].as_array().unwrap() {
+                    body.push_str(&format!(
+                        "<td data-field=\"{}\"><code>{}</code></td>",
+                        escape(strv(&f["path"])),
+                        escape(&record["values"][strv(&f["id"])].to_string())
+                    ));
+                }
+                body.push_str(&format!(
+                    "<td data-field=\"Evidence\">{}</td></tr>",
+                    evidence(&record["claim"])
+                ));
+            }
+            body.push_str("</tbody></table>");
+        }
+        body.push_str("<h2>Fields and representations</h2>");
         for f in m["fields"].as_array().unwrap() {
             body.push_str(&format!("<section id=\"field-{}\"><h3><code>{}</code></h3>{}<table><caption>Representation-specific constraints and mappings</caption><thead><tr><th>Representation</th><th>Type / requiredness / nullability</th><th>Mapping and evidence</th></tr></thead><tbody>",escape(strv(&f["id"])),escape(strv(&f["path"])),evidence(&f["meaning"])));
             for r in f["representations"].as_array().unwrap() {
@@ -914,9 +1016,15 @@ pub(super) fn write(model: &Value, files: &mut BTreeMap<String, Vec<u8>>) -> Res
                     evidence(&r["mapping"])
                 ));
             }
-            body.push_str(&format!("</tbody></table><p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">Trace this field</a></p></section>",escape(strv(&f["id"])),escape(strv(&f["id"]))));
+            if reference_only(m) {
+                body.push_str("</tbody></table></section>");
+            } else {
+                body.push_str(&format!("</tbody></table><p><a data-dm-context href=\"?field={}#field-usage\" data-dm-field=\"{}\">Trace this field</a></p></section>",escape(strv(&f["id"])),escape(strv(&f["id"]))));
+            }
         }
-        body.push_str("<section id=\"field-usage\"><h2>Field usage and focused flow</h2><p>Choose one field or consumer cell. Validation, business decisions, display, storage, forwarding and whole-object comparison remain separate. Unknown is not zero usage.</p><div id=\"dm-usage\"></div></section>");
+        if !reference_only(m) {
+            body.push_str("<section id=\"field-usage\"><h2>Field usage and focused flow</h2><p>Choose one field or consumer cell. Validation, business decisions, display, storage, forwarding and whole-object comparison remain separate. Unknown is not zero usage.</p><div id=\"dm-usage\"></div></section>");
+        }
         body.push_str("<h2>Processes</h2><ul>");
         for link in m["processLinks"].as_array().into_iter().flatten() {
             let subject = strv(&link["subject"]);
@@ -1101,6 +1209,63 @@ mod tests {
         let path = tmp.path().join("model.json");
         std::fs::write(&path, serde_json::to_vec(plan).unwrap()).unwrap();
         Ok(load(Some(&path), "pub", "snap", files, check, guides)?.unwrap())
+    }
+    #[test]
+    fn reference_records_are_bound_bounded_and_linked_to_the_exact_process_stage() {
+        let (mut plan, mut files, guides, check) = fixture();
+        let mut lookup = plan["models"][0].clone();
+        lookup["id"] = json!("lookup");
+        lookup["fields"][0]["usage"] = json!([]);
+        lookup["records"] = json!([{
+            "values":{"value":"<literal>"},"claim":plan["models"][0]["purpose"]
+        }]);
+        lookup["processLinks"][0]["reference"] = json!({"stages":["Store"]});
+        plan["models"].as_array_mut().unwrap().push(lookup);
+        let model = read(&plan, &files, &guides, &check).unwrap();
+        assert!(reference_only(&model["models"][1]));
+        assert_eq!(
+            model["models"][1]["records"][0]["claim"]["evidence"][0]["fragment"]["text"],
+            "Stored field"
+        );
+        let mut payload = json!({});
+        attach_process(Some(&model), "scenario:example", &mut payload).unwrap();
+        assert_eq!(payload["modelReferences"][0]["anchor"], "question-apply");
+        assert_eq!(
+            payload["processDataFlow"]["modelReferences"][0]["stages"],
+            json!(["Store"])
+        );
+        let mut other = json!({});
+        attach_process(Some(&model), "scenario:other", &mut other).unwrap();
+        assert!(other.get("modelReferences").is_none());
+        write(&model, &mut files).unwrap();
+        let html = String::from_utf8(files["data-model/lookup.html"].clone()).unwrap();
+        assert!(html.contains("&lt;literal&gt;"));
+        assert!(!html.contains("<literal>"));
+        assert!(html.contains("Agent proposal · Not reviewed"));
+        assert!(!html.contains("id=\"field-usage\""));
+        assert!(html.contains("id=\"dm-return\""));
+    }
+    #[test]
+    fn reference_records_reject_wrong_shape_unbound_evidence_and_foreign_stages() {
+        let (mut plan, files, guides, check) = fixture();
+        plan["models"][0]["records"] =
+            json!([{"values":{"value":1.25},"claim":plan["models"][0]["purpose"]}]);
+        assert!(read(&plan, &files, &guides, &check).is_ok());
+        for values in [
+            json!({}),
+            json!({"other":1}),
+            json!({"value":[1]}),
+            json!({"value":1,"other":2}),
+        ] {
+            let mut bad = plan.clone();
+            bad["models"][0]["records"][0]["values"] = values;
+            assert!(read(&bad, &files, &guides, &check).is_err());
+        }
+        let mut bad = plan.clone();
+        bad["models"][0]["records"][0]["claim"]["evidence"][0]["textDigest"] = json!("changed");
+        assert!(read(&bad, &files, &guides, &check).is_err());
+        plan["models"][0]["processLinks"][0]["reference"] = json!({"stages":["Foreign"]});
+        assert!(read(&plan, &files, &guides, &check).is_err());
     }
     #[test]
     fn contract_requiredness_keeps_null_and_missing_distinct_and_parent_scope() {

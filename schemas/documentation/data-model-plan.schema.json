@@ -458,6 +458,22 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 256
+              },
+              "reference": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Show this model beside the exact process question and in the explicitly named Data Flow stages. No field-usage inventory is added.",
+                "properties": {
+                  "stages": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    }
+                  }
+                }
               }
             },
             "required": [
@@ -475,6 +491,13 @@
             "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
           },
           "maxItems": 32
+        },
+        "records": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/referenceRecord"
+          }
         }
       },
       "required": [
@@ -718,6 +741,34 @@
         "fields",
         "stages"
       ]
+    },
+    "referenceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "values",
+        "claim"
+      ],
+      "properties": {
+        "values": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 128,
+          "description": "One scalar value for every declared model field ID; exact key equality is validated by the renderer.",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
+            "maxLength": 2048
+          }
+        },
+        "claim": {
+          "$ref": "#/$defs/block"
+        }
+      }
     }
   }
 }

@@ -92,6 +92,9 @@
   const label=edge.authority==='SOURCE_INTERPRETATION'?'Source-interpreted transfer':edge.authority==='DECLARED_TRANSFER'?'Declared transfer · runtime unverified':'Unknown transfer';
   return `<div class="dm-transfer ${edge.authority==='UNKNOWN'?'dm-transfer-unknown':''}"><p>↓ ${esc(label)}</p><details><summary>Transfer condition and evidence</summary><p>${esc(edge.condition)}</p><p>${esc(edge.claim.text)}</p>${evidence(edge.claim)}</details></div>`;
  }
+ function referenceLinks(stage,data){
+  return (data.modelReferences||[]).filter(link=>link.stages?.includes(stage)).map(link=>`<p><a data-dm-context data-dm-return-anchor="${esc(link.anchor)}" href="${esc(data.modelHrefs?.[link.id]||link.href)}">${esc(link.title)}</a></p>`).join('');
+ }
  function focused(row,uses,data){
   if(row.leaf)return `<h3 tabindex="-1" class="dm-flow-heading">${esc(row.label)}</h3><p>Unmapped contract leaf · not investigated. This is not zero usage.</p><p>Exact schema pointer: <code>${esc(row.leaf.pointer)}</code></p><pre>${esc(JSON.stringify(row.leaf.schema,null,2))}</pre>${row.contract.source?sourceHtml(row.contract.source):''}`;
   const canonical=data.modelHrefs?.[row.model.id]||`${data.request?'../data-model/':''}${row.model.id}.html`;
@@ -115,7 +118,7 @@
   function update(focus=false){
    fieldSelect.value=selected.key;stageSelect.value=stage;
    const uses=selected.field.usage.filter(u=>(!contractSelect.value||u.contract===contractSelect.value)&&(!(detailStage||stage)||u.stage===(detailStage||stage)));
-   locationUpdate();flow.innerHTML=(detailStage?`<p>Selected stage: ${esc(detailStage)}</p>`:'')+focused(selected,uses,data);contextLinks(document,data);
+   locationUpdate();flow.innerHTML=(detailStage?`<p>Selected stage: ${esc(detailStage)}</p>${referenceLinks(detailStage,data)}`:'')+focused(selected,uses,data);contextLinks(document,data);
    container.querySelectorAll('[data-dm-cell]').forEach(button=>{const active=button.dataset.field===selected.key&&button.dataset.stage===detailStage;button.setAttribute('aria-expanded',String(active&&(focus||container.querySelector('.dm-drilldown').open)));if(active)button.setAttribute('aria-current','true');else button.removeAttribute('aria-current');});
    container.querySelector('.dm-selected-context').textContent=selected.label+(detailStage?' · '+detailStage:' · all selected stages');
    const summaryStages=stage?[stage]:stages;const summary=summaryStages.map(s=>stats(data,contractSelect.value,s)).map((s,i)=>s?`<details><summary>${esc(summaryStages[i])}: ${s.investigated}/${s.required} required leaves investigated · ${s.unknown} unknown/not investigated${s.stale?' · '+s.stale+' stale':''}</summary><p>${esc(s.contract)}. Categories overlap; array element leaves counted once.</p><ul>${Object.entries(s.categories).map(([k,n])=>`<li>${esc(labels[k])}: ${n}</li>`).join('')}</ul><p>Scoped negative findings: ${s.negative}. Uninvestigated leaves: ${esc(s.uninvestigated.join(', ')||'none')}.</p></details>`:'').join('');
@@ -155,7 +158,7 @@
   root.dmSelectProcess=()=>view('process');
   view(new URLSearchParams(location.search||'').get('view')==='data-flow'?'data-flow':'process',false);
  }
- const api={stats,fields,overviewRows,overviewHtml,inventoryLabel,cellLabel,readableUse,matrixHtml,compactHtml,focused,mount,processMount};window.CodeclewDataModel=api;
+ const api={stats,fields,overviewRows,overviewHtml,inventoryLabel,cellLabel,readableUse,matrixHtml,compactHtml,focused,referenceLinks,contextLinks,mount,processMount};window.CodeclewDataModel=api;
  const node=document.getElementById('dm-data');
  if(node?.textContent?.trim()){
   const data=JSON.parse(node.textContent),container=document.getElementById('dm-usage'),handle=container?mount(container,data):null;

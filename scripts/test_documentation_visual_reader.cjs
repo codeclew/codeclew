@@ -1365,6 +1365,15 @@ test('canonical model is primary without Data Flow and retains exact process ret
  assert.doesNotMatch(other,/data-model/);
  assert.match(other,/fromQuestion=confidence/);
 });
+test('explicit model reference binds a process question without replacing existing descriptions',()=>{
+ const d=questionFixture(),before=JSON.stringify(d.questionReader);
+ d.modelReferences=[{id:'lookup',title:'City lookup',anchor:'question-story',href:'../data-model/lookup.html',stages:['Lookup']}];
+ const r=load(d),html=r.run("questionModelReferences('question-story')");
+ assert.match(html,/City lookup/);
+ assert.match(html,/fromProcess=renderer-fixture&amp;fromAnchor=question-story/);
+ assert.equal(r.run("questionModelReferences('question-confidence')"),'');
+ assert.equal(JSON.stringify(d.questionReader),before);
+});
 test('optional question profile has one main account, exact evidence and safe object return route',()=>{
  const d=questionFixture(),before=JSON.stringify(d.operations),r=load(d);
  r.run("showEntry('process-overview')");
