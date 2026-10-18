@@ -1630,6 +1630,24 @@ test('retained HTTP comparison displays bounded route findings, separate status/
  assert.match(html,/&lt;script&gt;unsafe/);assert.doesNotMatch(html,/<script>unsafe/);
  assert.match(html,/Full accepted route description remains available/);
 });
+test('Russian retained HTTP comparison localizes computed findings while preserving probes and source bindings',()=>{
+ const data=retainedHttpFixture();data.language='ru';
+ data.contractComparison.scope='Source fragments';
+ data.contractComparison.entries[1].coverage='Recorded request';
+ data.contractComparison.entries[1].cases[0].request.body='{"value":"Snapshot"}';
+ data.contractComparison.entries[1].cases[0].requestErrors=[{message:'External schema check'}];
+ const before=JSON.stringify(data),r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;
+ assert.match(html,/Приём запросов за пределами схемы/);
+ assert.match(html,/не доказывает сбой для запроса, соответствующего контракту/);
+ assert.match(html,/Необъявленный тип содержимого ответа/);
+ assert.doesNotMatch(html,/>Broader request acceptance<|>Undeclared response media type<|>Cases, evidence and limits</);
+ for(const original of ['Source fragments','Recorded request','External schema check','Snapshot','application/json','application/problem+json','sha256:packet','sha256:probe'])assert.ok(html.includes(original),original);
+ assert.match(html,/400 · объявлен/);assert.match(html,/Соответствует выбранной схеме/);
+ assert.match(html,/&lt;script&gt;unsafe/);assert.doesNotMatch(html,/<script>unsafe/);
+ assert.equal(r.run('JSON.stringify(publication)'),before);
+ assert.equal(r.e('document-data').textContent,before);
+});
+
 test('retained HTTP comparison refuses stale snapshot, revision and integrity status without rendering findings',()=>{
  for(const [key,value] of [['snapshot','other'],['revision','other'],['bindingStatus','UNKNOWN']]){
   const data=retainedHttpFixture();data.contractComparison[key]=value;const r=load(data);r.run("showEntry('section-ingress')");const html=r.e('scenario-content').innerHTML;

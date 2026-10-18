@@ -265,8 +265,8 @@ pub(super) fn narrative_notice_html(gaps: &BTreeMap<String, Value>, language: &s
         narrative_explanation(language),
         text(
             language,
-            "Descriptions awaiting translation",
-            "Описания, требующие перевода"
+            "Descriptions without established availability in the selected language",
+            "Описания, доступность которых на выбранном языке не установлена"
         ),
         gaps.len()
     );

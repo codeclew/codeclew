@@ -1044,38 +1044,80 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
     Ok(out)
 }
 
-fn comparison_rows(entry: &Value, packet: &Value) -> String {
+fn comparison_rows(entry: &Value, packet: &Value, language: &str) -> String {
     let mut out = format!(
         "{}\n\n{}",
         md(text(&entry["coverage"])),
-        contracts::findings(entry)
+        contracts::findings(entry, language)
     );
-    let mut cases = String::from(
-        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table clew-case-table\"><thead><tr><th scope=\"col\">Retained case</th><th scope=\"col\">HTTP status</th><th scope=\"col\">Status declared</th><th scope=\"col\">Recorded media</th><th scope=\"col\">Request assessment</th><th scope=\"col\">Body assessment</th></tr></thead><tbody>",
+    let mut cases = format!(
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table clew-case-table\"><thead><tr><th scope=\"col\">{clew_label_0}</th><th scope=\"col\">{clew_label_1}</th><th scope=\"col\">{clew_label_2}</th><th scope=\"col\">{clew_label_3}</th><th scope=\"col\">{clew_label_4}</th><th scope=\"col\">{clew_label_5}</th></tr></thead><tbody>",
+        clew_label_0 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Retained case"
+        )),
+        clew_label_1 = contracts::literal(crate::documentation::language::label(
+            language,
+            "HTTP status"
+        )),
+        clew_label_2 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Status declared"
+        )),
+        clew_label_3 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Recorded media"
+        )),
+        clew_label_4 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Request assessment"
+        )),
+        clew_label_5 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Body assessment"
+        ))
     );
     for case in rows(&entry["cases"]) {
-        cases.push_str(&format!("<tr><td data-label=\"Retained case\">{}</td><td data-label=\"HTTP status\">{}</td><td data-label=\"Status declared\">{}</td><td data-label=\"Recorded media\">{} · {}</td><td data-label=\"Request assessment\">{}</td><td data-label=\"Body assessment\">{}</td></tr>",
+        cases.push_str(&format!("<tr><td data-label=\"{clew_label_0}\">{}</td><td data-label=\"{clew_label_1}\">{}</td><td data-label=\"{clew_label_2}\">{}</td><td data-label=\"{clew_label_3}\">{} · {}</td><td data-label=\"{clew_label_4}\">{}</td><td data-label=\"{clew_label_5}\">{}</td></tr>",
             contracts::literal(text(&case["id"])),
             contracts::literal(&case["response"]["status"].to_string()),
             contracts::literal(&case["statusDeclared"].to_string()),
             contracts::literal(text(&case["response"]["contentType"])),
             contracts::literal(text(&case["mediaAssessment"])),
             contracts::literal(text(&case["requestAssessment"])),
-            contracts::literal(text(&case["bodyAssessment"]))));
+            contracts::literal(text(&case["bodyAssessment"])), clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Retained case")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "HTTP status")), clew_label_2 = contracts::literal(crate::documentation::language::label(language, "Status declared")), clew_label_3 = contracts::literal(crate::documentation::language::label(language, "Recorded media")), clew_label_4 = contracts::literal(crate::documentation::language::label(language, "Request assessment")), clew_label_5 = contracts::literal(crate::documentation::language::label(language, "Body assessment"))));
     }
     cases.push_str("</tbody></table></div>\n\n");
-    cases.push_str(&format!("\n{}\n\nExternal JSON-schema assessments are retained from {}; this reader verifies saved bindings and does not rerun that validator.\n\n",md(text(&packet["scope"])),md(text(&packet["validator"]))));
+    cases.push_str(&format!(
+        "\n{}\n\n{clew_label_0} {}{clew_label_1}\n\n",
+        md(text(&packet["scope"])),
+        md(text(&packet["validator"])),
+        clew_label_0 = contracts::literal(crate::documentation::language::label(
+            language,
+            "External JSON-schema assessments are retained from"
+        )),
+        clew_label_1 = contracts::literal(crate::documentation::language::label(
+            language,
+            "; this reader verifies saved bindings and does not rerun that validator."
+        ))
+    ));
     for limit in rows(&packet["limitations"]) {
         cases.push_str(&format!("- {}\n", md(text(limit))));
     }
     cases.push_str(&details(
-        "Raw recorded cases, differences and bindings",
+        crate::documentation::language::label(
+            language,
+            "Raw recorded cases, differences and bindings",
+        ),
         &fence(
             &serde_json::to_string_pretty(entry).expect("JSON value"),
             "json",
         ),
     ));
-    out.push_str(&details("Cases, evidence and limits", &cases));
+    out.push_str(&details(
+        crate::documentation::language::label(language, "Cases, evidence and limits"),
+        &cases,
+    ));
     out
 }
 
@@ -1084,6 +1126,7 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
     service_page_with_context(page, id, &Value::Null)
 }
 fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
+    let language = page["language"].as_str().unwrap_or("en");
     let mut out = header(text(&page["title"]), &format!("/services/{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!(
@@ -1154,13 +1197,29 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                 for compared in rows(&page["contractComparison"]["entries"])
                     .filter(|v| v["entrypoint"] == entry["id"])
                 {
-                    out.push_str("##### Retained HTTP comparison\n\n");
+                    out.push_str(&format!(
+                        "##### {}\n\n",
+                        md(crate::documentation::language::label(
+                            language,
+                            "Retained HTTP comparison"
+                        ))
+                    ));
                     if contracts::comparison_current(page, compared) {
-                        out.push_str(&comparison_rows(compared, &page["contractComparison"]));
+                        out.push_str(&comparison_rows(
+                            compared,
+                            &page["contractComparison"],
+                            language,
+                        ));
                     } else {
-                        out.push_str("Retained HTTP comparison does not match this selected snapshot. Its findings are not applied.\n\n");
+                        out.push_str(&format!("{}\n\n", md(crate::documentation::language::label(language, "Retained HTTP comparison does not match this selected snapshot. Its findings are not applied."))));
                     }
-                    out.push_str(&format!("[Comparison scope and original test artifacts](../comparisons/{id}.mdx)\n\n"));
+                    out.push_str(&format!(
+                        "[{}](../comparisons/{id}.mdx)\n\n",
+                        md(crate::documentation::language::label(
+                            language,
+                            "Comparison scope and original test artifacts"
+                        ))
+                    ));
                 }
             }
         }
@@ -1185,32 +1244,44 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
 }
 
 fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewError> {
-    let title = format!("{id}: retained HTTP comparison");
+    let language = page["language"].as_str().unwrap_or("en");
+    let title = format!(
+        "{id}: {}",
+        crate::documentation::language::label(language, "retained HTTP comparison")
+    );
     let mut out = header(&title, &format!("/comparisons/{id}"));
     out.push_str(IMPORTS);
-    out.push_str(&format!("# {}\n\n", md(&title)));
+    out.push_str(&format!(
+        "# {} {{#{}-retained-http-comparison}}\n\n",
+        md(&title),
+        id.to_ascii_lowercase()
+    ));
     for gap in
         rows(&page["authoredTranslationGaps"]).filter(|gap| gap["record"] == "contractComparison")
     {
         out.push_str(&prose_gap(gap, page["language"].as_str().unwrap_or("en"))?);
     }
-    out.push_str(&format!(
-        "{}\n\nAuthority: {} · binding: {}\n\nSnapshot: {}\n\nRevision: {}\n\n",
+    out.push_str(&format!("{}\n\n{clew_label_0}: {} · {clew_label_1}: {}\n\n{clew_label_2}: {}\n\n{clew_label_3}: {}\n\n",
         md(text(&c["scope"])),
         md(text(&c["authority"])),
         md(text(&c["bindingStatus"])),
         md(text(&c["snapshot"])),
-        md(text(&c["revision"]))
-    ));
+        md(text(&c["revision"])), clew_label_0 = contracts::literal(crate::documentation::language::label(language, "Authority")), clew_label_1 = contracts::literal(crate::documentation::language::label(language, "Binding")), clew_label_2 = contracts::literal(crate::documentation::language::label(language, "Snapshot")), clew_label_3 = contracts::literal(crate::documentation::language::label(language, "Revision"))));
     for entry in rows(&c["entries"]) {
         out.push_str(&format!(
             "## {} {}\n\n{}",
             md(text(&entry["method"])),
             md(text(&entry["path"])),
-            comparison_rows(entry, c)
+            comparison_rows(entry, c, language)
         ));
     }
-    out.push_str("## Scope and limitations\n\n");
+    out.push_str(&format!(
+        "## {clew_label_0} {{#scope-and-limitations}}\n\n",
+        clew_label_0 = contracts::literal(crate::documentation::language::label(
+            language,
+            "Scope and limitations"
+        ))
+    ));
     for limit in rows(&c["limitations"]) {
         out.push_str(&format!("- {}\n", md(text(limit))));
     }
@@ -1220,7 +1291,10 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
         .into_iter()
         .flat_map(|v| v.values())
     {
-        out.push_str(&format!("- {}\n", source_link(source)?));
+        out.push_str(&format!(
+            "- {}\n",
+            source_link_in_language(source, "../", language)?
+        ));
     }
     out.push('\n');
     for (name, artifact) in c["artifacts"]
@@ -1229,11 +1303,19 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
         .flat_map(|v| v.iter())
     {
         out.push_str(&details(
-            &format!("Retained artifact: {name}"),
             &format!(
-                "Digest: {}\n\n{}",
+                "{clew_label_0}: {name}",
+                clew_label_0 = contracts::literal(crate::documentation::language::label(
+                    language,
+                    "Retained artifact"
+                ))
+            ),
+            &format!(
+                "{clew_label_0}: {}\n\n{}",
                 md(text(&artifact["digest"])),
-                fence(text(&artifact["text"]), "text")
+                fence(text(&artifact["text"]), "text"),
+                clew_label_0 =
+                    contracts::literal(crate::documentation::language::label(language, "Digest"))
             ),
         ));
     }
@@ -1525,8 +1607,8 @@ fn narrative_page_notice(page: &Value) -> Result<String, ClewError> {
         super::prose_language::narrative_explanation(language),
         label(
             language,
-            "Descriptions awaiting translation",
-            "Описания, требующие перевода"
+            "Descriptions without established availability in the selected language",
+            "Описания, доступность которых на выбранном языке не установлена"
         ),
         gaps.len()
     );
@@ -1562,7 +1644,11 @@ fn operation_language_notice(page: &Value, operation: &Value) -> Result<String, 
     crate::documentation::store::relative(original)?;
     Ok(format!(
         "<p className=\"original-language\">{} · {}: {} · <ClewDownload path={}>{}</ClewDownload></p>\n\n",
-        label(language, "Translation pending", "Требуется перевод"),
+        label(
+            language,
+            "Availability in the selected language is not established",
+            "Доступность на выбранном языке не установлена"
+        ),
         label(
             language,
             "Original prose language",
@@ -2098,6 +2184,7 @@ mod tests {
         let rendered = comparison_rows(
             &json!({"coverage":"Selected cases only","cases":[{"id":"extra-property","response":{"status":200,"contentType":"application/json"},"statusDeclared":true,"mediaAssessment":"declared","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]}),
             &json!({"validator":"retained validator"}),
+            "en",
         );
         for label in [
             "Retained case",
@@ -2166,6 +2253,38 @@ mod tests {
         assert!(comparison.contains("/clew-original/scenarios/save.comparison.original.json"));
         assert_eq!(page["contractComparison"], original["contractComparison"]);
         assert_eq!(page["processDataFlow"], original["processDataFlow"]);
+    }
+
+    #[test]
+    fn russian_http_comparison_localizes_findings_without_changing_case_values_or_external_text() {
+        let entry = json!({"method":"POST","path":"/items/{id}","coverage":"Recorded request","findings":[{"kind":"BROADER_REQUEST_ACCEPTANCE","caseIds":["Snapshot"]},{"kind":"UNDECLARED_RESPONSE_MEDIA","caseIds":["Snapshot"]}],"cases":[{"id":"Snapshot","request":{"body":"{\"value\":\"Scope and limitations\"}"},"requestErrors":[{"message":"External schema check"}],"response":{"status":200,"contentType":"text/plain"},"statusDeclared":true,"declaredMedia":["application/json"],"mediaAssessment":"undeclared-media","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]});
+        let packet = json!({"scope":"Source fragments","validator":"validator-v1","limitations":["Original limitation"],"entries":[entry],"sources":{},"artifacts":{"probe":{"digest":"unchanged-digest","text":"Original artifact: Snapshot"}},"authority":"EXTERNAL_RECORDED_LOCAL_PROBE","snapshot":"saved-snapshot","revision":"saved-revision","bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT"});
+        let before = (entry.clone(), packet.clone());
+        let rows = comparison_rows(&entry, &packet, "ru");
+        assert!(rows.contains("Приём запросов за пределами схемы"));
+        assert!(rows.contains("не доказывает сбой для запроса, соответствующего контракту"));
+        assert!(rows.contains("data-label=\"Оценка запроса\""));
+        for original in [
+            "Snapshot",
+            "text/plain",
+            "application/json",
+            "outside-schema",
+            "matches-selected-schema",
+            "Source fragments",
+            "Recorded request",
+            "External schema check",
+            "Scope and limitations",
+            "validator-v1",
+        ] {
+            assert!(rows.contains(original), "{original}");
+        }
+        let page = comparison_page(&packet, "Places", &json!({"language":"ru"})).unwrap();
+        assert!(page.contains("Places: сохранённое сравнение HTTP"));
+        assert!(page.contains("{#places-retained-http-comparison}"));
+        assert!(page.contains("{#scope-and-limitations}"));
+        assert!(page.contains("Original artifact: Snapshot") && page.contains("unchanged-digest"));
+        assert!(!page.contains("#### Broader request acceptance"));
+        assert_eq!((entry, packet), before);
     }
 
     #[test]

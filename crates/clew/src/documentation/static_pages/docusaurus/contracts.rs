@@ -242,7 +242,7 @@ pub(super) fn comparison_current(page: &Value, entry: &Value) -> bool {
                 && r["normalized"]["path"] == entry["path"]
         })
 }
-pub(super) fn findings(entry: &Value) -> String {
+pub(super) fn findings(entry: &Value, language: &str) -> String {
     let mut out = String::new();
     for finding in rows(&entry["findings"]) {
         let (title, explanation) = match text(&finding["kind"]) {
@@ -266,8 +266,8 @@ pub(super) fn findings(entry: &Value) -> String {
         };
         out.push_str(&format!(
             "<aside className=\"clew-http-finding\" role=\"status\">\n\n#### {}\n\n{}\n\n",
-            md(title),
-            md(explanation)
+            md(label(language, title)),
+            md(label(language, explanation))
         ));
         let cases = rows(&entry["cases"])
             .filter(|c| rows(&finding["caseIds"]).any(|id| id == &c["id"]))
@@ -285,12 +285,15 @@ pub(super) fn findings(entry: &Value) -> String {
                         .unwrap_or("")
                 );
                 out.push_str(&format!(
-                    "<p>Recorded request{}: <code>{}</code> → <code>{}</code>.</p>\n\n",
-                    if body.chars().count() > 256 {
-                        " excerpt"
-                    } else {
-                        ""
-                    },
+                    "<p>{}: <code>{}</code> → <code>{}</code>.</p>\n\n",
+                    literal(label(
+                        language,
+                        if body.chars().count() > 256 {
+                            "Recorded request excerpt"
+                        } else {
+                            "Recorded request"
+                        }
+                    )),
                     literal(&excerpt),
                     literal(&response)
                 ));
@@ -299,8 +302,12 @@ pub(super) fn findings(entry: &Value) -> String {
                     .and_then(|v| v["message"].as_str())
                 {
                     out.push_str(&format!(
-                        "External schema check: {}\n\n",
-                        md(&error.chars().take(256).collect::<String>())
+                        "{clew_label_0}: {}\n\n",
+                        md(&error.chars().take(256).collect::<String>()),
+                        clew_label_0 = literal(crate::documentation::language::label(
+                            language,
+                            "External schema check"
+                        ))
                     ));
                 }
             }
@@ -322,21 +329,22 @@ pub(super) fn findings(entry: &Value) -> String {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let declared = if declared.is_empty() {
-                    "No media specified".into()
+                    label(language, "No media specified").into()
                 } else {
                     declared
                 };
                 if seen.insert((observed.clone(), declared.clone())) {
-                    out.push_str(&format!("<p>Observed: <code>{}</code>. Declared for this status: <code>{}</code>.</p>\n\n",literal(&observed),literal(&declared)));
+                    out.push_str(&format!("<p>{clew_label_0}: <code>{}</code>. {clew_label_1}: <code>{}</code>.</p>\n\n",literal(&observed),literal(&declared), clew_label_0 = literal(crate::documentation::language::label(language, "Observed")), clew_label_1 = literal(crate::documentation::language::label(language, "Declared for this status"))));
                 }
             }
         }
         out.push_str(&format!(
-            "Cases: {}\n\n</aside>\n\n",
+            "{clew_label_0} {}\n\n</aside>\n\n",
             rows(&finding["caseIds"])
                 .map(|v| md(text(v)))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            clew_label_0 = literal(crate::documentation::language::label(language, "Cases:"))
         ));
     }
     out
@@ -450,7 +458,7 @@ mod tests {
         assert!(comparison_current(&page, &entry));
         page["contractComparison"]["revision"] = json!("older");
         assert!(!comparison_current(&page, &entry));
-        let output = findings(&entry);
+        let output = findings(&entry, "en");
         assert!(output.contains("does not show failure for a contract-valid request"));
         assert!(output.contains("application/json"));
         assert!(output.contains("&#123;"));
