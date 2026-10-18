@@ -131,6 +131,48 @@ fn upstream_voltdb_inline_chain_retains_callback_order_and_exact_source_ranges()
 }
 
 #[test]
+fn inline_builder_locale_does_not_change_callback_groups_or_source_references() {
+    let profile = inline_profile();
+    let source = include_str!("../../../../../fixtures/flow-dsl/voltdb/OrderProc.java");
+    let evidence = evidence_at(source, &profile.construction.file, "");
+    let en = serde_json::to_value(
+        extract::project_language(&evidence, "saved", &profile, "en").unwrap(),
+    )
+    .unwrap();
+    let ru = serde_json::to_value(
+        extract::project_language(&evidence, "saved", &profile, "ru").unwrap(),
+    )
+    .unwrap();
+    for key in [
+        "sources",
+        "revision",
+        "snapshot",
+        "profileDigest",
+        "authority",
+    ] {
+        assert_eq!(en[key], ru[key]);
+    }
+    for (a, b) in en["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(ru["items"].as_array().unwrap())
+    {
+        for key in [
+            "id",
+            "kind",
+            "expression",
+            "members",
+            "conditions",
+            "reference",
+        ] {
+            assert_eq!(a[key], b[key]);
+        }
+    }
+    assert_eq!(en["phases"][0]["itemIds"], ru["phases"][0]["itemIds"]);
+}
+
+#[test]
 fn inline_chains_reject_ambiguous_conditional_nested_and_unsupported_expressions() {
     let p = inline_profile();
     let chain = "newStageList(this::first).then(this::second).build()";
@@ -161,9 +203,21 @@ fn inline_chains_reject_ambiguous_conditional_nested_and_unsupported_expressions
     for body in bodies {
         let source = format!("class OrderProc {{ void run() {{ {body} }} }}");
         let e = evidence_at(&source, &p.construction.file, "");
-        let projection = extract::project(&e, "snapshot", &p).unwrap();
-        assert!(projection.items.iter().all(|i| i.kind == "gap"), "{body}");
-        assert!(!projection.items.is_empty(), "{body}");
+        for language in ["en", "ru"] {
+            let projection = extract::project_language(&e, "snapshot", &p, language).unwrap();
+            assert!(projection.items.iter().all(|i| i.kind == "gap"), "{body}");
+            assert!(!projection.items.is_empty(), "{body}");
+            if language == "ru" {
+                assert!(
+                    projection
+                        .items
+                        .iter()
+                        .all(|i| !i.label.starts_with("Inline ")
+                            && !i.label.starts_with("Unsupported ")
+                            && !i.label.starts_with("Conditional "))
+                );
+            }
+        }
     }
 }
 

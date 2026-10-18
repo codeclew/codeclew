@@ -27,6 +27,21 @@ pub(super) fn owned<'a>(value: &'a str, language: &str) -> Cow<'a, str> {
         "Construction source has Java parse errors; no DSL extraction accepted" => {
             "В исходном коде построения найдены ошибки синтаксиса Java; разбор DSL не принят"
         }
+        "Inline builder initialization is missing or ambiguous" => {
+            "Инициализация inline-построителя отсутствует или неоднозначна"
+        }
+        "Inline builder requires a standalone chain ending in build()" => {
+            "Для inline-построителя требуется отдельная цепочка, завершающаяся build()"
+        }
+        "Conditional or nested inline builder expression is unsupported" => {
+            "Условное или вложенное выражение inline-построителя не поддерживается"
+        }
+        "Unsupported inline builder chain call" => {
+            "Вызов в цепочке inline-построителя не поддерживается"
+        }
+        "Unsupported inline builder callback expression" => {
+            "Выражение обработчика inline-построителя не поддерживается"
+        }
         "Conditional or nested construction is unsupported" => {
             "Условное или вложенное построение не поддерживается"
         }
