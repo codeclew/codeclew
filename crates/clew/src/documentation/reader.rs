@@ -86,10 +86,7 @@ pub(super) fn navigation_language(
         "Search documentation metadata",
         "Поиск по метаданным документации",
     );
-    let placeholder = label(
-        "Search services, APIs, handlers and entities…",
-        "Найти сервис, API, обработчик или сущность…",
-    );
+    let placeholder = label("Search documentation", "Поиск по документации");
     let search_button = label("Search", "Найти");
     let history_link = history
         .map(|path| {
@@ -120,18 +117,154 @@ pub(super) fn decorate(html: &str, navigation: &str) -> String {
     )
 }
 
+/// Refresh generated chrome around retained pages without changing their body
+/// content or embedded document payloads.
+pub(super) fn refresh_chrome(html: &str, navigation: &str) -> String {
+    let mut html = html.to_owned();
+    if let Some(start) = html.find("<nav class=\"reader-nav\"") {
+        if let Some(end) = html[start..].find("</nav>") {
+            html.replace_range(start..start + end + "</nav>".len(), navigation);
+        }
+    } else if let Some(start) = html.find("<body")
+        && let Some(end) = html[start..].find('>')
+    {
+        html.insert_str(start + end + 1, navigation);
+    }
+    html = remove_reader_resource(&html, "style", |_, body| {
+        body.starts_with("/* Shared engineering documentation shell:")
+    });
+    html = remove_reader_resource(&html, "script", |_, body| {
+        body.starts_with("(()=>{\n const ru=document.documentElement.lang==='ru'")
+    });
+    html.replacen(
+        "</head>",
+        &format!("<style data-clew-reader>{STYLE}</style></head>"),
+        1,
+    )
+    .replacen(
+        "</body>",
+        &format!("<script data-clew-reader>{SCRIPT}\n{LIMITS}</script></body>"),
+        1,
+    )
+}
+
+pub(super) fn navigation_context(
+    files: &BTreeMap<String, Vec<u8>>,
+) -> Result<serde_json::Value, ClewError> {
+    let mut processes = Vec::new();
+    let mut services = BTreeMap::new();
+    for (name, bytes) in files {
+        if let Some(service) = name
+            .strip_prefix("services/")
+            .and_then(|s| s.strip_suffix(".json"))
+        {
+            let value: serde_json::Value = serde_json::from_slice(bytes).map_err(io_error)?;
+            if let Some(title) = value["title"].as_str() {
+                services.insert(service, title.to_owned());
+            }
+            continue;
+        }
+        let Some(stem) = name
+            .strip_prefix("scenarios/")
+            .and_then(|s| s.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        if stem.contains('/') || !files.contains_key(&format!("scenarios/{stem}.html")) {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(io_error)?;
+        let definition = &value["process"]["definition"];
+        if !definition["root"].is_object() {
+            continue;
+        }
+        let guide = &value["questionReader"];
+        let steps = guide["sections"].as_array().into_iter().flatten()
+            .filter(|s| s["number"].as_u64().is_some())
+            .map(|section| {
+                let blocks = section["blocks"].as_array().into_iter().flatten().map(|block| {
+                    let evidence = block["evidence"].as_array().into_iter().flatten().collect::<Vec<_>>();
+                    let sources = evidence.iter().flat_map(|e| e["fragment"]["sourceIds"].as_array().into_iter().flatten().cloned()).collect::<Vec<_>>();
+                    let dependencies = evidence.iter().flat_map(|e| e["fragment"]["dependencyIds"].as_array().into_iter().flatten().cloned()).collect::<Vec<_>>();
+                    serde_json::json!({"text":block["text"],"sourceIds":sources,"dependencyIds":dependencies})
+                }).collect::<Vec<_>>();
+                serde_json::json!({"id":section["id"],"blocks":blocks})
+            }).collect::<Vec<_>>();
+        let title = guide["title"]
+            .as_str()
+            .or_else(|| definition["title"].as_str())
+            .unwrap_or(stem);
+        processes.push(serde_json::json!({"id":definition["id"],"href":format!("../scenarios/{stem}.html#process-overview"),
+            "title":title,"root":definition["root"],
+            "interactions":definition["interactions"],"steps":steps}));
+    }
+    Ok(serde_json::json!({"processLinks":processes,"serviceLabels":services}))
+}
+
+pub(super) fn attach_navigation_context(
+    html: &str,
+    context: &serde_json::Value,
+) -> Result<String, ClewError> {
+    let html = remove_reader_resource(html, "script", |opening, _| {
+        opening.contains("id=\"reader-context\"")
+    });
+    let data = serde_json::to_string(context)
+        .map_err(io_error)?
+        .replace('<', "\\u003c")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    Ok(html.replacen(
+        "</head>",
+        &format!("<script id=\"reader-context\" type=\"application/json\">{data}</script></head>"),
+        1,
+    ))
+}
+
+fn remove_reader_resource(html: &str, tag: &str, matches: impl Fn(&str, &str) -> bool) -> String {
+    let mut output = String::with_capacity(html.len());
+    let mut remaining = html;
+    let opening = format!("<{tag}");
+    let closing = format!("</{tag}>");
+    while let Some(start) = remaining.find(&opening) {
+        let Some(open_end) = remaining[start..].find('>').map(|i| start + i + 1) else {
+            break;
+        };
+        let Some(end) = remaining[open_end..].find(&closing).map(|i| open_end + i) else {
+            break;
+        };
+        output.push_str(&remaining[..start]);
+        let after = end + closing.len();
+        if !matches(&remaining[start..open_end], &remaining[open_end..end]) {
+            output.push_str(&remaining[start..after]);
+        }
+        remaining = &remaining[after..];
+    }
+    output.push_str(remaining);
+    output
+}
+
 /// Apply the selected process vocabulary to every linked publication page.
 /// Keep document payloads and existing body classes untouched.
 pub(super) fn process_theme(html: &str) -> String {
-    if html.contains("<style data-clew-theme=\"process\">") {
-        return html.to_owned();
-    }
-    html.replacen(
+    let html = remove_reader_resource(html, "style", |opening, _| {
+        opening.contains("data-clew-theme=\"process\"")
+    });
+    let html = html.replacen(
         "</head>",
         &format!("<style data-clew-theme=\"process\">{PROCESS_THEME}</style></head>"),
         1,
-    )
-    .replacen("<body", "<body data-clew-theme=\"process\"", 1)
+    );
+    let already_themed = html.find("<body").is_some_and(|start| {
+        html[start..]
+            .split('>')
+            .next()
+            .is_some_and(|opening| opening.contains("data-clew-theme=\"process\""))
+    });
+    if already_themed {
+        html
+    } else {
+        html.replacen("<body", "<body data-clew-theme=\"process\"", 1)
+    }
 }
 
 pub(super) fn catalog(files: &BTreeMap<String, Vec<u8>>) -> String {
@@ -960,6 +1093,63 @@ pub(super) fn decorate_bundle_language(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_pages_refresh_only_generated_chrome() {
+        let original = "<html lang=\"en\"><head><style>.authored{color:red}</style><style>/* Shared engineering documentation shell: old */obsolete-reader-style</style></head><body class=\"reader\"><nav class=\"reader-nav\"><a>Browse</a></nav><main><h1>Original account</h1><p>Retained meaning.</p></main><script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script><script>window.authored=true;</script><script>(()=>{\n const ru=document.documentElement.lang==='ru';obsolete-reader-script})();</script></body></html>";
+        let nav = navigation("", "overview.html", Some("history.html"), &[]);
+        let refreshed = refresh_chrome(original, &nav);
+        assert_eq!(refreshed.matches("<nav class=\"reader-nav\"").count(), 1);
+        assert!(refreshed.contains("type=\"submit\""));
+        assert!(refreshed.contains("Processes and services"));
+        assert!(!refreshed.contains("obsolete-reader-"));
+        for retained in [
+            "<style>.authored{color:red}</style>",
+            "<h1>Original account</h1><p>Retained meaning.</p>",
+            "<script id=\"document-data\">{\"authority\":\"UNKNOWN\"}</script>",
+            "<script>window.authored=true;</script>",
+        ] {
+            assert!(refreshed.contains(retained));
+        }
+        assert_eq!(refresh_chrome(&refreshed, &nav), refreshed);
+        let themed = process_theme(&refreshed);
+        assert_eq!(process_theme(&themed), themed);
+        let stale = themed.replace(PROCESS_THEME, "obsolete-theme");
+        assert_eq!(process_theme(&stale), themed);
+    }
+
+    #[test]
+    fn process_navigation_context_preserves_declared_roots_and_escapes_titles() {
+        let payload = serde_json::json!({"process":{"definition":{"id":"publisher","title":"Publisher","root":{"service":"sample","selector":{"name":"publish"}},"interactions":["event-route"]}},
+            "questionReader":{"title":"</script><script>unsafe()</script>","sections":[{"id":"send","number":1,"blocks":[{"text":"Send the declared topic.","evidence":[{"fragment":{"sourceIds":["publisher-source"],"dependencyIds":["interaction:event-route"]}}]}]}]}});
+        let files = BTreeMap::from([
+            (
+                "scenarios/publisher.json".into(),
+                serde_json::to_vec(&payload).unwrap(),
+            ),
+            ("scenarios/publisher.html".into(), Vec::new()),
+        ]);
+        let context = navigation_context(&files).unwrap();
+        let process = &context["processLinks"][0];
+        assert_eq!(
+            process["href"],
+            "../scenarios/publisher.html#process-overview"
+        );
+        assert_eq!(process["root"], payload["process"]["definition"]["root"]);
+        assert_eq!(
+            process["steps"][0]["blocks"][0]["sourceIds"][0],
+            "publisher-source"
+        );
+        let html = attach_navigation_context(
+            "<html><head></head><body>Original text</body></html>",
+            &context,
+        )
+        .unwrap();
+        assert!(!html.contains("<script>unsafe()"));
+        assert!(html.contains("\\u003c/script>"));
+        assert!(html.contains("<body>Original text</body>"));
+        assert_eq!(attach_navigation_context(&html, &context).unwrap(), html);
+    }
+
     #[test]
     fn canonical_models_are_searchable_without_inventing_review_status() {
         let files = BTreeMap::from([

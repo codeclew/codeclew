@@ -19,6 +19,9 @@ body[data-clew-theme="process"] :is(main h2,.dm-page h2,.contract-section>h3){fo
 body[data-clew-theme="process"] :is(.question-heading,.scenario-heading){margin:0 0 16px}
 body[data-clew-theme="process"] :is(.question-heading>p,.summary,.reader-guide>p,.dm-page>p){max-width:74ch;color:var(--ink);font-size:16px!important;line-height:26px!important}
 body[data-clew-theme="process"] :is(main p,main li){overflow-wrap:anywhere}
+body[data-clew-theme="process"] :is(main p,main li){font-size:16px;line-height:26px}
+body[data-clew-theme="process"] .sequential-step h2{margin-top:0!important;margin-bottom:12px}
+body[data-clew-theme="process"] .sequential-number{font-size:24px;line-height:32px;font-weight:600;color:var(--ink)}
 body[data-clew-theme="process"] :is(.breadcrumb,.sequential-breadcrumb){margin:0 0 16px;line-height:22px!important;color:var(--muted)}
 body[data-clew-theme="process"] :is(.project #project-title,.guide-local-navigation>summary,.reader-navigation>summary){font-size:16px!important;line-height:26px!important;font-weight:600!important;color:var(--ink)}
 body[data-clew-theme="process"] :is(.scenario-link,.question-link,.guide-toc a){font-size:16px!important;line-height:26px!important;min-height:40px;padding:6px 12px!important;color:#075fbd;border-radius:4px;text-decoration:none}
@@ -57,6 +60,21 @@ body[data-clew-theme="process"] :is(.source-link,.schema-link){font-size:14px!im
 body[data-clew-theme="process"] .tabs{gap:16px;max-width:100%;overflow:auto}
 body[data-clew-theme="process"] .tabs button{font-size:16px!important;line-height:26px!important;min-height:44px;white-space:nowrap}
 body[data-clew-theme="process"] .tabs button[aria-selected="true"]{color:#075fbd;border-color:#075fbd}
+body[data-clew-theme="process"] .dm-process-controls [role="tab"][aria-selected="true"]{color:#075fbd;border-color:#075fbd;background:#eef4fc}
+body[data-clew-theme="process"] .contract-intro{background:#f3f6fc;border-color:var(--line);color:var(--ink)}
+body[data-clew-theme="process"] .contract-intro h3{font-size:24px;line-height:32px;margin:0 0 8px}
+body[data-clew-theme="process"] .contract-intro p{color:var(--muted)}
+body[data-clew-theme="process"] .note-observation{border-left:3px solid #8a9db8;background:#f3f6fc;padding:12px 16px;margin:16px 0 24px}
+body[data-clew-theme="process"] .note-observation h2{margin-top:0}
+body[data-clew-theme="process"] .note-assessment{max-width:74ch}
+body[data-clew-theme="process"] .note-assessment .assessment-prose{white-space:pre-line}
+body[data-clew-theme="process"] .note-record-details{margin:24px 0}
+body[data-clew-theme="process"] .topic-boundary{border:1px solid var(--line);border-radius:8px;padding:16px;margin:16px 0;background:#fff}
+body[data-clew-theme="process"] .topic-boundary h3{font-size:18px;line-height:26px;margin:0 0 12px}
+body[data-clew-theme="process"] .topic-path{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);gap:12px;align-items:start;background:#f3f6fc;padding:12px;border-radius:4px;overflow-wrap:anywhere}
+body[data-clew-theme="process"] .topic-path .small-label{display:block}
+body[data-clew-theme="process"] .topic-type-note{font-size:14px;line-height:22px;color:var(--muted)}
+body[data-clew-theme="process"] :is(a,button,input,select,summary,pre,[tabindex="-1"]):focus-visible{outline:3px solid #075fbd;outline-offset:3px}
 body[data-clew-theme="process"] :is(.sequential-callout,.finding-strip){font-size:16px!important;line-height:26px!important}
 body[data-clew-theme="process"] #source-panel{background:#142344;color:#e0e9fc;border-color:#34476a}
 body[data-clew-theme="process"] #source-panel :is(h2,.eyebrow,#source-meta,#source-foot,.source-toolbar){color:#e0e9fc}
@@ -74,4 +92,6 @@ body[data-clew-theme="process"] :is(h1,h2,h3,h4,h5,h6,section,details,[tabindex=
  body[data-clew-theme="process"] :is(h1,h2,h3,h4,h5,h6,section,details,[tabindex="-1"]){scroll-margin-top:16px!important}
  body[data-clew-theme="process"] .sequential-route code{white-space:normal;overflow-wrap:anywhere}
  body[data-clew-theme="process"] .outcome-grid{grid-template-columns:1fr}
+ body[data-clew-theme="process"] .topic-path{grid-template-columns:minmax(0,1fr);gap:6px}
+ body[data-clew-theme="process"] .topic-path>span{justify-self:center;transform:rotate(90deg)}
 }
