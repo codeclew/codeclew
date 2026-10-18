@@ -242,30 +242,39 @@ pub(super) fn comparison_current(page: &Value, entry: &Value) -> bool {
                 && r["normalized"]["path"] == entry["path"]
         })
 }
-pub(super) fn findings(entry: &Value, language: &str) -> String {
+pub(super) fn findings(
+    entry: &Value,
+    language: &str,
+    headings: &mut super::ComparisonHeadings,
+) -> String {
     let mut out = String::new();
     for finding in rows(&entry["findings"]) {
-        let (title, explanation) = match text(&finding["kind"]) {
+        let (title, explanation, anchor) = match text(&finding["kind"]) {
             "BROADER_REQUEST_ACCEPTANCE" => (
                 "Broader request acceptance",
                 "A recorded request outside the declared schema received a successful response. This shows broader acceptance; it does not show failure for a contract-valid request.",
+                "broader-request-acceptance",
             ),
             "UNDECLARED_RESPONSE_MEDIA" => (
                 "Undeclared response media type",
                 "Recorded responses use a media type absent from the selected status declaration. Status-code and body-schema results are separate below.",
+                "undeclared-response-media-type",
             ),
             "UNDECLARED_RESPONSE_STATUS" => (
                 "Undeclared response status",
                 "A recorded response status is absent from the selected contract.",
+                "undeclared-response-status",
             ),
             "REPORTED_BODY_SCHEMA_DIFFERENCE" => (
                 "Reported body-schema difference",
                 "The retained external validator reports a difference against its selected response schema.",
+                "reported-body-schema-difference",
             ),
             _ => continue,
         };
+        let heading_id = headings.next(anchor);
         out.push_str(&format!(
-            "<aside className=\"clew-http-finding\" role=\"status\">\n\n#### {}\n\n{}\n\n",
+            "<aside className=\"clew-http-finding\" role=\"status\">\n\n#### {} {{#{heading_id}}}\n\n{}\n\n",
             md(label(language, title)),
             md(label(language, explanation))
         ));
@@ -458,7 +467,11 @@ mod tests {
         assert!(comparison_current(&page, &entry));
         page["contractComparison"]["revision"] = json!("older");
         assert!(!comparison_current(&page, &entry));
-        let output = findings(&entry, "en");
+        let output = findings(
+            &entry,
+            "en",
+            &mut super::super::ComparisonHeadings::default(),
+        );
         assert!(output.contains("does not show failure for a contract-valid request"));
         assert!(output.contains("application/json"));
         assert!(output.contains("&#123;"));

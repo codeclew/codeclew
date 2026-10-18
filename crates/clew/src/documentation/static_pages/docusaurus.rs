@@ -1044,11 +1044,35 @@ fn http_page(binding: &Value, key: &str, owner: Option<&Value>) -> Result<String
     Ok(out)
 }
 
-fn comparison_rows(entry: &Value, packet: &Value, language: &str) -> String {
+/// Legacy comparison heading IDs are English and allocated per document.
+/// A shared allocator preserves the original -1/-2 suffixes across entries.
+#[derive(Default)]
+struct ComparisonHeadings {
+    counts: BTreeMap<&'static str, usize>,
+}
+impl ComparisonHeadings {
+    fn next(&mut self, base: &'static str) -> String {
+        let count = self.counts.entry(base).or_default();
+        let id = if *count == 0 {
+            base.to_owned()
+        } else {
+            format!("{base}-{count}")
+        };
+        *count += 1;
+        id
+    }
+}
+
+fn comparison_rows(
+    entry: &Value,
+    packet: &Value,
+    language: &str,
+    headings: &mut ComparisonHeadings,
+) -> String {
     let mut out = format!(
         "{}\n\n{}",
         md(text(&entry["coverage"])),
-        contracts::findings(entry, language)
+        contracts::findings(entry, language, headings)
     );
     let mut cases = format!(
         "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table clew-case-table\"><thead><tr><th scope=\"col\">{clew_label_0}</th><th scope=\"col\">{clew_label_1}</th><th scope=\"col\">{clew_label_2}</th><th scope=\"col\">{clew_label_3}</th><th scope=\"col\">{clew_label_4}</th><th scope=\"col\">{clew_label_5}</th></tr></thead><tbody>",
@@ -1127,6 +1151,7 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
 }
 fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let language = page["language"].as_str().unwrap_or("en");
+    let mut comparison_headings = ComparisonHeadings::default();
     let mut out = header(text(&page["title"]), &format!("/services/{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!(
@@ -1197,8 +1222,9 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                 for compared in rows(&page["contractComparison"]["entries"])
                     .filter(|v| v["entrypoint"] == entry["id"])
                 {
+                    let comparison_anchor = comparison_headings.next("retained-http-comparison");
                     out.push_str(&format!(
-                        "##### {}\n\n",
+                        "##### {} {{#{comparison_anchor}}}\n\n",
                         md(crate::documentation::language::label(
                             language,
                             "Retained HTTP comparison"
@@ -1209,6 +1235,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
                             compared,
                             &page["contractComparison"],
                             language,
+                            &mut comparison_headings,
                         ));
                     } else {
                         out.push_str(&format!("{}\n\n", md(crate::documentation::language::label(language, "Retained HTTP comparison does not match this selected snapshot. Its findings are not applied."))));
@@ -1245,6 +1272,7 @@ fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
 
 fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewError> {
     let language = page["language"].as_str().unwrap_or("en");
+    let mut headings = ComparisonHeadings::default();
     let title = format!(
         "{id}: {}",
         crate::documentation::language::label(language, "retained HTTP comparison")
@@ -1272,7 +1300,7 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
             "## {} {}\n\n{}",
             md(text(&entry["method"])),
             md(text(&entry["path"])),
-            comparison_rows(entry, c, language)
+            comparison_rows(entry, c, language, &mut headings)
         ));
     }
     out.push_str(&format!(
@@ -2185,6 +2213,7 @@ mod tests {
             &json!({"coverage":"Selected cases only","cases":[{"id":"extra-property","response":{"status":200,"contentType":"application/json"},"statusDeclared":true,"mediaAssessment":"declared","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]}),
             &json!({"validator":"retained validator"}),
             "en",
+            &mut ComparisonHeadings::default(),
         );
         for label in [
             "Retained case",
@@ -2256,11 +2285,86 @@ mod tests {
     }
 
     #[test]
+    fn comparison_heading_ids_keep_legacy_english_names_and_unique_suffixes_in_both_languages() {
+        let mut entries = Vec::new();
+        let mut catalogue = Vec::new();
+        let mut contracts = Vec::new();
+        for index in 0..5 {
+            let input = format!("input-{index}");
+            let contract = format!("http-{index}");
+            let path = format!("/items/{index}");
+            let digest = format!("digest-{index}");
+            entries.push(json!({"entrypoint":input,"contractId":contract,"contractDigest":digest,"method":"POST","path":path,"coverage":"Original coverage","cases":[],"findings":[
+                {"kind":"BROADER_REQUEST_ACCEPTANCE","caseIds":[]},{"kind":"UNDECLARED_RESPONSE_MEDIA","caseIds":[]},{"kind":"UNDECLARED_RESPONSE_STATUS","caseIds":[]},{"kind":"REPORTED_BODY_SCHEMA_DIFFERENCE","caseIds":[]}]}));
+            catalogue.push(json!({"id":input,"service":"places","symbol":format!("handler{index}"),"kind":"HTTP_ENDPOINT","trigger":{"methods":["POST"],"paths":[path]},"sourceIds":[],"dependencyIds":[],"boundaries":[]}));
+            contracts.push(json!({"id":contract,"digest":digest,"normalized":{"entrypoint":input,"method":"POST","path":path}}));
+        }
+        let packet = json!({"schema":"codeclew-http-comparison-view/1.0","service":"places","snapshot":"snapshot","revision":"rev","bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT","entries":entries,"sources":{},"artifacts":{}});
+        let template = json!({"subject":"service:places","title":"Places","selectedSnapshot":"snapshot","selectedEvidence":{"revisions":{"places":"rev"}},"sections":[{"id":"section-ingress","title":"Ingress","gap":"Original gap"}],"catalogue":catalogue,"contracts":contracts,"contractComparison":packet});
+        let bases = [
+            "retained-http-comparison",
+            "broader-request-acceptance",
+            "undeclared-response-media-type",
+            "undeclared-response-status",
+            "reported-body-schema-difference",
+        ];
+        let ids = |body: &str| {
+            body.split("{#")
+                .skip(1)
+                .filter_map(|part| part.split_once('}').map(|(id, _)| id.to_owned()))
+                .filter(|id| {
+                    bases
+                        .iter()
+                        .any(|base| id == base || id.starts_with(&format!("{base}-")))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut rendered = Vec::new();
+        for language in ["en", "ru"] {
+            let mut page = template.clone();
+            page["language"] = json!(language);
+            let service = service_page(&page, "places").unwrap();
+            let comparison = comparison_page(&packet, "places", &page).unwrap();
+            let service_ids = ids(&service);
+            let comparison_ids = ids(&comparison);
+            for base in bases {
+                for index in 0..5 {
+                    let expected = if index == 0 {
+                        base.to_owned()
+                    } else {
+                        format!("{base}-{index}")
+                    };
+                    assert_eq!(
+                        service_ids.iter().filter(|id| **id == expected).count(),
+                        1,
+                        "{language} {expected}"
+                    );
+                    if base != "retained-http-comparison" {
+                        assert_eq!(
+                            comparison_ids.iter().filter(|id| **id == expected).count(),
+                            1,
+                            "{language} {expected}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(service_ids.len(), 25);
+            assert_eq!(comparison_ids.len(), 20);
+            assert_eq!(page["contractComparison"], packet);
+            rendered.push((service_ids, comparison_ids));
+        }
+        assert_eq!(
+            rendered[0], rendered[1],
+            "locale and prior render must not change heading identities"
+        );
+    }
+
+    #[test]
     fn russian_http_comparison_localizes_findings_without_changing_case_values_or_external_text() {
         let entry = json!({"method":"POST","path":"/items/{id}","coverage":"Recorded request","findings":[{"kind":"BROADER_REQUEST_ACCEPTANCE","caseIds":["Snapshot"]},{"kind":"UNDECLARED_RESPONSE_MEDIA","caseIds":["Snapshot"]}],"cases":[{"id":"Snapshot","request":{"body":"{\"value\":\"Scope and limitations\"}"},"requestErrors":[{"message":"External schema check"}],"response":{"status":200,"contentType":"text/plain"},"statusDeclared":true,"declaredMedia":["application/json"],"mediaAssessment":"undeclared-media","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]});
         let packet = json!({"scope":"Source fragments","validator":"validator-v1","limitations":["Original limitation"],"entries":[entry],"sources":{},"artifacts":{"probe":{"digest":"unchanged-digest","text":"Original artifact: Snapshot"}},"authority":"EXTERNAL_RECORDED_LOCAL_PROBE","snapshot":"saved-snapshot","revision":"saved-revision","bindingStatus":"MATCHES_PINNED_SELECTED_SNAPSHOT"});
         let before = (entry.clone(), packet.clone());
-        let rows = comparison_rows(&entry, &packet, "ru");
+        let rows = comparison_rows(&entry, &packet, "ru", &mut ComparisonHeadings::default());
         assert!(rows.contains("Приём запросов за пределами схемы"));
         assert!(rows.contains("не доказывает сбой для запроса, соответствующего контракту"));
         assert!(rows.contains("data-label=\"Оценка запроса\""));
