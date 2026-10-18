@@ -7,8 +7,19 @@ const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
 const iconAssets=Object.fromEntries(['arrow-right','database','license'].map(name=>[name,fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/tabler/',name==='license'?'LICENSE':name+'.svg'),'utf8')]));
-const script='var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
+const localeScript='var CLEW_RU_MESSAGES='+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/ru.json'),'utf8')+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/locale.js'),'utf8')+'\n';
+const script=localeScript+'var QUESTION_ICONS='+JSON.stringify(iconAssets)+';\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/app.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'../crates/clew/assets/documentation/question-reader.js'),'utf8');
 const fragment=text=>({id:text,text,dependencyIds:['dep'],sourceIds:['same-source']});
+
+test('shared locale translates owned template chunks without touching matching authored or schema text',()=>{
+ const data=fixture();data.language='ru';const reader=load(data);
+ const output=reader.run('chromeHtml`<h2>Overview</h2><p>${esc("Overview")}</p><pre>${esc(JSON.stringify({description:"Overview",enum:["required","UNKNOWN"]}))}</pre>`');
+ assert.match(output,/<h2>Обзор<\/h2>/);
+ assert.match(output,/<p>Overview<\/p>/);
+ assert.match(output,/&quot;description&quot;:&quot;Overview&quot;/);
+ assert.match(output,/&quot;enum&quot;:\[&quot;required&quot;,&quot;UNKNOWN&quot;\]/);
+ assert.equal(data.operations[0].summary.text,fixture().operations[0].summary.text);
+});
 const source=text=>({service:'sample',file:'Worker.kt',startLine:1,endLine:1,text,revision:'abc',authority:'RETAINED_SOURCE_NOT_REVERIFIED'});
 function fixture(){
  const flow={schema:1,generator:{id:'sample',version:'1'},id:'dispatch',kind:'execution-flow',title:'Dispatch work',purpose:fragment('Explain selected dispatch'),scope:fragment('The local handler only'),limitations:['Delivery is not observed.'],nodes:[{id:'start',meaning:fragment('Receive request')},{id:'select',meaning:fragment('Choose handler')},{id:'done',meaning:fragment('Return result')}],edges:[{id:'e1',from:'start',to:'select',meaning:fragment('After validation')},{id:'e2',from:'select',to:'done',meaning:fragment('When handler returns')}],parent:null,hitPolicy:null,rules:[],afterSelection:null};

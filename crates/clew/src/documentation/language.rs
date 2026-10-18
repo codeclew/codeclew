@@ -4,6 +4,18 @@ use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+pub(super) const RUSSIAN_LABELS: &str = include_str!("../../assets/documentation/ru.json");
+pub(super) const BROWSER_LOCALE: &str = include_str!("../../assets/documentation/locale.js");
+
+/// Only owned, compiled labels enter this script; source and prose are inserted
+/// separately by the caller after the locale implementation has been selected.
+pub(super) fn browser_script() -> String {
+    format!(
+        "var CLEW_RU_MESSAGES={};\n{BROWSER_LOCALE}\n",
+        RUSSIAN_LABELS.replace('<', "\\u003c")
+    )
+}
+
 pub(super) fn validate(language: Option<&str>) -> Result<(), ClewError> {
     if language.is_some_and(|value| !matches!(value, "en" | "ru")) {
         return Err(invalid("documentation language must be en or ru"));

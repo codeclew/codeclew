@@ -4,12 +4,13 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 import useBrokenLinks from '@docusaurus/useBrokenLinks';
 import {useLocation} from '@docusaurus/router';
 import routes from './clew-routes.json';
+import {language, t} from './clew-locale.js';
 
 const cache = new Map();
 const packedObjects = new Map();
 async function jsonAt(url) {
   if (!cache.has(url)) cache.set(url, fetch(url).then(response => {
-    if (!response.ok) throw new Error(`Saved documentation resource unavailable (${response.status})`);
+    if (!response.ok) throw new Error(`${t("Saved documentation resource unavailable")} (${response.status})`);
     return response.json();
   }));
   return cache.get(url);
@@ -19,10 +20,10 @@ async function resolve(value, base, seen = new Set()) {
   if (!value || typeof value !== 'object') return value;
   if (Object.keys(value).length === 1 && typeof value.$clewRef === 'string') {
     const id = value.$clewRef;
-    if (!/^sha256:[a-f0-9]{64}$/.test(id) || seen.has(id)) throw new Error('Invalid saved evidence reference');
+    if (!/^sha256:[a-f0-9]{64}$/.test(id) || seen.has(id)) throw new Error(t("Invalid saved evidence reference"));
     const object = packedObjects.get(id);
-    if (!object) throw new Error('Packed evidence reference is missing');
-    if (object.schema !== 'codeclew-export-object/1.0' || object.identity !== id) throw new Error('Saved evidence identity differs');
+    if (!object) throw new Error(t("Packed evidence reference is missing"));
+    if (object.schema !== 'codeclew-export-object/1.0' || object.identity !== id) throw new Error(t("Saved evidence identity differs"));
     return resolve(object.value, base, new Set([...seen, id]));
   }
   const literal = Object.keys(value).length === 1 && Object.hasOwn(value, '$clewLiteral');
@@ -31,14 +32,14 @@ async function resolve(value, base, seen = new Set()) {
 }
 async function documentAt(path, base) {
   const document = await jsonAt(base + path.replace(/^\//, ''));
-  if (document.schema !== 'codeclew-normalized-data/1.0') throw new Error('Unsupported saved documentation format');
+  if (document.schema !== 'codeclew-normalized-data/1.0') throw new Error(t("Unsupported saved documentation format"));
   const manifest = await jsonAt(base + 'clew-reader-packs/manifest.json');
-  if (manifest.schema !== 'codeclew-reader-packs/1.0' || !manifest.widgets[path]) throw new Error('Reader transport manifest is incomplete; run npm run build');
+  if (manifest.schema !== 'codeclew-reader-packs/1.0' || !manifest.widgets[path]) throw new Error(t("Reader transport manifest is incomplete; run npm run build"));
   await Promise.all(manifest.widgets[path].packs.map(async packPath => {
     const pack = await jsonAt(base + packPath.replace(/^\//, ''));
-    if (pack.schema !== 'codeclew-reader-pack/1.0') throw new Error('Unsupported saved evidence pack');
+    if (pack.schema !== 'codeclew-reader-pack/1.0') throw new Error(t("Unsupported saved evidence pack"));
     for (const [id, record] of Object.entries(pack.objects)) {
-      if (record.identity !== id || record.schema !== 'codeclew-export-object/1.0') throw new Error('Packed evidence identity differs');
+      if (record.identity !== id || record.schema !== 'codeclew-export-object/1.0') throw new Error(t("Packed evidence identity differs"));
       packedObjects.set(id, record);
     }
   }));
@@ -91,13 +92,13 @@ export function ClewProcessReturn({topic, direction}) {
   const next = new URL(`${base}scenarios/${process}`, 'https://clew.invalid');
   next.searchParams.set('view', 'process'); next.hash = question;
   for (const key of ['Field', 'Stage', 'Contract', 'CellStage']) if (q.has('from' + key)) next.searchParams.set(key[0].toLowerCase() + key.slice(1), q.get('from' + key));
-  return <p className="clew-return"><a href={next.pathname + next.search + next.hash}>Return to the same process step</a></p>;
+  return <p className="clew-return"><a href={next.pathname + next.search + next.hash}>{t("Return to the same process step")}</a></p>;
 }
 export function ClewStatus({freshness = 'UNVERIFIED', verification = 'UNASSESSED'}) {
-  return <aside className="clew-status" aria-label="Source and review scope">
-    <details><summary><strong>Retained source account</strong> · Runtime unverified</summary>
-      <p>Source and review states are tracked separately; runtime behavior is not established.</p>
-      <p>Freshness: {freshness} · Meaning review: {verification}</p>
+  return <aside className="clew-status" aria-label={t("Source and review scope")}>
+    <details><summary><strong>{t("Retained source account")}</strong> · {t("Runtime unverified")}</summary>
+      <p>{t("Source and review states are tracked separately; runtime behavior is not established.")}</p>
+      <p>{t("Freshness")}: {t(freshness)} · {t("Meaning review")}: {t(verification)}</p>
     </details>
   </aside>;
 }
@@ -123,9 +124,9 @@ export function ClewCatalog({entries}) {
   useEffect(() => {setQuery(new URLSearchParams(current.search).get('q') || '');}, [current.search]);
   const selected = entries.filter(e => (!kind || e.kind === kind) && JSON.stringify(e.searchText || [e.title, e.id, e.context]).toLowerCase().includes(query.toLowerCase()));
   return <section className="clew-catalog">
-    <div className="clew-catalog-controls"><label>Search docs<input type="search" value={query} onChange={e => setQuery(e.target.value)} /></label>
-      <label>Document type<select value={kind} onChange={e => setKind(e.target.value)}><option value="">All types</option>{[...new Set(entries.map(e => e.kind))].sort().map(k => <option key={k}>{k}</option>)}</select></label></div>
-    <p role="status">{selected.length} results</p><ul>{selected.map((e, i) => <li key={e.href + ':' + i}><a href={portableHref(e.href, 'catalog.html', base)}>{e.title || e.id}</a><p>{e.context} · {e.kind}</p></li>)}</ul>
+    <div className="clew-catalog-controls"><label>{t("Search docs")}<input type="search" value={query} onChange={e => setQuery(e.target.value)} /></label>
+      <label>{t("Document type")}<select value={kind} onChange={e => setKind(e.target.value)}><option value="">{t("All types")}</option>{[...new Set(entries.map(e => e.kind))].sort().map(k => <option key={k} value={k}>{t(k)}</option>)}</select></label></div>
+    <p role="status">{t("Results")}: {selected.length}</p><ul>{selected.map((e, i) => <li key={e.href + ':' + i}><a href={portableHref(e.href, 'catalog.html', base)}>{e.title || e.id}</a><p>{e.context} · {t(e.kind)}</p></li>)}</ul>
   </section>;
 }
 export function ClewModelLink({model, process, anchor, children}) {
@@ -156,7 +157,7 @@ export function ClewFieldTrace({field}) {
     const url = new URL(location.href); url.searchParams.set('field', field); url.hash = 'field-usage';
     ref.current.setAttribute('href', url.pathname + url.search + url.hash);
   }, [field]);
-  return <a ref={ref} data-dm-context data-dm-field={field} href={`?field=${encodeURIComponent(field)}#field-usage`}>Trace this field</a>;
+  return <a ref={ref} data-dm-context data-dm-field={field} href={`?field=${encodeURIComponent(field)}#field-usage`}>{t("Trace this field")}</a>;
 }
 
 function Widget({dataPath, anchor, contextOnly = false}) {
@@ -170,7 +171,7 @@ function Widget({dataPath, anchor, contextOnly = false}) {
     setReady(false); setError('');
     Promise.all([documentAt(dataPath, base), import('./clew-model-runtime.js')]).then(([saved]) => {
       if (disposed || !target.current) return;
-      const data = {...saved};
+      const data = {...saved, language};
       data.modelHrefs = Object.fromEntries([...(data.models || []), ...(data.modelReferences || [])].map(m => [m.id, `${base}data-model/${m.id}`]));
       const query = new URLSearchParams(location.search);
       const process = data.request?.subject?.slice(9) || query.get('fromProcess');
@@ -191,8 +192,8 @@ function Widget({dataPath, anchor, contextOnly = false}) {
     return () => { disposed = true; removals.forEach(remove => remove()); };
   }, [dataPath, base, anchor, contextOnly]);
   return <div className="dm-page clew-widget">
-    {!ready && !error && <p role="status">Loading saved field evidence…</p>}
-    {error && <p role="alert">{error}. The original prose and source links remain available.</p>}
+    {!ready && !error && <p role="status">{t("Loading saved field evidence…")}</p>}
+    {error && <p role="alert">{error}. {t("The original prose and source links remain available.")}</p>}
     <div ref={target} />
   </div>;
 }
@@ -234,7 +235,7 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
     history.replaceState(null, '', url); setFlow(on);
   }
   return <section className="clew-process" data-reading-view={flow ? 'data-flow' : 'process'}>
-    <div role="tablist" aria-label="Process reading view" className="clew-tabs">
+    <div role="tablist" aria-label={t("Process reading view")} className="clew-tabs">
       {[false, true].map(on => <button key={String(on)} type="button" role="tab" aria-selected={flow === on}
         aria-controls={on ? 'clew-flow' : 'clew-process'} id={on ? 'clew-flow-tab' : 'clew-process-tab'}
         tabIndex={flow === on ? 0 : -1} onClick={() => select(on)} onKeyDown={event => {
@@ -242,11 +243,11 @@ export function ClewProcess({dataPath, defaultAnchor, children}) {
             event.preventDefault(); const next = event.key === 'Home' ? false : event.key === 'End' ? true : !on;
             select(next); document.getElementById(next ? 'clew-flow-tab' : 'clew-process-tab')?.focus();
           }
-        }}>{on ? 'Data Flow' : 'Process'}</button>)}
+        }}>{t(on ? 'Data Flow' : 'Process')}</button>)}
     </div>
     <div id="clew-process" role="tabpanel" aria-labelledby="clew-process-tab" hidden={flow}>{children}</div>
     <div id="clew-flow" role="tabpanel" aria-labelledby="clew-flow-tab" hidden={!flow}>
-      <p className="dm-origin">Agent proposal · Not reviewed · <a href={`#${anchor}`} onClick={() => select(false)}>Return to process step</a></p>
+      <p className="dm-origin">{t("Agent proposal")} · {t("Not reviewed")} · <a href={`#${anchor}`} onClick={() => select(false)}>{t("Return to process step")}</a></p>
       {flow && <Widget dataPath={dataPath} anchor={anchor} />}
     </div>
   </section>;

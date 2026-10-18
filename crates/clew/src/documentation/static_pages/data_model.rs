@@ -1174,7 +1174,8 @@ fn data_script(data: &Value) -> String {
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     format!(
-        "<script type=\"application/json\" id=\"dm-data\">{encoded}</script><script>{}</script>",
+        "<script type=\"application/json\" id=\"dm-data\">{encoded}</script><script>{}{}</script>",
+        super::super::language::browser_script(),
         include_str!("../../../assets/documentation/data-model.js")
     )
 }

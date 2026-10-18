@@ -23,6 +23,7 @@ RUSSIAN_LOCALIZATION_FILES = {
     "crates/clew/assets/documentation/question-reader.js",
     "crates/clew/assets/documentation/limits.js",
     "crates/clew/assets/documentation/reader.js",
+    "crates/clew/assets/documentation/ru.json",
     "crates/clew/src/documentation/history.rs",
     "crates/clew/src/documentation/language.rs",
     "crates/clew/src/documentation/proposals.rs",

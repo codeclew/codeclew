@@ -1327,6 +1327,8 @@ pub(super) fn project(
     manifest: &Value,
     inputs: &super::full::ReadingInputs<'_>,
 ) -> Result<(BTreeMap<String, Vec<u8>>, Value), ClewError> {
+    let language = manifest["documentationLanguage"].as_str().unwrap_or("en");
+    crate::documentation::language::validate(Some(language))?;
     let mut files = BTreeMap::new();
     let mut documents = BTreeMap::new();
     let context = crate::documentation::reader::navigation_context(native)?;
@@ -1635,6 +1637,17 @@ pub(super) fn project(
             );
         }
     }
+    let locale = format!(
+        "{}\nexport const language={};\nconst {{t,chromeHtml}}=clewLocale(language,CLEW_RU_MESSAGES);\nexport {{t,chromeHtml}};\n",
+        crate::documentation::language::browser_script(),
+        serde_json::to_string(language).map_err(io_error)?
+    );
+    put(&mut files, "src/components/clew-locale.js", locale);
+    let model_runtime = format!(
+        "{}{}",
+        crate::documentation::language::browser_script(),
+        include_str!("../../../assets/documentation/data-model.js")
+    );
     for (path, bytes) in [
         (
             "package.json",
@@ -1663,7 +1676,7 @@ pub(super) fn project(
         ),
         (
             "src/components/clew-model-runtime.js",
-            include_bytes!("../../../assets/documentation/data-model.js").as_slice(),
+            model_runtime.as_bytes(),
         ),
         (
             "scripts/pack-evidence.mjs",

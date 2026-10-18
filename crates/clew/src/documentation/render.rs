@@ -68,7 +68,10 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
         .replace("/*__STYLE__*/", &styles)
         .replace(
             "/*__SCRIPT__*/",
-            &format!("var QUESTION_ICONS={question_icons};\n{scripts}"),
+            &format!(
+                "{}var QUESTION_ICONS={question_icons};\n{scripts}",
+                super::language::browser_script()
+            ),
         )
         .replace(
             "/*__ANALYSIS_SCRIPT__*/",
@@ -4410,6 +4413,8 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
     digest(&[
         TEMPLATE,
         include_str!("language.rs"),
+        super::language::RUSSIAN_LABELS,
+        super::language::BROWSER_LOCALE,
         STYLE,
         SCRIPT,
         QUESTION_SCRIPT,

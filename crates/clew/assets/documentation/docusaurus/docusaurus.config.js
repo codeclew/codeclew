@@ -1,5 +1,8 @@
+import {language, t} from './src/components/clew-locale.js';
+
 export default {
-  title: 'Codeclew documentation',
+  title: t('Codeclew documentation'),
+  i18n: {defaultLocale: language, locales: [language]},
   url: process.env.CODECLEW_DOCS_URL || 'https://example.invalid',
   baseUrl: process.env.CODECLEW_DOCS_BASE_URL || '/',
   trailingSlash: false,
@@ -10,10 +13,10 @@ export default {
   presets: [['classic', {docs: {routeBasePath: '/', sidebarPath: './sidebars.js'}, blog: false, theme: {customCss: './src/css/clew.css'}}]],
   themeConfig: {
     navbar: {title: 'Codeclew', items: [
-      {to: '/', label: 'Overview', position: 'left', exact: true},
-      {to: '/catalog', label: 'Browse', position: 'left'},
-      {to: '/help', label: 'Help', position: 'right'},
-      {to: '/runbooks', label: 'Runbooks', position: 'right'},
+      {to: '/', label: t('Overview'), position: 'left', exact: true},
+      {to: '/catalog', label: t('Browse'), position: 'left'},
+      {to: '/help', label: t('Help'), position: 'right'},
+      {to: '/runbooks', label: t('Runbooks'), position: 'right'},
       {type: 'custom-clewSearch', position: 'right'},
     ]},
     colorMode: {defaultMode: 'light', disableSwitch: true},
