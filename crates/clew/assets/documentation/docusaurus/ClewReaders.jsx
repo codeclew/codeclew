@@ -1,6 +1,8 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {flushSync} from 'react-dom';
 import useBaseUrl from '@docusaurus/useBaseUrl';
+import {useLocation} from '@docusaurus/router';
+import routes from './clew-routes.json';
 
 const cache = new Map();
 const packedObjects = new Map();
@@ -44,6 +46,71 @@ async function documentAt(path, base) {
 
 export function ClewDownload({path, children}) {
   return <a href={useBaseUrl(path)} download>{children}</a>;
+}
+const contextKeys = ['fromProcess', 'fromQuestion', 'fromField', 'fromStage', 'fromContract', 'fromCellStage'];
+export function ClewContextLink({path, fromProcess = '', fromQuestion = '', query = {}, children}) {
+  const basePath = useBaseUrl(path), current = useLocation();
+  const url = new URL(basePath, 'https://clew.invalid');
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+  const existing = new URLSearchParams(current.search);
+  for (const key of contextKeys) if (existing.has(key)) url.searchParams.set(key, existing.get(key));
+  if (fromProcess && fromQuestion) {
+    url.searchParams.set('fromProcess', fromProcess); url.searchParams.set('fromQuestion', fromQuestion);
+    for (const key of ['field', 'stage', 'contract', 'cellStage']) if (existing.has(key)) url.searchParams.set('from' + key[0].toUpperCase() + key.slice(1), existing.get(key));
+  }
+  return <a href={url.pathname + url.search + url.hash}>{children}</a>;
+}
+export function ClewPageContext() {
+  const base = useBaseUrl('/'), current = useLocation(), q = new URLSearchParams(current.search);
+  const process = q.get('fromProcess'), question = q.get('fromQuestion');
+  useEffect(() => {
+    const topic = q.get('topic'), direction = q.get('direction');
+    if (topic && ['incoming', 'outgoing'].includes(direction)) {
+      const frame = requestAnimationFrame(() => {
+        const target = document.getElementById(`topic-${direction}-${topic}`);
+        if (target) {target.scrollIntoView({block: 'start'});target.focus({preventScroll: true});}
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [current.pathname, current.search, current.hash]);
+  if (!/^[a-zA-Z0-9_-]{1,160}$/.test(process || '') || !/^question-[a-zA-Z0-9_-]+$/.test(question || '')) return null;
+  const next = new URL(`${base}scenarios/${process}`, 'https://clew.invalid');
+  next.searchParams.set('view', 'process'); next.hash = question;
+  for (const key of ['Field', 'Stage', 'Contract', 'CellStage']) if (q.has('from' + key)) next.searchParams.set(key[0].toLowerCase() + key.slice(1), q.get('from' + key));
+  return <p className="clew-return"><a href={next.pathname + next.search + next.hash}>Return to the same process step</a></p>;
+}
+export function ClewStatus({freshness = 'UNVERIFIED', verification = 'UNASSESSED'}) {
+  return <aside className="clew-status" aria-label="Source and review scope">
+    <strong>Retained source account</strong><span>Source and review states are tracked separately; runtime behavior is not established.</span>
+    <details><summary>Source status and scope</summary><p>Freshness: {freshness} · Meaning review: {verification}</p></details>
+  </aside>;
+}
+function portableHref(href, nativePath, base) {
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) return href;
+  const url = new URL(href.replaceAll('&amp;', '&'), 'https://clew.invalid/' + nativePath);
+  const key = url.pathname.slice(1), exact = routes[key + url.hash], mapped = exact || routes[key];
+  if (!mapped) return href;
+  const target = new URL(base + mapped.replace(/^\//, ''), 'https://clew.invalid');
+  if (!exact && !target.hash) target.hash = url.hash;
+  target.search = url.search;
+  return target.pathname + target.search + target.hash;
+}
+export function ClewRetainedPage({nativePath, html}) {
+  const base = useBaseUrl('/');
+  // Input is this generator's escaped native reader markup, with scripts/styles removed.
+  const projected = html.replace(/href="([^"]*)"/g, (_, href) => `href="${portableHref(href, nativePath, base).replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`);
+  return <div className={'clew-retained' + (nativePath === 'data-model.html' ? ' dm-page' : '')} dangerouslySetInnerHTML={{__html: projected}} />;
+}
+export function ClewCatalog({entries}) {
+  const base = useBaseUrl('/'), current = useLocation();
+  const [query, setQuery] = useState(''), [kind, setKind] = useState('');
+  useEffect(() => {setQuery(new URLSearchParams(current.search).get('q') || '');}, [current.search]);
+  const selected = entries.filter(e => (!kind || e.kind === kind) && JSON.stringify(e.searchText || [e.title, e.id, e.context]).toLowerCase().includes(query.toLowerCase()));
+  return <section className="clew-catalog">
+    <div className="clew-catalog-controls"><label>Search docs<input type="search" value={query} onChange={e => setQuery(e.target.value)} /></label>
+      <label>Document type<select value={kind} onChange={e => setKind(e.target.value)}><option value="">All types</option>{[...new Set(entries.map(e => e.kind))].sort().map(k => <option key={k}>{k}</option>)}</select></label></div>
+    <p role="status">{selected.length} results</p><ul>{selected.map((e, i) => <li key={e.href + ':' + i}><a href={portableHref(e.href, 'catalog.html', base)}>{e.title || e.id}</a><p>{e.context} · {e.kind}</p></li>)}</ul>
+  </section>;
 }
 export function ClewModelLink({model, process, anchor, children}) {
   const ref = useRef(null);

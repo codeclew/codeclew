@@ -25,3 +25,20 @@ body:has(.clew-process[data-reading-view="data-flow"]) [class*="docItemCol_"]{ma
 .clew-widget.dm-page{padding:0;margin:8px 0}.clew-tabs{margin-bottom:8px;z-index:4}.dm-origin{margin:8px 0}
 
 .clew-widget{--dm-detail-top:calc(var(--ifm-navbar-height,60px) + 70px)}
+
+/* The Docusaurus navbar owns the shell; reading controls stay in document flow. */
+:root{--ifm-color-primary:#075fbd;--ifm-font-color-base:#182033;--ifm-background-color:#fff;--ifm-heading-color:#182033}
+.clew-tabs{position:static;top:auto;z-index:auto;isolation:auto;flex-wrap:wrap}
+.clew-tabs button[aria-selected=true]{color:#075fbd;background:#e9f2ff;border-color:#075fbd}
+.clew-widget{--dm-detail-top:calc(var(--ifm-navbar-height,60px) + 16px)}
+.theme-doc-markdown{min-width:0}.theme-doc-markdown :is(summary,p,li,a,code){overflow-wrap:anywhere}.theme-doc-markdown summary{white-space:normal}
+.theme-doc-markdown :is(h1,h2,h3,h4,section,article,details,[tabindex="-1"]){scroll-margin-top:calc(var(--ifm-navbar-height,60px) + 20px)!important}
+.theme-doc-markdown :is(h2,h3){margin-top:24px}.theme-doc-markdown p{max-width:76ch}
+.clew-status{border:1px solid #ccd4de;border-left:3px solid #8293ab;padding:12px 16px;margin:16px 0 24px;background:#f7f9fc}.clew-status>span{display:block}.clew-status details{margin:6px 0 0}
+body .clew-status :is(span,p,summary){font-size:14px!important;line-height:22px!important;color:#42516a}
+.clew-return{border-left:3px solid #075fbd;padding:8px 12px}
+.clew-topic{border:1px solid #ccd4de;border-radius:8px;padding:16px;margin:16px 0}.clew-topic>h3{margin-top:0}.clew-topic-path{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);gap:12px;align-items:center}.clew-topic-path>div{min-width:0;overflow-wrap:anywhere}.clew-topic-path p{margin:4px 0}
+.clew-search{display:flex;gap:8px;min-width:0;max-width:280px;margin:0 8px}.clew-search input{width:150px;min-width:0}.clew-search :is(input,button),.clew-catalog-controls :is(input,select){font:inherit;min-height:44px;border:1px solid #8293ab;border-radius:6px;padding:6px 10px;background:#fff;color:#182033}
+.clew-catalog-controls{display:flex;gap:16px;flex-wrap:wrap}.clew-catalog-controls label{display:flex;flex-direction:column;max-width:100%}.clew-catalog-controls input{max-width:100%}.clew-catalog li{margin:16px 0}.clew-catalog li p{margin:2px 0}
+.clew-retained .guide-toc{display:none}.clew-retained .system-guide-grid,.clew-retained .dm-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:16px}.clew-retained :is(.system-guide-card,.mini-card){border:1px solid #ccd4de;border-radius:8px;padding:16px}
+@media(max-width:600px){.clew-topic-path{grid-template-columns:1fr}.clew-topic-path>span{transform:rotate(90deg);justify-self:center}.clew-topic{padding:12px}.clew-search{max-width:100%;margin:8px 0}.clew-search input{width:180px;max-width:100%}.clew-retained.dm-page{padding:0;max-width:100%}}

@@ -9,7 +9,13 @@ export default {
   themes: ['@docusaurus/theme-mermaid'],
   presets: [['classic', {docs: {routeBasePath: '/', sidebarPath: './sidebars.js'}, blog: false, theme: {customCss: './src/css/clew.css'}}]],
   themeConfig: {
-    navbar: {title: 'Codeclew', items: [{to: '/', label: 'Documentation', position: 'left'}]},
+    navbar: {title: 'Codeclew', items: [
+      {to: '/', label: 'Overview', position: 'left'},
+      {to: '/catalog', label: 'Browse', position: 'left'},
+      {to: '/help', label: 'Help', position: 'right'},
+      {to: '/runbooks', label: 'Runbooks', position: 'right'},
+      {type: 'custom-clewSearch', position: 'right'},
+    ]},
     colorMode: {defaultMode: 'light', disableSwitch: true},
     mermaid: {options: {securityLevel: 'strict', fontSize: 16}},
   },

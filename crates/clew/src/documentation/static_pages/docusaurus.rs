@@ -4,6 +4,7 @@ use crate::documentation::{digest, invalid, io_error};
 use crate::error::ClewError;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+mod reading;
 
 const REF: &str = "$clewRef";
 const LITERAL: &str = "$clewLiteral";
@@ -239,7 +240,7 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewStatus, ClewRetainedPage, ClewCatalog} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -300,7 +301,18 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
         } else {
             format!("{prefix}{directory}/{id}.mdx#{operation}")
         };
-        out.push_str(&format!("[{}]({target})\n\n", md(label)));
+        if let Some(process) = text(&page["subject"]).strip_prefix("scenario:") {
+            let path = target.trim_start_matches("../").replace(".mdx", "");
+            out.push_str(&format!(
+                "<ClewContextLink path={} fromProcess={} fromQuestion={}>{}</ClewContextLink>\n\n",
+                json!(format!("/{path}")),
+                json!(process),
+                json!(anchor),
+                md(label)
+            ));
+        } else {
+            out.push_str(&format!("[{}]({target})\n\n", md(label)));
+        }
     }
     out.push_str(&evidence_in(block, prefix)?);
     if block["disclosure"] == true || block["disclosure"].is_string() {
@@ -324,11 +336,16 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
     }
 }
 
+#[cfg(test)]
 fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
+    process_page_with_context(page, id, &Value::Null)
+}
+fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
+    out.push_str(&reading::status(page));
     let flow = page["processDataFlow"].is_object();
     if flow {
         out.push_str(&format!(
@@ -379,6 +396,7 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
         for (index, b) in rows(&section["blocks"]).enumerate() {
             out.push_str(&block(b, page, sid)?);
             if index == 0 {
+                out.push_str(&reading::process_topics(page, context, Some(sid))?);
                 for reference in rows(&page["modelReferences"]).filter(|r| r["anchor"] == anchor) {
                     out.push_str(&format!(
                         "<ClewModelLink model={} process={} anchor={}>{}</ClewModelLink>\n\n",
@@ -394,6 +412,7 @@ fn process_page(page: &Value, id: &str) -> Result<String, ClewError> {
             out.push_str("</aside>\n\n");
         }
     }
+    out.push_str(&reading::process_topics(page, context, None)?);
     if guide["conclusion"].is_object() {
         out.push_str(&details(
             text(&guide["conclusion"]["title"]),
@@ -813,6 +832,7 @@ fn operation_page(page: &Value, op: &Value, prefix: &str) -> Result<String, Clew
     let mut out = header(text(&op["title"]), &format!("/operations/{prefix}--{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!("# {}\n\n", md(text(&op["title"]))));
+    out.push_str("<ClewPageContext />\n\n");
     out.push_str(&operation_body(page, op, "##")?);
     Ok(out)
 }
@@ -915,20 +935,32 @@ fn comparison_rows(entry: &Value) -> String {
     out
 }
 
+#[cfg(test)]
 fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
+    service_page_with_context(page, id, &Value::Null)
+}
+fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let mut out = header(text(&page["title"]), &format!("/services/{id}"));
     out.push_str(IMPORTS);
     out.push_str(&format!(
-        "<span id=\"service-overview\"></span>\n\n# {}\n\n{}\n\n",
-        md(text(&page["title"])),
-        md(text(&page["subtitle"]))
+        "<span id=\"service-overview\"></span>\n\n# {}\n\n",
+        md(text(&page["title"]))
     ));
+    out.push_str(&reading::status(page));
+    out.push_str(&format!("{}\n\n", md(text(&page["subtitle"]))));
     for section in rows(&page["sections"]) {
         let sid = text(&section["id"]);
         out.push_str(&format!(
             "## {} {{#{sid}}}\n\n",
             md(text(&section["title"]))
         ));
+        if matches!(sid, "section-ingress" | "section-egress") {
+            out.push_str(&reading::service_topics(
+                page,
+                context,
+                sid == "section-ingress",
+            )?);
+        }
         if section["content"].is_object() {
             out.push_str(&operation_body(page, &section["content"], "###")?);
         } else {
@@ -945,13 +977,22 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
                     .as_str()
                     .filter(|v| !v.is_empty())
                     .unwrap_or(text(&entry["symbol"]));
+                let route = rows(&entry["trigger"]["methods"])
+                    .chain(rows(&entry["trigger"]["paths"]))
+                    .map(text)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let label = if route.is_empty() { label } else { &route };
                 out.push_str(&format!(
                     "#### {} {{#entry-{eid}}}\n\n{}\n\n{}",
                     md(label),
                     md(text(&entry["kind"])),
-                    fence(
-                        &serde_json::to_string_pretty(&entry["trigger"]).map_err(io_error)?,
-                        "json"
+                    details(
+                        "Declared trigger details",
+                        &fence(
+                            &serde_json::to_string_pretty(&entry["trigger"]).map_err(io_error)?,
+                            "json"
+                        )
                     )
                 ));
                 for process in rows(&page["entryProcesses"][eid]) {
@@ -966,6 +1007,12 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
                     out.push_str(&format!("[Comparison scope and original test artifacts](../comparisons/{id}.mdx)\n\n"));
                 }
             }
+        }
+    }
+    if rows(&page["notes"]).next().is_some() {
+        out.push_str("## Notes and assessments\n\n");
+        for note in rows(&page["notes"]) {
+            out.push_str(&format!("### {} {{#{}}}\n\n[Open the retained record and separate assessment](../notes/{id}--{}.mdx)\n\n", md(reading::note_title(note)), text(&note["id"]), text(&note["id"])));
         }
     }
     out.push_str("## Original operations\n\n");
@@ -1173,6 +1220,7 @@ pub(super) fn project(
 ) -> Result<(BTreeMap<String, Vec<u8>>, Value), ClewError> {
     let mut files = BTreeMap::new();
     let mut documents = BTreeMap::new();
+    let context = crate::documentation::reader::navigation_context(native)?;
     let mut sidebars = vec![json!("overview")];
     for (name, bytes) in native.iter().filter(|(name, _)| name.ends_with(".json")) {
         let value = crate::canonical::parse_json_strict(bytes).map_err(io_error)?;
@@ -1192,9 +1240,14 @@ pub(super) fn project(
     let mut http_documents = BTreeMap::new();
     let mut process_items = Vec::new();
     let mut service_items = Vec::new();
-    let mut overview = header("Documentation", "/");
+    let system_title = documents
+        .get("native/system-reading-guide.json")
+        .and_then(|g| g["title"].as_str())
+        .unwrap_or("Documentation");
+    let mut overview = header(system_title, "/");
     overview.push_str(IMPORTS);
-    overview.push_str("# Documentation\n\nFollow a process, inspect its contracts and data, and return to the source evidence when needed.\n\n## Processes\n\n");
+    overview.push_str(&format!("# {}\n\n", md(system_title)));
+    overview.push_str("<ClewStatus />\n\nFollow a process, inspect its contracts and data, and return to the source evidence when needed.\n\n## Processes\n\n");
     for (name, page) in &pages {
         for op in rows(&page["operations"]).chain(rows(&page["sections"]).map(|s| &s["content"])) {
             for contract in rows(&page["operationContracts"][text(&op["id"])])
@@ -1217,9 +1270,9 @@ pub(super) fn project(
             text(&page["title"])
         };
         let body = if process && page["questionReader"].is_object() {
-            process_page(page, id)?
+            process_page_with_context(page, id, &context)?
         } else if !process {
-            service_page(page, id)?
+            service_page_with_context(page, id, &context)?
         } else {
             let mut body = header(title, &format!("/scenarios/{id}"));
             body.push_str(IMPORTS);
@@ -1238,6 +1291,15 @@ pub(super) fn project(
             body
         };
         put(&mut files, format!("docs/{directory}/{id}.mdx"), body);
+        if !process {
+            for note in rows(&page["notes"]) {
+                put(
+                    &mut files,
+                    format!("docs/notes/{id}--{}.mdx", text(&note["id"])),
+                    reading::note_page(page, id, note)?,
+                );
+            }
+        }
         if process {
             process_items.push(json!(format!("scenarios/{id}")));
             overview.push_str(&format!("- [{}](scenarios/{id}.mdx)\n", md(title)));
@@ -1351,6 +1413,18 @@ pub(super) fn project(
     overview.push_str("\n## Provenance\n\nOriginal claims, evidence and their independent review states remain in the reference archive. Source references include the original revision, digest and line range; no runtime guarantee is added by export.\n\n");
     overview.push_str("[Source fragments](sources/index.mdx)\n\n");
     put(&mut files, "docs/overview.mdx", overview);
+    reading::ancillary_pages(native, &mut files, &mut sidebars)?;
+    let routes = reading::route_map(native, &pages)?;
+    put(
+        &mut files,
+        "src/components/clew-routes.json",
+        serde_json::to_vec(&routes).map_err(io_error)?,
+    );
+    put(
+        &mut files,
+        "route-map.json",
+        serde_json::to_vec_pretty(&routes).map_err(io_error)?,
+    );
     let mut objects = Objects::default();
     for value in documents.values() {
         objects.count(value)?;
@@ -1451,6 +1525,14 @@ pub(super) fn project(
         (
             "src/components/ClewReaders.jsx",
             include_bytes!("../../../assets/documentation/docusaurus/ClewReaders.jsx").as_slice(),
+        ),
+        (
+            "src/theme/NavbarItem/ComponentTypes.js",
+            include_bytes!("../../../assets/documentation/docusaurus/NavbarItems.js").as_slice(),
+        ),
+        (
+            "src/components/ClewSearch.jsx",
+            include_bytes!("../../../assets/documentation/docusaurus/ClewSearch.jsx").as_slice(),
         ),
         (
             "src/components/clew-model-runtime.js",
