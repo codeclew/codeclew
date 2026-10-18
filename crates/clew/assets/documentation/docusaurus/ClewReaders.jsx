@@ -48,9 +48,13 @@ async function documentAt(path, base) {
 export function ClewDownload({path, children}) {
   return <a href={useBaseUrl(path)} download>{children}</a>;
 }
-export function ClewAnchor({id}) {
+export function ClewAnchor({id, pageStart = false}) {
+  const current = useLocation();
   useBrokenLinks().collectAnchor(id);
-  return <span id={id} />;
+  useEffect(() => {
+    if (pageStart && current.hash === `#${id}`) window.scrollTo(0, 0);
+  }, [id, pageStart, current]);
+  return <span id={id} className={pageStart ? 'clew-page-start' : undefined} />;
 }
 const contextKeys = ['fromProcess', 'fromQuestion', 'fromField', 'fromStage', 'fromContract', 'fromCellStage'];
 export function ClewContextLink({path, fromProcess = '', fromQuestion = '', query = {}, children}) {
@@ -66,8 +70,7 @@ export function ClewContextLink({path, fromProcess = '', fromQuestion = '', quer
   return <a href={url.pathname + url.search + url.hash}>{children}</a>;
 }
 export function ClewPageContext() {
-  const base = useBaseUrl('/'), current = useLocation(), q = new URLSearchParams(current.search);
-  const process = q.get('fromProcess'), question = q.get('fromQuestion');
+  const current = useLocation(), q = new URLSearchParams(current.search);
   useEffect(() => {
     const topic = q.get('topic'), direction = q.get('direction');
     if (topic && ['incoming', 'outgoing'].includes(direction)) {
@@ -78,6 +81,12 @@ export function ClewPageContext() {
       return () => cancelAnimationFrame(frame);
     }
   }, [current.pathname, current.search, current.hash]);
+  return <ClewProcessReturn />;
+}
+export function ClewProcessReturn({topic, direction}) {
+  const base = useBaseUrl('/'), current = useLocation(), q = new URLSearchParams(current.search);
+  const process = q.get('fromProcess'), question = q.get('fromQuestion');
+  if (topic && (q.get('topic') !== topic || q.get('direction') !== direction)) return null;
   if (!/^[a-zA-Z0-9_-]{1,160}$/.test(process || '') || !/^question-[a-zA-Z0-9_-]+$/.test(question || '')) return null;
   const next = new URL(`${base}scenarios/${process}`, 'https://clew.invalid');
   next.searchParams.set('view', 'process'); next.hash = question;

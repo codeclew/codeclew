@@ -240,7 +240,7 @@ fn evidence_in(block: &Value, prefix: &str) -> Result<String, ClewError> {
     Ok(out)
 }
 
-const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
+const IMPORTS: &str = "import {ClewProcess, ClewDataModel, ClewDownload, ClewModelLink, ClewRelatedModelLink, ClewFieldTrace, ClewContextLink, ClewPageContext, ClewProcessReturn, ClewStatus, ClewRetainedPage, ClewCatalog, ClewAnchor} from '@site/src/components/ClewReaders';\n\n";
 
 fn rows(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
@@ -264,6 +264,7 @@ fn block(block: &Value, page: &Value, section: &str) -> Result<String, ClewError
 }
 fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<String, ClewError> {
     let mut out = format!("{}\n\n", reading::inline(text(&block["text"])));
+    let mut links = String::new();
     for link in rows(&block["links"]) {
         let subject = text(&link["subject"]);
         let operation = text(&link["operation"]);
@@ -272,7 +273,7 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
             &page["canonicalEntityLinks"][&anchor][subject.strip_prefix("service:").unwrap_or("")];
         if operation == "section-entities" && canonical.is_array() {
             for model in rows(canonical) {
-                out.push_str(&format!("<ClewModelLink model={} process={} anchor={}>{} · data model</ClewModelLink>\n\n",
+                links.push_str(&format!("<ClewModelLink model={} process={} anchor={}>{} · data model</ClewModelLink>\n\n",
                     json!(text(&model["id"])),json!(text(&page["subject"]).strip_prefix("scenario:").unwrap_or("")),json!(anchor),md(text(&model["title"]))));
             }
         }
@@ -303,7 +304,7 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
         };
         if let Some(process) = text(&page["subject"]).strip_prefix("scenario:") {
             let path = target.trim_start_matches("../").replace(".mdx", "");
-            out.push_str(&format!(
+            links.push_str(&format!(
                 "<ClewContextLink path={} fromProcess={} fromQuestion={}>{}</ClewContextLink>\n\n",
                 json!(format!("/{path}")),
                 json!(process),
@@ -311,12 +312,32 @@ fn block_in(block: &Value, page: &Value, section: &str, prefix: &str) -> Result<
                 md(label)
             ));
         } else {
-            out.push_str(&format!("[{}]({target})\n\n", md(label)));
+            links.push_str(&format!("[{}]({target})\n\n", md(label)));
         }
+    }
+    if !links.is_empty() {
+        out.push_str(&format!(
+            "<div className=\"clew-context-links\">\n\n{links}</div>\n\n"
+        ));
     }
     out.push_str(&evidence_in(block, prefix)?);
     if block["disclosure"] == true || block["disclosure"].is_string() {
-        Ok(details(text(&block["title"]), &out))
+        let title = block["disclosure"]
+            .as_str()
+            .unwrap_or(text(&block["title"]));
+        let preview = block["preview"]
+            .as_str()
+            .map(|value| {
+                format!(
+                    "<span className=\"clew-disclosure-preview\">{}</span>",
+                    reading::inline(value)
+                )
+            })
+            .unwrap_or_default();
+        Ok(format!(
+            "<details className=\"clew-context-disclosure\">\n<summary>{}{preview}</summary>\n\n{out}\n</details>\n\n",
+            md(title)
+        ))
     } else if matches!(text(&block["tone"]), "ERROR" | "WARNING" | "INFO") {
         let anchor = block["id"]
             .as_str()
@@ -344,6 +365,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
+    out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
     out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
     out.push_str(&reading::status(page));
     let flow = page["processDataFlow"].is_object();
@@ -353,10 +375,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             json!(text(&page["processDataFlow"]["request"]["anchor"]))
         ));
     }
-    out.push_str(&format!(
-        "<ClewAnchor id=\"process-overview\" />\n\n{}\n\n",
-        reading::inline(text(&guide["purpose"]))
-    ));
+    out.push_str(&format!("{}\n\n", reading::inline(text(&guide["purpose"]))));
     let mut reading_context = String::from(
         "Editorial reading guide · original source scopes and review states remain separate.\n\n",
     );
@@ -403,6 +422,7 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
         for (index, b) in rows(&section["blocks"]).enumerate() {
             out.push_str(&block(b, page, sid)?);
             if index == 0 {
+                out.push_str(&reading::step_models(page, &anchor));
                 out.push_str(&reading::process_topics(page, context, Some(sid))?);
                 for reference in rows(&page["modelReferences"]).filter(|r| r["anchor"] == anchor) {
                     out.push_str(&format!(
@@ -1285,7 +1305,7 @@ pub(super) fn project(
             let mut body = header(title, &format!("/scenarios/{id}"));
             body.push_str(IMPORTS);
             body.push_str(&format!(
-                "<span id=\"process-overview\"></span>\n\n# {}\n\n",
+                "<ClewAnchor id=\"process-overview\" pageStart />\n\n# {}\n\n",
                 md(title)
             ));
             for op in rows(&page["operations"]) {
@@ -1716,13 +1736,16 @@ mod tests {
         assert!(objects.expand(&value, 0).is_err());
     }
     #[test]
-    fn process_overview_and_original_guide_stay_inside_the_process_panel() {
+    fn process_entry_precedes_title_and_controls_while_step_content_stays_in_the_panel() {
         let page = json!({"questionReader":{"title":"Save","purpose":"Saved purpose.","sections":[]},"processDataFlow":{"request":{"anchor":"question-save"}}});
         let mdx = process_page(&page, "save").unwrap();
         let start = mdx.find("<ClewProcess ").unwrap();
-        let overview = mdx.find("<ClewAnchor id=\"process-overview\" />").unwrap();
+        let overview = mdx
+            .find("<ClewAnchor id=\"process-overview\" pageStart />")
+            .unwrap();
+        let title = mdx.find("# Save\n").unwrap();
         let end = mdx.find("</ClewProcess>").unwrap();
-        assert!(start < overview && overview < end);
+        assert!(overview < title && title < start && start < end);
         assert!(mdx[start..end].contains("Saved purpose."));
         let plain =
             process_page(&json!({"questionReader":page["questionReader"]}), "save").unwrap();
@@ -1735,5 +1758,18 @@ mod tests {
         assert!(md(value).starts_with("&#105;mport"));
         assert!(md(value).contains("&#123;unsafe()&#125;"));
         assert!(fence(value, "text").starts_with("````text\n"));
+    }
+    #[test]
+    fn closed_context_summary_keeps_authored_preview_and_separates_adjacent_links() {
+        let preview = "Compose POST http://places:8080/places · production URL unknown.";
+        let fragment = json!({"title":"Technical context","disclosure":"Address and contracts","preview":preview,"text":"Full retained address explanation.","links":[{"subject":"service:dashboard","operation":"save","label":"Dashboard entry and contract"},{"subject":"service:places","operation":"save","label":"Places handler and contract"}],"evidence":[]});
+        let rendered = block(&fragment, &json!({"subject":"scenario:save"}), "request").unwrap();
+        let summary = &rendered[..rendered.find("</summary>").unwrap()];
+        assert!(summary.contains("Address and contracts"));
+        assert!(summary.contains(preview));
+        assert!(rendered.contains("Full retained address explanation."));
+        assert!(rendered.contains("<div className=\"clew-context-links\">"));
+        assert_eq!(rendered.matches("<ClewContextLink ").count(), 2);
+        assert!(rendered.contains("fromQuestion=\"question-request\""));
     }
 }

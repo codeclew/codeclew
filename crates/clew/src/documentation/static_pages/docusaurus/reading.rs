@@ -20,6 +20,38 @@ pub(super) fn status(page: &Value) -> String {
         )
     )
 }
+pub(super) fn step_models(page: &Value, anchor: &str) -> String {
+    let data = &page["processDataFlow"];
+    if data["request"]["anchor"] != anchor {
+        return String::new();
+    }
+    let models = data
+        .get("relatedModels")
+        .filter(|v| v.is_array())
+        .unwrap_or(&data["models"]);
+    let links = rows(models)
+        .map(|model| {
+            format!(
+                "<ClewModelLink model={} process={} anchor={}>{}</ClewModelLink>",
+                json!(text(&model["id"])),
+                json!(
+                    text(&page["subject"])
+                        .strip_prefix("scenario:")
+                        .unwrap_or("")
+                ),
+                json!(anchor),
+                md(text(&model["title"]))
+            )
+        })
+        .collect::<Vec<_>>();
+    if links.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<p className=\"clew-step-data\">Data handled by this step: {}</p>\n\n",
+        links.join(" · ")
+    )
+}
 /// Match the native reader's single-backtick spans without admitting authored JSX.
 pub(super) fn inline(value: &str) -> String {
     let mut remaining = value;
@@ -305,7 +337,7 @@ fn cards(
             "outgoing" => "Outgoing Kafka topic",
             _ => "Related asynchronous continuation",
         };
-        out.push_str(&format!("<article className=\"clew-topic\" id={} tabIndex={{-1}}>\n\n### {heading} · {}\n\n<div className=\"clew-topic-path\" aria-label=\"Declared asynchronous handoff\">\n\n", json!(format!("topic-{role}-{topic}")), md(topic)));
+        out.push_str(&format!("<article className=\"clew-topic\" id={} tabIndex={{-1}}>\n\n### {heading} · {}\n\n<ClewProcessReturn topic={} direction={} />\n\n<div className=\"clew-topic-path\" aria-label=\"Declared asynchronous handoff\">\n\n", json!(format!("topic-{role}-{topic}")), md(topic), json!(topic), json!(role)));
         for (index, side) in ["from", "to"].iter().enumerate() {
             if index == 1 {
                 out.push_str(&format!("<span aria-hidden=\"true\">→</span>\n\n<div>\n\n**{}**\n\nKafka topic · asynchronous\n\n</div>\n\n<span aria-hidden=\"true\">→</span>\n\n", md(topic)));
@@ -685,6 +717,17 @@ pub(super) fn linked_downloads(
 mod tests {
     use super::*;
     #[test]
+    fn step_data_links_follow_the_explicit_anchor_and_existing_model_selection() {
+        let page = json!({"subject":"scenario:save","processDataFlow":{"request":{"anchor":"question-request"},"models":[{"id":"other","title":"Other"}],"relatedModels":[{"id":"request","title":"Save city request"},{"id":"place","title":"Place"}]}});
+        assert!(step_models(&page, "question-validation").is_empty());
+        let rendered = step_models(&page, "question-request");
+        assert!(rendered.contains("Data handled by this step:"));
+        assert_eq!(rendered.matches("<ClewModelLink ").count(), 2);
+        assert!(!rendered.contains("Other"));
+        assert_eq!(rendered.matches("anchor=\"question-request\"").count(), 2);
+        assert_eq!(rendered.matches("process=\"save\"").count(), 2);
+    }
+    #[test]
     fn inline_tokens_are_literal_react_children_and_cannot_execute_mdx() {
         let rendered = inline("Send `weather.place-requested`; retry `PUBLISH_RETRY`.");
         assert!(rendered.contains("<code>{\"weather.place-requested\"}</code>"));
@@ -739,6 +782,11 @@ mod tests {
         assert!(body.contains("UNKNOWN"));
         assert!(body.contains("/scenarios/publisher#process-overview"));
         assert!(body.contains("fromQuestion=\"question-async-continuations\""));
+        assert!(
+            body.contains(
+                "<ClewProcessReturn topic=\"weather.requested\" direction=\"related\" />"
+            )
+        );
     }
     #[test]
     fn ancillary_projection_drops_shell_scripts_but_retains_content_and_routes() {
