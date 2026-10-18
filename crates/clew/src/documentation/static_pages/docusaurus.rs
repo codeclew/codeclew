@@ -187,8 +187,10 @@ fn fence(value: &str, language: &str) -> String {
 }
 
 fn header(title: &str, slug: &str) -> String {
+    // Generated documents supply their own H1, including retained HTML pages.
+    // A preceding gap notice must not add a second framework-generated title.
     format!(
-        "---\ntitle: {}\nslug: {}\n---\n\n",
+        "---\ntitle: {}\nslug: {}\nhide_title: true\n---\n\n",
         json!(title),
         json!(slug)
     )
@@ -393,6 +395,9 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
     let guide = &page["questionReader"];
     let mut out = header(text(&guide["title"]), &format!("/scenarios/{id}"));
     out.push_str(IMPORTS);
+    out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
+    out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
+
     out.push_str(&page_prose_gaps(page)?);
     if page["questionReaderTranslationGap"].is_object() {
         out.push_str(&reading_guide_gap(
@@ -400,8 +405,6 @@ fn process_page_with_context(page: &Value, id: &str, context: &Value) -> Result<
             page["language"].as_str().unwrap_or("en"),
         )?);
     }
-    out.push_str("<ClewAnchor id=\"process-overview\" pageStart />\n\n");
-    out.push_str(&format!("# {}\n\n", md(text(&guide["title"]))));
     out.push_str(&reading::status(page));
     let flow = page["processDataFlow"].is_object();
     if flow {
@@ -1081,11 +1084,11 @@ fn service_page(page: &Value, id: &str) -> Result<String, ClewError> {
 fn service_page_with_context(page: &Value, id: &str, context: &Value) -> Result<String, ClewError> {
     let mut out = header(text(&page["title"]), &format!("/services/{id}"));
     out.push_str(IMPORTS);
-    out.push_str(&page_prose_gaps(page)?);
     out.push_str(&format!(
         "<span id=\"service-overview\"></span>\n\n# {}\n\n",
         md(text(&page["title"]))
     ));
+    out.push_str(&page_prose_gaps(page)?);
     out.push_str(&reading::status(page));
     out.push_str(&format!("{}\n\n", md(text(&page["subtitle"]))));
     for section in rows(&page["sections"]) {
@@ -1182,14 +1185,14 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
     let title = format!("{id}: retained HTTP comparison");
     let mut out = header(&title, &format!("/comparisons/{id}"));
     out.push_str(IMPORTS);
+    out.push_str(&format!("# {}\n\n", md(&title)));
     for gap in
         rows(&page["authoredTranslationGaps"]).filter(|gap| gap["record"] == "contractComparison")
     {
         out.push_str(&prose_gap(gap, page["language"].as_str().unwrap_or("en"))?);
     }
     out.push_str(&format!(
-        "# {}\n\n{}\n\nAuthority: {} · binding: {}\n\nSnapshot: {}\n\nRevision: {}\n\n",
-        md(&title),
+        "{}\n\nAuthority: {} · binding: {}\n\nSnapshot: {}\n\nRevision: {}\n\n",
         md(text(&c["scope"])),
         md(text(&c["authority"])),
         md(text(&c["bindingStatus"])),
@@ -1234,6 +1237,29 @@ fn comparison_page(c: &Value, id: &str, page: &Value) -> Result<String, ClewErro
     Ok(out)
 }
 
+fn source_page(source: &Value, title: &str, slug: &str, language: &str) -> String {
+    use crate::documentation::language::label;
+    let mut body = header(title, &format!("/sources/{slug}"));
+    body.push_str(IMPORTS);
+    body.push_str(&format!(
+        "# {}\n\n{}: {}\n\n{}: {}\n\n{}: {}\n\n## {} {{#retained-text}}\n\n{}",
+        md(title),
+        md(label(language, "Authority")),
+        md(text(&source["authority"])),
+        md(label(language, "Revision")),
+        md(text(&source["revision"])),
+        md(label(language, "Text digest")),
+        md(text(&source["textDigest"])),
+        md(label(language, "Retained text")),
+        fence(text(&source["text"]), "text")
+    ));
+    body.push_str(&format!(
+        "<ClewDownload path=\"/clew-data/objects/{slug}.json\">{}</ClewDownload>\n",
+        contracts::literal(label(language, "Complete original source binding"))
+    ));
+    body
+}
+
 fn declared_contract_page(
     contract: &Value,
     gap: Option<&Value>,
@@ -1243,12 +1269,12 @@ fn declared_contract_page(
     let id = text(&contract["id"]);
     let mut body = header(text(&contract["title"]), &format!("/contracts/{id}"));
     body.push_str(IMPORTS);
+    body.push_str(&format!("# {}\n\n", md(text(&contract["title"]))));
     if let Some(gap) = gap {
         body.push_str(&prose_gap(gap, language)?);
     }
     body.push_str(&format!(
-        "# {}\n\n{}\n\n{}:\n\n{}",
-        md(text(&contract["title"])),
+        "{}\n\n{}:\n\n{}",
         md(label(
             language,
             "Declared contract · runtime conformance is not established."
@@ -1290,13 +1316,13 @@ fn model_page(
     let id = text(&model["id"]);
     let mut out = header(text(&model["title"]), &format!("/data-model/{id}"));
     out.push_str(IMPORTS);
+    out.push_str(&format!("# {}\n\n", md(text(&model["title"]))));
     if let Some(gap) = gap {
         out.push_str(&prose_gap(gap, language)?);
     }
 
     out.push_str(&format!(
-        "# {}\n\n{clew_label_0} · {clew_label_1}.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
-        md(text(&model["title"])),
+        "{clew_label_0} · {clew_label_1}.\n\n<p id=\"dm-return\"></p>\n\n{}\n\n",
         reading::inline(text(&model["purpose"]["text"])),
         clew_label_0 = contracts::literal(crate::documentation::language::label(
             language,
@@ -1621,11 +1647,11 @@ pub(super) fn project(
         } else {
             let mut body = header(title, &format!("/scenarios/{id}"));
             body.push_str(IMPORTS);
-            body.push_str(&page_prose_gaps(page)?);
             body.push_str(&format!(
                 "<ClewAnchor id=\"process-overview\" pageStart />\n\n# {}\n\n",
                 md(title)
             ));
+            body.push_str(&page_prose_gaps(page)?);
             for op in rows(&page["operations"]) {
                 body.push_str(&format!(
                     "## {} {{#{}}}\n\n",
@@ -1690,7 +1716,7 @@ pub(super) fn project(
         }
     }
     if !process_items.is_empty() {
-        sidebars.push(json!({"type":"category","label":"Processes","items":process_items}));
+        sidebars.push(json!({"type":"category","label":crate::documentation::language::label(language, "Processes"),"items":process_items}));
     }
     if rows(&catalog["models"]).next().is_some() {
         overview.push_str("\n## Data model\n\n");
@@ -1716,7 +1742,7 @@ pub(super) fn project(
         ));
     }
     if !model_items.is_empty() {
-        sidebars.push(json!({"type":"category","label":"Data model","items":model_items}));
+        sidebars.push(json!({"type":"category","label":crate::documentation::language::label(language, "Data model"),"items":model_items}));
     }
     let mut contract_items = Vec::new();
     for contract in rows(&catalog["contracts"]) {
@@ -1731,10 +1757,10 @@ pub(super) fn project(
     }
     if !contract_items.is_empty() {
         sidebars
-            .push(json!({"type":"category","label":"Declared contracts","items":contract_items}));
+            .push(json!({"type":"category","label":crate::documentation::language::label(language, "Declared contracts"),"items":contract_items}));
     }
     if !service_items.is_empty() {
-        sidebars.push(json!({"type":"category","label":"Service context","items":service_items}));
+        sidebars.push(json!({"type":"category","label":crate::documentation::language::label(language, "Service context"),"items":service_items}));
     }
     if let Some(guide) = documents.get("native/system-reading-guide.json") {
         let mut story = if manifest["readingGuideTranslationGaps"]["system:overview"].is_object() {
@@ -1777,7 +1803,7 @@ pub(super) fn project(
     overview.push_str("\n## Provenance\n\nOriginal claims, evidence and their independent review states remain in the reference archive. Source references include the original revision, digest and line range; no runtime guarantee is added by export.\n\n");
     overview.push_str("[Source fragments](sources/index.mdx)\n\n");
     put(&mut files, "docs/overview.mdx", overview);
-    reading::ancillary_pages(native, &mut files, &mut sidebars)?;
+    reading::ancillary_pages(native, &mut files, &mut sidebars, language)?;
     let mut routes = reading::route_map(native, &pages)?;
     reading::linked_downloads(native, &mut files, &mut routes)?;
     put(
@@ -1822,8 +1848,11 @@ pub(super) fn project(
             .map_err(io_error)?,
         );
     }
-    let mut source_index = header("Source fragments", "/sources");
-    source_index.push_str("# Source fragments\n\nEach page keeps its exact retained revision, range, text digest and authority. Identical text at another revision remains a separate binding.\n\n");
+    let mut source_index = header(
+        crate::documentation::language::label(language, "Source fragments"),
+        "/sources",
+    );
+    source_index.push_str(&format!("# {} {{#source-fragments}}\n\n{}\n\n", md(crate::documentation::language::label(language, "Source fragments")), md(crate::documentation::language::label(language, "Each page keeps its exact retained revision, range, text digest and authority. Identical text at another revision remains a separate binding."))));
     for (id, source) in &objects.sources {
         let slug = &id[7..];
         let title = format!(
@@ -1832,17 +1861,7 @@ pub(super) fn project(
             source["startLine"],
             source["endLine"]
         );
-        let mut body = header(&title, &format!("/sources/{slug}"));
-        body.push_str(IMPORTS);
-        body.push_str(&format!(
-            "# {}\n\nAuthority: {}\n\nRevision: {}\n\nText digest: {}\n\n## Retained text\n\n{}",
-            md(&title),
-            md(text(&source["authority"])),
-            md(text(&source["revision"])),
-            md(text(&source["textDigest"])),
-            fence(text(&source["text"]), "text")
-        ));
-        body.push_str(&format!("<ClewDownload path=\"/clew-data/objects/{slug}.json\">Complete original source binding</ClewDownload>\n"));
+        let body = source_page(source, &title, slug, language);
         put(&mut files, format!("docs/sources/{slug}.mdx"), body);
         source_index.push_str(&format!(
             "- [{}]({slug}.mdx) · {}\n",
@@ -2048,15 +2067,54 @@ mod tests {
         .unwrap();
         let process = process_page(&page, "save").unwrap();
         assert!(process.contains("Original process purpose"));
+        assert_eq!(
+            process
+                .lines()
+                .filter(|line| line.starts_with("# "))
+                .count(),
+            1
+        );
+        assert_eq!(process.matches("hide_title: true").count(), 1);
         assert!(process.contains("<ClewProcess"));
         assert!(process.contains("question-save"));
         assert!(process.contains("/clew-original/scenarios/save.data-flow.original.json"));
         let comparison = comparison_page(&page["contractComparison"], "save", &page).unwrap();
         assert!(comparison.contains("Original comparison scope"));
+        assert_eq!(
+            comparison
+                .lines()
+                .filter(|line| line.starts_with("# "))
+                .count(),
+            1
+        );
+        assert_eq!(comparison.matches("hide_title: true").count(), 1);
         assert!(comparison.contains("Original bounded limitation"));
         assert!(comparison.contains("/clew-original/scenarios/save.comparison.original.json"));
         assert_eq!(page["contractComparison"], original["contractComparison"]);
         assert_eq!(page["processDataFlow"], original["processDataFlow"]);
+    }
+
+    #[test]
+    fn source_appendix_localizes_only_owned_labels_and_keeps_source_bytes_and_routes() {
+        let raw = "// Revision\nclass Authority { String value = \"Retained text\"; }\n";
+        let source = json!({"file":"Authority.java","revision":"Revision","authority":"COMPILER_BOUND","text":raw,"textDigest":crate::canonical::hash_bytes(raw.as_bytes()),"startLine":1,"endLine":2});
+        let original = source.clone();
+        let id = digest(&source).unwrap();
+        for language in ["en", "ru"] {
+            let body = source_page(&source, "Authority.java:1-2", &id[7..], language);
+            assert!(body.contains(&fence(raw, "text")));
+            assert!(body.contains("Authority.java:1-2"));
+            assert!(body.contains(&md("COMPILER_BOUND")));
+            assert!(body.contains("{#retained-text}"));
+            assert!(body.contains(&format!("/clew-data/objects/{}.json", &id[7..])));
+            if language == "ru" {
+                assert!(body.contains("Основание сведений: COMPILER"));
+                assert!(body.contains("Версия: Revision"));
+                assert!(body.contains("## Сохранённый текст"));
+                assert!(!body.contains("## Retained text"));
+            }
+            assert_eq!(source, original);
+        }
     }
 
     #[test]
@@ -2077,6 +2135,11 @@ mod tests {
                 .unwrap();
                 let body = declared_contract_page(&contract, gap.as_ref(), target).unwrap();
                 assert!(body.contains("# Properties"));
+                assert_eq!(
+                    body.lines().filter(|line| line.starts_with("# ")).count(),
+                    1
+                );
+                assert_eq!(body.matches("hide_title: true").count(), 1);
                 assert!(body.contains("{#properties}"));
                 assert!(body.contains("/components/schemas/Event"));
                 assert!(body.contains(&format!(
@@ -2127,6 +2190,11 @@ mod tests {
             assert!(body.contains(original));
         }
         assert!(body.contains("Требуется перевод"));
+        assert_eq!(
+            body.lines().filter(|line| line.starts_with("# ")).count(),
+            1
+        );
+        assert_eq!(body.matches("hide_title: true").count(), 1);
         assert!(body.contains("## Идентичность и связи"));
         assert!(body.contains("## Поля и представления"));
         assert!(body.contains("<summary>Основания и область</summary>"));

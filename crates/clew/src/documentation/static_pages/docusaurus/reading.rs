@@ -525,7 +525,9 @@ pub(super) fn ancillary_pages(
     native: &BTreeMap<String, Vec<u8>>,
     files: &mut BTreeMap<String, Vec<u8>>,
     sidebars: &mut Vec<Value>,
+    language: &str,
 ) -> Result<(), ClewError> {
+    use crate::documentation::language::label;
     let mut items = Vec::new();
     for (file, slug, title) in [
         ("help.html", "help", "Help"),
@@ -545,8 +547,7 @@ pub(super) fn ancillary_pages(
         let Some(body) = main_html(html) else {
             continue;
         };
-        let mut out = header(title, &format!("/{slug}"));
-        out = out.replacen("---\n\n", "hide_title: true\n---\n\n", 1);
+        let mut out = header(label(language, title), &format!("/{slug}"));
         out.push_str(IMPORTS);
         out.push_str(&format!(
             "<ClewRetainedPage nativePath={} html={{{}}} />\n",
@@ -555,13 +556,18 @@ pub(super) fn ancillary_pages(
         ));
         files.insert(format!("docs/{slug}.mdx"), out.into_bytes());
         if slug == "data-model" {
-            if let Some(category) = sidebars.iter_mut().find(|c| c["label"] == "Data model") {
+            if let Some(category) = sidebars
+                .iter_mut()
+                .find(|c| c["label"] == label(language, "Data model"))
+            {
                 category["items"]
                     .as_array_mut()
                     .expect("generated sidebar items")
                     .insert(0, json!(slug));
             } else {
-                sidebars.push(json!({"type":"category","label":"Data model","items":[slug]}));
+                sidebars.push(
+                    json!({"type":"category","label":label(language, "Data model"),"items":[slug]}),
+                );
             }
         } else {
             items.push(json!(slug));
@@ -579,15 +585,15 @@ pub(super) fn ancillary_pages(
                     crate::documentation::invalid("catalog data closing is missing")
                 })?;
             let entries: Value = serde_json::from_str(&html[start..end]).map_err(io_error)?;
-            let mut out = header("Search documentation", "/catalog");
+            let mut out = header(label(language, "Search documentation"), "/catalog");
             out.push_str(IMPORTS);
-            out.push_str(&format!("# Search documentation\n\nCatalog metadata helps discovery; it does not establish that explanations are complete.\n\n<ClewCatalog entries={{{entries}}} />\n"));
+            out.push_str(&format!("# {} {{#search-documentation}}\n\n{}\n\n<ClewCatalog entries={{{entries}}} />\n", md(label(language, "Search documentation")), md(label(language, "Catalog metadata helps discovery; it does not establish that explanations are complete."))));
             files.insert("docs/catalog.mdx".into(), out.into_bytes());
             items.push(json!("catalog"));
         }
     }
     if !items.is_empty() {
-        sidebars.push(json!({"type":"category","label":"Reader help and reference","items":items}));
+        sidebars.push(json!({"type":"category","label":label(language, "Reader help and reference"),"items":items}));
     }
     Ok(())
 }
@@ -789,6 +795,49 @@ mod tests {
         );
     }
     #[test]
+    fn ancillary_titles_and_categories_use_the_locale_without_changing_routes_or_retained_html() {
+        let original = "<main><h1>Source fragments</h1><p>Revision</p></main>";
+        let native = BTreeMap::from([
+            ("help.html".into(), original.as_bytes().to_vec()),
+            ("data-model.html".into(), original.as_bytes().to_vec()),
+            (
+                "catalog.html".into(),
+                b"<script id=\"catalog-data\">[]</script>".to_vec(),
+            ),
+        ]);
+        let mut routes = Vec::new();
+        for language in ["en", "ru"] {
+            let model_label = crate::documentation::language::label(language, "Data model");
+            let mut sidebar =
+                vec![json!({"type":"category","label":model_label,"items":["data-model/record"]})];
+            let mut files = BTreeMap::new();
+            ancillary_pages(&native, &mut files, &mut sidebar, language).unwrap();
+            assert_eq!(
+                sidebar
+                    .iter()
+                    .filter(|category| category["label"] == model_label)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                sidebar[0]["items"],
+                json!(["data-model", "data-model/record"])
+            );
+            let body = String::from_utf8(files["docs/help.mdx"].clone()).unwrap();
+            assert!(body.contains("<h1>Source fragments</h1><p>Revision</p>"));
+            let catalog = String::from_utf8(files["docs/catalog.mdx"].clone()).unwrap();
+            assert!(catalog.contains("{#search-documentation}"));
+            assert!(catalog.contains("<ClewCatalog entries={[]} />"));
+            if language == "ru" {
+                assert_ne!(sidebar[0]["label"], "Data model");
+                assert!(!catalog.contains("# Search documentation"));
+            }
+            routes.push(files.keys().cloned().collect::<Vec<_>>());
+        }
+        assert_eq!(routes[0], routes[1]);
+    }
+
+    #[test]
     fn ancillary_projection_drops_shell_scripts_but_retains_content_and_routes() {
         let html = b"<main><h1>Original heading</h1><p>All retained prose.</p><details><summary>Long/pointer</summary>Original scope</details><script>not portable</script><style>old shell</style></main>".to_vec();
         let native = BTreeMap::from([
@@ -801,7 +850,7 @@ mod tests {
         ]);
         let mut files = BTreeMap::new();
         let mut sidebar = vec![];
-        ancillary_pages(&native, &mut files, &mut sidebar).unwrap();
+        ancillary_pages(&native, &mut files, &mut sidebar, "en").unwrap();
         let body = String::from_utf8(files["docs/help.mdx"].clone()).unwrap();
         assert!(body.contains("All retained prose."));
         assert!(body.contains("Original scope"));

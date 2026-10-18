@@ -680,5 +680,19 @@
   "Declared contract · runtime conformance is not established.": "Заявленный контракт · соответствие во время выполнения не установлено.",
   "Exact pointer": "Точный указатель",
   "Properties": "Свойства",
-  "Requiredness follows the selected branch and required parents. Required and nullable are separate.": "Обязательность зависит от выбранной ветви и обязательных родительских свойств. Обязательность и допустимость null рассматриваются отдельно."
+  "Requiredness follows the selected branch and required parents. Required and nullable are separate.": "Обязательность зависит от выбранной ветви и обязательных родительских свойств. Обязательность и допустимость null рассматриваются отдельно.",
+  "Declared contracts": "Заявленные контракты",
+  "Service context": "Контекст сервисов",
+  "Reader help and reference": "Справка и материалы",
+  "Source fragments": "Фрагменты исходного кода",
+  "Authority": "Основание сведений",
+  "Revision": "Версия",
+  "Text digest": "Хеш текста",
+  "Retained text": "Сохранённый текст",
+  "Complete original source binding": "Полная исходная запись привязки к коду",
+  "Each page keeps its exact retained revision, range, text digest and authority. Identical text at another revision remains a separate binding.": "Каждая страница сохраняет точную версию, диапазон строк, хеш текста и основание сведений. Одинаковый текст в другой версии остаётся отдельной привязкой.",
+  "Publication history": "История публикаций",
+  "Retained publication overview": "Сохранённый обзор публикации",
+  "Search documentation": "Поиск по документации",
+  "Catalog metadata helps discovery; it does not establish that explanations are complete.": "Метаданные каталога помогают искать сведения, но не подтверждают полноту описаний."
 }

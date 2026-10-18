@@ -45,3 +45,6 @@ table.dm-records{width:100%;table-layout:fixed;border-collapse:collapse}.dm-reco
 @media(max-width:760px){.dm-wide-overview{display:none}.dm-compact-overview{display:block}.dm-overview .dm-matrix-scroll{max-height:none}.dm-field-row .dm-condition{margin-top:2px}.dm-detail-nav{gap:4px}.dm-selected-context{display:block;width:100%}}
 
 @media(max-width:650px){.dm-records td[data-label]::before{content:attr(data-label)}}
+
+/* Field tables become blocks on phones; their captions must leave table layout too. */
+@media(max-width:650px){.dm-page>section>table>caption{display:block;width:100%;box-sizing:border-box;text-align:left}}
