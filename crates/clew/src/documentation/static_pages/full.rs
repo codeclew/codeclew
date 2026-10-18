@@ -41,6 +41,8 @@ pub(super) fn render(
     let (manifest, raw) = history::read_frozen_bindings(repo, publication, &mut budget)?;
     let (_, bindings) =
         history::validate_frozen_bindings(repo, manifest.clone(), &raw, &mut BTreeMap::new())?;
+    let language = bindings.documentation_language.as_deref().unwrap_or("en");
+    crate::documentation::language::validate(Some(language))?;
     let mut files = BTreeMap::new();
     let mut remaining = MAX_BYTES;
     let mut pages = Vec::new();
@@ -210,16 +212,25 @@ pub(super) fn render(
             serde_json::to_vec_pretty(comparison).map_err(io_error)?,
         );
     }
-    let navigation = reader::navigation("", "overview.html", Some("history.html"), &[]);
-    let catalog = reader::decorate(&reader::catalog(&files), &navigation);
+    let navigation =
+        reader::navigation_language("", "overview.html", Some("history.html"), &[], language);
+    let catalog = reader::decorate(&reader::catalog_language(&files, language), &navigation);
     files.insert("catalog.html".into(), catalog.into_bytes());
-    let history = reader::page(
-        "Selected publication",
+    let history = reader::page_language(
+        reader::text(language, "Selected publication", "Выбранная публикация"),
         &format!(
-            "<h1>Selected publication</h1><p><code>{}</code></p><p>Selected source snapshot: <code>{}</code></p><p><a href=\"index.html\">Documentation</a></p>",
+            "<h1>{}</h1><p><code>{}</code></p><p>{}: <code>{}</code></p><p><a href=\"index.html\">{}</a></p>",
+            reader::text(language, "Selected publication", "Выбранная публикация"),
             render::escape(publication),
-            render::escape(snapshot)
+            reader::text(
+                language,
+                "Selected source snapshot",
+                "Выбранный снимок исходного кода"
+            ),
+            render::escape(snapshot),
+            reader::text(language, "Documentation", "Документация")
         ),
+        language,
     );
     files.insert(
         "history.html".into(),
@@ -265,7 +276,7 @@ pub(super) fn render(
             }
         }
     }
-    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","snapshot":snapshot,"publication":publication,
+    let mut result = json!({"schema":"codeclew-native-pages-full-manifest/1.0","status":"RENDERED","documentationLanguage":language,"snapshot":snapshot,"publication":publication,
         "authority":"FROZEN_NARRATIVES_WITH_SEPARATE_SELECTED_SNAPSHOT_EVIDENCE","inputDigest":checked.input_digest,"contextDigest":checked.context_digest,
         "frozenBindingsDigest":digest(&bindings)?,"pages":pages,"output":output,"index":"index.html","proseAuthored":false,"questionReadingProfile":!questions.is_empty(),"dataModelReadingProfile":model.is_some(),
         "files":files.iter().map(|(path,bytes)|json!({"path":path,"digest":crate::canonical::hash_bytes(bytes)})).collect::<Vec<_>>()});

@@ -360,6 +360,63 @@ fn edit(repo: &Repository, snapshot: &str, exclude: bool) {
 }
 
 #[test]
+fn full_publication_catalog_and_history_inherit_the_frozen_publication_language() {
+    let (temporary, repo, snapshot) = repository_snapshot();
+    for language in ["en", "ru"] {
+        let published = crate::documentation::render::publish_language(
+            &repo,
+            vec![],
+            false,
+            BTreeMap::new(),
+            Some(&snapshot),
+            false,
+            Some(language),
+        )
+        .unwrap();
+        let publication = published["bundle"].as_str().unwrap();
+        let original = fs::read(
+            repo.path(&format!("docs/generated/{publication}/bindings.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let output = temporary.path().join(format!("full-{language}"));
+        let rendered = run(Command::Render {
+            root: repo.root.clone(),
+            snapshot: snapshot.clone(),
+            input: None,
+            publication: Some(publication.into()),
+            reading_plan: None,
+            contract_comparison: None,
+            data_model: None,
+            format: PageFormat::Standalone,
+            output: output.clone(),
+        })
+        .unwrap();
+        assert_eq!(rendered["documentationLanguage"], language);
+        for file in ["catalog.html", "history.html"] {
+            let html = fs::read_to_string(output.join(file)).unwrap();
+            assert!(
+                html.contains(&format!("<html lang=\"{language}\">")),
+                "wrong wrapper: {file}"
+            );
+            assert!(html.contains(reader::SCRIPT));
+        }
+        let history = fs::read_to_string(output.join("history.html")).unwrap();
+        let title = if language == "ru" {
+            "<h1>Выбранная публикация</h1>"
+        } else {
+            "<h1>Selected publication</h1>"
+        };
+        assert!(history.contains(title));
+        assert!(history.contains(publication) && history.contains(&snapshot));
+        assert_eq!(
+            fs::read(output.join("frozen-bindings.json")).unwrap(),
+            original
+        );
+    }
+}
+
+#[test]
 fn full_publication_refuses_endpoint_exclusions_before_reading_or_writing_output() {
     let (temporary, repo, snapshot) = repository_snapshot();
     edit(&repo, &snapshot, true);
