@@ -1,4 +1,5 @@
 pub mod mission;
+pub mod retention;
 
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
@@ -256,6 +257,20 @@ pub struct SessionLifecycle {
 pub(crate) struct ReleasedSessionCasRoots {
     pub session_components: std::collections::BTreeMap<String, (u64, u64)>,
     pub run_components: std::collections::BTreeMap<String, (u64, u64)>,
+    pub retained_legacy_recovery_sessions: u64,
+    pub retained_legacy_recovery_runs: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunReadMode {
+    Current,
+    Retention,
+}
+
+struct SessionRunProjections {
+    records: Vec<RunRecord>,
+    legacy_recovery_cancellations: u64,
+    _locks: Vec<RunLedgerLock>,
 }
 
 pub struct SessionAdmission {
@@ -1704,18 +1719,21 @@ fn load_session_runs(
     session_root: &Path,
     session: &SessionAuthority,
 ) -> Result<Vec<RunRecord>, ClewError> {
-    load_session_runs_with_repair(state, session_root, session, true)
+    Ok(load_session_runs_in_mode(state, session_root, session, RunReadMode::Current)?.records)
 }
 
-fn load_session_runs_with_repair(
+fn load_session_runs_in_mode(
     state: &StateAuthority,
     session_root: &Path,
     session: &SessionAuthority,
-    repair_projection: bool,
-) -> Result<Vec<RunRecord>, ClewError> {
+    mode: RunReadMode,
+) -> Result<SessionRunProjections, ClewError> {
     let references_root = session_root.join("runs");
-    let references = state.directory_at(&references_root)?.entries()?;
+    let mut references = state.directory_at(&references_root)?.entries()?;
+    references.sort();
+    let mut locks = Vec::new();
     let mut runs = Vec::with_capacity(references.len());
+    let mut legacy_recovery_cancellations = 0;
     for name in references {
         let path = references_root.join(&name);
         let reference: SessionRunReference = read_managed_json(state, &path, MAX_PLAN_BYTES)?;
@@ -1730,7 +1748,7 @@ fn load_session_runs_with_repair(
         {
             return Err(invalid("session run reference authority is invalid"));
         }
-        let run_root = if repair_projection {
+        let run_root = if mode == RunReadMode::Current {
             state.run_root(&reference.run_id)?
         } else {
             state
@@ -1739,18 +1757,22 @@ fn load_session_runs_with_repair(
                 .join(id_component(&reference.run_id, "run:")?)
         };
         let _run_lock = RunLedgerLock::acquire(state, &run_root)?;
-        let run = load_run_projection_with_repair(
-            state,
-            &run_root,
-            &reference.run_id,
-            repair_projection,
-        )?;
+        let (run, legacy_recovery_cancellation) =
+            load_run_projection_in_mode(state, &run_root, &reference.run_id, mode)?;
         if run.session_id != session.session_id || run.request_digest != reference.request_digest {
             return Err(invalid("session run ledger does not match its reference"));
         }
         runs.push(run);
+        legacy_recovery_cancellations += u64::from(legacy_recovery_cancellation);
+        if mode == RunReadMode::Retention {
+            locks.push(_run_lock);
+        }
     }
-    Ok(runs)
+    Ok(SessionRunProjections {
+        records: runs,
+        legacy_recovery_cancellations,
+        _locks: locks,
+    })
 }
 
 /// Resolve the retention decision already committed by `session gc` without
@@ -1777,7 +1799,7 @@ pub(crate) fn released_session_cas_roots(
         if !state.private_file_exists(&root.join("authority.json"))? {
             continue;
         }
-        let authority = read_session_authority_for_cleanup(
+        let authority = read_session_authority_for_retention(
             state,
             &root.join("authority.json"),
             &expected_session_id,
@@ -1787,8 +1809,19 @@ pub(crate) fn released_session_cas_roots(
         }
         let _lock = SessionLifecycleLock::acquire(state, &root)?;
         let lifecycle = verify_session_lifecycle_unlocked(state, &root, &authority)?;
-        let runs = load_session_runs_with_repair(state, &root, &authority, false)?;
-        if lifecycle.status != SessionStatus::GarbageCollected {
+        let loaded = load_session_runs_in_mode(state, &root, &authority, RunReadMode::Retention)?;
+        let reconciled =
+            retention::release_authorized(state, &root, &authority, &lifecycle, &loaded)?;
+        let runs = loaded.records;
+        if loaded.legacy_recovery_cancellations > 0 && !reconciled {
+            released.retained_legacy_recovery_sessions += 1;
+            released.retained_legacy_recovery_runs += loaded.legacy_recovery_cancellations;
+        }
+        // An old cancellation cannot authorize releasing recovery evidence,
+        // even when a later lifecycle claims that the session was collected.
+        if lifecycle.status != SessionStatus::GarbageCollected
+            || (loaded.legacy_recovery_cancellations > 0 && !reconciled)
+        {
             retained_runs.extend(
                 runs.iter()
                     .map(|run| id_component(&run.run_id, "run:").map(str::to_owned))
@@ -2541,15 +2574,15 @@ fn load_run_projection(
     root: &Path,
     expected_run_id: &str,
 ) -> Result<RunRecord, ClewError> {
-    load_run_projection_with_repair(state, root, expected_run_id, true)
+    Ok(load_run_projection_in_mode(state, root, expected_run_id, RunReadMode::Current)?.0)
 }
 
-fn load_run_projection_with_repair(
+fn load_run_projection_in_mode(
     state: &StateAuthority,
     root: &Path,
     expected_run_id: &str,
-    repair_projection: bool,
-) -> Result<RunRecord, ClewError> {
+    mode: RunReadMode,
+) -> Result<(RunRecord, bool), ClewError> {
     let path = root.join("ledger.jsonl");
     let bytes = state
         .read_private_file(&path, MAX_RUN_LEDGER_BYTES as usize)
@@ -2561,6 +2594,7 @@ fn load_run_projection_with_repair(
         return Err(invalid("run ledger changed while reading"));
     }
     let mut previous = None::<RunLedgerEntry>;
+    let mut legacy_recovery_cancellation = false;
     for line in bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -2595,10 +2629,19 @@ fn load_run_projection_with_repair(
                 }
                 require_same_run_identity(&prior.record, &entry.record)?;
                 if !run_transition_allowed(prior.record.status, entry.record.status) {
-                    return Err(invalid(&format!(
-                        "run {expected_run_id} ledger contains an invalid transition {:?} -> {:?} at sequence {}",
-                        prior.record.status, entry.record.status, entry.sequence
-                    )));
+                    if mode == RunReadMode::Retention
+                        && legacy_retention_cancellation(&prior.record, &entry.record)?
+                    {
+                        // Recognize only this hash-valid legacy shape for a
+                        // conservative reachability scan. It is not a valid
+                        // mutation transition and pins the entire owning roots.
+                        legacy_recovery_cancellation = true;
+                    } else {
+                        return Err(invalid(&format!(
+                            "run {expected_run_id} ledger contains an invalid transition {:?} -> {:?} at sequence {}",
+                            prior.record.status, entry.record.status, entry.sequence
+                        )));
+                    }
                 }
             }
         }
@@ -2612,13 +2655,31 @@ fn load_run_projection_with_repair(
         read_managed_json::<RunRecord>(state, &projection_path, MAX_PLAN_BYTES).is_ok_and(
             |record| canonical::bytes(&record).ok() == canonical::bytes(&projected).ok(),
         );
-    if repair_projection && !projection_matches {
+    if mode == RunReadMode::Current && !projection_matches {
         state.write_private_atomic(
             &projection_path,
             &canonical::bytes(&projected).map_err(internal)?,
         )?;
     }
-    Ok(projected)
+    Ok((projected, legacy_recovery_cancellation))
+}
+
+fn legacy_retention_cancellation(prior: &RunRecord, next: &RunRecord) -> Result<bool, ClewError> {
+    if prior.status != RunStatus::WorktreeRecoveryRequired
+        || next.status != RunStatus::Cancelled
+        || next.process_id.is_some()
+        || next.process_start_token.is_some()
+    {
+        return Ok(false);
+    }
+    // The retained incident changed only sequence, status and update time.
+    // In particular its original failure and candidate authority survived.
+    let mut expected = prior.clone();
+    expected.sequence = next.sequence;
+    expected.status = next.status;
+    expected.updated_unix_ms = next.updated_unix_ms;
+    Ok(canonical::bytes(&expected).map_err(internal)?
+        == canonical::bytes(next).map_err(internal)?)
 }
 
 fn run_event_hash(entry: &RunLedgerEntry) -> Result<String, ClewError> {
@@ -2892,15 +2953,30 @@ fn read_session_authority_for_cleanup(
     path: &Path,
     expected_session_id: &str,
 ) -> Result<SessionAuthority, ClewError> {
+    read_compatible_session_authority(state, path, expected_session_id, false)
+}
+
+fn read_session_authority_for_retention(
+    state: &StateAuthority,
+    path: &Path,
+    expected_session_id: &str,
+) -> Result<SessionAuthority, ClewError> {
+    read_compatible_session_authority(state, path, expected_session_id, true)
+}
+
+fn read_compatible_session_authority(
+    state: &StateAuthority,
+    path: &Path,
+    expected_session_id: &str,
+    retention_only: bool,
+) -> Result<SessionAuthority, ClewError> {
     let bytes = state
         .read_private_file(path, MAX_PLAN_BYTES)
         .map_err(|_| invalid("managed JSON object is missing or exceeds its limit"))?;
-
     if let Ok(authority) = serde_json::from_slice::<SessionAuthority>(&bytes) {
         validate_session_authority(&authority, expected_session_id)?;
         return Ok(authority);
     }
-
     let legacy = canonical::parse_json_strict(&bytes).map_err(parse_error)?;
     if canonical::bytes(&legacy).map_err(internal)? != bytes {
         return Err(invalid("legacy session authority is not canonical"));
@@ -2908,29 +2984,50 @@ fn read_session_authority_for_cleanup(
     let object = legacy
         .as_object()
         .ok_or_else(|| invalid("legacy session authority is invalid"))?;
-    if object.get("language").and_then(Value::as_str) != Some("TYPE_SCRIPT") {
-        return Err(invalid("session authority language is invalid"));
-    }
     let stored_digest = object
         .get("authorityDigest")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("legacy session authority digest is invalid"))?
         .to_owned();
-
     let mut unsigned = legacy.clone();
-    unsigned
-        .as_object_mut()
-        .expect("legacy authority was checked as an object")
-        .insert("authorityDigest".into(), Value::String(String::new()));
+    unsigned["authorityDigest"] = json!("");
     if canonical::hash(&unsigned).map_err(internal)? != stored_digest {
         return Err(invalid("legacy session authority identity is invalid"));
     }
-
-    let mut normalized = legacy;
-    normalized
-        .as_object_mut()
-        .expect("legacy authority was checked as an object")
-        .insert("language".into(), Value::String("TYPESCRIPT".into()));
+    let mut normalized = legacy.clone();
+    let legacy_typescript = legacy["language"] == "TYPE_SCRIPT";
+    if legacy_typescript {
+        normalized["language"] = json!("TYPESCRIPT");
+    }
+    let old_limits = legacy["workingTree"]["limits"]
+        .as_object()
+        .is_some_and(|limits| {
+            let keys = [
+                "maxFiles",
+                "maxFileBytes",
+                "maxTotalBytes",
+                "maxInventoryBytes",
+                "maxInventorySeconds",
+            ];
+            limits.len() == keys.len()
+                && keys
+                    .iter()
+                    .all(|key| limits.get(*key).is_some_and(|v| v.as_u64().is_some()))
+        });
+    let legacy_limits =
+        retention_only && legacy["schema"] == WORKING_TREE_SESSION_SCHEMA && old_limits;
+    if legacy_limits {
+        // Retention reads references; it never captures paths. Zero placeholders
+        // keep this in-memory representation unusable for new capture. Original
+        // bytes/digest stay authoritative and no shared admission defaults change.
+        normalized["workingTree"]["limits"]["maxPathBytes"] = json!(0);
+        normalized["workingTree"]["limits"]["maxPathDepth"] = json!(0);
+    }
+    if !legacy_typescript && !legacy_limits {
+        return Err(invalid(&format!(
+            "session {expected_session_id} authority has an unsupported retained representation"
+        )));
+    }
     let authority: SessionAuthority = serde_json::from_value(normalized).map_err(parse_error)?;
     validate_session_authority_shape(&authority, expected_session_id)?;
     Ok(authority)
@@ -3588,6 +3685,31 @@ mod tests {
         (authority, canonical::bytes(&legacy).unwrap())
     }
 
+    fn legacy_working_tree_limits_authority() -> (SessionAuthority, Vec<u8>) {
+        let mut authority = test_session();
+        authority.schema = WORKING_TREE_SESSION_SCHEMA.into();
+        authority.working_tree = Some(WorkingTreeSourceBinding {
+            schema: "codeclew-working-tree-source/1.0".into(),
+            source_selection: "WORKING_TREE".into(),
+            operation: "ANALYSIS".into(),
+            profile_id: "kotlin-jvm-gradle-analysis".into(),
+            snapshot: CasObject::for_bytes(SNAPSHOT_SCHEMA, b"legacy snapshot").unwrap(),
+            capture_scope: "ALL_TRACKED_AND_NON_IGNORED_UNTRACKED_INPUTS".into(),
+            excluded_categories: Vec::new(),
+            consistency: "RETAINED_TEST_CAPTURE".into(),
+            limits: crate::repository_snapshot::WorkingTreeLimits::default(),
+        });
+        authority.authority_digest.clear();
+        let mut legacy = canonical::value(&authority).unwrap();
+        let limits = legacy["workingTree"]["limits"].as_object_mut().unwrap();
+        limits.remove("maxPathBytes");
+        limits.remove("maxPathDepth");
+        let digest = canonical::hash(&legacy).unwrap();
+        legacy["authorityDigest"] = json!(digest);
+        authority.authority_digest = digest;
+        (authority, canonical::bytes(&legacy).unwrap())
+    }
+
     fn test_run() -> RunRecord {
         let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         RunRecord {
@@ -4012,6 +4134,232 @@ mod tests {
         assert_eq!(released.reclaimable_loose_objects, 1);
     }
 
+    pub(super) fn retained_recovery_fixture(
+        legacy_cancelled: bool,
+        collected: bool,
+    ) -> (
+        tempfile::TempDir,
+        StateAuthority,
+        PathBuf,
+        PathBuf,
+        RunRecord,
+    ) {
+        let (temporary, state, root, authority) = initialized_session();
+        write_managed_json_create_new(&state, &root.join("authority.json"), &authority).unwrap();
+        let mut run = test_run();
+        run.session_id = authority.session_id.clone();
+        let run_root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &run_root, &mut run, None).unwrap();
+        ensure_session_run_reference(&state, &root, &authority, &run).unwrap();
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        run.status = RunStatus::WorktreeRecoveryRequired;
+        run.candidate_commit = Some("2222222222222222222222222222222222222222".into());
+        run.failure = Some(
+            json!({"code":"INVALID_INPUT","message":"conditional obligation authority is not unique","retryable":false}),
+        );
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        if legacy_cancelled {
+            let previous = run.ledger_head.clone();
+            run.sequence += 1;
+            run.status = RunStatus::Cancelled;
+            append_run_entry(&state, &run_root, &mut run, Some(previous)).unwrap();
+        }
+        if collected {
+            let mut current = verify_session_lifecycle_unlocked(&state, &root, &authority).unwrap();
+            for status in [SessionStatus::Closed, SessionStatus::GarbageCollected] {
+                append_session_lifecycle(
+                    &state,
+                    &root,
+                    SessionLifecycle {
+                        schema: SESSION_LIFECYCLE_SCHEMA.into(),
+                        session_id: authority.session_id.clone(),
+                        session_authority_digest: authority.authority_digest.clone(),
+                        sequence: current.sequence + 1,
+                        previous_event_hash: Some(current.event_hash),
+                        status,
+                        event_hash: String::new(),
+                        updated_unix_ms: unix_ms(),
+                    },
+                )
+                .unwrap();
+                current = verify_session_lifecycle_unlocked(&state, &root, &authority).unwrap();
+            }
+        }
+        (temporary, state, root, run_root, run)
+    }
+
+    #[test]
+    fn legacy_recovery_cancellation_is_read_only_retention_compatibility() {
+        let (_temporary, state, root, run_root, run) = retained_recovery_fixture(true, true);
+        let paths = [
+            root.join("authority.json"),
+            root.join("lifecycle.jsonl"),
+            root.join("lifecycle.json"),
+            run_root.join("ledger.jsonl"),
+            run_root.join("record.json"),
+        ];
+        let before = paths
+            .iter()
+            .map(fs::read)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(run.sequence, 3);
+        assert!(!run_transition_allowed(
+            RunStatus::WorktreeRecoveryRequired,
+            RunStatus::Cancelled
+        ));
+        assert!(load_run_projection(&state, &run_root, &run.run_id).is_err());
+        let retained = released_session_cas_roots(&state).unwrap();
+        assert!(retained.session_components.is_empty());
+        assert!(retained.run_components.is_empty());
+        assert_eq!(retained.retained_legacy_recovery_sessions, 1);
+        assert_eq!(retained.retained_legacy_recovery_runs, 1);
+        assert_eq!(
+            paths
+                .iter()
+                .map(fs::read)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn storage_gc_keeps_recovery_worktrees_and_transitive_evidence_but_collects_unrelated_garbage()
+    {
+        for (legacy, collected) in [(false, false), (true, true)] {
+            let (_temporary, state, root, run_root, _run) =
+                retained_recovery_fixture(legacy, collected);
+            let (leaf, parent, run_evidence, other_evidence, dead) = {
+                let store = CasStore::open(&state).unwrap();
+                let leaf = store
+                    .put("test/recovery-leaf/1", b"recovery source")
+                    .unwrap();
+                let parent = store
+                    .put(
+                        "test/recovery-parent/1",
+                        &canonical::bytes(&json!({"child":leaf})).unwrap(),
+                    )
+                    .unwrap();
+                let run_evidence = store
+                    .put("test/run-evidence/1", b"prepared evidence")
+                    .unwrap();
+                let other_evidence = store
+                    .put("test/other-root/1", b"another reachable root")
+                    .unwrap();
+                let dead = store
+                    .put("test/unreachable/1", b"unrelated garbage")
+                    .unwrap();
+                (leaf, parent, run_evidence, other_evidence, dead)
+            };
+            state
+                .write_private_atomic(
+                    &root.join("evidence.json"),
+                    &canonical::bytes(&json!({"root":parent})).unwrap(),
+                )
+                .unwrap();
+            state
+                .write_private_atomic(
+                    &run_root.join("evidence.json"),
+                    &canonical::bytes(&json!({"root":run_evidence})).unwrap(),
+                )
+                .unwrap();
+            let threads = state.directory(Path::new("threads")).unwrap();
+            state
+                .write_private_atomic(
+                    &threads.path().join("reachable.json"),
+                    &canonical::bytes(&json!({"root":other_evidence})).unwrap(),
+                )
+                .unwrap();
+            let worktree = root.join("candidates").join("retained").join("worktree");
+            create_private_directory(&worktree).unwrap();
+            fs::write(worktree.join("unpublished.txt"), b"unpublished work").unwrap();
+            let plan = crate::cas::storage_status(&state).unwrap();
+            assert!(!plan.collection_blocked);
+            assert_eq!(plan.reachable_objects, 4);
+            assert_eq!(plan.reclaimable_loose_objects, 1);
+            assert_eq!(plan.released_sessions, 0);
+            assert_eq!(plan.released_runs, 0);
+            assert_eq!(plan.retained_legacy_recovery_sessions, u64::from(legacy));
+            let applied = crate::cas::garbage_collect_storage(&state).unwrap();
+            assert!(applied.reclaimed_bytes > 0);
+            let store = CasStore::open(&state).unwrap();
+            for live in [leaf, parent, run_evidence, other_evidence] {
+                assert!(store.read(&live, 4096).is_ok());
+            }
+            assert!(store.read(&dead, 4096).is_err());
+            assert_eq!(
+                fs::read(worktree.join("unpublished.txt")).unwrap(),
+                b"unpublished work"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_retention_rejects_other_invalid_or_unverifiable_ledger_states_before_deletion() {
+        for invalid_case in [
+            "unknown-status",
+            "hash-mismatch",
+            "live-process",
+            "changed-failure",
+            "cleared-failure",
+            "changed-authority",
+            "wrong-transition",
+        ] {
+            let (_temporary, state, _root, run_root, _run) = retained_recovery_fixture(true, true);
+            let dead = {
+                let store = CasStore::open(&state).unwrap();
+                store
+                    .put("test/preserve-on-invalid/1", b"must remain")
+                    .unwrap()
+            };
+            let ledger = run_root.join("ledger.jsonl");
+            let mut entries = fs::read_to_string(&ledger)
+                .unwrap()
+                .lines()
+                .map(|line| canonical::parse_json_strict(line.as_bytes()).unwrap())
+                .collect::<Vec<_>>();
+            let last = entries.last_mut().unwrap();
+            match invalid_case {
+                "unknown-status" => last["record"]["status"] = json!("UNKNOWN_RUN_STATE"),
+                "hash-mismatch" => last["record"]["updatedUnixMs"] = json!(0),
+                "live-process" => last["record"]["processId"] = json!(1234),
+                "changed-failure" => {
+                    last["record"]["failure"] = json!({"code":"WORKTREE_RECOVERY_REQUIRED"})
+                }
+                "cleared-failure" => last["record"]["failure"] = Value::Null,
+                "changed-authority" => {
+                    last["record"]["candidateCommit"] =
+                        json!("3333333333333333333333333333333333333333")
+                }
+                "wrong-transition" => last["record"]["status"] = json!("CREATED"),
+                _ => unreachable!(),
+            }
+            if invalid_case != "hash-mismatch" {
+                last["eventHash"] = json!("");
+                last["eventHash"] = json!(canonical::hash(last).unwrap());
+            }
+            let mut bytes = Vec::new();
+            for entry in entries {
+                bytes.extend(canonical::bytes(&entry).unwrap());
+                bytes.push(b'\n');
+            }
+            fs::write(&ledger, &bytes).unwrap();
+            assert!(
+                crate::cas::storage_status(&state).is_err(),
+                "{invalid_case}"
+            );
+            assert!(
+                crate::cas::garbage_collect_storage(&state).is_err(),
+                "{invalid_case}"
+            );
+            assert_eq!(fs::read(&ledger).unwrap(), bytes);
+            let store = CasStore::open(&state).unwrap();
+            assert!(store.read(&dead, 4096).is_ok(), "{invalid_case}");
+        }
+    }
+
     #[test]
     fn cleanup_accepts_digest_valid_legacy_typescript_without_relaxing_normal_loading() {
         let temporary = tempfile::tempdir().unwrap();
@@ -4072,6 +4420,97 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn retention_accepts_original_five_limit_authority_without_admitting_or_rewriting_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let (authority, bytes) = legacy_working_tree_limits_authority();
+        let root = state.session_root(&authority.session_id).unwrap();
+        for child in ["runs", "candidates"] {
+            create_private_directory(&root.join(child)).unwrap();
+        }
+        let path = root.join("authority.json");
+        state.write_private_atomic(&path, &bytes).unwrap();
+        initialize_session_lifecycle(&state, &root, &authority).unwrap();
+        let snapshot = {
+            let store = CasStore::open(&state).unwrap();
+            store.put(SNAPSHOT_SCHEMA, b"legacy snapshot").unwrap()
+        };
+        let normal: Result<SessionAuthority, _> = read_managed_json(&state, &path, MAX_PLAN_BYTES);
+        assert!(normal.is_err());
+        assert!(read_session_authority_for_cleanup(&state, &path, &authority.session_id).is_err());
+        let retained =
+            read_session_authority_for_retention(&state, &path, &authority.session_id).unwrap();
+        assert_eq!(retained.authority_digest, authority.authority_digest);
+        assert_eq!(retained.working_tree.as_ref().unwrap().snapshot, snapshot);
+        assert_eq!(
+            retained
+                .working_tree
+                .as_ref()
+                .unwrap()
+                .limits
+                .max_path_bytes,
+            0
+        );
+        assert_eq!(
+            retained
+                .working_tree
+                .as_ref()
+                .unwrap()
+                .limits
+                .max_path_depth,
+            0
+        );
+        assert!(validate_session_authority(&retained, &authority.session_id).is_err());
+        let report = crate::cas::storage_status(&state).unwrap();
+        assert_eq!(report.reachable_objects, 1);
+        assert_eq!(report.released_sessions, 0);
+        assert_eq!(report.reclaimable_loose_objects, 0);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn retention_legacy_limits_reader_rejects_tampering_unknown_and_partial_shapes() {
+        for case in [
+            "digest-tamper",
+            "unknown-limit",
+            "one-path-limit",
+            "missing-old-limit",
+            "unknown-language",
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+            let (authority, bytes) = legacy_working_tree_limits_authority();
+            let root = state.session_root(&authority.session_id).unwrap();
+            let path = root.join("authority.json");
+            let mut value = canonical::parse_json_strict(&bytes).unwrap();
+            match case {
+                "digest-tamper" => value["workingTree"]["limits"]["maxFiles"] = json!(1),
+                "unknown-limit" => value["workingTree"]["limits"]["futureLimit"] = json!(1),
+                "one-path-limit" => value["workingTree"]["limits"]["maxPathBytes"] = json!(4096),
+                "missing-old-limit" => {
+                    value["workingTree"]["limits"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("maxFiles");
+                }
+                "unknown-language" => value["language"] = json!("UNKNOWN_LANGUAGE"),
+                _ => unreachable!(),
+            }
+            if case != "digest-tamper" {
+                value["authorityDigest"] = json!("");
+                value["authorityDigest"] = json!(canonical::hash(&value).unwrap());
+            }
+            let malformed = canonical::bytes(&value).unwrap();
+            state.write_private_atomic(&path, &malformed).unwrap();
+            assert!(
+                read_session_authority_for_retention(&state, &path, &authority.session_id).is_err(),
+                "{case}"
+            );
+            assert_eq!(fs::read(path).unwrap(), malformed);
+        }
     }
 
     #[test]

@@ -1,3 +1,5 @@
+pub mod cache_retirement;
+
 use crate::adapter_v2::{
     ANALYSIS_REQUEST_SCHEMA, AdapterRegistry, AnalysisAttemptComplete, AnalysisEvent, AnalysisSink,
     AnalyzeGenerationRequest, BuildModel, COMPILATION_SCHEMA, CapabilityUri, CompilationDescriptor,

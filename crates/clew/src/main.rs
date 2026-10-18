@@ -199,8 +199,24 @@ enum SupportCommand {
 
 #[derive(Subcommand)]
 enum StorageCommand {
+    /// Attribute missing retained CAS references to their metadata owners.
+    Diagnose,
+    /// Retire exactly one obsolete derived repository incremental head.
+    RetireIncremental(StorageRetireIncrementalArgs),
     /// Plan reclamation by default; mutate only with explicit --apply.
     Gc(StorageGcArgs),
+}
+
+#[derive(Args)]
+struct StorageRetireIncrementalArgs {
+    #[arg(long)]
+    repository_key: String,
+    #[arg(long)]
+    head_key: String,
+    #[arg(long)]
+    expected_plan: Option<String>,
+    #[arg(long, requires = "expected_plan")]
+    apply: bool,
 }
 
 #[derive(Args)]
@@ -698,8 +714,16 @@ struct SessionRelocateArgs {
 struct SessionGcArgs {
     #[arg(long)]
     session: String,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "reconcile_retention")]
     force: bool,
+    /// Address an already collected legacy recovery session; dry-run by default.
+    #[arg(long)]
+    reconcile_retention: bool,
+    /// The exact plan digest returned by the addressed reconciliation dry-run.
+    #[arg(long, requires = "reconcile_retention")]
+    expected_plan: Option<String>,
+    #[arg(long, requires_all = ["reconcile_retention", "expected_plan"])]
+    apply: bool,
 }
 
 #[derive(Args)]
@@ -1782,6 +1806,13 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Gc(args),
         } => {
+            if args.reconcile_retention {
+                return clew::session::retention::reconcile_retention(
+                    &args.session,
+                    args.expected_plan.as_deref(),
+                    args.apply,
+                );
+            }
             let (session, _) = SessionAuthority::load_for_lifecycle_cleanup(&args.session)?;
             let lifecycle = session.gc(args.force)?;
             Ok(json!({"schema":"codeclew-session-gc-result/1.0","lifecycle":lifecycle}))
@@ -2126,6 +2157,20 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     max_bytes: args.cache_max_bytes,
                 }),
         ),
+        Command::Storage {
+            command: StorageCommand::RetireIncremental(args),
+        } => clew::generation_service::cache_retirement::retire(
+            &args.repository_key,
+            &args.head_key,
+            args.expected_plan.as_deref(),
+            args.apply,
+        ),
+        Command::Storage {
+            command: StorageCommand::Diagnose,
+        } => {
+            let state = clew::state::StateAuthority::process_default()?;
+            serde_json::to_value(clew::cas::diagnose_storage(&state)?).map_err(internal)
+        }
         Command::Storage {
             command: StorageCommand::Gc(args),
         } => {
@@ -4001,6 +4046,56 @@ fn exit_code(code: &ErrorCode) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn addressed_retention_cli_requires_exact_dry_run_plan_before_apply() {
+        use clap::Parser;
+        assert!(super::Cli::try_parse_from(["clew", "storage", "diagnose"]).is_ok());
+        let retire = [
+            "clew",
+            "storage",
+            "retire-incremental",
+            "--repository-key",
+            "repo",
+            "--head-key",
+            "head",
+        ];
+        assert!(super::Cli::try_parse_from(retire).is_ok());
+        assert!(super::Cli::try_parse_from(retire.into_iter().chain(["--apply"])).is_err());
+        assert!(
+            super::Cli::try_parse_from(retire.into_iter().chain([
+                "--apply",
+                "--expected-plan",
+                "sha256:plan"
+            ]))
+            .is_ok()
+        );
+        let base = ["clew", "session", "gc", "--session", "session:example"];
+        assert!(
+            super::Cli::try_parse_from(base.into_iter().chain(["--reconcile-retention"])).is_ok()
+        );
+        assert!(super::Cli::try_parse_from(base.into_iter().chain(["--apply"])).is_err());
+        assert!(
+            super::Cli::try_parse_from(
+                base.into_iter().chain(["--reconcile-retention", "--apply"])
+            )
+            .is_err()
+        );
+        assert!(
+            super::Cli::try_parse_from(
+                base.into_iter().chain(["--reconcile-retention", "--force"])
+            )
+            .is_err()
+        );
+        assert!(
+            super::Cli::try_parse_from(base.into_iter().chain([
+                "--reconcile-retention",
+                "--apply",
+                "--expected-plan",
+                "sha256:exact"
+            ]))
+            .is_ok()
+        );
+    }
     use super::*;
 
     #[test]

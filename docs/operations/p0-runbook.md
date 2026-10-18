@@ -567,12 +567,102 @@ session/run CAS roots. It still performs no physical CAS deletion: bytes are
 removed only by the explicit storage command above, and any evidence shared by
 another retained authority remains live.
 
+`retainedLegacyRecoverySessions` and `retainedLegacyRecoveryRuns` count roots
+pinned by a hash-valid historical `WORKTREE_RECOVERY_REQUIRED` to `CANCELLED`
+entry with cleared process identity and unchanged failure/authority fields.
+Storage retention recognizes this
+shape without rewriting the ledger, but retains the entire session and run even
+if the session lifecycle says `GARBAGE_COLLECTED`. It does not authorize that
+transition for normal run operations. Other invalid transitions, unknown states,
+broken hashes, and missing retention authorities still block collection.
+
+Retention also recognizes the digest-valid schema6 working-tree authority with
+its original five-field inventory limits. Missing later path bounds are mapped
+only to unusable in-memory placeholders for reading CAS references; stored bytes,
+the original authority digest, normal loading, and capture defaults remain
+unchanged. Partial, unknown, or tampered limit representations are rejected.
+
 If the dry-run reports `collectionBlocked: true`, one or more retained CAS
 objects are physically absent. The report intentionally proposes zero deletion
 and `--apply` refuses to proceed because the missing object could have named
 additional descendants. Existing-but-tampered bytes remain `STATE_CORRUPT`.
 Never remove managed objects manually; preserve the typed diagnostic and repair
 or release the owning terminal state first.
+
+### Missing retained objects and addressed reconciliation
+
+Run `clew storage diagnose` to find one retained metadata witness for each
+missing object. It uses the same parser and complete reachability walk as GC,
+storing only the first discovery parent per object. `missing[].witness` contains
+a root file and direct or transitive digest chain; `ownershipComplete: false`
+explicitly means other shared owners may exist. The witness is not permission to
+release other roots. It returns no source text or Git snapshot and never deletes
+objects. Bounds are two million discovered objects, 1,024 missing objects and
+512 digests per witness; exceeding a bound fails explicitly. An absent object's
+unknown descendants cannot be diagnosed from absent bytes. After addressed
+reconciliation, physical collection still requires a complete global GC dry-run
+with zero dangling objects; a remaining shared owner keeps collection blocked.
+
+A hash-valid historical recovery cancellation remains pinned by default. If its
+owner is confirmed obsolete and is already `GARBAGE_COLLECTED`, use the addressed
+reconciliation dry-run:
+
+```bash
+clew session gc --session "$SESSION_ID" --reconcile-retention
+```
+
+This refuses active/process-owned runs, remaining source/candidate worktrees,
+unknown candidate state, invalid authority/history, and Git repository contents.
+It proposes an exact plan binding session authority, lifecycle head, all run
+heads, directory identities and the complete bounded metadata archive. It does
+not repair or rewrite history. Retain the dry-run output and apply its exact
+`planDigest` only for the confirmed obsolete owner:
+
+```bash
+clew session gc --session "$SESSION_ID" --reconcile-retention \
+  --expected-plan "$PLAN_DIGEST" --apply
+clew storage diagnose
+clew storage gc
+```
+
+Apply stores the exact metadata archive and receipt under
+`gc/retention-reconciliations/<session-component>/` in private state. Original
+session/run files remain untouched. Every subsequent collector verifies the
+archive and receipt against the still-current terminal state before releasing
+those exact roots. Changed metadata, hashes or identities fail closed. This
+releases no other session; a shared reference from another retained root still
+blocks collection. Run the physical `storage gc --apply` only after reviewing its
+new successful dry-run. Reconciliation itself deletes no CAS bytes.
+
+### Retiring one obsolete incremental cache head
+
+If diagnosis witnesses a derived repository incremental head, retire only that
+explicit head after confirming it is obsolete. This does not retire sessions or
+source and does not delete CAS objects:
+
+```bash
+clew storage retire-incremental --repository-key "$REPOSITORY_KEY" \
+  --head-key "$HEAD_KEY"
+clew storage retire-incremental --repository-key "$REPOSITORY_KEY" \
+  --head-key "$HEAD_KEY" --expected-plan "$PLAN_DIGEST" --apply
+```
+
+Both keys are lowercase 64-digit hexadecimal path components, not arbitrary
+paths. The dry-run binds the canonical head's exact bytes, compiler-store key,
+file identity/change time and both parent directory identities. Apply refuses a
+stale plan and waits for the exclusive CAS world lease, which excludes existing
+CAS-backed publishers and physical GC, including older writer processes. It
+archives the head and publishes a hash-bound `PREPARED` receipt under
+`gc/incremental-retirements/` before unlinking the exact file; the receipt then
+becomes `APPLIED`. A repeated apply can finish an interrupted receipt only after
+verifying its archive and current directory identities. A replacement head is
+never consumed using an earlier plan.
+
+Other heads, historical cache roots, session/run metadata, source and CAS remain
+unchanged. A subsequent analysis may publish a new head normally. Diagnose again
+after retirement: another retained root may reference the same missing object.
+Only a complete global `storage gc` dry-run with zero dangling objects and
+`collectionBlocked: false` permits physical collection.
 
 ### Dirty worktree
 
