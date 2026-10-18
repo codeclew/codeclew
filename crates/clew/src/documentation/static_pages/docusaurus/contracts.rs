@@ -5,7 +5,7 @@ use crate::error::ClewError;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-fn literal(value: &str) -> String {
+pub(super) fn literal(value: &str) -> String {
     crate::documentation::render::escape(value)
         .replace('{', "&#123;")
         .replace('}', "&#125;")
@@ -127,7 +127,7 @@ pub(super) fn fields(schema: &Value, depth: usize) -> String {
         return out;
     }
     if let Some(properties) = schema["properties"].as_object().filter(|p| !p.is_empty()) {
-        out.push_str("<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Declared constraints / description</th></tr></thead><tbody>\n");
+        out.push_str("<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">Field</th><th scope=\"col\">Type</th><th scope=\"col\">Required</th><th scope=\"col\">Declared constraints / description</th></tr></thead><tbody>\n");
         for (name, property) in properties {
             let required = match schema.get("required") {
                 None => "Optional",
@@ -150,7 +150,7 @@ pub(super) fn fields(schema: &Value, depth: usize) -> String {
                 nested = details("Nested fields", &fields(property, depth + 1));
             }
             let declared = constraints(property);
-            out.push_str(&format!("<tr><td><code>{}</code></td><td>{}{nested}</td><td>{required}</td><td>{}{}{}</td></tr>\n", literal(name), literal(&schema_type(property)), literal(&declared), if declared.is_empty() { "" } else { "<br/>" }, literal(text(&property["description"]))));
+            out.push_str(&format!("<tr><td data-label=\"Field\"><code>{}</code></td><td data-label=\"Type\">{}{nested}</td><td data-label=\"Required\">{required}</td><td data-label=\"Declared constraints / description\">{}{}{}</td></tr>\n", literal(name), literal(&schema_type(property)), literal(&declared), if declared.is_empty() { "" } else { "<br/>" }, literal(text(&property["description"]))));
         }
         out.push_str("</tbody></table></div>\n\n");
     }
@@ -193,11 +193,11 @@ pub(super) fn parameters(parameters: &Value) -> Result<String, ClewError> {
         return Ok("No parameters declared.\n\n".into());
     }
     let mut out = String::from(
-        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th>Parameter</th><th>Location / type</th><th>Required</th><th>Declared constraints</th></tr></thead><tbody>",
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">Parameter</th><th scope=\"col\">Location / type</th><th scope=\"col\">Required</th><th scope=\"col\">Declared constraints</th></tr></thead><tbody>",
     );
     for p in rows(parameters) {
         out.push_str(&format!(
-            "<tr><td><code>{}</code><br/>{}</td><td>{} / {}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td data-label=\"Parameter\"><code>{}</code><br/>{}</td><td data-label=\"Location / type\">{} / {}</td><td data-label=\"Required\">{}</td><td data-label=\"Declared constraints\">{}</td></tr>",
             literal(text(&p["name"])),
             literal(text(&p["description"])),
             literal(text(&p["in"])),
@@ -340,7 +340,7 @@ pub(super) fn representations(field: &Value, catalog: &Value) -> String {
         return String::new();
     }
     let mut out = String::from(
-        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th>Representation</th><th>Type / declared constraints</th><th>Requiredness / nullability</th><th>Retained mapping</th></tr></thead><tbody>",
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table\"><thead><tr><th scope=\"col\">Representation</th><th scope=\"col\">Type / declared constraints</th><th scope=\"col\">Requiredness / nullability</th><th scope=\"col\">Retained mapping</th></tr></thead><tbody>",
     );
     for rep in rows(&field["representations"]) {
         let leaf = rows(&catalog["contracts"])
@@ -372,7 +372,7 @@ pub(super) fn representations(field: &Value, catalog: &Value) -> String {
             )
         };
         out.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}<br/>{}</td><td>{}</td></tr>",
+            "<tr><td data-label=\"Representation\">{}</td><td data-label=\"Type / declared constraints\">{}</td><td data-label=\"Requiredness / nullability\">{}<br/>{}</td><td data-label=\"Retained mapping\">{}</td></tr>",
             literal(text(&rep["label"])),
             literal(&kind),
             literal(&required),

@@ -992,20 +992,19 @@ fn comparison_rows(entry: &Value, packet: &Value) -> String {
         contracts::findings(entry)
     );
     let mut cases = String::from(
-        "| Retained case | HTTP status | Status declared | Recorded media | Request assessment | Body assessment |\n| --- | --- | --- | --- | --- | --- |\n",
+        "<div className=\"clew-table-scroll\"><table className=\"clew-schema-table clew-case-table\"><thead><tr><th scope=\"col\">Retained case</th><th scope=\"col\">HTTP status</th><th scope=\"col\">Status declared</th><th scope=\"col\">Recorded media</th><th scope=\"col\">Request assessment</th><th scope=\"col\">Body assessment</th></tr></thead><tbody>",
     );
     for case in rows(&entry["cases"]) {
-        cases.push_str(&format!(
-            "| {} | {} | {} | {} · {} | {} | {} |\n",
-            md(text(&case["id"])),
-            case["response"]["status"],
-            case["statusDeclared"],
-            md(text(&case["response"]["contentType"])),
-            md(text(&case["mediaAssessment"])),
-            md(text(&case["requestAssessment"])),
-            md(text(&case["bodyAssessment"]))
-        ));
+        cases.push_str(&format!("<tr><td data-label=\"Retained case\">{}</td><td data-label=\"HTTP status\">{}</td><td data-label=\"Status declared\">{}</td><td data-label=\"Recorded media\">{} · {}</td><td data-label=\"Request assessment\">{}</td><td data-label=\"Body assessment\">{}</td></tr>",
+            contracts::literal(text(&case["id"])),
+            contracts::literal(&case["response"]["status"].to_string()),
+            contracts::literal(&case["statusDeclared"].to_string()),
+            contracts::literal(text(&case["response"]["contentType"])),
+            contracts::literal(text(&case["mediaAssessment"])),
+            contracts::literal(text(&case["requestAssessment"])),
+            contracts::literal(text(&case["bodyAssessment"]))));
     }
+    cases.push_str("</tbody></table></div>\n\n");
     cases.push_str(&format!("\n{}\n\nExternal JSON-schema assessments are retained from {}; this reader verifies saved bindings and does not rerun that validator.\n\n",md(text(&packet["scope"])),md(text(&packet["validator"]))));
     for limit in rows(&packet["limitations"]) {
         cases.push_str(&format!("- {}\n", md(text(limit))));
@@ -1718,6 +1717,37 @@ pub(super) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_http_cases_have_named_cells_and_preserve_every_assessment() {
+        let rendered = comparison_rows(
+            &json!({"coverage":"Selected cases only","cases":[{"id":"extra-property","response":{"status":200,"contentType":"application/json"},"statusDeclared":true,"mediaAssessment":"declared","requestAssessment":"outside-schema","bodyAssessment":"matches-selected-schema"}]}),
+            &json!({"validator":"retained validator"}),
+        );
+        for label in [
+            "Retained case",
+            "HTTP status",
+            "Status declared",
+            "Recorded media",
+            "Request assessment",
+            "Body assessment",
+        ] {
+            assert!(rendered.contains(&format!("data-label=\"{label}\"")));
+        }
+        for value in [
+            "extra-property",
+            "200",
+            "true",
+            "application/json",
+            "outside-schema",
+            "matches-selected-schema",
+            "Selected cases only",
+            "retained validator",
+            "Raw recorded cases",
+        ] {
+            assert!(rendered.contains(value), "{value}");
+        }
+    }
+
     #[test]
     fn reference_records_and_process_links_are_portable_and_keep_evidence() {
         let model = json!({"id":"lookup","title":"Lookup","purpose":{"text":"Supported values","evidence":[]},"identity":{"text":"Source literals","evidence":[]},"fields":[{"id":"id","path":"id","meaning":{"text":"Key","evidence":[]},"representations":[],"usage":[]}],"records":[{"values":{"id":"<literal>|value"},"claim":{"text":"Exact retained literal","evidence":[]}}],"processLinks":[],"relatedModels":[]});

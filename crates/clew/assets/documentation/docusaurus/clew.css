@@ -49,3 +49,28 @@ body .clew-status :is(span,p,summary){font-size:14px!important;line-height:22px!
 .clew-page-start{display:block;height:0}.clew-context-disclosure>summary .clew-disclosure-preview{display:block;font-weight:400!important;color:#42516a;font-size:14px!important;line-height:22px!important;overflow-wrap:anywhere}
 .clew-context-links{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0 12px}.clew-context-links>p{margin:0}.clew-context-links a{text-decoration:underline;text-underline-offset:3px}.clew-step-data a{white-space:normal}.clew-topic>.clew-return{margin:8px 0 12px}
 .clew-table-scroll{max-width:100%;overflow:auto;margin:12px 0}.clew-schema-table{display:table;width:100%;border-collapse:collapse;table-layout:fixed}.clew-schema-table :is(th,td){padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere}.clew-schema-table th{background:#f2f5f9}.clew-schema-table td details{margin:8px 0}.clew-http-finding,.clew-completion-boundary{border-left:3px solid #ad7b32;background:#fff9ec;padding:12px 16px;margin:16px 0}.clew-http-finding>h4,.clew-completion-boundary>h2{margin-top:0}.clew-related-models a{display:inline-block;text-decoration:underline;text-underline-offset:3px;margin:0 4px}
+
+/* Keep every table value with its heading when columns no longer fit. */
+@media(max-width:700px){
+  .clew-table-scroll{overflow:visible;min-width:0}
+  .clew-schema-table,.clew-schema-table tbody,.clew-schema-table tr,.clew-schema-table td{display:block;width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+  .clew-schema-table thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+  .clew-schema-table tr{border:1px solid #ccd4de;border-radius:6px;margin:12px 0;padding:4px 0}
+  .clew-schema-table tbody tr:nth-child(2n){background:transparent}
+  .clew-schema-table td{border:0;padding:8px 12px;overflow-wrap:break-word;word-break:normal}
+  .clew-schema-table td::before{content:attr(data-label);display:block;margin-bottom:3px;font-size:14px;line-height:20px;font-weight:650;color:#42516a}
+  .clew-schema-table td:empty{display:none}
+  .clew-widget .dm-controls{display:grid;grid-template-columns:minmax(0,1fr);width:100%;gap:12px}
+  .clew-widget .dm-controls label{min-width:0;width:100%;margin:0}
+  .clew-widget .dm-controls select{width:100%;max-width:100%;box-sizing:border-box}
+  .clew-widget .dm-field-row button{width:100%;max-width:100%;box-sizing:border-box;margin-right:0}
+  .clew-widget .dm-field-row,.clew-widget .dm-field-row>ul>li{min-width:0;max-width:100%;box-sizing:border-box}
+}
+@media(max-width:600px){
+  .navbar__inner>.navbar__items:not(.navbar__items--right){flex:0 0 auto;min-width:0}
+  .navbar__inner>.navbar__items--right{flex:1 1 0;min-width:0}
+  .navbar__inner .navbar__brand{flex:0 0 auto;min-width:0;margin-right:8px}
+  .navbar__inner .clew-search{flex:1 1 0;width:auto;min-width:0;max-width:100%;margin:0;gap:4px}
+  .navbar__inner .clew-search input{flex:1 1 0;width:0;min-width:0;max-width:100%;padding:6px 8px}
+  .navbar__inner .clew-search button{flex:0 0 auto;padding:6px 8px;font-size:14px}
+}
