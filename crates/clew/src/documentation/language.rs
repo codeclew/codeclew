@@ -33,6 +33,7 @@ pub(super) fn template(template: &str, language: &str) -> String {
         ),
         ("Source and API inventory", "Перечень исходников и API"),
         ("Sections and source", "Разделы и исходный код"),
+        ("On this page", "На этой странице"),
         (
             "Sources pinned to revisions",
             "Исходники привязаны к версиям",
@@ -299,7 +300,18 @@ mod tests {
         );
         assert!(template.contains("lang=\"ru\""));
         assert!(template.contains("Перечень исходников и API"));
-        assert!(template.contains("<summary>Разделы и исходный код</summary>"));
+        assert!(template.contains("<summary>На этой странице</summary>"));
+        assert!(template.contains("aria-label=\"На этой странице\""));
+        assert!(!template.contains("On this page"));
+        let filled = template.replace("__DOCUMENT_DATA__", r#"{"text":"On this page"}"#);
+        assert!(filled.contains(r#"{"text":"On this page"}"#));
+        assert_eq!(
+            super::template(
+                include_str!("../../assets/documentation/template.html"),
+                "en"
+            ),
+            include_str!("../../assets/documentation/template.html")
+        );
         assert!(!template.contains("Sections and source"));
         assert!(template.contains("__DOCUMENT_DATA__"));
         assert!(validate(Some("fr")).is_err());
